@@ -1,0 +1,28 @@
+{
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/INPUTS-BEFORE.json",
+    "bytes": 18047,
+    "mode": 420,
+    "sha256": "58b1f5d0248f0aba0dcd21163e73cd76f9bc462f16cf4508b6153f0c0397f8ab"
+  },
+  "queries": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/QUERIES.json",
+    "bytes": 5027,
+    "mode": 420,
+    "sha256": "fdedc2605dd9b1bbb6b04ddc94aa78f43b26d6039169974beb2d772098dbd441"
+  },
+  "attribution": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/ATTRIBUTION.json",
+    "bytes": 3388,
+    "mode": 420,
+    "sha256": "7102d81bf1989f7f90c62b9aef2c416d3f26c04c5b8c34047748d210eca546ee"
+  },
+  "contexts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/CONTEXTS.json",
+    "bytes": 10451,
+    "mode": 420,
+    "sha256": "e9d226af1ec2d87a350b97ee12a1dfc36552d44f97618c387d6eeab005f3b308"
+  },
+  "unchanged": true,
+  "guest_executed": false
+}

@@ -1,0 +1,11 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/bind_dependencies.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v1/bind_dependencies.py
+@@ -4,7 +4,7 @@
+ from pathlib import Path
+ from common import file_record,json_read,require,write_new
+ HERE=Path(__file__).resolve().parent
+-REPO=HERE.parents[1]
++REPO=HERE.parents[2]
+ result=json_read(HERE/'controls/metadata/result.json')
+ require(result['accepted']and result['terminal_authenticated']and result['raw_status']==0,'metadata not qualified')
+ metadata=json_read(HERE/'observer/metadata/stdout')

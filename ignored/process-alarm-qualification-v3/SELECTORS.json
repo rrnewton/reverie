@@ -1,0 +1,11 @@
+{
+  "groups": {
+    "test-child-vm": {
+      "artifact": "static",
+      "names": [
+        "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract"
+      ]
+    }
+  },
+  "scope": "Original remaining child-exit VM control on qualified successor ELF; no repeat of prior passes"
+}

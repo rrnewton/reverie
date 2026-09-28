@@ -1,0 +1,24 @@
+{
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-result-v1/RESULTS.json",
+    "bytes": 57364,
+    "sha256": "cbe2cf29cadb3cf3e13e0523215fcbbfd53899b9b1a94309c7fd6009e372abec",
+    "mode": 420
+  },
+  "raw_execution_audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-result-v1/RAW-EXECUTION-AUDIT.json",
+    "bytes": 1569,
+    "sha256": "c0f2d185ba2d8080ec214813ab6d8387a876bf85b55567e8b43c915eb9466f88",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-result-v1/INPUTS.json",
+    "bytes": 2818198,
+    "sha256": "0852f04ae0d9654e6da5de24af3a29123ccfc407e9b88e4fd39e7d4ee0802f1c",
+    "mode": 420
+  },
+  "records": 10182,
+  "all_inputs_unchanged": true,
+  "all_qualified": true,
+  "no_source_review_or_parity_verdict": true
+}

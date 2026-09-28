@@ -1,0 +1,80 @@
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        global: &G,
+        started: bool,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        assert!(started);
+        global.send_rpc((2, status)).await;
+        if self.mode == 2 {
+            Err(Errno::EIO.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        global: &G,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        global.send_rpc((3, status)).await;
+        Ok(())
+    }
+}
+
+fn terminal_program() -> Vec<u8> {
+    let mut code = vec![
+        0x0f, 0xa2, // cpuid: callback must never return a value to this frame
+        0x0f, 0xa2, // a resumed frame would produce a forbidden second callback
+        0xb8, 0xe7, 0, 0, 0, // mov eax, SYS_exit_group
+        0xbf, 77, 0, 0, 0, // mov edi, 77
+        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
+    ];
+    code.resize(0x100, 0);
+    code.extend_from_slice(&[0x5a; 16]);
+    code
+}
+
+fn run_terminal(mode: u8, code: &[u8]) -> (reverie_kvm::ToolRunCompletion<TerminalLog>, [u8; 16]) {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_thread_ownership(ThreadOwnership::Tool);
+    backend
+        .install_static_elf(&static_elf(code), "/bin/CPUID-terminal")
+        .unwrap();
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<TerminalTool>(mode, true),
+    )
+    .unwrap();
+    let mut marker = [0; 16];
+    backend
+        .memory()
+        .read(LOAD_ADDRESS + 0x100, &mut marker)
+        .unwrap();
+    (completion, marker)
+}
+
+#[test]
+fn terminal_exit_preserves_status_and_consuming_cleanup() {
+    for mode in [0, 1, 2, 8, 9] {
+        let (completion, marker) = run_terminal(mode, &terminal_program());
+        assert_eq!(marker, [0x5a; 16]);
+        let expected_status = if matches!(mode, 1 | 9) { 29 } else { 23 };
+        let expected = ExitStatus::Exited(expected_status);
+        assert_eq!(
+            *completion.global_state.events.lock().unwrap(),
+            vec![
+                (0, 1, ExitStatus::SUCCESS),
+                (1, 1, ExitStatus::SUCCESS),
+                (2, 1, expected),
+                (3, 1, expected),
+            ],
+            "mode={mode}",
+        );
+        if mode == 2 {
+            let error = completion.result.unwrap_err();
+            eprintln!("actual terminal exit cleanup failure: {error:?}");
+            let Error::SharedFailure(cause) = error else {

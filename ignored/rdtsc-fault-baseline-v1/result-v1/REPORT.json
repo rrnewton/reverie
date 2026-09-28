@@ -1,0 +1,43 @@
+{
+  "status": "ACTUAL BASELINE FAILURE REPRODUCED; NOT A PASS",
+  "receipt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/controls/baseline-fault/result.json",
+    "bytes": 2631,
+    "mode": 420,
+    "sha256": "44bfc0b7eb3b62efeb5c31d0e2804670ca4ea93395379394be2fc873c5ad1641"
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/observer/baseline-fault/stdout",
+    "bytes": 415,
+    "mode": 384,
+    "sha256": "762824995df1df2295f2aaedd3b8875771bb096356e75e90eb09ee7ef80566d3"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/observer/baseline-fault/stderr",
+    "bytes": 296,
+    "mode": 384,
+    "sha256": "cf340b9a599b41c2decd593f0f3dd2404238678d382c7c2cadf3eca51c117383"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/baseline-fault-plan.json",
+    "bytes": 43345,
+    "mode": 420,
+    "sha256": "2b45bc1406a07850a9d63a05999a8b7c81ab30ca0bda94fa2be2a29594e49b37"
+  },
+  "baseline_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/BINDING.json",
+    "bytes": 3357,
+    "mode": 420,
+    "sha256": "1a0693edfc6a8bc7eadf8204cf256a539ed2c1c1ea3bde91ae17333ff73c0e76"
+  },
+  "raw_status": 101,
+  "accepted": false,
+  "terminal_authenticated": true,
+  "inputs_unchanged": true,
+  "kvm_skip_absent": true,
+  "payload_elapsed_seconds": 0.15551259089261293,
+  "later_pf_gp_branches_credited": false,
+  "actual_error_debug_logged": false,
+  "source_derived_wrapper": "Documented SharedFailure envelope, distinct from directly logged Display fault values",
+  "proposed_correction": "Test-only exact bare or singly shared GuestException; retain fault values and reject cleanup/effect/worker context; no production ownership change or primary flattening"
+}

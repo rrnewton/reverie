@@ -1,0 +1,72 @@
+{
+  "started": [
+    "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+    "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+    "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+    "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+    "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+    "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+    "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+    "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+    "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 455,
+      "exec_time": 0.00920504
+    }
+  ]
+}

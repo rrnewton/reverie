@@ -1,0 +1,290 @@
+[
+  {
+    "callback": {
+      "ordinal": 1,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x101fcb8",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x1fcb8",
+      "file_offset": 130232,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   1fcaf:\t41 55                \tpush   %r13",
+      "   1fcb1:\t41 54                \tpush   %r12",
+      "   1fcb3:\t53                   \tpush   %rbx",
+      "   1fcb4:\t48 83 ec 38          \tsub    $0x38,%rsp",
+      "   1fcb8:\t0f 31                \trdtsc  ",
+      "   1fcba:\t80 25 8d a0 01 00 df \tandb   $0xdf,0x1a08d(%rip)        # 39d4e <_rtld_global+0xd4e>",
+      "   1fcc1:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   1fcc5:\t48 09 d0             \tor     %rdx,%rax",
+      "   1fcc8:\t48 8d 15 c1 91 01 00 \tlea    0x191c1(%rip),%rdx        # 38e90 <_DYNAMIC>"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 2,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x101fe52",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x1fe52",
+      "file_offset": 130642,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   1fe3f:\t00 ",
+      "   1fe40:\t0f 84 9a 00 00 00    \tje     1fee0 <_dl_start+0x240>",
+      "   1fe46:\t80 0d ff 9e 01 00 04 \torb    $0x4,0x19eff(%rip)        # 39d4c <_rtld_global+0xd4c>",
+      "   1fe4d:\te8 ae d2 ff ff       \tcallq  1d100 <__rtld_malloc_init_stubs>",
+      "   1fe52:\t0f 31                \trdtsc  ",
+      "   1fe54:\t48 8d 1d d5 9b 01 00 \tlea    0x19bd5(%rip),%rbx        # 39a30 <_rtld_global+0xa30>",
+      "   1fe5b:\t48 89 df             \tmov    %rbx,%rdi",
+      "   1fe5e:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   1fe62:\t48 09 d0             \tor     %rdx,%rax"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 3,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1022392",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x22392",
+      "file_offset": 140178,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   22386:\t48 85 ff             \ttest   %rdi,%rdi",
+      "   22389:\t74 07                \tje     22392 <dl_main+0x1fb2>",
+      "   2238b:\t31 f6                \txor    %esi,%esi",
+      "   2238d:\te8 9e 7a ff ff       \tcallq  19e30 <_dl_audit_objopen>",
+      "   22392:\t0f 31                \trdtsc  ",
+      "   22394:\t31 c9                \txor    %ecx,%ecx",
+      "   22396:\t48 89 c3             \tmov    %rax,%rbx",
+      "   22399:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   2239d:\t4c 89 ee             \tmov    %r13,%rsi"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 4,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x10223bf",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x223bf",
+      "file_offset": 140223,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   223b1:\t0f 94 c1             \tsete   %cl",
+      "   223b4:\t4c 89 ef             \tmov    %r13,%rdi",
+      "   223b7:\t45 31 c0             \txor    %r8d,%r8d",
+      "   223ba:\te8 11 16 fe ff       \tcallq  39d0 <_dl_map_object_deps>",
+      "   223bf:\t0f 31                \trdtsc  ",
+      "   223c1:\t41 8b bd c8 02 00 00 \tmov    0x2c8(%r13),%edi",
+      "   223c8:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   223cc:\t48 09 d0             \tor     %rdx,%rax",
+      "   223cf:\t48 29 d8             \tsub    %rbx,%rax"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 5,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102291d",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2291d",
+      "file_offset": 141597,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   2290d:\t09 1d 39 62 01 00    \tor     %ebx,0x16239(%rip)        # 38b4c <_rtld_global_ro+0x4c>",
+      "   22913:\t48 83 3d 05 67 01 00 \tcmpq   $0x0,0x16705(%rip)        # 39020 <_rtld_global+0x20>",
+      "   2291a:\t00 ",
+      "   2291b:\t74 41                \tje     2295e <dl_main+0x257e>",
+      "   2291d:\t0f 31                \trdtsc  ",
+      "   2291f:\t48 8b 3d fa 66 01 00 \tmov    0x166fa(%rip),%rdi        # 39020 <_rtld_global+0x20>",
+      "   22926:\t8b 0d 20 62 01 00    \tmov    0x16220(%rip),%ecx        # 38b4c <_rtld_global_ro+0x4c>",
+      "   2292c:\t48 8b b7 98 03 00 00 \tmov    0x398(%rdi),%rsi",
+      "   22933:\t49 89 c5             \tmov    %rax,%r13"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 6,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102294b",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2294b",
+      "file_offset": 141643,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   2293f:\t85 c9                \ttest   %ecx,%ecx",
+      "   22941:\t89 d9                \tmov    %ebx,%ecx",
+      "   22943:\t0f 95 c2             \tsetne  %dl",
+      "   22946:\te8 85 f4 fe ff       \tcallq  11dd0 <_dl_relocate_object>",
+      "   2294b:\t0f 31                \trdtsc  ",
+      "   2294d:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   22951:\t48 09 d0             \tor     %rdx,%rax",
+      "   22954:\t4c 29 e8             \tsub    %r13,%rax",
+      "   22957:\t48 01 05 3a 7b 01 00 \tadd    %rax,0x17b3a(%rip)        # 3a498 <relocate_time>"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 7,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102295e",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2295e",
+      "file_offset": 141662,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   2294d:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   22951:\t48 09 d0             \tor     %rdx,%rax",
+      "   22954:\t4c 29 e8             \tsub    %r13,%rax",
+      "   22957:\t48 01 05 3a 7b 01 00 \tadd    %rax,0x17b3a(%rip)        # 3a498 <relocate_time>",
+      "   2295e:\t0f 31                \trdtsc  ",
+      "   22960:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   22964:\t48 09 d0             \tor     %rdx,%rax",
+      "   22967:\t48 89 85 90 fd ff ff \tmov    %rax,-0x270(%rbp)",
+      "   2296e:\t48 8b 85 88 fd ff ff \tmov    -0x278(%rbp),%rax"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 8,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1022a27",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x22a27",
+      "file_offset": 141863,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   22a19:\t49 83 fc f8          \tcmp    $0xfffffffffffffff8,%r12",
+      "   22a1d:\t75 93                \tjne    229b2 <dl_main+0x25d2>",
+      "   22a1f:\t44 0f b6 a5 80 fd ff \tmovzbl -0x280(%rbp),%r12d",
+      "   22a26:\tff ",
+      "   22a27:\t0f 31                \trdtsc  ",
+      "   22a29:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   22a2d:\t48 09 d0             \tor     %rdx,%rax",
+      "   22a30:\t48 2b 85 90 fd ff ff \tsub    -0x270(%rbp),%rax",
+      "   22a37:\t48 83 3d d1 6f 01 00 \tcmpq   $0x0,0x16fd1(%rip)        # 39a10 <_rtld_global+0xa10>"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 9,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102316f",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2316f",
+      "file_offset": 143727,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   23160:\te8 ab 27 fe ff       \tcallq  5910 <_dl_find_object_init>",
+      "   23165:\t48 83 3d b3 5e 01 00 \tcmpq   $0x0,0x15eb3(%rip)        # 39020 <_rtld_global+0x20>",
+      "   2316c:\t00 ",
+      "   2316d:\t74 52                \tje     231c1 <dl_main+0x2de1>",
+      "   2316f:\t0f 31                \trdtsc  ",
+      "   23171:\t31 c9                \txor    %ecx,%ecx",
+      "   23173:\t48 8d 3d b6 68 01 00 \tlea    0x168b6(%rip),%rdi        # 39a30 <_rtld_global+0xa30>",
+      "   2317a:\t4c 8b bd 88 fd ff ff \tmov    -0x278(%rbp),%r15",
+      "   23181:\t49 8b b7 98 03 00 00 \tmov    0x398(%r15),%rsi"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 10,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1023199",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x23199",
+      "file_offset": 143769,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "   2318b:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   2318f:\t48 09 d3             \tor     %rdx,%rbx",
+      "   23192:\t31 d2                \txor    %edx,%edx",
+      "   23194:\te8 07 cc fe ff       \tcallq  fda0 <_dl_relocate_object_no_relro>",
+      "   23199:\t0f 31                \trdtsc  ",
+      "   2319b:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "   2319f:\t48 09 d0             \tor     %rdx,%rax",
+      "   231a2:\t48 29 d8             \tsub    %rbx,%rax",
+      "   231a5:\t48 01 05 ec 72 01 00 \tadd    %rax,0x172ec(%rip)        # 3a498 <relocate_time>"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 11,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x401055",
+      "image": "main",
+      "load_bias": "0x0",
+      "elf_vaddr": "0x401055",
+      "file_offset": 4181,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "",
+      "0000000000401050 <main>:",
+      "  401050:\t53                   \tpush   %rbx",
+      "  401051:\t48 83 ec 10          \tsub    $0x10,%rsp",
+      "  401055:\t0f 31                \trdtsc  ",
+      "  401057:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "  40105b:\t89 c0                \tmov    %eax,%eax",
+      "  40105d:\t41 b8 0a 00 00 00    \tmov    $0xa,%r8d",
+      "  401063:\t48 89 d3             \tmov    %rdx,%rbx"
+    ]
+  },
+  {
+    "callback": {
+      "ordinal": 12,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x4010c2",
+      "image": "main",
+      "load_bias": "0x0",
+      "elf_vaddr": "0x4010c2",
+      "file_offset": 4290,
+      "bytes": "0f31"
+    },
+    "lines": [
+      "  4010b5:\t75 34                \tjne    4010eb <main+0x9b>",
+      "  4010b7:\t48 81 7c 24 08 34 12 \tcmpq   $0x1234,0x8(%rsp)",
+      "  4010be:\t00 00 ",
+      "  4010c0:\t75 19                \tjne    4010db <main+0x8b>",
+      "  4010c2:\t0f 31                \trdtsc  ",
+      "  4010c4:\t48 c1 e2 20          \tshl    $0x20,%rdx",
+      "  4010c8:\t89 c0                \tmov    %eax,%eax",
+      "  4010ca:\t48 09 c2             \tor     %rax,%rdx",
+      "  4010cd:\tb8 0e 00 00 00       \tmov    $0xe,%eax"
+    ]
+  }
+]

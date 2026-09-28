@@ -1,0 +1,24 @@
+{
+  "lib": {
+    "compiler_file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+      "bytes": 119342504,
+      "mode": 493,
+      "sha256": "11075d3945eb443386a5257f7f367c9ed3ccf8789a2ef022f38ae76176cc937b"
+    },
+    "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v1/retained/lib.elf",
+    "bytes": 119342504,
+    "sha256": "11075d3945eb443386a5257f7f367c9ed3ccf8789a2ef022f38ae76176cc937b"
+  },
+  "static": {
+    "compiler_file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+      "bytes": 162291544,
+      "mode": 493,
+      "sha256": "0692c210daa99966bcb37c0c09b0a4c6cdcfcbf56a1d2c422d7d4c69e50d985c"
+    },
+    "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v1/retained/static.elf",
+    "bytes": 162291544,
+    "sha256": "0692c210daa99966bcb37c0c09b0a4c6cdcfcbf56a1d2c422d7d4c69e50d985c"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-review-response-design-v1/REPORT.md",
+    "bytes": 10634,
+    "sha256": "7bd5d842b4f7b12158aec32edd451d0e2abc84bf49a70ea8f761c52be3168cc3",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-review-response-design-v1/INPUTS.json",
+    "bytes": 7866,
+    "sha256": "5d5f530f39d08d2354a52bf7eb37b5b3aed00fd42b5135801f3bf0fd392acdf0",
+    "mode": 420
+  },
+  "records": 26,
+  "source_unchanged": true,
+  "no_execution": true,
+  "f1_f2_implementation_next": "new isolated V5",
+  "f3_policy_changes_authorized": false
+}

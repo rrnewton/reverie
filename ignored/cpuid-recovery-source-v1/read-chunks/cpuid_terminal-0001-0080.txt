@@ -1,0 +1,80 @@
+// Actual CPUID terminal transitions. These controls exercise the real
+// Tool/Guest/driver and consuming hooks; they do not model Detcore's clock RPC.
+use futures::channel::oneshot;
+
+use super::*;
+
+#[derive(Debug, Default)]
+struct SiblingGates {
+    entered: bool,
+    leader_entry: Option<oneshot::Sender<()>>,
+    worker_terminal: Option<oneshot::Sender<()>>,
+    leader_exit: Option<oneshot::Sender<()>>,
+}
+
+#[derive(Debug, Default)]
+struct TerminalLog {
+    events: Mutex<Vec<(u8, i32, ExitStatus)>>,
+    gates: Mutex<SiblingGates>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for TerminalLog {
+    type Request = (u8, ExitStatus);
+    type Response = ();
+    type Config = u8;
+
+    async fn receive_rpc(&self, from: Pid, (kind, status): Self::Request) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((kind, from.as_raw(), status));
+        match kind {
+            10 => {
+                assert_eq!(from.as_raw(), 2);
+                let (sender, receiver) = oneshot::channel();
+                {
+                    let mut gates = self.gates.lock().unwrap();
+                    assert!(!gates.entered);
+                    gates.entered = true;
+                    assert!(gates.worker_terminal.replace(sender).is_none());
+                    if let Some(leader) = gates.leader_entry.take() {
+                        leader.send(()).unwrap();
+                    }
+                }
+                receiver
+                    .await
+                    .expect("leader must release the CPUID callback");
+            }
+            11 => {
+                assert_eq!(from.as_raw(), 1);
+                let wait = {
+                    let mut gates = self.gates.lock().unwrap();
+                    if gates.entered {
+                        None
+                    } else {
+                        let (sender, receiver) = oneshot::channel();
+                        assert!(gates.leader_entry.replace(sender).is_none());
+                        Some(receiver)
+                    }
+                };
+                if let Some(wait) = wait {
+                    wait.await.expect("worker must enter its CPUID callback");
+                }
+                let (sender, receiver) = oneshot::channel();
+                {
+                    let mut gates = self.gates.lock().unwrap();
+                    assert!(gates.leader_exit.replace(sender).is_none());
+                    gates.worker_terminal.take().unwrap().send(()).unwrap();
+                }
+                // Do not hold a mutex across either actual RPC wait. The worker
+                // must consume its exit hook before the leader's physical exit.
+                receiver
+                    .await
+                    .expect("worker must acknowledge its consuming exit hook");
+            }
+            2 if from.as_raw() == 2 => {
+                let sender = self.gates.lock().unwrap().leader_exit.take().unwrap();
+                sender.send(()).unwrap();
+            }
+            _ => {}

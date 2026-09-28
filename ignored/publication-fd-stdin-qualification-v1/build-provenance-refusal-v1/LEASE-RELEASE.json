@@ -1,0 +1,34 @@
+{
+  "binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "identity": [
+      48,
+      816917584,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state"
+  },
+  "token": {
+    "plan_sha256": "82b8a50f1d78c020cfb527ea0215f430f6bf5c3017b07fbe1d896b0c7acdc74a",
+    "schema": 1
+  },
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/82b8a50f1d78c020cfb527ea0215f430f6bf5c3017b07fbe1d896b0c7acdc74a.json",
+    "bytes": 407,
+    "mode": 420,
+    "sha256": "b244626a3b2ddfb9a23f645ff798b34fcf27a2ffadc7586f93f25a2f0eb88f47"
+  },
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 6525,
+    "mode": 420,
+    "sha256": "46fbcea8e940621595a3c47ba6274d443763dd89a0bb2d6ecb4169625902ac02"
+  },
+  "exclusive_available": true,
+  "lease_bytes_mutated": false,
+  "terminal_authenticated": true,
+  "original_receipt_accepted": true,
+  "qualification_credit": false,
+  "descriptor_closed": true
+}

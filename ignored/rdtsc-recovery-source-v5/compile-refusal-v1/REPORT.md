@@ -1,0 +1,7 @@
+# Preserved V5 compile refusal
+
+Metadata accepted. The first compile failed raw 101 / accepted=false with one E0050 and its explanatory failure-note: the included terminal_runtime_tests.rs RefusingExecutor retained the former tail_injection_allowed signature. Terminal/accounting/source authentication succeeded. No test ran; all 36 declarations remain unexecuted, and the remaining 43 phases were not attempted. The new non-test KVM library was emitted fresh=false, but no selected harness ELF was emitted. Both emitted library files are retained here as unqualified artifacts only.
+
+The source author missed the included test module in the prior symbol audit. That audit's broad claim was incorrect. The authorized successor adds only _request: &SyscallRequest to this private implementation, preserving false/no-execution behavior and every assertion, then selects the unchanged terminal-cancellation/IntoGuest neighbor and adds the changed file to formatting/source bindings. No V5 source, input, limit, diagnostic or receipt was altered. No qualification retry occurred.
+
+The failed phase's terminal completion is authenticated; a nonblocking exclusive read-only lease acquisition succeeded and was closed without token mutation. The failure remains failure, not an expected-success test result or production qualification. A report-assembly count assumption was separately refused and is disclosed in PREPARATION-REFUSAL.md.

@@ -1,0 +1,310 @@
+    fn inherited_pipe_stdin_fixture(capture: bool) -> (FdinfoFixture, std::fs::File) {
+        let root = TestDir::new();
+        for (name, data) in [("a", b"abc"), ("b", b"def"), ("c", b"ghi")] {
+            std::fs::write(root.0.join(name), data).unwrap();
+        }
+        let mut pipe = [-1; 2];
+        // SAFETY: pipe has storage for both returned descriptors.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let mut state = test_state(&root.0);
+        // This is loader setup, before the executor publishes its file table.
+        // SAFETY: each successful pipe descriptor is transferred to one File.
+        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pipe[0]) });
+        let writer = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
+        (
+            FdinfoFixture {
+                executor: ElfExecutor::new(state, capture),
+                memory: GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap(),
+                root,
+            },
+            writer,
+        )
+    }
+
+    #[test]
+    fn inherited_stdin_epoll_preserves_local_and_authoritative_handles() {
+        for capture in [false, true] {
+            let (mut f, mut writer) = inherited_pipe_stdin_fixture(capture);
+            let epoll = f.call(libc::SYS_epoll_create1, [0; 6]);
+            assert!(epoll >= 3);
+            let event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: 71,
+            };
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &event), 0);
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_ADD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                0
+            );
+            let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+            let authoritative = f
+                .executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd();
+            let modified = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
+                u64: 72,
+            };
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
+            // execute() installs the shared table before epoll_ctl reaches the
+            // host. This is the decisive ADD -> synchronization -> MOD oracle.
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                0,
+                "unchanged inherited stdin must retain epoll registration identity"
+            );
+            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+            assert_eq!(
+                f.executor
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .stdin
+                    .as_ref()
+                    .unwrap()
+                    .as_raw_fd(),
+                authoritative
+            );
+            // F_GETFL uses the mutating-table writeback path. It must preserve
+            // the authoritative handle as well as the executor's local one.
+            let flags = f.call(libc::SYS_fcntl, [0, libc::F_GETFL as u64, 0, 0, 0, 0]);
+            assert!(flags >= 0);
+            assert_eq!(
+                flags & i64::from(libc::O_ACCMODE),
+                i64::from(libc::O_RDONLY)
+            );
+            assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
+            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+            assert_eq!(
+                f.executor
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .stdin
+                    .as_ref()
+                    .unwrap()
+                    .as_raw_fd(),
+                authoritative
+            );
+            std::io::Write::write_all(&mut writer, b"xyz").unwrap();
+            assert_eq!(
+                f.call(libc::SYS_epoll_wait, [epoll as u64, PAGE_SIZE, 1, 0, 0, 0]),
+                1
+            );
+            let delivered: libc::epoll_event = read_struct(&f.memory, PAGE_SIZE);
+            let data = delivered.u64;
+            assert_eq!(data, 72);
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            let mut bytes = [0; 3];
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"xyz");
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_DEL as u64, 0, 1, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                negative_errno(libc::ENOENT),
+                "DEL must remove the original registration"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_stdin_sibling_replacement_preserves_old_dup() {
+        for use_dup2 in [false, true] {
+            let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
+            let alias = f.call(libc::SYS_dup, [0; 6]);
+            assert!(alias >= 3);
+            let replacement = f.open("b", libc::O_RDONLY);
+            assert!(replacement > alias);
+            let alias_host = f.executor.state.files[&(alias as i32)].as_raw_fd();
+            let mut sibling = f.executor.thread_child(2).unwrap();
+            if use_dup2 {
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_dup2 as u64,
+                            [replacement as u64, 0, 0, 0, 0, 0]
+                        ),
+                        &f.memory
+                    ),
+                    0
+                );
+            } else {
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
+                        &f.memory
+                    ),
+                    0
+                );
+                f.memory.write(0x100, b"b\0").unwrap();
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_openat as u64,
+                            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0]
+                        ),
+                        &f.memory
+                    ),
+                    0
+                );
+            }
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            let mut bytes = [0; 3];
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"def");
+            assert!(f.executor.state.stdin.is_none());
+            assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
+            assert!(f.executor.state.files.contains_key(&0));
+            assert_eq!(
+                f.executor.state.files[&(alias as i32)].as_raw_fd(),
+                alias_host
+            );
+            std::io::Write::write_all(&mut writer, b"old").unwrap();
+            assert_eq!(
+                f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, 3, 0, 0, 0]),
+                3
+            );
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"old");
+            assert_eq!(f.call(libc::SYS_close, [0; 6]), 0);
+            assert_eq!(
+                f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(f.open("a", libc::O_RDONLY), 0);
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"abc");
+            assert!(
+                f.executor.state.stdin.is_none(),
+                "mapped close/reopen must not restore inherited stdin"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime() {
+        let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
+        let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+        let authoritative = f
+            .executor
+            .file_table
+            .lock()
+            .unwrap()
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_raw_fd();
+        let mut child = f.executor.fork_child(2, false, false).unwrap();
+        assert!(!Arc::ptr_eq(&f.executor.file_table, &child.file_table));
+        let child_local = child.state.stdin.as_ref().unwrap().as_raw_fd();
+        let child_authoritative = child
+            .file_table
+            .lock()
+            .unwrap()
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_raw_fd();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &f.memory
+            ),
+            2
+        );
+        assert_eq!(child.state.stdin.as_ref().unwrap().as_raw_fd(), child_local);
+        assert_eq!(
+            child
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            child_authoritative
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
+                &f.memory
+            ),
+            0
+        );
+        child.release_files_on_exit();
+        drop(child);
+        assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
+        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+        assert_eq!(
+            f.executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            authoritative
+        );
+        let replacement = test_state(&f.root.0);
+        f.executor.replace_after_exec(replacement);
+        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+        assert_eq!(
+            f.executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            authoritative
+        );
+        std::io::Write::write_all(&mut writer, b"ok").unwrap();
+        assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 2, 0, 0, 0]), 2);
+        let mut bytes = [0; 2];
+        f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"ok");
+        assert_eq!(
+            f.call(
+                libc::SYS_fcntl,
+                [0, libc::F_SETFD as u64, libc::FD_CLOEXEC as u64, 0, 0, 0]
+            ),
+            0
+        );
+        f.executor.replace_after_exec(test_state(&f.root.0));
+        assert!(f.executor.state.stdin.is_none());
+        assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
+        assert_eq!(
+            f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
+            negative_errno(libc::EBADF)
+        );
+        f.executor.release_files_on_exit();
+        assert!(f.executor.state.stdin.is_none());
+    }
+

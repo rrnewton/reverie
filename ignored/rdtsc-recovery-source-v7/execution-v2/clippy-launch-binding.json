@@ -1,0 +1,36 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/clippy-plan.json",
+  "sha256": "c292888666227997d6934080a38aecd312c7087fb69461689f70686d365e0226",
+  "requested_name": "clippy",
+  "actual_name": "clippy",
+  "kind": "check",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--test",
+    "vmcall",
+    "--test",
+    "read_clock",
+    "--message-format=json",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

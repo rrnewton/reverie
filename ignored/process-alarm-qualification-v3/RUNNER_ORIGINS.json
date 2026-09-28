@@ -1,0 +1,83 @@
+{
+  "copied_inputs": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/common.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/common.py",
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4",
+      "bytes": 10759
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/cache_lease.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/cache_lease.py",
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+      "bytes": 4603
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/phase.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/phase.py",
+      "sha256": "dca14d05311a819b2c208328120903ebdb2dc7874fd7fd256d8bce392673a7a8",
+      "bytes": 9886
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/prepare.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/prepare.py",
+      "sha256": "035c3f654261d1cf285559e6c01a02f4a842da09e9a9f5ade6f588bcce0d18d4",
+      "bytes": 8165
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/source-manifest.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/source-manifest.json",
+      "sha256": "6a5917449370babefff769dd21f75b3e54e8b65e8e8775ae9dabd699c35365db",
+      "bytes": 674822
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/dependency-inputs.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/dependency-inputs.json",
+      "sha256": "e6c31b56795af4f8a4f69ec6bce84f291a12ae8f947b3c2212f302f9e954c6c5",
+      "bytes": 1748252
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/dependency-symlinks.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/dependency-symlinks.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/dependency-closure.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/dependency-closure.json",
+      "sha256": "bf38733f21b86c19cebd8ee383dc6c0c862b181e619ad5a1af2ef5f94b637af0",
+      "bytes": 61650
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/observer/observer.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/observer/observer.py",
+      "sha256": "b161c17f850113d5155974d9547ddc842b44c4e37445c44a5d2f06aef500b56e",
+      "bytes": 39569
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/observer/before_exec.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/observer/before_exec.py",
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+      "bytes": 8260
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/observer/unit_reference.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/observer/unit_reference.py",
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+      "bytes": 8569
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/observer/source-inputs.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/observer/source-inputs.json",
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7",
+      "bytes": 1812
+    }
+  ],
+  "caller_changes": "prepare.py adds only focused Clippy/format and remaining child VM selection; phase.py reads format status. Approved observer/common/cache_lease bytes unchanged.",
+  "source_patch_sha256": "d7dac68d187d99f01bed533435043faac1152a989edd4a814ed6d62c753d1ccc",
+  "source_manifest_sha256": "6a5917449370babefff769dd21f75b3e54e8b65e8e8775ae9dabd699c35365db",
+  "prior_compile_result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/controls/compile/result.json",
+  "prior_actual_inventory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/controls/list-static/result.json",
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1",
+  "observer_sha256": "b161c17f850113d5155974d9547ddc842b44c4e37445c44a5d2f06aef500b56e"
+}

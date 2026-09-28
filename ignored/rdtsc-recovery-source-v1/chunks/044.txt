@@ -1,0 +1,54 @@
+
+`vm.rs:1390-1408`: `rax = tsc & 0xffff_ffff`, `rdx = tsc >> 32` — full 64 bits delivered through the architectural split with the upper halves implicitly zeroed, as the ISA requires. `rcx = aux` is written **only** for `Tscp` (`vm.rs:1394-1396`), so plain `RDTSC` correctly leaves `RCX` alone. RIP advances by `RDTSC.len()` = 2 and by a literal `3` for `RDTSCP` — both correct for `0f 31` and `0f 01 f9`. `rsp`/`rflags` are restored from the exception frame, and `RDTSC`/`RDTSCP` do not architecturally touch flags, so restoring the pre-fault value is right.
+
+No value is clamped, masked, re-derived, cached, or coalesced: `git grep -i '_rdtsc\|Instant::now\|SystemTime' -- reverie-kvm/src/` returns zero host time reads. Strict progression is proven by `repeated_timestamp_reads_evolve_once_per_instruction`, which asserts the guest observes `base`, `base+1`, `base+2` with `aux == AUX+2` and exactly three dispatches — that simultaneously proves one dispatch per instruction (no re-fault, no double-count) and correct RIP advance for both encodings.
+
+Frame decoding checks out: `static_elf_exception` (`vm.rs:1331-1349`) reads word 0 = RIP, 2 = RFLAGS, 3 = RSP past an error code when `exception_pushes_error_code` says so, and `bootstrap.rs` lists `13` (yes) but not `6` (no) — correct for both vectors. Because the CPL3→CPL0 transition pushes onto TSS.RSP0, the guest red zone is untouched.
+
+GPR preservation across the handler: I chased the injection path and it is safe. `StaticElfSyscallExecutor::execute` (`runtime.rs:209-222`) services injected syscalls **host-side** through `ElfExecutor`, never by re-entering the vCPU, so live guest GPRs survive. The one path that does re-enter is `complete_injection` → `run_process_action_with_tool`, and under `ProcessExecutionContext::Lifecycle` (`runtime.rs:1435`) that is restricted to `Exec` with fork/clone rejected (`runtime.rs:292-300`); the dispatch site then refuses the whole event via `handler_process_completed` **before** calling `resume_timestamp_counter`, and refuses `HandlerOutcome::TailInjected` as well. `hide_tool_scratch`'s side effect is taken before the early `?` returns and only its error is deferred — deliberate and correct.
+
+## 4. Determinism — no leakage found
+
+No host TSC path remains for a subscribed guest: `CR4.TSD` faults CPL3 `RDTSC`, and `RDTSCP` faults as `#UD` under `CpuidPolicy::deterministic()` (the `KvmBackend::new` default) or as `#GP` under `host_supported()` — both caught by `matches!(exception.vector, 6 | 13)`. `RDPMC` still `#GP`s (`CR4.PCE` unset) and is correctly not emulated. `aux.unwrap_or(0)` is a deterministic constant, not an uninitialised read; nothing reads IA32_TSC_AUX host-side. `CR4.TSD` survives `execve` because `exec_process` (`vm.rs:774`) routes through `configure_long_mode`, whose `sregs.cr4 |= ...` (`bootstrap.rs:183`) is read-modify-write, and it survives resumption because `configure_user_segments` (`bootstrap.rs:278`) is likewise read-modify-write — I checked both specifically for a full-sregs clobber that would silently disable interception after the first event, and neither does it. The value the guest sees depends only on Tool state.
+
+For completeness: `Tool::handle_rdtsc_event`'s default body is `RdtscResult::new(request)` (`reverie/src/tool.rs:371`), i.e. the raw host TSC. A tool that subscribes without overriding the handler gets host time — but that is the pre-existing cross-backend contract, identical under ptrace, and not this PR's doing.
+
+## 5. Lifecycle propagation — correct for every path that has a dispatcher
+
+Fork: snapshotted at `vm.rs:710`, applied at `vm.rs:730`. Tool-owned thread: `vm.rs:1244` → `vm.rs:769`. Exec: same vCPU, `CR4` preserved as above. Ordering in `from_thread_state` is right — `configure_long_mode_with_syscall_area` first, `set_rdtsc_interception` last (`vm.rs:756-769`) — so nothing overwrites `CR4` afterwards, and the later `set_user_segment_base` calls are read-modify-write. New-task default is the safe `false` (`vm.rs:485`). The live glibc lifecycle test independently confirms root, pthread worker, fork child, and post-exec image all dispatch. The single gap is the Host-owned worker in the blocking finding — where propagation is, ironically, *too* faithful.
+
+## 6. Core-abstraction line
+
+**DOES-NOT-CROSS.**
+
+The diff is confined to `reverie-kvm/{bootstrap,cpuid,runtime,vm}.rs` + `reverie-kvm/tests/static_elf.rs` (`git diff --stat 3494609...9630660`). `reverie/src/tool.rs`, `guest.rs`, `backend.rs`, `subscription.rs`, and `rdtsc.rs` are untouched. No public trait requirement, method signature, associated type, or default was added or altered; `Tool::handle_rdtsc_event`, `Subscription::has_rdtsc`, `Rdtsc`, and `RdtscResult` are all **consumed** exactly as defined. The only visibility change is private → `pub(crate)` on `StaticElfException` and its fields (`vm.rs:101-106`); `timestamp_counter_exception`, `resume_timestamp_counter`, `set_rdtsc_interception`, and `set_userspace_rdtsc_interception` are all `pub(crate)`. `reverie-kvm`'s public surface is unchanged. Guest register semantics change only *inside* the KVM backend and only for a subscribed tool, which is the fix, not a contract change. Trigger 3 (new determinization strategy) is the right label and is claimed correctly.
+
+## 7. PR description — sections complete, evidence SHA stale, tags missing
+
+Against `reverie/AGENTS.md:378-382`:
+
+| required | present |
+|---|---|
+| **Summary** | yes |
+| **Determinism** (informal proof, not only tests) | yes — the CR4.TSD/Tool-boundary argument, plus the explicit "no second clock domain" claim |
+| **Validation** | yes |
+| **Relationship to gVisor** (KVM) | **yes** — present and substantive; not a finding |
+| **Human Review Required** naming a numbered trigger | yes — trigger 3, named explicitly |
+| **Linux Semantics** | yes |
+
+Non-blocking, but please fix before landing:
+
+* **Validation is bound to `a6aa8bc41683f471aef1ba8cd3a23e9c0016ef3a`, not to this head.** `a6aa8bc` is not an ancestor of `9630660` and has a different tree. I verified the patch is byte-identical, so the risk is low, but the recorded `cargo test -p reverie-kvm` 229/0 was taken on a base 951 files older — including `reverie/src/backend.rs` (+49/-5, a new required `Backend::run_with_stats` + `type Stats`). Evidence binds to commits: re-record at the current head.
+* **No commit carries the role + team tag.** `reverie/AGENTS.md:200-211` calls the commit trailer "the load-bearing one" precisely because this repo lands by rebase merge; all three commits (`841107a`, `d65ab38`, `9630660`) end without it, and none carries a `Task:` trailer.
+* **The PR body opens `[impl agent, gpt-5.6-sol]`** — missing the `[<team>, <machine>]` bracket the same section requires.
+* `841107a`'s body contains a literal `\n\n` escape instead of newlines.
+* Very minor: `AUTONOMOUS-BOT-IMPLEMENTED` at `vm.rs:1352` is specified by `reverie/AGENTS.md:308-318` for *new syscall support* and explicitly "not blanket markers for API changes, backend work". This is instruction interception. The file has precedent (PR-172, PR-192, PR-202), so this is drift, not a regression.
+
+## Non-blocking, stated for the record
+
+* **B. `run_with_tool` (`runtime.rs:995`, public) never calls `set_rdtsc_interception`.** A tool subscribing to RDTSC on that entry point silently reads the raw host TSC. This is pre-existing (the hook did not exist before), and that path is the hand-written vmcall demo, so no real guest is affected — but the PR's "route every trapped instruction through the existing `Tool::handle_rdtsc_event` contract" is entry-point-specific. A one-line doc note on `run_with_tool` would prevent a future reader assuming coverage.
+* **C. Prefixed encodings are not decoded.** `decode_timestamp_counter_instruction` (`vm.rs:86-97`) reads two bytes at the faulting RIP, so `f3 0f 31` or a segment-overridden form falls through to `GuestException` rather than being emulated — turning a working (if unusual) instruction into a fault *only under subscription*. No compiler emits these; fail-closed is the right default; noting the limitation is enough.
+
+## Summary
+
+The core mechanism is right, and I checked it rather than inheriting it: the guard is correctly placed and provably discriminating, the `EDX:EAX`/`ECX` write-back and both instruction lengths are correct, virtual time is genuinely continuous and Tool-owned with no host leakage, injection cannot corrupt guest GPRs, and nothing in the public Reverie API moved. The one thing blocking is that `CR4.TSD` reaches a vCPU class whose run loop has no recognizer — a one-line fix plus one test case, in the same "state without a consumer" family as the defect the previous round caught, which is why I am not waving it through.

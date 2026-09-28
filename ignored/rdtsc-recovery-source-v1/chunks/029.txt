@@ -1,0 +1,60 @@
++    assert!(completion.global_state.calls().is_empty());
++}
++
++#[test]
++fn timestamp_tool_preserves_results_with_host_supported_cpuid() {
++    if !kvm_available("KVM host-supported timestamp profile test") {
++        return;
++    }
++    let mut backend =
++        KvmBackend::new_with_cpuid_policy(MEMORY_SIZE, reverie_kvm::CpuidPolicy::host_supported())
++            .unwrap();
++    backend
++        .install_static_elf(
++            &static_elf(&timestamp_assertion_program()),
++            "/bin/host-profile-timestamp",
++        )
++        .unwrap();
++    let (log, status, stdout, stderr) =
++        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
++            .unwrap();
++    assert_eq!(status, 0);
++    assert!(stdout.is_empty());
++    assert!(stderr.is_empty());
++    assert_eq!(
++        log.calls(),
++        vec![
++            (Pid::from_raw(1), Rdtsc::Tsc),
++            (Pid::from_raw(1), Rdtsc::Tscp)
++        ]
++    );
++}
++
++#[test]
++fn timestamp_single_step_reports_the_retired_instruction_boundary() {
++    if !kvm_available("KVM timestamp single-step boundary test") {
++        return;
++    }
++    for (opcode, request) in [
++        (&[0x0f, 0x31][..], Rdtsc::Tsc),
++        (&[0x66, 0x0f, 0x01, 0xf9][..], Rdtsc::Tscp),
++    ] {
++        // POPF's newly enabled TF takes effect after the following instruction.
++        let mut code = vec![0x68, 0x02, 0x03, 0x00, 0x00, 0x9d];
++        code.extend_from_slice(opcode);
++        let expected_ip = LOAD_ADDRESS + code.len() as u64;
++        code.push(0x90); // must not execute before the single-step boundary
++        code.extend_from_slice(&[0x0f, 0x0b]);
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&static_elf(&code), "/bin/single-step-timestamp")
++            .unwrap();
++        let completion = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
++        )
++        .unwrap();
++        let error = completion.result.unwrap_err();
++        assert!(
++            matches!(error.primary(), Error::GuestException { vector: 1, instruction_pointer, .. }
++                if *instruction_pointer == expected_ip),
++            "expected #DB at {expected_ip:#x}, got {error:?}"

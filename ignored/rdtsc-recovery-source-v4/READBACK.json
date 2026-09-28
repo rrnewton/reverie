@@ -1,0 +1,25 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/TARGET.json",
+    "bytes": 4314,
+    "sha256": "77f9f7fe342b7ea2a81b2dcb266df3e37bfea8c8ee4ad68a23f17c5ea7f95867",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/INPUTS.json",
+    "bytes": 2002311,
+    "sha256": "b55350500f985ac2c9a1c318f2d988b15de36e1417bc36d1760e341c9b090b3f",
+    "mode": 420
+  },
+  "source_entries": 2622,
+  "records": 6170,
+  "exact_changed_paths": [
+    "reverie-kvm/tests/static_elf.rs"
+  ],
+  "production_unchanged": true,
+  "all_other_test_bodies_identical": true,
+  "final_assertions_identical": true,
+  "selectors_and_order_unchanged": true,
+  "all_original_limits_unchanged": true,
+  "no_execution": true
+}

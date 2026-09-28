@@ -1,0 +1,159 @@
+[
+  {
+    "relative": "reverie-kvm/src/capture_identity.rs",
+    "before": null,
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/src/capture_identity.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 5038,
+      "sha256": "7dde0222986ce6e86bb8edd9699af622dfc29fbefb60f0e6e8d6fa702a244fbd"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/src/capture_identity.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 5038,
+      "sha256": "7dde0222986ce6e86bb8edd9699af622dfc29fbefb60f0e6e8d6fa702a244fbd"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/src/capture_identity_tests.rs",
+    "before": null,
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/src/capture_identity_tests.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 19565,
+      "sha256": "222d60364d5c49fbda783dc57233e9bb25369e91999b98f46b1ae4bd478e35c3"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/src/capture_identity_tests.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 19565,
+      "sha256": "222d60364d5c49fbda783dc57233e9bb25369e91999b98f46b1ae4bd478e35c3"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/src/executor.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/before/reverie-kvm/src/executor.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 1492531,
+      "sha256": "6d85a814c74f4d56661644f3632fb42b6f9b625b3dcfb3588b323619e6e1c41a"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/src/executor.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 1494305,
+      "sha256": "788ebdce22ee2b4a2b211bede79de4c8c73145a405710e15f07aa189077b43b6"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/src/executor.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 1494305,
+      "sha256": "788ebdce22ee2b4a2b211bede79de4c8c73145a405710e15f07aa189077b43b6"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/src/runtime.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/before/reverie-kvm/src/runtime.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 191208,
+      "sha256": "945d6af0ac3231e4d82eeaf34a614d66b6bf14196dcb162974f97d917538f928"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/src/runtime.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 191457,
+      "sha256": "abc86f6dc71a96dd658c824699065a553c51b13fd99140609acb0222b83cee57"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/src/runtime.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 191457,
+      "sha256": "abc86f6dc71a96dd658c824699065a553c51b13fd99140609acb0222b83cee57"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/src/vm.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/before/reverie-kvm/src/vm.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 323995,
+      "sha256": "8b61cc020810be90baaa0e4941dc06172ab80010810e4cd785dc2f08b860840e"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/src/vm.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 324642,
+      "sha256": "f887c7517847351a6319a8212855b45b189f8fe0a26e5546cc3a3f83b5cbc3aa"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/src/vm.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 324642,
+      "sha256": "f887c7517847351a6319a8212855b45b189f8fe0a26e5546cc3a3f83b5cbc3aa"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/tests/static_elf.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/before/reverie-kvm/tests/static_elf.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 512134,
+      "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/tests/static_elf.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 512197,
+      "sha256": "5a24ac2afb45232519041da41edbc033450d54c4e0cdb093766d7be7df810cda"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/tests/static_elf.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 512197,
+      "sha256": "5a24ac2afb45232519041da41edbc033450d54c4e0cdb093766d7be7df810cda"
+    },
+    "all_hunks_reconstructed": true
+  },
+  {
+    "relative": "reverie-kvm/tests/support/capture_identity.rs",
+    "before": null,
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/after/reverie-kvm/tests/support/capture_identity.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 4343,
+      "sha256": "9d2cb0854facfc887f17029ccfb7a5edfaaf6305d3a84fc2e2956b7ec1011f48"
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source/reverie-kvm/tests/support/capture_identity.rs",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 4343,
+      "sha256": "9d2cb0854facfc887f17029ccfb7a5edfaaf6305d3a84fc2e2956b7ec1011f48"
+    },
+    "all_hunks_reconstructed": true
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "new_capture_children": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/CHILD-CONTROLS.json",
+    "bytes": 1833,
+    "mode": 420,
+    "sha256": "25776eca713be8a74b8091d018e11b811b10e9ca3d86eb5234e4be8a8cd22ccf"
+  },
+  "unchanged_real_install_emfile": {
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/observer/neighbor-20/stderr",
+      "bytes": 312,
+      "mode": 384,
+      "sha256": "a95fff31db919ce048d733bff3d2265c1a20e7e11296b980055bf8cc194e8995"
+    },
+    "exact_completion_marker": "file-table EMFILE control completed",
+    "marker_count": 1,
+    "child_exit_status": 0
+  },
+  "meaning": "Actual markers supplement exact libtest outcomes; no child skip credited."
+}

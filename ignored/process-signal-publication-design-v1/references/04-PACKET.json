@@ -1,0 +1,45 @@
+{
+  "source_copy": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/SOURCE-COPY.json",
+    "bytes": 1220996,
+    "mode": 420,
+    "sha256": "6d4fa360e94c1ee2d7d82f51c0621630ed507b47bee969e74394ca0724a249bc"
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/SOURCE.patch",
+    "bytes": 257226,
+    "mode": 420,
+    "sha256": "e6b050d171f07d2d53ce4eacbc35779302f88253fe356d7a80aef54609b99bf2"
+  },
+  "reverie_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/REVERIE-CONTINUITY.json",
+    "bytes": 587293,
+    "mode": 420,
+    "sha256": "f18d5d0951d49e51ca3f3ecb45382d95f1ea86ef51d00b4e1a58bb7ce2133b4e"
+  },
+  "rebase": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-v1/REBASE-READBACK.json",
+    "bytes": 6323,
+    "mode": 420,
+    "sha256": "79630bb8030c74679403df68d4056558620e58236727d74ac174dc184f4c9be2"
+  },
+  "pin_edit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-v1/PIN-EDIT.json",
+    "bytes": 3368,
+    "mode": 420,
+    "sha256": "d7ee85acd7fb4ecd1c9f0d67a7f0652b216f62432dd7bd0078abcbe2f096ed20"
+  },
+  "old_review_packet": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-hermit-review-v26/PACKET.json",
+    "bytes": 1196,
+    "mode": 420,
+    "sha256": "508cb646a240ef2979eacf11c79c0f79f1cd525430dc938b1dbfd5ff276dd903"
+  },
+  "old_review_responses": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-hermit-review-v26/REVIEW-RESPONSES.md",
+    "bytes": 4579,
+    "mode": 420,
+    "sha256": "aa5ab57b9d549a6badee41fa63cf93f4f2c920186966eaa217c844c20832874a"
+  },
+  "scope": "Integration follow-up source packet. No final head review, final count reconciliation or full timer-semantics approval is claimed. Runtime and tooling phase completions are appended in a separate later record."
+}

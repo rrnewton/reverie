@@ -1,0 +1,21 @@
+{
+  "base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "change": "PreparedSignalToken and ParkedSignalFailureContext replace callback_nonce with full CallbackSignalSite site; other Guest/Tool signatures unchanged.",
+  "files": [
+    {
+      "path": "reverie/src/signal_observation.rs",
+      "bytes": 7162,
+      "sha256": "83361a50d825b11df24649349f45d1297b7edf0c851f78b9ae04335e65b7132a"
+    },
+    {
+      "path": "reverie/src/guest.rs",
+      "bytes": 24865,
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 25087,
+      "sha256": "d4e11629f795ed773f428ff72c1ac6067169de187f4f1b038722834c4c5de29d"
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "status": "FROZEN PREPARE-ONLY CALLER; NO ADMISSION OR PHASE LAUNCHED",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/TARGET.json",
+    "bytes": 4357,
+    "sha256": "5ff12f1d6800aaa5944efcbb431fd23d79740b16430ed1b960a9ced13619d3b8",
+    "mode": 420
+  },
+  "source_unchanged": true,
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/source-manifest.json",
+    "bytes": 471410,
+    "sha256": "1314b1e3cd39edc1e0073bc53ba2c8e72587470cc2e01ba968b3eb46367debb0",
+    "mode": 420
+  },
+  "setup": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/SETUP.json",
+    "bytes": 6260,
+    "sha256": "4f37190c455399675707164bb04b09b357bd30d990c0f4ca2066c19e01c89b77",
+    "mode": 420
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/CALLER-DELTA.patch",
+    "bytes": 44555,
+    "sha256": "907914b529ea8933e7b2ed2b91166a33d053b0dea211c10a7e592e22cee7c9ba",
+    "mode": 420
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/CALLER-PLAN.md",
+    "bytes": 4539,
+    "sha256": "e5757cec23bf3d320442f7f53958c180dbf6e6a34d27a6e534caef51aa2e9933",
+    "mode": 420
+  },
+  "launch_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/LAUNCH-PLAN.json",
+    "bytes": 4649,
+    "sha256": "4c9e5558ab76bdf03ee6094679b94a3a24b7f1834677364b922c22c89dc3f0cb",
+    "mode": 420
+  },
+  "order": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/RUN-ORDER.json",
+    "bytes": 1365,
+    "sha256": "ed006f1c56ea8df765af0dab13f9ee1691f33bfe3c2b3cf514beeceaed1894b4",
+    "mode": 420
+  },
+  "selectors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/SELECTORS.json",
+    "bytes": 24062,
+    "sha256": "273c791e8e35a7467203bc9aa93685fad7e1a1f7171f63f61f40fdab12d28929",
+    "mode": 420
+  },
+  "origins": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/RUNNER_ORIGINS.json",
+    "bytes": 8563,
+    "sha256": "9bb62f8545b21ffb8ef0cf9403d2d331b9f89d91fa225ccc11815ff42ef85a55",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/CALLER-INPUTS.json",
+    "bytes": 1757892,
+    "sha256": "2224234bf5cae75c5fc270bad6fffbbc09ef6cb5d14beb143ac248bdf4c49604",
+    "mode": 420
+  },
+  "preparation_state": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/PREPARATION-STATE.json",
+    "bytes": 2765,
+    "sha256": "ba0f65eade3281c31826ee8b4cbc4ac19469d3c5f3f0d933b2bd76c017fdccbc",
+    "mode": 420
+  },
+  "chronology_addendum": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/CANCELLATION-CHRONOLOGY.md",
+    "bytes": 1905,
+    "sha256": "6e9a8d24e7a4a1c3176cd95b3a85939c12b2ea14f40b86d3e00282736df8bdd1",
+    "mode": 420
+  },
+  "chronology_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/CHRONOLOGY-INPUTS.json",
+    "bytes": 2283,
+    "sha256": "ade5a8b6099814368d6fd52d8360422eb38dd612384c9702c2b16dacbde2225e",
+    "mode": 420
+  },
+  "target_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/cpuid-recovery-v1-cold-v1",
+  "phase_count": 64,
+  "declaration_count": 55,
+  "preserved_helper_algorithms": [
+    "bind_dependencies.py",
+    "cache_lease.py",
+    "common.py",
+    "before_exec.py",
+    "observer.py",
+    "unit_reference.py",
+    "phase.py",
+    "retain_artifacts.py"
+  ],
+  "materially_changed_helper_paths": [
+    "admit_target.py",
+    "prepare.py",
+    "execute_phases.py",
+    "finalize_results.py"
+  ],
+  "no_source_or_independent_approval": true
+}

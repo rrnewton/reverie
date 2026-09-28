@@ -1,0 +1,34 @@
+{
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2-continuation/cache_lease.py",
+    "bytes": 6556,
+    "mode": 420,
+    "sha256": "3cf0cee29dfb832070e1ac084be52b3c359d8e1fcd59b24bdccd7c0ac091eb8a"
+  },
+  "proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/PROOF.json",
+    "bytes": 7911,
+    "mode": 420,
+    "sha256": "d240c378035634468803f123d816b5da9937837892709efbb57a35d4c95b84f9"
+  },
+  "controls": [
+    {
+      "name": "bound",
+      "accepted": true,
+      "error": null,
+      "token_changed": true
+    },
+    {
+      "name": "changed-proof",
+      "accepted": false,
+      "error": "RuntimeError: unbound lifecycle recovery",
+      "token_changed": false
+    },
+    {
+      "name": "other-phase",
+      "accepted": false,
+      "error": "RuntimeError: unbound lifecycle recovery",
+      "token_changed": false
+    }
+  ]
+}

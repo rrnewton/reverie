@@ -1,0 +1,73 @@
+{
+  "changed_paths": [
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/cpuid.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/timestamp.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs"
+  ],
+  "all_other_manifest_leaves_equal_to_base": true,
+  "old_static_file_exact_prefix_after_removing_two_new_imports": true,
+  "no_old_static_test_or_helper_edit": true,
+  "historical_controls": [
+    {
+      "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+      "historical_sha256": "fa544e73d79ae043e1b27c73e452a3e4a60c37508465179afc94b7d5d802008d",
+      "current_sha256": "fa544e73d79ae043e1b27c73e452a3e4a60c37508465179afc94b7d5d802008d",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    },
+    {
+      "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+      "historical_sha256": "6c9571d15d2411b53d0b696ea1d03bdcb6e2cfc4eb7dbddc760dec772d0b882d",
+      "current_sha256": "6c9571d15d2411b53d0b696ea1d03bdcb6e2cfc4eb7dbddc760dec772d0b882d",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    },
+    {
+      "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "historical_sha256": "dd289ade03c2f0ee58a4360e61ed1777a234fa24b889be5210713f1b470d3979",
+      "current_sha256": "dd289ade03c2f0ee58a4360e61ed1777a234fa24b889be5210713f1b470d3979",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    },
+    {
+      "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "historical_sha256": "17bb3a62cf8e6851c5af950a3384989a4d057f2d2b5db2b12dfb693c8f8f850b",
+      "current_sha256": "17bb3a62cf8e6851c5af950a3384989a4d057f2d2b5db2b12dfb693c8f8f850b",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    },
+    {
+      "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "historical_sha256": "bb98762453d1bb87b2a9e3d1b455aa23a7e5d435733b9ed0b042a78b55a71cea",
+      "current_sha256": "bb98762453d1bb87b2a9e3d1b455aa23a7e5d435733b9ed0b042a78b55a71cea",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    },
+    {
+      "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "historical_sha256": "42655dd9268ebc39e924d68b1bca9372ca6a3cc19eb66fc51fb428b78ad7c475",
+      "current_sha256": "42655dd9268ebc39e924d68b1bca9372ca6a3cc19eb66fc51fb428b78ad7c475",
+      "byte_identical": true,
+      "only_whitespace_difference": true,
+      "no_oracle_or_argument_change": true
+    }
+  ],
+  "clock_executor_elf_public_Tool_Guest_vmcall_read_clock_bytes_unchanged": true,
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "extra_untracked_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/Cargo.lock",
+    "mode": 420,
+    "kind": "file",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  }
+}

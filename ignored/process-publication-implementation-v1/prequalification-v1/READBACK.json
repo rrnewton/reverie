@@ -1,0 +1,42 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/REPORT.md",
+    "bytes": 5172,
+    "sha256": "90578e7600f5d62cb1dc644b4cbc36b2db8d8c267a7708622c2a220c36ac2fff"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/SELECTORS.json",
+    "bytes": 8850,
+    "sha256": "95c76723b5c7fd32c5a524575f2b943a4f2c646690d6d895f481a6eb1cf80a7b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/SOURCE.patch",
+    "bytes": 53653,
+    "sha256": "26e95a267187d5ba67b9112e4cfa45dd58feb3712a5b63c02faa52928af306d7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/SOURCE_INPUTS.json",
+    "bytes": 760,
+    "sha256": "54fac429d03d50821432f67ed566c6b0069ddf3315340e8eb64701a3c806159c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/TEST_PLAN.md",
+    "bytes": 3159,
+    "sha256": "4604c7821e2474373e418486ddb8c0737acbc28538ff8eed95be5486304581c5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/after/reverie-kvm/src/elf.rs",
+    "bytes": 65985,
+    "sha256": "83604af5058db51dfbd4076b2a2187c78e7012829d6d22816a137186e2f5dbd0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/after/reverie-kvm/src/executor.rs",
+    "bytes": 1438025,
+    "sha256": "dc35ab30eb3ea8e6f18e23cc571794ed99dadcd3a04c6f13990351dc0606b431"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v1/after/reverie-kvm/src/process_signal_publication.rs",
+    "bytes": 27241,
+    "sha256": "8860ec79ef92a613e87ef189c5d2f0b547b9195e290cfdff58d02fd3b2d9c40c"
+  }
+]

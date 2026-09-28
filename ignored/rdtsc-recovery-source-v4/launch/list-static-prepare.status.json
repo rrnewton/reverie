@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/prepare.py",
+    "list-static"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 0.40689786500297487
+}

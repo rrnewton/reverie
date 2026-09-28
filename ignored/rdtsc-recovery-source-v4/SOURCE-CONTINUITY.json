@@ -1,0 +1,29 @@
+{
+  "predecessor": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/TARGET.json",
+    "bytes": 4450,
+    "sha256": "71e2d8644e74aaa5cdbc7a034513947d91c3068c421b6c96626209d220d26d91",
+    "mode": 420
+  },
+  "source_entries": 2622,
+  "changed": [
+    {
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "before": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 506765,
+        "sha256": "9b021890d8f1d882841e50e6d0bb8510aca58f4330849b1a9b1c9f2fe0479353",
+        "mode": 420
+      },
+      "after": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 511938,
+        "sha256": "9c325037f7421e6df54e553464558f5be7cbbe9868b62834fd019334e14d7522",
+        "mode": 420
+      }
+    }
+  ],
+  "production_unchanged": true,
+  "all_other_bytes_modes_and_links_unchanged": true,
+  "recovering_original_fixture_exactly_recovers_whole_v3_test_file": true
+}

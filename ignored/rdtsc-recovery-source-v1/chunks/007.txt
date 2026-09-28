@@ -1,0 +1,60 @@
+                     VcpuExit::Hlt => {
++                        if let Some(boundary) = self.timestamp_counter_exception()? {
++                            let request = boundary.instruction.request;
++                            executor.set_current_user_stack_pointer(boundary.registers.rsp);
++                            let handler_signal = Arc::new(Mutex::new(None));
++                            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++                            let mut process_completed = false;
++                            expose_tool_scratch(&memory, tool_stack_top)?;
++                            let result = {
++                                let mut guest_executor = StaticElfSyscallExecutor {
++                                    backend: self,
++                                    executor,
++                                    memory: memory.clone(),
++                                    process_context: ProcessExecutionContext::Timestamp,
++                                    callback_site: None,
++                                    original_syscall: None,
++                                    signal_guard: SignalGuard::Ordinary,
++                                    last_result: None,
++                                    process_completed: &mut process_completed,
++                                };
++                                let mut guest = KvmGuest::<T>::new(
++                                    pid,
++                                    tid,
++                                    tool.clone(),
++                                    memory.clone(),
++                                    &auxv,
++                                    boundary.user_registers(),
++                                    &mut thread_state,
++                                    &mut guest_executor,
++                                    global_state.as_ref(),
++                                    Some(global_state.clone()),
++                                    config,
++                                    subscriptions,
++                                    handler_signal.clone(),
++                                    pending_child_starts.clone(),
++                                    tool_stack_top,
++                                    stack_checked_out.clone(),
++                                );
++                                drive_handler(
++                                    tool.handle_rdtsc_event(&mut guest, request),
++                                    handler_signal,
++                                    pending_child_starts,
++                                    wait_for_failure(
++                                        global_state.as_ref(),
++                                        failure_subscription.clone(),
++                                    ),
++                                )
++                                .await
++                            };
++                            // Hide scratch even on callback failure. The outer
++                            // process supervisor retains any committed effects.
++                            let hidden = hide_tool_scratch(&memory, tool_stack_top);
++                            let value = match result {
++                                HandlerOutcome::Returned(Ok(value)) => value,
++                                HandlerOutcome::Returned(Err(error)) => {
++                                    return Err(Error::Reverie(error.into())
++                                        .with_cleanup(hidden.err().into_iter().collect()));
++                                }
++                                HandlerOutcome::ThreadCancelled => {
++                                    hidden?;

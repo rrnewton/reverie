@@ -1,0 +1,80 @@
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 19, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    code
+}
+
+fn run_cpuid(code: &[u8], config: (bool, u8), ownership: ThreadOwnership) -> (CpuidLog, i32) {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).expect("actual KVM is mandatory");
+    backend.set_thread_ownership(ownership);
+    backend
+        .install_static_elf(&static_elf(code), "/cpuid-dispatch")
+        .unwrap();
+    let (log, status, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<CpuidTool>(config, true))
+            .unwrap();
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    (log, status)
+}
+
+#[test]
+fn cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction() {
+    for prefix in [
+        vec![],
+        vec![0x66],
+        vec![0x67],
+        vec![0xf2],
+        vec![0xf3],
+        vec![0x64],
+        vec![0x4f],
+        vec![0x66; 13],
+    ] {
+        let (log, status) = run_cpuid(
+            &assertion_program(&prefix, 1, false),
+            (true, 0),
+            ThreadOwnership::Tool,
+        );
+        assert_eq!(status, 0, "prefix={prefix:x?}");
+        let calls = log.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!((calls[0].0.as_raw(), calls[0].1, calls[0].2), (1, 7, 2));
+    }
+    let (log, status) = run_cpuid(
+        &assertion_program(&[], 3, true),
+        (true, 1),
+        ThreadOwnership::Tool,
+    );
+    assert_eq!(status, 0);
+    let calls = log.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .all(|call| (call.0.as_raw(), call.1, call.2) == (1, 7, 2))
+    );
+    assert!(
+        calls.windows(2).all(|pair| pair[1].3 > pair[0].3),
+        "guest comparison branches must advance the real guest clock"
+    );
+}
+
+#[test]
+fn cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact() {
+    let mut overlong = vec![0x66; 14];
+    overlong.extend_from_slice(&[0x0f, 0xa2]);
+    for (code, vector, rip, calls) in [
+        (vec![0xf0, 0x0f, 0xa2], 6, LOAD_ADDRESS, 0),
+        (overlong, 13, LOAD_ADDRESS, 0),
+        (vec![0xfa], 13, LOAD_ADDRESS, 0),
+        (vec![0x0f, 0x0b], 6, LOAD_ADDRESS, 0),
+        (
+            vec![
+                0x9c, 0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0, 0, 0x9d, 0x0f, 0xa2,
+            ],
+            1,
+            LOAD_ADDRESS + 12,

@@ -1,0 +1,95 @@
+{
+  "schema": 2,
+  "source_and_scm_unchanged": true,
+  "all_final_phase_inputs_reauthenticated": true,
+  "reverse_full_and_delta_patch_checks": true,
+  "predecessor_inputs_unchanged": true,
+  "changed_paths": 14,
+  "delta_paths": 8,
+  "context_snapshots": 17,
+  "full_product_records": 2617,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/API_INVENTORY.json",
+      "bytes": 2153,
+      "sha256": "4a8460a798af17db988c480d8e0d5f784bd9c860c18b6bddafbb2e90bb3d8557"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/ARTIFACTS.json",
+      "bytes": 3891,
+      "sha256": "9b6297483ba689b533544baf2e1dbaaeceb31f20f29cdcb08214718e00401f46"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/DELTA.patch",
+      "bytes": 64979,
+      "sha256": "fe292a6f01ae755b80fc9c2771dec035090aadf909d208622b5f860f8d37eea3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/DESIGN_CLARIFICATIONS.md",
+      "bytes": 2602,
+      "sha256": "0e85ea8d13d83bfe10fb2229dc9b90beb981eb8f32e90c772642cc5c30906d71"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/PREDECESSOR_PRESERVATION.json",
+      "bytes": 20246,
+      "sha256": "ebf8dc86bb8ea4c00e594b57a0c1418c86f86fab266c6ecf511ac0545d9751d7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/QUALIFICATION.json",
+      "bytes": 105943,
+      "sha256": "1b7ea15f7998a2a151c715a75ebdf41f0652a46e79c864ed63e0a2edee42e467"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/REPORT.md",
+      "bytes": 16375,
+      "sha256": "a71862f6fdb8b8c715a55f99b94adb504de01887d0346244258e19974794f237"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE.patch",
+      "bytes": 159872,
+      "sha256": "09efb96b9fda442f36cb22f772b94db50cf42ecbee125738063752cd57917979"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE_INPUTS.json",
+      "bytes": 33026,
+      "sha256": "0fcb52b6f2b331d5a328de88053d32b36af3f0d86050457addec54941328b84c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/source-manifest.json",
+      "bytes": 676059,
+      "sha256": "02d70d4c1e03bc9c60f0b5ab97cc05a22a69f73c4e9bdc541fe45224d2fd4013"
+    }
+  ],
+  "final_tests": {
+    "library_passed": 36,
+    "vm_passed": 7,
+    "failed": 0,
+    "ignored": 0,
+    "library_inventory": 478,
+    "static_inventory": 294
+  },
+  "negative_controls": [
+    {
+      "qualification": "qualification-v1",
+      "findings": [
+        "native R1 cross-lifetime equality",
+        "native R2 replay removal",
+        "native R3 caught action mutation"
+      ]
+    },
+    {
+      "qualification": "qualification-v5",
+      "findings": [
+        "Claude F1 wrong sibling unit",
+        "Claude F1 wrong sibling actual VM",
+        "Claude F2 unrelated getpid EOVERFLOW actual VM"
+      ]
+    }
+  ],
+  "original_failures_retained": true,
+  "cleanup_recovery_does_not_qualify_original_failure": true,
+  "raw_index_drift_preserved": true,
+  "ownership": "Sole source/SCM ownership transferred back to root at final handoff; no further source writes absent explicit reassignment.",
+  "review_status": "Author candidate; independent native/Claude reviews and integrated runtime qualification pending.",
+  "source_only_changes_after_final_tests": false
+}

@@ -1,0 +1,6 @@
+{
+  "initial_artifact_writer_raw_status": 1,
+  "kind": "Python SyntaxError before any statement executed: missing whitespace between else and numeric literal",
+  "product_or_phase_execution": false,
+  "correction": "Whitespace in artifact writer only; no source, runner, assertion or result changes"
+}

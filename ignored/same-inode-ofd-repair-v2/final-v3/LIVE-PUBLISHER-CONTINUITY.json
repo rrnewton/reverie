@@ -1,0 +1,43 @@
+{
+  "head": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "index_sha256": "fc8df6346ffe9eb9243457f4dc50426d759a61ef0f1d7cfd8c00d02847f5951b",
+  "three_live_product_files_equal_frozen": [
+    {
+      "live_at_readback": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/elf.rs",
+        "bytes": 66430,
+        "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+      },
+      "frozen": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/elf.rs",
+        "bytes": 66430,
+        "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+      }
+    },
+    {
+      "live_at_readback": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/executor.rs",
+        "bytes": 1438129,
+        "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+      },
+      "frozen": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/executor.rs",
+        "bytes": 1438129,
+        "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+      }
+    },
+    {
+      "live_at_readback": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 32377,
+        "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+      },
+      "frozen": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 32377,
+        "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+      }
+    }
+  ],
+  "no_live_product_or_SCM_edits_by_this_qualification": true
+}

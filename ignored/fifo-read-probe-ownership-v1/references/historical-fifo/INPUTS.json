@@ -1,0 +1,51 @@
+{
+  "scope": "Frozen source diagnosis only; all controls proposed/unexecuted here",
+  "retained_inputs_authenticated": 31,
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/MAN-INPUTS.json",
+      "bytes": 599,
+      "sha256": "e4d40466591d58238b7c96425d83aa51b27d6ac4316bce4cda3a67e2cbdfcc55"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/REPORT.md",
+      "bytes": 15847,
+      "sha256": "a65b51478913cc810217cf5e266bb64b76c85838daa2af6e434582be7c5834e0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/SOURCE_BINDINGS.json",
+      "bytes": 10645,
+      "sha256": "5df59ee43c43e7e37f8c56fe125e15b8bac3f8263d838297e2267b2e20a80d39"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/AGENTS.md",
+      "bytes": 34047,
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/fd.rs",
+      "bytes": 31241,
+      "sha256": "7245edcdcdb79aac86a26a1d408600b8265fb51605c9262d2740b8fbbd5c8870"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/helpers.rs",
+      "bytes": 69890,
+      "sha256": "7a038b7668d90818695b04510fd5c7e5007bc09d2091af512200ffd3be85de63"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/io.rs",
+      "bytes": 84949,
+      "sha256": "99b2f22f5e558bde3cfc5b42e31ca04fe3fb8749aa1a4df17390f341e246c302"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/threads.rs",
+      "bytes": 138063,
+      "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381"
+    }
+  ]
+}

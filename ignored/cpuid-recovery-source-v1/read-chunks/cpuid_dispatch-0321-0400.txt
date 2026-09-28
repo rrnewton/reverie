@@ -1,0 +1,80 @@
+    let joined_jump = code.len() - 4;
+    code.extend_from_slice(&[
+        0x31, 0xf6, // xor esi, esi: FUTEX_WAIT, current nonzero value in edx
+        0x45, 0x31, 0xd2, // xor r10d, r10d: no timeout
+        0xb8, 0xca, 0x00, 0x00, 0x00, // mov eax, SYS_futex
+        0x0f, 0x05, // syscall
+    ]);
+    // A racing clear-TID may win before FUTEX_WAIT. Only Linux's normal
+    // successful wake, changed-value refusal or signal interruption can retry.
+    for result in [0_i32, -libc::EAGAIN, -libc::EINTR] {
+        code.push(0x3d); // cmp eax, result
+        code.extend_from_slice(&result.to_le_bytes());
+        code.extend_from_slice(&[0x0f, 0x84, 0, 0, 0, 0]); // je wait
+        let operand = code.len() - 4;
+        patch_stats_jump(&mut code, operand, wait);
+    }
+    code.push(0xe9); // jmp failure for any other futex result
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    let joined = code.len();
+    patch_stats_jump(&mut code, joined_jump, joined);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_result
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x44, 0x39, 0x29]); // cmp [rcx], r13d
+    append_jne_failure(&mut code, &mut failures);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0x81, 0x39, 0x34, 0x12, 0x00, 0x00]); // cmp [rcx], 0x1234
+    append_jne_failure(&mut code, &mut failures);
+    append_root_read(&mut code, &mut failures);
+    append_stats_exit(&mut code, true);
+
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    code.extend_from_slice(&[
+        0x0f, 0xa2, // actual Host-worker CPUID: must retire without a Tool callback
+        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
+        0x0f, 0x05, // syscall
+        0x48, 0xb9, // movabs rcx, child_result
+    ]);
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x89, 0x01]); // mov [rcx], eax
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0xc7, 0x01, 0x34, 0x12, 0x00, 0x00]); // mov [rcx], 0x1234
+    append_stats_exit(&mut code, false); // clear-TID and wake parent on real exit
+
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
+    code[clone_args_operand..clone_args_operand + 8]
+        .copy_from_slice(&clone_args_address.to_le_bytes());
+    let mut clone_args = [0_u8; 88];
+    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
+    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
+    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
+    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
+    code.extend_from_slice(&clone_args);
+    assert!(
+        code.len() < 0x1000,
+        "code must not overlap the shared data page"
+    );
+    code
+}
+
+#[test]
+fn cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed() {
+    for (ownership, expected) in [
+        (ThreadOwnership::Host, vec![1, 1]),

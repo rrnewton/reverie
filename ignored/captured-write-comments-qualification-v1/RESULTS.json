@@ -1,0 +1,171 @@
+{
+  "head": "7b28de2b20b6e7fdcdab92e552d4166908b50cad",
+  "tree": "33fced78b132b845698bdbc79ff3b6ebac72ca6e",
+  "new_tests_executed": 0,
+  "phases": [
+    {
+      "name": "format",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "reverie-kvm/src/captured_write_runtime_tests.rs",
+        "reverie-kvm/src/executor.rs",
+        "reverie-kvm/src/parked_signal_runtime.rs",
+        "reverie-kvm/src/runtime.rs",
+        "reverie-kvm/tests/static_elf.rs",
+        "reverie-kvm/tests/support/captured_write_signals.rs",
+        "reverie/src/guest.rs"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/format-plan.json",
+        "bytes": 35336,
+        "mode": 420,
+        "sha256": "87e8fc6af93bf5751fa1ac84edd17dcf89c3d295be251fdf053701b7f449cb2b"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/controls/format/result.json",
+        "bytes": 2593,
+        "mode": 420,
+        "sha256": "f25ff88cf4bc1a30ab5b17b8fa4a52526d1115ffb0e0d2071fca69fa41e84fc2"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/observer/format/result.json",
+        "bytes": 49540,
+        "mode": 384,
+        "sha256": "abf51a15ffd76e5906649ac3cec48b0001d04d2703223309a1eb0671293d4153"
+      },
+      "payload_seconds": 0.41176343499682844,
+      "aggregate_cpu_seconds": 2.844152,
+      "observer_seconds": 3.387006771,
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "readback": {
+        "format_check": true,
+        "changed_rust_paths": 7
+      }
+    },
+    {
+      "name": "core-check",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "check",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-core",
+        "-p",
+        "reverie-ptrace",
+        "--message-format=json"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/core-check-plan.json",
+        "bytes": 35102,
+        "mode": 420,
+        "sha256": "e516926479cd44b2becc21c9ed676f56983d742c4a7f718ffa9dee55fbda1186"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/controls/core-check/result.json",
+        "bytes": 2615,
+        "mode": 420,
+        "sha256": "9678f75ff6dd41a6f2c2078c5fce378a45ddb3739ee560a693f0380a0e7281ad"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/observer/core-check/result.json",
+        "bytes": 48695,
+        "mode": 384,
+        "sha256": "3f54618791d72f0718fe5080ec174f790ed9c0921e117ea61d4c4a1a8de20a10"
+      },
+      "payload_seconds": 1.5946911498904228,
+      "aggregate_cpu_seconds": 3.971797,
+      "observer_seconds": 4.943109362,
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "readback": {
+        "cargo_complete": true,
+        "compiler_diagnostics": 0
+      }
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/clippy-plan.json",
+        "bytes": 35135,
+        "mode": 420,
+        "sha256": "fdfc555b4c9e551103b1cfd7afcb389b6e27310e96ec8b5185862c0a41d0decc"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/controls/clippy/result.json",
+        "bytes": 2597,
+        "mode": 420,
+        "sha256": "b880420ad65d57261b85a1ec6a262d2d556c5daddfcce84fb791aaca6a303be9"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/observer/clippy/result.json",
+        "bytes": 46647,
+        "mode": 384,
+        "sha256": "13a7f674e8ef89d1f1f925d677872163bbeaef5f83347534656b6e5a22b3e549"
+      },
+      "payload_seconds": 21.254932556068525,
+      "aggregate_cpu_seconds": 5.239562,
+      "observer_seconds": 24.340112419,
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "readback": {
+        "cargo_complete": true,
+        "compiler_diagnostics": 0
+      }
+    }
+  ]
+}

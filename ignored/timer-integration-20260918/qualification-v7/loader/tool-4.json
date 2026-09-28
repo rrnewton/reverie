@@ -1,0 +1,149 @@
+{
+  "executable": {
+    "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+    "bytes": 17154944,
+    "mode": 493,
+    "sha256": "657754f6f51ce79d7bbc5ed9d002001d1dd82b926c6f19c20db000a81296c930"
+  },
+  "inputs": [
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/librustc_driver-dac3ae0f1ba99007.so",
+      "bytes": 157583248,
+      "mode": 420,
+      "sha256": "9e2b8f0c965172ea2a44b2fbcf69f1be8c2dd7f6655a5dbcfa0799d4741a416f"
+    },
+    {
+      "path": "/usr/lib64/libdl.so.2",
+      "bytes": 15464,
+      "mode": 493,
+      "sha256": "0345de5d76583b8bb233b1571023b936ce99ed748341daa65182240b0e900651"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/librt.so.1",
+      "bytes": 15640,
+      "mode": 493,
+      "sha256": "2fa98c45802ac2360bf7ce058fa3e57f0e1460b70743d0c5e50ce81a00d0a3d1"
+    },
+    {
+      "path": "/usr/lib64/libpthread.so.0",
+      "bytes": 15480,
+      "mode": 493,
+      "sha256": "2ae72a0a7a995db81d9ea8f50d745960e86f3af4c494658a2269c367f734a1e9"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.99.0-nightly",
+      "bytes": 199567600,
+      "mode": 420,
+      "sha256": "79bd30c1c32aa20c14573a5735f86151343cad1e4fc157ef40ab8f56e2a466ad"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libz.so.1.2.11",
+      "bytes": 102672,
+      "mode": 493,
+      "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/lib64",
+      "target": "usr/lib64"
+    },
+    {
+      "path": "/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1"
+    },
+    {
+      "path": "/lib64/libz.so.1",
+      "target": "libz.so.1.2.11"
+    }
+  ],
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/ldd",
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.051417923998087645,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v7/loader/tool-4-ldd.stdout",
+        "bytes": 851,
+        "mode": 420,
+        "sha256": "bf1371f88400122e926da2696b76dad17ab821b318acea84c35e53c2cbcf7c53"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v7/loader/tool-4-ldd.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "/usr/bin/readelf",
+        "-W",
+        "-l",
+        "-d",
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05152666685171425,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v7/loader/tool-4-readelf.stdout",
+        "bytes": 3923,
+        "mode": 420,
+        "sha256": "8e7dbec08e06b8bd58e79262eeeac3fa23bdae3faed4075e17f9292cfbcccbcc"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v7/loader/tool-4-readelf.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "query_programs": [
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    }
+  ]
+}

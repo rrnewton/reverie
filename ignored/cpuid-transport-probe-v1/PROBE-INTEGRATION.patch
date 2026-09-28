@@ -1,0 +1,193 @@
+--- root/probe.rs
++++ probe/cpuid_transport_probe.rs
+@@ -1,8 +1,10 @@
+ // Experimental unit module for vm.rs; not a product implementation.
+ // Include inside vm.rs's existing tests module in a separate source snapshot.
+ mod cpuid_fault_transport_probe {
++    use kvm_bindings::Msrs;
++    use kvm_bindings::kvm_msr_entry;
++
+     use super::*;
+-    use kvm_bindings::{Msrs, kvm_msr_entry};
+ 
+     const PLATFORM_INFO: u32 = 0xce;
+     const MISC_FEATURES_ENABLES: u32 = 0x140;
+@@ -15,15 +17,22 @@
+     const SUBLEAF: u32 = 0;
+ 
+     fn entry(index: u32, data: u64) -> kvm_msr_entry {
+-        kvm_msr_entry { index, data, ..Default::default() }
++        kvm_msr_entry {
++            index,
++            data,
++            ..Default::default()
++        }
+     }
+ 
+     fn read_state(backend: &KvmBackend, label: &str) -> (u64, u64) {
+-        let mut values = Msrs::from_entries(&[
+-            entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0),
+-        ]).unwrap();
++        let mut values =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0)])
++                .unwrap();
+         let count = backend.vcpu.get_msrs(&mut values).unwrap();
+-        println!("{label}: get_msrs count={count}, entries={:?}", values.as_slice());
++        eprintln!(
++            "{label}: get_msrs count={count}, entries={:?}",
++            values.as_slice()
++        );
+         assert_eq!(count, 2, "partial MSR state read is not qualification");
+         (values.as_slice()[0].data, values.as_slice()[1].data)
+     }
+@@ -31,7 +40,7 @@
+     fn set_one(backend: &KvmBackend, index: u32, data: u64, label: &str) {
+         let values = Msrs::from_entries(&[entry(index, data)]).unwrap();
+         let count = backend.vcpu.set_msrs(&values).unwrap();
+-        println!("{label}: set_msrs index={index:#x}, value={data:#x}, count={count}");
++        eprintln!("{label}: set_msrs index={index:#x}, value={data:#x}, count={count}");
+         assert_eq!(count, 1, "partial MSR activation is not qualification");
+     }
+ 
+@@ -41,10 +50,11 @@
+         let code = [
+             0xb8, 0x01, 0x00, 0x00, 0x80, // mov eax, 0x80000001
+             0xb9, 0x00, 0x00, 0x00, 0x00, // mov ecx, 0
+-            0x0f, 0xa2,                   // cpuid
+-            0xf4,                         // CPL3 hlt: distinct #GP sentinel
++            0x0f, 0xa2, // cpuid
++            0xf4, // CPL3 hlt: distinct #GP sentinel
+         ];
+-        backend.install_static_elf(&minimal_test_elf(&code), "/cpuid-fault-probe")
++        backend
++            .install_static_elf(&minimal_test_elf(&code), "/cpuid-fault-probe")
+             .unwrap();
+         assert_eq!(backend.vcpu.get_regs().unwrap().rip, ENTRY);
+         assert_eq!(backend.vcpu.get_sregs().unwrap().cs.dpl, 3);
+@@ -53,14 +63,26 @@
+ 
+     fn run_to_gp(backend: &mut KvmBackend, expected_rip: u64, label: &str) -> kvm_regs {
+         assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
+-        let fault = backend.static_elf_exception().unwrap()
++        let fault = backend
++            .static_elf_exception()
++            .unwrap()
+             .expect("the guest must reach the actual exception transport");
+         let registers = backend.vcpu.get_regs().unwrap();
+         let mut error_code = [0; 8];
+-        backend.memory.read_raw(registers.rsp, &mut error_code).unwrap();
+-        println!("{label}: vector={}, guest_rip={:#x}, error={}, rax={:#x}, rbx={:#x}, rcx={:#x}, rdx={:#x}",
+-            fault.vector, fault.instruction_pointer, u64::from_le_bytes(error_code),
+-            registers.rax, registers.rbx, registers.rcx, registers.rdx);
++        backend
++            .memory
++            .read_raw(registers.rsp, &mut error_code)
++            .unwrap();
++        eprintln!(
++            "{label}: vector={}, guest_rip={:#x}, error={}, rax={:#x}, rbx={:#x}, rcx={:#x}, rdx={:#x}",
++            fault.vector,
++            fault.instruction_pointer,
++            u64::from_le_bytes(error_code),
++            registers.rax,
++            registers.rbx,
++            registers.rcx,
++            registers.rdx
++        );
+         assert_eq!(fault.vector, 13);
+         assert_eq!(fault.instruction_pointer, expected_rip);
+         assert_eq!(u64::from_le_bytes(error_code), 0);
+@@ -69,12 +91,20 @@
+ 
+     fn assert_table_result(backend: &KvmBackend, registers: kvm_regs) {
+         let table = backend.vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES).unwrap();
+-        let expected = table.as_slice().iter()
++        let expected = table
++            .as_slice()
++            .iter()
+             .find(|entry| entry.function == LEAF && entry.index == SUBLEAF)
+             .expect("the installed table must contain the chosen leaf");
+-        assert_eq!((registers.rax, registers.rbx, registers.rcx, registers.rdx),
+-            (u64::from(expected.eax), u64::from(expected.ebx),
+-             u64::from(expected.ecx), u64::from(expected.edx)));
++        assert_eq!(
++            (registers.rax, registers.rbx, registers.rcx, registers.rdx),
++            (
++                u64::from(expected.eax),
++                u64::from(expected.ebx),
++                u64::from(expected.ecx),
++                u64::from(expected.edx)
++            )
++        );
+     }
+ 
+     #[test]
+@@ -84,7 +114,10 @@
+         assert!(feature_indices.as_slice().contains(&PLATFORM_INFO));
+         let mut feature = Msrs::from_entries(&[entry(PLATFORM_INFO, 0)]).unwrap();
+         let feature_count = kvm.get_msrs(&mut feature).unwrap();
+-        println!("host feature: count={feature_count}, platform_info={:#x}", feature.as_slice()[0].data);
++        eprintln!(
++            "host feature: count={feature_count}, platform_info={:#x}",
++            feature.as_slice()[0].data
++        );
+         assert_eq!(feature_count, 1);
+         assert_ne!(feature.as_slice()[0].data & SUPPORT_BIT, 0);
+ 
+@@ -98,9 +131,17 @@
+ 
+         guest.vcpu.set_sregs(&initial_sregs).unwrap();
+         guest.vcpu.set_regs(&initial_regs).unwrap();
+-        set_one(&guest, PLATFORM_INFO, initial.0 | SUPPORT_BIT, "install support");
++        set_one(
++            &guest,
++            PLATFORM_INFO,
++            initial.0 | SUPPORT_BIT,
++            "install support",
++        );
+         set_one(&guest, MISC_FEATURES_ENABLES, initial.1 | ENABLE_BIT, "arm");
+-        assert_eq!(read_state(&guest, "armed"), (initial.0 | SUPPORT_BIT, initial.1 | ENABLE_BIT));
++        assert_eq!(
++            read_state(&guest, "armed"),
++            (initial.0 | SUPPORT_BIT, initial.1 | ENABLE_BIT)
++        );
+         let trapped = run_to_gp(&mut guest, CPUID_RIP, "armed CPUID");
+         assert_eq!(trapped.rax, u64::from(LEAF));
+         assert_eq!(trapped.rcx, u64::from(SUBLEAF));
+@@ -113,7 +154,10 @@
+         assert_eq!(read_state(&independent, "independent").1 & ENABLE_BIT, 0);
+         let separate = run_to_gp(&mut independent, STOP_RIP, "independent CPUID reaches HLT");
+         assert_table_result(&independent, separate);
+-        assert_eq!(read_state(&guest, "first remains armed").1 & ENABLE_BIT, ENABLE_BIT);
++        assert_eq!(
++            read_state(&guest, "first remains armed").1 & ENABLE_BIT,
++            ENABLE_BIT
++        );
+ 
+         set_one(&guest, MISC_FEATURES_ENABLES, initial.1, "disarm");
+         set_one(&guest, PLATFORM_INFO, initial.0, "restore support state");
+@@ -124,10 +168,22 @@
+         assert_table_result(&guest, resumed);
+ 
+         let mut unrelated = KvmBackend::new(16 * 1024 * 1024).unwrap();
+-        unrelated.install_static_elf(&minimal_test_elf(&[0xfa, 0xf4]), "/unrelated-cli-fault").unwrap();
++        unrelated
++            .install_static_elf(&minimal_test_elf(&[0xfa, 0xf4]), "/unrelated-cli-fault")
++            .unwrap();
+         let unrelated_initial = read_state(&unrelated, "unrelated initial");
+-        set_one(&unrelated, PLATFORM_INFO, unrelated_initial.0 | SUPPORT_BIT, "unrelated support");
+-        set_one(&unrelated, MISC_FEATURES_ENABLES, unrelated_initial.1 | ENABLE_BIT, "unrelated arm");
++        set_one(
++            &unrelated,
++            PLATFORM_INFO,
++            unrelated_initial.0 | SUPPORT_BIT,
++            "unrelated support",
++        );
++        set_one(
++            &unrelated,
++            MISC_FEATURES_ENABLES,
++            unrelated_initial.1 | ENABLE_BIT,
++            "unrelated arm",
++        );
+         let _ = run_to_gp(&mut unrelated, ENTRY, "unrelated CLI still faults");
+     }
+ }

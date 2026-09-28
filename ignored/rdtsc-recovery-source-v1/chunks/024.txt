@@ -1,0 +1,60 @@
++        assert!(stderr.is_empty());
++        assert_eq!(
++            log.calls(),
++            vec![
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tscp),
++            ]
++        );
++    }
++}
++
++#[test]
++fn static_elf_unsubscribed_rdtscp_remains_guest_exception() {
++    if !kvm_available("KVM unsubscribed RDTSCP test") {
++        return;
++    }
++
++    let image = static_elf(&[
++        0x0f, 0x01, 0xf9, // rdtscp
++        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
++        0x31, 0xff, // xor edi, edi
++        0x0f, 0x05, // syscall
++    ]);
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend
++        .install_static_elf(&image, "/bin/unsubscribed-rdtscp")
++        .unwrap();
++    let error =
++        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(false, true))
++            .unwrap_err();
++    assert_invalid_opcode(error);
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++struct ClockTimestampTool;
++
++#[reverie::tool]
++impl Tool for ClockTimestampTool {
++    type GlobalState = TimestampLog;
++    type ThreadState = (Option<u64>, u64);
++
++    fn subscriptions(enabled: &bool) -> Subscription {
++        TimestampTool::subscriptions(enabled)
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        let before = guest
++            .read_clock()
++            .expect("timestamp clock must be available");
++        let (previous, ordinal) = *guest.thread_state();
++        if let Some(previous) = previous {
++            assert!(
++                before > previous,
++                "actual guest assertion branches must retire between reads"
++            );

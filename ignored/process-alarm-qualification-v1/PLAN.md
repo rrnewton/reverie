@@ -1,0 +1,21 @@
+# Process-alarm qualification v1
+
+Product source is frozen at base/HEAD 99d1e4827cce2404442d7c27ab447886a5839326 plus SOURCE.patch SHA256 4e56817a6e754e31e69626c184ff2703dc3632d6c23618efb4e1cbc72734a90d. No source edits or commit/push are authorized here.
+
+All output and state live under this owned slot. Target is a NEW empty target/process-alarm-qualification-v1. No foreign target is copied, read by Cargo, or written. The only dependency seed copied is Cargo.lock, 67,056 bytes, SHA256 1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856, from the completed bootstrap qualification. All 27 tracked Cargo.toml files were checked byte-identical. RUNNER_ORIGINS.json binds that comparison and helper bytes. source-manifest.json binds all 2,612 indexed product paths (gitlinks as pins; unused expansions are not claimed).
+
+Use explicit installed toolchain paths from nightly-2026-07-29. Rustc is 1.99.0-nightly 26ae60a9eeb20b4935be49d7a931a650fa1d2923 / LLVM22.1.8; Cargo is 1.99.0-nightly 3efb1f477. Cargo always uses --offline --locked, jobs2, empty RUSTFLAGS, a private target/temp/cache and declared environment. Each prepared plan records inputs/config absences/environment, source/index hashes, owned lease/target inode, executables and loader/library/symlink bindings. They are checked before and after each phase. The actual Cargo-selected test ELF paths and hashes are included in runtime phases; the compile output and each libtest inventory are prerequisites, not source declarations treated as tests.
+
+The observer is the exact root-approved v4 bytes b161c17f850113d5155974d9547ddc842b44c4e37445c44a5d2f06aef500b56e, with unchanged companions. The bootstrap common/cache_lease helpers are unchanged. Only the caller prepare/phase layer is adapted to select two KVM artifacts, bind loaders, and require exact inventories/outcomes. No observer protocol or special unresolved-lease recovery is rebuilt here.
+
+Compilation and metadata: 600 aggregate CPU seconds,900 wall seconds,16GiB MemoryMax,zero swap. Inventory/test:30 aggregate CPU seconds,60 wall seconds,16GiB,zero swap. All retain the16MiB live stderr cap, approved observer's existing64MiB live stdout/samples guard,16MiB post-exit phase-read refusal, and100GiB free-space floor. These are distinct bounds;16MiB is NOT the live stdout limit. Over-limit,truncated,incomplete,zero-selected,ignored or failed results do not qualify. The original static_elf30-second self-exec timeout is unchanged, and REVERIE_REQUIRE_KVM=1 applies throughout. There is no full Hermit/setitimer/determinism result from these controls.
+
+Order:
+
+1. prepare.py metadata; phase.py launch its plan/hash. Exact payload: pinned Cargo metadata --offline --locked --format-version1.
+2. bind_dependencies.py reads that qualified metadata and hashes the complete external source closure reachable from reverie-kvm, including dev/build dependencies. No external source writes.
+3. prepare.py compile; phase.py launch. Exact payload: pinned Cargo test --offline --locked -p reverie-kvm --lib --test static_elf --no-run --message-format=json. Require no undisposed structured diagnostics and exactly the emitted reverie_kvm/lib/test and static_elf/test/test artifacts.
+4. prepare.py list-lib and list-static, launching each. Actual ELF --list -Z unstable-options --format=json. Require all intended names exactly once in the full actual inventory.
+5. Prepare and launch test-alarm-lib,test-child-lib,test-domain-lib,test-alarm-vm,test-child-vm sequentially. SELECTORS.json holds exact candidate names. Each actual ELF receives those exact names plus --exact --test-threads=1 --nocapture -Z unstable-options --format=json. Require exact started and successful terminal names,nonzero matched population,no retries/skips/failures and exact suite counts. Require service terminal/empty readback and all source/ELF/loader inputs unchanged.
+
+No runtime duration/disk forecast is claimed for KVM. The completed bootstrap cold ptrace compile used113.778046CPU seconds/63.156081wall seconds; that is comparative provenance,not a promise about this larger KVM target. One compilation at a time uses two Cargo jobs. VM modes run sequentially at256MiB each. The new fixture's nine modes are assertions inside one actual libtest test,not nine independently counted test passes.

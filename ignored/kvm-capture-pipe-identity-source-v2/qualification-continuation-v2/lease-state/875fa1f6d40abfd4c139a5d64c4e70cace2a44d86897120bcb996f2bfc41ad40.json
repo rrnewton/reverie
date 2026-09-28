@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "875fa1f6d40abfd4c139a5d64c4e70cace2a44d86897120bcb996f2bfc41ad40",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/controls/v6-timestamp-32/result.json",
+    "bytes": 3052,
+    "mode": 420,
+    "sha256": "353d7a8e6db88866c80c9be04dc3f1391ff60eb5189aaa00bf3ad9b36113e6a5"
+  }
+}

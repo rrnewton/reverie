@@ -1,0 +1,31 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+  "exclusive_availability_observed": true,
+  "token_unchanged": true,
+  "before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+    "bytes": 97,
+    "mode": 384,
+    "sha256": "595f879d51c3599f3a6b6ed460ff4925e550d57b046a45b5b97fc02b1d2275cb"
+  },
+  "after": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+    "bytes": 97,
+    "mode": 384,
+    "sha256": "595f879d51c3599f3a6b6ed460ff4925e550d57b046a45b5b97fc02b1d2275cb"
+  },
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/39673522d972d6807ce5ea8e7e823ef3fd113212cd9bb20cd76b3d595fde633a.json",
+    "bytes": 399,
+    "mode": 420,
+    "sha256": "c02faac4991bd78a986987ba7591452cf81ba40c0024cead646652083b849ec5"
+  },
+  "last_plan_sha256": "39673522d972d6807ce5ea8e7e823ef3fd113212cd9bb20cd76b3d595fde633a",
+  "retained_before_cache_reuse": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/retained-binaries/BINDING.json",
+    "bytes": 6419,
+    "mode": 420,
+    "sha256": "c8dd188fa5a9a213619169b754d792c3cf711e9a658616f7752d47771e5d57e7"
+  },
+  "descriptor_closed": true
+}

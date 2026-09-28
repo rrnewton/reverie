@@ -1,0 +1,11 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/retained-binaries/BINDING.json",
+  "sha256": "5ca98185a60c383568f9f5a82ba559b6db1db839534217f93ae06962925a5e25",
+  "hashes": {
+    "lib": "1b3153afdff803ca4ec304933f17359717eb9a2c666e53198e3184e0e727d6f6",
+    "static": "286f081ef609e3ceae9c1dacb87f3246528de13ab5da56285f9c6a9a27045f39",
+    "vmcall": "e64ccbe60a249c1c0e334ff621ba1f012fe95dbf9318f972fbc0bf5bd61ec70d",
+    "read-clock": "9f18315a8e15c1df1c3b4d909d8903986807c3710c153c93363ea85d8b7d3694"
+  },
+  "purpose": "Refuse all four actual V4 harness bytes as new V5 compiler output; no V4 test credit."
+}

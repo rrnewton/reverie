@@ -1,0 +1,60 @@
++fn subscribed_timestamp_dispatch_refuses_unrelated_exceptions() {
++    if !kvm_available("KVM timestamp exception refusal test") {
++        return;
++    }
++
++    let mut invalid_opcode_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    invalid_opcode_backend
++        .install_static_elf(&static_elf(&[0x0f, 0x0b]), "/bin/fault")
++        .unwrap();
++    let error = futures::executor::block_on(
++        invalid_opcode_backend.run_static_elf_with_tool::<TimestampTool>(true, true),
++    )
++    .unwrap_err();
++    assert_invalid_opcode(error);
++
++    let mut general_protection_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    general_protection_backend
++        .install_static_elf(&static_elf(&[0xed]), "/bin/fault")
++        .unwrap();
++    let error = futures::executor::block_on(
++        general_protection_backend.run_static_elf_with_tool::<TimestampTool>(true, true),
++    )
++    .unwrap_err();
++    assert_general_protection(error);
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++struct EvolvingTimestampTool;
++
++#[reverie::tool]
++impl Tool for EvolvingTimestampTool {
++    type GlobalState = TimestampLog;
++    type ThreadState = u64;
++
++    fn subscriptions(enabled: &bool) -> Subscription {
++        let mut subscriptions = Subscription::none();
++        if *enabled {
++            subscriptions.rdtsc();
++        }
++        subscriptions
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        let ordinal = *guest.thread_state();
++        *guest.thread_state_mut() += 1;
++        guest.send_rpc(request).await;
++        Ok(RdtscResult {
++            tsc: RDTSC_SENTINEL + ordinal,
++            aux: (request == Rdtsc::Tscp).then_some(RDTSCP_AUX_SENTINEL + ordinal as u32),
++        })
++    }
++}
++
++fn evolving_timestamp_assertion_program() -> Vec<u8> {
++    let mut code = Vec::new();
++    let mut failure_patches = Vec::new();

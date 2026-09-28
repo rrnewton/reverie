@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v2/list-static-plan.json",
+      "f8440d11e073e429889161bd2ddd797b8e9ccd808d0b88e4f3faf1a4ba6b860b"
+    ]
+  },
+  "token": "08e39a701dd564c0a2a9da0d6cd7d17ef5e4727799cafcbad99685f9475d3a7f",
+  "observer_pid": 3984346,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 186751797,
+  "deadline_monotonic_ns": 1867543018816307
+}

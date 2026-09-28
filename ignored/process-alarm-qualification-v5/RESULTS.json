@@ -1,0 +1,457 @@
+{
+  "source_patch_sha256": "e9ec808ff3cdf17537f172e9b9285dfb884d468cdae4644369855427948bde25",
+  "source_manifest_sha256": "df9853dbdb86e18b542df142956c3190f0c0264c5755252cd1ca942c7bd55057",
+  "phases": [
+    {
+      "version": 4,
+      "name": "compile",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 30.335869,
+      "wall_seconds": 15.550739473,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v4/controls/compile/result.json",
+        "bytes": 6043,
+        "sha256": "88fce12c9a69e3643e591440f6e8588416037eeffb371d60f2b2b747a81bea76"
+      },
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "compiler_diagnostics": 0
+    },
+    {
+      "version": 5,
+      "name": "compile",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.097351,
+      "wall_seconds": 2.674858516,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/compile/result.json",
+        "bytes": 6043,
+        "sha256": "2bc490d04e54aef8a053908f8966c5637fd55c0ed5d85caadc2d4a49cb092460"
+      },
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "compiler_diagnostics": 0
+    },
+    {
+      "version": 5,
+      "name": "list-lib",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.178033,
+      "wall_seconds": 3.107384991,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/list-lib/result.json",
+        "bytes": 43168,
+        "sha256": "2a7e2a5d2b9b628935972598343403a43a813c275ed58a3647c4aa02e599eb6b"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "actual_inventory_count": 466,
+      "selected": [
+        "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+        "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+        "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+        "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+        "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+        "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+        "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+        "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+        "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+        "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+        "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+        "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+        "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+        "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+        "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+        "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+        "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+        "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+        "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains",
+        "executor::tests::structured_replacement_uses_replacement_disposition_and_mask",
+        "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "runtime::process_alarm_tests::process_alarm_signal_guest_executor_default_refuses_explicitly",
+        "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "runtime::process_alarm_tests::process_alarm_signal_transport_contexts_match_resumable_boundaries"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "list-static",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.263515,
+      "wall_seconds": 2.875642434,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/list-static/result.json",
+        "bytes": 18856,
+        "sha256": "bea092dff821eb09e1f89c364cbcc72633df1e43f5f0f0e0c5b21a289dc2c1b0"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "actual_inventory_count": 289,
+      "selected": [
+        "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract",
+        "process_alarm_signals::process_alarm_signal_tool_boundary_contract"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "test-alarm-lib",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.18521,
+      "wall_seconds": 2.73190739,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/test-alarm-lib/result.json",
+        "bytes": 3912,
+        "sha256": "d4b60b37575909da2be02ac15932a243ff2b04cdb02e81f16e72b947e8ec0d3b"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+        "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+        "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+        "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+        "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+        "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+        "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+        "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+        "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains",
+        "runtime::process_alarm_tests::process_alarm_signal_guest_executor_default_refuses_explicitly",
+        "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "runtime::process_alarm_tests::process_alarm_signal_transport_contexts_match_resumable_boundaries",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "summary": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 454,
+        "exec_time": 0.010307104
+      },
+      "names": [
+        "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+        "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+        "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+        "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+        "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+        "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+        "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+        "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+        "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains",
+        "runtime::process_alarm_tests::process_alarm_signal_guest_executor_default_refuses_explicitly",
+        "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "runtime::process_alarm_tests::process_alarm_signal_transport_contexts_match_resumable_boundaries"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "test-child-lib",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.155157,
+      "wall_seconds": 2.717822089,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/test-child-lib/result.json",
+        "bytes": 3605,
+        "sha256": "ee4e515122665e5ee01222657fb7ec28beb01a88c8fc4eae6ec2fef6bdd1d86e"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+        "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+        "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+        "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+        "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+        "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+        "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+        "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+        "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "summary": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 457,
+        "exec_time": 0.008255553
+      },
+      "names": [
+        "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+        "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+        "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+        "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+        "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+        "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+        "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+        "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+        "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "test-domain-lib",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.158339,
+      "wall_seconds": 2.643917721,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/test-domain-lib/result.json",
+        "bytes": 2931,
+        "sha256": "b250a68d79d0050fced53f318e30c399a048272ab3d383775db19d6990b317d9"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+        "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+        "executor::tests::structured_replacement_uses_replacement_disposition_and_mask",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "summary": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 463,
+        "exec_time": 0.002178372
+      },
+      "names": [
+        "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+        "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+        "executor::tests::structured_replacement_uses_replacement_disposition_and_mask"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "test-alarm-vm",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.442472,
+      "wall_seconds": 3.600687198,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/test-alarm-vm/result.json",
+        "bytes": 2724,
+        "sha256": "8b65234af7a9c2b84295843bfdf7b036c5b96dad6c70d4cd1251efe66e1fd01c"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+        "process_alarm_signals::process_alarm_signal_tool_boundary_contract",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "summary": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 288,
+        "exec_time": 0.826888223
+      },
+      "names": [
+        "process_alarm_signals::process_alarm_signal_tool_boundary_contract"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "test-child-vm",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.532177,
+      "wall_seconds": 4.106517985,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/test-child-vm/result.json",
+        "bytes": 2726,
+        "sha256": "16f66be788dae6e29a2a37017de73eced101afdfe639bc96433d0c2b0893f642"
+      },
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+        "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "summary": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 288,
+        "exec_time": 1.452389796
+      },
+      "names": [
+        "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "format",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 2.871546,
+      "wall_seconds": 3.526065937,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/format/result.json",
+        "bytes": 2424,
+        "sha256": "fa0a45779f959c18b0b0ba5065a76bc44bd8782e513f7996c558ced85f1fe734"
+      },
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "reverie-kvm/src/child_exit_signal_tests.rs",
+        "reverie-kvm/src/executor.rs",
+        "reverie-kvm/src/process_alarm_runtime_tests.rs",
+        "reverie-kvm/src/process_alarm_signal_tests.rs",
+        "reverie-kvm/src/runtime.rs",
+        "reverie-kvm/src/signal.rs",
+        "reverie-kvm/src/vm.rs",
+        "reverie-kvm/tests/static_elf.rs",
+        "reverie-kvm/tests/support/process_alarm_signals.rs",
+        "reverie/src/guest.rs",
+        "reverie/src/signal.rs"
+      ]
+    },
+    {
+      "version": 5,
+      "name": "clippy",
+      "accepted": true,
+      "raw_status": 0,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "cpu_seconds": 5.124031,
+      "wall_seconds": 5.612731013,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/controls/clippy/result.json",
+        "bytes": 2427,
+        "sha256": "80e280297bd6331c1dea74d581b33d3388675d8d2d20c1033b2afaf7b3ec9a2a"
+      },
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "compiler_diagnostics": 0
+    }
+  ],
+  "selected_library_passes": 24,
+  "selected_vm_passes": 2,
+  "original_failed_vm_preserved": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/FIRST_FAILURE.md",
+  "metadata_erratum": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/MANIFEST_ERRATUM.md",
+  "final_artifacts": {
+    "lib": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+      "bytes": 116984928,
+      "mode": 493,
+      "sha256": "ff6981a67636f198e85c273007ec19811078cddff5ad3f5e6a3d4309029af830"
+    },
+    "static": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+      "bytes": 150607088,
+      "mode": 493,
+      "sha256": "2fe8dfc1ec212f4eac529e3a41ac5d58fbafddf9e7fe882be4d496b6257aa5d7"
+    }
+  },
+  "v4_v5_elf_identity_equal": true,
+  "source_whitespace_status": 0
+}

@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/source",
+  "qualified_source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source",
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/SOURCE.patch",
+    "bytes": 143066,
+    "mode": 420,
+    "sha256": "b51dc00c98699b65621112f6f3aa672df5492fcb3dd1ef85bf8c7c7b9b9ff94e"
+  },
+  "source_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/SOURCE_INPUTS.json",
+    "bytes": 3897,
+    "mode": 420,
+    "sha256": "ae617d37e9eeca759d4b23124d59348df1d3932a2170bb964930ef5b6e5a4542"
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/RESULTS.json",
+    "bytes": 233240,
+    "mode": 420,
+    "sha256": "17f58963f685e36324015fbbbfc9c850f1182c6d12e858b2da81279ee5e94eb0"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/REPORT.md",
+    "bytes": 3941,
+    "mode": 420,
+    "sha256": "04c19c277dedd596858d983ea599fb8a51c6bf64f58ecffa17ad65a66353a769"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/INPUTS.json",
+    "bytes": 5786638,
+    "mode": 420,
+    "sha256": "17140c1bb0e810f6a72ad8005a4da7d4fba8f67638246c94b5a782cc9ca8e578"
+  },
+  "readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/READBACK.json",
+    "bytes": 1587,
+    "mode": 420,
+    "sha256": "6a41ed481805bc748ab58679789525c61ae1e43d2b9f796d7df326eb563cbe05"
+  },
+  "predecessors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/PREDECESSORS.json",
+    "bytes": 2604,
+    "mode": 420,
+    "sha256": "6a37b2a27257464f41a0394af0fe13f9b29c10bf9ae847b7606f316b77acf946"
+  },
+  "status": "Qualified inactive composition-v3; independent source approval and SCM pending"
+}

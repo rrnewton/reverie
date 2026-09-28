@@ -1,0 +1,51 @@
+## Findings
+
+- **High — unchanged inherited stdin is re-duplicated before every syscall, breaking epoll MOD/DEL identity.** `FileTableState` stores stdin separately from entry identities ([executor.rs:1248](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:1248)). Every install unconditionally clones stdin ([executor.rs:1657](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:1657)) and replaces/retires the previous local handle ([executor.rs:1692](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:1692)). This install occurs before every ordinary syscall ([executor.rs:4291](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:4291)). `epoll_ctl` then passes the newly duplicated host descriptor for guest fd 0 ([executor.rs:7511](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:7511), [executor.rs:12235](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:12235)).
+
+  Concrete counterexample: run with pipe-backed stdin, create epoll, `EPOLL_CTL_ADD` fd 0, then `EPOLL_CTL_MOD` fd 0. The MOD call’s preliminary install creates a different host fd before retiring the ADD fd. Linux epoll registration identity includes the descriptor number and open-file description; using a different duplicate cannot modify the original registration and yields `ENOENT`. The same applies to DEL. The existing epoll preservation control covers descriptors in `files`, not inherited stdin ([executor.rs:24083](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:24083)). The tests themselves confirm unchanged installs still clone stdin ([executor.rs:25517](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:25517)).
+
+  Required correction: give inherited stdin an entry identity and preserve its existing local and authoritative host handles when that identity is unchanged. Clone before mutation only when stdin’s logical entry changed. Add a pipe-backed actual executor control exercising ADD → synchronization → MOD → DEL on fd 0.
+
+## Prior High disposition
+
+The previously reported destruction-under-lock defect is resolved for the audited retirement paths:
+
+- Retirement scopes queue actual owners and release the queue mutex before destruction ([elf.rs:394](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs:394), [elf.rs:445](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs:445), [elf.rs:540](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs:540)).
+- Ordinary execution, accept, exec replacement, exit release, clone-failure cleanup, and paired/SCM_RIGHTS rollback place final destruction after file-table and signal-transaction guards.
+- The probe retains real descriptors and verifies from another thread that both actual mutexes are acquirable before destruction ([executor.rs:25207](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs:25207)). The exit test retains an extra table `Arc`, so final-table-owner ordering remains source-proven rather than fully runtime-proven, but the production declaration/drop order is sound.
+
+## Conclusions
+
+**CHANGES REQUESTED** for the exact three-path composition:
+
+- Target SHA256: `7336b0544f0ec3c0c4dbf64b2e5a9ef630677c1247da06891bb9a391aad6dda3`
+- Full patch SHA256: `41dd4f6af0ee2b4364b36254f67d5988113dd2b04ccfff10d50012280a64ce1a`
+- V1-to-V2 SHA256: `6eec8035ee119eef093812bd94decfe5e882b43c5adcbffef46e3963714d5093`
+
+The corrected retirement abstraction and inactive publisher portion are sound within their finite private scope. Weak registry/image bindings, generation revalidation, transaction ordering, first-siginfo coalescence, three-consumer readiness updates, and precommit/postcommit failure distinction remain coherent. This does not approve activation, selection, timer scheduling, blocked waits, FIFO ownership, child production, or parity.
+
+Determinism: the reported stdin issue is deterministic Linux-semantic divergence, not a host race. This patch does not change DetCore turns, virtual time, PRNG, INFO, replay, or race-search scheduling.
+
+Linux/POSIX: ordinary mapped descriptor entry identity correctly distinguishes same-inode close/reopen and preserves unchanged handles; dup retains the OFD. Inherited stdin lacks the same protection. Entry identity still does not prove imported/exported OFD exclusivity.
+
+## Evidence and goalposts
+
+I read all 107 mandatory chunks, the full 3,123-line patch, 1,241-line correction, complete publisher module and additive tests, all raw 78 test streams, complete 5,905-line phase index, and complete 5,302-line results.
+
+The packet records 85/85 accepted phases and 78/78 selected tests: 69 library and 9 static declarations, zero failed/ignored, inventories 502/304. Total CPU was 269.606006 seconds; outer observer transport totaled 300.277448 seconds; exact-test payload totaled 3.880781 seconds. I executed nothing.
+
+Goalpost audit:
+
+- No production/test assertion was weakened.
+- Three item-level `expect(dead_code)` exemptions were added previously to qualify intentionally inactive private entry points. This is a real lint exemption, explicitly preserved—not “no gate change”—but it is narrowly scoped and does not hide the semantic finding above.
+- No comparator, timeout, tolerance, selector, or failure label was relaxed.
+- No substantive check was deleted; original warning, format, and stale-OFD failures remain preserved as failures.
+
+Protocol triggers:
+
+1. New syscall support: **No**.
+2. Reverie API/core abstraction or interception model: **Yes**—authoritative descriptor synchronization, retirement, and process-publication internals change the backend interception model despite private visibility.
+3. New determinization strategy: **Yes**—descriptor-entry identity and serialized callback-independent publication are new deterministic mechanisms.
+4. Core DetCore scheduling/race-search change: **No**.
+
+Initial combined instruction/grounding reads and two aggregate-index reads truncated; each was reread completely in bounded ranges. One attempted `final-v1/PHASE-INDEX.json` read failed because that path does not exist; the manifest-bound review-directory copy was located and read completely. Two broad file-list diagnostics truncated and were not used. All mandatory inputs were completed; I did not semantically inspect every one of the 12,971 manifest records.

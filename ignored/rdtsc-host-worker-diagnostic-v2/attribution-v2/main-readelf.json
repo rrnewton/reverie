@@ -1,0 +1,31 @@
+{
+  "argv": [
+    "/usr/bin/prlimit",
+    "--cpu=30:30",
+    "--fsize=16777216:16777216",
+    "--",
+    "/usr/bin/readelf",
+    "-W",
+    "-h",
+    "-l",
+    "-s",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/timestamp-host-worker.elf"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2",
+  "wall_limit_seconds": 60,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.05139961396344006,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/main-readelf.stdout",
+    "bytes": 8247,
+    "mode": 420,
+    "sha256": "e482cd920abb004e14a44863784281c5d5ed9b632edf72cc864b173647750f45"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/main-readelf.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

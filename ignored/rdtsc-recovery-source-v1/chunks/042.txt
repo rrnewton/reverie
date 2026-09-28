@@ -1,0 +1,50 @@
+[
+  {
+    "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+    "historical_sha256": "fa544e73d79ae043e1b27c73e452a3e4a60c37508465179afc94b7d5d802008d",
+    "current_sha256": "fa544e73d79ae043e1b27c73e452a3e4a60c37508465179afc94b7d5d802008d",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  },
+  {
+    "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+    "historical_sha256": "6c9571d15d2411b53d0b696ea1d03bdcb6e2cfc4eb7dbddc760dec772d0b882d",
+    "current_sha256": "6c9571d15d2411b53d0b696ea1d03bdcb6e2cfc4eb7dbddc760dec772d0b882d",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  },
+  {
+    "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+    "historical_sha256": "dd289ade03c2f0ee58a4360e61ed1777a234fa24b889be5210713f1b470d3979",
+    "current_sha256": "dd289ade03c2f0ee58a4360e61ed1777a234fa24b889be5210713f1b470d3979",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  },
+  {
+    "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+    "historical_sha256": "17bb3a62cf8e6851c5af950a3384989a4d057f2d2b5db2b12dfb693c8f8f850b",
+    "current_sha256": "17bb3a62cf8e6851c5af950a3384989a4d057f2d2b5db2b12dfb693c8f8f850b",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  },
+  {
+    "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+    "historical_sha256": "bb98762453d1bb87b2a9e3d1b455aa23a7e5d435733b9ed0b042a78b55a71cea",
+    "current_sha256": "bb98762453d1bb87b2a9e3d1b455aa23a7e5d435733b9ed0b042a78b55a71cea",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  },
+  {
+    "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+    "historical_sha256": "42655dd9268ebc39e924d68b1bca9372ca6a3cc19eb66fc51fb428b78ad7c475",
+    "current_sha256": "42655dd9268ebc39e924d68b1bca9372ca6a3cc19eb66fc51fb428b78ad7c475",
+    "byte_identical": true,
+    "only_whitespace_difference": true,
+    "no_oracle_or_argument_change": true
+  }
+]

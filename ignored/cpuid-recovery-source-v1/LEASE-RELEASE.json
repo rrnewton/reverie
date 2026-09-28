@@ -1,0 +1,51 @@
+{
+  "utc": "2026-09-18T19:31:59.956301+00:00",
+  "final_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/clippy-plan.json",
+    "bytes": 64653,
+    "mode": 420,
+    "sha256": "bb0ed2d249c0b2d9089257a54f13a4c16198adc0b553cc4807d5d8a7ac3fb073"
+  },
+  "final_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/controls/clippy/result.json",
+    "bytes": 2629,
+    "mode": 420,
+    "sha256": "e40424a844041845ec52dc0012b19fc050a86673c4b98c90db0c5e8f21f1268e"
+  },
+  "final_observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/observer/clippy/result.json",
+    "bytes": 50863,
+    "mode": 384,
+    "sha256": "213dd33e734529ecf1890bcd63ae242c7a44386a778175b1fa4b26b07f418173"
+  },
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/bb0ed2d249c0b2d9089257a54f13a4c16198adc0b553cc4807d5d8a7ac3fb073.json",
+    "bytes": 405,
+    "mode": 420,
+    "sha256": "0c86aa36bd9105d51722f43fe12d0ff87ec9f7e16fe52614de74baaed31bbe3a"
+  },
+  "lease_identity": [
+    48,
+    816917584,
+    212630
+  ],
+  "current_token_plan_sha256": "bb0ed2d249c0b2d9089257a54f13a4c16198adc0b553cc4807d5d8a7ac3fb073",
+  "exclusive_nonblocking_acquired": true,
+  "lease_token_modified": false,
+  "terminal_authenticated": true,
+  "cgroup_empty": true,
+  "properties": {
+    "Id": "safehermit-20260918T193034Z-2861531.service",
+    "LoadState": "loaded",
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "ControlGroup": "",
+    "MainPID": 0,
+    "ExecMainPID": 2863839,
+    "ExecMainCode": 1,
+    "ExecMainStatus": 0,
+    "ExecMainStartTimestampMonotonic": 1918764202159,
+    "CPUUsageNSec": 20641745000
+  },
+  "descriptor_closed": true
+}

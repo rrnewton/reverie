@@ -1,0 +1,25 @@
+{
+  "initial_attempt": {
+    "tool": "git apply run inside repository subdirectory",
+    "raw": 0,
+    "postcondition": false,
+    "source_unchanged": true,
+    "reason": "Git subdirectory path selection skipped root-relative patch paths; exact byte check rejected the reconstruction. No phase was executed and no product bytes changed."
+  },
+  "corrected_attempt": {
+    "argv": [
+      "/usr/bin/patch",
+      "--batch",
+      "--forward",
+      "-p1",
+      "--directory",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/patch-reconstruction",
+      "--input",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE.patch"
+    ],
+    "raw": 0,
+    "tool_sha256": "549bae3ec9a23f239cb53a5daccd1d77ae8a0df74f931feed542e4eb0474e17e",
+    "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/reconstruction.stdout",
+    "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/reconstruction.stderr"
+  }
+}

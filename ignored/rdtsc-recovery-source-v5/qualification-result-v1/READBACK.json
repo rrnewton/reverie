@@ -1,0 +1,24 @@
+{
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-result-v1/RESULTS.json",
+    "bytes": 4940,
+    "sha256": "b1d1de0a2d0afdd707eaaf6b9c1095b0d511535b1cc92a9198c27ec23af6acef",
+    "mode": 420
+  },
+  "raw_execution_audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-result-v1/RAW-EXECUTION-AUDIT.json",
+    "bytes": 917,
+    "sha256": "d436675344e4dd1d92e3a1641c4770a89be98dbd326b6dd0df16134638dfcbba",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-result-v1/INPUTS.json",
+    "bytes": 2910598,
+    "sha256": "d31087ff9883a84ed755347a9043d10399ddb635e29f0a8f248901600efbd56c",
+    "mode": 420
+  },
+  "records": 9006,
+  "all_inputs_unchanged": true,
+  "all_qualified": false,
+  "no_source_review_or_parity_verdict": true
+}

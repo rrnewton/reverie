@@ -1,0 +1,75 @@
+{
+  "status": "PREPARATION AUTHENTICATED; NOT RUNTIME QUALIFICATION",
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/TARGET.json",
+    "bytes": 4278,
+    "mode": 420,
+    "sha256": "41500365a8f2672e33e8937d9491ee74b183ddd69b794054e7a1fd68284007cf"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/INPUTS.json",
+    "bytes": 17800,
+    "mode": 420,
+    "sha256": "f934ed939afe10d1220fac6d33b35e6ee6df7e63cf96884bd4ad4496daebf2ff"
+  },
+  "records_unchanged": 69,
+  "symlinks_unchanged": 6,
+  "handed_off_files_unchanged": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+      "bytes": 9369,
+      "mode": 420,
+      "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/README.md",
+      "bytes": 1650,
+      "mode": 420,
+      "sha256": "b472cbbf657bb1e52dd768a988672ad872fe139166f5a548eab66703b2bd52f3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SELECTORS.json",
+      "bytes": 6302,
+      "mode": 420,
+      "sha256": "83c367b409e8d15e593f0899037655a91aa8466966e1534b97535bef2d842295"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SOURCE-ORIGIN.json",
+      "bytes": 1261,
+      "mode": 420,
+      "sha256": "90f9ec1b10336cce39d12b6ff01961668f6d7d53342ee82e2ee0e4cfe7c99d2f"
+    }
+  ],
+  "unchanged_supervision_helpers": 6,
+  "observer_sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+  "new_native_helpers_syntax_only": true,
+  "python_39_syntax_parsed": 11,
+  "inherited_unit_reference_asserts": 6,
+  "new_native_guard_asserts": 0,
+  "no_helper_import_or_execution": true,
+  "no_compiler_or_loader_query": true,
+  "no_probe_run": true,
+  "no_private_admission_or_lease": true,
+  "absent_runtime_paths": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/tmp",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/plans",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/driver",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/ADMISSION.json"
+  ],
+  "no_product_scm_cache_or_external_review_action": true,
+  "output_limit_checks_cover_fast_exit": true,
+  "known_unmeasured": [
+    "actual installed linker trace spelling",
+    "strict native compiler diagnostics",
+    "all native architectural outcomes",
+    "RDTSCP availability",
+    "independent caller correctness review"
+  ],
+  "source_review_limits": "RF requested, not independently sampled at timestamp input; no hardware truth inferred from source."
+}

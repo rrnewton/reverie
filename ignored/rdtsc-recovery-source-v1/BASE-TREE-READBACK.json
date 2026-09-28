@@ -1,0 +1,8 @@
+{
+  "kind": "offline Git-object hashing of every actual frozen base leaf, without Git/SCM calls",
+  "base_commit_reported_by_root": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "root_reported_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "reconstructed_actual_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "entries": 2621,
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source"
+}

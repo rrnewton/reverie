@@ -1,0 +1,91 @@
+{
+  "status": "FROZEN V4 SOURCE/CALLER PREPARATION ONLY; UNCOMPILED AND UNRUN",
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/source",
+  "authorship_base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "landed_tree_equivalent_base": "44fcb1955f44547f50d724fe8f7d718215fed446",
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "predecessor": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/TARGET.json",
+    "bytes": 4450,
+    "sha256": "71e2d8644e74aaa5cdbc7a034513947d91c3068c421b6c96626209d220d26d91",
+    "mode": 420
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/SOURCE-MANIFEST.json",
+    "bytes": 1399350,
+    "sha256": "8e3db68f609e8b3bd22af7f41665fd49684b21170233d8bf707d72384515581d",
+    "mode": 420
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/SOURCE.patch",
+    "bytes": 66371,
+    "sha256": "7375550e696b5c96a2ac31d83c3adf304ad10a7461d4ff428ee98ca763001e6d",
+    "mode": 420
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/DELTA.patch",
+    "bytes": 7968,
+    "sha256": "194a5fd8169fee465f95a4941483d491ef18f47462b58d77214a7b74d7b0421a",
+    "mode": 420
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/CALLER-DELTA.patch",
+    "bytes": 3783,
+    "sha256": "6241c5c91126d591622cab8826ad031ea19fce740345114aad793918747aaec9",
+    "mode": 420
+  },
+  "source_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/SOURCE-CONTINUITY.json",
+    "bytes": 1199,
+    "sha256": "70abed7cd1161e439ccb95d98ca1b00ea9806076a68b57ff37694c95273e1ef1",
+    "mode": 420
+  },
+  "test_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/TEST-BODY-CONTINUITY.json",
+    "bytes": 43120,
+    "sha256": "be32e8a064362943c31cbd9bf99b7f4f94cb1adf09a03cdf6ec3e1f8ca68c828",
+    "mode": 420
+  },
+  "setup": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/SETUP.json",
+    "bytes": 3526,
+    "sha256": "b4b375db641813640b2b4be45641623cdeba947260ef8ec2cd2eb2a156c028e1",
+    "mode": 420
+  },
+  "selectors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/SELECTORS.json",
+    "bytes": 12282,
+    "sha256": "e8030560f57a0f423b081cb745858f5258607093aa125892ba20dcd581b5bad0",
+    "mode": 420
+  },
+  "observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/observer.py",
+    "bytes": 44851,
+    "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+    "mode": 420
+  },
+  "prior_refusals": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-stop-v1/READBACK.json",
+      "bytes": 1301,
+      "sha256": "c7ea54d6e4fd404cb848dabb1ee8334b3a6eda813bc3de3e2cb31a7c5676eb23",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/result-v1/READBACK.json",
+      "bytes": 1068,
+      "sha256": "eeb59527d29315b649591d6a37222b7e3a03a9fb738f1441af997839ad8b7bee",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/compile-refusal-v1/READBACK.json",
+      "bytes": 937,
+      "sha256": "07c95b85414f6ce0610749420afc40af76928f7e966ca81527ed8e94e6383ab6",
+      "mode": 420
+    }
+  ],
+  "declarations": 31,
+  "phases": 40,
+  "production_unchanged": true,
+  "execution_authorized": false
+}

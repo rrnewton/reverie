@@ -1,0 +1,10 @@
+{
+  "fixture_byte_identical": true,
+  "complete_support_byte_identical_except_named_snapshot_only_selector": true,
+  "entire_executor_test_module_byte_identical": true,
+  "snapshot_only_selector": "\n// Qualification-only selector: same proposed mode19 assertions, unchanged production.\n#[test]\nfn scalar_write_high_fd_uncaptured_baseline_oracle() {\n    if leader_self_exec_bounded(\n        \"captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle\",\n    ) {\n        run_modes([19]);\n    }\n}\n",
+  "fixture_sha256": "396007188d9bc8411158b1ede2061791292a9fd2b096519e9c00670a6f0ce8f5",
+  "support_sha256": "4330dbf7a954223fa601452f0f4aa4431854ffecd5a78e563e0ba7056e3df228",
+  "executor_tests_sha256": "43569c214aff41eec98d7eca7203cdcd6aceb9d0c27e50ab4e6b59f7860ce434",
+  "product_new_test_declarations": 0
+}

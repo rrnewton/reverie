@@ -1,0 +1,78 @@
+{
+  "started": [
+    "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+    "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+    "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+    "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+    "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+    "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+    "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+    "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+    "runtime::process_alarm_tests::process_alarm_signal_default_kvm_executor_refuses_explicitly",
+    "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::process_alarm_tests::process_alarm_signal_default_kvm_executor_refuses_explicitly",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 454,
+      "exec_time": 0.00923898
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "pr": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "3096",
+    "--repo",
+    "rrnewton/hermit",
+    "--json",
+    "url,title,body,state,baseRefName,baseRefOid,headRefName,headRefOid,author,createdAt,updatedAt,mergeable,mergeStateStatus,reviewDecision,reviews,comments,statusCheckRollup,commits,files"
+  ],
+  "diff": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "diff",
+    "3096",
+    "--repo",
+    "rrnewton/hermit"
+  ],
+  "review-comments": [
+    "with-proxy",
+    "gh",
+    "api",
+    "--paginate",
+    "repos/rrnewton/hermit/pulls/3096/comments"
+  ],
+  "checks": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "checks",
+    "3096",
+    "--repo",
+    "rrnewton/hermit"
+  ],
+  "old-task": [
+    "tg",
+    "clear-the-two-chronic-kvm-setitimer-row-failures",
+    "-v"
+  ],
+  "current-task": [
+    "tg",
+    "kvm_setitimer_sandbox_killed",
+    "-v"
+  ]
+}

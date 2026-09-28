@@ -1,0 +1,6 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "purpose": "Inactive process publication prerequisite, active serialization/default-path regression controls"
+}

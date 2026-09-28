@@ -1,0 +1,85 @@
+{
+  "base_tree": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/BASE-TREE-READBACK.json",
+    "mode": 420,
+    "kind": "file",
+    "bytes": 475,
+    "sha256": "2aef8fa0e806e41d92d928cfecf0cd084f0cdce7a517e05ae950dea9d37c3345"
+  },
+  "baseline_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/BASELINE-MANIFEST.json",
+    "mode": 420,
+    "kind": "file",
+    "bytes": 1310225,
+    "sha256": "6eb4bd0d7910907377fd641d8d368546ba779a3d0df5eed75a2cac3f929c6de3"
+  },
+  "candidate_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/SOURCE-MANIFEST.json",
+    "mode": 420,
+    "kind": "file",
+    "bytes": 1399350,
+    "sha256": "096ce79b43b7449c0bba2d11d72d304fc19afef1f80a3a44b4267877d1eb9c12"
+  },
+  "contexts": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/process-publication-design-v4/grounding/OWN-GROUNDING.json",
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/OWN-GROUNDING.json",
+        "mode": 420,
+        "kind": "file",
+        "bytes": 1152,
+        "sha256": "1cf3add6899eeaf5e8df2f4f7adb82fc962f200d4013a5e8adb8c61042851433"
+      },
+      "purpose": "own author grounding (prior exposure disclosed)"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/process-exit-progress-investigation-v1/source/hermit/detcore/src/lib.rs",
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/hermit-detcore-lib.rs",
+        "mode": 420,
+        "kind": "file",
+        "bytes": 163257,
+        "sha256": "24afad331fa5c938758a45e55c77cacba09fe708c27f4a90f942198eb3aef77e"
+      },
+      "purpose": "unchanged callback/time-charge source context; not a qualified new Hermit composition"
+    }
+  ],
+  "historical_inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/841107ac.patch",
+      "mode": 420,
+      "kind": "file",
+      "bytes": 25636,
+      "sha256": "2a9831da98b35727cd00d19661a0e1da3e5321d234e79c4a85d713c342474312"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/d65ab382.patch",
+      "mode": 420,
+      "kind": "file",
+      "bytes": 5687,
+      "sha256": "0c905d34000a1a38990673fc6da949f7d6360c2109bce530f21ba9aaa4788bd5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/96306604.patch",
+      "mode": 420,
+      "kind": "file",
+      "bytes": 2166,
+      "sha256": "735305dd2a450711ea67452fa7040b694c90ac7c4af94cfe7241fba84f8942ab"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/kvm-rdtsc-prior-pr403-comments-20260918.json",
+      "mode": 420,
+      "kind": "file",
+      "bytes": 121516,
+      "sha256": "1e1b4e6248f6d06382d7a809b652b20b2d2b5d8b255282e3ea10d30d8a884ac9"
+    }
+  ],
+  "parity_summary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/evidence/parity/SUMMARY.json",
+    "mode": 420,
+    "kind": "file",
+    "bytes": 3884,
+    "sha256": "cc402d0ea700468609b62f869efc7c0ce72e8769e79a93ed70952a592480e3be"
+  },
+  "author_disclosure": "This worker authored the candidate and prior scheduler designs. This packet is not an independent review; historical source/runtime review credit is not transferred."
+}

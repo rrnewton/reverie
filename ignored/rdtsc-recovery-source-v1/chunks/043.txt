@@ -1,0 +1,60 @@
+[adversarial-reviewer agent, OPUS] [claude-coord-fable, devbig030]
+
+**CHANGES-REQUESTED-AT `96306604d7808389e89f2ce567c43d4402d29cf0`**
+
+This is a fresh, independent review derived from source at this exact head (rebased onto `reverie/main` `349460925ee56f2aca686a3392b534e8861ba375`). It does not rely on, defer to, or inherit anything from the voided verdicts at `f21205ff`, `a6aa8bc4`, or `f178de87`. I enumerated the call graph myself before reading any prior comment; the one blocking finding below has not been raised by any earlier round.
+
+For the record on the patch itself: `git diff <old-base>...a6aa8bc` and `git diff 3494609...9630660` are **byte-identical** (empty interdiff), so the change under review is exactly the one previously validated — only the base moved (951 files, none in `reverie-kvm/`; one in `reverie/`: `src/backend.rs`).
+
+---
+
+## BLOCKING — interception is propagated to a vCPU that has no dispatcher for it
+
+`ThreadOwnership::Host` CLONE_THREAD workers inherit `CR4.TSD` but run a loop that cannot service the resulting fault. Their first CPL3 `RDTSC` is fatal.
+
+Exact chain, all at this head:
+
+1. `runtime.rs:1180` — `set_rdtsc_interception(subscriptions.has_rdtsc())` sets `CR4.TSD` on the root vCPU when the Tool subscribes.
+2. `vm.rs:1175` — `ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => self.run_process_action(...)` delegates the host-owned worker to the **tool-less** action handler.
+3. `vm.rs:980` — that handler passes `self.intercept_rdtsc` (== `true`) into `from_thread_state`, which at `vm.rs:769` calls `child.set_rdtsc_interception(true)` → **`CR4.TSD` is set on the child vCPU**.
+4. `vm.rs:1011` — the child is spawned running `run_static_elf_process` (the tool-less loop at `vm.rs:1473`).
+5. `vm.rs:1516-1521` — that loop's `VcpuExit::Hlt` arm calls **only** `try_resume_vmware_backdoor_probe()`, then `static_elf_halt_error()`. It never calls `timestamp_counter_exception()`. `timestamp_counter_exception` has exactly one caller in the tree (`runtime.rs:1421`), and it is not on this path.
+
+Result: `RDTSC` in that worker takes `#GP(0)`, is not recognised, and becomes `Error::GuestException { vector: 13 }` (`vm.rs:1443-1449`), which `vm.rs:1016-1020` reduces to an `eprintln!` while the worker thread dies. Before this PR the same instruction executed natively.
+
+This is the mirror image of the bug the last round caught. That one was *consumer missing at the dispatch site*; this one is *state set on a vCPU with no dispatch site at all*. Either reading of `ThreadOwnership::Host` gives a correct fix, and the current code gives neither:
+
+* If Host-owned means "uninstrumented, native execution" (which is what `reverie/src/tool.rs:70-86` says — "the Tool never sees the thread's syscalls"), then pass `false` at `vm.rs:980` when the tool path delegates, so the worker keeps native `RDTSC`.
+* If Host-owned workers should still route timestamps, add the recognizer to the `vm.rs:1516` arm.
+
+What it is **not**: this is not reachable from Hermit today. `hermit-cli/src/lib.rs:1333-1335` guards `backend.unmonitored_threads()` on `!config.backend_dispatches_thread_tools`, and `prepare_backend_config` hard-wires that to `true` (`hermit-cli/src/lib.rs:1523`) with `#[clap(skip = true)]` (`detcore-model/src/config.rs:107-109`), so the branch is currently dead. It **is** reachable through the public `reverie-kvm` API — `KvmBackend::unmonitored_threads()` (`vm.rs:551`), `set_thread_ownership(Host)` (`vm.rs:529`), or `Tool::thread_ownership -> Host` — and `reverie-kvm`'s own suite exercises that configuration deliberately (`tests/static_elf.rs:1493`, `WorkerDispatch::Tool(ThreadOwnership::Host)`). It escapes CI only because `StraceTool` takes the `Tool::subscriptions` default `Subscription::all_syscalls()` (`reverie/src/tool.rs:232-234`), which carries no `Instructions::RDTSC`, and because that test's hand-written guest has no `RDTSC`. A one-line fix plus a `Host` + `rdtsc()` case in `timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles` closes it.
+
+---
+
+## 1. Subscription gating, exhaustively — otherwise correct
+
+`timestamp_counter_exception` has one definition (`vm.rs:1355`) and one caller (`runtime.rs:1421`). I enumerated all eight `vcpu.run()` loops and every `VcpuExit::Hlt` arm:
+
+| site | runs CPL3 guest? | can `CR4.TSD` be set? | dispatches timestamps? |
+|---|---|---|---|
+| `runtime.rs:1420` (static-ELF + Tool) | yes | yes | **yes**, guarded |
+| `vm.rs:1516` (static-ELF, tool-less) | yes | **yes, via `vm.rs:1175` delegation** | **no** ← blocking finding |
+| `runtime.rs:1116` (`run_with_tool`, vmcall) | yes | no (`set_rdtsc_interception` never called on this entry point) | no — see finding B |
+| `vm.rs:1663` (`run`, vmcall demo) | yes | no | no |
+| `vm.rs:826 / 949 / 1038 / 1213` | no — park/trampoline `Hlt => Ok(())` | n/a | n/a |
+
+The guard itself is correctly placed: `vm.rs:1357-1359` returns `None` **before** `static_elf_exception()` and before any byte decoding, so an unsubscribed guest's genuine fault is never even inspected. That satisfies the documented contract at `reverie/src/tool.rs:362` ("never called by default unless rdtsc events are subscribed") at the one site that dispatches.
+
+Storage and default: `intercept_rdtsc: false` at construction (`vm.rs:485`); the only mutator is `set_rdtsc_interception` (`vm.rs:565-569`), which read-modify-writes `CR4` (`bootstrap.rs:253-262`) rather than clobbering sregs.
+
+## 2. Unsubscribed guests keep native behavior — yes, and the negative discriminates
+
+`static_elf_unsubscribed_rdtscp_remains_guest_exception` (`tests/static_elf.rs`) is the discriminating negative and I verified it by construction: with `subscribed=false`, `CR4.TSD` is clear, `RDTSCP` still `#UD`s because `DETERMINISTIC_EXTENDED_CPUIDS[1][3] == 0x2010_0800` and `0x2010_0800 & bit(27) == 0` (`cpuid.rs:233`, ratcheted by the new assertion at `cpuid.rs:329`). Delete `vm.rs:1357-1359` and the recognizer matches vector 6, decodes `0f 01 f9`, dispatches to the Tool, the run returns `Ok`, and the test's `unwrap_err()` panics. It fires; it is not inert.
+
+Bracket, as counted:
+
+* **Positive (4):** `static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably` (2 fresh runs, exact `EDX:EAX` + `ECX` sentinels, exactly `[Tsc, Tscp]`); `repeated_timestamp_reads_evolve_once_per_instruction` (2 fresh runs, exactly `[Tsc, Tsc, Tscp]`); `timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles` (real glibc C program, ≥3 distinct senders, ≥2 from the fork child spanning `execl`); `two_byte_rdtsc_decode_does_not_read_a_third_byte` (`vm.rs:1789`, unit).
+* **Negative (4):** unsubscribed `RDTSCP` → `#UD` (**discriminates the guard**); `subscribed_timestamp_dispatch_refuses_unrelated_exceptions` — `0f 0b` UD2 → `#UD` refused and `0xed` → `#GP` refused (**discriminates the decoder**); the `read_rdtscp_suffix() == None` arm of the unit test; the `cpuid.rs:329` ratchet that keeps the `#UD` premise true.
+* **Inert, stated not blocking:** `static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch` does **not** discriminate `vm.rs:1357-1359`. With `TSD` clear, `RDTSC` never faults, so the guard is never consulted — delete the guard and this test still passes. It is a real test of the `CR4` gate, just not of the guard; the PR body should not count it toward the guard's bracket.
+
+## 3. Continuous virtual time — not blunted

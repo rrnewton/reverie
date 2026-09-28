@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "004548af85d9be8c5598ce4f006204edd6ab7b693d5e793fe0d48ac3b1cf043c",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/controls/clippy/result.json",
+    "bytes": 2677,
+    "mode": 420,
+    "sha256": "bc4a8490d0573c05dfffaac7fb2942747ec007b7881d19d4d7d25dc28268fbdc"
+  }
+}

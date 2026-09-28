@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/baseline-fault-plan.json",
+    "2b45bc1406a07850a9d63a05999a8b7c81ab30ca0bda94fa2be2a29594e49b37"
+  ],
+  "raw_status": 1,
+  "elapsed_seconds": 7.823726738104597,
+  "optimize": 0,
+  "debug": true
+}

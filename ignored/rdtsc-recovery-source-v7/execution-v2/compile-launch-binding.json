@@ -1,0 +1,34 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/compile-plan.json",
+  "sha256": "4262aefe564106b413001705b9863b3d5af7ae07c0dd29b316c3187aa04e7297",
+  "requested_name": "compile",
+  "actual_name": "compile",
+  "kind": "compile",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--test",
+    "vmcall",
+    "--test",
+    "read_clock",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

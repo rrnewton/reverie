@@ -1,0 +1,11 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/bind_dependencies.py",
+    "sha256": "920d6cbe40d310392a4f5a8d67c2b38e498b68c2d047d7e257d502b07dc97ffd"
+  },
+  "successor": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v1/bind_dependencies.py",
+    "sha256": "83dd925c49ed024ff6f2775772175f1dac6ba214aa87f7804f636294d7f6235a"
+  },
+  "change": "Only source-root depth for the fresh qualification directory; same actual metadata dependency traversal and complete external package-file binding."
+}

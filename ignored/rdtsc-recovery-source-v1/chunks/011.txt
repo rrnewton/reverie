@@ -1,0 +1,60 @@
++            Rdtsc::Tscp
++        );
++        assert_eq!(instruction(&[0x0f, 0x01]), None);
++    }
++
++    #[test]
++    fn timestamp_prefixes_and_fifteen_byte_limit_preserve_faults() {
++        for prefix in [
++            0x66, 0x67, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x40, 0x4f,
++        ] {
++            assert_eq!(instruction(&[prefix, 0x0f, 0x31]).unwrap().length, 3);
++            assert_eq!(instruction(&[prefix, 0x0f, 0x01, 0xf9]).unwrap().length, 4);
++        }
++        let mut longest = vec![0x66; 13];
++        longest.extend_from_slice(&[0x0f, 0x31]);
++        assert_eq!(instruction(&longest).unwrap().length, 15);
++        longest.insert(0, 0x66);
++        assert_eq!(instruction(&longest), None);
++        for invalid in [
++            &[0xf0, 0x0f, 0x31][..],
++            &[0xf3, 0xf0, 0x0f, 0x01, 0xf9],
++            &[0x0f, 0x0b],
++            &[0xed],
++        ] {
++            assert_eq!(instruction(invalid), None);
++        }
++        let mut fetched = Vec::new();
++        assert_eq!(
++            decode(|index| {
++                fetched.push(index);
++                Some(0x66)
++            }),
++            None
++        );
++        assert_eq!(fetched, (0..15).collect::<Vec<_>>());
++    }
++
++    #[test]
++    fn timestamp_writeback_preserves_other_registers_and_full_flags() {
++        let original = kvm_regs {
++            rax: u64::MAX,
++            rbx: 2,
++            rcx: u64::MAX,
++            rdx: u64::MAX,
++            rsi: 5,
++            rdi: 6,
++            rsp: 7,
++            rbp: 8,
++            r8: 9,
++            r9: 10,
++            r10: 11,
++            r11: 12,
++            r12: 13,
++            r13: 14,
++            r14: 15,
++            r15: 16,
++            rip: 0x1234,
++            rflags: 0x1_03d7,
++        };
++        for request in [Rdtsc::Tsc, Rdtsc::Tscp] {

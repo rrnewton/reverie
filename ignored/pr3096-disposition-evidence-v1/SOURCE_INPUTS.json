@@ -1,0 +1,50 @@
+[
+  {
+    "rev": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "path": "hermit-cli/src/bin/hermit/tracing.rs",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/base/hermit-cli/src/bin/hermit/tracing.rs",
+    "blob": "5ff6cc6e0400678fa350d637904cdcc69899099f",
+    "bytes": 26835,
+    "sha256": "1338b023c4f5badcdddc3aee2c8cd8b44afd449a146b895b777fce4ad2a7dada"
+  },
+  {
+    "rev": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "path": "tests/c/setitimer_determinism.c",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/base/tests/c/setitimer_determinism.c",
+    "blob": "32a04fc46c5d4214a22187a5d385a04da6d312f9",
+    "bytes": 3808,
+    "sha256": "5fa0618c557d539f9d694e526c18a59f69ea191487898c21e8d9d8a9b7fe2f76"
+  },
+  {
+    "rev": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "path": "AGENTS.md",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/base/AGENTS.md",
+    "blob": "3d4e2a5672b4b2e4c9d39ec409bd9fb52d0883fa",
+    "bytes": 34047,
+    "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+  },
+  {
+    "rev": "d9d8d32f9511911ef9becac0220bc5d748a414c2",
+    "path": "hermit-cli/src/bin/hermit/tracing.rs",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/head/hermit-cli/src/bin/hermit/tracing.rs",
+    "blob": "e4ac010609958ebf12cd135077a88a45779712d1",
+    "bytes": 26651,
+    "sha256": "27ecf95a963d9a7ec4d411622f901c84654af333c5aea1c9bcc664020ba12dd9"
+  },
+  {
+    "rev": "d9d8d32f9511911ef9becac0220bc5d748a414c2",
+    "path": "tests/c/setitimer_determinism.c",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/head/tests/c/setitimer_determinism.c",
+    "blob": "32a04fc46c5d4214a22187a5d385a04da6d312f9",
+    "bytes": 3808,
+    "sha256": "5fa0618c557d539f9d694e526c18a59f69ea191487898c21e8d9d8a9b7fe2f76"
+  },
+  {
+    "rev": "d9d8d32f9511911ef9becac0220bc5d748a414c2",
+    "path": "AGENTS.md",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/head/AGENTS.md",
+    "blob": "3d4e2a5672b4b2e4c9d39ec409bd9fb52d0883fa",
+    "bytes": 34047,
+    "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+  }
+]

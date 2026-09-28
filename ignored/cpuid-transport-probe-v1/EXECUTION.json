@@ -1,0 +1,10 @@
+{
+  "target_sha256": "344466b84022a35968ebb42b3035ac8c45381460c7eb1b670a5b82765f7648b1",
+  "authorized_phases": 5,
+  "actual_optimize": 0,
+  "debug": true,
+  "python": "/usr/bin/python3",
+  "python_version": "3.9.25 (main, Aug 13 2026, 00:00:00) \n[GCC 11.5.0 20240719 (Red Hat 11.5.0-14)]",
+  "inputs_reauthenticated": 2783,
+  "first_refusal_stops": true
+}

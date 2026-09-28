@@ -1,0 +1,6 @@
+{
+  "optimize": 0,
+  "debug": true,
+  "PYTHONOPTIMIZE": "0",
+  "executable": "/usr/bin/python3"
+}

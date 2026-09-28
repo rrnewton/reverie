@@ -1,0 +1,42 @@
+{
+  "diffs": {
+    "SOURCE.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/SOURCE.patch",
+        "bytes": 88411,
+        "sha256": "4200ed84f6909fb00d8b26268f7124253f9409169aa1bc6070192ab9d6f292aa"
+      },
+      "reconstructed_after_sha256": {
+        "reverie-kvm/src/elf.rs": "617b6e2d539fab8b753e032b60037ac195d4b983b77e6996dae4d29af849cd95",
+        "reverie-kvm/src/executor.rs": "72e7e3dd0d840dd3068c6216ce23c142dba5cf7fecd55f5a133c68c319755151",
+        "reverie-kvm/src/process_signal_publication.rs": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+      }
+    },
+    "PUBLISHER-TO-COMPOSED.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/PUBLISHER-TO-COMPOSED.patch",
+        "bytes": 28708,
+        "sha256": "fb60bedebefe15e0c280a1a191d4496aadc1610849afeef40b84cebd81e3218b"
+      },
+      "reconstructed_after_sha256": {
+        "reverie-kvm/src/elf.rs": "617b6e2d539fab8b753e032b60037ac195d4b983b77e6996dae4d29af849cd95",
+        "reverie-kvm/src/executor.rs": "72e7e3dd0d840dd3068c6216ce23c142dba5cf7fecd55f5a133c68c319755151"
+      }
+    },
+    "FD-TO-COMPOSED.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/FD-TO-COMPOSED.patch",
+        "bytes": 63922,
+        "sha256": "4e0390088473026d2bcfb1662a1725f90fc4727e6aa4bf2a0f3e3813025c3265"
+      },
+      "reconstructed_after_sha256": {
+        "reverie-kvm/src/elf.rs": "617b6e2d539fab8b753e032b60037ac195d4b983b77e6996dae4d29af849cd95",
+        "reverie-kvm/src/executor.rs": "72e7e3dd0d840dd3068c6216ce23c142dba5cf7fecd55f5a133c68c319755151",
+        "reverie-kvm/src/process_signal_publication.rs": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+      }
+    }
+  },
+  "manifest_entries_checked": 2621,
+  "all_component_input_bindings_unchanged": true,
+  "source_only": true
+}

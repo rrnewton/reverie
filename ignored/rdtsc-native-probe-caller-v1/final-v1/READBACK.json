@@ -1,0 +1,33 @@
+{
+  "inputs_unchanged": true,
+  "records": 1804,
+  "symlinks": 40,
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/RESULTS.json",
+      "bytes": 39909,
+      "mode": 420,
+      "sha256": "fb18af538a055fe8c3409bc8a7296cee27a15d56f7227af6b3c2141afb79022d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/INPUTS.json",
+      "bytes": 573251,
+      "mode": 420,
+      "sha256": "7f2109800a9c6df592cdb1100cd24584093b9f3657514137da77da2e48428807"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/REPORT.md",
+      "bytes": 601,
+      "mode": 420,
+      "sha256": "19ab207857aaf9209ada00c4fb2e5634f84627e35a9dae07642abbddf7b6dd47"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/LEASE-RELEASE.json",
+      "bytes": 1060,
+      "mode": 420,
+      "sha256": "ae7c752e09a0d3dc68368bde293b0ed86b72dad9c4e02802ec8e77847d929f93"
+    }
+  ],
+  "no_execution_by_freezer": true,
+  "original_bounds_preserved": true
+}

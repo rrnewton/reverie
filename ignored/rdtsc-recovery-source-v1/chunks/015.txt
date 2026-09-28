@@ -1,0 +1,60 @@
++            return Ok(None);
++        }
++        let Some(instruction) = crate::timestamp::decode(|offset| {
++            let address = exception
++                .instruction_pointer
++                .checked_add(u64::from(offset))?;
++            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
++        }) else {
++            return Ok(None);
++        };
++        // RDTSC is enabled by every supported CPUID policy. Only RDTSCP may
++        // fault as #UD (the deterministic policy does not expose that feature).
++        if exception.vector == 6 && instruction.request != reverie::Rdtsc::Tscp {
++            return Ok(None);
++        }
++        let mut registers = halted;
++        registers.rip = exception.instruction_pointer;
++        registers.rsp = exception.stack_pointer;
++        registers.rflags = exception.rflags;
++        Ok(Some(TimestampBoundary {
++            registers,
++            instruction,
++            special_registers: special,
++            code_segment: cs as u16,
++            stack_segment: ss as u16,
++        }))
++    }
++
++    pub(crate) fn resume_timestamp_counter(
++        &mut self,
++        boundary: TimestampBoundary,
++        result: reverie::RdtscResult,
++    ) -> Result<()> {
++        let registers =
++            crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
++                .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
++        // Exception stubs preserve every GPR. Returning host-side injections
++        // cannot supply a replacement user register file. Preserve the saved
++        // instruction state, and any intentional injected FS/GS-base effect.
++        let previous = self.vcpu.get_sregs()?;
++        configure_user_segments(&self.vcpu)?;
++        let mut special = self.vcpu.get_sregs()?;
++        special.cs.selector = boundary.code_segment;
++        special.ss.selector = boundary.stack_segment;
++        special.ds = previous.ds;
++        special.es = previous.es;
++        special.fs = previous.fs;
++        special.gs = previous.gs;
++        self.vcpu.set_sregs(&special)?;
++        self.vcpu.set_regs(&registers)?;
++        if registers.rflags & (1 << 8) != 0 {
++            // The timestamp has now retired. Preserve this backend's existing
++            // typed #DB boundary here, before another guest instruction can
++            // run; resuming with TF would report the following instruction.
++            return Err(Error::GuestException {
++                vector: 1,
++                instruction_pointer: registers.rip,
++                fault_address: special.cr2,
++            });
++        }

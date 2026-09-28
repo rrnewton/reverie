@@ -1,0 +1,80 @@
+                                     // retirement and consuming hooks own cleanup.
+                                     return Ok(exit.into());
+                                 }
+@@ -3263,7 +3298,7 @@
+                                 | HandlerOutcome::ParkedFatal(_)
+                                 | HandlerOutcome::ParkedCancelled(_) => {
+                                     return Err(Error::UnexpectedVcpuExit(
+-                                        "nonreturning timestamp callback outcome".to_owned(),
++                                        "nonreturning instruction callback outcome".to_owned(),
+                                     )
+                                     .with_cleanup(hidden.err().into_iter().collect()));
+                                 }
+@@ -3271,14 +3306,14 @@
+                             hidden?;
+                             if process_completed {
+                                 return Err(Error::UnexpectedVcpuExit(
+-                                    "timestamp callback changed the process continuation"
++                                    "instruction callback changed the process continuation"
+                                         .to_owned(),
+                                 ));
+                             }
+                             if let Some((segment, address)) = executor.take_segment() {
+                                 set_user_segment_base(&self.vcpu, segment, address)?;
+                             }
+-                            self.resume_timestamp_counter(boundary, value)?;
++                            self.resume_tool_instruction(boundary, value)?;
+                             continue;
+                         }
+                         if self.try_resume_vmware_backdoor_probe()? {
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -119,15 +119,37 @@
+     rflags: u64,
+ }
+ 
+-pub(crate) struct TimestampBoundary {
++pub(crate) struct InstructionBoundary<I> {
+     pub(crate) registers: kvm_regs,
+-    pub(crate) instruction: crate::timestamp::TimestampInstruction,
++    pub(crate) instruction: I,
+     special_registers: kvm_bindings::kvm_sregs,
+     code_segment: u16,
+     stack_segment: u16,
+ }
+ 
+-impl TimestampBoundary {
++pub(crate) type TimestampBoundary = InstructionBoundary<crate::timestamp::TimestampInstruction>;
++pub(crate) type CpuidBoundary = InstructionBoundary<crate::cpuid_instruction::Instruction>;
++
++pub(crate) enum ToolInstructionBoundary {
++    Timestamp(TimestampBoundary),
++    Cpuid(CpuidBoundary),
++}
++
++pub(crate) enum ToolInstructionResult {
++    Timestamp(reverie::RdtscResult),
++    Cpuid(reverie::CpuIdResult),
++}
++
++impl ToolInstructionBoundary {
++    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
++        match self {
++            Self::Timestamp(boundary) => boundary.user_registers(),
++            Self::Cpuid(boundary) => boundary.user_registers(),
++        }
++    }
++}
++
++impl<I> InstructionBoundary<I> {
+     pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+         let mut registers = crate::runtime::kvm_registers(self.registers, u64::MAX);
+         registers.cs = self.code_segment.into();
+@@ -968,6 +990,7 @@
+     // Set by the active execution consumer, never copied to a new vCPU. A
+     // Host-owned worker has no Tool dispatcher and must retain native TSC.
+     intercept_rdtsc: bool,
++    cpuid_interception: crate::cpuid_instruction::Interception,
+     pub(crate) static_elf: Option<LoadedStaticElf>,
+     stdin: Option<File>,

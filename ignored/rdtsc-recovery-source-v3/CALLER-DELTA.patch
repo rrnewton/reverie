@@ -1,0 +1,71 @@
+--- v2/qualification-v1/prepare.py
++++ v3/qualification-v1/prepare.py
+@@ -39,7 +39,7 @@
+     name=sys.argv[1];kind='metadata'if name=='metadata'else'check'if name in ('clippy','core-check')else'format'if name=='format'else'compile'if name=='compile'else'list'if name.startswith('list-')else'test'
+     require(name in ('metadata','compile','list-lib','list-static','list-vmcall','list-read-clock','format','clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned phase')
+     env={'HOME':'/home/newton','PATH':str(TOOL)+':/usr/local/bin:/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','RUSTUP_HOME':'/home/newton/.rustup',
+-         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-recovery-v2-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
++         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-recovery-v3-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
+          'CARGO_NET_OFFLINE':'true','CARGO_NET_GIT_FETCH_WITH_CLI':'true','RUSTFLAGS':'','LC_ALL':'C','LANG':'C','TZ':'UTC',
+          'CARGO_TERM_COLOR':'never','TMPDIR':str(HERE/'tmp'),'XDG_CACHE_HOME':str(HERE/'cache'),'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1',
+          'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/212630','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/212630/bus',
+@@ -110,7 +110,7 @@
+             argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=OWNER/'target/rdtsc-recovery-v2-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=OWNER/'target/rdtsc-recovery-v3-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+     require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+@@ -119,7 +119,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='CPL3 timestamp recovery: exact 30 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
++              scope='CPL3 timestamp recovery: exact 31 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()
+--- v2/qualification-v1/admit_target.py
++++ v3/qualification-v1/admit_target.py
+@@ -7,7 +7,7 @@
+ OWNER=HERE.parents[2]
+ setup=json_read(HERE/'SETUP.json')
+ target=Path(setup['target'])
+-require(target==OWNER/'target/rdtsc-recovery-v2-cold-v1','wrong target')
++require(target==OWNER/'target/rdtsc-recovery-v3-cold-v1','wrong target')
+ require(not target.exists() and not target.is_symlink(),'target already exists; preserve and refuse')
+ require(target.parent.is_dir() and not target.parent.is_symlink(),'target parent absent or aliased')
+ target.mkdir(mode=0o700)
+--- v2/qualification-v1/SELECTORS.json
++++ v3/qualification-v1/SELECTORS.json
+@@ -269,8 +269,17 @@
+       "source": "reverie-kvm/tests/read_clock.rs",
+       "origin": "unchanged baseline neighbor",
+       "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
++    },
++    "timestamp-31": {
++      "artifact": "static",
++      "names": [
++        "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure"
++      ],
++      "source": "reverie-kvm/tests/static_elf.rs",
++      "origin": "V3 new actual cleanup rejection control",
++      "purpose": "Actual UD2 Tool run plus failing on_exit_thread must retain both typed causes; existing fault-only helper must reject the complete cleanup aggregate. No synthetic error object or production variant."
+     }
+   },
+   "actual_inventory_pending": true,
+-  "exact_declarations": 30
++  "exact_declarations": 31
+ }
+--- v2/RUN-ORDER.json
++++ v3/RUN-ORDER.json
+@@ -26,6 +26,7 @@
+     "timestamp-17",
+     "timestamp-18",
+     "timestamp-19",
++    "timestamp-31",
+     "timestamp-20",
+     "timestamp-21",
+     "timestamp-22",

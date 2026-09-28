@@ -1,0 +1,25 @@
+from pathlib import Path
+import json,hashlib,re
+P=Path(__file__).resolve().parent;S=P/'source'; records=[]
+def add(target,names,origin,purpose):
+ path={'lib-timestamp':'reverie-kvm/src/timestamp.rs','lib-vm':'reverie-kvm/src/vm.rs','lib-cpuid':'reverie-kvm/src/cpuid.rs','static_elf':'reverie-kvm/tests/static_elf.rs','vmcall':'reverie-kvm/tests/vmcall.rs','read_clock':'reverie-kvm/tests/read_clock.rs'}[target]
+ text=(S/path).read_text()
+ for name in names:
+  at=text.index('fn '+name+'(');line=text.count('\n',0,at)+1
+  prefix={'lib-timestamp':'timestamp::tests::','lib-vm':'vm::tests::','lib-cpuid':'cpuid::tests::'}.get(target,'')
+  records.append({'target':'lib' if target.startswith('lib-') else target,'selector':prefix+name,'source':path,'line':line,'source_sha256':hashlib.sha256((S/path).read_bytes()).hexdigest(),'origin':origin,'purpose':purpose,'executed':False,'require_kvm':True,'outer_cpu_seconds':30,'outer_wall_seconds':60,'selection':'--exact --nocapture --test-threads=1; actual emitted harness/list identity must be verified before execution'})
+add('lib-timestamp',['two_byte_rdtsc_decode_does_not_read_a_third_byte','timestamp_prefixes_and_fifteen_byte_limit_preserve_faults','timestamp_writeback_preserves_other_registers_and_full_flags','timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction'],'new candidate','Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification')
+add('lib-vm',['timestamp_boundary_respects_hardware_instruction_fetch_fault_priority'],'new candidate','Actual KVM exception priority for completed two-byte instruction versus inaccessible third byte; no replacement fetch simulator')
+add('lib-cpuid',['deterministic_policy_replaces_host_identity_and_features'],'existing, strengthened','All old assertions retained plus RDTSCP capability bit remains clear; unsubscribed faults retain their meaning')
+add('static_elf',['static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably','timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles','static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch','subscribed_timestamp_dispatch_refuses_unrelated_exceptions','repeated_timestamp_reads_evolve_once_per_instruction','static_elf_unsubscribed_rdtscp_remains_guest_exception'],'historical unchanged bodies','Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit')
+add('static_elf',['timestamp_callbacks_observe_retired_branches_without_counting_rpc_work','host_owned_timestamp_worker_keeps_native_execution','prefixed_timestamp_instructions_preserve_registers_flags_and_stack','locked_and_overlength_timestamp_encodings_remain_faults','timestamp_tool_preserves_results_with_host_supported_cpuid','timestamp_single_step_reports_the_retired_instruction_boundary'],'new candidate','Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending')
+add('static_elf',['static_elf_faults_are_reported_by_direct_and_tool_runtimes','static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes','static_elf_forks_execs_and_waits_for_child','static_elf_runs_glibc_clone3_thread_and_restores_parent_state','static_elf_caught_signal_returns_through_rt_sigreturn','post_exec_failure_runs_tool_exit_lifecycle'],'unchanged baseline neighbor','Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup')
+add('vmcall',['guest_write_syscall_runs_shared_reverie_tool','default_tool_handler_tail_injects_through_executor'],'unchanged baseline neighbor','Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims')
+add('read_clock',['read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus','read_clock_follows_a_guest_between_host_threads','read_clock_starts_fork_vfork_and_thread_children_at_zero','read_clock_survives_successful_and_failed_exec'],'unchanged baseline neighbor','Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained')
+assert len(records)==30
+(P/'CONTROLS.json').write_text(json.dumps({'status':'planned only; no compiled inventory or test result','declarations':len(records),'targets':{'lib':6,'static_elf':18,'vmcall':2,'read_clock':4},'controls':records,'additional_native_reference_plan':'PLAN.md: native architectural references; not authored/executed controls yet'},indent=2)+'\n')
+# Carry exact prior numeric bounds as a template only; prior evidence is not new source qualification.
+r=P.parent/'publication-fd-stdin-cold-qualification-v1/final-v1/RESULTS.json';j=json.loads(r.read_text());limits={}
+for phase in j['phases']:limits.setdefault(phase['kind'],phase['limits'])
+(P/'evidence/QUALIFICATION-LIMIT-TEMPLATE.json').write_text(json.dumps({'source':str(r),'source_sha256':hashlib.sha256(r.read_bytes()).hexdigest(),'limits_by_kind':limits,'scope':'numeric bounds template, no prior result transferred'},indent=2)+'\n')
+print('30 declarations; no execution')

@@ -1,0 +1,67 @@
+{
+  "groups": {
+    "test-alarm-lib": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+        "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+        "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+        "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+        "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+        "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+        "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+        "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+        "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains",
+        "runtime::process_alarm_tests::process_alarm_signal_guest_executor_default_refuses_explicitly",
+        "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+        "runtime::process_alarm_tests::process_alarm_signal_transport_contexts_match_resumable_boundaries"
+      ]
+    },
+    "test-child-lib": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+        "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+        "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+        "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+        "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+        "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+        "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+        "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+        "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects"
+      ]
+    },
+    "test-domain-lib": {
+      "artifact": "lib",
+      "names": [
+        "error::tests::signal_effects_preserve_first_failure_and_cancellation_evidence",
+        "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+        "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+        "executor::tests::parked_handles_reject_equal_ordinals_across_fork_and_stale_callbacks",
+        "executor::tests::parked_observation_lease_replay_preserves_pending_sequence_ack_and_ledger",
+        "executor::tests::signal_dequeue_all_consumers_preserve_domain_and_post_copyout_effects",
+        "executor::tests::signal_dequeue_first_private_nonalarm_is_bound_before_any_parked_call",
+        "executor::tests::signal_dequeue_fork_resets_and_exec_retains_process_sequence",
+        "executor::tests::signal_dequeue_readiness_error_retains_complete_removal",
+        "executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals",
+        "executor::tests::signal_dequeue_sequence_exhaustion_refuses_before_removal",
+        "executor::tests::structured_replacement_uses_replacement_disposition_and_mask"
+      ]
+    },
+    "test-alarm-vm": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract",
+        "parked_signals::parked_signal_caught_action_posthook_refusal",
+        "process_alarm_signals::process_alarm_signal_tool_boundary_contract"
+      ]
+    },
+    "test-child-vm": {
+      "artifact": "static",
+      "names": [
+        "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract"
+      ]
+    }
+  },
+  "declaration_scope": "Candidate exact names only. Actual ELF inventory and successful named libtest outcomes are required; these are not pass counts."
+}

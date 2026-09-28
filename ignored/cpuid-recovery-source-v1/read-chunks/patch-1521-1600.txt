@@ -1,0 +1,80 @@
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (2, 7, 2), (2, 7, 2)]
++    );
++}
++
++#[test]
++fn cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges() {
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    // Retain the existing complete RDTSC/RDTSCP guest result and AUX checks.
++    // Its relative jumps remain local when placed after the CPUID assertion.
++    code.extend_from_slice(&timestamp_assertion_program());
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 22, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    let (log, status) = run_cpuid(&code, (true, 3), ThreadOwnership::Tool);
++    assert_eq!(status, 0);
++    let calls = log.calls.lock().unwrap();
++    assert_eq!(
++        calls
++            .iter()
++            .map(|call| (call.0.as_raw(), call.1, call.2))
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (1, u32::MAX, 0), (1, u32::MAX, 1)]
++    );
++    assert!(calls.windows(2).all(|pair| pair[1].3 > pair[0].3));
++}
+diff --git a/reverie-kvm/tests/support/cpuid_terminal.rs b/reverie-kvm/tests/support/cpuid_terminal.rs
+new file mode 100644
+--- /dev/null
++++ b/reverie-kvm/tests/support/cpuid_terminal.rs
+@@ -0,0 +1,360 @@
++// Actual CPUID terminal transitions. These controls exercise the real
++// Tool/Guest/driver and consuming hooks; they do not model Detcore's clock RPC.
++use futures::channel::oneshot;
++
++use super::*;
++
++#[derive(Debug, Default)]
++struct SiblingGates {
++    entered: bool,
++    leader_entry: Option<oneshot::Sender<()>>,
++    worker_terminal: Option<oneshot::Sender<()>>,
++    leader_exit: Option<oneshot::Sender<()>>,
++}
++
++#[derive(Debug, Default)]
++struct TerminalLog {
++    events: Mutex<Vec<(u8, i32, ExitStatus)>>,
++    gates: Mutex<SiblingGates>,
++}
++
++#[reverie::global_tool]
++impl GlobalTool for TerminalLog {
++    type Request = (u8, ExitStatus);
++    type Response = ();
++    type Config = u8;
++
++    async fn receive_rpc(&self, from: Pid, (kind, status): Self::Request) {
++        self.events
++            .lock()
++            .unwrap()
++            .push((kind, from.as_raw(), status));
++        match kind {
++            10 => {
++                assert_eq!(from.as_raw(), 2);
++                let (sender, receiver) = oneshot::channel();
++                {
++                    let mut gates = self.gates.lock().unwrap();
++                    assert!(!gates.entered);
++                    gates.entered = true;
++                    assert!(gates.worker_terminal.replace(sender).is_none());
++                    if let Some(leader) = gates.leader_entry.take() {
++                        leader.send(()).unwrap();
++                    }

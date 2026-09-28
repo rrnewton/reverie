@@ -1,0 +1,37 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/TARGET.json",
+    "file_mode": 420,
+    "kind": "file",
+    "bytes": 3153,
+    "sha256": "e9c5ad9dbc92c79da82be5961ba4b645204d9f016111ec9ed6bc53b9df52d503"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/INPUTS.json",
+    "file_mode": 420,
+    "kind": "file",
+    "bytes": 8334995,
+    "sha256": "bd8c7b28e6c2b8278440b1288d15849039093b154b9f8b81dcd852e4ca3bdf55"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/SOURCE-MANIFEST.json",
+    "file_mode": 420,
+    "kind": "file",
+    "bytes": 1152676,
+    "sha256": "90a256536dbdf5ba485beef1cb21740b9a711f4eb60bf605242172678a148a7d"
+  },
+  "all_records_unchanged": 25377,
+  "source_entries": 2626,
+  "changed_v1_paths": [
+    "reverie-kvm/src/capture_identity_tests.rs",
+    "reverie-kvm/src/executor.rs"
+  ],
+  "tests_or_build_executed": false,
+  "previous_failure_preserved": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/failure-final-v1/READBACK.json",
+    "file_mode": 420,
+    "kind": "file",
+    "bytes": 1502,
+    "sha256": "f09701e8d0031a211c1002e2efd811a11642bd3e9d4bec95623b837af5d3ca5d"
+  }
+}

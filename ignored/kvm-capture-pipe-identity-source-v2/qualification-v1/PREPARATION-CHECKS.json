@@ -1,0 +1,91 @@
+{
+  "python_ast_only": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/admit_target.py",
+      "bytes": 1838,
+      "mode": 420,
+      "sha256": "2293e582db1d03aa6961533063796b82d145dd24ca38ea16c366e27c93991d75"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/bind_dependencies.py",
+      "bytes": 2373,
+      "mode": 420,
+      "sha256": "d438aee30ef309740bb0fe6c87418abaec84eafd75dc3d71d80abb712360132e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/cache_lease.py",
+      "bytes": 4603,
+      "mode": 420,
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/execute.py",
+      "bytes": 4176,
+      "mode": 420,
+      "sha256": "00a45b80ba342263d3b891c45bc800e27ed93ad30bd3c6f950173237dd08ccdc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/freeze_caller.py",
+      "bytes": 9595,
+      "mode": 420,
+      "sha256": "9f95a7e0a3ba08047fad6c57b612eb5232707ac6fae65d8a01680a14af2203cd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/phase.py",
+      "bytes": 10210,
+      "mode": 420,
+      "sha256": "3c4e1f3d25987ae0e12a1fc7ecc904fa0b028da9a4ca00d0c751000eed65534b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/prepare.py",
+      "bytes": 11920,
+      "mode": 420,
+      "sha256": "0ccfc6fa723b07d2639e10caf7c406f4e97a0c3a2256d5bf52f674176fff1d63"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retain_artifacts.py",
+      "bytes": 3681,
+      "mode": 420,
+      "sha256": "23e508b1a407796897949b08090c1a98238c34c4a01bb3c57ff3217d827f5208"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/observer.py",
+      "bytes": 44851,
+      "mode": 420,
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    }
+  ],
+  "no_product_compilation_or_test": true,
+  "freeze_python": {
+    "executable": "/usr/bin/python3",
+    "argv": [
+      "ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/freeze_caller.py"
+    ],
+    "optimize": 0,
+    "debug": true
+  },
+  "read_limits": [
+    "Historical V1 duplicate delete/add apply_patch was refused; its complete history is preserved.",
+    "Historical V1 missing lock and first compiler failure remain frozen; V2 explicitly prepares the same lock carrier before execution.",
+    "Historical V1 static-freezer symlink schema refusal is preserved; this successor keeps the corrected literal-alias and resolved-byte checks.",
+    "No product/helper execution beyond this static preparation freezer."
+  ]
+}

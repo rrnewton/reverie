@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/INPUTS.json",
+    "bytes": 1754962,
+    "mode": 420,
+    "sha256": "ac3693469a67b499f41457b095cec4cd4dfe8002fd14de27f2637ba1307d728f"
+  },
+  "authenticated_regular_records": 5299,
+  "authenticated_symlinks": 14,
+  "changed_relative_to_v2": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs"
+  ],
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/SOURCE.patch",
+    "bytes": 143066,
+    "mode": 420,
+    "sha256": "b51dc00c98699b65621112f6f3aa672df5492fcb3dd1ef85bf8c7c7b9b9ff94e"
+  },
+  "successor_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/V2-TO-V3.patch",
+    "bytes": 30953,
+    "mode": 420,
+    "sha256": "d1aa20c4c53145f4611b00fe8296cf17a8d82ef37c52e3a74223eebb543cc941"
+  },
+  "baseline_test_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/BASELINE-TEST.patch",
+    "bytes": 12305,
+    "mode": 420,
+    "sha256": "e1fd7c14dacbb8e48b2f69c4da5305031e4d52fba4221785425191d3de8d55f1"
+  },
+  "live_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/LIVE-CONTINUITY.json",
+    "bytes": 1199,
+    "mode": 420,
+    "sha256": "be1c1a8074f8d87cb667a390464db96c59e8b2f13ec5098aec0e0db8729f2760"
+  },
+  "test_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/TEST-CONTINUITY.json",
+    "bytes": 1105,
+    "mode": 420,
+    "sha256": "f761cc7189145ed1d090e237931247a99e8db91decac02060599f8e87273486a"
+  },
+  "no_successor_build_test_or_guest": true,
+  "no_cache_lease_scm_network_mutation": true
+}

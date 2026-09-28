@@ -1,0 +1,11 @@
+{
+  "groups": {
+    "test-alarm-vm": {
+      "artifact": "static",
+      "names": [
+        "process_alarm_signals::process_alarm_signal_tool_boundary_contract"
+      ]
+    }
+  },
+  "declaration_scope": "Candidate exact names only. Actual ELF inventory and successful named libtest outcomes are required; these are not pass counts."
+}

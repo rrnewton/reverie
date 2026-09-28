@@ -1,0 +1,60 @@
++    let image = static_elf(&timestamp_assertion_program());
++    for _ in 0..2 {
++        let (log, code) = run_timestamp_probe(&image, true);
++        assert_eq!(code, 0);
++        assert_eq!(
++            log.calls(),
++            vec![
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tscp)
++            ]
++        );
++    }
++}
++
++#[test]
++fn timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles() {
++    if !kvm_available("KVM timestamp lifecycle test") {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let source = format!(
++        r#"
++#include <pthread.h>
++#include <stdint.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++static uint64_t read_tsc(void) {{
++    unsigned int low;
++    unsigned int high;
++    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
++    return ((uint64_t)high << 32) | low;
++}}
++
++static void *thread_main(void *unused) {{
++    (void)unused;
++    return (void *)(uintptr_t)(read_tsc() != UINT64_C({RDTSC_SENTINEL}));
++}}
++
++int main(int argc, char **argv) {{
++    if (read_tsc() != UINT64_C({RDTSC_SENTINEL})) return 10;
++    if (argc > 1) return 0;
++
++    pthread_t thread;
++    if (pthread_create(&thread, NULL, thread_main, NULL) != 0) return 11;
++    void *thread_result = NULL;
++    if (pthread_join(thread, &thread_result) != 0 || thread_result != NULL) return 12;
++
++    pid_t child = fork();
++    if (child < 0) return 13;
++    if (child == 0) {{
++        if (read_tsc() != UINT64_C({RDTSC_SENTINEL})) _exit(14);
++        execl(argv[0], argv[0], "post-exec", NULL);
++        _exit(15);
++    }}
++    int status = 0;
++    if (waitpid(child, &status, 0) != child) return 16;
++    return WIFEXITED(status) ? WEXITSTATUS(status) : 17;
++}}

@@ -1,0 +1,60 @@
+{
+  "exact_declarations": 6,
+  "groups": {
+    "timestamp-32": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Five actual modes: tail Exit23/ExitGroup29, ordinary Exit23/ExitGroup29, and real EIO cleanup; exact status, one callback and both consuming hooks, no continuation."
+    },
+    "timestamp-33": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::nonterminal_tails_refuse_before_side_effects"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Four real timestamp tail refusals: uname/getpid/fork/exec; exact ENOSYS/full failure shape and unchanged guest-memory marker/no child/image or resumed callback."
+    },
+    "timestamp-34": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Real Tool-owned worker timestamp RPC and terminal Exit0 precede leader actual ExitGroup17; exact exits and callback count. Backend control, not Detcore clock coverage."
+    },
+    "timestamp-37": {
+      "artifact": "lib",
+      "names": [
+        "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children"
+      ],
+      "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "origin": "Unchanged existing terminal-cancellation neighbor; private trait signature only adapted",
+      "purpose": "Existing exact cancellation/IntoGuest forwarding assertions and no injection/child-start effects remain unchanged."
+    },
+    "timestamp-v7-worker-group": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "New N1 requested actual worker-origin group-exit control",
+      "purpose": "Exact worker/leader Exit29 hooks and one process hook; no leader guest Exit17 or resumed timestamp"
+    },
+    "timestamp-v7-admission": {
+      "artifact": "lib",
+      "names": [
+        "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections"
+      ],
+      "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "origin": "New N2 source-correct KVM-free predicate control",
+      "purpose": "Both exit forms admitted; write tail refused/ordinary allowed; exec/fork refused by both"
+    }
+  },
+  "scope": "Two new declarations plus four nearest unchanged controls; prior37 remain historical evidence, no repeated full-suite claim"
+}

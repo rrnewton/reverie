@@ -1,0 +1,25 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "changed": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "sha256": "83604af5058db51dfbd4076b2a2187c78e7012829d6d22816a137186e2f5dbd0",
+      "bytes": 65985,
+      "mode": "100644"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "sha256": "dc35ab30eb3ea8e6f18e23cc571794ed99dadcd3a04c6f13990351dc0606b431",
+      "bytes": 1438025,
+      "mode": "100644"
+    },
+    {
+      "path": "reverie-kvm/src/process_signal_publication.rs",
+      "sha256": "8860ec79ef92a613e87ef189c5d2f0b547b9195e290cfdff58d02fd3b2d9c40c",
+      "bytes": 27241,
+      "mode": "100644"
+    }
+  ],
+  "new_product_path": "reverie-kvm/src/process_signal_publication.rs",
+  "qualification": "none attempted"
+}

@@ -1,0 +1,53 @@
+{
+  "hermit": "H39ac source composition retained with V6 timestamp witness build; no new build",
+  "records": [
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-cancellation-v1/composition/hermit/detcore/src/lib.rs",
+        "kind": "file",
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": 420
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/context/hermit-h39ac/detcore/src/lib.rs",
+        "kind": "file",
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": 420
+      }
+    },
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-cancellation-v1/composition/hermit/detcore/src/cpuid.rs",
+        "kind": "file",
+        "bytes": 5560,
+        "sha256": "bd6b26f8157e9f1ff00d003b01e7c9b70190b013fac8158b62abca6d41db9b08",
+        "mode": 420
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/context/hermit-h39ac/detcore/src/cpuid.rs",
+        "kind": "file",
+        "bytes": 5560,
+        "sha256": "bd6b26f8157e9f1ff00d003b01e7c9b70190b013fac8158b62abca6d41db9b08",
+        "mode": 420
+      }
+    },
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-cancellation-v1/composition/hermit/detcore-model/src/time.rs",
+        "kind": "file",
+        "bytes": 43561,
+        "sha256": "d65bf6190c679ec15dbeb82263bf71aae003d346929cc36fc95b4354356c656c",
+        "mode": 420
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/context/hermit-h39ac/detcore-model/src/time.rs",
+        "kind": "file",
+        "bytes": 43561,
+        "sha256": "d65bf6190c679ec15dbeb82263bf71aae003d346929cc36fc95b4354356c656c",
+        "mode": 420
+      }
+    }
+  ]
+}

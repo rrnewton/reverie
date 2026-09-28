@@ -1,0 +1,20 @@
+{
+  "base": "99d1e4827cce2404442d7c27ab447886a5839326",
+  "commit": "b116e2f6fe4d02f6f52a5189c09be686f3661a29",
+  "tree": "fea1d0744b6eb77bd9d2643f5d9b2af7e3854e3f",
+  "branch": "codex/kvm-setitimer-20260918",
+  "patch_sha256": "e9ec808ff3cdf17537f172e9b9285dfb884d468cdae4644369855427948bde25",
+  "patch_byte_identical": true,
+  "complete_frozen_tree_equal": true,
+  "tree_entries": 2612,
+  "source_manifest_sha256": "df9853dbdb86e18b542df142956c3190f0c0264c5755252cd1ca942c7bd55057",
+  "commit_message_byte_identical": true,
+  "tracked_worktree_clean": true,
+  "staging_clean": true,
+  "current_index_sha256": "0acae2175c4a50f34e85917443c195a9d53f38d204bb1ac0b5de17de942b3f95",
+  "qualification_report_sha256": "1663977690855a47798e6b53c53a45e4ca772ad80f1887ea2b386ab9cef9c375",
+  "pr_body_sha256": "97599a31a8d3c96d789d6e347fc731f1f0d50250d605ca841947621e2e5be739",
+  "pushed": false,
+  "pr_created": false,
+  "ownership_transfer": "Root now has sole source/SCM/landing write ownership. Author stops product and SCM writes after this verified commit. Historical precommit raw index identities are preserved and not restored."
+}

@@ -1,0 +1,19 @@
+{
+  "author": "/root/kvm_prerequisite_impl",
+  "ordered_records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/process-publication-design-v4/grounding/PAPER-READ.json",
+      "sha256": "9d47280c9d60d9e8d2c6061547bd2a0e3ffb36931e91de4f61e55a3f57c5fec4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/process-publication-design-v4/grounding/SCHEDULER-READ.json",
+      "sha256": "6ead4fd8381d6a266d6c7ed4d48e8f3f13a11d3e55bd2cb4bb1902fe29319950"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/process-publication-design-v4/grounding/VISION-READ.json",
+      "sha256": "ea51ad6ed4bf3fb9c39d5bff2cc6d8ba5e2633bfa318868cd119945426da199e"
+    }
+  ],
+  "completed_at_utc": "2026-09-18T13:26:29.162484+00:00",
+  "prior_exposure": "Author grounding only. Prior proposal, prompt and review-report exposure during orchestration disclosed; not independent or proposal-naive. Dated roadmap measurements are historical, not current capability or startup policy."
+}

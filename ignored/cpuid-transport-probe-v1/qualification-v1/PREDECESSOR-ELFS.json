@@ -1,0 +1,8 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/retained-binaries/BINDING.json",
+  "sha256": "10c7c898fdb6d1b8496a03defd5a3fd0ef6ad2d073072a2ab17d33a54e029685",
+  "hashes": {
+    "lib": "85f9e1c558c533359b97faad7d845d5e7ce778f4cb013bd34618e0b439b870a7"
+  },
+  "purpose": "Refuse actual V6 harness bytes as newly compiled probe output; no V6 execution credit"
+}

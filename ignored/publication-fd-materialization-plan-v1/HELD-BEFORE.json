@@ -1,0 +1,47 @@
+[
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/elf.rs",
+      "bytes": 66430,
+      "mode": 420,
+      "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+    },
+    "retained": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/held-before/reverie-kvm/src/elf.rs",
+      "bytes": 66430,
+      "mode": 420,
+      "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+    },
+    "source_and_destination_are_distinct_inodes": true
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/executor.rs",
+      "bytes": 1438129,
+      "mode": 420,
+      "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+    },
+    "retained": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/held-before/reverie-kvm/src/executor.rs",
+      "bytes": 1438129,
+      "mode": 420,
+      "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+    },
+    "source_and_destination_are_distinct_inodes": true
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 32377,
+      "mode": 420,
+      "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+    },
+    "retained": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/held-before/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 32377,
+      "mode": 420,
+      "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+    },
+    "source_and_destination_are_distinct_inodes": true
+  }
+]

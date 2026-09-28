@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "tg",
+    "restore-the-dettid-alignment-without-spawning-a-host-thread",
+    "-v"
+  ],
+  "raw_status": 0,
+  "seconds": 0.36467475816607475
+}

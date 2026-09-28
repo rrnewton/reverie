@@ -1,0 +1,16 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+  "identity": [
+    48,
+    816917584,
+    212630
+  ],
+  "exclusive_availability_verified": true,
+  "descriptor_closed": true,
+  "last_terminal_phase": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/controls/test-emfile/result.json",
+    "bytes": 2859,
+    "sha256": "1348c58108ac88ca5f53693be763cb8c59a0aeca4447fc811ca44a3727b59b69"
+  },
+  "no_lease_state_mutation": true
+}

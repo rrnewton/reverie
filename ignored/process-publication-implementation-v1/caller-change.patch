@@ -1,0 +1,20 @@
+--- before/prepare.py
++++ after/prepare.py
+@@ -67,7 +67,7 @@
+     elif kind=='check':
+         argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+-        paths=['reverie-kvm/src/executor.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/tests/support/captured_write_signals.rs']
++        paths=['reverie-kvm/src/elf.rs', 'reverie-kvm/src/executor.rs', 'reverie-kvm/src/process_signal_publication.rs']
+         actual=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'diff','HEAD','--name-only'],timeout=30).decode().splitlines()
+         actual+=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'ls-files','--others','--exclude-standard','--','reverie/src','reverie-kvm/src','reverie-kvm/tests'],timeout=30).decode().splitlines()
+         require(sorted(p for p in actual if p.endswith('.rs'))==paths,'changed Rust path set differs')
+@@ -105,7 +105,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Scalar write low32 descriptor component; separate baseline/corrected source. No Hermit timer fix or parity claim')
++              scope='Inactive process publication prerequisite; new private unit controls and unchanged existing VM consumers. No scheduler activation or Hermit timer repair claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()

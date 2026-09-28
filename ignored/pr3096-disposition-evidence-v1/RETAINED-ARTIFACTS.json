@@ -1,0 +1,142 @@
+[
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm/verify-1.json",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-1/verify-1.json",
+    "bytes": 523,
+    "sha256": "822fd7275e198adf51a91268c935ec92cfcbc8b72971ec91d13d5cdc61b2f55e",
+    "mode": 384
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm/captures/verify-1.stdout",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-1/captures/verify-1.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm/captures/verify-1.stderr",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-1/captures/verify-1.stderr",
+    "bytes": 165,
+    "sha256": "2dbb9cf652a4ab4b454adb6e05e372c32dc6c323f1d3dd2b74bdb733223b839a",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm/fixtures/program",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-1/fixtures/program",
+    "bytes": 23296,
+    "sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "mode": 493
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm-attempt-2/verify-1.json",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-2/verify-1.json",
+    "bytes": 523,
+    "sha256": "822fd7275e198adf51a91268c935ec92cfcbc8b72971ec91d13d5cdc61b2f55e",
+    "mode": 384
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm-attempt-2/captures/verify-1.stdout",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-2/captures/verify-1.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm-attempt-2/captures/verify-1.stderr",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-2/captures/verify-1.stderr",
+    "bytes": 165,
+    "sha256": "2dbb9cf652a4ab4b454adb6e05e372c32dc6c323f1d3dd2b74bdb733223b839a",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-kvm-attempt-2/fixtures/program",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-kvm-2/fixtures/program",
+    "bytes": 23296,
+    "sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "mode": 493
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-ptrace/verify-1.json",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-ptrace-1/verify-1.json",
+    "bytes": 1542,
+    "sha256": "c6cff1f79544799977016c21a6191521994bf85274b39924d980b9b1ea4067db",
+    "mode": 384
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-ptrace/captures/verify-1.stdout",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-ptrace-1/captures/verify-1.stdout",
+    "bytes": 78,
+    "sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-ptrace/captures/verify-1.stderr",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-ptrace-1/captures/verify-1.stderr",
+    "bytes": 687,
+    "sha256": "2494772b244f3a0a7e7a01b422119dd4e0fa6bea496ad34a839a8d5d4ea144c0",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732881-1821604/c-programs-setitimer-determinism-verify-ptrace/fixtures/program",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732881-1821604-ptrace-1/fixtures/program",
+    "bytes": 23296,
+    "sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "mode": 493
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-kvm/verify-1.json",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-kvm-1/verify-1.json",
+    "bytes": 1542,
+    "sha256": "3947f8788915463c2e464dcdf732048251bc6b64a149a50a6abd85b2885d4e8d",
+    "mode": 384
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-kvm/captures/verify-1.stdout",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-kvm-1/captures/verify-1.stdout",
+    "bytes": 77,
+    "sha256": "ba4e438ab1bc40691bfdeeb74ff8121121c727fbded788f341c1140a24bed5c0",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-kvm/captures/verify-1.stderr",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-kvm-1/captures/verify-1.stderr",
+    "bytes": 735,
+    "sha256": "740e41d33e69db746c51fe0d0e559826f59e2a9e5f8b1b336d0e46a7d53fcb03",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-kvm/fixtures/program",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-kvm-1/fixtures/program",
+    "bytes": 23296,
+    "sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "mode": 493
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-ptrace/verify-1.json",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-ptrace-1/verify-1.json",
+    "bytes": 1542,
+    "sha256": "c6cff1f79544799977016c21a6191521994bf85274b39924d980b9b1ea4067db",
+    "mode": 384
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-ptrace/captures/verify-1.stdout",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-ptrace-1/captures/verify-1.stdout",
+    "bytes": 78,
+    "sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-ptrace/captures/verify-1.stderr",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-ptrace-1/captures/verify-1.stderr",
+    "bytes": 687,
+    "sha256": "2494772b244f3a0a7e7a01b422119dd4e0fa6bea496ad34a839a8d5d4ea144c0",
+    "mode": 420
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/bisect-si/ignored/e2e/runs/local-1789732899-1846252/c-programs-setitimer-determinism-verify-ptrace/fixtures/program",
+    "retained": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/retained/local-1789732899-1846252-ptrace-1/fixtures/program",
+    "bytes": 23296,
+    "sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "mode": 493
+  }
+]

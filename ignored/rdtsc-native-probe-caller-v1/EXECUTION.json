@@ -1,0 +1,31 @@
+{
+  "status": "PREPARE ONLY; root must inspect and authorize before any command",
+  "commands_after_authorization": [
+    [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/admit.py",
+      "371b8bbb1bb9532c665cd6aa886cf820d224bbad5d3628d3cea21c71c4fd86c8"
+    ],
+    [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/execute.py",
+      "all"
+    ],
+    [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/freeze_results.py"
+    ]
+  ],
+  "private_target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target",
+  "private_lease": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+  "normal_observed_phases": 44,
+  "native_cases": 42,
+  "actual_case_results": null,
+  "rust_tests": 0,
+  "vm_controls": 0,
+  "source_review_launch": false,
+  "compiler_and_probe_execution_performed": false
+}

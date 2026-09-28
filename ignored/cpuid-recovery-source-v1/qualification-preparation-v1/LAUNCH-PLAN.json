@@ -1,0 +1,147 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/TARGET.json",
+    "bytes": 4357,
+    "sha256": "5ff12f1d6800aaa5944efcbb431fd23d79740b16430ed1b960a9ced13619d3b8",
+    "mode": 420
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1",
+  "environment_override": {
+    "PYTHONOPTIMIZE": "0"
+  },
+  "actual_optimize_debug_record_required_before_admission": true,
+  "steps": [
+    {
+      "step": "admit-new-target",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/admit_target.py"
+      ],
+      "requires": "root execution authorization; exact target must still be absent"
+    },
+    {
+      "step": "metadata",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/execute_phases.py",
+        "metadata"
+      ],
+      "requires": "successful retained fresh-target admission; existing lease admission performed by unchanged phase helper"
+    },
+    {
+      "step": "bind-actual-dependencies",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/bind_dependencies.py"
+      ],
+      "requires": "accepted terminal/source-authenticated metadata receipt"
+    },
+    {
+      "step": "compile",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/execute_phases.py",
+        "compile"
+      ],
+      "requires": "actual external dependency closure bound"
+    },
+    {
+      "step": "retain-four-fresh-harnesses",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/retain_artifacts.py"
+      ],
+      "requires": "accepted compile, no structured warnings, actual fresh=false and source-bound emitted artifacts"
+    },
+    {
+      "step": "remaining-phases",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/execute_phases.py",
+        "format",
+        "list-lib",
+        "list-static",
+        "list-vmcall",
+        "list-read-clock",
+        "cpuid-01",
+        "cpuid-02",
+        "cpuid-03",
+        "cpuid-04",
+        "cpuid-05",
+        "cpuid-06",
+        "cpuid-07",
+        "cpuid-08",
+        "cpuid-09",
+        "cpuid-10",
+        "cpuid-11",
+        "cpuid-12",
+        "cpuid-13",
+        "cpuid-14",
+        "cpuid-15",
+        "timestamp-01",
+        "timestamp-02",
+        "timestamp-03",
+        "timestamp-04",
+        "timestamp-05",
+        "timestamp-06",
+        "timestamp-07",
+        "timestamp-08",
+        "timestamp-09",
+        "timestamp-10",
+        "timestamp-11",
+        "timestamp-12",
+        "timestamp-13",
+        "timestamp-32",
+        "timestamp-33",
+        "timestamp-34",
+        "timestamp-35",
+        "timestamp-36",
+        "timestamp-37",
+        "timestamp-14",
+        "timestamp-15",
+        "timestamp-16",
+        "timestamp-17",
+        "timestamp-18",
+        "timestamp-19",
+        "timestamp-31",
+        "timestamp-20",
+        "timestamp-21",
+        "timestamp-22",
+        "timestamp-23",
+        "timestamp-24",
+        "timestamp-25",
+        "timestamp-26",
+        "timestamp-27",
+        "timestamp-28",
+        "timestamp-29",
+        "timestamp-30",
+        "cpuid-neighbor-01",
+        "cpuid-neighbor-02",
+        "cpuid-neighbor-03",
+        "core-check",
+        "clippy"
+      ],
+      "requires": "source-bound immutable copies and linked-library proof"
+    },
+    {
+      "step": "read-actual-results",
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/finalize_results.py"
+      ],
+      "requires": "only after the phase driver stops; preserve any reader refusal instead of reconstructing receipts"
+    }
+  ],
+  "stop_first_unaccepted": true,
+  "no_retry": true,
+  "phases": 64,
+  "declarations": 55,
+  "phase_execution_authorized": false
+}

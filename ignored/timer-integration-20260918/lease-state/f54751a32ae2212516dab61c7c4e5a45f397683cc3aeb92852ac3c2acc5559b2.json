@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "f54751a32ae2212516dab61c7c4e5a45f397683cc3aeb92852ac3c2acc5559b2",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/qualification-v2/controls/compile/result.json",
+    "bytes": 2659,
+    "mode": 420,
+    "sha256": "71c7aea4da4562a7ef73852d3150fcfe5b8d3a38d9610ab3031471bcba4e8c43"
+  }
+}

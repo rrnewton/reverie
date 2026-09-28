@@ -1,0 +1,28 @@
+{
+  "all_records_authenticated": true,
+  "records": 38,
+  "primary": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/REPORT.md",
+      "bytes": 4269,
+      "sha256": "d4bbb30dc7294bc6375349299177d2189637713f1e150b2c47fbba15ac139289"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/proposed-comments.patch",
+      "bytes": 1330,
+      "sha256": "5f6cd63f0ff3a320fbc4ca0875bd1a9dfb917e97afe7477ae7d10dac35f74f25"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/NATIVE-RESULT.json",
+      "bytes": 5885,
+      "sha256": "38e1b3ecadb63323c0163255e2bc9c9d3ef25e2836580fc2b914f00918b362b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/INPUTS.json",
+      "bytes": 10747,
+      "sha256": "107f8df62743cd3c2b8e0d8150257d06f67fb6d2e0177b9d4e96a7ab1dfe5329"
+    }
+  ],
+  "source_scm_unchanged": true,
+  "proposal_unapplied": true
+}

@@ -1,0 +1,12 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/cpuid-transport-probe-v1-cold-v1",
+  "identity": [
+    48,
+    836543477,
+    212630
+  ],
+  "mode": 448,
+  "initially_empty": true,
+  "imports": [],
+  "created_by": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/admit_target.py"
+}

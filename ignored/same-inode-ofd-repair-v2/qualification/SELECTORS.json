@@ -1,0 +1,97 @@
+{
+  "groups": {
+    "test-01": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::shared_file_table_reopen_same_inode_replaces_description"
+      ]
+    },
+    "test-02": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state"
+      ]
+    },
+    "test-03": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::forked_states_share_file_object_identity_namespace"
+      ]
+    },
+    "test-04": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::epoll_waits_are_nonblocking_and_pwait_validates_sigmask"
+      ]
+    },
+    "test-05": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::thread_executors_share_descriptor_replacement"
+      ]
+    },
+    "test-06": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::descriptor_duplication_and_fchmod_preserve_guest_fd_semantics"
+      ]
+    },
+    "test-07": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts"
+      ]
+    },
+    "test-08": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags"
+      ]
+    },
+    "test-09": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime"
+      ]
+    },
+    "test-10": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::exec_closes_cloexec_descriptors_and_resets_caught_signals"
+      ]
+    },
+    "test-11": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::received_rights_reservation_and_rewrite_failures_are_transactional"
+      ]
+    },
+    "test-12": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::sendmsg_recvmsg_translates_multiple_rights_and_cloexec_lifecycle"
+      ]
+    },
+    "test-13": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::close_range_closes_the_inclusive_descriptor_span"
+      ]
+    },
+    "test-14": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::fcntl_advisory_locks_apply_to_host_descriptors"
+      ]
+    },
+    "test-emfile": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions"
+      ]
+    }
+  },
+  "previous_unchanged_declarations": 14,
+  "new_declarations": 1,
+  "execution_performed": false
+}

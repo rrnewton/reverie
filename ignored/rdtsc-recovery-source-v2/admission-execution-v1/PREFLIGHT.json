@@ -1,0 +1,56 @@
+{
+  "python": "/usr/bin/python3",
+  "optimize": 0,
+  "debug": true,
+  "env_pythonoptimize": "0",
+  "scm": [
+    {
+      "argv": [
+        "/usr/bin/git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "raw_status": 0,
+      "stdout": "79516661bf82d30ab2967c71834a6d47447b76ee\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/usr/bin/git",
+        "branch",
+        "--show-current"
+      ],
+      "raw_status": 0,
+      "stdout": "codex/kvm-setitimer-20260918\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/usr/bin/git",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no"
+      ],
+      "raw_status": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/usr/bin/git",
+        "rev-parse",
+        "--git-path",
+        "index"
+      ],
+      "raw_status": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-setitimer-reverie-20260918/index\n",
+      "stderr": ""
+    }
+  ],
+  "index": {
+    "path": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-setitimer-reverie-20260918/index",
+    "bytes": 319033,
+    "sha256": "d54d31c12bf22f9b9b3672fc67cffba994985cc71652c39b7f6107fa15eb044b"
+  },
+  "authorization": "Root V2 source/caller readback; exact 39-phase execution, first refusal stops"
+}

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "files": [
+    {
+      "path": "reverie/src/signal_observation.rs",
+      "bytes": 6892,
+      "sha256": "f1fab28fe2d2622c25853068a7a715bf0d2c4dc159a8116524351b2a6ab8995c"
+    },
+    {
+      "path": "reverie/src/signal.rs",
+      "bytes": 10358,
+      "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+    },
+    {
+      "path": "reverie/src/guest.rs",
+      "bytes": 24865,
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 25087,
+      "sha256": "d4e11629f795ed773f428ff72c1ac6067169de187f4f1b038722834c4c5de29d"
+    },
+    {
+      "path": "reverie/src/lib.rs",
+      "bytes": 4581,
+      "sha256": "59640c96cd9dae86dd75bf40edff3f282ab1a45a30db5bcef7ec87cc62d7c59c"
+    }
+  ],
+  "early_inventory": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/API_V1.json",
+    "bytes": 926,
+    "sha256": "e8d3beec9972a983feb71fddf894557e24ccab36e38548badf9080cdc382fc26"
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/frozen-v1/SOURCE.patch",
+    "bytes": 124283,
+    "sha256": "2376c4f9405d551cb5ffd4edf0314ef8e2dcefde1d2c327c22d34da831a1e804"
+  },
+  "qualification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/frozen-v1/QUALIFICATION.json",
+    "bytes": 86310,
+    "sha256": "7f73dd2667032e8ef2fb78b83a43e85cbca59fd6be6e582dee4933edf9ecb6b9"
+  },
+  "status": "Exact API unchanged; component compile,31 library tests,3 VM tests,format,Clippy passed. Independent source review and integrated Hermit qualification pending."
+}

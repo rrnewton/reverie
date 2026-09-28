@@ -1,0 +1,28 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/TARGET.json",
+    "bytes": 3717,
+    "sha256": "117cb24fca03f164c866863e25df96517dfb9c6e1f062332872bbaa3b215eada",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/INPUTS.json",
+    "bytes": 2860459,
+    "sha256": "fff2ee904aa0b57cd310bed52a498a331792f003ef4ccb53c9c9ce07639d9fda",
+    "mode": 420
+  },
+  "records": 8843,
+  "source_entries": 2623,
+  "changed_paths": [
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/timestamp_terminal.rs"
+  ],
+  "all_other_source_unchanged": true,
+  "old_test_bodies_and_failures_preserved": true,
+  "obsolete_exit_refusal_change_disclosed": true,
+  "ordinary_and_tail_exit_controls_added": true,
+  "original_limits_helpers_observer_preserved": true,
+  "no_execution": true
+}

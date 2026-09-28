@@ -1,0 +1,24 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/list-lib-plan.json",
+  "sha256": "d824aef5076c2603b0642c014673500bdc919e9a426545e912d912ffa26192a7",
+  "requested_name": "list-lib",
+  "actual_name": "list-lib",
+  "kind": "list",
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/retained-binaries/lib.elf",
+    "--list",
+    "-Z",
+    "unstable-options",
+    "--format=json"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

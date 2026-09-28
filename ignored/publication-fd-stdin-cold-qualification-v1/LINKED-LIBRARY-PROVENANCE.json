@@ -1,0 +1,62 @@
+{
+  "raw_cargo": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/observer/compile/stdout",
+    "bytes": 132364,
+    "mode": 384,
+    "sha256": "0e226b622864d4262a3781ee98e5ca8576d10c58b944f18900d038eb3e01cf11"
+  },
+  "compile_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 6566,
+    "mode": 420,
+    "sha256": "96d288460e30636393f125093ec6575d63815a0c17d8947829e46acdd7cfb06d"
+  },
+  "linked_library": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_kvm",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/reverie-kvm/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": false
+    },
+    "features": [
+      "default"
+    ],
+    "filenames": [
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/publication-fd-stdin-v3-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/publication-fd-stdin-v3-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rmeta"
+    ],
+    "executable": null,
+    "fresh": false
+  },
+  "selected_harnesses": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 5768,
+    "mode": 420,
+    "sha256": "bae5c46911e573fd3aced851010d96cec442ea60cba1baddb94a237e51ac2f98"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/source-manifest.json",
+    "bytes": 470593,
+    "mode": 420,
+    "sha256": "d12e6dce2c461e9b7aa2314d58c18b7f41c65d8495b243fd57419fc37807a8c9"
+  },
+  "all_newly_built": true
+}

@@ -1,0 +1,44 @@
+This is a source-materialization and commit-verification plan, not a source approval or permission to commit. Nothing below that writes product bytes, the index, objects, or refs has been executed. Root owns those actions after the pending independent reviews. No build, test, network request, or lease acquisition was performed for this plan.
+
+The qualified source is `/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/source`. The destination is the same slot's live root. Branch is `codex/kvm-setitimer-20260918`; current parent is `000c15a1161ea2d58749431b5ddaaa97f7aa37d5`. Reconstructing the complete qualified tree from the base and actual file contents, without writing Git objects, gives **`db63dc5823131a9af142e7d74dd4695f90a38eb9`**. It preserves all unchanged files and all three gitlinks. There are 2,620 base leaves and 2,621 candidate leaves. The extra ignored Cargo.lock used during qualification remains evidence, not a fourth committed path.
+
+Only these three files belong in the commit. Each qualified source copy and destination is a regular file with filesystem mode 0644 and Git mode 100644. `SOURCE-BINDING.json` contains the absolute copy/destination paths, before and after SHA-256 values, and base/expected blob identities.
+
+| Path | Qualified bytes | Qualified SHA-256 | Expected Git blob |
+| --- | ---: | --- | --- |
+| reverie-kvm/src/elf.rs | 74384 | 529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070 | 10526f5c73689752641b55eea9bd175d35602581 |
+| reverie-kvm/src/executor.rs | 1475699 | 1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b | cd7b0a425adb992a8e313ac28caf50bec2bdbf0d |
+| reverie-kvm/src/process_signal_publication.rs | 34525 | a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49 | 1993d66f951c433167aeb0e29b66242bc62af198 |
+
+The two existing live tracked files remain the old publisher candidate, not the qualified composition. The new module is currently untracked product source, also at the old publisher bytes. `HANDOFF.md` and the `ignored/` directory are unrelated untracked evidence; do not stage them. The index is clean against the base and unchanged at SHA-256 `979da5a207fb109ec448c915867c7681525a9783b8a11ba8a71037b627592683`. No rebase, merge, cherry-pick, or revert state exists. `STATUS.txt` records the actual current ownership boundary. Materialization must fail closed if these held bytes, the branch, index, or HEAD have moved; it must not overwrite a later author's work.
+
+After root accepts the final reviews, use this sequence in a fresh root-owned execution record. Preserve each command's complete stdout, stderr and raw return code before interpreting it. No pipe may supply the reported command status. An unexpected failure requires inspecting current source/index/HEAD before continuing; do not reset, amend, suppress hooks, or widen the staged set automatically.
+
+1. Reauthenticate `final-v1/TARGET.json` (`004482610ed2c1f5aa032669d9adc75c878003a90258b218d5eb479120c5a953`), its inputs and these three source copies. Repeat the held-state checks in `SOURCE-BINDING.json` with `GIT_OPTIONAL_LOCKS=0`: branch/base, no in-progress operation, clean index, exact current live hashes/modes, and no additional tracked modifications. Preserve the old three live copies in the new execution record before replacing them. `capture.py` documents the read-only derivation, but its evidence outputs are create-only and must not be rerun into this frozen directory.
+
+2. Copy only the three absolute source files below to their same relative destinations, using mode 0644, and verify the resulting lengths, SHA-256 values and raw Git blob identities against the table. For example, these are the intended commands, **not executed here**:
+
+```bash
+cd /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918
+install -m 0644 -- ignored/publication-fd-composition-qualification-v1/final-v1/source/reverie-kvm/src/elf.rs reverie-kvm/src/elf.rs
+install -m 0644 -- ignored/publication-fd-composition-qualification-v1/final-v1/source/reverie-kvm/src/executor.rs reverie-kvm/src/executor.rs
+install -m 0644 -- ignored/publication-fd-composition-qualification-v1/final-v1/source/reverie-kvm/src/process_signal_publication.rs reverie-kvm/src/process_signal_publication.rs
+git diff --check
+git add -- reverie-kvm/src/elf.rs reverie-kvm/src/executor.rs reverie-kvm/src/process_signal_publication.rs
+git diff --cached --check
+git diff --cached --name-status 000c15a1161ea2d58749431b5ddaaa97f7aa37d5
+git ls-files --stage -- reverie-kvm/src/elf.rs reverie-kvm/src/executor.rs reverie-kvm/src/process_signal_publication.rs
+git write-tree
+```
+
+Run each command separately or with explicit status retention and stop-on-failure. The staged status must be precisely `M elf.rs`, `M executor.rs`, and `A process_signal_publication.rs`, at their full paths. Every stage must be zero and every mode/blob must equal the table. `git write-tree` must return `db63dc5823131a9af142e7d74dd4695f90a38eb9`; this checks the entire index, including unmodified paths and gitlinks. Verify `git diff --name-only` is empty after staging and the untracked evidence remains untracked. No generated file or count update is part of this packet.
+
+3. Root obtains a fresh `/home/newton/work/dev-hermit/ci-hub/bin/who-am-i --tag --role impl` result at commit time and retains its raw status/warnings. Copy its actual tag to the first line of the commit body, with a concise plain subject and the existing real Task trailer selected by root. Do not invent a resolved identity, new task, or PR number. The current preparation deliberately does not run the resolver or manufacture a message. Use ordinary `git commit -F` on the root-prepared message file, with configured hooks intact and only the validated index staged. Record raw return code before any subsequent command.
+
+4. Independently read back the resulting commit: require the intended branch, exactly one parent equal to `000c15a1161ea2d58749431b5ddaaa97f7aa37d5`, and tree `db63dc5823131a9af142e7d74dd4695f90a38eb9`. `git diff-tree --no-commit-id --name-status -r HEAD` must contain only the same three changes. Read `git ls-tree -r HEAD` and `git show HEAD:<path>` for all three files; require the table's modes, blob IDs, byte counts and SHA-256 values. Check the commit body/tag/trailer and that live bytes match the commit, the index is clean, and only existing evidence remains untracked. Retain the complete canonical Git diff and its own digest.
+
+The retained `SOURCE.patch` is a Python unified diff, not Git's header format. Its SHA-256 is `41dd4f6af0ee2b4364b36254f67d5988113dd2b04ccfff10d50012280a64ce1a`; an ordinary `git diff` will have different headers. For exact packet comparison, reconstruct it with `difflib.unified_diff(base_text.splitlines(keepends=True), committed_text.splitlines(keepends=True), fromfile='a/'+path, tofile='b/'+path)` in the table's order, using `/dev/null` for the new module's before name. `capture.py` already reproduced those bytes exactly from base objects and qualified afterfiles. The complete expected tree independently establishes that no unrelated change entered the commit. Snapshot manifest fields named `publisher_git_object` are historical provenance, not the final changed-file Git blob identities; use the table or computed expected tree instead.
+
+No repository-local protocol or format defect was found that requires changing this packet. There is no current Reverie AGENTS.md/CLAUDE.md in the root or affected directories, and no local tracked `.githooks` implementation. The configured common hook dispatcher invokes a local hook when present and otherwise exits successfully after checking the index; its source was read, not executed. No applicable file attributes or clean filters select these three paths. Files retain the repository's existing Rustfmt configuration and dated toolchain; the exact source already passed format, core/ptrace check and strict Clippy in the frozen qualification. `CONTRIBUTING.md` states the normal testing/lint/documentation/CLA policy; no additional formatting edit or compile is needed to make these exact bytes committable. This is not a new CLA-status determination.
+
+Root's explicit workflow instruction applies the Hermit core-review/PR-label protocol to this dependency work. The recorded native trigger-2/3 classification and the other reviewer's differing classification remain distinct. This plan adds no syscall and no new audit tags. Root owns final reviewer bindings, PR sections/labels and manual protocol lint; those publication obligations are not an automatic local commit hook or a new full-DAG gate. This preparation does not read concurrent reviewer artifacts or decide their source verdicts.

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "--paginate",
+    "repos/rrnewton/hermit/pulls/3096/comments"
+  ],
+  "raw_status": 0,
+  "seconds": 0.36634414992295206
+}

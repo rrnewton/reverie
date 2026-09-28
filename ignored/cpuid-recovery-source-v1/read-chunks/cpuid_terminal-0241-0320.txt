@@ -1,0 +1,80 @@
+                panic!("expected exactly the real shared exit-hook failure");
+            };
+            assert!(
+                matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::EIO)
+            );
+        } else {
+            let (status, stdout, stderr) = completion.result.unwrap();
+            assert_eq!(status, expected_status);
+            assert!(stdout.is_empty());
+            assert!(stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn nonterminal_tails_refuse_before_side_effects() {
+    for mode in [3, 4, 5, 6] {
+        let (completion, marker) = run_terminal(mode, &terminal_program());
+        assert_eq!(
+            marker, [0x5a; 16],
+            "refused uname must not write guest memory"
+        );
+        let error = completion.result.unwrap_err();
+        eprintln!("actual refused CPUID tail mode={mode}: {error:?}");
+        let Error::SharedFailure(cause) = error else {
+            panic!("refusal must have exactly one shared cause and no hidden cleanup error");
+        };
+        assert!(
+            matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::ENOSYS)
+        );
+        let events = completion.global_state.events.lock().unwrap();
+        assert_eq!(
+            *events,
+            vec![
+                (0, 1, ExitStatus::SUCCESS),
+                (1, 1, ExitStatus::SUCCESS),
+                (2, 1, ExitStatus::Exited(255)),
+                (3, 1, ExitStatus::Exited(255)),
+            ],
+            "mode={mode}: no new child/image or resumed CPUID",
+        );
+    }
+}
+
+#[test]
+fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
+    const STACK: u64 = LOAD_ADDRESS + 0x1900;
+    let flags = libc::CLONE_VM as u64
+        | libc::CLONE_FS as u64
+        | libc::CLONE_FILES as u64
+        | libc::CLONE_SIGHAND as u64
+        | libc::CLONE_THREAD as u64
+        | libc::CLONE_SYSVSEM as u64;
+    let mut code = vec![
+        0xb8, 0xb3, 0x01, 0, 0, // mov eax, SYS_clone3
+        0x48, 0xbf, // movabs rdi, clone_args
+    ];
+    let args_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[
+        0xbe, 88, 0, 0, 0, 0x0f, 0x05, // mov esi, 88; syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz worker
+        0x83, 0xf8, 0x02, // cmp eax, 2
+        0x0f, 0x85, 0, 0, 0, 0, // jne failure
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 17, 0, 0, 0, 0x0f, 0x05, // exit_group(17)
+        0x0f, 0x0b,
+    ]);
+    let child_jump = args_operand + 8 + 11;
+    let failure_jump = child_jump + 4 + 5;
+    let worker = code.len();
+    code.extend_from_slice(&terminal_program()[..18]);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 78, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    patch_stats_jump(&mut code, child_jump, worker);
+    patch_stats_jump(&mut code, failure_jump, failure);
+    while !code.len().is_multiple_of(8) {
+        code.push(0);

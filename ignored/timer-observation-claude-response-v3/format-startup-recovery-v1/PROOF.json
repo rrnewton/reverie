@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "kind": "startup-refusal-lifecycle-only",
+  "accepted": false,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "accounting_complete": false,
+  "comparison_eligible": false,
+  "raw_status": 137,
+  "original_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/controls/format/result.json",
+    "bytes": 2509,
+    "mode": 420,
+    "sha256": "e68575e8c47468845727291889b273cc74289a2b991b3b5717adbcabc195a789"
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/format/result.json",
+    "bytes": 22713,
+    "mode": 384,
+    "sha256": "7a2c0ebd99add60bf2d50e69287359596011a4f4f8261cd1c1b84dce67fcaa70"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/format-plan.json",
+    "bytes": 35118,
+    "mode": 420,
+    "sha256": "bef6ca891e07f277a85926cf736648a6f041731f9514c00c367af14f7222e0ff"
+  },
+  "fresh_checks": [
+    {
+      "query": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260918T083343Z-2735826.service",
+          "--property=Id,LoadState,ActiveState,SubState,ControlGroup,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+        ],
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "wall_limit_seconds": 5,
+        "forced": false,
+        "returncode": 0,
+        "elapsed_seconds": 0.05057473201304674,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/service-0.stdout",
+          "bytes": 197,
+          "mode": 420,
+          "sha256": "43e4eea83d89dd547dc599f87a3ac844a3c35498b492575061c2910cbb549930"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/service-0.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "properties": {
+        "Id": "safehermit-20260918T083343Z-2735826.service",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ExecMainStartTimestampMonotonic": "0",
+        "ExecMainPID": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "retired_processes": [
+        {
+          "original": {
+            "pid": 2735826,
+            "start_ticks": 187935184,
+            "parent_pid": 2735796,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+          },
+          "current": null
+        },
+        {
+          "original": {
+            "pid": 2736571,
+            "start_ticks": 187935233
+          },
+          "current": null
+        }
+      ]
+    },
+    {
+      "query": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260918T083343Z-2735826.service",
+          "--property=Id,LoadState,ActiveState,SubState,ControlGroup,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+        ],
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "wall_limit_seconds": 5,
+        "forced": false,
+        "returncode": 0,
+        "elapsed_seconds": 0.05059950891882181,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/service-1.stdout",
+          "bytes": 197,
+          "mode": 420,
+          "sha256": "43e4eea83d89dd547dc599f87a3ac844a3c35498b492575061c2910cbb549930"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/service-1.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "properties": {
+        "Id": "safehermit-20260918T083343Z-2735826.service",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ExecMainStartTimestampMonotonic": "0",
+        "ExecMainPID": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "retired_processes": [
+        {
+          "original": {
+            "pid": 2735826,
+            "start_ticks": 187935184,
+            "parent_pid": 2735796,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+          },
+          "current": null
+        },
+        {
+          "original": {
+            "pid": 2736571,
+            "start_ticks": 187935233
+          },
+          "current": null
+        }
+      ]
+    }
+  ],
+  "absent_payload_records": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/format/before-exec-receipt.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/format/payload.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/format/payload-exit.json"
+  ],
+  "observer_sources": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/observer.py",
+      "bytes": 44851,
+      "mode": 420,
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    }
+  ],
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/format/safehermit.report",
+    "bytes": 1917,
+    "mode": 384,
+    "sha256": "3c8a55d96c627b85d64ffbf128766a6debdc2053f70b468dba0f464b69138f04"
+  },
+  "source_inputs_unchanged": true,
+  "payload_authorized": false,
+  "scope": "Only owned phase quiescence and no authorization. No historical CPU accounting or format pass. Original result remains unqualified. Fresh continuation must explicitly recognize this recovery; original caller does not."
+}

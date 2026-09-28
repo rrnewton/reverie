@@ -1,0 +1,12 @@
+{
+  "old_mode7_assertion_suffix_byte_identical": true,
+  "old_mode7_clone_byte_construction_equivalent": true,
+  "method": "Exact literal array comparison before worker target plus byte-identical remaining jump patch/worker/failure/clone_args construction; source-only, no compiled ELF or runtime claim",
+  "old_mode7_assertion_sha256": "b7bca0e5382dc5562321ee5e6d76b72f72f8c275f256788a7d15eb33f7d39669",
+  "new_mode10_leader_spin_bytes": "eb fe",
+  "remaining_original_test_assertions_unchanged": true,
+  "new_declarations": 2,
+  "new_guest_modes": 1,
+  "ordinary_write_expected": true,
+  "tail_write_expected": false
+}

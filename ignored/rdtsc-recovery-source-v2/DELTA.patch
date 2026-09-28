@@ -1,0 +1,11 @@
+--- v1/reverie-kvm/src/timestamp.rs
++++ v2/reverie-kvm/src/timestamp.rs
+@@ -236,7 +236,7 @@
+ 
+     #[test]
+     fn timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction() {
+-        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();
++        let memory = GuestMemory::new(0, 0x10_000).unwrap();
+         for (address, value) in [
+             (0x1000, 0x2007_u64),
+             (0x2000, 0x3007),

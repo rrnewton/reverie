@@ -1,0 +1,88 @@
+--- v3/qualification-v1/admit_target.py
++++ diagnostic/qualification-v1/admit_target.py
+@@ -7,14 +7,14 @@
+ OWNER=HERE.parents[2]
+ setup=json_read(HERE/'SETUP.json')
+ target=Path(setup['target'])
+-require(target==OWNER/'target/rdtsc-recovery-v3-cold-v1','wrong target')
++require(target==OWNER/'target/rdtsc-host-worker-diagnostic-v1-cold-v1','wrong target')
+ require(not target.exists() and not target.is_symlink(),'target already exists; preserve and refuse')
+ require(target.parent.is_dir() and not target.parent.is_symlink(),'target parent absent or aliased')
+ target.mkdir(mode=0o700)
+ s=target.stat()
+ require(s.st_uid==os.getuid() and (s.st_mode&0o777)==0o700 and not list(target.iterdir()),'target creation binding')
+ write_new(HERE/'TARGET-ADMISSION.json',dict(path=str(target),identity=[s.st_dev,s.st_ino,s.st_uid],mode=s.st_mode&0o777,initially_empty=True,imports=[],created_by=str(Path(__file__).resolve())))
+-for directory in [HERE/'tmp',HERE/'cache',HERE/'controls',HERE/'loader',HERE.parent/'launch']:
++for directory in [HERE/'tmp',HERE/'cache',HERE/'controls',HERE/'loader',HERE.parent/'launch',HERE/'fixture-evidence']:
+     require(not directory.exists() and not directory.is_symlink(),'phase destination already exists: '+str(directory))
+     directory.mkdir(mode=0o700)
+ print(str(HERE/'TARGET-ADMISSION.json'))
+--- v3/qualification-v1/prepare.py
++++ diagnostic/qualification-v1/prepare.py
+@@ -37,13 +37,14 @@
+ 
+ def main():
+     name=sys.argv[1];kind='metadata'if name=='metadata'else'check'if name in ('clippy','core-check')else'format'if name=='format'else'compile'if name=='compile'else'list'if name.startswith('list-')else'test'
+-    require(name in ('metadata','compile','list-lib','list-static','list-vmcall','list-read-clock','format','clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned phase')
++    require(name in ('metadata','compile','list-static','format','host-worker-diagnostic'),'unplanned phase')
+     env={'HOME':'/home/newton','PATH':str(TOOL)+':/usr/local/bin:/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','RUSTUP_HOME':'/home/newton/.rustup',
+-         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-recovery-v3-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
++         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-host-worker-diagnostic-v1-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
+          'CARGO_NET_OFFLINE':'true','CARGO_NET_GIT_FETCH_WITH_CLI':'true','RUSTFLAGS':'','LC_ALL':'C','LANG':'C','TZ':'UTC',
+          'CARGO_TERM_COLOR':'never','TMPDIR':str(HERE/'tmp'),'XDG_CACHE_HOME':str(HERE/'cache'),'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1',
+          'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/212630','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/212630/bus',
+-         'RUSTC':str(TOOL/'rustc'),'RUSTDOC':str(TOOL/'rustdoc'),'REVERIE_REQUIRE_KVM':'1'}
++         'RUSTC':str(TOOL/'rustc'),'RUSTDOC':str(TOOL/'rustdoc'),'REVERIE_REQUIRE_KVM':'1',
++         'REVERIE_TIMESTAMP_DIAGNOSTIC_DIR':str(HERE/'fixture-evidence')}
+     selected=[];dependencies=[];artifact_selectors=[];links=[];inputs=[];absent=[]
+     for parent in [REPO,*REPO.parents,Path('/home/newton')]:
+         for rel in ['.cargo/config','.cargo/config.toml']:
+@@ -77,7 +78,7 @@
+     elif kind=='check':
+         argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+-        paths=['reverie-kvm/src/bootstrap.rs', 'reverie-kvm/src/cpuid.rs', 'reverie-kvm/src/lib.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/src/timestamp.rs', 'reverie-kvm/src/vm.rs', 'reverie-kvm/tests/static_elf.rs']
++        paths=['reverie-kvm/tests/static_elf.rs']
+         require(REPO != OWNER, 'corrected source must be an owned snapshot')
+         expected=json_read(HERE/'SETUP.json')['source_files']
+         require([row['relative']for row in expected]==paths, 'reviewed Rust path set differs')
+@@ -90,8 +91,8 @@
+         metadata=json_read(HERE/'controls/metadata/result.json');require(metadata['accepted']and metadata['terminal_authenticated'],'metadata did not qualify')
+         require((HERE/'dependency-inputs.json').is_file(),'dependency sources not bound')
+         inputs.append(file_record(HERE/'controls/metadata/result.json'))
+-        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--no-run','--message-format=json']
+-        artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib']),dict(id='static',target='static_elf',kind=['test']),dict(id='vmcall',target='vmcall',kind=['test']),dict(id='read-clock',target='read_clock',kind=['test'])]
++        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--test','static_elf','--no-run','--message-format=json']
++        artifact_selectors=[dict(id='static',target='static_elf',kind=['test'])]
+     else:
+         qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
+         selection=json_read(HERE/'SELECTORS.json')
+@@ -110,7 +111,7 @@
+             argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=OWNER/'target/rdtsc-recovery-v3-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=OWNER/'target/rdtsc-host-worker-diagnostic-v1-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+     require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+--- v3/qualification-v1/retain_artifacts.py
++++ diagnostic/qualification-v1/retain_artifacts.py
+@@ -20,7 +20,7 @@
+ require(len(rlibs)==1 and rlibs[0].is_relative_to(Path(plan['target']['path'])) and rlibs[0].resolve()==rlibs[0],'linked library path differs')
+ linked_file=file_record(rlibs[0])
+ originals=json_read(HERE/'controls/compile/artifacts.json')
+-require(set(originals)=={'lib','static','vmcall','read-clock'},'wrong four harnesses')
++require(set(originals)=={'static'},'wrong diagnostic harness')
+ predecessor=json_read(HERE/'PREDECESSOR-ELFS.json')
+ retained=HERE/'retained-binaries';retained.mkdir(mode=0o700)
+ artifacts={};copies=[]
+@@ -44,7 +44,7 @@
+     artifacts[artifact_id]=dict(cargo_artifact=cargo,file=actual)
+     copies.append(dict(id=artifact_id,original=original,retained=actual,distinct_inode=True))
+ check(plan)
+-binding=dict(compile_plan=file_record(plan_path),compile_result=file_record(result_path),cargo_output=file_record(raw_path),original_artifacts=file_record(HERE/'controls/compile/artifacts.json'),source_manifest=plan['source_manifest'],linked_library=dict(cargo_artifact=linked[0],file=linked_file),copies=copies,all_selected_newly_built=True,meaning='Cargo fresh=false for all four harnesses and linked KVM library; not a test result')
++binding=dict(compile_plan=file_record(plan_path),compile_result=file_record(result_path),cargo_output=file_record(raw_path),original_artifacts=file_record(HERE/'controls/compile/artifacts.json'),source_manifest=plan['source_manifest'],linked_library=dict(cargo_artifact=linked[0],file=linked_file),copies=copies,all_selected_newly_built=True,meaning='Cargo fresh=false for diagnostic harness and linked KVM library; not a test result')
+ write_new(retained/'BINDING.json',binding)
+ write_new(retained/'ARTIFACTS.json',artifacts)
+ print(json.dumps(dict(binding=str(retained/'BINDING.json'),retained=list(artifacts),test_execution=False)))

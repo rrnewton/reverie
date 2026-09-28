@@ -1,0 +1,43 @@
+{
+  "scope": "Source-author formatting only; not a build, test or qualified phase",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs"
+  ],
+  "executable": {
+    "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "bytes": 5255768,
+    "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+  },
+  "raw": 0,
+  "wall_seconds": 0.3235463500022888,
+  "before": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source-format-retained/before/reverie-kvm/src/elf.rs",
+      "bytes": 75271,
+      "sha256": "038fdfcfb5e85292be901ae735e952a0bf177be9568c15ef88d247f3050aadc9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source-format-retained/before/reverie-kvm/src/executor.rs",
+      "bytes": 1490550,
+      "sha256": "e18d002a59e263689b42a30ff99921ee740a8281be913d83f3b220e2be8a8f7d"
+    }
+  ],
+  "after": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source-format-retained/after/reverie-kvm/src/elf.rs",
+      "bytes": 75271,
+      "sha256": "038fdfcfb5e85292be901ae735e952a0bf177be9568c15ef88d247f3050aadc9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source-format-retained/after/reverie-kvm/src/executor.rs",
+      "bytes": 1492531,
+      "sha256": "6d85a814c74f4d56661644f3632fb42b6f9b625b3dcfb3588b323619e6e1c41a"
+    }
+  ]
+}

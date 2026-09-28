@@ -1,0 +1,92 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "publisher": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/TARGET.json",
+      "bytes": 1675,
+      "sha256": "8864d3be8d243ff0dfd2019e85f0b17b587409bb53d855d74ea36f44e0cee94b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE.patch",
+      "bytes": 63642,
+      "sha256": "a1667b036591d34ef5b657f10f611b0b716491522c247f2b6a2273d754c3a41f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/INPUTS.json",
+      "bytes": 1513395,
+      "sha256": "eda29e634677d3b6e784c1c2fb9a75bc7741f738c1fc7bd0652f2c15c60f7dd7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/READBACK.json",
+      "bytes": 3281,
+      "sha256": "afeabd1bdff952e498b898ca1c590b1d5207877c2836906c8c6c69da5ab06a27"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/FULL-SOURCE-MANIFEST.json",
+      "bytes": 1224175,
+      "sha256": "7ffe8c71bc4068df04d4757a32178930dab313542b2bae10476d31b842847610"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/REPORT.md",
+      "bytes": 4828,
+      "sha256": "6ac906317dbb60ba3297c13f7c6b4158b4f674e36ecfae04e458aa96dcd7ad76"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/QUALIFICATION.md",
+      "bytes": 3526,
+      "sha256": "ebedb73bf2d98ff6e4eb60711fc173a90c990f5468646c237910716e643126b0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/RESULTS.json",
+      "bytes": 218548,
+      "sha256": "bc403216f5a5599247d51b98b3ca61beb122b205c012fb60791438e2c10c7253"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/LEASE-RELEASE.json",
+      "bytes": 725,
+      "sha256": "0d9fed3755908065c130f9368e96bfa0d2302613380f352706befcda2a3add6c"
+    }
+  ],
+  "fd": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/SOURCE.patch",
+      "bytes": 28148,
+      "sha256": "a0fe14f686030ce6d32abd0963c11f6e9e5f2a4dfe47d987b4f5d9c73b21f1b5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/SOURCE_INPUTS.json",
+      "bytes": 3121,
+      "sha256": "2273c2fa7637f199f0e8d01fa0b76f409e78444b6d9b3ee96222a5244f9ca9cb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/READBACK.json",
+      "bytes": 1818,
+      "sha256": "5a2a582723adf30a0c314b0b149d7848f0e8071bc71be3ad6b7d7c67584da011"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/INPUTS.json",
+      "bytes": 1856855,
+      "sha256": "8fa0b83b1e5abab34a925d001089514a37f34025ef885aa03b0482d61dbb2082"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/REPORT.md",
+      "bytes": 4540,
+      "sha256": "0599543ed84266cb46906307cd46a94bfb7a67aa2a83839b729d5446c2fb8b82"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/RESULTS.json",
+      "bytes": 91847,
+      "sha256": "db48718b36017d1252ce8697cd17eb1f9bc67b2e1dbd3fb8e1ea0fb4b5efb1c1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/LEASE-RELEASE.json",
+      "bytes": 606,
+      "sha256": "1a56b93901486b7359cecfaeb0e9a792c22f44703c19da6a3384aeeac0a18946"
+    }
+  ],
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  }
+}

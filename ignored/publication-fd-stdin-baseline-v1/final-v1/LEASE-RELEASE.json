@@ -1,0 +1,33 @@
+{
+  "binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "identity": [
+      48,
+      816917584,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state"
+  },
+  "token": {
+    "plan_sha256": "bdce31c6fb85dbabfe7650f1c0b7e93d3e8fb0b1a47ce2de1bb14526b767392b",
+    "schema": 1
+  },
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/bdce31c6fb85dbabfe7650f1c0b7e93d3e8fb0b1a47ce2de1bb14526b767392b.json",
+    "bytes": 409,
+    "mode": 420,
+    "sha256": "529b6daab5e5b8f18752d2e282c36370b140c6462f506050d7bdc258d2bbabb2"
+  },
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/controls/baseline-stdin/result.json",
+    "bytes": 2706,
+    "mode": 420,
+    "sha256": "8771b7089e25df01f9b4f2e6066b7575870f3bc7dd9b10e330d72a38edfcb399"
+  },
+  "exclusive_available": true,
+  "lease_bytes_mutated": false,
+  "terminal_authenticated": true,
+  "accepted": false,
+  "descriptor_closed": true
+}

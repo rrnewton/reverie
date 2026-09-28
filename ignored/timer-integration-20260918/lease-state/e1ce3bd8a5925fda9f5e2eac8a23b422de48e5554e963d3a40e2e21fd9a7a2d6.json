@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "e1ce3bd8a5925fda9f5e2eac8a23b422de48e5554e963d3a40e2e21fd9a7a2d6",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v2/controls/test-43/result.json",
+    "bytes": 2891,
+    "mode": 420,
+    "sha256": "955677cbe278365cb5e98a82813669780bf49b6be134d1f0901eef748fe57524"
+  }
+}

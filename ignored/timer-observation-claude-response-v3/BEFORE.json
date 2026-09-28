@@ -1,0 +1,82 @@
+[
+  {
+    "path": "reverie-kvm/src/error.rs",
+    "bytes": 19402,
+    "sha256": "3e8f0dc0bcfe1600d61968bd64b2607437d01464230664ff12d562626ad4e209"
+  },
+  {
+    "path": "reverie-kvm/src/executor.rs",
+    "bytes": 1425793,
+    "sha256": "d92078046a26824696c2017ed9bed1aea1108ccd941cf59276205e77b473dd53"
+  },
+  {
+    "path": "reverie-kvm/src/parked_signal_runtime.rs",
+    "bytes": 11768,
+    "sha256": "9ab25bc8dba03445fd8a53282bf2d3334ddb85b871ecd6b2986e3f95376a90cc"
+  },
+  {
+    "path": "reverie-kvm/src/runtime.rs",
+    "bytes": 179722,
+    "sha256": "3f9cb37c391db3a0744f0494131aa9dbfdaa68dde07e8d4b30ef2dd2be78f811"
+  },
+  {
+    "path": "reverie-kvm/src/signal.rs",
+    "bytes": 62222,
+    "sha256": "3e89e6d3b03fa38d5372ce6a531169e95887914f00a3e581aaf4aeb745c62b97"
+  },
+  {
+    "path": "reverie-kvm/src/signal_dequeue_tests.rs",
+    "bytes": 21032,
+    "sha256": "b824822b550f0ca58d2c462f0f3fcd2949740471ce7cf289196477b9ab8fcaf6"
+  },
+  {
+    "path": "reverie-kvm/tests/fixtures/parked_signal.c",
+    "bytes": 2238,
+    "sha256": "021c481594cef7f901967367c547c31da45caf39a792b1a2a44d386cd2f5afdf"
+  },
+  {
+    "path": "reverie-kvm/tests/static_elf.rs",
+    "bytes": 478542,
+    "sha256": "d987e823bdfb8578ae8df28111d21e2883e3f6a32504b638ace51370e53cde73"
+  },
+  {
+    "path": "reverie-kvm/tests/support/parked_signals.rs",
+    "bytes": 32005,
+    "sha256": "b97bf3cc167a0de01a5686fdf8b7b5b76608f52b06c090556d6bf0eb1a947055"
+  },
+  {
+    "path": "reverie/src/guest.rs",
+    "bytes": 24865,
+    "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+  },
+  {
+    "path": "reverie/src/lib.rs",
+    "bytes": 4581,
+    "sha256": "59640c96cd9dae86dd75bf40edff3f282ab1a45a30db5bcef7ec87cc62d7c59c"
+  },
+  {
+    "path": "reverie/src/signal.rs",
+    "bytes": 10358,
+    "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+  },
+  {
+    "path": "reverie/src/signal_observation.rs",
+    "bytes": 7162,
+    "sha256": "83361a50d825b11df24649349f45d1297b7edf0c851f78b9ae04335e65b7132a"
+  },
+  {
+    "path": "reverie/src/tool.rs",
+    "bytes": 25087,
+    "sha256": "d4e11629f795ed773f428ff72c1ac6067169de187f4f1b038722834c4c5de29d"
+  },
+  {
+    "path": "reverie-kvm/src/vm.rs",
+    "bytes": 312232,
+    "sha256": "fe084bcd21f9d8c3717336cc57eef2359c87c9085dc10ce7da3be5ce2dc90a36"
+  },
+  {
+    "path": "reverie-kvm/src/runtime/failure_tests.rs",
+    "bytes": 52732,
+    "sha256": "a918ff5f389e47cc6a21d418e34ee8fc917072d2afa1618ff01a14529252cf44"
+  }
+]

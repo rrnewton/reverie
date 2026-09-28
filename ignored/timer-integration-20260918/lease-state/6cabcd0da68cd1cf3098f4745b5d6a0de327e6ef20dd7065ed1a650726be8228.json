@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "6cabcd0da68cd1cf3098f4745b5d6a0de327e6ef20dd7065ed1a650726be8228",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/controls/test-mode15/result.json",
+    "bytes": 2860,
+    "mode": 420,
+    "sha256": "2c8ca51ce68f879cbfa3a0c87c93e0cd81685611c6baeb1209ebaac6b58e4ef3"
+  }
+}

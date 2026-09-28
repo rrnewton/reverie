@@ -1,0 +1,148 @@
+{
+  "status": "NOT FULLY QUALIFIED; preserve first failure/refusal or raw execution gap",
+  "phases": [
+    {
+      "name": "metadata",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/metadata-plan.json",
+        "bytes": 53331,
+        "sha256": "05d2a6fd7bbf89084016d986ffc20273ebcebc0cbd6fca2380cc7ed155a7c0af",
+        "mode": 420
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/controls/metadata/result.json",
+        "bytes": 2664,
+        "sha256": "a634a46d7cd60a3aa193a61f24de5ebbc4eae08f0e395b5f0ad7b2b93eecbab8",
+        "mode": 420
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/observer/metadata/result.json",
+        "bytes": 50341,
+        "sha256": "b67a3d0f4b15e89062dd51d64097a699e900a043bad9c788b5c2ef68f69adb15",
+        "mode": 384
+      },
+      "accepted": true,
+      "raw_status": 0,
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "cpu_seconds": 1.549901,
+      "payload_seconds": 0.13673435803502798,
+      "observer_transport_seconds": 2.308558829128742,
+      "readback": {
+        "package_count": 288,
+        "workspace_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/source"
+      }
+    },
+    {
+      "name": "compile",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/compile-plan.json",
+        "bytes": 54802,
+        "sha256": "03e959d4f89287c9010496e912dd2ca4eafcbcc63c106dff5f168944ca008504",
+        "mode": 420
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/controls/compile/result.json",
+        "bytes": 2603,
+        "sha256": "74f89bb8f17925504e0b8146f1a3e4bbd97270e3815975ec1c03504fc1763918",
+        "mode": 420
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/observer/compile/result.json",
+        "bytes": 48916,
+        "sha256": "7ddc151f529de228eeff88014825a43743bb4b09bb75674ab3a3db6ee95a3594",
+        "mode": 384
+      },
+      "accepted": false,
+      "raw_status": 101,
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "cpu_seconds": 84.779088,
+      "payload_seconds": 41.023881676839665,
+      "observer_transport_seconds": 43.96269808104262,
+      "readback": null
+    }
+  ],
+  "planned_phases": 45,
+  "attempted": 2,
+  "accepted": 1,
+  "refused": 1,
+  "planned_declarations": 36,
+  "attempted_declarations": 0,
+  "passed_declarations": 0,
+  "failed_declarations": 0,
+  "ignored_declarations": 0,
+  "unattempted_phases": [
+    "format",
+    "list-lib",
+    "list-static",
+    "list-vmcall",
+    "list-read-clock",
+    "timestamp-01",
+    "timestamp-02",
+    "timestamp-03",
+    "timestamp-04",
+    "timestamp-05",
+    "timestamp-06",
+    "timestamp-07",
+    "timestamp-08",
+    "timestamp-09",
+    "timestamp-10",
+    "timestamp-11",
+    "timestamp-12",
+    "timestamp-13",
+    "timestamp-32",
+    "timestamp-33",
+    "timestamp-34",
+    "timestamp-35",
+    "timestamp-36",
+    "timestamp-14",
+    "timestamp-15",
+    "timestamp-16",
+    "timestamp-17",
+    "timestamp-18",
+    "timestamp-19",
+    "timestamp-31",
+    "timestamp-20",
+    "timestamp-21",
+    "timestamp-22",
+    "timestamp-23",
+    "timestamp-24",
+    "timestamp-25",
+    "timestamp-26",
+    "timestamp-27",
+    "timestamp-28",
+    "timestamp-29",
+    "timestamp-30",
+    "core-check",
+    "clippy"
+  ],
+  "all_qualified": false,
+  "no_skip_messages": true,
+  "scm_unchanged": {
+    "head": "79516661bf82d30ab2967c71834a6d47447b76ee",
+    "branch": "codex/kvm-setitimer-20260918",
+    "index": "d3a88be14872a030e9718536ecd0ccb240447bdf25f42e4fa42711ea9bb60571",
+    "status": ""
+  },
+  "total_cpu_seconds": 86.328989,
+  "total_payload_seconds": 41.16061603487469,
+  "total_observer_transport_seconds": 46.27125691017136,
+  "no_parity_or_source_approval": true
+}

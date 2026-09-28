@@ -1,0 +1,57 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/REPORT.md",
+    "bytes": 5998,
+    "sha256": "1663977690855a47798e6b53c53a45e4ca772ad80f1887ea2b386ab9cef9c375"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/RESULTS.json",
+    "bytes": 20767,
+    "sha256": "e065c9e65435173f5d30dcd1d771f68ea4bd77a51ad9d7510896470af605e2cc"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/EVIDENCE_INDEX.json",
+    "bytes": 47396,
+    "sha256": "d25af2d54dbdb2af0d26742cc7596a8cad1277005ea628486bdd489e9a337600"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/SOURCE.patch",
+    "bytes": 79339,
+    "sha256": "e9ec808ff3cdf17537f172e9b9285dfb884d468cdae4644369855427948bde25"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/source-manifest.json",
+    "bytes": 674823,
+    "sha256": "df9853dbdb86e18b542df142956c3190f0c0264c5755252cd1ca942c7bd55057"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/SOURCE_INPUTS.json",
+    "bytes": 9124,
+    "sha256": "83299b38758ddb235969fb250069c40377d9de819a43e00a9d2a4b025e05f624"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/DELTA.patch",
+    "bytes": 21667,
+    "sha256": "c6b203960c58e10aaeaa0dc08562c8e225ba51d29322fa281d74cba6ec357dfb"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/REPORT.md",
+    "bytes": 4939,
+    "sha256": "8711c5c32ed6916cb98e76f02bc256c542d73a8ff508de88cff33986b0026652"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/REFERENCES.json",
+    "bytes": 1289,
+    "sha256": "3f83075068eb601c85d043100c9168444507b5d846d779e46f45eb4351de377d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/MANIFEST_ERRATUM.md",
+    "bytes": 1623,
+    "sha256": "fe9521d6a7b79c1ea56ee4511cf5406a9daa717a32e679968fb8514d5be14507"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-review-response-v1/source-manifest-v2.json",
+    "bytes": 674823,
+    "sha256": "df9853dbdb86e18b542df142956c3190f0c0264c5755252cd1ca942c7bd55057"
+  }
+]

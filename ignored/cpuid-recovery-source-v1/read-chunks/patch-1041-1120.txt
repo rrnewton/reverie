@@ -1,0 +1,80 @@
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        assert_eq!(guest.config().1, 3);
++        assert!(guest.has_cpuid_interception());
++        let before = guest.read_clock().expect("actual mixed-instruction clock");
++        let (kind, result) = match request {
++            Rdtsc::Tsc => (
++                0,
++                RdtscResult {
++                    tsc: RDTSC_SENTINEL,
++                    aux: None,
++                },
++            ),
++            Rdtsc::Tscp => (
++                1,
++                RdtscResult {
++                    tsc: RDTSCP_SENTINEL,
++                    aux: Some(RDTSCP_AUX_SENTINEL),
++                },
++            ),
++        };
++        guest.send_rpc((u32::MAX, kind, before)).await;
++        assert_eq!(guest.read_clock().unwrap(), before);
++        Ok(result)
++    }
++
++    async fn handle_cpuid_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        eax: u32,
++        ecx: u32,
++    ) -> Result<CpuIdResult, Errno> {
++        assert!(guest.has_cpuid_interception());
++        let registers = guest.regs().await;
++        assert_eq!((registers.rax as u32, registers.rcx as u32), (eax, ecx));
++        let before = guest.read_clock().expect("actual guest clock");
++        assert_eq!(
++            guest.inject(reverie::syscalls::Getpid::new()).await?,
++            i64::from(guest.pid().as_raw())
++        );
++        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
++        guest.send_rpc((eax, ecx, before)).await;
++        assert_eq!(
++            guest.read_clock().unwrap(),
++            before,
++            "host RPC/injection must not retire guest branches"
++        );
++        let ordinal = *guest.thread_state();
++        *guest.thread_state_mut() = ordinal + 1;
++        let values = if guest.config().1 == 2 {
++            [RDTSC_SENTINEL as u32, 0, 0, (RDTSC_SENTINEL >> 32) as u32]
++        } else {
++            OUTPUTS.map(|value| value + if guest.config().1 == 1 { ordinal } else { 0 })
++        };
++        Ok(CpuIdResult {
++            eax: values[0],
++            ebx: values[1],
++            ecx: values[2],
++            edx: values[3],
++        })
++    }
++}
++
++fn append_cpuid(code: &mut Vec<u8>, prefix: &[u8], ordinal: u32, failures: &mut Vec<usize>) {
++    code.extend_from_slice(&[0x48, 0xb8]);
++    code.extend_from_slice(&0x8877665500000007_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xb9]);
++    code.extend_from_slice(&0x1234567800000002_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xbb]);
++    code.extend_from_slice(&u64::MAX.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xba]);
++    code.extend_from_slice(&u64::MAX.to_le_bytes());
++    code.extend_from_slice(&[0x49, 0xb8]);
++    code.extend_from_slice(&0x123456789abcdef0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x49, 0x89, 0xe4]); // mov r12,rsp
++    code.extend_from_slice(&[0x68, 0xd7, 0x02, 0, 0, 0x9d]); // push flags; popfq

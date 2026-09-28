@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--check",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/candidate.patch"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "",
+  "writes_index_or_product": false
+}

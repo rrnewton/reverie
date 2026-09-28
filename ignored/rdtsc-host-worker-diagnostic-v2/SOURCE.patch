@@ -1,0 +1,177 @@
+--- candidate-v3/reverie-kvm/tests/static_elf.rs
++++ diagnostic-v2/reverie-kvm/tests/static_elf.rs
+@@ -14510,6 +14510,147 @@
+     }
+ }
+ 
++// Diagnostic only: retain every timestamp callback and its actual saved user
++// instruction pointer. The original fixture's exact two-call assertion remains.
++#[derive(Debug, Default)]
++struct HostTimestampDiagnosticLog {
++    records: Mutex<Vec<(Pid, Rdtsc, u64)>>,
++}
++
++impl HostTimestampDiagnosticLog {
++    fn calls(&self) -> Vec<(Pid, Rdtsc)> {
++        self.records
++            .lock()
++            .expect("timestamp diagnostic lock poisoned")
++            .iter()
++            .map(|(pid, request, _)| (*pid, *request))
++            .collect()
++    }
++
++    fn retain(&self) {
++        let records = self
++            .records
++            .lock()
++            .expect("timestamp diagnostic lock poisoned");
++        let mut text = String::from("pid\tinstruction\trip\n");
++        for (pid, request, rip) in records.iter() {
++            text.push_str(&format!("{}\t{request:?}\t{rip:#x}\n", pid.as_raw()));
++        }
++        let directory =
++            PathBuf::from(std::env::var_os("REVERIE_TIMESTAMP_DIAGNOSTIC_DIR").unwrap());
++        std::fs::write(directory.join("callbacks.tsv"), &text).unwrap();
++        eprintln!("timestamp diagnostic callbacks:\n{text}");
++    }
++}
++
++#[reverie::global_tool]
++impl GlobalTool for HostTimestampDiagnosticLog {
++    type Request = (Rdtsc, u64);
++    type Response = ();
++    type Config = bool;
++
++    async fn receive_rpc(&self, from: Pid, request: Self::Request) {
++        self.records
++            .lock()
++            .expect("timestamp diagnostic lock poisoned")
++            .push((from, request.0, request.1));
++    }
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++struct HostTimestampDiagnosticTool;
++
++#[reverie::tool]
++impl Tool for HostTimestampDiagnosticTool {
++    type GlobalState = HostTimestampDiagnosticLog;
++    type ThreadState = ();
++
++    fn subscriptions(enabled: &bool) -> Subscription {
++        TimestampTool::subscriptions(enabled)
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        let rip = guest.regs().await.rip;
++        guest.send_rpc((request, rip)).await;
++        Ok(match request {
++            Rdtsc::Tsc => RdtscResult {
++                tsc: RDTSC_SENTINEL,
++                aux: None,
++            },
++            Rdtsc::Tscp => RdtscResult {
++                tsc: RDTSCP_SENTINEL,
++                aux: Some(RDTSCP_AUX_SENTINEL),
++            },
++        })
++    }
++}
++
++fn compile_host_timestamp_diagnostic(directory: &std::path::Path, source: &str) -> PathBuf {
++    let retained = PathBuf::from(std::env::var_os("REVERIE_TIMESTAMP_DIAGNOSTIC_DIR").unwrap());
++    assert!(retained.is_dir());
++    assert!(std::fs::read_dir(&retained).unwrap().next().is_none());
++    let source_path = directory.join("timestamp-host-worker.c");
++    let executable_path = directory.join("timestamp-host-worker");
++    std::fs::write(&source_path, source).unwrap();
++    std::fs::write(retained.join("timestamp-host-worker.c"), source).unwrap();
++    let mut command = std::process::Command::new("/usr/bin/gcc");
++    command
++        .args(["-O2", "-pthread"])
++        .arg(&source_path)
++        .arg("-o")
++        .arg(&executable_path);
++    let argv: Vec<_> = std::iter::once(command.get_program())
++        .chain(command.get_args())
++        .map(|word| word.to_str().unwrap().to_owned())
++        .collect();
++    std::fs::write(retained.join("compiler.argv"), argv.join("\0") + "\0").unwrap();
++    std::fs::write(
++        retained.join("compiler.cwd"),
++        std::env::current_dir().unwrap().to_str().unwrap(),
++    )
++    .unwrap();
++    let output = command.output().unwrap();
++    std::fs::write(retained.join("compiler.stdout"), &output.stdout).unwrap();
++    std::fs::write(retained.join("compiler.stderr"), &output.stderr).unwrap();
++    std::fs::write(
++        retained.join("compiler-status.txt"),
++        format!(
++            "code={:?}\nsuccess={}\ndisplay={}\n",
++            output.status.code(),
++            output.status.success(),
++            output.status,
++        ),
++    )
++    .unwrap();
++    assert!(
++        output.status.success(),
++        "gcc failed: stdout={} stderr={}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr),
++    );
++    let image = std::fs::read(&executable_path).unwrap();
++    std::fs::write(retained.join("timestamp-host-worker.elf"), &image).unwrap();
++    let elf = goblin::elf::Elf::parse(&image).unwrap();
++    let interpreter = elf.interpreter.unwrap();
++    let interpreter_path = std::fs::canonicalize(interpreter).unwrap();
++    std::fs::write(retained.join("interpreter-path"), interpreter).unwrap();
++    std::fs::write(
++        retained.join("interpreter-resolved-path"),
++        interpreter_path.to_str().unwrap(),
++    )
++    .unwrap();
++    std::fs::write(
++        retained.join("interpreter.elf"),
++        std::fs::read(&interpreter_path).unwrap(),
++    )
++    .unwrap();
++    executable_path
++}
++
+ #[test]
+ fn host_owned_timestamp_worker_keeps_native_execution() {
+     if !kvm_available("KVM Host-owned timestamp worker test") {
+@@ -14540,7 +14681,7 @@
+ }}
+ "#
+     );
+-    let executable = compile_c_program(&directory.0, "timestamp-host-worker", &source);
++    let executable = compile_host_timestamp_diagnostic(&directory.0, &source);
+     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+     backend.set_thread_ownership(ThreadOwnership::Host);
+     backend
+@@ -14551,12 +14692,14 @@
+             &directory.0,
+         )
+         .unwrap();
+-    let (log, status, stdout, stderr) =
+-        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
+-            .unwrap();
++    let (log, status, stdout, stderr) = futures::executor::block_on(
++        backend.run_static_elf_with_tool::<HostTimestampDiagnosticTool>(true, true),
++    )
++    .unwrap();
+     assert_eq!(status, 0, "stdout={stdout:?} stderr={stderr:?}");
+     assert!(stdout.is_empty());
+     assert!(stderr.is_empty());
++    log.retain();
+     assert_eq!(
+         log.calls(),
+         vec![

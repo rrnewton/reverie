@@ -1,0 +1,20 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/CALLER-TARGET.json",
+    "bytes": 4352,
+    "mode": 420,
+    "sha256": "f9d63019b01cb821966611f34fc600f468637ec53b6ca87a8aace4515b9fef9e"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/CALLER-INPUTS.json",
+    "bytes": 8922106,
+    "mode": 420,
+    "sha256": "c8fcbcc64533d5ce7e30bf6ba711b15a5499adf51e71e38f1dc74710d421a614"
+  },
+  "regular_files": 29030,
+  "symlinks": 44,
+  "gitlinks": 18,
+  "all_current_bytes_modes_unchanged": true,
+  "no_admission_or_execution": true,
+  "original_failed_phase_preserved": true
+}

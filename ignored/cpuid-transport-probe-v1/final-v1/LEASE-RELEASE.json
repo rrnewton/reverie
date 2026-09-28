@@ -1,0 +1,23 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+  "identity": [
+    48,
+    816917584,
+    212630
+  ],
+  "token": {
+    "plan_sha256": "4124ce886b1f8ff45990704c68865240868cc6b7fa91406e9c7f761d2afd7e2c",
+    "schema": 1
+  },
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/4124ce886b1f8ff45990704c68865240868cc6b7fa91406e9c7f761d2afd7e2c.json",
+    "bytes": 395,
+    "sha256": "11cdfef6f9b0db105f711beda3ec931cb6c75809e2634eff450500c01c8cbac3",
+    "mode": 420
+  },
+  "exclusive_nonblocking_available": true,
+  "terminal": true,
+  "accepted": true,
+  "no_token_write": true,
+  "descriptor_closed": true
+}

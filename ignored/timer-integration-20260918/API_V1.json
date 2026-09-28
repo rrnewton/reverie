@@ -1,0 +1,31 @@
+{
+  "base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "status": "early_interface_inventory_not_compile_qualified",
+  "files": [
+    {
+      "path": "reverie/src/signal_observation.rs",
+      "bytes": 6892,
+      "sha256": "f1fab28fe2d2622c25853068a7a715bf0d2c4dc159a8116524351b2a6ab8995c"
+    },
+    {
+      "path": "reverie/src/signal.rs",
+      "bytes": 10358,
+      "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+    },
+    {
+      "path": "reverie/src/guest.rs",
+      "bytes": 24865,
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 25087,
+      "sha256": "d4e11629f795ed773f428ff72c1ac6067169de187f4f1b038722834c4c5de29d"
+    },
+    {
+      "path": "reverie/src/lib.rs",
+      "bytes": 4581,
+      "sha256": "59640c96cd9dae86dd75bf40edff3f282ab1a45a30db5bcef7ec87cc62d7c59c"
+    }
+  ]
+}

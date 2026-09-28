@@ -1,0 +1,203 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -3670,6 +3670,8 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    include!("cpuid_transport_probe.rs");
+ 
+     mod initialization_tests {
+         use std::io::Seek;
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_transport_probe.rs
+@@ -0,0 +1,189 @@
++// Experimental unit module for vm.rs; not a product implementation.
++// Include inside vm.rs's existing tests module in a separate source snapshot.
++mod cpuid_fault_transport_probe {
++    use kvm_bindings::Msrs;
++    use kvm_bindings::kvm_msr_entry;
++
++    use super::*;
++
++    const PLATFORM_INFO: u32 = 0xce;
++    const MISC_FEATURES_ENABLES: u32 = 0x140;
++    const SUPPORT_BIT: u64 = 1 << 31;
++    const ENABLE_BIT: u64 = 1;
++    const ENTRY: u64 = 0x20_0000;
++    const CPUID_RIP: u64 = ENTRY + 10;
++    const STOP_RIP: u64 = CPUID_RIP + 2;
++    const LEAF: u32 = 0x8000_0001;
++    const SUBLEAF: u32 = 0;
++
++    fn entry(index: u32, data: u64) -> kvm_msr_entry {
++        kvm_msr_entry {
++            index,
++            data,
++            ..Default::default()
++        }
++    }
++
++    fn read_state(backend: &KvmBackend, label: &str) -> (u64, u64) {
++        let mut values =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0)])
++                .unwrap();
++        let count = backend.vcpu.get_msrs(&mut values).unwrap();
++        println!(
++            "{label}: get_msrs count={count}, entries={:?}",
++            values.as_slice()
++        );
++        assert_eq!(count, 2, "partial MSR state read is not qualification");
++        (values.as_slice()[0].data, values.as_slice()[1].data)
++    }
++
++    fn set_one(backend: &KvmBackend, index: u32, data: u64, label: &str) {
++        let values = Msrs::from_entries(&[entry(index, data)]).unwrap();
++        let count = backend.vcpu.set_msrs(&values).unwrap();
++        println!("{label}: set_msrs index={index:#x}, value={data:#x}, count={count}");
++        assert_eq!(count, 1, "partial MSR activation is not qualification");
++    }
++
++    fn new_cpuid_guest() -> KvmBackend {
++        let mut backend = KvmBackend::new(16 * 1024 * 1024)
++            .expect("this hardware probe requires a real usable KVM backend");
++        let code = [
++            0xb8, 0x01, 0x00, 0x00, 0x80, // mov eax, 0x80000001
++            0xb9, 0x00, 0x00, 0x00, 0x00, // mov ecx, 0
++            0x0f, 0xa2, // cpuid
++            0xf4, // CPL3 hlt: distinct #GP sentinel
++        ];
++        backend
++            .install_static_elf(&minimal_test_elf(&code), "/cpuid-fault-probe")
++            .unwrap();
++        assert_eq!(backend.vcpu.get_regs().unwrap().rip, ENTRY);
++        assert_eq!(backend.vcpu.get_sregs().unwrap().cs.dpl, 3);
++        backend
++    }
++
++    fn run_to_gp(backend: &mut KvmBackend, expected_rip: u64, label: &str) -> kvm_regs {
++        assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++        let fault = backend
++            .static_elf_exception()
++            .unwrap()
++            .expect("the guest must reach the actual exception transport");
++        let registers = backend.vcpu.get_regs().unwrap();
++        let mut error_code = [0; 8];
++        backend
++            .memory
++            .read_raw(registers.rsp, &mut error_code)
++            .unwrap();
++        println!(
++            "{label}: vector={}, guest_rip={:#x}, error={}, rax={:#x}, rbx={:#x}, rcx={:#x}, rdx={:#x}",
++            fault.vector,
++            fault.instruction_pointer,
++            u64::from_le_bytes(error_code),
++            registers.rax,
++            registers.rbx,
++            registers.rcx,
++            registers.rdx
++        );
++        assert_eq!(fault.vector, 13);
++        assert_eq!(fault.instruction_pointer, expected_rip);
++        assert_eq!(u64::from_le_bytes(error_code), 0);
++        registers
++    }
++
++    fn assert_table_result(backend: &KvmBackend, registers: kvm_regs) {
++        let table = backend.vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES).unwrap();
++        let expected = table
++            .as_slice()
++            .iter()
++            .find(|entry| entry.function == LEAF && entry.index == SUBLEAF)
++            .expect("the installed table must contain the chosen leaf");
++        assert_eq!(
++            (registers.rax, registers.rbx, registers.rcx, registers.rdx),
++            (
++                u64::from(expected.eax),
++                u64::from(expected.ebx),
++                u64::from(expected.ecx),
++                u64::from(expected.edx)
++            )
++        );
++    }
++
++    #[test]
++    fn actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu() {
++        let kvm = Kvm::new().expect("/dev/kvm is mandatory for this probe");
++        let feature_indices = kvm.get_msr_feature_index_list().unwrap();
++        assert!(feature_indices.as_slice().contains(&PLATFORM_INFO));
++        let mut feature = Msrs::from_entries(&[entry(PLATFORM_INFO, 0)]).unwrap();
++        let feature_count = kvm.get_msrs(&mut feature).unwrap();
++        println!(
++            "host feature: count={feature_count}, platform_info={:#x}",
++            feature.as_slice()[0].data
++        );
++        assert_eq!(feature_count, 1);
++        assert_ne!(feature.as_slice()[0].data & SUPPORT_BIT, 0);
++
++        let mut guest = new_cpuid_guest();
++        let initial_regs = guest.vcpu.get_regs().unwrap();
++        let initial_sregs = guest.vcpu.get_sregs().unwrap();
++        let initial = read_state(&guest, "initial");
++        assert_eq!(initial.1 & ENABLE_BIT, 0, "fresh vCPU must be unarmed");
++        let ordinary = run_to_gp(&mut guest, STOP_RIP, "unarmed CPUID reaches later HLT");
++        assert_table_result(&guest, ordinary);
++
++        guest.vcpu.set_sregs(&initial_sregs).unwrap();
++        guest.vcpu.set_regs(&initial_regs).unwrap();
++        set_one(
++            &guest,
++            PLATFORM_INFO,
++            initial.0 | SUPPORT_BIT,
++            "install support",
++        );
++        set_one(&guest, MISC_FEATURES_ENABLES, initial.1 | ENABLE_BIT, "arm");
++        assert_eq!(
++            read_state(&guest, "armed"),
++            (initial.0 | SUPPORT_BIT, initial.1 | ENABLE_BIT)
++        );
++        let trapped = run_to_gp(&mut guest, CPUID_RIP, "armed CPUID");
++        assert_eq!(trapped.rax, u64::from(LEAF));
++        assert_eq!(trapped.rcx, u64::from(SUBLEAF));
++        assert_eq!(trapped.rbx, initial_regs.rbx);
++        assert_eq!(trapped.rdx, initial_regs.rdx);
++
++        // Reverie also creates a separate VM for its other backend vCPUs.
++        // This observes another real unarmed backend while the first stays armed.
++        let mut independent = new_cpuid_guest();
++        assert_eq!(read_state(&independent, "independent").1 & ENABLE_BIT, 0);
++        let separate = run_to_gp(&mut independent, STOP_RIP, "independent CPUID reaches HLT");
++        assert_table_result(&independent, separate);
++        assert_eq!(
++            read_state(&guest, "first remains armed").1 & ENABLE_BIT,
++            ENABLE_BIT
++        );
++
++        set_one(&guest, MISC_FEATURES_ENABLES, initial.1, "disarm");
++        set_one(&guest, PLATFORM_INFO, initial.0, "restore support state");
++        assert_eq!(read_state(&guest, "disarmed"), initial);
++        guest.vcpu.set_sregs(&initial_sregs).unwrap();
++        guest.vcpu.set_regs(&initial_regs).unwrap();
++        let resumed = run_to_gp(&mut guest, STOP_RIP, "disarmed CPUID reaches HLT");
++        assert_table_result(&guest, resumed);
++
++        let mut unrelated = KvmBackend::new(16 * 1024 * 1024).unwrap();
++        unrelated
++            .install_static_elf(&minimal_test_elf(&[0xfa, 0xf4]), "/unrelated-cli-fault")
++            .unwrap();
++        let unrelated_initial = read_state(&unrelated, "unrelated initial");
++        set_one(
++            &unrelated,
++            PLATFORM_INFO,
++            unrelated_initial.0 | SUPPORT_BIT,
++            "unrelated support",
++        );
++        set_one(
++            &unrelated,
++            MISC_FEATURES_ENABLES,
++            unrelated_initial.1 | ENABLE_BIT,
++            "unrelated arm",
++        );
++        let _ = run_to_gp(&mut unrelated, ENTRY, "unrelated CLI still faults");
++    }
++}

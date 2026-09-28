@@ -1,0 +1,60 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/TARGET.json",
+    "bytes": 3219,
+    "mode": 420,
+    "sha256": "767b9ef89de7c084a68e309e89a7b7710d94a61c493ade90934ae2d32ae67bf8"
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/SOURCE.patch",
+    "bytes": 92271,
+    "mode": 420,
+    "sha256": "b6ffa880ca7e0afcda747e168c8bc2fd5a022b6cc3365a30338a980cdc711902"
+  },
+  "v6_to_v7_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/DELTA.patch",
+    "bytes": 6798,
+    "mode": 420,
+    "sha256": "8ac726502935dbb0f2590f485e290fc92c0086f4cd05f88587ccb6538b1735e4"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/SOURCE-MANIFEST.json",
+    "bytes": 1399836,
+    "mode": 420,
+    "sha256": "6839b7de0037654ac315c768328206dc0bd2b93fa6f26590d6f1746121f84f75"
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/final-v1/RESULTS.json",
+    "bytes": 27232,
+    "mode": 420,
+    "sha256": "7b0b2fa46bce1e3d041dcfac5c2a1fb7f20a8c68dbe7f06a7b490cc7ca112feb"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/final-v1/REPORT.md",
+    "bytes": 1834,
+    "mode": 420,
+    "sha256": "7d4a6521911c855bb03a5220213f2f06d0c68804a7bc1bb6344637b815ba11e0"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/final-v1/INPUTS.json",
+    "bytes": 1049068,
+    "mode": 420,
+    "sha256": "79c36712989619691ed2909994c6366a6c6abb72f495cebeeb94ef5fc8698339"
+  },
+  "raw_tests": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/final-v1/RAW-TESTS.txt",
+    "bytes": 3302,
+    "mode": 420,
+    "sha256": "965707e7984850819b4543c63c6d37eef2c2ca84b4d5340e8b3195d6f980e00b"
+  },
+  "lease_release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/final-v1/LEASE-RELEASE.json",
+    "bytes": 1544,
+    "mode": 420,
+    "sha256": "d1b8d7da5418626a1e02fcc08465a5cb922b4f392dd603b2415eaf8b055ea4a8"
+  },
+  "actual_qualified": true,
+  "source_approval": false,
+  "head": null,
+  "pending": "Root commit of exact qualified source before final independent continuation"
+}

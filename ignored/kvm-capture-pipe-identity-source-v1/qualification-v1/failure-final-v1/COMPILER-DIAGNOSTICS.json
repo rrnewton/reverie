@@ -1,0 +1,290 @@
+{
+  "raw_stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/compile/stdout",
+    "bytes": 147184,
+    "mode": 384,
+    "sha256": "1a1cbe361950b52641e094551bd29e0df722b9fa2141d07627fd60f8c221f1ca"
+  },
+  "messages": [
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "error[E0046]: not all trait items implemented, missing: `receive_rpc`\n   --> reverie-kvm/src/capture_identity_tests.rs:362:1\n    |\n362 | impl reverie::GlobalTool for CaptureSetupMustNotInitialize {\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `receive_rpc` in implementation\n    |\n    = help: implement the missing item: `fn receive_rpc<'life0: 'async_trait, 'async_trait>(&'life0 self, _: reverie::Pid, _: <Self as reverie::GlobalTool>::Request) -> std::pin::Pin<Box<(dyn futures::Future<Output = <Self as reverie::GlobalTool>::Response> + std::marker::Send + 'async_trait)>> { todo!() }`\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "help",
+            "message": "implement the missing item: `fn receive_rpc<'life0: 'async_trait, 'async_trait>(&'life0 self, _: reverie::Pid, _: <Self as reverie::GlobalTool>::Request) -> std::pin::Pin<Box<(dyn futures::Future<Output = <Self as reverie::GlobalTool>::Response> + std::marker::Send + 'async_trait)>> { todo!() }`",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 13470,
+                "byte_start": 13470,
+                "column_end": 1,
+                "column_start": 1,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/capture_identity_tests.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 369,
+                "line_start": 369,
+                "suggested_replacement": "fn receive_rpc<'life0: 'async_trait, 'async_trait>(&'life0 self, _: reverie::Pid, _: <Self as reverie::GlobalTool>::Request) -> std::pin::Pin<Box<(dyn futures::Future<Output = <Self as reverie::GlobalTool>::Response> + std::marker::Send + 'async_trait)>> { todo!() }\n",
+                "suggestion_applicability": "HasPlaceholders",
+                "text": [
+                  {
+                    "highlight_end": 1,
+                    "highlight_start": 1,
+                    "text": "}"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "level": "error",
+        "message": "not all trait items implemented, missing: `receive_rpc`",
+        "spans": [
+          {
+            "byte_end": 13282,
+            "byte_start": 13224,
+            "column_end": 59,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/capture_identity_tests.rs",
+            "is_primary": true,
+            "label": "missing `receive_rpc` in implementation",
+            "line_end": 362,
+            "line_start": 362,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 59,
+                "highlight_start": 1,
+                "text": "impl reverie::GlobalTool for CaptureSetupMustNotInitialize {"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "E0046",
+          "explanation": "Items are missing in a trait implementation.\n\nErroneous code example:\n\n```compile_fail,E0046\ntrait Foo {\n    fn foo();\n}\n\nstruct Bar;\n\nimpl Foo for Bar {}\n// error: not all trait items implemented, missing: `foo`\n```\n\nWhen trying to make some type implement a trait `Foo`, you must, at minimum,\nprovide implementations for all of `Foo`'s required methods (meaning the\nmethods that do not have default implementations), as well as any required\ntrait items like associated types or constants. Example:\n\n```\ntrait Foo {\n    fn foo();\n}\n\nstruct Bar;\n\nimpl Foo for Bar {\n    fn foo() {} // ok!\n}\n```\n"
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "error[E0308]: mismatched types\n     --> reverie-kvm/src/executor.rs:39601:17\n      |\n39594 |             let count = readlink_at_impl(\n      |                         ---------------- arguments to this function are incorrect\n...\n39601 |                 false,\n      |                 ^^^^^ expected `Option<CaptureMetadata>`, found `bool`\n      |\n      = note: expected enum `Option<CaptureMetadata>`\n                 found type `bool`\nnote: function defined here\n     --> reverie-kvm/src/executor.rs:13940:4\n      |\n13940 | fn readlink_at_impl(\n      |    ^^^^^^^^^^^^^^^^\n...\n13947 |     capture: Option<CaptureMetadata>,\n      |     --------------------------------\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "note",
+            "message": "expected enum `Option<CaptureMetadata>`\n   found type `bool`",
+            "rendered": null,
+            "spans": []
+          },
+          {
+            "children": [],
+            "code": null,
+            "level": "note",
+            "message": "function defined here",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 526650,
+                "byte_start": 526618,
+                "column_end": 37,
+                "column_start": 5,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/executor.rs",
+                "is_primary": false,
+                "label": "",
+                "line_end": 13947,
+                "line_start": 13947,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "text": [
+                  {
+                    "highlight_end": 37,
+                    "highlight_start": 5,
+                    "text": "    capture: Option<CaptureMetadata>,"
+                  }
+                ]
+              },
+              {
+                "byte_end": 526452,
+                "byte_start": 526436,
+                "column_end": 20,
+                "column_start": 4,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/executor.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 13940,
+                "line_start": 13940,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "text": [
+                  {
+                    "highlight_end": 20,
+                    "highlight_start": 4,
+                    "text": "fn readlink_at_impl("
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "level": "error",
+        "message": "mismatched types",
+        "spans": [
+          {
+            "byte_end": 1443306,
+            "byte_start": 1443301,
+            "column_end": 22,
+            "column_start": 17,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/executor.rs",
+            "is_primary": true,
+            "label": "expected `Option<CaptureMetadata>`, found `bool`",
+            "line_end": 39601,
+            "line_start": 39601,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 22,
+                "highlight_start": 17,
+                "text": "                false,"
+              }
+            ]
+          },
+          {
+            "byte_end": 1443130,
+            "byte_start": 1443114,
+            "column_end": 41,
+            "column_start": 25,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/executor.rs",
+            "is_primary": false,
+            "label": "arguments to this function are incorrect",
+            "line_end": 39594,
+            "line_start": 39594,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 41,
+                "highlight_start": 25,
+                "text": "            let count = readlink_at_impl("
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "E0308",
+          "explanation": "Expected type did not match the received type.\n\nErroneous code examples:\n\n```compile_fail,E0308\nfn plus_one(x: i32) -> i32 {\n    x + 1\n}\n\nplus_one(\"Not a number\");\n//       ^^^^^^^^^^^^^^ expected `i32`, found `&str`\n\nif \"Not a bool\" {\n// ^^^^^^^^^^^^ expected `bool`, found `&str`\n}\n\nlet x: f32 = \"Not a float\";\n//     ---   ^^^^^^^^^^^^^ expected `f32`, found `&str`\n//     |\n//     expected due to this\n```\n\nThis error occurs when an expression was used in a place where the compiler\nexpected an expression of a different type. It can occur in several cases, the\nmost common being when calling a function and passing an argument which has a\ndifferent type than the matching type in the function declaration.\n"
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "Some errors have detailed explanations: E0046, E0308.\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "failure-note",
+        "message": "Some errors have detailed explanations: E0046, E0308.",
+        "spans": [],
+        "code": null
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "For more information about an error, try `rustc --explain E0046`.\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "failure-note",
+        "message": "For more information about an error, try `rustc --explain E0046`.",
+        "spans": [],
+        "code": null
+      }
+    }
+  ],
+  "build_finished": [
+    {
+      "reason": "build-finished",
+      "success": false
+    }
+  ]
+}

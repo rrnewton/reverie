@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "status": "SOURCE-ONLY STDIN IDENTITY SUCCESSOR; baseline and qualification NOT EXECUTED; review/handoff pending",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source",
+  "baseline_source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-source",
+  "product_paths": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs"
+  ],
+  "changed_from_v2": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs"
+  ],
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/SOURCE.patch",
+    "bytes": 143066,
+    "mode": 420,
+    "sha256": "b51dc00c98699b65621112f6f3aa672df5492fcb3dd1ef85bf8c7c7b9b9ff94e"
+  },
+  "v2_to_v3": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/V2-TO-V3.patch",
+    "bytes": 30953,
+    "mode": 420,
+    "sha256": "d1aa20c4c53145f4611b00fe8296cf17a8d82ef37c52e3a74223eebb543cc941"
+  },
+  "baseline_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/BASELINE-TEST.patch",
+    "bytes": 12305,
+    "mode": 420,
+    "sha256": "e1fd7c14dacbb8e48b2f69c4da5305031e4d52fba4221785425191d3de8d55f1"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/SOURCE-MANIFEST.json",
+    "bytes": 1321615,
+    "mode": 420,
+    "sha256": "918ab0d19c8c5c1256a33087a1828caad35e7200cc517203560c47fc6408ba82"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/REPORT.md",
+    "bytes": 4796,
+    "mode": 420,
+    "sha256": "7669336192adcf866e41b4c1e4047a2b9b0979c244877cc325107e9419bc9f62"
+  },
+  "ownership": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/OWNERSHIP.md",
+    "bytes": 6904,
+    "mode": 420,
+    "sha256": "796478cb4f1525dbf5699274c54443cb89b4696722aa624ed1f1e1bad2517500"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/PLAN.md",
+    "bytes": 5322,
+    "mode": 420,
+    "sha256": "afb1a91a17e6d262a69bacb566c654287f906dffd0e92fc9c51cdca7590bbb82"
+  },
+  "source_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/SOURCE_INPUTS.json",
+    "bytes": 3722,
+    "mode": 420,
+    "sha256": "a7a504b0d8a3c6f91099c26ed8dd57ddb9db19dc03ceef7906e18114f61c6e7a"
+  },
+  "caller_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/CALLER_INPUTS.json",
+    "bytes": 9112,
+    "mode": 420,
+    "sha256": "313c33a1d40b19b709d66b6af2776d35cdfc4afed6d8ab46fbac1040e24c5aec"
+  },
+  "test_continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/TEST-CONTINUITY.json",
+    "bytes": 1105,
+    "mode": 420,
+    "sha256": "f761cc7189145ed1d090e237931247a99e8db91decac02060599f8e87273486a"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/INPUTS.json",
+    "bytes": 1754962,
+    "mode": 420,
+    "sha256": "ac3693469a67b499f41457b095cec4cd4dfe8002fd14de27f2637ba1307d728f"
+  },
+  "readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/READBACK.json",
+    "bytes": 2026,
+    "mode": 420,
+    "sha256": "744e263a342430b47cf6ae1d3f8986f4a57af1f63cd689417eb080c422276140"
+  },
+  "proposed_corrected_declarations": 81,
+  "proposed_lib_declarations": 72,
+  "proposed_static_declarations": 9,
+  "proposed_other_corrected_phases": 7,
+  "baseline_failure_observed": false,
+  "production_execution_performed": false,
+  "public_api_or_publication_activation": false
+}

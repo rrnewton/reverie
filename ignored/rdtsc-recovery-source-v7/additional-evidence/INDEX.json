@@ -1,0 +1,95 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/READBACK.json",
+      "bytes": 1317,
+      "mode": 420,
+      "sha256": "e83e708d76e4c2a584fd333d7746b7154f32f65c6bb01d5c9863eedb0bfa71dd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/RESULTS.json",
+      "bytes": 39909,
+      "mode": 420,
+      "sha256": "fb18af538a055fe8c3409bc8a7296cee27a15d56f7227af6b3c2141afb79022d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/INPUTS.json",
+      "bytes": 573251,
+      "mode": 420,
+      "sha256": "7f2109800a9c6df592cdb1100cd24584093b9f3657514137da77da2e48428807"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/REPORT.md",
+      "bytes": 601,
+      "mode": 420,
+      "sha256": "19ab207857aaf9209ada00c4fb2e5634f84627e35a9dae07642abbddf7b6dd47"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/final-v1/LEASE-RELEASE.json",
+      "bytes": 1060,
+      "mode": 420,
+      "sha256": "ae7c752e09a0d3dc68368bde293b0ed86b72dad9c4e02802ec8e77847d929f93"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/READBACK.json",
+      "bytes": 848,
+      "mode": 420,
+      "sha256": "f5a4a5ffd183ebc2824af46a27f93123c98964eb6419452d909a071c3bd4de29"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/RESULTS.json",
+      "bytes": 26780,
+      "mode": 420,
+      "sha256": "60ef09278757b6458e3dbbc791a7524bc842dd26fa6894b3cecddbd802a66940"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/REPORT.md",
+      "bytes": 3030,
+      "mode": 420,
+      "sha256": "cb8a5ae1bc13cada8f439f0debcbb4928ed4694cd987975cdf8e82e9dcb3cda2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/readback.py",
+      "bytes": 7245,
+      "mode": 420,
+      "sha256": "da038b24f165a3860190560905db3dee3caeedd93a8d8cbd03d126f87636cf85"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/static_elf.rs",
+      "bytes": 512134,
+      "mode": 420,
+      "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/parked_signal_runtime.rs",
+      "bytes": 27079,
+      "mode": 420,
+      "sha256": "41082fd8131415d108718eb4e851c657a213d83194b6dda795de7d25cadea037"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/runtime.rs",
+      "bytes": 191208,
+      "mode": 420,
+      "sha256": "945d6af0ac3231e4d82eeaf34a614d66b6bf14196dcb162974f97d917538f928"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/observer/compile/stdout",
+      "bytes": 132516,
+      "mode": 384,
+      "sha256": "fe157bc4503d5686a0f49f80b66c6a560eb46fc2c3ab8251ebdc82d926847814"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/controls/compile/result.json",
+      "bytes": 2603,
+      "mode": 420,
+      "sha256": "74f89bb8f17925504e0b8146f1a3e4bbd97270e3815975ec1c03504fc1763918"
+    }
+  ],
+  "scope": "Supplementary actual source/retained measurements for later reviews; no V7 execution, no prior verdict imported",
+  "native_probe_limit": "42 actual cases; RF signal-return case does not independently observe RF immediately before instruction",
+  "hermit_limit": "Separate H39ac consumer flag correction; actual after-charge/posthook cancellation only, no before-charge/clock-RPC claim",
+  "required_source_contexts": {
+    "kvm_available": "static_elf.rs:3649-3666, complete helper and error classification",
+    "ordinary_admission": "parked_signal_runtime.rs:1-28 plus runtime.rs:420-485; full files retained"
+  }
+}

@@ -1,0 +1,286 @@
+{
+  "planned_native_cases": 42,
+  "attempted_native_cases": 42,
+  "passed": 42,
+  "unexecuted": 0,
+  "failed": 0,
+  "all_native_cases_passed": true,
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "phase_records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/dependencies/result.json",
+      "bytes": 7995,
+      "mode": 420,
+      "sha256": "dc77eeb4efd81e2ca5ea32787130afe387596056b6d9e842ec2d965349dac756"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/compile/result.json",
+      "bytes": 9631,
+      "mode": 420,
+      "sha256": "3e03afcbdf1f530fcc10f187b5bbbf354620731b7a3d25e2844a2e81aefcee6d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-00/result.json",
+      "bytes": 3705,
+      "mode": 420,
+      "sha256": "29228e2c8de26cbdeb93d364f8979d4bd09f7ae83031dc58cb64b9d4cf9d931f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-01/result.json",
+      "bytes": 3706,
+      "mode": 420,
+      "sha256": "929369ce090351b6e140b7679b2d4efa12e5f3f316a3384a90412595eb7c9acf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-02/result.json",
+      "bytes": 3704,
+      "mode": 420,
+      "sha256": "c9384a28c3962d414ffda61a8b89e284ceb1c7dd328f9f920669f94e28c842eb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-03/result.json",
+      "bytes": 3704,
+      "mode": 420,
+      "sha256": "2f5b94689444ba86079eae07ce8ab33bc2ea42ea1c10dbff8b253a1186a8496b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-04/result.json",
+      "bytes": 3706,
+      "mode": 420,
+      "sha256": "bb0e02323c6f19d2d53e167cace5bed45113a809dbcfc79d376a928f99f4cf14"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-05/result.json",
+      "bytes": 3705,
+      "mode": 420,
+      "sha256": "fe311dcbba322fe68978a6f0ea112efeac0009e67518ce6edea4237cb6133117"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-06/result.json",
+      "bytes": 3705,
+      "mode": 420,
+      "sha256": "68b9077433936d9042acadbff3a52e440c6961650d37e3490e38de88ca6d80d6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-07/result.json",
+      "bytes": 3706,
+      "mode": 420,
+      "sha256": "103de429d0cd30b2391ccbed8b46af72475885619d2f1e6ff4a2b60e8f24f88f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-08/result.json",
+      "bytes": 3706,
+      "mode": 420,
+      "sha256": "b33dfecae00553bc20ec5fb729d354bdfb947919eb09736f46bce2f328b8cebf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-09/result.json",
+      "bytes": 3705,
+      "mode": 420,
+      "sha256": "38746395e19b7e8fc60fc70df646e2f25085ce125a3e378398b4fd32e1fbbea8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-10/result.json",
+      "bytes": 3707,
+      "mode": 420,
+      "sha256": "ece17c3ccf35eddb3e67fc8ce05f77de8a913f8515ec8c89b0dde6c0ef6e44c1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-11/result.json",
+      "bytes": 3707,
+      "mode": 420,
+      "sha256": "ccef9e4549146fb0ce75db5817b40b47437d61f2cd6948cabdf238cd434fad15"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-12/result.json",
+      "bytes": 3707,
+      "mode": 420,
+      "sha256": "6200522810ed0d60b27232986417860eeacdf9fae64cd6bfcd04fc348c465991"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-13/result.json",
+      "bytes": 3706,
+      "mode": 420,
+      "sha256": "2b8311ab9317364c45487dd3501a02b37012b3f17b2b5a3f1632253356bfbd78"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-14/result.json",
+      "bytes": 3707,
+      "mode": 420,
+      "sha256": "9980b66b1502f09357776553b0b72b28d0251c5c88a28a44438e742f8000e9cd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-15/result.json",
+      "bytes": 3705,
+      "mode": 420,
+      "sha256": "e6337ad12105ccb89be95a9c46697114dea6e734260515584f6bf983577d0819"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/lock-rdtsc/result.json",
+      "bytes": 3645,
+      "mode": 420,
+      "sha256": "478145eefdf3a607af6ce61f405e330fc02b57ff0f569ef9c0fd4791f470bc2f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/overlength-rdtsc/result.json",
+      "bytes": 3719,
+      "mode": 420,
+      "sha256": "6825b1662d5c57d497435d02b8e0347502b9ba0867ad38e991ee2b1147b7afbd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/step-rdtsc/result.json",
+      "bytes": 3646,
+      "mode": 420,
+      "sha256": "10d1fde96b43677c6b3810fbd8b967105ee631a2773ed6c94123b0ed710e1e46"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/edge-rdtsc/result.json",
+      "bytes": 3644,
+      "mode": 420,
+      "sha256": "a3c3703e53953c5f16127390f253e5454526ea72fe84ddda6db52d374eb378af"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/rf-rdtsc/result.json",
+      "bytes": 3628,
+      "mode": 420,
+      "sha256": "c3fb06be38c9b2755581635709d6515c274ea0ffb256fe757f58d20fe837e562"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-00/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "da8fd28aa0ed76fa0ba67bebee8f3e716a44df1fa558d147de8bdb01b51ab619"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-01/result.json",
+      "bytes": 3714,
+      "mode": 420,
+      "sha256": "8d64612199436ef3ba21fe3ee682beb1b601da9370a20d07274366467fb32b82"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-02/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "5f4f7fe4ec4dce828b59cb97153de63fa30cbbcbce0d97e6fefe1eafef31090a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-03/result.json",
+      "bytes": 3713,
+      "mode": 420,
+      "sha256": "a6d4a0b97a0f39f1cc1ad7a195cf6c7921940628e2a76d01cbd2c127d97080c7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-04/result.json",
+      "bytes": 3713,
+      "mode": 420,
+      "sha256": "28f7ea836b634285b55d64bc4d6a7dc82ab172e0800d673d953dca4874ad664f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-05/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "2b85a2b2bf7071663bedc99b67e0214afc761853efa5bf21a37a48fe5d860217"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-06/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "75c133c3bb7ecf42ea3c33efb0d43ce7671aa3e90be344ade971ea59f87b9c2f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-07/result.json",
+      "bytes": 3714,
+      "mode": 420,
+      "sha256": "13baca407ba409520a446e6fe9de896372ad1c0ea4ecfe0c01f74e18fe2ea409"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-08/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "0b4b2ea3a44865093f6c1de969ca67dd351fad802da55e929dc43c364c84efa9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-09/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "a6d4625e4328ca1972dda425472e7dc885877cc97dd6b28c29139074f7796d2e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-10/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "06d9cff1cbc109f1e8294fdde73beec5974bc932a58db1016a2f030ba87accec"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-11/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "0cdc0eef9d0987d3b303fd23bbcee05e631d26501043d4b88b65d5103948389a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-12/result.json",
+      "bytes": 3716,
+      "mode": 420,
+      "sha256": "5abf166b9ab33b30522b6f10644ee5f53819dec76f8a4ecda88b24fc242872d5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-13/result.json",
+      "bytes": 3716,
+      "mode": 420,
+      "sha256": "f6e5d4bfed4aedaa28fc54bc52fd73f621101ad19927c5d7aeff17a91915041f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-14/result.json",
+      "bytes": 3715,
+      "mode": 420,
+      "sha256": "5f6dd19756769da878a9da257d0692fa5b41ae77ddc6a8610236d67634fcdd55"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-15/result.json",
+      "bytes": 3716,
+      "mode": 420,
+      "sha256": "682c16e40912cc3bac1d7ff9190acbabc12eecd3711d98db0603a283f2ce49d6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/lock-rdtscp/result.json",
+      "bytes": 3655,
+      "mode": 420,
+      "sha256": "0c5e20d7c23aa6fff96c59da26f281edb5f94feeec36a782a7d77ad3707d761b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/overlength-rdtscp/result.json",
+      "bytes": 3728,
+      "mode": 420,
+      "sha256": "e03251b1560816f4756f9c4aefff9c969730231d22a90b2044143974e74c02fd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/step-rdtscp/result.json",
+      "bytes": 3655,
+      "mode": 420,
+      "sha256": "089bb6a1f8eb40c4bb3bb7f947e1bebc34885f6e70fd0da2d6fb60018d6eb846"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/edge-rdtscp/result.json",
+      "bytes": 3657,
+      "mode": 420,
+      "sha256": "22cfae10e79f175f4ee5da34e1eaf39db4920b549dc608ea8c87771ad3dd904f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/rf-rdtscp/result.json",
+      "bytes": 3637,
+      "mode": 420,
+      "sha256": "fc212581d19122823bfb2ae1f87dd6718acc16e4cba3ccb6854f2cdaea6758e1"
+    }
+  ],
+  "observer_phases": 44,
+  "rust_tests": 0,
+  "vm_controls": 0,
+  "hermit_parity_claim": false,
+  "all_prior_failures_preserved": true,
+  "lease_release": "Every phase closes the private lease after append-only terminal completion; no shared lane lease used."
+}

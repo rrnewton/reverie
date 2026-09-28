@@ -1,0 +1,33 @@
+{
+  "scope": "Final source/artifact readback for primary-reference addendum only",
+  "report": {
+    "path": "PRIMARY_REFERENCE_ADDENDUM_V1.md",
+    "bytes": 20133,
+    "sha256": "8d786442a710aea1999434d37c7bdb93f279b9b3b1caa4fc6ecaee5d76481ec8"
+  },
+  "inputs": {
+    "path": "PRIMARY_REFERENCE_INPUTS_V1.json",
+    "bytes": 29734,
+    "sha256": "5de1e471e8a78bccdee36718dcd57b1736c49713e304103d9ab80d4e51f61c02"
+  },
+  "original_frozen_artifacts_checked": 53,
+  "original_readback": {
+    "path": "READBACK.json",
+    "bytes": 9535,
+    "sha256": "e30774ecf5c86486296b08c8ee4b344cf3d147e6698159ba0044af8ba1733b7f"
+  },
+  "original_source_blobs_reauthenticated": 40,
+  "new_network_requests": 15,
+  "new_requests_status_zero": true,
+  "linux_new_decoded_sources_and_api_git_blobs_reauthenticated": 9,
+  "linux_reused_source_reauthenticated": 1,
+  "primary_html_pages_reauthenticated": 6,
+  "derived_text_hashes_reauthenticated": 6,
+  "new_reference_artifacts_checked": 61,
+  "all_identity_checks_passed": true,
+  "report_completely_read": true,
+  "runtime_executions": 0,
+  "product_source_mutations": 0,
+  "pre_final_check_note": "An initial inventory script expected FETCH_SIGNALFD.json to be a list; its dict shape raised TypeError before writing any manifest. Corrected shape handling completed every identity check without relaxing one.",
+  "limits": "No runtime, vendor-source identity, delivery implementation or design approval; old evidence/proposals remain unchanged."
+}

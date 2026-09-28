@@ -1,0 +1,80 @@
++        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
++        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
++        0x0f, 0x05, // syscall
++        0x0f, 0x0b, // ud2
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
++    code[clone_args_operand..clone_args_operand + 8]
++        .copy_from_slice(&clone_args_address.to_le_bytes());
++    let mut clone_args = [0_u8; 88];
++    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
++    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
++    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
++    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
++    code.extend_from_slice(&clone_args);
++    assert!(
++        code.len() < 0x1000,
++        "code must not overlap the shared data page"
++    );
++    code
++}
++
++#[test]
++fn cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed() {
++    for (ownership, expected) in [
++        (ThreadOwnership::Host, vec![1, 1]),
++        (ThreadOwnership::Tool, vec![1, 2, 1]),
++    ] {
++        let (log, status) = run_cpuid(&cpuid_clone_program(), (true, 2), ownership);
++        assert_eq!(status, 0);
++        assert_eq!(
++            log.calls
++                .lock()
++                .unwrap()
++                .iter()
++                .map(|row| row.0.as_raw())
++                .collect::<Vec<_>>(),
++            expected
++        );
++    }
++}
++
++fn table_program(leaf: u32, subleaf: u32, values: [u32; 4]) -> Vec<u8> {
++    let mut code = vec![0xb8];
++    code.extend_from_slice(&leaf.to_le_bytes());
++    code.push(0xb9);
++    code.extend_from_slice(&subleaf.to_le_bytes());
++    code.extend_from_slice(&[0x0f, 0xa2]);
++    let mut failures = Vec::new();
++    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(values) {
++        code.extend_from_slice(&[0x49, 0xba]);
++        code.extend_from_slice(&u64::from(value).to_le_bytes());
++        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
++        append_jne_failure(&mut code, &mut failures);
++    }
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 20, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    code
++}
++
++#[test]
++fn unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy() {
++    for (leaf, subleaf, expected) in [
++        (0x80000001, 0, [0x663, 0, 1, 0x20100800]),
++        (0xd, 1, [0; 4]),
++        (0xd, 17, [0; 4]),
++        (0xd, 19, [0; 4]),
++    ] {
++        let (log, status) = run_cpuid(

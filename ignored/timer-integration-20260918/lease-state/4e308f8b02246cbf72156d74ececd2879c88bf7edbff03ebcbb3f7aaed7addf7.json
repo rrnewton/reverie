@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "4e308f8b02246cbf72156d74ececd2879c88bf7edbff03ebcbb3f7aaed7addf7",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 4474,
+    "mode": 420,
+    "sha256": "f34479024a637a5ec1751ab22e636ee6b2e3282b331987e8828a78b14761c0c4"
+  }
+}

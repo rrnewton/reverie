@@ -1,0 +1,80 @@
++        assert_eq!(msrs.as_slice()[0].data & 1, 0);
++    }
++
++    #[test]
++    fn cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state() {
++        for previously_armed in [false, true] {
++            for use_tool in [false, true] {
++                let mut backend =
++                    KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++                backend.set_cpuid_interception(previously_armed).unwrap();
++                let request = SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
++                backend.install_syscall(0x1002, 0x2000, request).unwrap();
++                backend.memory.write(0x1000, &[0x0f, 0xa2]).unwrap();
++                let mut registers = backend.vcpu.get_regs().unwrap();
++                registers.rip = 0x1000;
++                backend.vcpu.set_regs(&registers).unwrap();
++                let mut calls = 0;
++                if use_tool {
++                    futures::executor::block_on(backend.run_with_tool::<NonElfCpuidTool, _>(
++                        (),
++                        |actual: &SyscallRequest, _: &GuestMemory| {
++                            assert_eq!(*actual, request);
++                            calls += 1;
++                            41
++                        },
++                    ))
++                    .unwrap();
++                } else {
++                    backend
++                        .run(|call, _| {
++                            assert_eq!(call.number(), reverie::syscalls::Sysno::getpid);
++                            calls += 1;
++                            41
++                        })
++                        .unwrap();
++                }
++                assert_eq!(calls, 1);
++                assert_disarmed(&backend);
++            }
++            let mut backend = KvmBackend::new(16 * 1024 * 1024).unwrap();
++            backend.set_cpuid_interception(previously_armed).unwrap();
++            backend
++                .install_static_elf(
++                    &minimal_test_elf(&[0x0f, 0xa2, 0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]),
++                    "/direct-cpuid",
++                )
++                .unwrap();
++            let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
++            assert_eq!(status, 0);
++            assert!(stdout.is_empty());
++            assert!(stderr.is_empty());
++            assert_disarmed(&backend);
++        }
++    }
++}
+diff --git a/reverie-kvm/src/lib.rs b/reverie-kvm/src/lib.rs
+--- a/reverie-kvm/src/lib.rs
++++ b/reverie-kvm/src/lib.rs
+@@ -18,6 +18,7 @@
+ mod bootstrap;
+ mod clock;
+ mod cpuid;
++mod cpuid_instruction;
+ mod elf;
+ mod error;
+ mod executor;
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -254,6 +254,10 @@
+ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+     fn read_clock(&self) -> Result<u64>;
+ 
++    fn has_cpuid_interception(&self) -> bool {
++        false
++    }
++
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+ 
+     /// Reserve backend bookkeeping before executing an injected syscall.

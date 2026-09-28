@@ -1,0 +1,9 @@
+{
+  "active_exec_session_id": 54576,
+  "command": "PYTHONOPTIMIZE=0 /usr/bin/python3 -B execute_phases.py <RUN-ORDER phases after compile>",
+  "stop_first_failure": true,
+  "source_frozen": true,
+  "source_target_sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+  "next_after_process_completion": "Read final actual result; run finalize_results.py, then finalize_packet.py only if fully qualified. No retry.",
+  "next_author_task": "After qualification, prepare H/ignored/rdtsc-h39ac-cancellation-v1 build caller, H39ac plus frozen V6. No build/guest without root caller inspection."
+}

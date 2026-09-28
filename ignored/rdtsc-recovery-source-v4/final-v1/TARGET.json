@@ -1,0 +1,78 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/TARGET.json",
+    "bytes": 4314,
+    "sha256": "77f9f7fe342b7ea2a81b2dcb266df3e37bfea8c8ee4ad68a23f17c5ea7f95867",
+    "mode": 420
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/SOURCE-MANIFEST.json",
+    "bytes": 1399350,
+    "sha256": "8e3db68f609e8b3bd22af7f41665fd49684b21170233d8bf707d72384515581d",
+    "mode": 420
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/SOURCE.patch",
+    "bytes": 66371,
+    "sha256": "7375550e696b5c96a2ac31d83c3adf304ad10a7461d4ff428ee98ca763001e6d",
+    "mode": 420
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/DELTA.patch",
+    "bytes": 7968,
+    "sha256": "194a5fd8169fee465f95a4941483d491ef18f47462b58d77214a7b74d7b0421a",
+    "mode": 420
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/CALLER-DELTA.patch",
+    "bytes": 3783,
+    "sha256": "6241c5c91126d591622cab8826ad031ea19fce740345114aad793918747aaec9",
+    "mode": 420
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-result-v1/RESULTS.json",
+    "bytes": 181734,
+    "sha256": "d817f40f4d2909d06694316dd00c61e20a881014e7e7889095e54c51158ed0c3",
+    "mode": 420
+  },
+  "raw_execution_audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-result-v1/RAW-EXECUTION-AUDIT.json",
+    "bytes": 40131,
+    "sha256": "0e60ec4dc3fee0f302ba3333a75d5b225d3f0e0183b21feef228d3a68156f143",
+    "mode": 420
+  },
+  "qualification_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-result-v1/READBACK.json",
+    "bytes": 1047,
+    "sha256": "771b1143577ec1773cd15179589a4e6dc7c4e89524c6c0542220c6ca78647ca6",
+    "mode": 420
+  },
+  "artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/retained-binaries/ARTIFACTS.json",
+    "bytes": 7002,
+    "sha256": "2a0bf5bc5a4c8418dd2b95dd0de350aca856350d87139455083e107fe247db63",
+    "mode": 420
+  },
+  "binary_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 6419,
+    "sha256": "5ca98185a60c383568f9f5a82ba559b6db1db839534217f93ae06962925a5e25",
+    "mode": 420
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/final-v1/REPORT.md",
+    "bytes": 3155,
+    "sha256": "f435a4019fb55b7e5f2fb6c411afb7e209bd39725f3df0e6c8b85b6afd4bca24",
+    "mode": 420
+  },
+  "lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/final-v1/LEASE-RELEASE.json",
+    "bytes": 1089,
+    "sha256": "5a028b3ada31b4e46cbe865059ab8ccaf85c08488268322b4b2a32c99b08199f",
+    "mode": 420
+  },
+  "qualified_phases": 40,
+  "passed_declarations": 31,
+  "source_review_approval": false,
+  "parity_qualified": false
+}

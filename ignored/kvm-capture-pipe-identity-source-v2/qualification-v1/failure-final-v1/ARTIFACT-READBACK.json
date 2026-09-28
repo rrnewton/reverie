@@ -1,0 +1,29 @@
+{
+  "original_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 6847,
+    "mode": 420,
+    "sha256": "0b93137c1f91ccb6983a01c31a4f2a93894fdc440574bf2ba4c3a58d54ab131c"
+  },
+  "retained_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/ARTIFACTS.json",
+    "bytes": 7662,
+    "mode": 420,
+    "sha256": "0930bfc09647daa9dd2a5e6d664dfc03b349603335b837c2660bf30b3ab8421b"
+  },
+  "four_harnesses_fresh_false": true,
+  "linked_library_fresh_false": true,
+  "retained_linked_library": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/retained-linked-library.rlib",
+    "bytes": 63170364,
+    "mode": 292,
+    "sha256": "27a96c974d129bee66530e8408c2e856d43cc7c3f55e2ceff6740c916abfe066"
+  },
+  "historical_linked_library": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/target/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+    "bytes": 63170364,
+    "mode": 420,
+    "sha256": "27a96c974d129bee66530e8408c2e856d43cc7c3f55e2ceff6740c916abfe066"
+  },
+  "meaning": "Actual accepted compile, immutable four harnesses and separate rlib copy; no credit for unrun selectors. Historical target paths are not immutable inputs."
+}

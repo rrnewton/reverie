@@ -1,0 +1,22 @@
+{
+  "all_records_authenticated": true,
+  "retained_source_records": 31,
+  "owned_records": 9,
+  "primary": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/REPORT.md",
+      "bytes": 15847,
+      "sha256": "a65b51478913cc810217cf5e266bb64b76c85838daa2af6e434582be7c5834e0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/SOURCE_BINDINGS.json",
+      "bytes": 10645,
+      "sha256": "5df59ee43c43e7e37f8c56fe125e15b8bac3f8263d838297e2267b2e20a80d39"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/INPUTS.json",
+      "bytes": 2563,
+      "sha256": "25e68025712df8a7cecce2ec78b2f2531770d8c255466cc66ebe7b319406e8d4"
+    }
+  ]
+}

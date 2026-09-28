@@ -1,0 +1,12 @@
+{
+  "phases": [
+    "metadata",
+    "compile",
+    "format",
+    "list-static",
+    "host-worker-diagnostic"
+  ],
+  "metadata_followup": "bind_dependencies.py",
+  "compile_followup": "retain_artifacts.py",
+  "stop_first_unaccepted": true
+}

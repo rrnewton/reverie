@@ -1,0 +1,27 @@
+{
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/RESULTS.json",
+    "bytes": 12268,
+    "mode": 420,
+    "sha256": "09156644d7439a147778655bfc8706d8c5c338a15e6c38e20fc428e64bca01f0"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/REPORT.md",
+    "bytes": 916,
+    "mode": 420,
+    "sha256": "3a61497d5cd17271e9e176cf859be3d4e47cf2e9edf9e2883d6e568786470b6c"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/INPUTS.json",
+    "bytes": 109200,
+    "mode": 420,
+    "sha256": "d7029c86be7b7731f6630bf975610c2aff33d7bc48385df24a057a7ccace7327"
+  },
+  "lease_release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/LEASE-RELEASE.json",
+    "bytes": 1406,
+    "mode": 420,
+    "sha256": "69f072dbac52ab9689add0e0d9796a9220a3e439db4fc95d4ab6b8af4f97c999"
+  },
+  "frozen": true
+}

@@ -1,0 +1,48 @@
+{
+  "scope": "Author format only, not component qualification",
+  "command": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/terminal_runtime_tests.rs",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs"
+  ],
+  "tool": {
+    "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "bytes": 5255768,
+    "mode": 493,
+    "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+  },
+  "before": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 6566,
+      "mode": 420,
+      "sha256": "8f8f892103e56e4a14068ab3fc45af255c431324ae866644204061ce52c9dee2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+      "bytes": 15529,
+      "mode": 420,
+      "sha256": "b4dd1276fc10c8ad19dd4ab863d0bb741a6ea0b7ccc3e51a20794264966e5e58"
+    }
+  ],
+  "after": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 6658,
+      "mode": 420,
+      "sha256": "b91758f9496c8acd30a8ae43337593c7caa27fe3af24fb8f584a877e597d4715"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+      "bytes": 15727,
+      "mode": 420,
+      "sha256": "447bf99dbb60c01f64349f213f34e7b6da2f2b4d80bf37e5e5ecc56c68dafa93"
+    }
+  ],
+  "raw_status": 0,
+  "seconds": 0.03958808979950845,
+  "cpu_limit": 30,
+  "wall_limit": 60
+}

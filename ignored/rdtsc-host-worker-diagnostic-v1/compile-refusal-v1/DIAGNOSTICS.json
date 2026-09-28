@@ -1,0 +1,437 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14645:36\n      |\n14645 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |                                    ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 502284,
+          "byte_start": 502274,
+          "column_end": 46,
+          "column_start": 36,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14645,
+          "line_start": 14645,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 36,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14624:36\n      |\n14624 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |                                    ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 501465,
+          "byte_start": 501455,
+          "column_end": 46,
+          "column_start": 36,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14624,
+          "line_start": 14624,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 36,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14612:36\n      |\n14612 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |                                    ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 501010,
+          "byte_start": 501000,
+          "column_end": 46,
+          "column_start": 36,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14612,
+          "line_start": 14612,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 36,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14535:21\n      |\n14535 |         let bytes = serde_json::to_vec_pretty(&*records).unwrap();\n      |                     ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n      |\n      = help: if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 498370,
+          "byte_start": 498360,
+          "column_end": 31,
+          "column_start": 21,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14535,
+          "line_start": 14535,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 31,
+              "highlight_start": 21,
+              "text": "        let bytes = serde_json::to_vec_pretty(&*records).unwrap();"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14612:9\n      |\n14612 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |         ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n      |\n      = help: if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 500983,
+          "byte_start": 500973,
+          "column_end": 19,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14612,
+          "line_start": 14612,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 19,
+              "highlight_start": 9,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14624:9\n      |\n14624 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |         ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n      |\n      = help: if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 501438,
+          "byte_start": 501428,
+          "column_end": 19,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14624,
+          "line_start": 14624,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 19,
+              "highlight_start": 9,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0433]: cannot find module or crate `serde_json` in this scope\n     --> reverie-kvm/tests/static_elf.rs:14645:9\n      |\n14645 |         serde_json::to_vec_pretty(&serde_json::json!({\n      |         ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n      |\n      = help: if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "if you wanted to use a crate named `serde_json`, use `cargo add serde_json` to add it to your `Cargo.toml`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "cannot find module or crate `serde_json` in this scope",
+      "spans": [
+        {
+          "byte_end": 502257,
+          "byte_start": 502247,
+          "column_end": 19,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "reverie-kvm/tests/static_elf.rs",
+          "is_primary": true,
+          "label": "use of unresolved module or unlinked crate `serde_json`",
+          "line_end": 14645,
+          "line_start": 14645,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 19,
+              "highlight_start": 9,
+              "text": "        serde_json::to_vec_pretty(&serde_json::json!({"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0433",
+        "explanation": "An undeclared crate, module, or type was used.\n\nErroneous code example:\n\n```compile_fail,E0433\nlet map = HashMap::new();\n// error: failed to resolve: use of undeclared type `HashMap`\n```\n\nPlease verify you didn't misspell the type/module's name or that you didn't\nforget to import it:\n\n```\nuse std::collections::HashMap; // HashMap has been imported.\nlet map: HashMap<u32, u32> = HashMap::new(); // So it can be used!\n```\n\nIf you've expected to use a crate name:\n\n```compile_fail\nuse ferris_wheel::BigO;\n// error: failed to resolve: use of undeclared module or unlinked crate\n```\n\nMake sure the crate has been added as a dependency in `Cargo.toml`.\n\nTo use a module from your current crate, add the `crate::` prefix to the path.\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "static_elf",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/source/reverie-kvm/tests/static_elf.rs",
+      "edition": "2024",
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    "message": {
+      "rendered": "For more information about this error, try `rustc --explain E0433`.\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "failure-note",
+      "message": "For more information about this error, try `rustc --explain E0433`.",
+      "spans": [],
+      "code": null
+    }
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "authorized_target_sha256": "117cb24fca03f164c866863e25df96517dfb9c6e1f062332872bbaa3b215eada",
+  "python": "/usr/bin/python3",
+  "optimize": 0,
+  "debug": true,
+  "pythonoptimize": "0",
+  "phases": 45,
+  "declarations": 36,
+  "no_retries": true
+}

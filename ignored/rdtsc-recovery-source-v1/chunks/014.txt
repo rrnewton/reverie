@@ -1,0 +1,60 @@
+@@ -1121,6 +1147,7 @@
+             thread_ownership: ThreadOwnership::Host,
+             // No explicit caller override: follow the tool at run entry.
+             thread_ownership_override: None,
++            intercept_rdtsc: false,
+             static_elf: None,
+             stdin,
+             root_pid: 1,
+@@ -2607,6 +2634,117 @@
+         }))
+     }
+ 
++    pub(crate) fn set_rdtsc_interception(&mut self, enabled: bool) -> Result<()> {
++        crate::bootstrap::set_userspace_rdtsc_interception(&self.vcpu, enabled)?;
++        self.intercept_rdtsc = enabled;
++        Ok(())
++    }
++
++    pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
++        // This guard precedes even reading the fault frame: an unsubscribed
++        // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
++        if !self.intercept_rdtsc {
++            return Ok(None);
++        }
++        let Some(exception) = self.static_elf_exception()? else {
++            return Ok(None);
++        };
++        if !matches!(exception.vector, 6 | 13) {
++            return Ok(None);
++        }
++        let halted = self.vcpu.get_regs()?;
++        let special = self.vcpu.get_sregs()?;
++        if special.cr0 & (1 << 31) == 0
++            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
++            || special.cr4 & (1 << 12) != 0
++            || special.cr4 & (1 << 2) == 0
++        {
++            return Ok(None);
++        }
++        let mut frame = [0; 6 * 8];
++        let words = if exception.vector == 13 { 6 } else { 5 };
++        self.memory.read_raw(halted.rsp, &mut frame[..words * 8])?;
++        let word = |index: usize| {
++            u64::from_le_bytes(
++                frame[index * 8..index * 8 + 8]
++                    .try_into()
++                    .expect("exception frame word"),
++            )
++        };
++        let first = usize::from(exception.vector == 13);
++        let cs = word(first + 1);
++        let ss = word(first + 4);
++        if (exception.vector == 13 && word(0) != 0)
++            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
++            || ![
++                u64::from(crate::signal::USER_DATA_SELECTOR),
++                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
++            ]
++            .contains(&ss)
++        {

@@ -1,0 +1,5 @@
+{
+  "raw_status": 1,
+  "error": "Successor manifest preparation treated a symlink row as a regular file and requested absent file_mode. No target, cache, lease or compile touched.",
+  "helper_sha256": "d36faca9f14c14656538e2e9ecdbaa61902a48b263ae8059f8eca02fc25c6888"
+}

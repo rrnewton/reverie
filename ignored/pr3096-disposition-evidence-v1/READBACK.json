@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "checked_at_utc": "2026-09-18T15:06:05.010286+00:00",
+  "records": 111,
+  "failures": [],
+  "inputs_sha256": "a34f064c270c89935eb9b68d44c99e0e343d2405ba8e7205920c89c37500438f",
+  "report_sha256": "0402f8209a9bfd8e2fc2fb09a4272ea2236af31575335c7bd2ba738ced36c7b1",
+  "scope": "Read-only source/evidence audit, no current runtime or whole-scheduler approval."
+}

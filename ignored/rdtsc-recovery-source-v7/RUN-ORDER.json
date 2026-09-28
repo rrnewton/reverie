@@ -1,0 +1,19 @@
+{
+  "phases": [
+    "metadata",
+    "compile",
+    "format",
+    "core-check",
+    "clippy",
+    "list-lib",
+    "list-static",
+    "timestamp-v7-admission",
+    "timestamp-v7-worker-group",
+    "timestamp-32",
+    "timestamp-33",
+    "timestamp-34",
+    "timestamp-37"
+  ],
+  "declarations": 6,
+  "phase_count": 13
+}

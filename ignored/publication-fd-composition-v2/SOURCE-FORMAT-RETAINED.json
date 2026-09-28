@@ -1,0 +1,149 @@
+{
+  "scope": "Exact reproduction of recorded source-preparation bytes; all hashes equal the original formatter records. These are not qualified receipts.",
+  "records": [
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+        "bytes": 73722,
+        "sha256": "98bb62805a71b5824e4ab864d6ce0bae05fc7e90c0fa37d577d18807f80d53f2"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/before/reverie-kvm/src/elf.rs",
+        "bytes": 73722,
+        "sha256": "98bb62805a71b5824e4ab864d6ce0bae05fc7e90c0fa37d577d18807f80d53f2"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+        "bytes": 1472497,
+        "sha256": "f17275b4abc34579f2bf33994b90047822fadce01639df187f34f20f1c064541"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/before/reverie-kvm/src/executor.rs",
+        "bytes": 1472497,
+        "sha256": "f17275b4abc34579f2bf33994b90047822fadce01639df187f34f20f1c064541"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34220,
+        "sha256": "34e0ee688c691b1314bbba62d8ed41365a1f3e64edbe5eb508a12bfff8e3495c"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/before/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34220,
+        "sha256": "34e0ee688c691b1314bbba62d8ed41365a1f3e64edbe5eb508a12bfff8e3495c"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+        "bytes": 73975,
+        "sha256": "8698dec597388d491d05afc581f53a951f6687c174786e66431697c66171b807"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/after/reverie-kvm/src/elf.rs",
+        "bytes": 73975,
+        "sha256": "8698dec597388d491d05afc581f53a951f6687c174786e66431697c66171b807"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+        "bytes": 1475699,
+        "sha256": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/after/reverie-kvm/src/executor.rs",
+        "bytes": 1475699,
+        "sha256": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34331,
+        "sha256": "79e2888f41abc49dde140217fafef56a5ccd7eb5e52eade7a0e559a968bbb75b"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/01/after/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34331,
+        "sha256": "79e2888f41abc49dde140217fafef56a5ccd7eb5e52eade7a0e559a968bbb75b"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+        "bytes": 73971,
+        "sha256": "3ba6138fc497e3b0872d2c859cdf50836d3bbabb1d068f59f43397e97a462e73"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/before/reverie-kvm/src/elf.rs",
+        "bytes": 73971,
+        "sha256": "3ba6138fc497e3b0872d2c859cdf50836d3bbabb1d068f59f43397e97a462e73"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+        "bytes": 1472497,
+        "sha256": "f17275b4abc34579f2bf33994b90047822fadce01639df187f34f20f1c064541"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/before/reverie-kvm/src/executor.rs",
+        "bytes": 1472497,
+        "sha256": "f17275b4abc34579f2bf33994b90047822fadce01639df187f34f20f1c064541"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34220,
+        "sha256": "34e0ee688c691b1314bbba62d8ed41365a1f3e64edbe5eb508a12bfff8e3495c"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/before/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34220,
+        "sha256": "34e0ee688c691b1314bbba62d8ed41365a1f3e64edbe5eb508a12bfff8e3495c"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+        "bytes": 74224,
+        "sha256": "e96d411feb9663725d69e743949a15b171515e1d0b8f8c74bea4bf9d8246e024"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/after/reverie-kvm/src/elf.rs",
+        "bytes": 74224,
+        "sha256": "e96d411feb9663725d69e743949a15b171515e1d0b8f8c74bea4bf9d8246e024"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+        "bytes": 1475699,
+        "sha256": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/after/reverie-kvm/src/executor.rs",
+        "bytes": 1475699,
+        "sha256": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b"
+      }
+    },
+    {
+      "historical_path_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34331,
+        "sha256": "79e2888f41abc49dde140217fafef56a5ccd7eb5e52eade7a0e559a968bbb75b"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source-format-retained/02/after/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34331,
+        "sha256": "79e2888f41abc49dde140217fafef56a5ccd7eb5e52eade7a0e559a968bbb75b"
+      }
+    }
+  ]
+}

@@ -1,0 +1,300 @@
+
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>FUTEX_WAIT_BITSET(2const) - Linux manual page</title>
+    <link rel="stylesheet" type="text/css" href="../../../style.css" title="style" />
+    <link rel="stylesheet" type="text/css" href="../style.css" title="style" />
+</head>
+
+<body>
+
+<div class="page-top"><a id="top_of_page"></a></div>
+<!--%%%TOP_BAR%%%-->
+    <div class="nav-bar">
+        <table class="nav-table">
+            <tr>
+                <td class="nav-cell">
+                    <p class="nav-text">
+                        <a href="../../../index.html">man7.org</a> &gt; Linux &gt; <a href="../index.html">man-pages</a>
+                    </p>
+                </td>
+                <td class="training-cell">
+                    <p class="training-text"><a class="training-link" href="http://man7.org/training/">Linux/UNIX system programming training</a></p>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+<hr class="nav-end" />
+
+<!--%%%PAGE_START%%%-->
+<h1>FUTEX_WAIT_BITSET(2const) &mdash; Linux manual page</h1>
+
+
+<table class="sec-table">
+<tr>
+    <td>
+        <p class="section-dir">
+<a href="#NAME">NAME</a> | <a href="#LIBRARY">LIBRARY</a> | <a href="#SYNOPSIS">SYNOPSIS</a> | <a href="#DESCRIPTION">DESCRIPTION</a> | <a href="#RETURN_VALUE">RETURN&nbsp;VALUE</a> | <a href="#ERRORS">ERRORS</a> | <a href="#STANDARDS">STANDARDS</a> | <a href="#HISTORY">HISTORY</a> | <a href="#SEE_ALSO">SEE&nbsp;ALSO</a> | <a href="#COLOPHON">COLOPHON</a>
+        </p>
+    </td>
+</tr>
+<tr>
+    <td class="search-box">
+        <div class="man-search-box">
+
+            <form method="get" action="https://www.google.com/search">
+                <fieldset class="man-search">
+                    <input type="text" name="q" size="10" maxlength="255" value="" />
+                    <input type="hidden" name="sitesearch" value="man7.org/linux/man-pages" />
+                    <input type="submit" name="sa" value="Search online pages" />
+                </fieldset>
+            </form>
+
+        </div>
+    </td>
+    <td> </td>
+</tr>
+</table>
+
+<!--%%%TEXT_START%%%-->
+<pre>
+<span class="headline"><i>FUTEX_WAIT_BITSET</i>(2const)                       <i>FUTEX_WAIT_BITSET</i>(2const)</span>
+</pre>
+<h2><a id="NAME" href="#NAME"></a>NAME  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET - selective futex waiting and
+       waking
+</pre>
+<h2><a id="LIBRARY" href="#LIBRARY"></a>LIBRARY  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       Standard C library (<i>libc</i>, <i>-lc</i>)
+</pre>
+<h2><a id="SYNOPSIS" href="#SYNOPSIS"></a>SYNOPSIS  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       <b>#include &lt;linux/futex.h&gt;  </b>/* Definition of <b>FUTEX_* </b>constants */
+       <b>#include &lt;sys/syscall.h&gt;  </b>/* Definition of <b>SYS_* </b>constants */
+       <b>#include &lt;unistd.h&gt;</b>
+
+       <b>long syscall(SYS_futex, uint32_t *</b><i>uaddr</i><b>, FUTEX_WAIT_BITSET, uint32_t </b><i>val</i><b>,</b>
+                    <b>const struct timespec *</b><i>timeout</i><b>, NULL,</b>
+                    <b>uint32_t </b><i>val3</i><b>);</b>
+
+       <b>long syscall(SYS_futex, uint32_t *</b><i>uaddr</i><b>, FUTEX_WAKE_BITSET, uint32_t </b><i>val</i><b>,</b>
+                    <b>NULL, NULL,</b>
+                    <b>uint32_t </b><i>val3</i><b>);</b>
+</pre>
+<h2><a id="DESCRIPTION" href="#DESCRIPTION"></a>DESCRIPTION  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       <b>FUTEX_WAIT_BITSET</b>
+              This operation is like <a href="../man2/FUTEX_WAIT.2const.html">FUTEX_WAIT(2const)</a> except that <i>val3</i>
+              is used to provide a 32-bit bit mask to the kernel.  This
+              bit mask, in which at least one bit must be set, is stored
+              in the kernel-internal state of the waiter.  See the
+              description of <b>FUTEX_WAKE_BITSET </b>for further details.
+
+              If <i>timeout</i> is not NULL, the structure it points to
+              specifies an absolute timeout for the wait operation.  If
+              <i>timeout</i> is NULL, the operation can block indefinitely.
+
+       <b>FUTEX_WAKE_BITSET</b>
+              This operation is the same as <a href="../man2/FUTEX_WAKE.2const.html">FUTEX_WAKE(2const)</a> except
+              that the <i>val3</i> argument is used to provide a 32-bit bit mask
+              to the kernel.  This bit mask, in which at least one bit
+              must be set, is used to select which waiters should be
+              woken up.  The selection is done by a bitwise AND of the
+              "wake" bit mask (i.e., the value in <i>val3</i>) and the bit mask
+              which is stored in the kernel-internal state of the waiter
+              (the "wait" bit mask that is set using <b>FUTEX_WAIT_BITSET</b>).
+              All of the waiters for which the result of the AND is
+              nonzero are woken up; the remaining waiters are left
+              sleeping.
+
+              The effect of <b>FUTEX_WAIT_BITSET </b>and <b>FUTEX_WAKE_BITSET </b>is to
+              allow selective wake-ups among multiple waiters that are
+              blocked on the same futex.  However, note that, depending
+              on the use case, employing this bit-mask multiplexing
+              feature on a futex can be less efficient than simply using
+              multiple futexes, because employing bit-mask multiplexing
+              requires the kernel to check all waiters on a futex,
+              including those that are not interested in being woken up
+              (i.e., they do not have the relevant bit set in their
+              "wait" bit mask).
+
+              The constant <b>FUTEX_BITSET_MATCH_ANY</b>, which corresponds to
+              all 32 bits set in the bit mask, can be used as the <i>val3</i>
+              argument for <b>FUTEX_WAIT_BITSET </b>and <b>FUTEX_WAKE_BITSET</b>.
+              Other than differences in the handling of the <i>timeout</i>
+              argument, the <a href="../man2/FUTEX_WAIT.2const.html">FUTEX_WAIT(2const)</a> operation is equivalent to
+              <b>FUTEX_WAIT_BITSET </b>with <i>val3</i> specified as
+              <b>FUTEX_BITSET_MATCH_ANY</b>; that is, allow a wake-up by any
+              waker.  The <a href="../man2/FUTEX_WAKE.2const.html">FUTEX_WAKE(2const)</a> operation is equivalent to
+              <b>FUTEX_WAKE_BITSET </b>with <i>val3</i> specified as
+              <b>FUTEX_BITSET_MATCH_ANY</b>; that is, wake up any waiter(s).
+</pre>
+<h2><a id="RETURN_VALUE" href="#RETURN_VALUE"></a>RETURN VALUE  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       On error, -1 is returned, and <i><a href="../man3/errno.3.html">errno</a></i> is set to indicate the error.
+
+       The return value on success depends on the operation, as described
+       in the following list:
+
+       <b>FUTEX_WAIT_BITSET</b>
+              Returns 0 if the caller was woken up.  See
+              <a href="../man2/FUTEX_WAIT.2const.html">FUTEX_WAIT(2const)</a> for how to interpret this correctly in
+              practice.
+
+       <b>FUTEX_WAKE_BITSET</b>
+              Returns the number of waiters that were woken up.
+</pre>
+<h2><a id="ERRORS" href="#ERRORS"></a>ERRORS  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       See <a href="../man2/futex.2.html">futex(2)</a>.
+
+       <b>EAGAIN </b>or <b>EWOULDBLOCK</b>
+              (<b>FUTEX_WAIT_BITSET</b>) The value pointed to by <i>uaddr</i> was not
+              equal to the expected value <i>val</i> at the time of the call.
+
+       <b>EFAULT </b><i>timeout</i> did not point to a valid user-space address.
+
+       <b>EINTR  </b>A <b>FUTEX_WAIT_BITSET </b>operation was interrupted by a signal
+              (see <a href="../man7/signal.7.html">signal(7)</a>).  Before Linux 2.6.22, this error could
+              also be returned for a spurious wakeup; since Linux 2.6.22,
+              this no longer happens.
+
+       <b>EINVAL </b>The supplied <i>timeout</i> argument was invalid (<i>tv_sec</i> was less
+              than zero, or <i>tv_nsec</i> was not less than 1,000,000,000).
+
+       <b>EINVAL </b><i>uaddr2</i> does not point to a valid object—that is, the
+              address is not four-byte-aligned.
+
+       <b>EINVAL </b>The bit mask supplied in <i>val3</i> is zero.
+
+       <b>EINVAL </b>(<b>FUTEX_WAKE_BITSET</b>) The kernel detected an inconsistency
+              between the user-space state at <i>uaddr</i> and the kernel state—
+              that is, it detected a waiter which waits in
+              <a href="../man2/FUTEX_LOCK_PI.2const.html">FUTEX_LOCK_PI(2const)</a> or <a href="../man2/FUTEX_LOCK_PI2.2const.html">FUTEX_LOCK_PI2(2const)</a> on <i>uaddr</i>.
+
+       <b>ETIMEDOUT</b>
+              The timeout expired before the operation completed.
+</pre>
+<h2><a id="STANDARDS" href="#STANDARDS"></a>STANDARDS  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       Linux.
+</pre>
+<h2><a id="HISTORY" href="#HISTORY"></a>HISTORY  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       Linux 2.6.25.
+</pre>
+<h2><a id="SEE_ALSO" href="#SEE_ALSO"></a>SEE ALSO  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       <a href="../man2/futex.2.html">futex(2)</a>
+</pre>
+<h2><a id="COLOPHON" href="#COLOPHON"></a>COLOPHON  &nbsp; &nbsp; &nbsp; &nbsp; <a href="#top_of_page"><span class="top-link">top</span></a></h2><pre>
+       This page is part of the <i>man-pages</i> (Linux kernel and C library
+       user-space interface documentation) project.  Information about
+       the project can be found at 
+       ⟨<a href="https://www.kernel.org/doc/man-pages/">https://www.kernel.org/doc/man-pages/</a>⟩.  If you have a bug report
+       for this manual page, see
+       ⟨<a href="https://git.kernel.org/pub/scm/docs/man-pages/man-pages.git/tree/CONTRIBUTING">https://git.kernel.org/pub/scm/docs/man-pages/man-pages.git/tree/CONTRIBUTING</a>⟩.
+       This page was obtained from the tarball man-pages-6.19.tar.gz
+       fetched from
+       ⟨<a href="https://mirrors.edge.kernel.org/pub/linux/docs/man-pages/">https://mirrors.edge.kernel.org/pub/linux/docs/man-pages/</a>⟩ on
+       2026-09-09.  If you discover any rendering problems in this HTML
+       version of the page, or you believe there is a better or more up-
+       to-date source for the page, or you have corrections or
+       improvements to the information in this COLOPHON (which is <i>not</i>
+       part of the original manual page), send a mail to
+       man-pages@man7.org
+
+<span class="footline">Linux man-pages 6.19            2026-02-10      <i>FUTEX_WAIT_BITSET</i>(2const)</span>
+</pre>
+
+<hr class="end-man-text" />
+<p>Pages that refer to this page:
+    <a href="../man2/futex.2.html">futex(2)</a>,&nbsp;
+    <a href="../man2/FUTEX_CMP_REQUEUE_PI.2const.html">FUTEX_CMP_REQUEUE_PI(2const)</a>,&nbsp;
+    <a href="../man2/FUTEX_LOCK_PI.2const.html">FUTEX_LOCK_PI(2const)</a>,&nbsp;
+    <a href="../man2/FUTEX_TRYLOCK_PI.2const.html">FUTEX_TRYLOCK_PI(2const)</a>,&nbsp;
+    <a href="../man2/FUTEX_UNLOCK_PI.2const.html">FUTEX_UNLOCK_PI(2const)</a>,&nbsp;
+    <a href="../man2/FUTEX_WAIT.2const.html">FUTEX_WAIT(2const)</a>
+</p>
+<hr/>
+
+<p class="page-copyright"><a href="../man2/FUTEX_WAIT_BITSET.2const.license.html">Copyright and license for this manual page</a></p> 
+<hr class="start-footer" />
+
+<div class="footer">
+
+<table class="colophon-table">
+    <tr>
+    <td class="pub-info">
+        <p>
+            HTML rendering created 2026-09-09
+            by <a href="https://man7.org/mtk/index.html">Michael Kerrisk</a>,
+            author of
+            <a href="https://man7.org/tlpi/"><em>The Linux Programming Interface</em></a>.
+        </p>
+        <p>
+            For details of in-depth
+            <strong>Linux/UNIX system programming training courses</strong>
+            that I teach, look <a href="https://man7.org/training/">here</a>.
+        </p>
+        <p>
+            Hosting by <a href="https://www.jambit.com/index_en.html">jambit GmbH</a>.
+        </p>
+    </td>
+    <td class="colophon-divider">
+    </td>
+    <td class="tlpi-cover">
+        <a href="https://man7.org/tlpi/"><img src="https://man7.org/tlpi/cover/TLPI-front-cover-vsmall.png" alt="Cover of TLPI" /></a>
+    </td>
+    </tr>
+</table>
+
+</div>
+
+<hr class="end-footer" />
+
+
+
+<!--BEGIN-SITETRACKING-->
+<!-- SITETRACKING.man7.org_linux_man-pages -->
+
+<!-- Default Statcounter code for man7.org/linux/man-pages
+http://www.man7.org/linux/man-pages -->
+<script type="text/javascript">
+var sc_project=7422636;
+var sc_invisible=1;
+var sc_security="9b6714ff";
+</script>
+<script type="text/javascript"
+src="https://www.statcounter.com/counter/counter.js"
+async></script>
+<noscript><div class="statcounter"><a title="Web Analytics
+Made Easy - StatCounter" href="https://statcounter.com/"
+target="_blank"><img class="statcounter"
+src="https://c.statcounter.com/7422636/0/9b6714ff/1/"
+alt="Web Analytics Made Easy -
+StatCounter"></a></div></noscript>
+<!-- End of Statcounter Code -->
+
+
+
+<!-- Start of Google Analytics Code -->
+
+<script type="text/javascript">
+
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-9830363-8']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+
+</script>
+
+<!-- End of Google Analytics Code -->
+
+<!--END-SITETRACKING-->
+
+</body>
+</html>

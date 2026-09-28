@@ -1,0 +1,641 @@
+{
+  "status": "PROPOSED; NOT ENUMERATED OR EXECUTED",
+  "groups": {
+    "capture-01": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks"
+      ],
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "origin": "new unexecuted control",
+      "purpose": "actual native pipe and keeper identity; all metadata routes; unchanged no-follow device"
+    },
+    "capture-02": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement"
+      ],
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "origin": "new unexecuted control",
+      "purpose": "real executor descriptor alias/table/fork/exec mutations and buffered output"
+    },
+    "capture-03": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed"
+      ],
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "origin": "new unexecuted control",
+      "purpose": "isolated closed 0/1/2 setup; private keeper relocation and CLOEXEC"
+    },
+    "capture-04": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind"
+      ],
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "origin": "new unexecuted control",
+      "purpose": "real executor/worker teardown and final OwnedFd release after both guards; normal/unwind"
+    },
+    "capture-05": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams"
+      ],
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "origin": "new unexecuted control",
+      "purpose": "actual root API error before GlobalState; pipe1/pipe2/F_DUPFD_CLOEXEC EMFILE; restored limits"
+    },
+    "capture-06": {
+      "artifact": "static",
+      "names": [
+        "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe"
+      ],
+      "source": "reverie-kvm/tests/support/capture_identity.rs",
+      "origin": "new unexecuted control",
+      "purpose": "freestanding actual KVM root paths, full exact output/status, device equality and distinct inodes"
+    },
+    "neighbor-01": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_output_fstat_is_synthetic_and_stable"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-02": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-03": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-04": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-05": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-06": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-07": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-08": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::forked_executors_share_captured_output_order"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-09": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-10": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-11": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-12": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-13": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-14": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-15": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-16": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::descriptor_retirement_close_and_dup_release_both_guards"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-17": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-18": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::descriptor_retirement_install_error_releases_both_guards"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-19": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "neighbor-20": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions"
+      ],
+      "source": "reverie-kvm/src/executor.rs",
+      "origin": "existing control; exact original assertions retained except two intentionally corrected captured object identity oracles",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    "v6-timestamp-01": {
+      "artifact": "lib",
+      "names": [
+        "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte"
+      ],
+      "source": "reverie-kvm/src/timestamp.rs",
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+    },
+    "v6-timestamp-02": {
+      "artifact": "lib",
+      "names": [
+        "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults"
+      ],
+      "source": "reverie-kvm/src/timestamp.rs",
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+    },
+    "v6-timestamp-03": {
+      "artifact": "lib",
+      "names": [
+        "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags"
+      ],
+      "source": "reverie-kvm/src/timestamp.rs",
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+    },
+    "v6-timestamp-04": {
+      "artifact": "lib",
+      "names": [
+        "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction"
+      ],
+      "source": "reverie-kvm/src/timestamp.rs",
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+    },
+    "v6-timestamp-05": {
+      "artifact": "lib",
+      "names": [
+        "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority"
+      ],
+      "source": "reverie-kvm/src/vm.rs",
+      "origin": "new candidate",
+      "purpose": "Actual KVM exception priority for completed two-byte instruction versus inaccessible third byte; no replacement fetch simulator"
+    },
+    "v6-timestamp-06": {
+      "artifact": "lib",
+      "names": [
+        "cpuid::tests::deterministic_policy_replaces_host_identity_and_features"
+      ],
+      "source": "reverie-kvm/src/cpuid.rs",
+      "origin": "existing, strengthened",
+      "purpose": "All old assertions retained plus RDTSCP capability bit remains clear; unsubscribed faults retain their meaning"
+    },
+    "v6-timestamp-07": {
+      "artifact": "static",
+      "names": [
+        "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-08": {
+      "artifact": "static",
+      "names": [
+        "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-09": {
+      "artifact": "static",
+      "names": [
+        "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-10": {
+      "artifact": "static",
+      "names": [
+        "subscribed_timestamp_dispatch_refuses_unrelated_exceptions"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-11": {
+      "artifact": "static",
+      "names": [
+        "repeated_timestamp_reads_evolve_once_per_instruction"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-12": {
+      "artifact": "static",
+      "names": [
+        "static_elf_unsubscribed_rdtscp_remains_guest_exception"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    "v6-timestamp-13": {
+      "artifact": "static",
+      "names": [
+        "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "new candidate",
+      "purpose": "Current clock/RPC and exact returning getpid/fork refusal retained; obsolete unlanded exit refusal replaced by exec refusal, with actual ordinary/tail exit coverage in timestamp-32."
+    },
+    "v6-timestamp-14": {
+      "artifact": "static",
+      "names": [
+        "host_owned_timestamp_worker_keeps_native_execution"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "V4 replacement of new unlanded fixture after actual RIP attribution",
+      "purpose": "Loader-free static clone/CLEARTID: both root RDTSC results exact, actual worker RDTSC followed by its TID/completion marker and real exit, exactly two root callbacks and zero worker callbacks; no count widening or callback filtering."
+    },
+    "v6-timestamp-15": {
+      "artifact": "static",
+      "names": [
+        "prefixed_timestamp_instructions_preserve_registers_flags_and_stack"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    "v6-timestamp-16": {
+      "artifact": "static",
+      "names": [
+        "locked_and_overlength_timestamp_encodings_remain_faults"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    "v6-timestamp-17": {
+      "artifact": "static",
+      "names": [
+        "timestamp_tool_preserves_results_with_host_supported_cpuid"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    "v6-timestamp-18": {
+      "artifact": "static",
+      "names": [
+        "timestamp_single_step_reports_the_retired_instruction_boundary"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    "v6-timestamp-19": {
+      "artifact": "static",
+      "names": [
+        "static_elf_faults_are_reported_by_direct_and_tool_runtimes"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-20": {
+      "artifact": "static",
+      "names": [
+        "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-21": {
+      "artifact": "static",
+      "names": [
+        "static_elf_forks_execs_and_waits_for_child"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-22": {
+      "artifact": "static",
+      "names": [
+        "static_elf_runs_glibc_clone3_thread_and_restores_parent_state"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-23": {
+      "artifact": "static",
+      "names": [
+        "static_elf_caught_signal_returns_through_rt_sigreturn"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-24": {
+      "artifact": "static",
+      "names": [
+        "post_exec_failure_runs_tool_exit_lifecycle"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    "v6-timestamp-25": {
+      "artifact": "vmcall",
+      "names": [
+        "guest_write_syscall_runs_shared_reverie_tool"
+      ],
+      "source": "reverie-kvm/tests/vmcall.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+    },
+    "v6-timestamp-26": {
+      "artifact": "vmcall",
+      "names": [
+        "default_tool_handler_tail_injects_through_executor"
+      ],
+      "source": "reverie-kvm/tests/vmcall.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+    },
+    "v6-timestamp-27": {
+      "artifact": "read-clock",
+      "names": [
+        "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus"
+      ],
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    "v6-timestamp-28": {
+      "artifact": "read-clock",
+      "names": [
+        "read_clock_follows_a_guest_between_host_threads"
+      ],
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    "v6-timestamp-29": {
+      "artifact": "read-clock",
+      "names": [
+        "read_clock_starts_fork_vfork_and_thread_children_at_zero"
+      ],
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    "v6-timestamp-30": {
+      "artifact": "read-clock",
+      "names": [
+        "read_clock_survives_successful_and_failed_exec"
+      ],
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    "v6-timestamp-31": {
+      "artifact": "static",
+      "names": [
+        "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "origin": "V3 new actual cleanup rejection control",
+      "purpose": "Actual UD2 Tool run plus failing on_exit_thread must retain both typed causes; existing fault-only helper must reject the complete cleanup aggregate. No synthetic error object or production variant."
+    },
+    "v6-timestamp-32": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Five actual modes: tail Exit23/ExitGroup29, ordinary Exit23/ExitGroup29, and real EIO cleanup; exact status, one callback and both consuming hooks, no continuation."
+    },
+    "v6-timestamp-33": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::nonterminal_tails_refuse_before_side_effects"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Four real timestamp tail refusals: uname/getpid/fork/exec; exact ENOSYS/full failure shape and unchanged guest-memory marker/no child/image or resumed callback."
+    },
+    "v6-timestamp-34": {
+      "artifact": "static",
+      "names": [
+        "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group"
+      ],
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Real Tool-owned worker timestamp RPC and terminal Exit0 precede leader actual ExitGroup17; exact exits and callback count. Backend control, not Detcore clock coverage."
+    },
+    "v6-timestamp-35": {
+      "artifact": "lib",
+      "names": [
+        "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception"
+      ],
+      "source": "reverie-kvm/src/vm.rs",
+      "origin": "V5 new actual control",
+      "purpose": "Both actual CR4.TSD entry states, real-mode RDTSC plus real vmcall/HLT; one syscall, no timestamp callback, cleared ownership. No CPL0 interception claim."
+    },
+    "v6-timestamp-36": {
+      "artifact": "lib",
+      "names": [
+        "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect"
+      ],
+      "source": "reverie-kvm/src/runtime.rs",
+      "origin": "existing guard control, mechanical private-signature adaptation",
+      "purpose": "Existing signal-hook side-effect/refusal control with unchanged assertions; private predicate now receives exact request."
+    },
+    "v6-timestamp-37": {
+      "artifact": "lib",
+      "names": [
+        "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children"
+      ],
+      "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "origin": "Unchanged existing terminal-cancellation neighbor; private trait signature only adapted",
+      "purpose": "Existing exact cancellation/IntoGuest forwarding assertions and no injection/child-start effects remain unchanged."
+    }
+  },
+  "exact_declarations": 63,
+  "new_declarations": 6,
+  "retained_v6_declarations": 37,
+  "retained_metadata_and_ownership_neighbors": 20,
+  "proposed_order": [
+    "capture-01",
+    "capture-02",
+    "capture-03",
+    "capture-04",
+    "capture-05",
+    "capture-06",
+    "neighbor-01",
+    "neighbor-02",
+    "neighbor-03",
+    "neighbor-04",
+    "neighbor-05",
+    "neighbor-06",
+    "neighbor-07",
+    "neighbor-08",
+    "neighbor-09",
+    "neighbor-10",
+    "neighbor-11",
+    "neighbor-12",
+    "neighbor-13",
+    "neighbor-14",
+    "neighbor-15",
+    "neighbor-16",
+    "neighbor-17",
+    "neighbor-18",
+    "neighbor-19",
+    "neighbor-20",
+    "v6-timestamp-01",
+    "v6-timestamp-02",
+    "v6-timestamp-03",
+    "v6-timestamp-04",
+    "v6-timestamp-05",
+    "v6-timestamp-06",
+    "v6-timestamp-07",
+    "v6-timestamp-08",
+    "v6-timestamp-09",
+    "v6-timestamp-10",
+    "v6-timestamp-11",
+    "v6-timestamp-12",
+    "v6-timestamp-13",
+    "v6-timestamp-14",
+    "v6-timestamp-15",
+    "v6-timestamp-16",
+    "v6-timestamp-17",
+    "v6-timestamp-18",
+    "v6-timestamp-19",
+    "v6-timestamp-20",
+    "v6-timestamp-21",
+    "v6-timestamp-22",
+    "v6-timestamp-23",
+    "v6-timestamp-24",
+    "v6-timestamp-25",
+    "v6-timestamp-26",
+    "v6-timestamp-27",
+    "v6-timestamp-28",
+    "v6-timestamp-29",
+    "v6-timestamp-30",
+    "v6-timestamp-31",
+    "v6-timestamp-32",
+    "v6-timestamp-33",
+    "v6-timestamp-34",
+    "v6-timestamp-35",
+    "v6-timestamp-36",
+    "v6-timestamp-37"
+  ]
+}

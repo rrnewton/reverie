@@ -1,0 +1,8 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/bisect-si/target/debug/hermit",
+  "bytes": 411660144,
+  "observed_sha256": "fa6bda71abb03628dafca7b2082b6ed1baa8365317eda09a76d0f87bf0f1431b",
+  "matches_recorded_before": false,
+  "matches_recorded_after": false,
+  "note": "Read-only hash of current mutable path, not a preserved historical artifact."
+}

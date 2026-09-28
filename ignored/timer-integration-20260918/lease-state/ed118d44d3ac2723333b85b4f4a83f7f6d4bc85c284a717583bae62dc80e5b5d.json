@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "ed118d44d3ac2723333b85b4f4a83f7f6d4bc85c284a717583bae62dc80e5b5d",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/LIFECYCLE-RECOVERY.json",
+    "bytes": 7016,
+    "mode": 420,
+    "sha256": "bfa9fde41cc52e989b3a173ffc9bdc273b73c0acccf3e9adefe75f09c5e20fba"
+  }
+}

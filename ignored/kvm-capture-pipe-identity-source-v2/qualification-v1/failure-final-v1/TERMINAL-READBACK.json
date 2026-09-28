@@ -1,0 +1,15 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/TERMINAL-LIFECYCLE.json",
+    "bytes": 6086,
+    "mode": 420,
+    "sha256": "a373d667588302c4712971b063d5cc5894e55ddd3193e5672f0485056995e867"
+  },
+  "cpu_accounting_available": false,
+  "cpu_usage_nsec": null,
+  "raw_cpu_usage": "[not set]",
+  "correction": "The preliminary collector boolean incorrectly treated [not set] as available. The raw query was preserved correctly; it supplies no CPU accounting. No original receipt or collector artifact changed.",
+  "terminal_lifecycle_only": true,
+  "old_lease_unresolved": true,
+  "no_original_result_mutation": true
+}

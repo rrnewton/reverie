@@ -1,0 +1,9 @@
+{
+  "stage": "freeze_caller.py initial static authentication",
+  "raw_exit": 1,
+  "error": "KeyError: sha256",
+  "cause": "observer source index contains a symlink spelling; add returned literal-alias metadata",
+  "no_caller_target_written": true,
+  "no_runtime_or_admission": true,
+  "correction": "Bind exact literal alias plus resolved file and compare original required bytes/hash"
+}

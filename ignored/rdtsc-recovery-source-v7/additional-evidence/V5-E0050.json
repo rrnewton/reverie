@@ -1,0 +1,88 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/qualification-v1/observer/compile/stdout",
+    "bytes": 132516,
+    "mode": 384,
+    "sha256": "fe157bc4503d5686a0f49f80b66c6a560eb46fc2c3ab8251ebdc82d926847814"
+  },
+  "selected": [
+    {
+      "raw_line": 149,
+      "record": {
+        "reason": "compiler-message",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/source/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/source/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_kvm",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v5/source/reverie-kvm/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "message": {
+          "rendered": "error[E0050]: method `tail_injection_allowed` has 1 parameter but the declaration in trait `runtime::GuestSyscallExecutor::tail_injection_allowed` has 2\n   --> reverie-kvm/src/terminal_runtime_tests.rs:33:31\n    |\n 33 |     fn tail_injection_allowed(&self) -> bool {\n    |                               ^^^^^ expected 2 parameters, found 1\n    |\n   ::: reverie-kvm/src/runtime.rs:373:31\n    |\n373 |     fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {\n    |                               -------------------------------- trait requires 2 parameters\n\n",
+          "$message_type": "diagnostic",
+          "children": [],
+          "level": "error",
+          "message": "method `tail_injection_allowed` has 1 parameter but the declaration in trait `runtime::GuestSyscallExecutor::tail_injection_allowed` has 2",
+          "spans": [
+            {
+              "byte_end": 12903,
+              "byte_start": 12871,
+              "column_end": 63,
+              "column_start": 31,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/runtime.rs",
+              "is_primary": false,
+              "label": "trait requires 2 parameters",
+              "line_end": 373,
+              "line_start": 373,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 63,
+                  "highlight_start": 31,
+                  "text": "    fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {"
+                }
+              ]
+            },
+            {
+              "byte_end": 833,
+              "byte_start": 828,
+              "column_end": 36,
+              "column_start": 31,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/terminal_runtime_tests.rs",
+              "is_primary": true,
+              "label": "expected 2 parameters, found 1",
+              "line_end": 33,
+              "line_start": 33,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 36,
+                  "highlight_start": 31,
+                  "text": "    fn tail_injection_allowed(&self) -> bool {"
+                }
+              ]
+            }
+          ],
+          "code": {
+            "code": "E0050",
+            "explanation": "An attempted implementation of a trait method has the wrong number of function\nparameters.\n\nErroneous code example:\n\n```compile_fail,E0050\ntrait Foo {\n    fn foo(&self, x: u8) -> bool;\n}\n\nstruct Bar;\n\n// error: method `foo` has 1 parameter but the declaration in trait `Foo::foo`\n// has 2\nimpl Foo for Bar {\n    fn foo(&self) -> bool { true }\n}\n```\n\nFor example, the `Foo` trait has a method `foo` with two function parameters\n(`&self` and `u8`), but the implementation of `foo` for the type `Bar` omits\nthe `u8` parameter. To fix this error, they must have the same parameters:\n\n```\ntrait Foo {\n    fn foo(&self, x: u8) -> bool;\n}\n\nstruct Bar;\n\nimpl Foo for Bar {\n    fn foo(&self, x: u8) -> bool { // ok!\n        true\n    }\n}\n```\n"
+          }
+        }
+      }
+    }
+  ],
+  "scope": "Exact preserved compiler JSON, not a newly generated diagnostic"
+}

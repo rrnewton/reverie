@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/TARGET.json",
+    "bytes": 3586,
+    "mode": 420,
+    "sha256": "7336b0544f0ec3c0c4dbf64b2e5a9ef630677c1247da06891bb9a391aad6dda3"
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/SOURCE.patch",
+    "bytes": 123989,
+    "mode": 420,
+    "sha256": "41dd4f6af0ee2b4364b36254f67d5988113dd2b04ccfff10d50012280a64ce1a"
+  },
+  "full_source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/FULL-SOURCE-MANIFEST.json",
+    "bytes": 1381668,
+    "mode": 420,
+    "sha256": "a3bcb28bcfcb154875a56265c8a40c6f8e29067e94418bfcd2338e28cd29f6a3"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/REPORT.md",
+    "bytes": 3232,
+    "mode": 420,
+    "sha256": "b27d34d1a05356f8235a06dbf300d38283e98e358ecf2518c2b1a936a95e552c"
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/RESULTS.json",
+    "bytes": 225700,
+    "mode": 420,
+    "sha256": "d3ea66b412cd126472dc813c00779e57dae81427194036dcb432d0a460b646ff"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/INPUTS.json",
+    "bytes": 3837792,
+    "mode": 420,
+    "sha256": "ab366a5727f001d416dc15079bcc120a0611b1244b6768f3a67e714de70233df"
+  },
+  "readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/READBACK.json",
+    "bytes": 3789,
+    "mode": 420,
+    "sha256": "ce117369ff26ebf63714f3a9fc7a818969db1de025e28fc48687580d69a10ed8"
+  },
+  "lease_release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/LEASE-RELEASE.json",
+    "bytes": 1308,
+    "mode": 420,
+    "sha256": "5041ed3382f3a1486221164ac83085e093ac7c17a55b4bbfb3740e8651dd6c19"
+  },
+  "qualified_phases": 85,
+  "passed_test_declarations": 78,
+  "actual_inventories": {
+    "lib": 502,
+    "static": 304
+  },
+  "status": "FINITE QUALIFICATION COMPLETE; final independent source/runtime review and SCM pending"
+}

@@ -1,0 +1,7 @@
+{
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "head": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "tree": "a12d56466eed51cdd7d12087b5fafa9d66d8c864",
+  "branch": "codex/kvm-setitimer-20260918",
+  "scope": "source-only proposal; live product and SCM unchanged"
+}

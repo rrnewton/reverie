@@ -1,0 +1,38 @@
+--- positive-v2/cache_lease.py
++++ positive-v2-continuation/cache_lease.py
+@@ -58,10 +58,31 @@
+             if result.get('terminal_authenticated'):
+                 check_file(result['observer_result'])
+                 observed = json_read(result['observer_result']['path'])
+-                final = observed.get('final_accounting') or observed.get('refusal_final_accounting')
+-                require(final and final['cgroup_empty'] and final['properties']['MainPID'] == 0 and
+-                        final['properties']['ControlGroup'] == '' and
+-                        final['properties']['ActiveState'] in ('inactive','failed'), 'previous service not terminal')
++                if result.get('kind') == 'startup-refusal-lifecycle-only':
++                    # Exact owned startup refusal: no CPU-accounting fiction, no pass.
++                    require(completion['result']['sha256'] == 'd240c378035634468803f123d816b5da9937837892709efbb57a35d4c95b84f9' and
++                            prior['plan_sha256'] == 'bef6ca891e07f277a85926cf736648a6f041731f9514c00c367af14f7222e0ff',
++                            'unbound lifecycle recovery')
++                    require(result['accepted'] is False and result['observer_attempted'] is True and
++                            result['accounting_complete'] is False and result['comparison_eligible'] is False and
++                            result['payload_authorized'] is False and result['source_inputs_unchanged'] is True,
++                            'lifecycle recovery scope changed')
++                    for record in [result['original_result'], result['plan'], result['safehermit_report'], *result['observer_sources']]:
++                        check_file(record)
++                    require(all(not Path(p).exists() for p in result['absent_payload_records']), 'unexpected payload record')
++                    require(len(result['fresh_checks']) == 2, 'missing quiescence checks')
++                    for check in result['fresh_checks']:
++                        for key in ['stdout', 'stderr']: check_file(check['query'][key])
++                        props = check['properties']
++                        require(props['Id'] == 'safehermit-20260918T083343Z-2735826.service' and
++                                props['LoadState'] == 'not-found' and props['ActiveState'] == 'inactive' and
++                                props['SubState'] == 'dead' and props['ControlGroup'] == '' and props['MainPID'] == '0' and
++                                all(p['current'] is None for p in check['retired_processes']), 'incomplete lifecycle proof')
++                else:
++                    final = observed.get('final_accounting') or observed.get('refusal_final_accounting')
++                    require(final and final['cgroup_empty'] and final['properties']['MainPID'] == 0 and
++                            final['properties']['ControlGroup'] == '' and
++                            final['properties']['ActiveState'] in ('inactive','failed'), 'previous service not terminal')
+         data = token(plan_sha)
+         os.ftruncate(fd, 0)
+         require(os.pwrite(fd, data, 0) == len(data), 'short lease token write')

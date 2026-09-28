@@ -1,0 +1,639 @@
+{
+  "declarations": 37,
+  "new_declarations": 4,
+  "additional_existing_declarations": 2,
+  "controls": [
+    {
+      "phase": "timestamp-01",
+      "artifact": "lib",
+      "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+        "mode": 420
+      },
+      "line": 127,
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-02",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+        "mode": 420
+      },
+      "line": 148,
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-03",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+        "mode": 420
+      },
+      "line": 180,
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-04",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+        "mode": 420
+      },
+      "line": 238,
+      "origin": "new candidate",
+      "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-05",
+      "artifact": "lib",
+      "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/vm.rs",
+        "bytes": 323995,
+        "sha256": "8b61cc020810be90baaa0e4941dc06172ab80010810e4cd785dc2f08b860840e",
+        "mode": 420
+      },
+      "line": 6382,
+      "origin": "new candidate",
+      "purpose": "Actual KVM exception priority for completed two-byte instruction versus inaccessible third byte; no replacement fetch simulator",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-06",
+      "artifact": "lib",
+      "name": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/cpuid.rs",
+        "bytes": 16731,
+        "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f",
+        "mode": 420
+      },
+      "line": 340,
+      "origin": "existing, strengthened",
+      "purpose": "All old assertions retained plus RDTSCP capability bit remains clear; unsubscribed faults retain their meaning",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-07",
+      "artifact": "static",
+      "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14150,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-08",
+      "artifact": "static",
+      "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14170,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-09",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14258,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-10",
+      "artifact": "static",
+      "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14275,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-11",
+      "artifact": "static",
+      "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14378,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-12",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14408,
+      "origin": "historical unchanged bodies",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-13",
+      "artifact": "static",
+      "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14491,
+      "origin": "new candidate",
+      "purpose": "Current clock/RPC and exact returning getpid/fork refusal retained; obsolete unlanded exit refusal replaced by exec refusal, with actual ordinary/tail exit coverage in timestamp-32.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-14",
+      "artifact": "static",
+      "name": "host_owned_timestamp_worker_keeps_native_execution",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14653,
+      "origin": "V4 replacement of new unlanded fixture after actual RIP attribution",
+      "purpose": "Loader-free static clone/CLEARTID: both root RDTSC results exact, actual worker RDTSC followed by its TID/completion marker and real exit, exactly two root callbacks and zero worker callbacks; no count widening or callback filtering.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-15",
+      "artifact": "static",
+      "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14735,
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-16",
+      "artifact": "static",
+      "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14779,
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-17",
+      "artifact": "static",
+      "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14810,
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-18",
+      "artifact": "static",
+      "name": "timestamp_single_step_reports_the_retired_instruction_boundary",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 14839,
+      "origin": "new candidate",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-19",
+      "artifact": "static",
+      "name": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 3800,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-20",
+      "artifact": "static",
+      "name": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 3847,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-21",
+      "artifact": "static",
+      "name": "static_elf_forks_execs_and_waits_for_child",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 3939,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-22",
+      "artifact": "static",
+      "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 4682,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-23",
+      "artifact": "static",
+      "name": "static_elf_caught_signal_returns_through_rt_sigreturn",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 4112,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-24",
+      "artifact": "static",
+      "name": "post_exec_failure_runs_tool_exit_lifecycle",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 6879,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-25",
+      "artifact": "vmcall",
+      "name": "guest_write_syscall_runs_shared_reverie_tool",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/vmcall.rs",
+        "bytes": 13663,
+        "sha256": "b72df51e29dd28e4f10b54d202a1faec1fc7a8c56b7662d3a42b160030469d6a",
+        "mode": 420
+      },
+      "line": 353,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-26",
+      "artifact": "vmcall",
+      "name": "default_tool_handler_tail_injects_through_executor",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/vmcall.rs",
+        "bytes": 13663,
+        "sha256": "b72df51e29dd28e4f10b54d202a1faec1fc7a8c56b7662d3a42b160030469d6a",
+        "mode": 420
+      },
+      "line": 382,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-27",
+      "artifact": "read-clock",
+      "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/read_clock.rs",
+        "bytes": 17362,
+        "sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e",
+        "mode": 420
+      },
+      "line": 233,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-28",
+      "artifact": "read-clock",
+      "name": "read_clock_follows_a_guest_between_host_threads",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/read_clock.rs",
+        "bytes": 17362,
+        "sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e",
+        "mode": 420
+      },
+      "line": 284,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-29",
+      "artifact": "read-clock",
+      "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/read_clock.rs",
+        "bytes": 17362,
+        "sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e",
+        "mode": 420
+      },
+      "line": 319,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-30",
+      "artifact": "read-clock",
+      "name": "read_clock_survives_successful_and_failed_exec",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/read_clock.rs",
+        "bytes": 17362,
+        "sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e",
+        "mode": 420
+      },
+      "line": 378,
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-31",
+      "artifact": "static",
+      "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512134,
+        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
+        "mode": 420
+      },
+      "line": 3751,
+      "origin": "V3 new actual cleanup rejection control",
+      "purpose": "Actual UD2 Tool run plus failing on_exit_thread must retain both typed causes; existing fault-only helper must reject the complete cleanup aggregate. No synthetic error object or production variant.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-32",
+      "artifact": "static",
+      "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+        "bytes": 12927,
+        "sha256": "af115c32a075ec9d308a3bc0129f3c278723d62b5a2b9e4270c6e18eabadb326",
+        "mode": 420
+      },
+      "line": 221,
+      "origin": "V5 new actual control",
+      "purpose": "Five actual modes: tail Exit23/ExitGroup29, ordinary Exit23/ExitGroup29, and real EIO cleanup; exact status, one callback and both consuming hooks, no continuation.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-33",
+      "artifact": "static",
+      "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+        "bytes": 12927,
+        "sha256": "af115c32a075ec9d308a3bc0129f3c278723d62b5a2b9e4270c6e18eabadb326",
+        "mode": 420
+      },
+      "line": 259,
+      "origin": "V5 new actual control",
+      "purpose": "Four real timestamp tail refusals: uname/getpid/fork/exec; exact ENOSYS/full failure shape and unchanged guest-memory marker/no child/image or resumed callback.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-34",
+      "artifact": "static",
+      "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+        "bytes": 12927,
+        "sha256": "af115c32a075ec9d308a3bc0129f3c278723d62b5a2b9e4270c6e18eabadb326",
+        "mode": 420
+      },
+      "line": 292,
+      "origin": "V5 new actual control",
+      "purpose": "Real Tool-owned worker timestamp RPC and terminal Exit0 precede leader actual ExitGroup17; exact exits and callback count. Backend control, not Detcore clock coverage.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-35",
+      "artifact": "lib",
+      "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/vm.rs",
+        "bytes": 323995,
+        "sha256": "8b61cc020810be90baaa0e4941dc06172ab80010810e4cd785dc2f08b860840e",
+        "mode": 420
+      },
+      "line": 6464,
+      "origin": "V5 new actual control",
+      "purpose": "Both actual CR4.TSD entry states, real-mode RDTSC plus real vmcall/HLT; one syscall, no timestamp callback, cleared ownership. No CPL0 interception claim.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-36",
+      "artifact": "lib",
+      "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/runtime.rs",
+        "bytes": 191208,
+        "sha256": "945d6af0ac3231e4d82eeaf34a614d66b6bf14196dcb162974f97d917538f928",
+        "mode": 420
+      },
+      "line": 4454,
+      "origin": "existing guard control, mechanical private-signature adaptation",
+      "purpose": "Existing signal-hook side-effect/refusal control with unchanged assertions; private predicate now receives exact request.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "phase": "timestamp-37",
+      "artifact": "lib",
+      "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/terminal_runtime_tests.rs",
+        "bytes": 5673,
+        "sha256": "af916ce5c0f4a30adcbf9d87b52dd33b555e5b9e2fe463e7d5310d7b34b6a7c5",
+        "mode": 420
+      },
+      "line": 48,
+      "origin": "Unchanged existing terminal-cancellation neighbor; private trait signature only adapted",
+      "purpose": "Existing exact cancellation/IntoGuest forwarding assertions and no injection/child-start effects remain unchanged.",
+      "executed": false,
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    }
+  ],
+  "actual_inventory_pending": true,
+  "new_guest_modes": 12,
+  "mode_count_not_a_test_or_execution_count": true
+}

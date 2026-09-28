@@ -1,0 +1,9 @@
+Host-owned timestamp RIP diagnostic — preparation only
+
+This is author investigation, not a correction or source approval. V3 timestamp-14 actually failed raw 101 with twelve root-Pid Tsc callbacks versus the original exact two. Status 0 and empty guest stdout/stderr were observed first. The extra instruction origins have not been measured; loader startup is a source lead, not the conclusion.
+
+Only the isolated static_elf.rs test source changes. A private diagnostic Tool records every (Pid, Rdtsc, saved user RIP) through the same one RPC per callback and returns the identical sentinel. Existing TimestampTool/TimestampLog and their consumers are untouched. No callback is filtered, reordered, aggregated away or exempted. The original C source and all original guest assertions remain; the exact two-call vector is byte-identical. Diagnostic records are retained before that assertion, so if twelve recur this selector still returns a real failed result, not accepted evidence of correctness.
+
+The fixture-specific compiler helper invokes the identical actual GCC command (-O2 -pthread), recording argv/cwd/status/stdout/stderr and retaining the actual generated C source and ELF before TestDirectory cleanup. It also retains the exact PT_INTERP pathname/canonical target/bytes used by that generated ELF. The phase environment and compiler/loader inputs remain bound. Raw output and generated artifacts will be hashed after terminal readback. The selected test uses an explicitly bound output directory, required empty before compiling. No stored executable or inferred compiler output is accepted.
+
+Production and all other test bodies are unchanged. No component, native reference, Host-worker proof or same-run parity credit comes from preparation. Native probes are separate. Original V1 warning refusal, V2 fault helper failure, predecessor helper failure and V3 count failure remain intact.

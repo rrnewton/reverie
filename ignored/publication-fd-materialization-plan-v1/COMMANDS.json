@@ -1,0 +1,200 @@
+[
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "8fb2397465b3e24390a1c77a764431c401638353b62a3f7c977f2fab4f8b287b",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "branch",
+      "--show-current"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "65f3e1780c25ebf11ff57efc6a4b2ef93014701292323d0e5aea6a577f8c8978",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "index"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "1896f974f6c28a86065b9151763040616433650375d619aadeebb95bb66c2d43",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--name-only",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "rebase-merge"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "8ef37cd437933d23f3d8e4718f9637e341431f29b202c0c715137e4713bded07",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "rebase-apply"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "fbd7e86c7032d40eb58f14db6d92617dd7c4633dcc0cc058da6e7e2c77cc1166",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "MERGE_HEAD"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e93df6027bb299796c9d904991b2846c2c75402960f80d93dbcbf901bd602de2",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "CHERRY_PICK_HEAD"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "037d0e3371d08ab82aa495792b5bb6b708023aa80c9a33caecbdb225a0c88eee",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "--git-path",
+      "REVERT_HEAD"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e887ebec758e47efe6aaea21c66ec1226b8398b91773d203b363a3773967bc19",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--name-only",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "d95dc66cec7fbde7e1b78fea6a548665e03580e4294fb2dde1a2096d1d0f8ce8",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=normal"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "28be2001462f819793334f849b01c503a7a3401e205deb3ee41cc10c7828ecf7",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "ls-tree",
+      "-r",
+      "-z",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "7f612d832604844ec6e2eb99b2867040f7a4df81d5ad623dbdd74cc60b693c2a",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5^{tree}"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "413e052e38a895bd2d7c3af46f1c4885eaac1762738b5a045d7c9eae0f426e04",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "show",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5:reverie-kvm/src/elf.rs"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "2b8c070f200f00faaafab3418ea3c73d4506e98a610ac224399d7ad9ea45e61b",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "check-attr",
+      "--all",
+      "--",
+      "reverie-kvm/src/elf.rs"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "show",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5:reverie-kvm/src/executor.rs"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "1f20e4259eb6b90ffdc6363c218a847eede94c1510477dcca49f70c5e5704242",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "check-attr",
+      "--all",
+      "--",
+      "reverie-kvm/src/executor.rs"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "check-attr",
+      "--all",
+      "--",
+      "reverie-kvm/src/process_signal_publication.rs"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr": ""
+  }
+]

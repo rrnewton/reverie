@@ -1,0 +1,39 @@
+{
+  "status": "Source/caller successor frozen for root inspection; not execution authorization",
+  "records": 2664,
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/TARGET.json",
+    "kind": "file",
+    "bytes": 3681,
+    "sha256": "bf025a6afedc4429ebb870e0bd002aef5055519ea735f8f2d1a8a4cba375a091",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/INPUTS.json",
+    "kind": "file",
+    "bytes": 914082,
+    "sha256": "02e3786e12aa32a989726472e3e1831478e4ea6619bed4593da65a808c1625c8",
+    "mode": 420
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/DELTA.patch",
+    "kind": "file",
+    "bytes": 424,
+    "sha256": "fad8efd67ebe0027af15076fa8e98901bf0e9f00c70783b2e62d8e76eebd889f",
+    "mode": 420
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/CALLER-DELTA.patch",
+    "kind": "file",
+    "bytes": 2975,
+    "sha256": "f2980a397b82206c0fdd36b8d75c74cf118dedf440b8bab184e87bbd2b89a601",
+    "mode": 420
+  },
+  "unchanged_helpers": 8,
+  "modified_helpers": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/admit_target.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/prepare.py"
+  ],
+  "source_entries": 2622,
+  "no_execution": true
+}

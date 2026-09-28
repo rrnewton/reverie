@@ -1,0 +1,128 @@
+{
+  "python_ast_only": [
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/admit.py",
+        "bytes": 1931,
+        "mode": 420,
+        "sha256": "c2fc171c969c673f6d7183246cf8769576a46b2d97da3029a363e6d676cee713"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/bind.py",
+        "bytes": 3390,
+        "mode": 420,
+        "sha256": "48dc9a4720838568f6e5026277fcde37917f1114fa8369c65f0e0c159003417d"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/cache_lease.py",
+        "bytes": 4603,
+        "mode": 420,
+        "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/common.py",
+        "bytes": 10759,
+        "mode": 420,
+        "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/execute.py",
+        "bytes": 3710,
+        "mode": 420,
+        "sha256": "21222595794afaa7aaa7e84ce9d98c382f0e14b90b3c70706f4254d4685827a0"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/freeze_results.py",
+        "bytes": 6830,
+        "mode": 420,
+        "sha256": "fa3810c069fa9791317a4bc6ca8577604481a49b58a723df09b716f71727b110"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/native_phase.py",
+        "bytes": 11124,
+        "mode": 420,
+        "sha256": "3e4c8d30c34c266124b6ea900108716e43de0dd3dc9dcd1d61a7ea048cf642ea"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/before_exec.py",
+        "bytes": 8260,
+        "mode": 420,
+        "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/observer.py",
+        "bytes": 44851,
+        "mode": 420,
+        "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/unit_reference.py",
+        "bytes": 8569,
+        "mode": 420,
+        "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 6
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/prepare.py",
+        "bytes": 7741,
+        "mode": 420,
+        "sha256": "c20ab92292dbbd1ddb2e3496129488914bf3c520067e81b806591fe381fcf27b"
+      },
+      "syntax_only": true,
+      "python_feature_version": "3.9",
+      "assert_guards": 0
+    }
+  ],
+  "no_code_import_or_execution": true,
+  "preparation_interpreter": "/usr/local/fbcode/platform010/bin/python3.12",
+  "preparation_python": "3.12.14+meta (3.12:2abcf90, Aug 12 2026, 13:57:39) [Clang 21.1.0 (ssh://git.vip.facebook.com/data/gitrepos/osmeta/external/llvm-pro"
+}

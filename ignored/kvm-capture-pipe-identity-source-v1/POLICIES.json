@@ -1,0 +1,35 @@
+[
+  {
+    "origin": "/home/newton/work/dev-hermit/AGENTS.md",
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/instructions/01-AGENTS.md",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 17897,
+      "sha256": "f80ea3182e85d7067acc4cb2ae7fe3775e882bdb5053b7c487b5c4939d0e5d1a"
+    },
+    "original_resolved_path": "/home/newton/work/dev-hermit/AGENTS.md"
+  },
+  {
+    "origin": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/instructions/02-SKILL.md",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 3617,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    "original_resolved_path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md"
+  },
+  {
+    "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/.claude/skills/post-facto-review/SKILL.md",
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/instructions/03-SKILL.md",
+      "file_mode": 420,
+      "kind": "file",
+      "bytes": 5784,
+      "sha256": "88ceb86d661b468a0a32f99776ae480a5231e9c9695fd97a223a965950008567"
+    },
+    "original_resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/.claude/skills/post-facto-review/SKILL.md"
+  }
+]

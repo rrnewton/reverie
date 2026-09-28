@@ -1,0 +1,53 @@
+    "backend-parity-c/renameat2-flags",
+    "backend-parity-c/rlimit-identity",
+    "backend-parity-c/robust-list",
+    "backend-parity-c/sched-getaffinity-identity",
+    "backend-parity-c/seccomp-refusal",
+    "backend-parity-c/sendfile-copy",
+    "backend-parity-c/set-tid-address",
+    "backend-parity-c/short-io-split-identity",
+    "backend-parity-c/shutdown-socketpair",
+    "backend-parity-c/signalfd-create",
+    "backend-parity-c/socket-epoll-ordering",
+    "backend-parity-c/stat-metadata-identity",
+    "backend-parity-c/statfs-free-determinism",
+    "backend-parity-c/statx-metadata",
+    "backend-parity-c/symlink-ops",
+    "backend-parity-c/sync-file-range",
+    "backend-parity-c/sysv-ipc-refusal",
+    "backend-parity-c/umask-mode",
+    "backend-parity-c/uname-identity",
+    "backend-parity-c/utimensat-determinism",
+    "backend-parity-c/vectored-io"
+  ],
+  "other_cells": [
+    "backend-parity-c/static-nolibc-syscall-sites"
+  ],
+  "attempt_count_distribution": {
+    "1": 75,
+    "2": 75
+  },
+  "actual_timestamp_pair_counts": [
+    {
+      "reference": 0,
+      "candidate": 0,
+      "rows": 2
+    },
+    {
+      "reference": 10,
+      "candidate": 0,
+      "rows": 146
+    },
+    {
+      "reference": 20,
+      "candidate": 0,
+      "rows": 2
+    }
+  ],
+  "twenty_event_cells": [
+    "backend-parity-c/fork-exec-pipeline"
+  ],
+  "all_kvm_parity_failures_preserved": true,
+  "all_input_hashes_authenticated": true,
+  "no_comparator_or_selected_event_change": true
+}

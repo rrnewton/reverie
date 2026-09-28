@@ -1,0 +1,24 @@
+{
+  "started": [
+    "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 288,
+      "exec_time": 1.452389796
+    }
+  ]
+}

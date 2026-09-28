@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-receiver-control-design-20260918/DESIGN.md",
+    "bytes": 10939,
+    "sha256": "a7d41078860e22811b1a2e866627c4fca0b1dce2c7a4c0ff28f2909e072dfe1c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-receiver-control-design-20260918/INPUTS.json",
+    "bytes": 3824,
+    "sha256": "2461cc2d1c6d3c9fffb1b29e566bbc5ee1889cf76aa79aecc007698f0a00f63a"
+  }
+]

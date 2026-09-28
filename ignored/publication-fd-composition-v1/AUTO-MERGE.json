@@ -1,0 +1,56 @@
+[
+  {
+    "argv": [
+      "git",
+      "merge-file",
+      "-p",
+      "-L",
+      "publisher-frozen-v1",
+      "-L",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+      "-L",
+      "fd-final-v3",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/elf.rs",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/base/reverie-kvm/src/elf.rs",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/after/reverie-kvm/src/elf.rs"
+    ],
+    "raw_exit": 1,
+    "output": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/auto-merge/reverie-kvm/src/elf.rs",
+      "bytes": 67479,
+      "sha256": "ef95c52b4df29e1b38d6cae85c968eccc5097ec76e6f6763d68a08b0e98fc9a5"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/auto-merge/reverie-kvm/src/elf.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  {
+    "argv": [
+      "git",
+      "merge-file",
+      "-p",
+      "-L",
+      "publisher-frozen-v1",
+      "-L",
+      "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+      "-L",
+      "fd-final-v3",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/executor.rs",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/base/reverie-kvm/src/executor.rs",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/final-v3/after/reverie-kvm/src/executor.rs"
+    ],
+    "raw_exit": 3,
+    "output": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/auto-merge/reverie-kvm/src/executor.rs",
+      "bytes": 1457285,
+      "sha256": "3e5ffabe45e62f7211fc9da702230aecd0459876819e163e5541daa02e0aa21a"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/auto-merge/reverie-kvm/src/executor.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+]

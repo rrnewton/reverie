@@ -1,0 +1,23 @@
+{
+  "resolved_packages": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/resolved-package-inputs.json",
+    "bytes": 1748252,
+    "mode": 420,
+    "sha256": "e6c31b56795af4f8a4f69ec6bce84f291a12ae8f947b3c2212f302f9e954c6c5"
+  },
+  "stdlib": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/toolchain-standard-inputs.json",
+    "bytes": 19751,
+    "mode": 420,
+    "sha256": "404c5c996edf187b3766cb99a7696d9dce07d81f511a7b8d19c0380ab7ab6421"
+  },
+  "combined_phase_dependencies": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/dependency-inputs.json",
+    "bytes": 1767063,
+    "mode": 420,
+    "sha256": "b639893442ec06536e22fba7b5a3f977c01bb8c838335fae86dcd87ed8cc0e38"
+  },
+  "package_count": 7083,
+  "standard_count": 64,
+  "scope": "Fresh actual metadata closure and rehashed pinned standard-library inputs before compile plan; package-only binder output preserved. Helpers unchanged."
+}

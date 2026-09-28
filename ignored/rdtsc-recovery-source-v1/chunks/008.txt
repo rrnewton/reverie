@@ -1,0 +1,60 @@
++                                    return Ok(self.cancelled_tool_thread_status(executor));
++                                }
++                                HandlerOutcome::RunFailed => {
++                                    return Err(Error::RunAborted
++                                        .with_cleanup(hidden.err().into_iter().collect()));
++                                }
++                                HandlerOutcome::RuntimeError(error) => {
++                                    return Err(
++                                        error.with_cleanup(hidden.err().into_iter().collect())
++                                    );
++                                }
++                                HandlerOutcome::TailInjected { .. }
++                                | HandlerOutcome::ParkedFatal(_)
++                                | HandlerOutcome::ParkedCancelled(_) => {
++                                    return Err(Error::UnexpectedVcpuExit(
++                                        "nonreturning timestamp callback outcome".to_owned(),
++                                    )
++                                    .with_cleanup(hidden.err().into_iter().collect()));
++                                }
++                            };
++                            hidden?;
++                            if process_completed {
++                                return Err(Error::UnexpectedVcpuExit(
++                                    "timestamp callback changed the process continuation"
++                                        .to_owned(),
++                                ));
++                            }
++                            if let Some((segment, address)) = executor.take_segment() {
++                                set_user_segment_base(&self.vcpu, segment, address)?;
++                            }
++                            self.resume_timestamp_counter(boundary, value)?;
++                            continue;
++                        }
+                         if self.try_resume_vmware_backdoor_probe()? {
+                             continue;
+                         }
+--- /dev/null
++++ b/reverie-kvm/src/timestamp.rs
+@@ -0,0 +1,279 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Instruction decoding for the existing Tool timestamp callback. There is no
++//! clock here: the callback supplies the entire TSC and optional TSC_AUX value.
++
++use kvm_bindings::kvm_regs;
++use reverie::Rdtsc;
++use reverie::RdtscResult;
++
++use crate::GuestMemory;
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub(crate) struct TimestampInstruction {
++    pub(crate) request: Rdtsc,
++    pub(crate) length: u8,

@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/head/detcore/src/scheduler.rs",
+    "source": "d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/scheduler.rs",
+    "bytes": 354822,
+    "sha256": "a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/source/head/hermit-cli/src/bin/hermit/run.rs",
+    "source": "d9d8d32f9511911ef9becac0220bc5d748a414c2:hermit-cli/src/bin/hermit/run.rs",
+    "bytes": 244308,
+    "sha256": "8e747578fbeb4f51d99c26b20b20d2669d1aa6acaf45f3ffe831af0c225c648a"
+  }
+]

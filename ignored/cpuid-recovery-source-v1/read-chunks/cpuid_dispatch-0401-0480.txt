@@ -1,0 +1,80 @@
+        (ThreadOwnership::Tool, vec![1, 2, 1]),
+    ] {
+        let (log, status) = run_cpuid(&cpuid_clone_program(), (true, 2), ownership);
+        assert_eq!(status, 0);
+        assert_eq!(
+            log.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|row| row.0.as_raw())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+fn table_program(leaf: u32, subleaf: u32, values: [u32; 4]) -> Vec<u8> {
+    let mut code = vec![0xb8];
+    code.extend_from_slice(&leaf.to_le_bytes());
+    code.push(0xb9);
+    code.extend_from_slice(&subleaf.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0xa2]);
+    let mut failures = Vec::new();
+    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(values) {
+        code.extend_from_slice(&[0x49, 0xba]);
+        code.extend_from_slice(&u64::from(value).to_le_bytes());
+        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
+        append_jne_failure(&mut code, &mut failures);
+    }
+    append_stats_exit(&mut code, true);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 20, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    code
+}
+
+#[test]
+fn unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy() {
+    for (leaf, subleaf, expected) in [
+        (0x80000001, 0, [0x663, 0, 1, 0x20100800]),
+        (0xd, 1, [0; 4]),
+        (0xd, 17, [0; 4]),
+        (0xd, 19, [0; 4]),
+    ] {
+        let (log, status) = run_cpuid(
+            &table_program(leaf, subleaf, expected),
+            (false, 0),
+            ThreadOwnership::Tool,
+        );
+        assert_eq!(status, 0, "leaf={leaf:#x}, subleaf={subleaf}");
+        assert!(log.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn cpuid_dispatch_survives_real_fork_and_same_pid_exec() {
+    let directory = TestDirectory::new();
+    let executable = directory.0.join("cpuid-exec-target");
+    let child_image = static_elf(&assertion_program(&[], 1, false));
+    std::fs::write(&executable, &child_image).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    append_cpuid(&mut code, &[], 0, &mut failures);
+    code.extend_from_slice(&[
+        0xb8, 57, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0, 0x0f, 0x84, 0, 0, 0, 0,
+    ]);
+    let child_jump = code.len() - 4;
+    code.extend_from_slice(&[0x0f, 0x88]);
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    code.extend_from_slice(&[
+        0x49, 0x89, 0xc5, // mov r13,rax: exact child identity
+        0x48, 0x89, 0xc7, // mov rdi,rax: wait for that child
+        0x48, 0x83, 0xec, 0x10, // sub rsp,16: real writable guest stack
+        0x48, 0x89, 0xe6, // mov rsi,rsp: wait status

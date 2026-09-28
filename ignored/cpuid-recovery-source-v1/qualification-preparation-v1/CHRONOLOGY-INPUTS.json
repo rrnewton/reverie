@@ -1,0 +1,44 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/READBACK.json",
+      "bytes": 848,
+      "sha256": "f5a4a5ffd183ebc2824af46a27f93123c98964eb6419452d909a071c3bd4de29",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/RESULTS.json",
+      "bytes": 26780,
+      "sha256": "60ef09278757b6458e3dbbc791a7524bc842dd26fa6894b3cecddbd802a66940",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/INPUTS.json",
+      "bytes": 14253,
+      "sha256": "8b9561381f708600b14e8144fbb6d384e9fa49d4065009d408962c29f570e234",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/REPORT.md",
+      "bytes": 3030,
+      "sha256": "cb8a5ae1bc13cada8f439f0debcbb4928ed4694cd987975cdf8e82e9dcb3cda2",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/timestamp-cancel-v1/observer/kvm/verify-logs/run1_log_QoCCH",
+      "bytes": 793111,
+      "sha256": "fe1f9287982a1372247d71eb5662a2e562c50c146656d61fb8ce7a144991d2e1",
+      "mode": 384
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/timestamp-cancel-v1/observer/kvm/verify-logs/run2_log_Kcpml",
+      "bytes": 793113,
+      "sha256": "d3e3d9adc32f45ab36f40f76bd95c5ebf3db282f38ce0356bbd6947482863faf",
+      "mode": 384
+    }
+  ],
+  "own_read_scope": "complete REPORT and READBACK; selected timestamp result; both whole trace hashes and exact 12 ordered/9 cleanup row matches per trace, not every trace line or a source verdict",
+  "coordinator_reported_hermit_elf": "a8408c776c850ed61ff984c7d61d09b4c0027fa6fd9cf9d492ad6983c75be8c3",
+  "before_charge_or_clock_rpc_credit": false,
+  "CPUID_candidate_execution_credit": false
+}

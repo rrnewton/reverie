@@ -1,0 +1,26 @@
+{
+  "predecessor": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/TARGET.json",
+    "bytes": 2979,
+    "sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+    "mode": 420
+  },
+  "predecessor_qualification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/TARGET.json",
+    "bytes": 3798,
+    "sha256": "9730077c7572bc0fc0d8488de1fc974f1166cab353e9915a0d80a0cc531339b1",
+    "mode": 420
+  },
+  "entries": 2624,
+  "unchanged_predecessor_entries": 2622,
+  "changed_test_container": "reverie-kvm/src/vm.rs",
+  "added_test_module": "reverie-kvm/src/cpuid_transport_probe.rs",
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "production_behavior_unchanged": true,
+  "test_body_changes": "Only test-only include and additive root-authored probe; diagnostic stream change disclosed separately."
+}

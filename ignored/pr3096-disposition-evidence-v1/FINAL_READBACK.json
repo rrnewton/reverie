@@ -1,0 +1,43 @@
+{
+  "checked_at_utc": "2026-09-18T15:07:16.323411+00:00",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/REPORT.md",
+      "bytes": 9611,
+      "sha256": "0402f8209a9bfd8e2fc2fb09a4272ea2236af31575335c7bd2ba738ced36c7b1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/INPUTS.json",
+      "bytes": 33587,
+      "sha256": "a34f064c270c89935eb9b68d44c99e0e343d2405ba8e7205920c89c37500438f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/READBACK.json",
+      "bytes": 379,
+      "sha256": "f60b7f3299db862e8bc1d94ed7488412c6720ab274acd2a79e38adebf65c4969"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/DISPOSITION_ADDENDUM.md",
+      "bytes": 4546,
+      "sha256": "f43946daa1514915456903009ff4e33c55a4e5a67a958c9ce19a08bfa972bac9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/original-2945/pr.stdout",
+      "bytes": 25264,
+      "sha256": "e75aa039cd1e602f37a828ed19eae6e06c556456937d840667fe2e7ff48cfd69"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/original-2945/pr.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/pr3096-disposition-evidence-v1/original-2945/status.json",
+      "bytes": 276,
+      "sha256": "6eab8c9e97fe09cbddc7899efed0730f08b9e2e682d9ec635ff3ae7600c9f315"
+    }
+  ],
+  "unchanged_initial_inputs": true,
+  "preferred_disposition": "close/defer standalone revert; temporary crash mitigation remains explicit owner option",
+  "no_independent_pr3096_approval_found": true
+}

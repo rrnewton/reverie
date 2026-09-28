@@ -1,0 +1,30 @@
+error[E0046]: not all trait items implemented, missing: `receive_rpc`
+   --> reverie-kvm/src/capture_identity_tests.rs:362:1
+    |
+362 | impl reverie::GlobalTool for CaptureSetupMustNotInitialize {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `receive_rpc` in implementation
+    |
+    = help: implement the missing item: `fn receive_rpc<'life0: 'async_trait, 'async_trait>(&'life0 self, _: reverie::Pid, _: <Self as reverie::GlobalTool>::Request) -> std::pin::Pin<Box<(dyn futures::Future<Output = <Self as reverie::GlobalTool>::Response> + std::marker::Send + 'async_trait)>> { todo!() }`
+
+error[E0308]: mismatched types
+     --> reverie-kvm/src/executor.rs:39601:17
+      |
+39594 |             let count = readlink_at_impl(
+      |                         ---------------- arguments to this function are incorrect
+...
+39601 |                 false,
+      |                 ^^^^^ expected `Option<CaptureMetadata>`, found `bool`
+      |
+      = note: expected enum `Option<CaptureMetadata>`
+                 found type `bool`
+note: function defined here
+     --> reverie-kvm/src/executor.rs:13940:4
+      |
+13940 | fn readlink_at_impl(
+      |    ^^^^^^^^^^^^^^^^
+...
+13947 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+
+Some errors have detailed explanations: E0046, E0308.
+For more information about an error, try `rustc --explain E0046`.

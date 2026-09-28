@@ -1,0 +1,17 @@
+{
+  "baseline_listed": {
+    "lib": 488,
+    "static": 305
+  },
+  "corrected_listed": {
+    "lib": 488,
+    "static": 304
+  },
+  "listed_is_not_executed": true,
+  "before_actual_failing_selected_tests": 3,
+  "after_actual_passing_selected_tests": 8,
+  "new_product_test_declarations": 0,
+  "snapshot_only_test_declarations": 1,
+  "captured_write_modes_executed_on_corrected_source": 20,
+  "separate_original_frame_modes_executed": 15
+}

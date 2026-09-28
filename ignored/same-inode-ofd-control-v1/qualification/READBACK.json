@@ -1,0 +1,47 @@
+{
+  "all_97_result_artifacts_unchanged": true,
+  "first_attempts_only": true,
+  "tests_passed": 2,
+  "tests_failed": 1,
+  "negative_receipt_accepted": false,
+  "actual_intended_assertion_reached": true,
+  "source_target_hold_released": true,
+  "report_only_refusal_preserved": true,
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/REPORT.md",
+      "bytes": 7053,
+      "sha256": "8f57298bc45ca08d57bb8e49caaf8133d682d92af91c014d86c9ce63a0effb0c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/RESULTS.json",
+      "bytes": 40563,
+      "sha256": "6d0d4f02adeb8b8cb8630d3c2d63134964ca4bd5ea5667b0e7a9af28a758d73d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/FINAL-SOURCE-READBACK.json",
+      "bytes": 1186,
+      "sha256": "e61ac48b5d1910129f8e86c3e9fa8e5646da3701e35a1d1b311712647f6cb2ed"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/LEASE-RELEASE.json",
+      "bytes": 1000,
+      "sha256": "74f5ae5def24ef79ef39880696c79652bc624de87bf58a3455a66983710775eb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/ELF-RETENTION.json",
+      "bytes": 1006,
+      "sha256": "ff3cfe81502aacc2952e6cc7c2f546146a5038104e1818c83e0bce7fafa5613b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/SNAPSHOT.json",
+      "bytes": 1496,
+      "sha256": "515cc4597ba4e2829de15d5b3e98eb000f7476998a3d2aa4fefd0e3bda1921ac"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/METADATA-CONTINUITY.json",
+      "bytes": 3722,
+      "sha256": "3236bb13fc68db2da0b7ca5d85ca7133f8ae9f25bac8cf9312a8a6e0c2e3fceb"
+    }
+  ]
+}

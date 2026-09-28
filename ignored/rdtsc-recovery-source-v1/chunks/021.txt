@@ -1,0 +1,60 @@
++"#
++    );
++    let executable = compile_c_program(&directory.0, "timestamp-lifecycle", &source);
++    let image = std::fs::read(&executable).unwrap();
++    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++    backend
++        .install_static_elf_with_context(
++            &image,
++            &[executable.to_str().unwrap()],
++            &["PATH=/usr/bin:/bin"],
++            &directory.0,
++        )
++        .unwrap();
++    let (log, code, stdout, stderr) =
++        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
++            .unwrap();
++    assert_eq!(code, 0, "stdout={stdout:?} stderr={stderr:?}");
++    assert!(stdout.is_empty());
++    assert!(stderr.is_empty());
++
++    let calls = log.calls();
++    let mut senders = calls
++        .iter()
++        .map(|(sender, _)| sender.as_raw())
++        .collect::<Vec<_>>();
++    senders.sort_unstable();
++    senders.dedup();
++    assert!(
++        senders.len() >= 3,
++        "expected root, pthread, and fork-child timestamp senders; calls={calls:?}"
++    );
++    let child = *senders.iter().max().unwrap();
++    assert!(
++        calls
++            .iter()
++            .filter(|(sender, _)| sender.as_raw() == child)
++            .count()
++            >= 2,
++        "fork child must dispatch timestamps before and after exec; calls={calls:?}"
++    );
++}
++
++#[test]
++fn static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch() {
++    if !kvm_available("KVM unsubscribed RDTSC test") {
++        return;
++    }
++
++    let image = static_elf(&[
++        0x0f, 0x31, // rdtsc
++        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
++        0x31, 0xff, // xor edi, edi
++        0x0f, 0x05, // syscall
++    ]);
++    let (log, code) = run_timestamp_probe(&image, false);
++    assert_eq!(code, 0);
++    assert!(log.calls().is_empty());
++}
++
++#[test]

@@ -1,0 +1,49 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-same-run-v3/composition/hermit/detcore/src/lib.rs",
+      "bytes": 162820,
+      "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-same-run-v3/composition/hermit/detcore/src/tool_global.rs",
+      "bytes": 263975,
+      "sha256": "3f695019ba601fcd979482065e1ce3f4c871ce9f6ef8d0396b3adb0a08d5cdfc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-same-run-v3/composition/hermit/detcore/src/syscalls/time.rs",
+      "bytes": 25539,
+      "sha256": "b0edc785ef3b80756a93b766b4fe47089bcfbbeb8575b15a7f6eef5f45128b11",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/rdtsc-h39ac-same-run-v3/composition/hermit/detcore/src/syscalls/threads.rs",
+      "bytes": 138063,
+      "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-rdtsc-claude-review-v2-20260918/REVIEW.md",
+      "bytes": 30585,
+      "sha256": "b051bc120115467c86235c9988d170313ed035e73a648554aa86b30243c58dbf",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-rdtsc-native-review-v1-20260918/01-source.final.txt",
+      "bytes": 8756,
+      "sha256": "3e440de7c4d1c71a08f03f414b405d41c2fc93411e436e7b5302c19b98715f84",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-rdtsc-claude-review-v2-20260918/ROOT-FOLLOWUP-FACTS.md",
+      "bytes": 1957,
+      "sha256": "22b3630ce1748274a3c01e2acc0bc01ca54cfd8c5af2d3994ac747130f8c0a98",
+      "mode": 420
+    }
+  ],
+  "author_analysis": true,
+  "external_reviews_remain_changes_requested": true,
+  "actual_H39ac_before_after_charge_coverage_pending": true
+}

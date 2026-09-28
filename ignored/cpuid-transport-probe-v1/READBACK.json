@@ -1,0 +1,43 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/TARGET.json",
+    "bytes": 4690,
+    "sha256": "344466b84022a35968ebb42b3035ac8c45381460c7eb1b670a5b82765f7648b1",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/INPUTS.json",
+    "bytes": 891048,
+    "sha256": "d7a8be67b8e08f5646b16247ce9247cc91e82fabd60367391ba56a612c1b2a74",
+    "mode": 420
+  },
+  "records": 2783,
+  "symlinks": 8,
+  "source_entries": 2624,
+  "declared_unexpanded_gitlinks": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/third-party/dynamorio",
+      "kind": "unexpanded_gitlink",
+      "empty": true,
+      "mode": 493
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/third-party/e9patch",
+      "kind": "unexpanded_gitlink",
+      "empty": true,
+      "mode": 493
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/third-party/sabre",
+      "kind": "unexpanded_gitlink",
+      "empty": true,
+      "mode": 493
+    }
+  ],
+  "all_records_authenticated": true,
+  "source_only": true,
+  "no_target_admission_or_lease_action": true,
+  "no_cargo_test_vm_execution": true,
+  "original_observer_phase_common_lease_and_outer_driver_unchanged": true,
+  "diagnostic_stream_delta_only_after_mechanical_formatting": true
+}

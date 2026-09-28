@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "tg",
+    "kvm_setitimer_sandbox_killed",
+    "-v"
+  ],
+  "raw_status": 0,
+  "seconds": 0.36470506014302373
+}

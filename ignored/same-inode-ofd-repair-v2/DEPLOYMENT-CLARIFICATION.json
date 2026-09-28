@@ -1,0 +1,9 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/DEPLOYMENT.json",
+    "bytes": 2608,
+    "mode": 420,
+    "sha256": "03caab10a54a40f03bef793b3853b9b70fc159b34f4efdfa5c8741c6f9a6b5ec"
+  },
+  "clarification": "The original RUNNER_ORIGINS deployment list records initial copied-template bytes before its declared relocation rewrite. Its self-entry is therefore historical template-copy data, not the later current RUNNER_ORIGINS file digest. Phase plans bind the actual post-relocation record. The v3 origin record lists only unchanged copied code/selectors and carries SETUP/source changes separately."
+}

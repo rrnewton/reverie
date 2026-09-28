@@ -1,0 +1,89 @@
+{
+  "reverie-kvm/src/elf.rs": {
+    "struct FileRetirement(": [
+      398
+    ],
+    "struct StagedFile {": [
+      426
+    ],
+    "fn destroy(": [
+      468
+    ],
+    "fn try_clone_for_fork_locked(": [
+      741
+    ],
+    "fn inherit_process_state_locked(": [
+      856
+    ]
+  },
+  "reverie-kvm/src/executor.rs": {
+    "impl FileTableState {": [
+      1615
+    ],
+    "fn try_from_elf(": [
+      1620
+    ],
+    "fn install(": [
+      1658
+    ],
+    "fn execute_accept(": [
+      1867
+    ],
+    "fn fork_child(": [
+      2201
+    ],
+    "fn thread_child_with_signal_observation(": [
+      2309
+    ],
+    "fn release_files_on_exit(": [
+      2559
+    ],
+    "fn replace_after_exec(": [
+      2868
+    ],
+    "impl Drop for ElfExecutor": [
+      4257
+    ],
+    "impl SyscallExecutor for ElfExecutor": [
+      4273
+    ],
+    "fn insert_file_with_flags(": [
+      6833
+    ],
+    "fn duplicate_fd(": [
+      6995
+    ],
+    "fn insert_file_pair(": [
+      7143
+    ],
+    "fn install_received_rights(": [
+      9313
+    ],
+    "fn close(state:": [
+      12429
+    ],
+    "type RetirementObservations =": [
+      25207
+    ],
+    "fn descriptor_retirement_close_and_dup_release_both_guards(": [
+      25260
+    ],
+    "fn descriptor_retirement_exec_and_exit_release_both_guards(": [
+      25327
+    ],
+    "fn descriptor_retirement_install_error_releases_both_guards(": [
+      25413
+    ],
+    "fn descriptor_retirement_accept_cleanup_releases_both_guards(": [
+      25476
+    ]
+  },
+  "reverie-kvm/src/process_signal_publication.rs": {
+    "fn publish(": [
+      256
+    ],
+    "fn inactive_publication_refuses_poisoned_file_table_without_effects(": [
+      457
+    ]
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "tree": "a12d56466eed51cdd7d12087b5fafa9d66d8c864",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/Cargo.toml",
+      "bytes": 778,
+      "sha256": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+      "base_path": "Cargo.toml",
+      "git_blob": "4168dea2771f18a00fb1afdfd2218efba415ecbb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/rustfmt.toml",
+      "bytes": 287,
+      "sha256": "fb381af1e39bdd4639360e7256b8bea0ed26fb77c1bfa89f1a83f7e1d9d2a932",
+      "base_path": "rustfmt.toml",
+      "git_blob": "06998754bd7d342afaaaa4f91526c31d8b59f4d5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/CONTRIBUTING.md",
+      "bytes": 1524,
+      "sha256": "c6de999fdc06d22d19b18d08f82294f6674f1a62dc09a2f151e44276b9b8b07e",
+      "base_path": "CONTRIBUTING.md",
+      "git_blob": "854d94a735aefb07f9c7bf28338f7e6b57a4dc50"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/Cargo.toml",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340",
+      "base_path": "reverie-kvm/Cargo.toml",
+      "git_blob": "7a2bbf2888a431e8c0acd692ad07a3387a3787ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/src/runtime.rs",
+      "bytes": 182731,
+      "sha256": "1cee59050cb86814e76e54776635afd4f6c93a361da7a70b52828386aa124fdb",
+      "base_path": "reverie-kvm/src/runtime.rs",
+      "git_blob": "a10fed6355f7b5edf7db29bfd6afa26c3d12c044"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/src/elf.rs",
+      "bytes": 64744,
+      "sha256": "2b8c070f200f00faaafab3418ea3c73d4506e98a610ac224399d7ad9ea45e61b",
+      "base_path": "reverie-kvm/src/elf.rs",
+      "git_blob": "a31ecdfc47a9c859a4685d41dafebe0145bf824d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3",
+      "base_path": "reverie-kvm/src/fdinfo.rs",
+      "git_blob": "2518463e81b35fb2c27ef823edc3d103ec3bba01"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/src/syscall.rs",
+      "bytes": 6194,
+      "sha256": "df03079cd2b9fc2612e03d173b2fa6a7fcb75894d42d0656d12bb1289bc46627",
+      "base_path": "reverie-kvm/src/syscall.rs",
+      "git_blob": "181cb0712361980e3eced3df51cde9b881e2b307"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/base/reverie-kvm/tests/support/captured_write_signals.rs",
+      "bytes": 10299,
+      "sha256": "4330dbf7a954223fa601452f0f4aa4431854ffecd5a78e563e0ba7056e3df228",
+      "base_path": "reverie-kvm/tests/support/captured_write_signals.rs",
+      "git_blob": "24a81928c94f8cef38828731e205419d40ad301f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/local-generated-Cargo.lock",
+      "bytes": 67056,
+      "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+      "original_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/Cargo.lock",
+      "kind": "Existing ignored local lockfile, absent from base Git tree. No dependency resolution or Cargo command performed."
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/residual/REPORT.md",
+      "bytes": 11678,
+      "sha256": "af6ae264b0c4e91da7b7de568d385bc3de024337af4d09592236aba81e5110d0",
+      "original_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-descriptor-width-residuals-20260918/REPORT.md",
+      "kind": "authored plan; not independent approval"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/residual/INPUTS.json",
+      "bytes": 3115,
+      "sha256": "a750856f902518a18ccec0898f7c0e6c78bdb1938a1ae9e92bfdb50c94dc4334",
+      "original_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-descriptor-width-residuals-20260918/INPUTS.json",
+      "kind": "authored plan; not independent approval"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/instructions/parent-AGENTS.md",
+      "bytes": 17897,
+      "sha256": "f80ea3182e85d7067acc4cb2ae7fe3775e882bdb5053b7c487b5c4939d0e5d1a",
+      "kind": "instructions",
+      "original_path": "/home/newton/work/dev-hermit/AGENTS.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/inputs/instructions/code-review-SKILL.md",
+      "bytes": 3617,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+      "kind": "instructions",
+      "original_path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md"
+    }
+  ],
+  "product_instructions": "No AGENTS.md/CLAUDE.md in tracked base tree; CONTRIBUTING.md retained. Parent instructions and explicit owner dispatch apply.",
+  "read_limit": "Complete residual report and inputs, complete proposal diff; relevant surrounding executor/dispatcher/routing/tests and existing harness helpers. Complete context-file binding does not claim each entire context file was read anew.",
+  "qualifying_execution": {
+    "builds": 0,
+    "tests": 0,
+    "native_probes": 0,
+    "KVM_guests": 0,
+    "Hermit_invocations": 0
+  },
+  "artifact_formatting": "Pinned rustfmt formatted draft unit file and appended integration source only, not an applied-tree qualification."
+}

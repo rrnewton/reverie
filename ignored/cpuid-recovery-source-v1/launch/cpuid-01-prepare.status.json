@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/prepare.py",
+    "cpuid-01"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 0.37553096492774785
+}

@@ -1,0 +1,408 @@
+{
+  "status": "FIRST COMPILE REFUSAL; STOPPED, NOT A QUALIFIED SOURCE OR EXECUTABLE",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 2619,
+    "mode": 420,
+    "sha256": "242b99ff263f75cb04cafef649d960d595597c6d8ca4959b240c632d66bbec46",
+    "identity": [
+      48,
+      833107637
+    ]
+  },
+  "observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-v1/observer/compile/result.json",
+    "bytes": 48854,
+    "mode": 384,
+    "sha256": "7c2296a5729b4ccebe307dd49be9718db34b9ea05df8d779f92284330c27692f",
+    "identity": [
+      48,
+      833107603
+    ]
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-v1/compile-plan.json",
+    "bytes": 54802,
+    "mode": 420,
+    "sha256": "734f9b81d7e1f6b5be37551893494c2b44f2bca90bbc9fa518597c7317ea72f0",
+    "identity": [
+      48,
+      833056883
+    ]
+  },
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/TARGET.json",
+    "bytes": 3203,
+    "mode": 420,
+    "sha256": "04554adf7a1a9ad93d4ad7fff2e8c50eca6fafe5418bcaa85d15109001a7e045",
+    "identity": [
+      48,
+      832694518
+    ]
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/SOURCE-MANIFEST.json",
+    "bytes": 1399350,
+    "mode": 420,
+    "sha256": "096ce79b43b7449c0bba2d11d72d304fc19afef1f80a3a44b4267877d1eb9c12",
+    "identity": [
+      48,
+      832527016
+    ]
+  },
+  "diagnostics": [
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: variable does not need to be mutable\n   --> reverie-kvm/src/timestamp.rs:239:13\n    |\n239 |         let mut memory = GuestMemory::new(0, 0x10_000).unwrap();\n    |             ----^^^^^^\n    |             |\n    |             help: remove this `mut`\n    |\n    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "note",
+            "message": "`#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default",
+            "rendered": null,
+            "spans": []
+          },
+          {
+            "children": [],
+            "code": null,
+            "level": "help",
+            "message": "remove this `mut`",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 8037,
+                "byte_start": 8033,
+                "column_end": 17,
+                "column_start": 13,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/timestamp.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 239,
+                "line_start": 239,
+                "suggested_replacement": "",
+                "suggestion_applicability": "MachineApplicable",
+                "text": [
+                  {
+                    "highlight_end": 17,
+                    "highlight_start": 13,
+                    "text": "        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "level": "warning",
+        "message": "variable does not need to be mutable",
+        "spans": [
+          {
+            "byte_end": 8043,
+            "byte_start": 8033,
+            "column_end": 23,
+            "column_start": 13,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/timestamp.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 239,
+            "line_start": 239,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 23,
+                "highlight_start": 13,
+                "text": "        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "unused_mut",
+          "explanation": null
+        }
+      }
+    }
+  ],
+  "retained_artifacts": [
+    {
+      "cargo": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "vmcall",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/tests/vmcall.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/vmcall-6f24a603a27fcb71"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/vmcall-6f24a603a27fcb71",
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/vmcall-6f24a603a27fcb71",
+        "bytes": 87854040,
+        "mode": 493,
+        "sha256": "a7e753586e6b500bf79d28a4ff34c9724850a97d7049f9dc235da3d5651aa245",
+        "identity": [
+          48,
+          833106690
+        ]
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/vmcall",
+        "bytes": 87854040,
+        "mode": 365,
+        "sha256": "a7e753586e6b500bf79d28a4ff34c9724850a97d7049f9dc235da3d5651aa245",
+        "identity": [
+          48,
+          833144901
+        ]
+      },
+      "qualified": false
+    },
+    {
+      "cargo": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_kvm",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "bytes": 126192168,
+        "mode": 493,
+        "sha256": "9a672f27b036d5a38290a74dae11daf2f217fdfb1b8dff4ef49fd1ed39e6df9b",
+        "identity": [
+          48,
+          833107010
+        ]
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/reverie_kvm",
+        "bytes": 126192168,
+        "mode": 365,
+        "sha256": "9a672f27b036d5a38290a74dae11daf2f217fdfb1b8dff4ef49fd1ed39e6df9b",
+        "identity": [
+          48,
+          833144902
+        ]
+      },
+      "qualified": false
+    },
+    {
+      "cargo": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "read_clock",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/tests/read_clock.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/read_clock-19dc7265d033212c"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/read_clock-19dc7265d033212c",
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/read_clock-19dc7265d033212c",
+        "bytes": 97605968,
+        "mode": 493,
+        "sha256": "954b2c925386d4059d74f8c3366450cb81ab3f3450b9c4efc3d5a4a69d9778eb",
+        "identity": [
+          48,
+          833107168
+        ]
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/read_clock",
+        "bytes": 97605968,
+        "mode": 365,
+        "sha256": "954b2c925386d4059d74f8c3366450cb81ab3f3450b9c4efc3d5a4a69d9778eb",
+        "identity": [
+          48,
+          833144903
+        ]
+      },
+      "qualified": false
+    },
+    {
+      "cargo": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "static_elf",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/tests/static_elf.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/static_elf-8045a74b4f627592"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v1-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+        "bytes": 177657472,
+        "mode": 493,
+        "sha256": "4a0541840795d6507a0ef74675e511fc513666db7528e506b7dafc3a1acc3ceb",
+        "identity": [
+          48,
+          833107456
+        ]
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/static_elf",
+        "bytes": 177657472,
+        "mode": 365,
+        "sha256": "4a0541840795d6507a0ef74675e511fc513666db7528e506b7dafc3a1acc3ceb",
+        "identity": [
+          48,
+          833144907
+        ]
+      },
+      "qualified": false
+    }
+  ],
+  "payload_raw_status": 0,
+  "qualification_accepted": false,
+  "payload_elapsed_seconds": 62.03123527416028,
+  "observer_transport_elapsed_seconds": 65.39396697003394,
+  "aggregate_cpu_seconds": 131.849228,
+  "terminal_authenticated": true,
+  "tests_run": 0,
+  "scm_before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-v1/controls/compile/scm-before.json",
+    "bytes": 180,
+    "mode": 420,
+    "sha256": "5e01fb75da85eb26196a6da59e312e6879c8990dba9384b6fd2397de66854609",
+    "identity": [
+      48,
+      833056915
+    ]
+  },
+  "scm_after": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-v1/controls/compile/scm-after.json",
+    "bytes": 180,
+    "mode": 420,
+    "sha256": "5e01fb75da85eb26196a6da59e312e6879c8990dba9384b6fd2397de66854609",
+    "identity": [
+      48,
+      833107636
+    ]
+  },
+  "python_optimize": 0,
+  "debug": true,
+  "lease": "Existing phase finally completed terminal receipt and closed lease fd; no recovery or reconstruction",
+  "following_phases": "artifact qualification helper, format, all lists/tests, core check and Clippy unattempted"
+}

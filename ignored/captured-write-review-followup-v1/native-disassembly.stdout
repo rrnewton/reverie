@@ -1,0 +1,35 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000401000 <_start>:
+  401000:	48 bf 01 00 00 00 01 	movabs $0x100000001,%rdi
+  401007:	00 00 00 
+  40100a:	48 8d 35 ef 0f 00 00 	lea    0xfef(%rip),%rsi        # 402000 <payload>
+  401011:	ba 03 00 00 00       	mov    $0x3,%edx
+  401016:	41 ba 77 70 61 63    	mov    $0x63617077,%r10d
+  40101c:	41 b8 11 00 00 00    	mov    $0x11,%r8d
+  401022:	41 b9 76 98 00 00    	mov    $0x9876,%r9d
+  401028:	b8 01 00 00 00       	mov    $0x1,%eax
+  40102d:	0f 05                	syscall 
+  40102f:	48 89 05 0d 20 00 00 	mov    %rax,0x200d(%rip)        # 403043 <raw_rax>
+  401036:	bf 03 00 00 00       	mov    $0x3,%edi
+  40103b:	48 8d 35 c1 1f 00 00 	lea    0x1fc1(%rip),%rsi        # 403003 <record>
+  401042:	ba 48 00 00 00       	mov    $0x48,%edx
+  401047:	b8 01 00 00 00       	mov    $0x1,%eax
+  40104c:	0f 05                	syscall 
+  40104e:	48 83 f8 48          	cmp    $0x48,%rax
+  401052:	75 13                	jne    401067 <failed>
+  401054:	48 83 3d e7 1f 00 00 	cmpq   $0x3,0x1fe7(%rip)        # 403043 <raw_rax>
+  40105b:	03 
+  40105c:	75 09                	jne    401067 <failed>
+  40105e:	31 ff                	xor    %edi,%edi
+  401060:	b8 3c 00 00 00       	mov    $0x3c,%eax
+  401065:	0f 05                	syscall 
+
+0000000000401067 <failed>:
+  401067:	bf 01 00 00 00       	mov    $0x1,%edi
+  40106c:	b8 3c 00 00 00       	mov    $0x3c,%eax
+  401071:	0f 05                	syscall 

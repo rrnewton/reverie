@@ -1,0 +1,80 @@
+            1,
+        ),
+    ] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&static_elf(&code), "/cpuid-fault")
+            .unwrap();
+        let completion = futures::executor::block_on(
+            backend.run_static_elf_with_tool_completion::<CpuidTool>((true, 0), true),
+        )
+        .unwrap();
+        let error = completion.result.unwrap_err();
+        let Error::GuestException {
+            vector: actual_vector,
+            instruction_pointer: actual_rip,
+            ..
+        } = unwrap_shared_guest_exception(error)
+        else {
+            panic!("exact guest exception required");
+        };
+        assert_eq!((actual_vector, actual_rip), (vector, rip));
+        assert_eq!(completion.global_state.calls.lock().unwrap().len(), calls);
+    }
+}
+
+fn cpuid_clone_program() -> Vec<u8> {
+    fn append_root_read(code: &mut Vec<u8>, failures: &mut Vec<usize>) {
+        code.extend_from_slice(&[0x0f, 0xa2]); // cpuid
+        code.push(0x3d); // cmp eax, expected low word
+        code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
+        append_jne_failure(code, failures);
+        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, expected high word
+        code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
+        append_jne_failure(code, failures);
+    }
+
+    const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
+    const CHILD_RESULT: u64 = LOAD_ADDRESS + 0x1808;
+    const CHILD_DONE: u64 = LOAD_ADDRESS + 0x1810;
+    const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
+    const CHILD_STACK_SIZE: u64 = 0x600;
+    let flags = libc::CLONE_VM as u64
+        | libc::CLONE_FS as u64
+        | libc::CLONE_FILES as u64
+        | libc::CLONE_SIGHAND as u64
+        | libc::CLONE_THREAD as u64
+        | libc::CLONE_SYSVSEM as u64
+        | libc::CLONE_CHILD_SETTID as u64
+        | libc::CLONE_CHILD_CLEARTID as u64;
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    append_root_read(&mut code, &mut failures);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    code.extend_from_slice(&[
+        0xc7, 0x01, 0xff, 0xff, 0xff, 0x7f, // mov [rcx], nonzero sentinel
+        0xb8, 0xb3, 0x01, 0x00, 0x00, // mov eax, SYS_clone3
+        0x48, 0xbf, // movabs rdi, clone_args
+    ]);
+    let clone_args_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[
+        0xbe, 0x58, 0x00, 0x00, 0x00, // mov esi, sizeof(clone_args)
+        0x0f, 0x05, // syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz child
+    ]);
+    let child_jump = code.len() - 4;
+    code.extend_from_slice(&[0x0f, 0x88]); // js failure: clone must succeed
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    code.extend_from_slice(&[0x41, 0x89, 0xc5]); // mov r13d, returned child tid
+    code.extend_from_slice(&[0x48, 0xbf]); // movabs rdi, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    let wait = code.len();
+    code.extend_from_slice(&[
+        0x8b, 0x17, // mov edx, [rdi]
+        0x85, 0xd2, // test edx, edx
+        0x0f, 0x84, 0, 0, 0, 0, // jz joined
+    ]);

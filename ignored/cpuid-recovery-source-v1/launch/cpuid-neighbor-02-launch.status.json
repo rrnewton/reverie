@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/cpuid-neighbor-02-plan.json",
+    "b2af7583c7f7f38cc73074a1e4f53492ad38547c72b948f2f639b27af53b61e7"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 6.297224987996742
+}

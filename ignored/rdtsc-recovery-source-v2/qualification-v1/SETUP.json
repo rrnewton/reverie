@@ -1,0 +1,79 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source",
+  "base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/bootstrap.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/bootstrap.rs",
+        "bytes": 42817,
+        "mode": 420,
+        "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/cpuid.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/cpuid.rs",
+        "bytes": 16731,
+        "mode": 420,
+        "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/lib.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/lib.rs",
+        "bytes": 1736,
+        "mode": 420,
+        "sha256": "179ac1ba7a19011e1b481b01d8b6a5de47cea93470d313eedff8abb13b75efc2"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/runtime.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/runtime.rs",
+        "bytes": 188932,
+        "mode": 420,
+        "sha256": "5bd2d122aeb2d37bc1894ad8cec058ac01715de8aa022321e02d4d9f1b2928d3"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "mode": 420,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/vm.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/src/vm.rs",
+        "bytes": 321017,
+        "mode": 420,
+        "sha256": "52f8565b9e659751ff34e7981149115d4b7d8867b79c87f2b11bd7495dec1397"
+      }
+    },
+    {
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 503499,
+        "mode": 420,
+        "sha256": "4520007427820d43ce7ff3d21d8e5f8e2ce253ae52394679dca18ef1502bc545"
+      }
+    }
+  ],
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v2-cold-v1",
+  "purpose": "CPL3 timestamp recovery only; public real-mode timestamp gap retained; no timer or full-backend claim"
+}

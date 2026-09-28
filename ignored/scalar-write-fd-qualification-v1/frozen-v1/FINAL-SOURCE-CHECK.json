@@ -1,0 +1,16 @@
+{
+  "head": "1a28260f548267fcd8bd2da46f7a697573455166",
+  "branch": "codex/kvm-setitimer-20260918",
+  "index_unchanged": true,
+  "index_sha256": "98b691b99a586400ac793b7885a873ffe82c700e8086ddfcea18c9e23bd40173",
+  "exact_proposal_afterfiles": true,
+  "full_source_manifest_authenticated": true,
+  "actual_diff": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/applied.patch",
+    "bytes": 7375,
+    "mode": 420,
+    "sha256": "dbe55cd2c966a55b983fe6d185035f4c0bd5873c4a6515d32cd465d7d3a6abf9"
+  },
+  "all_phase_source_checks_passed": true,
+  "no_commit_or_ref_changes": true
+}

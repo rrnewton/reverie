@@ -1,0 +1,14 @@
+--- formatted/reverie-kvm/src/elf.rs
++++ final/reverie-kvm/src/elf.rs
+@@ -720,8 +720,9 @@
+ }
+ 
+ impl LoadedStaticElf {
+-    /// Return the replaced description so callers can retire it after both
+-    /// the authoritative file-table and signal-transaction guards are released.
++    /// Return replaced descriptions, including inherited stdin at fd 0, so
++    /// callers retire them after both the authoritative file-table and
++    /// signal-transaction guards are released.
+     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
+         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
+         if fd == libc::STDIN_FILENO {

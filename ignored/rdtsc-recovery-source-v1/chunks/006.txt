@@ -1,0 +1,60 @@
+     FaultBoundary(Box<PageZeroFault>),
+@@ -444,12 +445,15 @@
+     fn tail_injection_allowed(&self) -> bool {
+         !matches!(
+             self,
+-            Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::ThreadEntrySignal
++            Self::SignalBoundary(_)
++                | Self::FaultBoundary(_)
++                | Self::ThreadEntrySignal
++                | Self::Timestamp
+         )
+     }
+ 
+     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+-        if matches!(self, Self::ThreadEntrySignal) {
++        if matches!(self, Self::ThreadEntrySignal | Self::Timestamp) {
+             // There is a real user continuation, but no consumed syscall
+             // transport to restore after an injected process action.
+             return !injection_can_be_nonreturning(request)
+@@ -571,10 +575,12 @@
+             // that SignalBoundary cannot resume its Tool hook.
+             return -(i64::from(Errno::ENOSYS.into_raw()));
+         }
+-        if matches!(self.process_context, ProcessExecutionContext::Lifecycle)
+-            && let Some(result) = self
+-                .executor
+-                .lifecycle_signal_mask_preflight(request, memory)
++        if matches!(
++            self.process_context,
++            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Timestamp
++        ) && let Some(result) = self
++            .executor
++            .lifecycle_signal_mask_preflight(request, memory)
+         {
+             return result;
+         }
+@@ -893,6 +899,9 @@
+                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
+                         "synthetic initial exec completes before process actions are inspected"
+                     ),
++                    ProcessExecutionContext::Timestamp => Err(Error::UnexpectedVcpuExit(
++                        "process injection from a timestamp callback is unsupported".to_owned(),
++                    )),
+                     ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
+                         "process injection from a thread-entry signal hook is unsupported"
+                             .to_owned(),
+@@ -2918,6 +2927,10 @@
+         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+         let mut _process_completed = false;
+         let outcome: Result<ToolProcessExit> = async {
++            // Each actual Tool consumer admits its own subscription before
++            // any user instruction. New fork/thread vCPUs start unarmed; the
++            // tool-less Host worker loop never inherits trapping without a hook.
++            self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
+             self.vcpu.track_clock()?;
+             _registration = Some(self.register_guest_thread()?);
+             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+@@ -3140,6 +3153,98 @@
+                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                     }

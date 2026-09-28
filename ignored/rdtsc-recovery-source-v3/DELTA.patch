@@ -1,0 +1,138 @@
+--- v2/reverie-kvm/tests/static_elf.rs
++++ v3/reverie-kvm/tests/static_elf.rs
+@@ -3664,8 +3664,29 @@
+     }
+ }
+ 
++// The Tool completion API retains a lone fault in one shared ownership envelope.
++// Unwrap only that exact shape: cleanup, worker and signal-effect context must
++// still fail these fault-only assertions instead of being hidden by primary().
++fn unwrap_shared_guest_exception(error: Error) -> Error {
++    match error {
++        Error::SharedFailure(cause) => match cause.as_ref() {
++            Error::GuestException {
++                vector,
++                instruction_pointer,
++                fault_address,
++            } => Error::GuestException {
++                vector: *vector,
++                instruction_pointer: *instruction_pointer,
++                fault_address: *fault_address,
++            },
++            _ => Error::SharedFailure(cause),
++        },
++        error => error,
++    }
++}
++
+ fn assert_invalid_opcode(error: Error) {
+-    match error {
++    match unwrap_shared_guest_exception(error) {
+         Error::GuestException {
+             vector,
+             instruction_pointer,
+@@ -3679,7 +3700,7 @@
+ }
+ 
+ fn assert_page_fault(error: Error) {
+-    match error {
++    match unwrap_shared_guest_exception(error) {
+         Error::GuestException {
+             vector,
+             instruction_pointer,
+@@ -3694,7 +3715,7 @@
+ }
+ 
+ fn assert_general_protection(error: Error) {
+-    match error {
++    match unwrap_shared_guest_exception(error) {
+         Error::GuestException {
+             vector,
+             instruction_pointer,
+@@ -3705,6 +3726,74 @@
+         }
+         error => panic!("expected general-protection exception, got {error}"),
+     }
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++struct FailingFaultExitTool;
++
++#[reverie::tool]
++impl Tool for FailingFaultExitTool {
++    type GlobalState = ();
++    type ThreadState = ();
++
++    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
++        &self,
++        _tid: Pid,
++        _global: &G,
++        _thread_state: Self::ThreadState,
++        _status: ExitStatus,
++    ) -> Result<(), reverie::Error> {
++        Err(Errno::EIO.into())
++    }
++}
++
++#[test]
++fn fault_only_assertion_rejects_actual_tool_exit_cleanup_failure() {
++    if !kvm_available("fault_only_assertion_rejects_actual_tool_exit_cleanup_failure") {
++        return;
++    }
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend
++        .install_static_elf(&static_elf(&[0x0f, 0x0b]), "/bin/fault-with-cleanup")
++        .unwrap();
++    let error = match futures::executor::block_on(
++        backend.run_static_elf_with_tool::<FailingFaultExitTool>((), true),
++    ) {
++        Ok(_) => panic!("faulting guest and failing exit hook unexpectedly succeeded"),
++        Err(error) => error,
++    };
++    eprintln!("actual fault and exit-hook failure: {error:?}");
++    let Error::WithCleanup { primary, cleanup } = &error else {
++        panic!("expected execution fault with retained cleanup failure, got {error:?}");
++    };
++    let Error::SharedFailure(fault) = primary.as_ref() else {
++        panic!("expected the shared original execution fault, got {primary:?}");
++    };
++    assert!(matches!(
++        fault.as_ref(),
++        Error::GuestException {
++            vector: 6,
++            instruction_pointer: LOAD_ADDRESS,
++            ..
++        }
++    ));
++    assert_eq!(cleanup.len(), 1, "unexpected cleanup causes: {cleanup:?}");
++    let Error::SharedFailure(hook) = cleanup[0].as_ref() else {
++        panic!("expected the shared exit-hook failure, got {cleanup:?}");
++    };
++    assert!(matches!(
++        hook.as_ref(),
++        Error::Reverie(reverie::Error::Errno(errno)) if *errno == Errno::EIO
++    ));
++    // Only the assertion is caught. The actual run above must retain both
++    // failures, and the unchanged vector/RIP oracle is satisfied by its primary.
++    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        assert_invalid_opcode(error);
++    }));
++    assert!(
++        rejected.is_err(),
++        "fault-only helper discarded cleanup failure"
++    );
+ }
+ 
+ #[test]
+@@ -14655,9 +14744,9 @@
+             backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
+         )
+         .unwrap();
+-        let error = completion.result.unwrap_err();
++        let error = unwrap_shared_guest_exception(completion.result.unwrap_err());
+         assert!(
+-            matches!(error.primary(), Error::GuestException { vector: 1, instruction_pointer, .. }
++            matches!(&error, Error::GuestException { vector: 1, instruction_pointer, .. }
+                 if *instruction_pointer == expected_ip),
+             "expected #DB at {expected_ip:#x}, got {error:?}"
+         );

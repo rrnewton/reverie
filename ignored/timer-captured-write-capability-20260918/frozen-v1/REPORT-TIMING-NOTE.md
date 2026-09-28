@@ -1,0 +1,1 @@
+Timing correction to REPORT.md: the ten passing test payloads ranged from 0.002857 to 0.659472 seconds. The report’s lower endpoint “0.004” was rounded incorrectly; it is approximately 0.003 seconds. QUALIFICATION.json retains the exact original values. No result, bound, source or existing receipt changes.

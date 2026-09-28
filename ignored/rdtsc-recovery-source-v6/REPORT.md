@@ -1,0 +1,9 @@
+# V6: one private test implementation signature correction
+
+V5 failed its first compile with raw 101 / accepted=false / E0050. The included terminal_runtime_tests.rs RefusingExecutor still implemented the former zero-request private tail predicate. The V5 author symbol audit had searched runtime.rs but missed this included test module; its broad audit statement was incorrect. The exact raw compiler diagnostic and unsuccessful compile receipt remain preserved. No V5 test ran; its emitted non-test library is not a qualified executable.
+
+V6 changes exactly that one method signature to accept _request: &SyscallRequest. It still returns false, its execute and complete_injection still panic, and every existing test body/assertion remains byte-identical. The whole V5 production implementation and all new V5 controls are byte-identical. A full source search identifies all private predicate implementations/calls; no other old signature remains. No behavior, warning suppression, assertion, skip or comparator change.
+
+The changed included file joins the explicit rustfmt/source binding set. Root's requested unchanged terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children neighbor is added, producing 37 exact declarations and 46 phases. The original per-phase bounds, two jobs, offline/locked compiler, observer, phase/lease/retention helpers and all 36 prior selectors remain unchanged. A fresh empty target and newly emitted/retained source-bound harnesses are required; neither V4 harnesses nor V5's incomplete build receive new credit. Stop on the first unaccepted phase with no retry. F3 policy and actual Detcore before/after-charge coverage remain separate pending obligations.
+
+This packet is source/caller preparation, not compilation, test or source approval. Root authorized this exact minimal successor and qualification after reauthentication without an additional planning round.
