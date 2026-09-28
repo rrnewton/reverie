@@ -675,3 +675,171 @@ fn injected_mask_swapping_syscall_keeps_the_saved_mask() {
         "guest sees EINTR, one handler run, and its saved mask restored"
     );
 }
+
+static SIGBUS_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigbus(_signal: libc::c_int) {
+    SIGBUS_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Returns whether `signal` is in the calling thread's signal mask.
+///
+/// # Safety
+/// Reads the calling thread's signal mask.
+unsafe fn is_blocked(signal: libc::c_int) -> libc::c_int {
+    unsafe {
+        let mut current: libc::sigset_t = std::mem::zeroed();
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_BLOCK,
+                0usize,
+                &mut current as *mut libc::sigset_t,
+                8usize
+            ),
+            0
+        );
+        libc::sigismember(&current, signal)
+    }
+}
+
+/// Linux's `dequeue_synchronous_signal` returns the first queued
+/// synchronous-class entry (positive `si_code`) without consulting the mask
+/// whenever some unblocked synchronous signal is pending, and the step
+/// SIGTRAP always is. So a signal the guest keeps blocked can stop the
+/// injected step after its `syscall` completed. Returning it to the kernel
+/// queue must leave the guest's mask alone: unmasking it at the end of the
+/// step would unblock a signal the guest itself blocked.
+///
+/// Oracle: the same guest body under `strace -f` prints "0 0 1 1" (a tracer
+/// resuming a blocked signal has `ptrace_signal` requeue it, so its handler
+/// does not run, and SIGBUS stays blocked). Untraced Linux prints "0 1 1 1";
+/// no ptrace tracer can match its SIGBUS handler count.
+#[test]
+fn guest_blocked_signal_dequeued_after_injected_syscall_stays_blocked() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGBUS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGBUS, count_sigbus);
+        install_counter(libc::SIGSEGV, count_sigsegv);
+        block(&[libc::SIGBUS, libc::SIGSEGV]);
+        queue_to_self(libc::SIGBUS, 1);
+        queue_to_self(libc::SIGSEGV, 1);
+        let mut unblock: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut unblock);
+        libc::sigaddset(&mut unblock, libc::SIGSEGV);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_FD,
+            &unblock as *const libc::sigset_t,
+            0usize,
+        );
+        println!(
+            "{ret} {} {} {}",
+            SIGBUS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGSEGV_HANDLER_CALLS.load(Ordering::Relaxed),
+            is_blocked(libc::SIGBUS)
+        );
+    })
+    .expect("run guest-blocked signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE guest-blocked guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(*injected, vec![Ok(0)], "the unblock runs once and succeeds");
+    assert_eq!(
+        stdout.trim(),
+        "0 0 1 1",
+        "success, SIGBUS still blocked and not run, SIGSEGV run once (strace oracle)"
+    );
+    // The requeued SIGBUS sits ahead of SIGSEGV, so the same quirk dequeues
+    // it once more at the next resume: the tool sees it (as `strace -f` does)
+    // and its requeue leaves it blocked, then SIGSEGV is delivered.
+    assert_eq!(
+        *signals,
+        vec![libc::SIGBUS, libc::SIGSEGV],
+        "the still-blocked SIGBUS is reported and requeued, then SIGSEGV delivered"
+    );
+}
+
+/// The mask-swapping variant: an injected `ppoll` whose temporary mask keeps
+/// SIGBUS blocked but unblocks SIGSYS, both queued with a positive `si_code`.
+/// SIGBUS is dequeued first, still blocked; it must be requeued rather than
+/// held, or it occupies the single hold slot and SIGSYS then fails the step
+/// closed.
+///
+/// Oracle: the same guest body under `strace -f` prints "-1 4 1 0 1 1"
+/// (EINTR, SIGSYS handler once, SIGBUS handler never, both blocked again
+/// once `ppoll` restores the saved mask). Untraced Linux prints
+/// "-1 4 1 1 1 1".
+#[test]
+fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGBUS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        install_counter(libc::SIGBUS, count_sigbus);
+        block(&[libc::SIGBUS, libc::SIGSYS]);
+        queue_to_self(libc::SIGBUS, 1);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        libc::sigaddset(&mut args.mask, libc::SIGBUS);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {} {} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGBUS_HANDLER_CALLS.load(Ordering::Relaxed),
+            is_blocked(libc::SIGBUS),
+            is_blocked(libc::SIGSYS)
+        );
+    })
+    .expect("run ppoll guest-blocked guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE ppoll-blocked guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw())],
+        "ppoll is interrupted by the signal its mask unblocks"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 1 0 1 1", libc::EINTR),
+        "EINTR, SIGSYS run once, SIGBUS never run, saved mask restored (strace oracle)"
+    );
+    assert!(
+        !signals.contains(&libc::SIGBUS),
+        "the still-blocked SIGBUS is never delivered: {signals:?}"
+    );
+}
