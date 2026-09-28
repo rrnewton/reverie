@@ -7374,8 +7374,7 @@ mod tests {
             b"orphan err".to_vec(),
         );
         executor
-            .state
-            .children
+            .fixture_child_wait_context()
             .assert_namespace_reaped_child_for_test(child_id, ExitStatus::Exited(7));
         (result, executor)
     }
@@ -7390,7 +7389,7 @@ mod tests {
             "a detached child's output still reaches the run",
         );
         assert_eq!(
-            executor.state.children.get(&4),
+            executor.fixture_child_wait_context().get(&4),
             None,
             "init reaped the child, so its former parent has nothing to wait for",
         );
