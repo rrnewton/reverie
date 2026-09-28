@@ -2080,6 +2080,92 @@ async fn compare_mode_with_internal(mode: &str, internal: &[&str]) -> [P2Run; 4]
     [ptrace_inject, trap_only_inject, ptrace_tail, trap_only_tail]
 }
 
+/// Attempts of one precise-timer comparison; see `compare_timer_mode`.
+const TIMER_ATTEMPTS: usize = 3;
+
+/// The assertions `compare_mode_with_internal` makes, on its four runs
+/// (ptrace inject, trap-only inject, ptrace tail, trap-only tail).
+fn assert_mode_runs(runs: &[P2Run; 4], internal: &[&str]) {
+    let [ptrace_inject, trap_only_inject, ptrace_tail, trap_only_tail] = runs;
+    assert_equal_runs_with_internal(trap_only_inject, ptrace_inject, internal);
+    assert_equal_runs_with_internal(trap_only_tail, ptrace_tail, internal);
+    for run in [ptrace_inject, ptrace_tail] {
+        assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+        assert!(run.report.ends_with("done\n"), "{}", run.report);
+    }
+}
+
+/// The text of a caught panic.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+        .unwrap_or_else(|| "<non-string panic>".to_owned())
+}
+
+/// `compare_mode_with_internal` for a mode whose Tool arms precise timers,
+/// followed by the test's own `check` of the four runs. An attempt is
+/// retried, up to `TIMER_ATTEMPTS` attempts, only when it failed and one of
+/// its runs had a host-timed timer outcome (`HostTimedTimerEvents`, counted
+/// by the timer on this thread): the perf overflow signal was handled past
+/// the target, or exactly at the target with no step to place the event, or
+/// after another stop had already ended the timer although its overflow was
+/// due. Each of these puts the timer event (or its absence) where the host's
+/// signal delivery put it, under plain ptrace as much as under trap-only, so
+/// such an attempt says nothing about trap-only.
+///
+/// A failed attempt without such an outcome fails the test at once. If
+/// every attempt fails, each with such an outcome, the test fails too,
+/// reporting that it measured nothing. A passing attempt passes whether or
+/// not it had one. A trap-only defect that fails every attempt is therefore
+/// always reported; one that fails only some attempts can pass only if each
+/// failed attempt also had a host-timed outcome.
+async fn compare_timer_mode(
+    mode: &str,
+    internal: &[&str],
+    check: impl Fn(&[P2Run; 4]),
+) -> [P2Run; 4] {
+    let mut failures = Vec::new();
+    for attempt in 1..=TIMER_ATTEMPTS {
+        let _ = crate::timer::take_host_timed_timer_events();
+        let runs = [
+            run_p2(mode, None, false).await,
+            run_p2(mode, Some(SitePatching::On), false).await,
+            run_p2(mode, None, true).await,
+            run_p2(mode, Some(SitePatching::On), true).await,
+        ];
+        let host_timed = crate::timer::take_host_timed_timer_events();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_mode_runs(&runs, internal);
+            check(&runs);
+        }));
+        eprintln!(
+            "TIMER-ATTEMPT {mode} attempt={attempt} passed={} host-timed={host_timed:?}",
+            outcome.is_ok()
+        );
+        match outcome {
+            Ok(()) => return runs,
+            Err(panic) if host_timed.total() == 0 => std::panic::resume_unwind(panic),
+            Err(panic) => {
+                eprintln!(
+                    "TIMER-RETRY {mode}: attempt {attempt} of {TIMER_ATTEMPTS} failed with \
+                     host-timed timer outcomes {host_timed:?}"
+                );
+                failures.push(format!(
+                    "attempt {attempt}: {host_timed:?}: {}",
+                    panic_text(panic.as_ref())
+                ));
+            }
+        }
+    }
+    panic!(
+        "{mode}: no signal: all {TIMER_ATTEMPTS} attempts failed, each with a host-timed \
+         timer outcome:\n{}",
+        failures.join("\n")
+    );
+}
+
 /// The Tool's timer events of a run, in order.
 fn timer_events(run: &P2Run) -> Vec<&String> {
     run.all_events()
@@ -2138,90 +2224,102 @@ async fn trap_only_p2_t4_timer_loop() {
         eprintln!("skipping: perf counters are not supported here");
         return;
     }
-    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("timer_loop").await;
-    assert_patched(&trap_only, SiteState::Live);
-    assert_patched(&trap_only_tail, SiteState::Live);
-    let timers = timer_events(&ptrace);
-    eprintln!("T4 ptrace timer events: {}", timers.len());
-    assert_eq!(timers.len(), 46, "{timers:#?}");
-    for run in [&ptrace, &trap_only, &trap_only_tail] {
-        let stepped = stepped_entries(run, "getpid");
-        assert_eq!(
-            stepped, 154,
-            "stepped getpid entries: {:#?}",
-            run.stepped_entries
+    compare_timer_mode("timer_loop", &[], |runs| {
+        let [ptrace, trap_only, _, trap_only_tail] = runs;
+        assert_patched(trap_only, SiteState::Live);
+        assert_patched(trap_only_tail, SiteState::Live);
+        let timers = timer_events(ptrace);
+        eprintln!("T4 ptrace timer events: {}", timers.len());
+        assert_eq!(timers.len(), 46, "{timers:#?}");
+        for run in [ptrace, trap_only, trap_only_tail] {
+            let stepped = stepped_entries(run, "getpid");
+            assert_eq!(
+                stepped, 154,
+                "stepped getpid entries: {:#?}",
+                run.stepped_entries
+            );
+            assert_eq!(run.stepped_entries, ptrace.stepped_entries);
+            let leaked = run.tool_events["task#0"]
+                .iter()
+                .filter(|event| {
+                    event.starts_with("entry getpid ") && event.contains(" r11=rflags:false ")
+                })
+                .count();
+            assert_eq!(
+                leaked, 0,
+                "getpid entries whose r11 is not rflags: {:#?}",
+                run.tool_events
+            );
+        }
+        assert!(
+            ptrace.report.contains("timer loop sum=400\n"),
+            "{}",
+            ptrace.report
         );
-        assert_eq!(run.stepped_entries, ptrace.stepped_entries);
-        let leaked = run.tool_events["task#0"]
-            .iter()
-            .filter(|event| {
-                event.starts_with("entry getpid ") && event.contains(" r11=rflags:false ")
-            })
-            .count();
-        assert_eq!(
-            leaked, 0,
-            "getpid entries whose r11 is not rflags: {:#?}",
-            run.tool_events
-        );
-    }
-    assert!(
-        ptrace.report.contains("timer loop sum=400\n"),
-        "{}",
-        ptrace.report
-    );
-    // The guest sees the stepped getpid's r11 too: the fixture reports every
-    // iteration whose r11 is not 0x246, and there is none.
-    let iters: Vec<&str> = ptrace
-        .report
-        .lines()
-        .filter(|line| line.starts_with("iter "))
-        .collect();
-    assert_eq!(iters, Vec::<&str>::new(), "{}", ptrace.report);
+        // The guest sees the stepped getpid's r11 too: the fixture reports
+        // every iteration whose r11 is not 0x246, and there is none.
+        let iters: Vec<&str> = ptrace
+            .report
+            .lines()
+            .filter(|line| line.starts_with("iter "))
+            .collect();
+        assert_eq!(iters, Vec::<&str>::new(), "{}", ptrace.report);
+    })
+    .await;
 }
 
 /// T1d: a timer far enough out that perf's own overflow signal starts the
 /// single-steps, targeted at branch counts that land before, at and after the
 /// patched getpid that follows a long loop.
 ///
-/// Measured on an AMD EPYC 9D85 under parallel load: the perf-overflow path
-/// itself is not exact there. Plain ptrace, run against itself, occasionally
-/// drops a timer or fires it one branch late (1 of 48 runs each), so this
-/// test can fail on a loaded host without any trap-only defect.
+/// The targets sit next to that getpid on purpose, because the steps must
+/// reach it; that is what this test is for, so they are not moved into the
+/// loop as the timer-hop modes' were. It also means that where the host
+/// delivers the overflow signal (programmed one skid margin before each
+/// target) decides the outcome when it is late: handled past or exactly at
+/// the target, the event fires where the guest happened to be; handled after
+/// the getpid's stop, that stop cancels the timer, which then neither fires
+/// nor steps onto the getpid (which is then not a stepped entry). The timer
+/// counts each such outcome, and `compare_timer_mode` retries only an attempt
+/// that failed with one.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_t1d_perf_marker_steps_across_a_patched_site() {
     if !crate::perf::is_perf_supported() {
         eprintln!("skipping: perf counters are not supported here");
         return;
     }
-    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("perf_marker").await;
-    assert_patched(&trap_only, SiteState::Live);
-    assert_patched(&trap_only_tail, SiteState::Live);
-    let timers = timer_events(&ptrace);
-    eprintln!("T1d ptrace timer events: {timers:#?}");
-    // Measured: the targets before the site (inside the loop, and at its
-    // exit) fire; the targets at and after the site are cancelled when the
-    // steps reach the traced getpid, which is then entered by a single-step.
-    // The guest's r11 is 0x246 either way: plain ptrace's timer clears the
-    // TF that the stepped `syscall` saved in r11.
-    assert_eq!(timers.len(), 2, "{timers:#?}");
-    for run in [&ptrace, &trap_only, &trap_only_tail] {
-        assert_eq!(
-            stepped_entries(run, "getpid"),
-            2,
-            "stepped getpid entries: {:#?}",
-            run.stepped_entries
-        );
-        assert_eq!(run.stepped_entries, ptrace.stepped_entries);
-    }
-    for (c, r11) in [(0, "0x246"), (1, "0x246"), (2, "0x246"), (3, "0x246")] {
-        assert!(
-            ptrace
-                .report
-                .contains(&format!("marker {c} getpid=1 r11={r11}\n")),
-            "{}",
-            ptrace.report
-        );
-    }
+    compare_timer_mode("perf_marker", &[], |runs| {
+        let [ptrace, trap_only, _, trap_only_tail] = runs;
+        assert_patched(trap_only, SiteState::Live);
+        assert_patched(trap_only_tail, SiteState::Live);
+        let timers = timer_events(ptrace);
+        eprintln!("T1d ptrace timer events: {timers:#?}");
+        // Measured: the targets before the site (inside the loop, and at its
+        // exit) fire; the targets at and after the site are cancelled when the
+        // steps reach the traced getpid, which is then entered by a
+        // single-step. The guest's r11 is 0x246 either way: plain ptrace's
+        // timer clears the TF that the stepped `syscall` saved in r11.
+        assert_eq!(timers.len(), 2, "{timers:#?}");
+        for run in [ptrace, trap_only, trap_only_tail] {
+            assert_eq!(
+                stepped_entries(run, "getpid"),
+                2,
+                "stepped getpid entries: {:#?}",
+                run.stepped_entries
+            );
+            assert_eq!(run.stepped_entries, ptrace.stepped_entries);
+        }
+        for (c, r11) in [(0, "0x246"), (1, "0x246"), (2, "0x246"), (3, "0x246")] {
+            assert!(
+                ptrace
+                    .report
+                    .contains(&format!("marker {c} getpid=1 r11={r11}\n")),
+                "{}",
+                ptrace.report
+            );
+        }
+    })
+    .await;
 }
 
 /// T4b: with getuid unsubscribed, trap-only does not patch at all and the
@@ -2380,8 +2478,13 @@ async fn trap_only_p2_rt_sigreturn_from_a_prot_none_frame_naming_the_slot_return
 /// so the slot's syscall would produce no TAG_SLOT stop. Plain ptrace runs
 /// them (SIGILL for 335, -ENXIO for 336); trap-only fails closed at H0 with
 /// `TrapOnlySeccompBypassingNumber`, by number, before any hop or Tool
-/// dispatch, whether or not the syscalls crate knows the number. On a kernel
-/// without them both backends return -ENOSYS, but trap-only still refuses.
+/// dispatch, whether or not the syscalls crate knows the number.
+///
+/// Known divergence: on a kernel without these syscalls plain ptrace returns
+/// -ENOSYS to the guest while trap-only still refuses the run. The refusal is
+/// kept on purpose (trap-only does not probe the kernel for them), so this
+/// test accepts either plain-ptrace outcome but always requires the refusal;
+/// making trap-only return -ENOSYS there is a tracked follow-up.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_seccomp_bypassing_probe_numbers_fail_closed() {
     for (mode, nr, probe_line) in [
@@ -2410,6 +2513,28 @@ async fn trap_only_p2_seccomp_bypassing_probe_numbers_fail_closed() {
             )),
             "{mode}: {text}"
         );
+    }
+}
+
+/// The guest's own seccomp filter returns `SECCOMP_RET_TRACE` for number 500,
+/// which the syscall table does not know (the tracer's filter does not trace
+/// it). The seccomp stop's number cannot be decoded: `get_syscall` used to
+/// panic in `Sysno::from` here on every backend, the default one included,
+/// and now ends the run with an ENOSYS error. Both backends end it the same
+/// way. Returning -ENOSYS to the guest instead is a tracked follow-up.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_guest_trace_of_an_unknown_number_ends_the_run() {
+    for patching in [None, Some(SitePatching::On)] {
+        let error = run_p2_with("guest_trace_unknown", patching, false, false)
+            .await
+            .expect_err("an undecodable seccomp stop must end the run");
+        let text = format!("{error:#} {error:?}");
+        eprintln!("{patching:?}: {text}");
+        assert!(
+            text.contains("read registers at seccomp stop"),
+            "{patching:?}: {text}"
+        );
+        assert!(text.contains("ENOSYS"), "{patching:?}: {text}");
     }
 }
 
@@ -2493,33 +2618,35 @@ async fn trap_only_p2_timer_survives_an_allow_class_hop() {
             " nr=15",
         ),
     ] {
-        let [ptrace, trap_only, ptrace_tail, trap_only_tail] =
-            compare_mode_with_internal(mode, &[internal]).await;
-        for (ptrace, trap_only) in [(&ptrace, &trap_only), (&ptrace_tail, &trap_only_tail)] {
-            // Not vacuous: plain ptrace fires the timer exactly once, in the
-            // branch loop after the hop.
-            assert_eq!(
-                timer_events(ptrace).len(),
-                1,
-                "{mode}: {:#?}",
-                ptrace.all_events()
-            );
-            assert_eq!(
-                timer_events(trap_only),
-                timer_events(ptrace),
-                "{mode}: timer events differ"
-            );
-            assert_patched(trap_only, shared_site);
-            assert!(
-                trap_only
-                    .lifecycle
-                    .iter()
-                    .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(nr)),
-                "{mode}: {:#?}",
-                trap_only.lifecycle
-            );
-            assert_report_has(ptrace, &[line]);
-        }
+        compare_timer_mode(mode, &[internal], |runs| {
+            let [ptrace, trap_only, ptrace_tail, trap_only_tail] = runs;
+            for (ptrace, trap_only) in [(ptrace, trap_only), (ptrace_tail, trap_only_tail)] {
+                // Not vacuous: plain ptrace fires the timer exactly once, in the
+                // branch loop after the hop.
+                assert_eq!(
+                    timer_events(ptrace).len(),
+                    1,
+                    "{mode}: {:#?}",
+                    ptrace.all_events()
+                );
+                assert_eq!(
+                    timer_events(trap_only),
+                    timer_events(ptrace),
+                    "{mode}: timer events differ"
+                );
+                assert_patched(trap_only, shared_site);
+                assert!(
+                    trap_only
+                        .lifecycle
+                        .iter()
+                        .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(nr)),
+                    "{mode}: {:#?}",
+                    trap_only.lifecycle
+                );
+                assert_report_has(ptrace, &[line]);
+            }
+        })
+        .await;
     }
 }
 
@@ -2533,13 +2660,16 @@ async fn trap_only_p2_timer_is_cancelled_by_every_ptrace_visible_stop() {
         eprintln!("skipping: perf counters are not supported here");
         return;
     }
-    let [ptrace, trap_only, ptrace_tail, trap_only_tail] = compare_mode("timer_cancel").await;
-    for (ptrace, trap_only) in [(&ptrace, &trap_only), (&ptrace_tail, &trap_only_tail)] {
-        assert_patched(trap_only, SiteState::Live);
-        assert_eq!(timer_events(ptrace).len(), 1, "{:#?}", ptrace.all_events());
-        assert_eq!(timer_events(trap_only), timer_events(ptrace));
-        assert_report_has(ptrace, &["timer cancel site=1 ordinary=1"]);
-    }
+    compare_timer_mode("timer_cancel", &[], |runs| {
+        let [ptrace, trap_only, ptrace_tail, trap_only_tail] = runs;
+        for (ptrace, trap_only) in [(ptrace, trap_only), (ptrace_tail, trap_only_tail)] {
+            assert_patched(trap_only, SiteState::Live);
+            assert_eq!(timer_events(ptrace).len(), 1, "{:#?}", ptrace.all_events());
+            assert_eq!(timer_events(trap_only), timer_events(ptrace));
+            assert_report_has(ptrace, &["timer cancel site=1 ordinary=1"]);
+        }
+    })
+    .await;
 }
 
 /// The hop fails closed with `TrapOnlyHopExitRip` when the slot's syscall
