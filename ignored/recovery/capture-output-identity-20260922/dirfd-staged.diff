@@ -1,0 +1,981 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index c0e5e7e6..5a008274 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -721,13 +721,13 @@ fn execute_basic_syscall_inner(
+     } else if number == libc::SYS_fstatfs as u64 {
+         fstatfs(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_access as u64 {
+-        access(memory, state, args)
++        access(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_faccessat as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        faccessat(memory, state, args)
++        faccessat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_faccessat2 as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        faccessat2(memory, state, args)
++        faccessat2(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_mkdir as u64 {
+         mkdir_at(memory, state, libc::AT_FDCWD, args[0], args[1])
+     } else if number == libc::SYS_mkdirat as u64 {
+@@ -906,12 +906,28 @@ fn execute_basic_syscall_inner(
+         state.umask = args[0] as libc::mode_t & 0o777;
+         i64::from(previous)
+     } else if number == libc::SYS_fchmod as u64 {
+-        fchmod(state, args)
++        fchmod(state, args, capture_metadata)
+     } else if number == libc::SYS_chmod as u64 {
+-        fchmodat(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
++        fchmodat(
++            memory,
++            state,
++            libc::AT_FDCWD,
++            args[0],
++            args[1],
++            0,
++            capture_metadata,
++        )
+     } else if number == libc::SYS_fchmodat as u64 {
+         // SYS_fchmodat has three arguments; r10 is unspecified guest state.
+-        fchmodat(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
++        fchmodat(
++            memory,
++            state,
++            args[0] as libc::c_int,
++            args[1],
++            args[2],
++            0,
++            capture_metadata,
++        )
+     } else if number == libc::SYS_fchmodat2 as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         fchmodat(
+@@ -921,6 +937,7 @@ fn execute_basic_syscall_inner(
+             args[1],
+             args[2],
+             args[3],
++            capture_metadata,
+         )
+     } else if number == libc::SYS_mknod as u64 {
+         mknod_at(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
+@@ -934,7 +951,7 @@ fn execute_basic_syscall_inner(
+             args[3],
+         )
+     } else if number == libc::SYS_utimensat as u64 {
+-        utimensat(memory, state, args)
++        utimensat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_arch_prctl as u64 {
+         return arch_prctl(memory, state, args);
+     } else if number == libc::SYS_prctl as u64 {
+@@ -7230,6 +7247,11 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
+         if state.proc_files.contains_key(&guest_fd) {
+             return negative_errno(libc::EACCES);
+         }
++        if is_captured_output_description(state, guest_fd) {
++            // The proc-fd path follows the guest's logical capture FIFO, not
++            // the supervisor object currently occupying raw fd 1/2.
++            return negative_errno(libc::EINVAL);
++        }
+         let Some(host_fd) = host_fd(state, guest_fd) else {
+             return negative_errno(libc::ENOENT);
+         };
+@@ -7594,6 +7616,12 @@ fn open_file(
+     if path.is_empty() {
+         return negative_errno(libc::ENOENT);
+     }
++    if captured_relative_dirfd(state, guest_dirfd, &path) {
++        // Captured stdout/stderr are logical FIFOs, never directory handles.
++        // Refuse before synthetic or host-relative lookup can inspect an
++        // unrelated directory occupying the supervisor's fd 1/2 slot.
++        return negative_errno(libc::ENOTDIR);
++    }
+     let relative_proc_path = synthetic_proc_relative_path(state, guest_dirfd, &path);
+     let path = relative_proc_path.as_deref().unwrap_or(&path);
+     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+@@ -7996,6 +8024,9 @@ fn guest_fd_descendant_error(
+     trailing_slash_errno: libc::c_int,
+     trailing_slash_only: bool,
+ ) -> i64 {
++    if is_captured_output_description(state, guest_fd) {
++        return negative_errno(libc::ENOTDIR);
++    }
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return negative_errno(libc::ENOENT);
+     };
+@@ -8222,6 +8253,20 @@ fn file_table_host_fd(table: &FileTableState, guest_fd: libc::c_int) -> Option<R
+         })
+ }
+ 
++fn file_table_is_captured_output_description(
++    table: &FileTableState,
++    guest_fd: libc::c_int,
++) -> bool {
++    table.capture_status_flags.contains_key(&guest_fd)
++        && output_alias_from_sets(
++            guest_fd,
++            &table.stdout_alias_fds,
++            &table.stderr_alias_fds,
++            file_table_open_standard(table, guest_fd),
++        )
++        .is_some()
++}
++
+ fn proc_fd_link_snapshot(
+     table: &FileTableState,
+     target_tgid: i32,
+@@ -8347,9 +8392,11 @@ fn proc_fd_directory_descendant_error(
+     if !description.target_lookup_is_live(&lifecycle) {
+         return negative_errno(libc::ENOENT);
+     }
+-    let Some(host_fd) = file_table_host_fd(&table, guest_fd) else {
++    let captured_output = file_table_is_captured_output_description(&table, guest_fd);
++    let host_fd = file_table_host_fd(&table, guest_fd);
++    if host_fd.is_none() && !captured_output {
+         return negative_errno(libc::ENOENT);
+-    };
++    }
+     if !description.target_lookup_is_authorized(
+         &lifecycle,
+         caller_tgid,
+@@ -8357,6 +8404,10 @@ fn proc_fd_directory_descendant_error(
+     ) {
+         return negative_errno(libc::EACCES);
+     }
++    if captured_output {
++        return negative_errno(libc::ENOTDIR);
++    }
++    let host_fd = host_fd.expect("non-captured live descriptor has a host fd");
+     if table
+         .proc_files
+         .get(&guest_fd)
+@@ -8888,6 +8939,10 @@ fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias>
+     )
+ }
+ 
++fn is_captured_output_description(state: &LoadedStaticElf, fd: libc::c_int) -> bool {
++    state.capture_status_flags.contains_key(&fd) && output_alias(state, fd).is_some()
++}
++
+ fn output_alias_from_sets(
+     fd: libc::c_int,
+     stdout: &std::collections::BTreeSet<i32>,
+@@ -13328,7 +13383,11 @@ fn guest_object_stat(
+     capture: Option<CaptureMetadata>,
+ ) -> Result<libc::stat, i64> {
+     if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
+-        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
++        let mode = captured_output_mode(state, fd, capture)?;
++        return Ok(synthetic_captured_output_stat(
++            capture.identity(alias),
++            mode,
++        ));
+     }
+     if let Some(description) = state.proc_fd_directories.get(&fd) {
+         let lifecycle = description
+@@ -13354,7 +13413,20 @@ fn guest_object_stat(
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+-fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
++fn captured_output_mode(
++    state: &LoadedStaticElf,
++    guest_fd: libc::c_int,
++    capture: CaptureMetadata,
++) -> Result<libc::mode_t, i64> {
++    let host_fd = isolated_host_fd(state, guest_fd, Some(capture))
++        .ok_or_else(|| negative_errno(libc::EBADF))?;
++    fd_mode(host_fd)
++}
++
++fn synthetic_captured_output_stat(
++    identity: CaptureObjectIdentity,
++    mode: libc::mode_t,
++) -> libc::stat {
+     // Captured writes never reach the host descriptor, so exposing that
+     // descriptor's type, size, or inode leaks the invoking shell into the
+     // guest. Model the capture sink as the pipe used by process-based backends.
+@@ -13362,7 +13434,7 @@ fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat
+     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+     stat.st_dev = synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR);
+     stat.st_ino = identity.inode;
+-    stat.st_mode = libc::S_IFIFO | 0o600;
++    stat.st_mode = libc::S_IFIFO | (mode & 0o7777);
+     stat.st_nlink = 1;
+     stat.st_uid = 0;
+     stat.st_gid = 0;
+@@ -13373,9 +13445,10 @@ fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat
+ 
+ fn synthetic_captured_output_statx(
+     identity: CaptureObjectIdentity,
++    mode: libc::mode_t,
+     requested_mask: libc::c_uint,
+ ) -> libc::statx {
+-    let stat = synthetic_captured_output_stat(identity);
++    let stat = synthetic_captured_output_stat(identity, mode);
+     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+     extended.stx_mask = libc::STATX_BASIC_STATS;
+@@ -13519,10 +13592,14 @@ fn fstatat_impl(
+         && let Some(capture) = capture
+         && let Some(alias) = output_alias(state, fd)
+     {
++        let mode = match captured_output_mode(state, fd, capture) {
++            Ok(mode) => mode,
++            Err(error) => return error,
++        };
+         return write_struct(
+             memory,
+             output_address,
+-            &synthetic_captured_output_stat(capture.identity(alias)),
++            &synthetic_captured_output_stat(capture.identity(alias), mode),
+         );
+     }
+     let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
+@@ -13716,10 +13793,18 @@ fn statx(
+         {
+             return negative_errno(libc::EINVAL);
+         }
++        let mode = match captured_output_mode(state, fd, capture) {
++            Ok(mode) => mode,
++            Err(error) => return error,
++        };
+         return write_struct(
+             memory,
+             args[4],
+-            &synthetic_captured_output_statx(capture.identity(alias), args[3] as libc::c_uint),
++            &synthetic_captured_output_statx(
++                capture.identity(alias),
++                mode,
++                args[3] as libc::c_uint,
++            ),
+         );
+     }
+     let opened_file;
+@@ -13895,7 +13980,12 @@ fn canonicalize_statfs(sf: &mut libc::statfs) {
+     sf.f_fsid = unsafe { std::mem::zeroed() };
+ }
+ 
+-fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn access(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     // access(2) is faccessat2(AT_FDCWD, path, mode, 0): a real-UID check that
+     // follows symlinks and rejects an empty path with ENOENT.
+     faccessat_impl(
+@@ -13905,6 +13995,7 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
+         args[0],
+         args[1] as libc::c_int,
+         0,
++        capture,
+     )
+ }
+ 
+@@ -13912,7 +14003,12 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
+ // TODO-HUMAN-REVIEW(reverie#124): faccessat access check so bash
+ // `test -r/-w/-x` and program startup probes resolve correctly under the KVM
+ // backend instead of falling through to ENOSYS.
+-fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn faccessat(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     // faccessat(2) has no flags argument, so it behaves like access(2) relative
+     // to the supplied directory descriptor: real-UID check, follow symlinks.
+     faccessat_impl(
+@@ -13922,6 +14018,7 @@ fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         args[1],
+         args[2] as libc::c_int,
+         0,
++        capture,
+     )
+ }
+ 
+@@ -13929,7 +14026,12 @@ fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+ // TODO-HUMAN-REVIEW(reverie#124): faccessat2 access check. glibc routes the
+ // C `access`/`euidaccess` helpers and the shell `test -r/-w/-x` operators
+ // through faccessat2; without this arm every access probe returned ENOSYS.
+-fn faccessat2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn faccessat2(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     faccessat_impl(
+         memory,
+         state,
+@@ -13937,6 +14039,7 @@ fn faccessat2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         args[1],
+         args[2] as libc::c_int,
+         args[3] as libc::c_int,
++        capture,
+     )
+ }
+ 
+@@ -13952,6 +14055,7 @@ fn faccessat_impl(
+     path_address: u64,
+     mode: libc::c_int,
+     flags: libc::c_int,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     // mode is F_OK or a bitmask of R_OK/W_OK/X_OK; anything else is invalid.
+     if mode & !(libc::R_OK | libc::W_OK | libc::X_OK) != 0 {
+@@ -13991,6 +14095,13 @@ fn faccessat_impl(
+             negative_errno(libc::ENOENT)
+         };
+     }
++    if path.is_empty()
++        && flags & libc::AT_EMPTY_PATH != 0
++        && capture.is_some()
++        && output_alias(state, guest_dirfd).is_some()
++    {
++        return captured_fifo_access_result(state, guest_dirfd, mode, flags, capture);
++    }
+     // Synthetic /proc files exist and are world-readable but never writable or
+     // executable, matching the read-only surface open_file serves.
+     if synthetic_proc_content(state, &path).is_some() {
+@@ -14019,6 +14130,12 @@ fn faccessat_impl(
+         // procfs permission hook as the exact and AT_EMPTY_PATH spellings.
+         return 0;
+     }
++    if let Some(metadata) = guest_path
++        && capture.is_some()
++        && output_alias(state, metadata.guest_fd).is_some()
++    {
++        return captured_fifo_access_result(state, metadata.guest_fd, mode, flags, capture);
++    }
+     let opened_file;
+     let host_fd = if let Some(metadata) = guest_path {
+         metadata.host_fd
+@@ -14055,6 +14172,36 @@ fn faccessat_impl(
+     }
+ }
+ 
++fn captured_fifo_access_result(
++    state: &LoadedStaticElf,
++    guest_fd: libc::c_int,
++    mode: libc::c_int,
++    flags: libc::c_int,
++    capture: Option<CaptureMetadata>,
++) -> i64 {
++    let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
++        return negative_errno(libc::EBADF);
++    };
++    let empty_path = b"\0";
++    let host_flags = libc::AT_EMPTY_PATH | (flags & (libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW));
++    // SAFETY: empty_path is terminated and host_fd is the private capture pipe
++    // description, never inherited supervisor fd 1/2.
++    let result = unsafe {
++        libc::syscall(
++            libc::SYS_faccessat2,
++            host_fd,
++            empty_path.as_ptr(),
++            mode,
++            host_flags,
++        )
++    };
++    if result == 0 {
++        0
++    } else {
++        io_error(std::io::Error::last_os_error())
++    }
++}
++
+ fn read_path_at(
+     memory: &GuestMemory,
+     state: &LoadedStaticElf,
+@@ -14063,11 +14210,20 @@ fn read_path_at(
+     allow_empty: bool,
+ ) -> Result<(RawFd, CString), i64> {
+     let path = read_c_string(memory, address, 4096).map_err(read_c_string_errno)?;
++    resolve_path_at(state, guest_dirfd, &path, allow_empty)
++}
++
++fn resolve_path_at(
++    state: &LoadedStaticElf,
++    guest_dirfd: libc::c_int,
++    path: &[u8],
++    allow_empty: bool,
++) -> Result<(RawFd, CString), i64> {
+     if path.is_empty() && !allow_empty {
+         return Err(negative_errno(libc::ENOENT));
+     }
+-    ensure_mutation_dirfd_not_synthetic_procfs(state, guest_dirfd, &path)?;
+-    let (host_dirfd, path) = host_dirfd_and_path(state, guest_dirfd, &path)?;
++    ensure_mutation_dirfd_not_synthetic_procfs(state, guest_dirfd, path)?;
++    let (host_dirfd, path) = host_dirfd_and_path(state, guest_dirfd, path)?;
+     ensure_mutation_parent_not_procfs(host_dirfd, &path)?;
+     Ok((host_dirfd, path))
+ }
+@@ -14284,10 +14440,10 @@ fn symlink_at(
+     zero_or_errno(unsafe { libc::symlinkat(target.as_ptr(), new_host_dirfd, new_path.as_ptr()) })
+ }
+ 
+-fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn fchmod(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+     // Linux syscall argument decoding consumes only the low descriptor word.
+     let guest_fd = args[0] as libc::c_int;
+-    let Some(host_fd) = host_fd(state, guest_fd) else {
++    let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let status = match fd_status_flags(host_fd) {
+@@ -14317,6 +14473,7 @@ fn fchmodat(
+     path_address: u64,
+     raw_mode: u64,
+     raw_flags: u64,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     // TODO-HUMAN-REVIEW(PR-532): Review fchmodat2 flag handling, guest path
+     // translation, and held-target mutation against Linux semantics.
+@@ -14326,11 +14483,29 @@ fn fchmodat(
+         return negative_errno(libc::EINVAL);
+     }
+     let allow_empty = flags & libc::AT_EMPTY_PATH != 0;
+-    let (host_dirfd, path) =
+-        match read_path_at(memory, state, guest_dirfd, path_address, allow_empty) {
++    let path = match read_c_string(memory, path_address, 4096) {
++        Ok(path) => path,
++        Err(error) => return read_c_string_errno(error),
++    };
++    let captured_empty_target = if allow_empty
++        && path.is_empty()
++        && capture.is_some()
++        && output_alias(state, guest_dirfd).is_some()
++    {
++        match isolated_host_fd(state, guest_dirfd, capture) {
++            Some(host_fd) => Some((host_fd, CString::new(Vec::new()).unwrap())),
++            None => return negative_errno(libc::EBADF),
++        }
++    } else {
++        None
++    };
++    let (host_dirfd, path) = match captured_empty_target {
++        Some(target) => target,
++        None => match resolve_path_at(state, guest_dirfd, &path, allow_empty) {
+             Ok(path) => path,
+             Err(error) => return error,
+-        };
++        },
++    };
+     let nofollow = flags & libc::AT_SYMLINK_NOFOLLOW != 0;
+     let opened_file = if path.to_bytes().is_empty() {
+         if state.proc_files.contains_key(&guest_dirfd) {
+@@ -14424,7 +14599,12 @@ fn mknod_at(
+ // filesystems while remaining independent of host wall time.
+ const DETERMINISTIC_METADATA_SECONDS: libc::time_t = 1_640_995_199;
+ 
+-fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn utimensat(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     let raw_flags = args[3] as libc::c_int;
+     let allowed_flags = libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH;
+     if raw_flags & !allowed_flags != 0 {
+@@ -14454,7 +14634,7 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         if let Err(error) = ensure_mutation_dirfd_not_synthetic_procfs(state, guest_fd, b"") {
+             return error;
+         }
+-        let Some(host_fd) = host_fd(state, guest_fd) else {
++        let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
+             return negative_errno(libc::EBADF);
+         };
+         if let Err(error) = ensure_fd_not_procfs(host_fd) {
+@@ -14466,11 +14646,30 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         host_fd
+     } else {
+         let allow_empty = raw_flags & libc::AT_EMPTY_PATH != 0;
+-        let (host_dirfd, path) =
+-            match read_path_at(memory, state, args[0] as libc::c_int, args[1], allow_empty) {
++        let guest_dirfd = args[0] as libc::c_int;
++        let path = match read_c_string(memory, args[1], 4096) {
++            Ok(path) => path,
++            Err(error) => return read_c_string_errno(error),
++        };
++        let captured_empty_target = if allow_empty
++            && path.is_empty()
++            && capture.is_some()
++            && output_alias(state, guest_dirfd).is_some()
++        {
++            match isolated_host_fd(state, guest_dirfd, capture) {
++                Some(host_fd) => Some((host_fd, CString::new(Vec::new()).unwrap())),
++                None => return negative_errno(libc::EBADF),
++            }
++        } else {
++            None
++        };
++        let (host_dirfd, path) = match captured_empty_target {
++            Some(target) => target,
++            None => match resolve_path_at(state, guest_dirfd, &path, allow_empty) {
+                 Ok(target) => target,
+                 Err(error) => return error,
+-            };
++            },
++        };
+         if path.to_bytes().is_empty() {
+             if let Err(error) = ensure_fd_not_procfs(host_dirfd) {
+                 return error;
+@@ -16008,6 +16207,19 @@ fn descriptor_creation_host_fd(
+     host_fd(state, guest_fd)
+ }
+ 
++/// Resolves a guest descriptor for host operations without ever consulting
++/// inherited fd 1/2 when the guest description is a captured output FIFO.
++fn isolated_host_fd(
++    state: &LoadedStaticElf,
++    guest_fd: libc::c_int,
++    capture: Option<CaptureMetadata>,
++) -> Option<RawFd> {
++    if let (Some(capture), Some(_)) = (capture, output_alias(state, guest_fd)) {
++        return descriptor_creation_host_fd(state, guest_fd, Some(capture));
++    }
++    host_fd(state, guest_fd)
++}
++
+ // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
+ fn fcntl(
+     memory: &GuestMemory,
+@@ -16260,6 +16472,9 @@ fn host_dirfd_and_path(
+             .map(|path| (state.cwd_fd.as_raw_fd(), path))
+             .map_err(|_| negative_errno(libc::EINVAL));
+     }
++    if captured_relative_dirfd(state, guest_dirfd, path) {
++        return Err(negative_errno(libc::ENOTDIR));
++    }
+     if !path.is_empty() && state.proc_fd_directories.contains_key(&guest_dirfd) {
+         return Err(negative_errno(libc::EACCES));
+     }
+@@ -16280,6 +16495,12 @@ fn host_dirfd_and_path(
+         .map_err(|_| negative_errno(libc::EINVAL))
+ }
+ 
++fn captured_relative_dirfd(state: &LoadedStaticElf, guest_dirfd: libc::c_int, path: &[u8]) -> bool {
++    !path.is_empty()
++        && !path.starts_with(b"/")
++        && is_captured_output_description(state, guest_dirfd)
++}
++
+ // TODO-HUMAN-REVIEW(PR-136): Review descriptor object-identity cleanup.
+ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+     let transaction = state.signal_transaction.clone();
+@@ -17965,6 +18186,12 @@ fn readlink_at_impl(
+         if guest_dirfd == libc::AT_FDCWD {
+             return negative_errno(libc::ENOENT);
+         }
++        if is_captured_output_description(state, guest_dirfd) {
++            // readlinkat with an empty path succeeds only for an O_PATH handle
++            // to a symlink. A captured stream is a FIFO regardless of the
++            // supervisor object occupying the same numeric slot.
++            return negative_errno(libc::ENOENT);
++        }
+         let Some(host_fd) = host_fd(state, guest_dirfd) else {
+             return negative_errno(libc::EBADF);
+         };
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 2b229589..ab6cdbed 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -10619,6 +10619,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
+         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
+         "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
++        "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
+     ] {
+         let output = std::process::Command::new(std::env::current_exe().unwrap())
+             .args([test, "--exact", "--test-threads=1", "--nocapture"])
+@@ -14786,6 +14787,386 @@ int main(int argc, char **argv) {
+     assert_eq!(results.3, results.2, "Tool KVM result changed");
+ }
+ 
++// A captured stdout/stderr description is a FIFO, so it can never resolve a
++// relative pathname. Bind physical host fd 1/2 to populated writable
++// directories and prove that these pathname operations neither disclose nor
++// mutate entries in those directories. This is output/exit/status repeat
++// parity only, not an L2-log or record/replay claim.
++#[test]
++fn captured_dirfds_reject_reused_supervisor_directories_on_kvm() {
++    const TEST: &str = "captured_dirfds_reject_reused_supervisor_directories_on_kvm";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "captured-dirfd-firewall",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++static int failed_with(long result, int error) {
++  return result == -1 && errno == error;
++}
++
++static int check_dirfd(int fd, int base) {
++  struct stat stat_buffer;
++  struct statx statx_buffer;
++  struct timespec times[2] = {
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++  };
++  char output[64];
++
++  if (fchmod(fd, 0640) != 0) return base + 30;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      (stat_buffer.st_mode & 07777) != 0640) return base + 31;
++  if (syscall(SYS_fchmodat2, fd, "", 0600, AT_EMPTY_PATH) != 0)
++    return base + 32;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      (stat_buffer.st_mode & 07777) != 0600) return base + 33;
++  if (syscall(SYS_utimensat, fd, NULL, times, 0) != 0) return base + 34;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      stat_buffer.st_atim.tv_sec != times[0].tv_sec ||
++      stat_buffer.st_mtim.tv_sec != times[1].tv_sec) return base + 35;
++  if (syscall(SYS_utimensat, fd, "", times, AT_EMPTY_PATH) != 0)
++    return base + 36;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      stat_buffer.st_atim.tv_sec != times[0].tv_sec ||
++      stat_buffer.st_mtim.tv_sec != times[1].tv_sec) return base + 37;
++  if (fchownat(fd, "", -1, -1, AT_EMPTY_PATH) != 0) return base + 38;
++  const int empty_access_modes[] = {F_OK, R_OK, W_OK, R_OK | W_OK};
++  for (size_t index = 0;
++       index < sizeof(empty_access_modes) / sizeof(empty_access_modes[0]);
++       ++index) {
++    if (syscall(SYS_faccessat2, fd, "", empty_access_modes[index],
++                AT_EMPTY_PATH) != 0) return base + 39;
++  }
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, fd, "", X_OK, AT_EMPTY_PATH),
++                   EACCES)) return base + 40;
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, fd, "", X_OK,
++                           AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW), EACCES))
++    return base + 41;
++  if (fchmod(fd, 0100) != 0) return base + 45;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      (stat_buffer.st_mode & 07777) != 0100) return base + 46;
++  if (syscall(SYS_faccessat2, fd, "", X_OK, AT_EMPTY_PATH) != 0)
++    return base + 47;
++  const int denied_modes[] = {R_OK, W_OK, R_OK | W_OK};
++  for (size_t index = 0;
++       index < sizeof(denied_modes) / sizeof(denied_modes[0]); ++index) {
++    errno = 0;
++    if (!failed_with(syscall(SYS_faccessat2, fd, "", denied_modes[index],
++                             AT_EMPTY_PATH), EACCES)) return base + 48;
++  }
++  if (syscall(SYS_fchmodat2, fd, "", 0600, AT_EMPTY_PATH) != 0)
++    return base + 49;
++
++  errno = 0;
++  if (!failed_with(openat(fd, "secret", O_RDONLY | O_CLOEXEC), ENOTDIR))
++    return base + 1;
++  errno = 0;
++  if (!failed_with(openat(fd, "created", O_WRONLY | O_CREAT | O_EXCL, 0600),
++                   ENOTDIR)) return base + 2;
++  errno = 0;
++  if (!failed_with(mkdirat(fd, "dir", 0700), ENOTDIR)) return base + 3;
++  errno = 0;
++  if (!failed_with(unlinkat(fd, "secret", 0), ENOTDIR)) return base + 4;
++  errno = 0;
++  if (!failed_with(renameat(fd, "secret", fd, "renamed"), ENOTDIR))
++    return base + 5;
++  errno = 0;
++  if (!failed_with(syscall(SYS_renameat2, fd, "secret", fd, "renamed2",
++                           RENAME_NOREPLACE), ENOTDIR)) return base + 42;
++  errno = 0;
++  if (!failed_with(linkat(fd, "secret", fd, "linked", 0), ENOTDIR))
++    return base + 6;
++  errno = 0;
++  if (!failed_with(symlinkat("target", fd, "symlink"), ENOTDIR))
++    return base + 7;
++  errno = 0;
++  if (!failed_with(fchmodat(fd, "secret", 0600, 0), ENOTDIR))
++    return base + 8;
++  errno = 0;
++  if (!failed_with(syscall(SYS_fchmodat2, fd, "secret", 0600, 0), ENOTDIR))
++    return base + 43;
++  errno = 0;
++  if (!failed_with(mknodat(fd, "fifo", S_IFIFO | 0600, 0), ENOTDIR))
++    return base + 9;
++  errno = 0;
++  if (!failed_with(utimensat(fd, "secret", times, 0), ENOTDIR))
++    return base + 10;
++  errno = 0;
++  if (!failed_with(fchownat(fd, "secret", -1, -1, 0), ENOTDIR))
++    return base + 11;
++  errno = 0;
++  if (!failed_with(fstatat(fd, "secret", &stat_buffer, 0), ENOTDIR))
++    return base + 12;
++  errno = 0;
++  if (!failed_with(syscall(SYS_statx, fd, "secret", 0, STATX_BASIC_STATS,
++                           &statx_buffer), ENOTDIR)) return base + 13;
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, fd, "secret", F_OK, 0), ENOTDIR))
++    return base + 14;
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat, fd, "secret", F_OK), ENOTDIR))
++    return base + 44;
++  errno = 0;
++  if (!failed_with(readlinkat(fd, "secret", output, sizeof(output)), ENOTDIR))
++    return base + 15;
++  errno = 0;
++  if (!failed_with(readlinkat(fd, "", output, sizeof(output)), ENOENT))
++    return base + 16;
++
++  char proc_path[64], child_path[72];
++  if (snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd) >=
++      (int)sizeof(proc_path)) return base + 17;
++  if (snprintf(child_path, sizeof(child_path), "%s/child", proc_path) >=
++      (int)sizeof(child_path)) return base + 18;
++  errno = 0;
++  if (!failed_with(open(child_path, O_RDONLY | O_CLOEXEC), ENOTDIR))
++    return base + 19;
++  errno = 0;
++  if (!failed_with(readlink(child_path, output, sizeof(output)), ENOTDIR))
++    return base + 20;
++  errno = 0;
++  if (!failed_with(truncate(proc_path, 0), EINVAL)) return base + 21;
++  const int allowed_modes[] = {F_OK, R_OK, W_OK};
++  for (size_t index = 0; index < sizeof(allowed_modes) / sizeof(allowed_modes[0]);
++       ++index) {
++    if (syscall(SYS_faccessat2, AT_FDCWD, proc_path, allowed_modes[index], 0) != 0)
++      return base + 22;
++  }
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, AT_FDCWD, proc_path, X_OK, 0),
++                   EACCES)) return base + 23;
++  if (syscall(SYS_faccessat2, AT_FDCWD, proc_path, X_OK,
++              AT_SYMLINK_NOFOLLOW) != 0) return base + 24;
++
++  int proc_fd_dir = open("/proc/self/fd", O_PATH | O_DIRECTORY | O_CLOEXEC);
++  if (proc_fd_dir < 0) return base + 25;
++  char relative_child[32];
++  if (snprintf(relative_child, sizeof(relative_child), "%d/child", fd) >=
++      (int)sizeof(relative_child)) return base + 26;
++  errno = 0;
++  if (!failed_with(readlinkat(proc_fd_dir, relative_child, output, sizeof(output)),
++                   ENOTDIR)) return base + 27;
++  if (close(proc_fd_dir) != 0) return base + 28;
++
++  int absolute = openat(fd, "/dev/null", O_RDONLY | O_CLOEXEC);
++  if (absolute < 0 || close(absolute) != 0) return base + 29;
++  return 0;
++}
++
++static int check_path_alias(int source) {
++  char proc_path[64];
++  if (snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", source) >=
++      (int)sizeof(proc_path)) return 130;
++  int fd = open(proc_path, O_PATH | O_CLOEXEC);
++  if (fd < 0) return 131;
++  struct stat stat_buffer;
++  struct timespec times[2] = {
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++  };
++  errno = 0;
++  if (!failed_with(fchmod(fd, 0640), EBADF)) return 132;
++  if (syscall(SYS_fchmodat2, fd, "", 0640, AT_EMPTY_PATH) != 0)
++    return 133;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      (stat_buffer.st_mode & 07777) != 0640) return 134;
++  errno = 0;
++  if (!failed_with(syscall(SYS_utimensat, fd, NULL, times, 0), EBADF))
++    return 135;
++  if (syscall(SYS_utimensat, fd, "", times, AT_EMPTY_PATH) != 0)
++    return 136;
++  if (fstat(fd, &stat_buffer) != 0 ||
++      stat_buffer.st_atim.tv_sec != times[0].tv_sec ||
++      stat_buffer.st_mtim.tv_sec != times[1].tv_sec) return 137;
++  if (syscall(SYS_fchmodat2, fd, "", 0600, AT_EMPTY_PATH) != 0)
++    return 138;
++  return close(fd) == 0 ? 0 : 139;
++}
++
++int main(void) {
++  int result = check_dirfd(STDOUT_FILENO, 10);
++  if (result) return result;
++  result = check_dirfd(STDERR_FILENO, 70);
++  if (result) return result;
++  result = check_path_alias(STDOUT_FILENO);
++  if (result) return result;
++  puts("captured-dirfd-ok");
++  if (fputs("captured-dirfd-err\n", stderr) < 0) return 200;
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .current_dir(&directory.0)
++        .output()
++        .unwrap();
++    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
++    assert_eq!(native.stdout, b"captured-dirfd-ok\n");
++    assert_eq!(native.stderr, b"captured-dirfd-err\n");
++
++    let executable = executable.to_str().unwrap();
++    let run = |with_tool: bool| {
++        let image = std::fs::read(executable).unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        if with_tool {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        }
++    };
++
++    struct RestoreStandardDescriptors {
++        stdout: std::fs::File,
++        stderr: std::fs::File,
++    }
++    impl Drop for RestoreStandardDescriptors {
++        fn drop(&mut self) {
++            use std::os::fd::AsRawFd;
++            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
++            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
++        }
++    }
++
++    let results = {
++        use std::os::fd::AsRawFd;
++        use std::os::fd::FromRawFd;
++        use std::os::unix::fs::MetadataExt;
++
++        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
++        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(saved_stdout >= 3 && saved_stderr >= 3);
++        let restore = RestoreStandardDescriptors {
++            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
++            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
++        };
++
++        let ambient_paths = [
++            directory.0.join("ambient-stdout-dir"),
++            directory.0.join("ambient-stderr-dir"),
++        ];
++        let mut ambient = Vec::new();
++        let mut snapshots = Vec::new();
++        for (index, path) in ambient_paths.iter().enumerate() {
++            std::fs::create_dir(path).unwrap();
++            let secret = path.join("secret");
++            std::fs::write(&secret, format!("secret-{index}")).unwrap();
++            let metadata = std::fs::metadata(&secret).unwrap();
++            snapshots.push((
++                std::fs::read(&secret).unwrap(),
++                metadata.mode(),
++                metadata.uid(),
++                metadata.gid(),
++                metadata.len(),
++                metadata.mtime(),
++                metadata.mtime_nsec(),
++                {
++                    let directory_metadata = std::fs::metadata(path).unwrap();
++                    (
++                        directory_metadata.mode(),
++                        directory_metadata.uid(),
++                        directory_metadata.gid(),
++                        directory_metadata.mtime(),
++                        directory_metadata.mtime_nsec(),
++                    )
++                },
++            ));
++            ambient.push(std::fs::File::open(path).unwrap());
++        }
++        assert_eq!(unsafe { libc::dup2(ambient[0].as_raw_fd(), 1) }, 1);
++        assert_eq!(unsafe { libc::dup2(ambient[1].as_raw_fd(), 2) }, 2);
++
++        let direct = run(false);
++        let direct_repeat = run(false);
++        let tool = run(true);
++        let tool_repeat = run(true);
++
++        for (index, path) in ambient_paths.iter().enumerate() {
++            let secret = path.join("secret");
++            let metadata = std::fs::metadata(&secret).unwrap();
++            assert_eq!(
++                (
++                    std::fs::read(&secret).unwrap(),
++                    metadata.mode(),
++                    metadata.uid(),
++                    metadata.gid(),
++                    metadata.len(),
++                    metadata.mtime(),
++                    metadata.mtime_nsec(),
++                    {
++                        let directory_metadata = std::fs::metadata(path).unwrap();
++                        (
++                            directory_metadata.mode(),
++                            directory_metadata.uid(),
++                            directory_metadata.gid(),
++                            directory_metadata.mtime(),
++                            directory_metadata.mtime_nsec(),
++                        )
++                    },
++                ),
++                snapshots[index],
++                "ambient directory {index} was mutated"
++            );
++            let mut names = std::fs::read_dir(path)
++                .unwrap()
++                .map(|entry| entry.unwrap().file_name())
++                .collect::<Vec<_>>();
++            names.sort();
++            assert_eq!(names, [std::ffi::OsString::from("secret")]);
++        }
++        drop(restore);
++        (direct, direct_repeat, tool, tool_repeat)
++    };
++
++    for (label, result) in [
++        ("direct", &results.0),
++        ("direct-repeat", &results.1),
++        ("tool", &results.2),
++        ("tool-repeat", &results.3),
++    ] {
++        assert_eq!(
++            result.0,
++            0,
++            "{label}: stdout={} stderr={}",
++            String::from_utf8_lossy(&result.1),
++            String::from_utf8_lossy(&result.2)
++        );
++        assert_eq!(result.1, native.stdout, "{label}");
++        assert_eq!(result.2, native.stderr, "{label}");
++    }
++    assert_eq!(results.1, results.0, "direct KVM result changed");
++    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
++    assert_eq!(results.3, results.2, "Tool KVM result changed");
++}
++
+ // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
+ // stdin, are intentionally compared only among fresh KVM runs. Native Linux is
+ // the relationship oracle, but its allocator is host-global and therefore

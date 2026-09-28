@@ -1,0 +1,14 @@
+Isolate captured KVM path operations
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Treat captured stdout and stderr as logical FIFO descriptions when they are
+used as relative directory descriptors or through proc-fd descendants. Route
+descriptor metadata operations through private pipe carriers so supervisor fd
+1/2 cannot disclose or mutate unrelated directories, while retaining native
+chmod, access, timestamp, and O_PATH behavior.
+
+Exercise both captured streams against populated writable host directories,
+including direct and Tool runs, repeated output/status parity, proc-directory
+relative lookup, parent metadata preservation, and the required KVM anti-skip
+gate.

@@ -1,0 +1,53 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:2661:
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         number if number == libc::SYS_accept as u64 => Some(Ok(0)),
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        number if number == libc::SYS_accept4 as u64 => {
+-            Some(Ok(request.args()[3] as libc::c_int))
+-        }
++        number if number == libc::SYS_accept4 as u64 => Some(Ok(request.args()[3] as libc::c_int)),
+         _ => None,
+     }
+ }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:11397:
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-213): Review host-backed listen translation.
+-fn listen(
+-    state: &LoadedStaticElf,
+-    args: &[u64; 6],
+-    capture: Option<CaptureMetadata>,
+-) -> i64 {
++fn listen(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+     let Some(host_fd) = isolated_host_fd(state, args[0] as libc::c_int, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:11712:
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-205): Review host-backed AF_UNIX shutdown semantics.
+-fn shutdown(
+-    state: &LoadedStaticElf,
+-    args: &[u64; 6],
+-    capture: Option<CaptureMetadata>,
+-) -> i64 {
++fn shutdown(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+     let Some(host_fd) = isolated_host_fd(state, args[0] as libc::c_int, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:30183:
+             executor.execute(
+                 &SyscallRequest::new(
+                     libc::SYS_recvfrom as u64,
+-                    [
+-                        HIGH_WORD | accepted as u64,
+-                        PAYLOAD + 8,
+-                        5,
+-                        HIGH_WORD,
+-                        0,
+-                        0,
+-                    ],
++                    [HIGH_WORD | accepted as u64, PAYLOAD + 8, 5, HIGH_WORD, 0, 0,],
+                 ),
+                 &memory,
+             ),

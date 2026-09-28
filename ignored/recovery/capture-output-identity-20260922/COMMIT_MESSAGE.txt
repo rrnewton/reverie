@@ -1,0 +1,31 @@
+Make captured KVM output identity deterministic
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Give in-memory captured stdout and stderr fixed collision-free identities in
+the synthetic pipe namespace. Keep stat, statx mount IDs, proc links, fdinfo,
+and direct/Tool executions consistent without exposing the supervisor's
+descriptor identity or status flags.
+
+Track capture-owned open-description flags across dup, fork, and exec while
+giving proc-fd reopen an independent description. Preserve non-capture fcntl
+behavior and avoid consuming dynamic anonymous-object inodes for capture
+aliases.
+
+Retain the existing keeper-pipe setup, EMFILE rollback, CLOEXEC, and final-owner
+lifetime contract. Add exact unit and required-KVM coverage, including ambient
+and closed supervisor stdout controls.
+
+Task: kvm-lane-to-full-determinism-and-parity
+Task: kvm_backend_emits_no
+
+Validation:
+- cargo fmt --all -- --check
+- cargo test --locked -p reverie-kvm --lib: 877 passed
+- cargo test --locked -p reverie-kvm --lib -- --test-threads=1: 877 passed
+- REVERIE_REQUIRE_KVM=1 cargo test --locked -p reverie-kvm --test static_elf anonymous_pipe_socket_identities_are_repeatable_on_kvm -- --exact --nocapture: 3 outer runs passed
+- cargo test --locked -p reverie-kvm --test static_elf repair_prctl_required_kvm_is_not_optional -- --exact --nocapture: passed
+- cargo clippy --locked -p reverie-kvm --lib --tests -- -D warnings
+
+Three adversarial reviews approved exact diff
+d38e882fbe0cd7289c923a8daaa9113d3452272f188bdae34454650d5a8b4905.

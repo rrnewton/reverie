@@ -1,0 +1,12 @@
+Support O_PATH directories in KVM fchdir
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Resolve fchdir sources through capture-aware descriptor translation, consume the
+Linux low descriptor word, and accept O_PATH directories while retaining an
+independent cwd handle. Validate non-directory type before the fallible reopen
+so regular files and captured FIFOs keep ENOTDIR under host fd pressure.
+
+Remove the former KVM-only test exemption and cover direct, duplicate,
+proc-reopened, high-word, post-close relative-I/O, procfs, capture isolation,
+and resource-order cases with required-KVM and anti-skip checks.

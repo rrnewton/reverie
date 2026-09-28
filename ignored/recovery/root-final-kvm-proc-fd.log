@@ -1,0 +1,111 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] arch_prctl(12289, 0xfffed20) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf50 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28479, ...}) = 0
+[kvm-strace] mmap(NULL, 28479, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0b8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcb0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc70, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc20, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf50 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdba0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18104320
+[kvm-strace] mmap(0x116d000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18272256
+[kvm-strace] mmap(0x12e3000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19804160
+[kvm-strace] mmap(0x133c000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20168704
+[kvm-strace] mmap(0x1342000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20193280
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20246528
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20248384) = 0
+[kvm-strace] set_tid_address(0x134fa10) = 1
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] rseq(20250848, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133c000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffea90) = 0
+[kvm-strace] munmap(0x113d000, 28479) = 0
+[kvm-strace] openat(-100, 0xfffef87 -> "/tmp/reverie-kvm-coreutils-911548-0/proc-fd-link-aliases-target", OFlag(O_CREAT | O_RDWR | O_TRUNC), Mode(S_IRUSR | S_IWUSR)) = 3
+[kvm-strace] getpid() = 1
+[kvm-strace] readlink(0xfffeb40 -> "/proc/self/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] fstat(1, 0xfffe330 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13474f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] brk(0x426000) = 4349952
+[kvm-strace] readlink(0xfffeb80 -> "/proc/thread-self/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffeb40 -> "/proc/self/fd/3", 0xfffeaa0, 10) = 10
+[kvm-strace] readlink(0xfffebc0 -> "/proc/1/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffec00 -> "/dev/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffec40 -> "/proc/self/fd/../fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] openat(-100, 0x4020b7 -> "/proc/self/fd", OFlag(O_DIRECTORY | O_PATH), Mode(0x0)) = 4
+[kvm-strace] readlinkat(4, 0xfffeb30 -> "3", 0xfffec80, 128) = 63
+[kvm-strace] close(4) = 0
+[kvm-strace] close(3) = 0
+[kvm-strace] unlink(0xfffef87 -> "/tmp/reverie-kvm-coreutils-911548-0/proc-fd-link-aliases-target") = 0
+[kvm-strace] write(1, 0x4052a0, 461) = 461
+[kvm-strace] exit_group(0) = ?
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] arch_prctl(12289, 0xfffed20) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf50 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28479, ...}) = 0
+[kvm-strace] mmap(NULL, 28479, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0b8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcb0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc70, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc20, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf50 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdba0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18104320
+[kvm-strace] mmap(0x116d000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18272256
+[kvm-strace] mmap(0x12e3000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19804160
+[kvm-strace] mmap(0x133c000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20168704
+[kvm-strace] mmap(0x1342000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20193280
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20246528
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20248384) = 0
+[kvm-strace] set_tid_address(0x134fa10) = 1
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] rseq(20250848, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133c000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffea90) = 0
+[kvm-strace] munmap(0x113d000, 28479) = 0
+[kvm-strace] openat(-100, 0xfffef87 -> "/tmp/reverie-kvm-coreutils-911548-0/proc-fd-link-aliases-target", OFlag(O_CREAT | O_RDWR | O_TRUNC), Mode(S_IRUSR | S_IWUSR)) = 3
+[kvm-strace] getpid() = 1
+[kvm-strace] readlink(0xfffeb40 -> "/proc/self/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] fstat(1, 0xfffe330 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13474f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] brk(0x426000) = 4349952
+[kvm-strace] readlink(0xfffeb80 -> "/proc/thread-self/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffeb40 -> "/proc/self/fd/3", 0xfffeaa0, 10) = 10
+[kvm-strace] readlink(0xfffebc0 -> "/proc/1/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffec00 -> "/dev/fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] readlink(0xfffec40 -> "/proc/self/fd/../fd/3", 0xfffeaa0, 128) = 63
+[kvm-strace] openat(-100, 0x4020b7 -> "/proc/self/fd", OFlag(O_DIRECTORY | O_PATH), Mode(0x0)) = 4
+[kvm-strace] readlinkat(4, 0xfffeb30 -> "3", 0xfffec80, 128) = 63
+[kvm-strace] close(4) = 0
+[kvm-strace] close(3) = 0
+[kvm-strace] unlink(0xfffef87 -> "/tmp/reverie-kvm-coreutils-911548-0/proc-fd-link-aliases-target") = 0
+[kvm-strace] write(1, 0x4052a0, 461) = 461
+[kvm-strace] exit_group(0) = ?
+test proc_fd_link_aliases_run_on_kvm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 342 filtered out; finished in 0.25s
+
+real 0.35
+user 0.14
+sys 0.07

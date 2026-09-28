@@ -1,0 +1,32 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.22s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 1 test
+capture child status=exit status: 101
+stdout:
+
+running 1 test
+test executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout ... 
+stderr:
+
+thread 'executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout' (4011583) panicked at reverie-kvm/src/capture_identity_tests.rs:526:5:
+assertion `left == right` failed
+  left: 0
+ right: -14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+thread 'executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout' (4011579) panicked at reverie-kvm/src/capture_identity_tests.rs:758:5:
+assertion failed: output.status.success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout ... FAILED
+
+failures:
+
+failures:
+    executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

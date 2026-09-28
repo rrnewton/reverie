@@ -1,0 +1,31 @@
+initial type=010000 mode=0600 uid=212630 gid=100 mtime=1790121502
+fchmodat2-empty ret=0 errno=0(Success)
+fchmodat2-after type=010000 mode=0640
+fchmodat2-empty-nofollow ret=0 errno=0(Success)
+utimensat-empty ret=0 errno=0(Success)
+utimensat-empty-after atime=1640995199.000000000 mtime=1640995199.000000000
+utimensat-null ret=0 errno=0(Success)
+utimensat-null-after atime=1640995199.000000000 mtime=1640995199.000000000
+utimensat-empty-nofollow ret=0 errno=0(Success)
+fchownat-empty-noop ret=0 errno=0(Success)
+fchownat-empty-own-ids ret=0 errno=0(Success)
+fchownat-empty-nofollow ret=0 errno=0(Success)
+linkat-empty ret=-1 errno=18(Invalid cross-device link)
+linkat-empty-created=0
+linkat-empty-follow ret=-1 errno=18(Invalid cross-device link)
+linkat-empty-follow-created=0
+newfstatat-empty ret=0 errno=0(Success)
+newfstatat-empty-stat type=010000 mode=0600 uid=212630 gid=100
+newfstatat-empty-nofollow ret=0 errno=0(Success)
+statx-empty ret=0 errno=0(Success)
+statx-empty-stat type=010000 mode=0600 uid=212630 gid=100 mask=0x17ff
+statx-empty-nofollow ret=0 errno=0(Success)
+faccessat2-empty-mode-0 ret=0 errno=0(Success)
+faccessat2-empty-mode-4 ret=0 errno=0(Success)
+faccessat2-empty-mode-2 ret=0 errno=0(Success)
+faccessat2-empty-mode-1 ret=-1 errno=13(Permission denied)
+faccessat2-empty-mode-6 ret=0 errno=0(Success)
+faccessat2-empty-mode-5 ret=-1 errno=13(Permission denied)
+faccessat2-empty-mode-3 ret=-1 errno=13(Permission denied)
+faccessat2-empty-x-nofollow ret=-1 errno=13(Permission denied)
+readlinkat-empty ret=-1 errno=2(No such file or directory)

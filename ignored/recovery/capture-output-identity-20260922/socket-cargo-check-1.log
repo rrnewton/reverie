@@ -1,0 +1,122 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+     --> reverie-kvm/src/executor.rs:32754:13
+      |
+32754 |               recvmmsg_with_table(
+      |  _____________^^^^^^^^^^^^^^^^^^^-
+32755 | |                 &mut memory,
+32756 | |                 &mut state,
+32757 | |                 &[
+...     |
+32765 | |                 &mut shared,
+32766 | |             ),
+      | |_____________- argument #5 of type `Option<CaptureMetadata>` is missing
+      |
+note: function defined here
+     --> reverie-kvm/src/executor.rs:12878:4
+      |
+12878 | fn recvmmsg_with_table(
+      |    ^^^^^^^^^^^^^^^^^^^
+...
+12883 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+help: provide the argument
+      |
+32754 |             recvmmsg_with_table(
+  ...
+32765 |                 &mut shared,
+32766 ~                 /* Option<CaptureMetadata> */,
+32767 ~             ),
+      |
+
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+     --> reverie-kvm/src/executor.rs:32922:13
+      |
+32922 |               recvmmsg_with_table(
+      |  _____________^^^^^^^^^^^^^^^^^^^-
+32923 | |                 &mut memory,
+32924 | |                 &mut state,
+32925 | |                 &[
+...     |
+32933 | |                 &mut shared,
+32934 | |             ),
+      | |_____________- argument #5 of type `Option<CaptureMetadata>` is missing
+      |
+note: function defined here
+     --> reverie-kvm/src/executor.rs:12878:4
+      |
+12878 | fn recvmmsg_with_table(
+      |    ^^^^^^^^^^^^^^^^^^^
+...
+12883 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+help: provide the argument
+      |
+32922 |             recvmmsg_with_table(
+  ...
+32933 |                 &mut shared,
+32934 ~                 /* Option<CaptureMetadata> */,
+32935 ~             ),
+      |
+
+error[E0308]: mismatched types
+     --> reverie-kvm/src/executor.rs:33391:21
+      |
+33387 |                 sendmsg(
+      |                 ------- arguments to this function are incorrect
+...
+33391 |                     true,
+      |                     ^^^^ expected `Option<CaptureMetadata>`, found `bool`
+      |
+      = note: expected enum `Option<CaptureMetadata>`
+                 found type `bool`
+note: function defined here
+     --> reverie-kvm/src/executor.rs:12495:4
+      |
+12495 | fn sendmsg(
+      |    ^^^^^^^
+...
+12499 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+
+error[E0308]: mismatched types
+     --> reverie-kvm/src/executor.rs:36530:75
+      |
+36530 |                 translate_outgoing_control(&mut control, &executor.state, false),
+      |                 --------------------------                                ^^^^^ expected `Option<CaptureMetadata>`, found `bool`
+      |                 |
+      |                 arguments to this function are incorrect
+      |
+      = note: expected enum `Option<CaptureMetadata>`
+                 found type `bool`
+note: function defined here
+     --> reverie-kvm/src/executor.rs:11975:4
+      |
+11975 | fn translate_outgoing_control(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+11978 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+
+error[E0308]: mismatched types
+     --> reverie-kvm/src/executor.rs:40107:77
+      |
+40107 |                 translate_outgoing_control(&mut control, &f.executor.state, false),
+      |                 --------------------------                                  ^^^^^ expected `Option<CaptureMetadata>`, found `bool`
+      |                 |
+      |                 arguments to this function are incorrect
+      |
+      = note: expected enum `Option<CaptureMetadata>`
+                 found type `bool`
+note: function defined here
+     --> reverie-kvm/src/executor.rs:11975:4
+      |
+11975 | fn translate_outgoing_control(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+11978 |     capture: Option<CaptureMetadata>,
+      |     --------------------------------
+
+Some errors have detailed explanations: E0061, E0308.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `reverie-kvm` (lib test) due to 5 previous errors

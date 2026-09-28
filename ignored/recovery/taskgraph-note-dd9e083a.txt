@@ -1,0 +1,31 @@
+KVM socket parity child qualified locally at exact Reverie commit dd9e083a1c38589b37de1b79e3928b52bcc51644.
+
+Dependency and publication state:
+- The authorized checkout remains /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922 on codex/kvm-pr611-recovery-20260922.
+- This local branch deliberately contains the current-main base 5f5cc66039de38bc07301705753fc6e6de4d1928, a content-equivalent local rebase of the five PR 610 prerequisite commits, recovered PR 611 through frozen reviewed commit 644d6dffc7d6f4ff648d04f13345888a17018d7a, then detachable socket child dd9e083a1c38589b37de1b79e3928b52bcc51644.
+- Nothing was pushed or published. Publishing this combined stack against main would incorrectly bypass the PR 610 gate.
+- PR 610 https://github.com/rrnewton/reverie/pull/610 still requires independent Claude-family approval of exact head acffb228964041190ff9aa071454a5f0017e34a1, then landing. PR 611 must then be rebased onto the landed prerequisite without deleting or weakening loginuid_fds, proc_files, or proc_carrier_authority authentication. Hermit remains downstream until those Reverie commits land.
+
+Socket child scope and behavior:
+- Diff from 644d6dff is confined to reverie-kvm/src/executor.rs and reverie-kvm/tests/static_elf.rs: 926 insertions, 24 deletions.
+- Adds SYS_getpeername dispatch and bounded local/peer socket-name handling with measured Linux error and copy ordering.
+- Makes get/setsockopt distinguish EBADF and ENOTSOCK before guest-pointer faults, truncates setsockopt length to socklen_t, and exposes only stable SOL_SOCKET scalar metadata: SO_TYPE, SO_DOMAIN, SO_ACCEPTCONN, SO_REUSEADDR, SO_KEEPALIVE, and SO_BROADCAST. Host-varying SO_ERROR and SO_SNDBUF remain refused.
+- Native raw-syscall evidence on Linux 7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf covers zero/short/oversized lengths, UINT_MAX, aliasing, bad-fd/non-socket/disconnected precedence, mutable option transitions, and local/peer identity. In the overlapping getsockname address/length case, the kernel writes the returned length before copying the address; reviewers challenged this and then accepted the exact native probe evidence.
+- Required-KVM coverage compares native, direct KVM, and Tool KVM stdout, stderr, and successful exit status for stable options, mutable transitions including clears, listen state, STREAM/DGRAM type, three socketpair flag combinations, local/peer names, and invalid-peer EBADF. These are output/exit/status repeat-parity claims only, not L2 or log-parity claims.
+
+Exact-head validation:
+- cargo fmt --all -- --check: pass.
+- git diff --check 644d6dff..dd9e083a: pass.
+- Focused unit tests each executed 1/1 and passed: getsockopt_so_type_supports_bounded_and_zero_length_results; getsockopt_scalar_allowlist_tracks_socket_state_and_stays_bounded; socket_name_queries_match_linux_ordering_and_peer_identity.
+- REVERIE_REQUIRE_KVM=1 stable_socket_metadata_queries_match_native_linux_on_kvm: 1/1 pass in the final run (0.17 s), after two preceding exact-head passes (0.27 s and 0.14 s).
+- Full reverie-kvm library default run: 863/863 pass on final content (9.35 s in the earlier final-content run).
+- Full reverie-kvm library serial run: 863/863 pass on exact dd9e083a (28.11 s).
+- Clippy: exit 0; only the pre-existing PR 610 proc_carrier::public_id dead-code warning.
+- One earlier full default run hit the unrelated vm::tests::both_clear_tid_paths_keep_distinct_store_and_queued_wake_contracts wake timeout (862/863). Its exact rerun passed, followed by the successful full default and serial runs above; this transient is retained rather than hidden.
+
+Adversarial review:
+- Three independent reviewers approved exact dd9e083a with no correctness, evidence, scope, or goalpost-moving findings.
+- Review confirmed a read-only transplant simulation onto 5f5cc660 is conflict-free and the child makes no semantic change to PR 610 or PR 611.
+- Residual publication gate: create the eventual standalone PR only after the prerequisite stack lands, replace all three TODO-HUMAN-REVIEW(kvm-socket-parity) markers with that PR number, and re-review the resulting exact head before landing.
+
+Legacy anchor classification remains read-only: kvm-ratchet-90-run5 has no unpublished code but retains verified evidence and a live sleep-infinity owner/cgroup with no handoff, so the coordinator may not reclaim it through wrkslots yet.

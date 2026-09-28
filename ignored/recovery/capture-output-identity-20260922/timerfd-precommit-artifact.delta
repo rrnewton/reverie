@@ -1,0 +1,18 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/ignored/recovery/capture-output-identity-20260922/timerfd-frozen-v3.diff	2026-09-22 18:50:35.931371554 -0700
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/ignored/recovery/capture-output-identity-20260922/timerfd-current-precommit.diff	2026-09-22 18:55:49.580195351 -0700
+@@ -1,5 +1,5 @@
+ diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+-index e8b3415081399f42d0fb88221b8d1187c810fa41..5af2a5bd4875c675c5c3c044b6489228ead2afe5 100644
++index e8b34150..5af2a5bd 100644
+ --- a/reverie-kvm/src/executor.rs
+ +++ b/reverie-kvm/src/executor.rs
+ @@ -616,10 +616,10 @@ fn execute_basic_syscall_inner(
+@@ -262,7 +262,7 @@
+      fn timerfd_round_trips_flags_and_expiration() {
+          const TIMER: u64 = 0x100;
+ diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+-index 1bd0208fe286a20149dba8f91451d54e549fbd31..9678d27c06c071a085f5c6470831040144b20337 100644
++index 1bd0208f..9678d27c 100644
+ --- a/reverie-kvm/tests/static_elf.rs
+ +++ b/reverie-kvm/tests/static_elf.rs
+ @@ -10621,6 +10621,7 @@ fn repair_prctl_required_kvm_is_not_optional() {

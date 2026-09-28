@@ -1,0 +1,2099 @@
+diff --git a/reverie-kvm/src/capture_identity.rs b/reverie-kvm/src/capture_identity.rs
+index 9e6e50aa..159d6566 100644
+--- a/reverie-kvm/src/capture_identity.rs
++++ b/reverie-kvm/src/capture_identity.rs
+@@ -33,7 +33,7 @@ pub(super) fn relocation_failures() -> usize {
+ }
+ 
+ #[cfg(test)]
+-pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 2]) + Send>;
++pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 4]) + Send>;
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub(super) struct CaptureObjectIdentity {
+@@ -52,13 +52,33 @@ impl CaptureObjectIdentity {
+ }
+ 
+ struct CapturePipe {
+-    // Never installed in a guest file table, used for I/O, or exported. The
+-    // keeper preserves the existing fallible setup and root-owner lifecycle;
+-    // guest-visible identity comes exclusively from the fixed metadata above.
+-    _keeper: OwnedFd,
++    // Neither endpoint is installed directly in a guest file table, used for
++    // captured I/O, or exported. The read keeper prevents a private writer
++    // from reporting POLLERR; descriptor-creation paths duplicate or reopen
++    // only the O_WRONLY carrier. Guest-visible identity still comes exclusively
++    // from the fixed metadata above.
++    _read_keeper: OwnedFd,
++    write_carrier: OwnedFd,
+ }
+ 
+ impl CapturePipe {
++    fn relocate_private(descriptor: OwnedFd) -> std::io::Result<OwnedFd> {
++        if descriptor.as_raw_fd() >= 3 {
++            return Ok(descriptor);
++        }
++        // SAFETY: descriptor is live; the returned descriptor is newly owned.
++        let private = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
++        if private < 0 {
++            let error = std::io::Error::last_os_error();
++            #[cfg(test)]
++            RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
++            return Err(error);
++        }
++        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor. Dropping the
++        // original closes the temporary standard-number slot.
++        Ok(unsafe { OwnedFd::from_raw_fd(private) })
++    }
++
+     fn try_new() -> std::io::Result<Self> {
+         let mut descriptors = [-1; 2];
+         // SAFETY: descriptors has room for both newly owned endpoints.
+@@ -66,40 +86,53 @@ impl CapturePipe {
+             return Err(std::io::Error::last_os_error());
+         }
+         // SAFETY: a successful pipe2 created both descriptors exclusively here.
+-        let keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+-        let unused = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
++        let read_keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
++        let write_carrier = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+         // A caller may have closed fd 0, 1 or 2. Never retain a private pipe in
+-        // the executor's implicit host-standard-descriptor namespace. Closing
+-        // the unused endpoint first bounds this relocation's descriptor peak.
+-        drop(unused);
+-        let keeper = if keeper.as_raw_fd() < 3 {
+-            // SAFETY: keeper is live; the returned descriptor is newly owned.
+-            let private = unsafe { libc::fcntl(keeper.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+-            if private < 0 {
+-                let error = std::io::Error::last_os_error();
+-                #[cfg(test)]
+-                RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
+-                return Err(error);
+-            }
+-            let private = unsafe { OwnedFd::from_raw_fd(private) };
+-            drop(keeper);
+-            private
+-        } else {
+-            keeper
+-        };
+-        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+-        // SAFETY: keeper is live and stat is writable storage.
+-        if unsafe { libc::fstat(keeper.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+-            return Err(std::io::Error::last_os_error());
+-        }
+-        // SAFETY: fstat initialized stat on success.
+-        let stat = unsafe { stat.assume_init() };
+-        if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
++        // the executor's implicit host-standard-descriptor namespace.
++        let read_keeper = Self::relocate_private(read_keeper)?;
++        let write_carrier = Self::relocate_private(write_carrier)?;
++        let read_stat = capture_pipe_stat(read_keeper.as_raw_fd())?;
++        let write_stat = capture_pipe_stat(write_carrier.as_raw_fd())?;
++        if read_stat.st_mode & libc::S_IFMT != libc::S_IFIFO
++            || write_stat.st_mode & libc::S_IFMT != libc::S_IFIFO
++            || (read_stat.st_dev, read_stat.st_ino) != (write_stat.st_dev, write_stat.st_ino)
++        {
+             return Err(std::io::Error::other("capture identity is not a pipe"));
+         }
++        if capture_pipe_status(read_keeper.as_raw_fd())? & libc::O_ACCMODE != libc::O_RDONLY
++            || capture_pipe_status(write_carrier.as_raw_fd())? & libc::O_ACCMODE != libc::O_WRONLY
++        {
++            return Err(std::io::Error::other(
++                "capture pipe endpoints have invalid access modes",
++            ));
++        }
+         #[cfg(test)]
+         PIPES_PREPARED.set(PIPES_PREPARED.get() + 1);
+-        Ok(Self { _keeper: keeper })
++        Ok(Self {
++            _read_keeper: read_keeper,
++            write_carrier,
++        })
++    }
++}
++
++fn capture_pipe_stat(fd: RawFd) -> std::io::Result<libc::stat> {
++    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++    // SAFETY: fd is live and stat is writable storage.
++    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
++        return Err(std::io::Error::last_os_error());
++    }
++    // SAFETY: fstat initialized stat on success.
++    Ok(unsafe { stat.assume_init() })
++}
++
++fn capture_pipe_status(fd: RawFd) -> std::io::Result<libc::c_int> {
++    // SAFETY: fd is live and F_GETFL takes no variadic argument.
++    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
++    if flags < 0 {
++        Err(std::io::Error::last_os_error())
++    } else {
++        Ok(flags)
+     }
+ }
+ 
+@@ -129,20 +162,24 @@ impl CapturedPipeIdentities {
+             // after the original standard slot is replaced or closed.
+             stdout: CaptureObjectIdentity::for_alias(OutputAlias::Stdout),
+             stderr: CaptureObjectIdentity::for_alias(OutputAlias::Stderr),
+-            // These descriptors are private lifetime anchors, not guest file
+-            // table entries.  Metadata-only syscalls may use them as stable
+-            // pipefs carriers instead of consulting inherited supervisor
+-            // stdout or stderr.
+-            stdout_statfs_carrier: self._stdout._keeper.as_raw_fd(),
+-            stderr_statfs_carrier: self._stderr._keeper.as_raw_fd(),
++            // These descriptors remain private lifetime anchors, not guest
++            // file-table entries. Metadata queries use the read keepers and
++            // descriptor-creation paths duplicate/reopen the write carriers;
++            // neither path consults inherited supervisor stdout or stderr.
++            stdout_statfs_carrier: self._stdout._read_keeper.as_raw_fd(),
++            stderr_statfs_carrier: self._stderr._read_keeper.as_raw_fd(),
++            stdout_descriptor_carrier: self._stdout.write_carrier.as_raw_fd(),
++            stderr_descriptor_carrier: self._stderr.write_carrier.as_raw_fd(),
+         }
+     }
+ 
+     #[cfg(test)]
+-    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 2] {
++    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 4] {
+         [
+-            self._stdout._keeper.as_raw_fd(),
+-            self._stderr._keeper.as_raw_fd(),
++            self._stdout._read_keeper.as_raw_fd(),
++            self._stdout.write_carrier.as_raw_fd(),
++            self._stderr._read_keeper.as_raw_fd(),
++            self._stderr.write_carrier.as_raw_fd(),
+         ]
+     }
+ }
+@@ -164,6 +201,8 @@ pub(super) struct CaptureMetadata {
+     stderr: CaptureObjectIdentity,
+     stdout_statfs_carrier: RawFd,
+     stderr_statfs_carrier: RawFd,
++    stdout_descriptor_carrier: RawFd,
++    stderr_descriptor_carrier: RawFd,
+ }
+ 
+ impl CaptureMetadata {
+@@ -183,4 +222,14 @@ impl CaptureMetadata {
+             OutputAlias::Stderr => self.stderr_statfs_carrier,
+         }
+     }
++
++    /// Private O_WRONLY pipe endpoint for creating a host file description
++    /// that backs a captured guest alias. The paired read keeper remains owned
++    /// by CapturedPipeIdentities, so readiness does not report a missing peer.
++    pub(super) fn descriptor_carrier(self, alias: OutputAlias) -> RawFd {
++        match alias {
++            OutputAlias::Stdout => self.stdout_descriptor_carrier,
++            OutputAlias::Stderr => self.stderr_descriptor_carrier,
++        }
++    }
+ }
+diff --git a/reverie-kvm/src/capture_identity_tests.rs b/reverie-kvm/src/capture_identity_tests.rs
+index 1ef8e3d7..a2a246c4 100644
+--- a/reverie-kvm/src/capture_identity_tests.rs
++++ b/reverie-kvm/src/capture_identity_tests.rs
+@@ -550,6 +550,806 @@ fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
+     eprintln!("{COMPLETE}");
+ }
+ 
++#[test]
++fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
++    const TEST: &str =
++        "executor::tests::captured_alias_creation_ignores_closed_and_reused_supervisor_stdio";
++    const COMPLETE: &str = "capture descriptor carrier control completed";
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++
++    fn assert_physical_standard_closed() {
++        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
++            let target = std::fs::read_link(format!("/proc/self/fd/{fd}"));
++            assert_eq!(
++                unsafe { libc::fcntl(fd, libc::F_GETFD) },
++                -1,
++                "physical supervisor fd {fd} was reopened as {target:?}"
++            );
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EBADF)
++            );
++        }
++    }
++
++    fn next_private_fd(anchor: libc::c_int) -> libc::c_int {
++        let next = unsafe { libc::fcntl(anchor, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(next >= 3);
++        assert_eq!(unsafe { libc::close(next) }, 0);
++        next
++    }
++
++    let saved = [libc::STDOUT_FILENO, libc::STDERR_FILENO].map(|fd| {
++        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(duplicate >= 3, "captured dup returned {duplicate}");
++        unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) }
++    });
++    let closed_root = TestDir::new();
++    let closed_state = test_state(&closed_root.0);
++    let reused_root = TestDir::new();
++    let reused_state = test_state(&reused_root.0);
++    let plain_root = TestDir::new();
++    let plain_state = test_state(&plain_root.0);
++    let live_plain_root = TestDir::new();
++    let live_plain_state = test_state(&live_plain_root.0);
++    let mut memory = GuestMemory::new(0, 0x8000).unwrap();
++    memory.write(0x3000, b"xy").unwrap();
++    let one_byte = libc::iovec {
++        iov_base: 0x3000_usize as *mut libc::c_void,
++        iov_len: 1,
++    };
++    assert_eq!(write_struct(&mut memory, 0x3100, &one_byte), 0);
++    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
++    let mut live_plain = ElfExecutor::new(live_plain_state, false);
++    for access in [libc::O_RDONLY, libc::O_RDWR] {
++        let reopened = live_plain.execute(
++            &SyscallRequest::new(
++                libc::SYS_openat as u64,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        );
++        assert!(reopened >= 3, "noncapture proc reopen returned {reopened}");
++        assert_eq!(
++            live_plain.execute(
++                &SyscallRequest::new(
++                    libc::SYS_close as u64,
++                    [reopened as u64, 0, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            0
++        );
++    }
++    drop(live_plain);
++    let epoll_host_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
++    assert!(epoll_host_fd >= 3);
++    let epoll_host = unsafe { std::fs::File::from_raw_fd(epoll_host_fd) };
++    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
++        assert_eq!(unsafe { libc::close(fd) }, 0);
++    }
++
++    let mut plain = ElfExecutor::new(plain_state, false);
++    assert_eq!(
++        plain.execute(
++            &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
++            &memory,
++        ),
++        negative_errno(libc::EBADF)
++    );
++    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
++    for access in [
++        libc::O_RDONLY,
++        libc::O_WRONLY,
++        libc::O_RDWR,
++        libc::O_ACCMODE,
++    ] {
++        assert_eq!(
++            plain.execute(
++                &SyscallRequest::new(
++                    libc::SYS_openat as u64,
++                    [
++                        libc::AT_FDCWD as u64,
++                        0x100,
++                        (access | libc::O_NONBLOCK) as u64,
++                        0,
++                        0,
++                        0,
++                    ],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::ENOENT)
++        );
++    }
++    drop(plain);
++    assert_physical_standard_closed();
++
++    let mut executor = ElfExecutor::new(closed_state, true);
++    assert_physical_standard_closed();
++    let epoll_fd = insert_file_with_flags(&mut executor.state, epoll_host, true, None) as i32;
++    assert!(epoll_fd >= 3);
++    executor
++        .file_table
++        .lock()
++        .unwrap()
++        .update_from_elf(&executor.state)
++        .unwrap();
++    let carriers = executor.output.as_ref().unwrap().identities.descriptors();
++    assert!(carriers.into_iter().all(|fd| fd >= 3));
++    let carrier_capacities = [carriers[1], carriers[3]].map(|fd| {
++        let capacity = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
++        assert!(capacity > 0);
++        capacity
++    });
++
++    let mut survivors = Vec::new();
++    for (index, source) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
++        .into_iter()
++        .enumerate()
++    {
++        let identity = capture_executor_stat(&mut executor, &memory, source);
++        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_fcntl as u64,
++                        [source as u64, command as u64, PAGE_SIZE, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::ENOSYS)
++            );
++        }
++        assert_eq!(
++            unsafe { libc::fcntl(carriers[index * 2 + 1], libc::F_GETPIPE_SZ) },
++            carrier_capacities[index],
++            "capture capacity refusal mutated the private carrier"
++        );
++        let requested = libc::pollfd {
++            fd: source,
++            events: libc::POLLIN | libc::POLLOUT,
++            revents: libc::POLLERR,
++        };
++        assert_eq!(write_struct(&mut memory, 0x4000, &requested), 0);
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(libc::SYS_poll as u64, [0x4000, 1, 0, 0, 0, 0]),
++                &memory,
++            ),
++            1
++        );
++        let observed: libc::pollfd = read_struct(&memory, 0x4000);
++        assert_eq!(observed.fd, source);
++        assert_eq!(observed.events, requested.events);
++        assert_eq!(observed.revents, libc::POLLOUT);
++        assert_eq!(write_struct(&mut memory, 0x4000, &requested), 0);
++        let zero_timespec = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        assert_eq!(write_struct(&mut memory, 0x4380, &zero_timespec), 0);
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(libc::SYS_ppoll as u64, [0x4000, 1, 0x4380, 0, 0, 0]),
++                &memory,
++            ),
++            1
++        );
++        assert_eq!(read_struct::<libc::pollfd>(&memory, 0x4000).revents, libc::POLLOUT);
++
++        let source_bit = 1_u64 << source;
++        memory.write(0x4100, &source_bit.to_ne_bytes()).unwrap();
++        memory.write(0x4200, &source_bit.to_ne_bytes()).unwrap();
++        let timeout = libc::timeval {
++            tv_sec: 0,
++            tv_usec: 0,
++        };
++        assert_eq!(write_struct(&mut memory, 0x4300, &timeout), 0);
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_select as u64,
++                    [source as u64 + 1, 0x4100, 0x4200, 0, 0x4300, 0],
++                ),
++                &memory,
++            ),
++            1
++        );
++        assert_eq!(read_struct::<u64>(&memory, 0x4100), 0);
++        assert_eq!(read_struct::<u64>(&memory, 0x4200), source_bit);
++        assert_eq!(read_struct::<libc::timeval>(&memory, 0x4300).tv_sec, 0);
++        assert_eq!(read_struct::<libc::timeval>(&memory, 0x4300).tv_usec, 0);
++
++        let event = libc::epoll_event {
++            events: (libc::EPOLLIN | libc::EPOLLOUT) as u32,
++            u64: 0x1357_9bdf_2468_ace0,
++        };
++        assert_eq!(write_struct(&mut memory, 0x4400, &event), 0);
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_epoll_ctl as u64,
++                    [
++                        epoll_fd as u64,
++                        libc::EPOLL_CTL_ADD as u64,
++                        source as u64,
++                        0x4400,
++                        0,
++                        0,
++                    ],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::ENOSYS)
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_epoll_wait as u64,
++                    [epoll_fd as u64, 0x4500, 1, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            0,
++            "refused capture registration mutated the host epoll set"
++        );
++        assert_physical_standard_closed();
++
++        let target = 100 + index as i32 * 20;
++        let duplicate = executor.execute(
++            &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
++            &memory,
++        ) as i32;
++        assert!(duplicate >= 0, "source={source} captured dup returned {duplicate}");
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_dup2 as u64,
++                    [source as u64, target as u64, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            i64::from(target)
++        );
++        let dup3_target = target + 1;
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_dup3 as u64,
++                    [
++                        source as u64,
++                        dup3_target as u64,
++                        libc::O_CLOEXEC as u64,
++                        0,
++                        0,
++                        0,
++                    ],
++                ),
++                &memory,
++            ),
++            i64::from(dup3_target)
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_dup2 as u64,
++                    [source as u64, source as u64, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            i64::from(source)
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_dup3 as u64,
++                    [source as u64, source as u64, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::EINVAL)
++        );
++        let fcntl_duplicate = executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_fcntl as u64,
++                [
++                    source as u64,
++                    libc::F_DUPFD as u64,
++                    (target + 5) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        ) as i32;
++        let fcntl_cloexec = executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_fcntl as u64,
++                [
++                    source as u64,
++                    libc::F_DUPFD_CLOEXEC as u64,
++                    (target + 10) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        ) as i32;
++        assert!(fcntl_duplicate >= target + 5 && fcntl_cloexec >= target + 10);
++
++        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{source}"));
++        let files_before = executor.state.files.len();
++        let identities_before = executor.state.fd_entry_ids.len();
++        let object_inodes_before = executor.state.fd_object_inodes.len();
++        let next_inode_before = executor
++            .state
++            .file_identity_table
++            .lock()
++            .unwrap()
++            .next_inode;
++        // Captured bytes are not queued in the identity pipe, so read-capable
++        // reopens deliberately fail closed rather than expose false EOF/EAGAIN.
++        // The host validation probe rejects access mode 3 for this FIFO with
++        // Linux's EINVAL before the capture-specific ENOSYS boundary.
++        for access in [libc::O_RDONLY, libc::O_RDWR] {
++            let next_host_fd_before = next_private_fd(saved[0].as_raw_fd());
++            let probe = open_host_fd_path(
++                carriers[index * 2 + 1],
++                (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
++            )
++            .unwrap();
++            drop(probe);
++            assert_eq!(
++                next_private_fd(saved[0].as_raw_fd()),
++                next_host_fd_before,
++                "capture reopen helper retained a host descriptor"
++            );
++        }
++        for (access, expected) in [
++            (libc::O_RDONLY, libc::ENOSYS),
++            (libc::O_RDWR, libc::ENOSYS),
++            (libc::O_ACCMODE, libc::EINVAL),
++        ] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_openat as u64,
++                        [
++                            libc::AT_FDCWD as u64,
++                            0x100,
++                            (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
++                            0,
++                            0,
++                            0,
++                        ],
++                    ),
++                    &memory,
++                ),
++                negative_errno(expected)
++            );
++            assert_eq!(executor.state.files.len(), files_before);
++            assert_eq!(executor.state.fd_entry_ids.len(), identities_before);
++            assert_eq!(executor.state.fd_object_inodes.len(), object_inodes_before);
++            assert_eq!(
++                executor
++                    .state
++                    .file_identity_table
++                    .lock()
++                    .unwrap()
++                    .next_inode,
++                next_inode_before
++            );
++            assert_physical_standard_closed();
++        }
++        for (flags, expected) in [
++            (libc::O_RDONLY | libc::O_DIRECTORY, libc::ENOTDIR),
++            (libc::O_RDONLY | libc::O_NOFOLLOW, libc::ELOOP),
++        ] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_openat as u64,
++                        [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(expected)
++            );
++            assert_eq!(executor.state.files.len(), files_before);
++            assert_eq!(executor.state.fd_entry_ids.len(), identities_before);
++            assert_eq!(executor.state.fd_object_inodes.len(), object_inodes_before);
++            assert_physical_standard_closed();
++        }
++        let reopened = executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_openat as u64,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    (libc::O_WRONLY | libc::O_CLOEXEC) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        ) as i32;
++        let path_only = executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_openat as u64,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    (libc::O_PATH | libc::O_CLOEXEC) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        ) as i32;
++        assert!(reopened >= 3 && path_only >= 3);
++
++        let shared_status = executor.state.capture_status_flags[&source].clone();
++        for (fd, cloexec) in [
++            (duplicate, false),
++            (target, false),
++            (dup3_target, true),
++            (fcntl_duplicate, false),
++            (fcntl_cloexec, true),
++        ] {
++            assert_eq!(capture_executor_stat(&mut executor, &memory, fd), identity);
++            assert!(Arc::ptr_eq(
++                &executor.state.capture_status_flags[&fd],
++                &shared_status
++            ));
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_fcntl as u64,
++                        [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                if cloexec {
++                    i64::from(libc::FD_CLOEXEC)
++                } else {
++                    0
++                }
++            );
++            let host = executor.state.files[&fd].as_raw_fd();
++            assert!(host >= 3);
++            assert_eq!(
++                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
++                libc::O_WRONLY
++            );
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_read as u64,
++                        [fd as u64, 0x3000, 1, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::EBADF)
++            );
++            for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
++                assert_eq!(
++                    executor.execute(
++                        &SyscallRequest::new(
++                            libc::SYS_fcntl as u64,
++                            [fd as u64, command as u64, PAGE_SIZE, 0, 0, 0],
++                        ),
++                        &memory,
++                    ),
++                    negative_errno(libc::ENOSYS)
++                );
++            }
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(libc::SYS_lseek as u64, [fd as u64, 0, 0, 0, 0, 0]),
++                    &memory,
++                ),
++                negative_errno(libc::ESPIPE)
++            );
++            assert_physical_standard_closed();
++        }
++        assert!(!Arc::ptr_eq(
++            &executor.state.capture_status_flags[&reopened],
++            &shared_status
++        ));
++        assert_eq!(
++            executor.state.capture_status_flags[&reopened].load(Ordering::SeqCst)
++                & libc::O_ACCMODE,
++            libc::O_WRONLY
++        );
++        assert_eq!(
++            executor.state.capture_status_flags[&path_only].load(Ordering::SeqCst),
++            libc::O_PATH
++        );
++        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_fcntl as u64,
++                        [reopened as u64, command as u64, PAGE_SIZE, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::ENOSYS)
++            );
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_fcntl as u64,
++                        [path_only as u64, command as u64, PAGE_SIZE, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::EBADF)
++            );
++        }
++        for fd in [reopened, path_only] {
++            assert_eq!(capture_executor_stat(&mut executor, &memory, fd), identity);
++            assert!(executor.state.files[&fd].as_raw_fd() >= 3);
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_read as u64,
++                        [fd as u64, 0x3000, 1, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::EBADF)
++            );
++            assert_physical_standard_closed();
++        }
++        for number in [libc::SYS_writev, libc::SYS_pwritev2] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        number as u64,
++                        [path_only as u64, 0x3100, 1, u64::MAX, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::EBADF)
++            );
++        }
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_lseek as u64,
++                    [path_only as u64, 0, libc::SEEK_SET as u64, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_physical_standard_closed();
++
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(libc::SYS_close as u64, [source as u64, 0, 0, 0, 0, 0]),
++                &memory,
++            ),
++            0
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
++                &memory,
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_fcntl as u64,
++                    [source as u64, libc::F_DUPFD as u64, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_openat as u64,
++                    [
++                        libc::AT_FDCWD as u64,
++                        0x100,
++                        libc::O_WRONLY as u64,
++                        0,
++                        0,
++                        0,
++                    ],
++                ),
++                &memory,
++            ),
++            negative_errno(libc::ENOENT)
++        );
++        assert_eq!(capture_executor_stat(&mut executor, &memory, duplicate), identity);
++        survivors.push((duplicate, source));
++        assert_physical_standard_closed();
++    }
++    assert_eq!(
++        executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_close as u64,
++                [epoll_fd as u64, 0, 0, 0, 0, 0],
++            ),
++            &memory,
++        ),
++        0
++    );
++    let snapshot = FileTableState::try_from_elf(&executor.state).unwrap();
++    assert!(snapshot.files.values().all(|file| file.as_raw_fd() >= 3));
++    assert_physical_standard_closed();
++    drop(snapshot);
++    for (fd, source) in survivors {
++        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_fcntl as u64,
++                        [fd as u64, command as u64, PAGE_SIZE, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::ENOSYS),
++                "capture capacity became host-backed after closing its source"
++            );
++        }
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(libc::SYS_write as u64, [fd as u64, 0x3000, 1, 0, 0, 0]),
++                &memory,
++            ),
++            1
++        );
++        assert_physical_standard_closed();
++        assert!(matches!(source, libc::STDOUT_FILENO | libc::STDERR_FILENO));
++    }
++    assert_eq!(executor.take_output(), (b"x".to_vec(), b"x".to_vec()));
++    drop(executor);
++    assert_physical_standard_closed();
++
++    let sentinel_bytes = [b"stdout-sentinel", b"stderr-sentinel"];
++    let mut sentinels = Vec::new();
++    let mut snapshots = Vec::new();
++    for (index, expected_fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
++        .into_iter()
++        .enumerate()
++    {
++        let raw = unsafe { libc::memfd_create(c"capture-sentinel".as_ptr(), libc::MFD_CLOEXEC) };
++        assert_eq!(raw, expected_fd);
++        assert_eq!(
++            unsafe {
++                libc::write(
++                    raw,
++                    sentinel_bytes[index].as_ptr().cast(),
++                    sentinel_bytes[index].len(),
++                )
++            },
++            sentinel_bytes[index].len() as isize
++        );
++        assert_eq!(unsafe { libc::lseek(raw, 1, libc::SEEK_SET) }, 1);
++        let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
++        assert!(flags >= 0);
++        assert_eq!(
++            unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_APPEND | libc::O_NONBLOCK) },
++            0
++        );
++        let metadata = capture_native_stat(raw);
++        snapshots.push((metadata.st_dev, metadata.st_ino, flags | libc::O_APPEND | libc::O_NONBLOCK));
++        sentinels.push(unsafe { std::fs::File::from_raw_fd(raw) });
++    }
++
++    let mut reused = ElfExecutor::new(reused_state, true);
++    let mut reused_aliases = Vec::new();
++    for (index, source) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
++        .into_iter()
++        .enumerate()
++    {
++        let duplicate = reused.execute(
++            &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
++            &memory,
++        ) as i32;
++        assert!(duplicate >= 3);
++        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{source}"));
++        let reopened = reused.execute(
++            &SyscallRequest::new(
++                libc::SYS_openat as u64,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    libc::O_WRONLY as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        ) as i32;
++        assert!(reopened >= 3);
++        for fd in [duplicate, reopened] {
++            let host = reused.state.files[&fd].as_raw_fd();
++            assert!(host >= 3);
++            assert_eq!(
++                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
++                libc::O_WRONLY
++            );
++            let backing = capture_native_stat(host);
++            assert_ne!((backing.st_dev, backing.st_ino), (snapshots[index].0, snapshots[index].1));
++            assert_eq!(
++                reused.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_read as u64,
++                        [fd as u64, 0x3000, 1, 0, 0, 0],
++                    ),
++                    &memory,
++                ),
++                negative_errno(libc::EBADF)
++            );
++        }
++        let mut bytes = vec![0; sentinel_bytes[index].len()];
++        assert_eq!(
++            unsafe {
++                libc::pread(
++                    source,
++                    bytes.as_mut_ptr().cast(),
++                    bytes.len(),
++                    0,
++                )
++            },
++            bytes.len() as isize
++        );
++        assert_eq!(bytes, sentinel_bytes[index]);
++        assert_eq!(unsafe { libc::lseek(source, 0, libc::SEEK_CUR) }, 1);
++        assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFL) }, snapshots[index].2);
++        let metadata = capture_native_stat(source);
++        assert_eq!((metadata.st_dev, metadata.st_ino), (snapshots[index].0, snapshots[index].1));
++        reused_aliases.push((duplicate, source));
++    }
++    memory.write(0x3000, b"yz").unwrap();
++    for (index, (fd, source)) in reused_aliases.into_iter().enumerate() {
++        assert_eq!(
++            reused.execute(
++                &SyscallRequest::new(
++                    libc::SYS_write as u64,
++                    [fd as u64, 0x3000 + index as u64, 1, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            1
++        );
++        assert!(matches!(source, libc::STDOUT_FILENO | libc::STDERR_FILENO));
++    }
++    assert_eq!(reused.take_output(), (b"y".to_vec(), b"z".to_vec()));
++    drop(reused);
++    drop(sentinels);
++    for (fd, saved) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
++        .into_iter()
++        .zip(&saved)
++    {
++        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
++    }
++    eprintln!("{COMPLETE}");
++}
++
+ #[test]
+ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
+     let root = TestDir::new();
+@@ -791,13 +1591,42 @@ fn capture_identity_keeps_closed_standard_descriptors_closed() {
+     }
+     let owner = prepared.unwrap();
+     assert_eq!(closed, [true; 3]);
+-    for fd in owner.identities.descriptors() {
++    let descriptors = owner.identities.descriptors();
++    for (index, fd) in descriptors.into_iter().enumerate() {
+         assert!(fd >= 3);
+         assert_eq!(
+             capture_native_stat(fd).st_mode & libc::S_IFMT,
+             libc::S_IFIFO
+         );
+         assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, libc::FD_CLOEXEC);
++        assert_eq!(
++            unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_ACCMODE,
++            if index % 2 == 0 {
++                libc::O_RDONLY
++            } else {
++                libc::O_WRONLY
++            }
++        );
++    }
++    let metadata = descriptors.map(capture_native_stat);
++    for pair in metadata.as_chunks::<2>().0 {
++        assert_eq!(
++            (pair[0].st_dev, pair[0].st_ino),
++            (pair[1].st_dev, pair[1].st_ino)
++        );
++    }
++    assert_ne!(
++        (metadata[0].st_dev, metadata[0].st_ino),
++        (metadata[2].st_dev, metadata[2].st_ino)
++    );
++    for fd in [descriptors[1], descriptors[3]] {
++        let mut poll = libc::pollfd {
++            fd,
++            events: libc::POLLOUT,
++            revents: 0,
++        };
++        assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
++        assert_eq!(poll.revents, libc::POLLOUT);
+     }
+     eprintln!("{COMPLETE}");
+ }
+@@ -995,7 +1824,7 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
+         }
+     }
+     // Only closed standard-number slots remain available. pipe2 succeeds in
+-    // 0/1, its unused end closes, but F_DUPFD_CLOEXEC(min=3) must fail.
++    // 0/1, but relocating its first retained endpoint above 2 must fail.
+     let saved = [0, 1].map(|fd| {
+         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+         assert!(copy >= 3);
+diff --git a/reverie-kvm/src/elf.rs b/reverie-kvm/src/elf.rs
+index 928ea147..bdad47e2 100644
+--- a/reverie-kvm/src/elf.rs
++++ b/reverie-kvm/src/elf.rs
+@@ -705,7 +705,16 @@ impl FileRetirement {
+                 *remaining -= 1;
+             }
+         }
+-        file.try_clone().map(|file| self.stage(file))
++        // File::try_clone may allocate host fd 0/1/2 when the embedding
++        // process has closed one. File-table snapshots are private backend
++        // objects and must never repopulate the supervisor's standard slots.
++        // SAFETY: file is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
++        let duplicate = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
++        if duplicate < 0 {
++            return Err(std::io::Error::last_os_error());
++        }
++        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
++        Ok(self.stage(unsafe { File::from_raw_fd(duplicate) }))
+     }
+ 
+     #[cfg(test)]
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 2a10b8db..c0e5e7e6 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -578,27 +578,27 @@ fn execute_basic_syscall_inner(
+         pipe2(memory, state, args[0], args[1])
+     } else if number == libc::SYS_select as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        select(memory, state, args)
++        select(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_pselect6 as u64 {
+         pselect6_validation_preflight(memory, args)
+     } else if number == libc::SYS_poll as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        poll(memory, state, args)
++        poll(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_ppoll as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        ppoll(memory, state, args)
++        ppoll(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_epoll_create1 as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         epoll_create1(state, args[0])
+     } else if number == libc::SYS_epoll_ctl as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        epoll_ctl(memory, state, args)
++        epoll_ctl(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_epoll_wait as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        epoll_wait(memory, state, args, false)
++        epoll_wait(memory, state, args, false, capture_metadata)
+     } else if number == libc::SYS_epoll_pwait as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        epoll_wait(memory, state, args, true)
++        epoll_wait(memory, state, args, true, capture_metadata)
+     } else if number == libc::SYS_eventfd as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         eventfd2(state, args[0], 0)
+@@ -675,21 +675,28 @@ fn execute_basic_syscall_inner(
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         ioctl(memory, state, args, capture_output)
+     } else if number == libc::SYS_dup as u64 {
+-        duplicate_fd(state, args[0], None, 0, false)
++        duplicate_fd(state, args[0], None, 0, false, capture_metadata)
+     } else if number == libc::SYS_dup2 as u64 {
+-        duplicate_fd(state, args[0], Some(args[1]), 0, false)
++        duplicate_fd(state, args[0], Some(args[1]), 0, false, capture_metadata)
+     } else if number == libc::SYS_dup3 as u64 {
+-        duplicate_fd(state, args[0], Some(args[1]), args[2], true)
++        duplicate_fd(
++            state,
++            args[0],
++            Some(args[1]),
++            args[2],
++            true,
++            capture_metadata,
++        )
+     } else if number == libc::SYS_fcntl as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        fcntl(memory, state, args)
++        fcntl(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_open as u64 {
+-        open(memory, state, args, capture_output)
++        open(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_openat as u64 {
+-        openat(memory, state, args, capture_output)
++        openat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_creat as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        creat(memory, state, args, capture_output)
++        creat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_memfd_create as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         memfd_create(memory, state, args)
+@@ -6667,6 +6674,11 @@ fn vectored_io(
+     let guest_fd = args[0] as libc::c_int;
+     let output_destination = output_alias(state, guest_fd);
+     let captured_output = output.is_some() && output_destination.is_some();
++    let captured_status = captured_output
++        .then(|| state.capture_status_flags.get(&guest_fd))
++        .flatten()
++        .map(|status| status.load(Ordering::SeqCst));
++    let captured_path_only = captured_status.is_some_and(|flags| flags & libc::O_PATH != 0);
+     // Synthetic procfs descriptors have backend-owned content and must not be
+     // forwarded to the supervisor's procfs.
+     if state.proc_files.contains_key(&guest_fd) {
+@@ -6683,6 +6695,9 @@ fn vectored_io(
+         || matches!(number, libc::SYS_preadv2 | libc::SYS_pwritev2) && args[3] as i64 == -1;
+     if !current_position {
+         if captured_output {
++            if captured_path_only {
++                return negative_errno(libc::EBADF);
++            }
+             return negative_errno(libc::ESPIPE);
+         }
+         let host_fd = descriptor.expect("validated guest descriptor disappeared");
+@@ -6721,7 +6736,10 @@ fn vectored_io(
+         // and dup aliases retain their separate descriptor/capture routing.
+         Err(negative_errno(libc::EBADF))
+     } else if captured_output {
+-        if reading {
++        if reading
++            || captured_path_only
++            || captured_status.is_some_and(|flags| flags & libc::O_ACCMODE == libc::O_RDONLY)
++        {
+             Err(negative_errno(libc::EBADF))
+         } else {
+             Ok(())
+@@ -7136,6 +7154,13 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64
+         return description.seek(args);
+     }
+     if capture_output && output_alias(state, fd).is_some() {
++        if state
++            .capture_status_flags
++            .get(&fd)
++            .is_some_and(|status| status.load(Ordering::SeqCst) & libc::O_PATH != 0)
++        {
++            return negative_errno(libc::EBADF);
++        }
+         // Captured stdout/stderr are modeled as pipes: writes go to the
+         // in-memory capture sink, and fstat exposes S_IFIFO. Do not leak the
+         // unrelated file position of the supervisor's inherited descriptor.
+@@ -7481,7 +7506,7 @@ fn open(
+     memory: &GuestMemory,
+     state: &mut LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     open_file(
+         memory,
+@@ -7490,7 +7515,7 @@ fn open(
+         args[0],
+         args[1],
+         args[2],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -7498,7 +7523,7 @@ fn openat(
+     memory: &GuestMemory,
+     state: &mut LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     open_file(
+         memory,
+@@ -7507,7 +7532,7 @@ fn openat(
+         args[1],
+         args[2],
+         args[3],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -7523,7 +7548,7 @@ fn creat(
+     memory: &GuestMemory,
+     state: &mut LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64;
+     open_file(
+@@ -7533,7 +7558,7 @@ fn creat(
+         args[0],
+         flags,
+         args[1],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -7544,8 +7569,9 @@ fn open_file(
+     path_address: u64,
+     raw_flags: u64,
+     raw_mode: u64,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
++    let capture_output = capture.is_some();
+     let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+     let path_only = flags & libc::O_PATH as u64 != 0;
+     // Legacy open/openat validates every non-O_PATH __O_TMPFILE spelling before
+@@ -7691,7 +7717,7 @@ fn open_file(
+         Ok(path) => path,
+         Err(error) => return error,
+     } {
+-        return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
++        return open_guest_fd_path(state, guest_fd, flags, guest_cloexec, capture);
+     }
+     if path == b"/dev/random" || path == b"/dev/urandom" {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+@@ -8374,11 +8400,36 @@ fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std::fs::File,
+         )
+     };
+     if reopened < 0 {
+-        Err(io_error(std::io::Error::last_os_error()))
+-    } else {
+-        // SAFETY: openat returned a new owned descriptor.
+-        Ok(unsafe { std::fs::File::from_raw_fd(reopened as RawFd) })
++        return Err(io_error(std::io::Error::last_os_error()));
++    }
++    // SAFETY: openat returned a new owned descriptor.
++    let file = unsafe { std::fs::File::from_raw_fd(reopened as RawFd) };
++    relocate_owned_host_fd(file)
++}
++
++fn relocate_owned_host_fd(file: std::fs::File) -> Result<std::fs::File, i64> {
++    if file.as_raw_fd() >= 3 {
++        return Ok(file);
++    }
++    // Never let a private guest-table carrier occupy the supervisor's standard
++    // descriptor namespace. The original low descriptor closes on every path.
++    // SAFETY: file is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
++    let duplicate = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
++    if duplicate < 0 {
++        return Err(io_error(std::io::Error::last_os_error()));
+     }
++    Ok(unsafe { std::fs::File::from_raw_fd(duplicate) })
++}
++
++fn duplicate_owned_host_fd(source: RawFd) -> Result<std::fs::File, i64> {
++    // Internal descriptors must not claim a closed supervisor fd 0/1/2.
++    // SAFETY: source is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
++    let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, 3) };
++    if duplicate < 0 {
++        return Err(io_error(std::io::Error::last_os_error()));
++    }
++    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
++    Ok(unsafe { std::fs::File::from_raw_fd(duplicate) })
+ }
+ 
+ fn ensure_proc_carrier_readonly_or_path(file: &std::fs::File) -> Result<(), i64> {
+@@ -8452,8 +8503,9 @@ fn open_guest_fd_path(
+     guest_fd: libc::c_int,
+     flags: u64,
+     close_on_exec: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+-    let Some(source_host_fd) = host_fd(state, guest_fd) else {
++    let Some(source_host_fd) = descriptor_creation_host_fd(state, guest_fd, capture) else {
+         return negative_errno(libc::ENOENT);
+     };
+     if let Some(description) = state.proc_fd_directories.get(&guest_fd).cloned() {
+@@ -8516,6 +8568,27 @@ fn open_guest_fd_path(
+         return negative_errno(libc::ENOSYS);
+     }
+     let source_alias = output_alias(state, guest_fd);
++    let access_mode = flags & libc::O_ACCMODE as u64;
++    if capture.is_some()
++        && source_alias.is_some()
++        && !path_only
++        && access_mode != libc::O_WRONLY as u64
++    {
++        // Captured bytes live in the bounded in-memory output buffer; they are
++        // never written into the private pipe that supplies descriptor identity.
++        // A read-capable reopen of that pipe would therefore expose an empty
++        // queue and a permanently retained writer, producing EAGAIN or an
++        // unbounded wait instead of captured data/EOF. Linux access mode 3 is
++        // likewise unusable for I/O and must not become a writable capture
++        // alias. Let the host validate target/flag precedence without
++        // publishing the temporary descriptor, then fail closed until capture
++        // queue and last-writer lifetime are modeled together.
++        match open_host_fd_path(source_host_fd, flags) {
++            Ok(probe) => drop(probe),
++            Err(error) => return error,
++        }
++        return negative_errno(libc::ENOSYS);
++    }
+     if regular_proc && !path_only {
+         if flags & libc::O_TRUNC as u64 != 0
+             || flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
+@@ -9191,14 +9264,12 @@ fn duplicate_fd_at_or_above(
+         return negative_errno(libc::EMFILE);
+     };
+ 
+-    // SAFETY: old_host_fd is live. F_DUPFD_CLOEXEC returns an owned
+-    // descriptor; guest CLOEXEC is modeled independently in cloexec_fds.
+-    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+-    if duplicated < 0 {
+-        return io_error(std::io::Error::last_os_error());
+-    }
+-    // SAFETY: fcntl returned a new owned descriptor.
+-    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
++    // Guest CLOEXEC is modeled independently in cloexec_fds. The host copy is
++    // always CLOEXEC and private to descriptors 3 and above.
++    let file = match duplicate_owned_host_fd(old_host_fd) {
++        Ok(file) => file,
++        Err(error) => return error,
++    };
+     let retired = state.insert_file(fd, file);
+     state.fd_object_inodes.insert(fd, source.object_inode);
+     if source.is_random {
+@@ -9257,6 +9328,7 @@ fn duplicate_fd(
+     raw_new_fd: Option<u64>,
+     raw_flags: u64,
+     is_dup3: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let _retirement = state.file_retirement.hold();
+     let transaction = state.signal_transaction.clone();
+@@ -9278,7 +9350,7 @@ fn duplicate_fd(
+     let source_is_loginuid = state.loginuid_fds.contains(&old_fd);
+     let source_signalfd_mask = signalfd_mask(state, old_fd);
+     let source_capture_status = state.capture_status_flags.get(&old_fd).cloned();
+-    let Some(old_host_fd) = host_fd(state, old_fd) else {
++    let Some(old_host_fd) = descriptor_creation_host_fd(state, old_fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let source_object_inode = guest_fd_object_identity(state, old_fd);
+@@ -9302,14 +9374,10 @@ fn duplicate_fd(
+         None => None,
+     };
+ 
+-    // SAFETY: old_host_fd names a live descriptor. F_DUPFD_CLOEXEC returns a
+-    // new owned descriptor and prevents it leaking through a supervisor exec.
+-    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+-    if duplicated < 0 {
+-        return io_error(std::io::Error::last_os_error());
+-    }
+-    // SAFETY: fcntl returned a new owned descriptor.
+-    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
++    let file = match duplicate_owned_host_fd(old_host_fd) {
++        Ok(file) => file,
++        Err(error) => return error,
++    };
+     if let Some(new_fd) = new_fd {
+         let retired = state.insert_file(new_fd, file);
+         state.fd_object_inodes.insert(new_fd, source_object_inode);
+@@ -9559,7 +9627,12 @@ fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-205): Review deterministic select readiness and timeout semantics.
+-fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn select(
++    memory: &mut GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     let Ok(nfds) = libc::c_int::try_from(args[0]) else {
+         return negative_errno(libc::EINVAL);
+     };
+@@ -9604,7 +9677,7 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         if !membership.into_iter().any(|present| present) {
+             continue;
+         }
+-        let Some(host_fd) = host_fd(state, guest_fd) else {
++        let Some(host_fd) = descriptor_creation_host_fd(state, guest_fd, capture) else {
+             return negative_errno(libc::EBADF);
+         };
+         let virtual_signalfd = signalfd_mask(state, guest_fd).is_some();
+@@ -9697,12 +9770,22 @@ fn fd_set_insert(set: &mut [u64], fd: libc::c_int) {
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-92): Review guest descriptor translation and deterministic nonblocking poll semantics.
+-fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    poll_with_timeout(memory, state, args, 0)
++fn poll(
++    memory: &mut GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
++    poll_with_timeout(memory, state, args, 0, capture)
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-172): Review host-blocking KVM ppoll timeout and signal-mask semantics.
+-fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn ppoll(
++    memory: &mut GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     // Validate the timeout up front for every ppoll, mirroring detcore's
+     // handle_ppoll (hermit detcore/src/syscalls/io.rs:824-828): the kernel
+     // rejects a malformed timeout (bad pointer or out-of-range nanoseconds)
+@@ -9747,13 +9830,13 @@ fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         // instantaneous poll, so a plain non-blocking poll reproduces the kernel
+         // result: a ready descriptor returns its count exactly as the unmasked
+         // path would, and a poll/read error propagates unchanged.
+-        let ready = poll_with_timeout(memory, state, args, 0);
++        let ready = poll_with_timeout(memory, state, args, 0, capture);
+         if ready == 0 {
+             return negative_errno(libc::ENOSYS);
+         }
+         return ready;
+     }
+-    poll_with_timeout(memory, state, args, timeout)
++    poll_with_timeout(memory, state, args, timeout, capture)
+ }
+ 
+ fn poll_with_timeout(
+@@ -9761,6 +9844,7 @@ fn poll_with_timeout(
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+     timeout: libc::c_int,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let Ok(count) = usize::try_from(args[1]) else {
+         return negative_errno(libc::EINVAL);
+@@ -9817,7 +9901,7 @@ fn poll_with_timeout(
+             // A signalfd exposes only the carrier's synthetic readable state.
+             poll_fd.events &= libc::POLLIN;
+         }
+-        match host_fd(state, poll_fd.fd) {
++        match descriptor_creation_host_fd(state, poll_fd.fd, capture) {
+             Some(host_fd) => poll_fd.fd = host_fd,
+             None => {
+                 poll_fd.fd = -1;
+@@ -9886,11 +9970,17 @@ fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+-fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
++fn epoll_ctl(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
++    let Some(epoll_fd) = descriptor_creation_host_fd(state, args[0] as libc::c_int, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+-    let Some(target_fd) = host_fd(state, args[2] as libc::c_int) else {
++    let target_guest_fd = args[2] as libc::c_int;
++    let Some(target_fd) = descriptor_creation_host_fd(state, target_guest_fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let operation = args[1] as libc::c_int;
+@@ -9903,12 +9993,25 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         }
+     };
+     if matches!(operation, libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD)
+-        && signalfd_mask(state, args[2] as libc::c_int).is_some()
++        && signalfd_mask(state, target_guest_fd).is_some()
+     {
+         // Otherwise a blocking ppoll of this epoll descriptor could wait on
+         // virtual signal readiness without carrying signalfd metadata itself.
+         return negative_errno(libc::ENOSYS);
+     }
++    if capture.is_some()
++        && output_alias(state, target_guest_fd).is_some()
++        && matches!(
++            operation,
++            libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD | libc::EPOLL_CTL_DEL
++        )
++    {
++        // A persistent registration on the root-owned identity carrier would
++        // survive guest close/replacement of the last capture alias and keep
++        // reporting stale POLLOUT. Refuse before mutating the host epoll set
++        // until registrations are tied to guest-description lifetime.
++        return negative_errno(libc::ENOSYS);
++    }
+     // SAFETY: both descriptors were translated from live guest descriptors;
+     // event is initialized and Linux validates the requested operation.
+     zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
+@@ -9920,6 +10023,7 @@ fn epoll_wait(
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+     pwait: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     if pwait && args[4] != 0 {
+         if args[5] != KERNEL_SIGSET_SIZE as u64 {
+@@ -9930,7 +10034,7 @@ fn epoll_wait(
+             return negative_errno(libc::EFAULT);
+         }
+     }
+-    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
++    let Some(epoll_fd) = descriptor_creation_host_fd(state, args[0] as libc::c_int, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let Ok(max_events) = libc::c_int::try_from(args[2]) else {
+@@ -15885,8 +15989,32 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
+         })
+ }
+ 
++fn descriptor_creation_host_fd(
++    state: &LoadedStaticElf,
++    guest_fd: libc::c_int,
++    capture: Option<CaptureMetadata>,
++) -> Option<RawFd> {
++    if let Some(file) = state.files.get(&guest_fd) {
++        return Some(file.as_raw_fd());
++    }
++    if is_open_standard(state, guest_fd)
++        && let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd))
++    {
++        // Captured implicit stdout/stderr are virtual descriptions. Never use
++        // or validate the supervisor's same-numbered object: it may be closed
++        // or may have been reused for an unrelated file after setup.
++        return Some(capture.descriptor_carrier(alias));
++    }
++    host_fd(state, guest_fd)
++}
++
+ // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
+-fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn fcntl(
++    memory: &GuestMemory,
++    state: &mut LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
+     let guest_fd = args[0] as libc::c_int;
+     let source_alias = output_alias(state, guest_fd);
+     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
+@@ -15897,7 +16025,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
+     let source_is_loginuid = state.loginuid_fds.contains(&guest_fd);
+     let source_signalfd_mask = signalfd_mask(state, guest_fd);
+     let source_capture_status = state.capture_status_flags.get(&guest_fd).cloned();
+-    let host_fd = host_fd(state, guest_fd);
++    let host_fd = descriptor_creation_host_fd(state, guest_fd, capture);
+     let command = args[1] as libc::c_int;
+     if host_fd.is_none()
+         && !(source_capture_status.is_some()
+@@ -15908,6 +16036,19 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
+     {
+         return negative_errno(libc::EBADF);
+     }
++    if matches!(command, libc::F_GETPIPE_SZ | libc::F_SETPIPE_SZ)
++        && let Some(status) = source_capture_status.as_ref()
++    {
++        if status.load(Ordering::SeqCst) & libc::O_PATH != 0 {
++            return negative_errno(libc::EBADF);
++        }
++        // Captured writes bypass the private identity pipe and append to a
++        // bounded in-memory sink. Reporting or changing the carrier's real
++        // capacity would expose host defaults/per-user quotas without modeling
++        // either capture backpressure or queue occupancy. Refuse before a host
++        // fcntl can observe or mutate that private pipe.
++        return negative_errno(libc::ENOSYS);
++    }
+     let source_object_inode = guest_fd_object_identity(state, guest_fd);
+     match command {
+         libc::F_DUPFD => duplicate_fd_at_or_above(
+@@ -23908,6 +24049,7 @@ mod tests {
+                 Some(duplicated as u64),
+                 0,
+                 false,
++                None,
+             ),
+             i64::from(duplicated)
+         );
+@@ -23916,7 +24058,14 @@ mod tests {
+             "replacement by an ordinary description retained trusted identity"
+         );
+         assert_eq!(
+-            duplicate_fd(&mut state, direct as u64, Some(ordinary as u64), 0, false,),
++            duplicate_fd(
++                &mut state,
++                direct as u64,
++                Some(ordinary as u64),
++                0,
++                false,
++                None,
++            ),
+             i64::from(ordinary)
+         );
+         assert!(state.loginuid_fds.contains(&ordinary));
+@@ -23928,6 +24077,7 @@ mod tests {
+                 Some(dup3_target as u64),
+                 libc::O_CLOEXEC as u64,
+                 true,
++                None,
+             ),
+             i64::from(dup3_target)
+         );
+@@ -24058,7 +24208,9 @@ mod tests {
+     // AUTONOMOUS-BOT-IMPLEMENTED
+     // TODO-HUMAN-REVIEW(rrnewton/reverie#318): regression for the F_GETPIPE_SZ /
+     // F_SETPIPE_SZ fcntl arms (were ENOSYS). They forward to the backing host
+-    // pipe, so the guest observes the real, deterministic pipe capacity.
++    // pipe, so an ordinary guest-created pipe observes the real host capacity.
++    // Captured-output descriptions fail closed instead because their private
++    // identity pipe does not carry captured bytes or model backpressure.
+     #[test]
+     fn fcntl_pipe_capacity_get_and_set_forward_to_host() {
+         let root = TestDir::new();
+@@ -32754,7 +32906,8 @@ mod tests {
+         // Active output capture makes both standard slots and every duplicate
+         // private. Exercise the real sendmsg translation with capture enabled;
+         // the ordinary syscall helper intentionally passes false.
+-        let stdout_alias = duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false);
++        let stdout_alias =
++            duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false, None);
+         assert!(stdout_alias >= 0);
+         for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
+             let control = rights_control(&[donated as libc::c_int]);
+@@ -44946,7 +45099,7 @@ mod tests {
+             ) as libc::c_int;
+             assert!(source >= 0);
+             assert_eq!(
+-                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
++                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
+                 i64::from(fd)
+             );
+             assert!(!is_open_standard(&state, fd));
+@@ -44998,7 +45151,7 @@ mod tests {
+             let source = insert_file_with_flags(&mut state, path_file, false, None) as libc::c_int;
+             assert!(source >= 0);
+             assert_eq!(
+-                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
++                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
+                 i64::from(fd)
+             );
+             assert!(!is_open_standard(&state, fd));
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index fc329015..2b229589 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -10618,6 +10618,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "kvm_direct_and_tool_match_thp_disable_cell",
+         "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
+         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
++        "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
+     ] {
+         let output = std::process::Command::new(std::env::current_exe().unwrap())
+             .args([test, "--exact", "--test-threads=1", "--nocapture"])
+@@ -14397,6 +14398,394 @@ int main(int argc, char **argv) {
+     assert_eq!(results.3, results.2, "Tool KVM result changed");
+ }
+ 
++// Descriptor creation for a captured stream must use a private write-capable
++// pipe, not the object occupying the supervisor's same-numbered fd. This cell
++// uses readable O_RDONLY files with mutable offsets as adversarial carriers, then
++// requires native output/exit parity and direct/Tool repeat equality. It makes
++// no L2-log or record/replay claim. Read-capable proc-fd opens, captured epoll
++// registration, and captured pipe-capacity fcntls are checked as explicit KVM
++// ENOSYS fail-closed divergences; matching final output and status do not claim
++// syscall-result parity for those operations.
++#[test]
++fn captured_aliases_ignore_reused_supervisor_stdio_on_kvm() {
++    const TEST: &str = "captured_aliases_ignore_reused_supervisor_stdio_on_kvm";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "captured-alias-carrier",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/epoll.h>
++#include <sys/stat.h>
++#include <sys/select.h>
++#include <sys/syscall.h>
++#include <sys/uio.h>
++#include <time.h>
++#include <unistd.h>
++
++static int same_object(int left, int right) {
++  struct stat a, b;
++  return fstat(left, &a) == 0 && fstat(right, &b) == 0 &&
++      a.st_dev == b.st_dev && a.st_ino == b.st_ino &&
++      (a.st_mode & S_IFMT) == S_IFIFO && (b.st_mode & S_IFMT) == S_IFIFO;
++}
++
++static int read_fails(int fd) {
++  unsigned char byte = 0xa5;
++  errno = 0;
++  return read(fd, &byte, 1) == -1 && errno == EBADF && byte == 0xa5;
++}
++
++static int readv_fails(int fd) {
++  unsigned char byte = 0xa5;
++  struct iovec vector = {.iov_base = &byte, .iov_len = 1};
++  errno = 0;
++  return readv(fd, &vector, 1) == -1 && errno == EBADF && byte == 0xa5;
++}
++
++static int cloexec_is(int fd, int expected) {
++  int flags = fcntl(fd, F_GETFD);
++  return flags >= 0 && !!(flags & FD_CLOEXEC) == expected;
++}
++
++static int readiness_error(int fd) {
++  struct pollfd requested = {
++      .fd = fd, .events = POLLIN | POLLOUT, .revents = POLLERR};
++  if (poll(&requested, 1, 0) != 1 || requested.events != (POLLIN | POLLOUT) ||
++      requested.revents != POLLOUT) return 1;
++  requested.revents = POLLERR;
++  struct timespec zero_timespec = {.tv_sec = 0, .tv_nsec = 0};
++  if (ppoll(&requested, 1, &zero_timespec, NULL) != 1 ||
++      requested.events != (POLLIN | POLLOUT) || requested.revents != POLLOUT)
++    return 2;
++
++  fd_set reads, writes;
++  FD_ZERO(&reads);
++  FD_ZERO(&writes);
++  FD_SET(fd, &reads);
++  FD_SET(fd, &writes);
++  struct timeval timeout = {.tv_sec = 0, .tv_usec = 0};
++  int selected = syscall(SYS_select, fd + 1, &reads, &writes, NULL, &timeout);
++  if (selected != 1) return 3;
++  if (FD_ISSET(fd, &reads)) return 4;
++  if (!FD_ISSET(fd, &writes)) return 5;
++  if (timeout.tv_sec != 0 || timeout.tv_usec != 0) return 6;
++  return 0;
++}
++
++static int epoll_capture_boundary(int fd, int kvm) {
++  int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
++  if (epoll_fd < 0) return 0;
++  struct epoll_event requested = {
++      .events = EPOLLIN | EPOLLOUT, .data.u64 = 0x13579bdf2468ace0ULL};
++  struct epoll_event observed = {.events = 0, .data.u64 = 0};
++  int ok;
++  if (kvm) {
++    errno = 0;
++    ok = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &requested) == -1 &&
++        errno == ENOSYS && epoll_wait(epoll_fd, &observed, 1, 0) == 0;
++  } else {
++    ok = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &requested) == 0 &&
++        epoll_wait(epoll_fd, &observed, 1, 0) == 1 &&
++        observed.events == EPOLLOUT && observed.data.u64 == requested.data.u64;
++  }
++  return close(epoll_fd) == 0 && ok;
++}
++
++static int check_stream(int source, int base, const char *first,
++                        const char *second, int kvm, int *survivor) {
++  if ((fcntl(source, F_GETFL) & O_ACCMODE) != O_WRONLY) return base;
++  int readiness = readiness_error(source);
++  if (readiness) return base + 24 + readiness;
++  if (!epoll_capture_boundary(source, kvm)) return base + 30;
++  if (kvm) {
++    errno = 0;
++    if (fcntl(source, F_GETPIPE_SZ) != -1 || errno != ENOSYS)
++      return base + 31;
++    errno = 0;
++    if (fcntl(source, F_SETPIPE_SZ, 4096) != -1 || errno != ENOSYS)
++      return base + 32;
++  } else if (fcntl(source, F_GETPIPE_SZ) <= 0) {
++    return base + 33;
++  }
++  int duplicate = dup(source);
++  int dup2_target = base + 100;
++  int dup3_target = base + 101;
++  int fcntl_duplicate = fcntl(source, F_DUPFD, base + 110);
++  int fcntl_cloexec = fcntl(source, F_DUPFD_CLOEXEC, base + 120);
++  if (duplicate < 0 || dup2(source, dup2_target) != dup2_target ||
++      dup3(source, dup3_target, O_CLOEXEC) != dup3_target ||
++      fcntl_duplicate < base + 110 || fcntl_cloexec < base + 120)
++    return base + 1;
++  errno = 0;
++  if (dup3(source, source, 0) != -1 || errno != EINVAL ||
++      dup2(source, source) != source) return base + 2;
++
++  char path[64];
++  if (snprintf(path, sizeof(path), "/proc/self/fd/%d", source) >=
++      (int)sizeof(path)) return base + 3;
++  const int read_modes[] = {O_RDONLY, O_RDWR};
++  for (unsigned index = 0;
++       index < sizeof(read_modes) / sizeof(read_modes[0]); ++index) {
++    errno = 0;
++    int read_capable = open(path, read_modes[index] | O_NONBLOCK | O_CLOEXEC);
++    if (kvm) {
++      if (read_capable != -1 || errno != ENOSYS) return base + 25;
++    } else if (read_capable < 0 || close(read_capable) != 0) {
++      return base + 26;
++    }
++  }
++  errno = 0;
++  if (open(path, O_ACCMODE | O_NONBLOCK | O_CLOEXEC) != -1 || errno != EINVAL)
++    return base + 34;
++  int reopened = open(path, O_WRONLY | O_CLOEXEC);
++  int path_only = open(path, O_PATH | O_CLOEXEC);
++  if (reopened < 0 || path_only < 0) return base + 4;
++
++  int shared[] = {source, duplicate, dup2_target, dup3_target,
++                  fcntl_duplicate, fcntl_cloexec};
++  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index) {
++    if (!same_object(source, shared[index]) || !read_fails(shared[index]) ||
++        !readv_fails(shared[index])) return base + 5;
++    errno = 0;
++    if (lseek(shared[index], 0, SEEK_SET) != -1 || errno != ESPIPE)
++      return base + 6;
++  }
++  if (!same_object(source, reopened) || !same_object(source, path_only) ||
++      !read_fails(reopened) || !read_fails(path_only)) return base + 7;
++  struct iovec path_vector = {.iov_base = (void *)"x", .iov_len = 1};
++  errno = 0;
++  if (write(path_only, "x", 1) != -1 || errno != EBADF) return base + 8;
++  errno = 0;
++  if (writev(path_only, &path_vector, 1) != -1 || errno != EBADF)
++    return base + 27;
++  errno = 0;
++  if (syscall(SYS_pwritev2, path_only, &path_vector, 1, -1L, 0L, 0) != -1 ||
++      errno != EBADF) return base + 28;
++  errno = 0;
++  if (lseek(path_only, 0, SEEK_SET) != -1 || errno != EBADF)
++    return base + 29;
++
++  if (!cloexec_is(duplicate, 0) || !cloexec_is(dup2_target, 0) ||
++      !cloexec_is(dup3_target, 1) || !cloexec_is(fcntl_duplicate, 0) ||
++      !cloexec_is(fcntl_cloexec, 1) || !cloexec_is(reopened, 1) ||
++      !cloexec_is(path_only, 1)) return base + 9;
++  if ((fcntl(reopened, F_GETFL) & O_ACCMODE) != O_WRONLY ||
++      fcntl(path_only, F_GETFL) != O_PATH) return base + 10;
++
++  if (fcntl(duplicate, F_SETFL, O_NONBLOCK) != 0) return base + 11;
++  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index)
++    if (!(fcntl(shared[index], F_GETFL) & O_NONBLOCK)) return base + 12;
++  if (fcntl(reopened, F_GETFL) & O_NONBLOCK) return base + 13;
++  if (fcntl(source, F_SETFL, 0) != 0) return base + 14;
++  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index)
++    if (fcntl(shared[index], F_GETFL) & O_NONBLOCK) return base + 15;
++
++  if (write(duplicate, first, strlen(first)) != (ssize_t)strlen(first))
++    return base + 16;
++  struct iovec vectors[2] = {
++      {.iov_base = (void *)second, .iov_len = strlen(second) / 2},
++      {.iov_base = (void *)(second + strlen(second) / 2),
++       .iov_len = strlen(second) - strlen(second) / 2},
++  };
++  if (writev(reopened, vectors, 2) != (ssize_t)strlen(second))
++    return base + 17;
++
++  if (close(source) != 0) return base + 18;
++  errno = 0;
++  if (dup(source) != -1 || errno != EBADF) return base + 19;
++  errno = 0;
++  if (fcntl(source, F_DUPFD, 0) != -1 || errno != EBADF) return base + 20;
++  errno = 0;
++  if (open(path, O_WRONLY) != -1 || errno != ENOENT) return base + 21;
++  if (!same_object(duplicate, dup2_target)) return base + 22;
++  *survivor = duplicate;
++
++  if (close(dup2_target) || close(dup3_target) || close(fcntl_duplicate) ||
++      close(fcntl_cloexec) || close(reopened) || close(path_only))
++    return base + 23;
++  return 0;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 72;
++  int kvm = !strcmp(argv[1], "kvm");
++  if (!kvm && strcmp(argv[1], "native")) return 73;
++  int stdout_survivor = -1, stderr_survivor = -1;
++  int result = check_stream(STDOUT_FILENO, 10, "stdout-dup\n",
++                            "stdout-reopen\n", kvm, &stdout_survivor);
++  if (result) return result;
++  result = check_stream(STDERR_FILENO, 40, "stderr-dup\n",
++                        "stderr-reopen\n", kvm, &stderr_survivor);
++  if (result) return result;
++  if (write(stdout_survivor, "stdout-survivor\n", 16) != 16 ||
++      write(stderr_survivor, "stderr-survivor\n", 16) != 16)
++    return 70;
++  if (close(stdout_survivor) || close(stderr_survivor)) return 71;
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .arg("native")
++        .current_dir(&directory.0)
++        .output()
++        .unwrap();
++    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
++    assert_eq!(
++        native.stdout,
++        b"stdout-dup\nstdout-reopen\nstdout-survivor\n"
++    );
++    assert_eq!(
++        native.stderr,
++        b"stderr-dup\nstderr-reopen\nstderr-survivor\n"
++    );
++
++    let executable = executable.to_str().unwrap();
++    let run = |with_tool: bool| {
++        let image = std::fs::read(executable).unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable, "kvm"],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        if with_tool {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        }
++    };
++
++    struct RestoreStandardDescriptors {
++        stdout: std::fs::File,
++        stderr: std::fs::File,
++    }
++    impl Drop for RestoreStandardDescriptors {
++        fn drop(&mut self) {
++            use std::os::fd::AsRawFd;
++            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
++            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
++        }
++    }
++
++    let results = {
++        use std::os::fd::AsRawFd;
++        use std::os::fd::FromRawFd;
++
++        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
++        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(saved_stdout >= 3 && saved_stderr >= 3);
++        let restore = RestoreStandardDescriptors {
++            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
++            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
++        };
++        let ambient_stdout_path = directory.0.join("carrier-ambient-stdout");
++        let ambient_stderr_path = directory.0.join("carrier-ambient-stderr");
++        std::fs::write(&ambient_stdout_path, b"host-stdout").unwrap();
++        std::fs::write(&ambient_stderr_path, b"host-stderr").unwrap();
++        let ambient_stdout = std::fs::File::open(&ambient_stdout_path).unwrap();
++        let ambient_stderr = std::fs::File::open(&ambient_stderr_path).unwrap();
++        for file in [&ambient_stdout, &ambient_stderr] {
++            assert_eq!(
++                unsafe { libc::lseek(file.as_raw_fd(), 1, libc::SEEK_SET) },
++                1
++            );
++            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
++            assert!(flags >= 0);
++            assert_eq!(
++                unsafe {
++                    libc::fcntl(
++                        file.as_raw_fd(),
++                        libc::F_SETFL,
++                        flags | libc::O_APPEND | libc::O_NONBLOCK,
++                    )
++                },
++                0
++            );
++        }
++        let expected_flags = [
++            unsafe { libc::fcntl(ambient_stdout.as_raw_fd(), libc::F_GETFL) },
++            unsafe { libc::fcntl(ambient_stderr.as_raw_fd(), libc::F_GETFL) },
++        ];
++        assert_eq!(unsafe { libc::dup2(ambient_stdout.as_raw_fd(), 1) }, 1);
++        assert_eq!(unsafe { libc::dup2(ambient_stderr.as_raw_fd(), 2) }, 2);
++
++        let direct = run(false);
++        let direct_repeat = run(false);
++        let tool = run(true);
++        let tool_repeat = run(true);
++
++        for (index, (fd, file, path, expected)) in [
++            (
++                1,
++                &ambient_stdout,
++                &ambient_stdout_path,
++                b"host-stdout".as_slice(),
++            ),
++            (
++                2,
++                &ambient_stderr,
++                &ambient_stderr_path,
++                b"host-stderr".as_slice(),
++            ),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            assert_eq!(unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) }, 1);
++            assert_eq!(
++                unsafe { libc::fcntl(fd, libc::F_GETFL) },
++                expected_flags[index]
++            );
++            assert_eq!(std::fs::read(path).unwrap(), expected);
++            assert_eq!(
++                unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) },
++                1
++            );
++        }
++        drop(restore);
++        (direct, direct_repeat, tool, tool_repeat)
++    };
++
++    for (label, result) in [
++        ("direct", &results.0),
++        ("direct-repeat", &results.1),
++        ("tool", &results.2),
++        ("tool-repeat", &results.3),
++    ] {
++        assert_eq!(
++            result.0,
++            0,
++            "{label}: stdout={} stderr={}",
++            String::from_utf8_lossy(&result.1),
++            String::from_utf8_lossy(&result.2)
++        );
++        assert_eq!(result.1, native.stdout, "{label}");
++        assert_eq!(result.2, native.stderr, "{label}");
++    }
++    assert_eq!(results.1, results.0, "direct KVM result changed");
++    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
++    assert_eq!(results.3, results.2, "Tool KVM result changed");
++}
++
+ // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
+ // stdin, are intentionally compared only among fresh KVM runs. Native Linux is
+ // the relationship oracle, but its allocator is host-global and therefore

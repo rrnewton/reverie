@@ -1,0 +1,34 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.28s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+test captured_file_operations_ignore_reused_supervisor_files_on_kvm ... 
+thread 'captured_file_operations_ignore_reused_supervisor_files_on_kvm' (1364736) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_file_operations_ignore_reused_supervisor_files_on_kvm: status=Some(101) stdout=
+running 1 test
+test captured_file_operations_ignore_reused_supervisor_files_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_file_operations_ignore_reused_supervisor_files_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 347 filtered out; finished in 0.24s
+
+ stderr=
+thread 'captured_file_operations_ignore_reused_supervisor_files_on_kvm' (1364749) panicked at reverie-kvm/tests/static_elf.rs:15563:13:
+captured file-operation setup/run panicked: failed printing to stderr: Operation not permitted (os error 1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    captured_file_operations_ignore_reused_supervisor_files_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 347 filtered out; finished in 0.25s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

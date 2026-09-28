@@ -1,0 +1,59 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error[E0369]: binary operation `==` cannot be applied to type `Result<usize, std::io::Error>`
+     --> reverie-kvm/tests/static_elf.rs:16411:9
+      |
+16411 |         assert_eq!(stdout_peer.send(b"first-seven"), Ok(11));
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         Result<usize, std::io::Error>
+      |         Result<usize, std::io::Error>
+      |
+note: `std::io::Error` does not implement `PartialEq`
+     --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/error.rs:86:0
+      |
+      = note: `std::io::Error` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `Result<usize, std::io::Error>`
+     --> reverie-kvm/tests/static_elf.rs:16412:9
+      |
+16412 |         assert_eq!(stdout_peer.send(b"second-eleven"), Ok(13));
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         Result<usize, std::io::Error>
+      |         Result<usize, std::io::Error>
+      |
+note: `std::io::Error` does not implement `PartialEq`
+     --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/error.rs:86:0
+      |
+      = note: `std::io::Error` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `Result<usize, std::io::Error>`
+     --> reverie-kvm/tests/static_elf.rs:16444:9
+      |
+16444 |         assert_eq!(stdout_socket.recv(&mut datagram), Ok(11));
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         Result<usize, std::io::Error>
+      |         Result<usize, std::io::Error>
+      |
+note: `std::io::Error` does not implement `PartialEq`
+     --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/error.rs:86:0
+      |
+      = note: `std::io::Error` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `Result<usize, std::io::Error>`
+     --> reverie-kvm/tests/static_elf.rs:16446:9
+      |
+16446 |         assert_eq!(stdout_socket.recv(&mut datagram), Ok(13));
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         Result<usize, std::io::Error>
+      |         Result<usize, std::io::Error>
+      |
+note: `std::io::Error` does not implement `PartialEq`
+     --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/error.rs:86:0
+      |
+      = note: `std::io::Error` is defined in another crate
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `reverie-kvm` (test "static_elf") due to 4 previous errors

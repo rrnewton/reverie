@@ -1,0 +1,1228 @@
+diff --git a/reverie-kvm/src/capture_identity_tests.rs b/reverie-kvm/src/capture_identity_tests.rs
+index a2a246c4cdeb335f2014e1b9cb9401b34af0e173..503619da2e7fa04e152cad94dd8754f94e0db7dc 100644
+--- a/reverie-kvm/src/capture_identity_tests.rs
++++ b/reverie-kvm/src/capture_identity_tests.rs
+@@ -1254,7 +1254,14 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
+             0
+         );
+         let metadata = capture_native_stat(raw);
+-        snapshots.push((metadata.st_dev, metadata.st_ino, flags | libc::O_APPEND | libc::O_NONBLOCK));
++        snapshots.push((
++            metadata.st_dev,
++            metadata.st_ino,
++            flags | libc::O_APPEND | libc::O_NONBLOCK,
++            metadata.st_size,
++            metadata.st_blocks,
++            unsafe { libc::fcntl(raw, libc::F_GETFD) },
++        ));
+         sentinels.push(unsafe { std::fs::File::from_raw_fd(raw) });
+     }
+ 
+@@ -1285,6 +1292,80 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
+             &memory,
+         ) as i32;
+         assert!(reopened >= 3);
++        let high_source = (1_u64 << 32) | source as u64;
++        for (number, args, expected) in [
++            (
++                libc::SYS_ftruncate,
++                [high_source, 0, 0, 0, 0, 0],
++                negative_errno(libc::EINVAL),
++            ),
++            (
++                libc::SYS_fallocate,
++                [high_source, 0, 0, 4096, 0, 0],
++                negative_errno(libc::ESPIPE),
++            ),
++            (
++                libc::SYS_fsync,
++                [high_source, 0, 0, 0, 0, 0],
++                negative_errno(libc::EINVAL),
++            ),
++            (
++                libc::SYS_fdatasync,
++                [high_source, 0, 0, 0, 0, 0],
++                negative_errno(libc::EINVAL),
++            ),
++            (
++                libc::SYS_readahead,
++                [high_source, 0, 1, 0, 0, 0],
++                negative_errno(libc::EBADF),
++            ),
++            (
++                libc::SYS_sync_file_range,
++                [
++                    high_source,
++                    0,
++                    4096,
++                    libc::SYNC_FILE_RANGE_WRITE as u64,
++                    0,
++                    0,
++                ],
++                negative_errno(libc::ESPIPE),
++            ),
++        ] {
++            assert_eq!(
++                reused.execute(&SyscallRequest::new(number as u64, args), &memory),
++                expected,
++                "captured fd {source} syscall {number} reached its physical memfd"
++            );
++        }
++        memory.write(0x3400, &0_i32.to_ne_bytes()).unwrap();
++        assert_eq!(
++            reused.execute(
++                &SyscallRequest::new(
++                    libc::SYS_ioctl as u64,
++                    [
++                        high_source,
++                        (1_u64 << 32) | libc::FIONBIO,
++                        0x3400,
++                        0,
++                        0,
++                        0,
++                    ],
++                ),
++                &memory,
++            ),
++            0
++        );
++        assert_eq!(
++            reused.execute(
++                &SyscallRequest::new(
++                    libc::SYS_ioctl as u64,
++                    [high_source, (1_u64 << 32) | libc::FIONCLEX, 0, 0, 0, 0],
++                ),
++                &memory,
++            ),
++            0
++        );
+         for fd in [duplicate, reopened] {
+             let host = reused.state.files[&fd].as_raw_fd();
+             assert!(host >= 3);
+@@ -1321,7 +1402,23 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
+         assert_eq!(unsafe { libc::lseek(source, 0, libc::SEEK_CUR) }, 1);
+         assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFL) }, snapshots[index].2);
+         let metadata = capture_native_stat(source);
+-        assert_eq!((metadata.st_dev, metadata.st_ino), (snapshots[index].0, snapshots[index].1));
++        assert_eq!(
++            (
++                metadata.st_dev,
++                metadata.st_ino,
++                metadata.st_size,
++                metadata.st_blocks,
++                unsafe { libc::fcntl(source, libc::F_GETFD) },
++            ),
++            (
++                snapshots[index].0,
++                snapshots[index].1,
++                snapshots[index].3,
++                snapshots[index].4,
++                snapshots[index].5,
++            ),
++            "captured operations changed physical supervisor fd {source}"
++        );
+         reused_aliases.push((duplicate, source));
+     }
+     memory.write(0x3000, b"yz").unwrap();
+@@ -1350,6 +1447,47 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
+     eprintln!("{COMPLETE}");
+ }
+ 
++#[test]
++fn captured_fionbio_missing_status_is_a_typed_backend_failure() {
++    let root = TestDir::new();
++    let mut executor = ElfExecutor::new(test_state(&root.0), true);
++    let mut memory = GuestMemory::new(0, 0x1000).unwrap();
++    memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
++    let capture = executor.output.as_ref().unwrap().metadata();
++    let carrier = capture.descriptor_carrier(OutputAlias::Stdout);
++    let original_flags = unsafe { libc::fcntl(carrier, libc::F_GETFL) };
++    assert!(original_flags >= 0);
++
++    executor.state.capture_status_flags.remove(&libc::STDOUT_FILENO);
++    executor
++        .file_table
++        .lock()
++        .unwrap()
++        .capture_status_flags
++        .remove(&libc::STDOUT_FILENO);
++    let error = executor
++        .execute_checked(
++            &SyscallRequest::new(
++                libc::SYS_ioctl as u64,
++                [
++                    libc::STDOUT_FILENO as u64,
++                    libc::FIONBIO,
++                    0x100,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            &memory,
++        )
++        .expect_err("missing captured status must terminate the backend call");
++    assert!(matches!(
++        error,
++        crate::Error::CapturedOutputStatusMissing(libc::STDOUT_FILENO)
++    ));
++    assert_eq!(unsafe { libc::fcntl(carrier, libc::F_GETFL) }, original_flags);
++}
++
+ #[test]
+ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
+     let root = TestDir::new();
+@@ -1477,6 +1615,82 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
+     assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
+     assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
+     let mut child = parent.fork_child(3, false, false).unwrap();
++    assert!(Arc::ptr_eq(
++        &child.state.capture_status_flags[&alias],
++        &stdout_status
++    ));
++
++    // Forked processes retain one open file description but do not share a
++    // file-table lock. Concurrent F_SETFL and FIONBIO therefore have to update
++    // the virtual status atomically. Every valid serialization keeps O_APPEND;
++    // a split load/store can lose it when FIONBIO publishes last.
++    let start = Arc::new(std::sync::Barrier::new(3));
++    let finish = Arc::new(std::sync::Barrier::new(3));
++    let iterations = 2_000;
++    std::thread::scope(|scope| {
++        let parent_start = start.clone();
++        let parent_finish = finish.clone();
++        let parent_executor = &mut parent;
++        let parent_worker = scope.spawn(move || {
++            let parent_memory = GuestMemory::new(0, 0x1000).unwrap();
++            for _ in 0..iterations {
++                parent_start.wait();
++                assert_eq!(
++                    parent_executor.execute(
++                        &SyscallRequest::new(
++                            libc::SYS_fcntl as u64,
++                            [
++                                alias as u64,
++                                libc::F_SETFL as u64,
++                                libc::O_APPEND as u64,
++                                0,
++                                0,
++                                0,
++                            ],
++                        ),
++                        &parent_memory,
++                    ),
++                    0
++                );
++                parent_finish.wait();
++            }
++        });
++        let child_start = start.clone();
++        let child_finish = finish.clone();
++        let child_executor = &mut child;
++        let child_worker = scope.spawn(move || {
++            let mut child_memory = GuestMemory::new(0, 0x1000).unwrap();
++            child_memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
++            for _ in 0..iterations {
++                child_start.wait();
++                assert_eq!(
++                    child_executor.execute(
++                        &SyscallRequest::new(
++                            libc::SYS_ioctl as u64,
++                            [alias as u64, libc::FIONBIO, 0x100, 0, 0, 0],
++                        ),
++                        &child_memory,
++                    ),
++                    0
++                );
++                child_finish.wait();
++            }
++        });
++        for _ in 0..iterations {
++            stdout_status.store(libc::O_WRONLY, Ordering::SeqCst);
++            start.wait();
++            finish.wait();
++            assert_ne!(
++                stdout_status.load(Ordering::SeqCst) & libc::O_APPEND,
++                0,
++                "concurrent FIONBIO lost the serialized F_SETFL update"
++            );
++        }
++        parent_worker.join().unwrap();
++        child_worker.join().unwrap();
++    });
++    stdout_status.store(libc::O_WRONLY, Ordering::SeqCst);
++
+     let replacement = test_exec_replacement(&root.0, &child.state);
+     child.replace_after_exec(replacement);
+     assert!(Arc::ptr_eq(
+diff --git a/reverie-kvm/src/error.rs b/reverie-kvm/src/error.rs
+index 6b5a752ee699e3d9e4f80848b80bbfd62f88603e..82c5f04ab11237ed03611fca074cda7598c53941 100644
+--- a/reverie-kvm/src/error.rs
++++ b/reverie-kvm/src/error.rs
+@@ -334,6 +334,10 @@ pub enum Error {
+     #[error("no static ELF is installed")]
+     StaticElfNotInstalled,
+ 
++    /// A captured output alias lost the virtual status shared by its open file description.
++    #[error("captured output descriptor {0} has no virtual status state")]
++    CapturedOutputStatusMissing(i32),
++
+     /// KVM accepted only part of the long-mode MSR table.
+     #[error("KVM installed {actual} of {expected} long-mode MSRs")]
+     IncompleteMsrSetup {
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 5a0082741ad5004defc1eae244e66dd23542ca6e..95b95632ec70ecaa7d193f6025dc1dc3f443d18f 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -549,17 +549,17 @@ fn execute_basic_syscall_inner(
+     } else if number == libc::SYS_lseek as u64 {
+         lseek(state, args, capture_output)
+     } else if number == libc::SYS_ftruncate as u64 {
+-        ftruncate(state, args)
++        ftruncate(state, args, capture_metadata)
+     } else if number == libc::SYS_truncate as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         truncate(memory, state, args)
+     } else if number == libc::SYS_fallocate as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        fallocate(state, args)
++        fallocate(state, args, capture_metadata)
+     } else if number == libc::SYS_fsync as u64 {
+-        sync_file(state, args[0], false)
++        sync_file(state, args[0], false, capture_metadata)
+     } else if number == libc::SYS_fdatasync as u64 {
+-        sync_file(state, args[0], true)
++        sync_file(state, args[0], true, capture_metadata)
+     } else if number == libc::SYS_syncfs as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
+@@ -567,11 +567,11 @@ fn execute_basic_syscall_inner(
+     } else if number == libc::SYS_readahead as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
+-        readahead(state, args)
++        readahead(state, args, capture_metadata)
+     } else if number == libc::SYS_sync_file_range as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
+-        sync_file_range(state, args)
++        sync_file_range(state, args, capture_metadata)
+     } else if number == libc::SYS_pipe as u64 {
+         pipe2(memory, state, args[0], 0)
+     } else if number == libc::SYS_pipe2 as u64 {
+@@ -673,7 +673,7 @@ fn execute_basic_syscall_inner(
+         recvmmsg(memory, state, args)
+     } else if number == libc::SYS_ioctl as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        ioctl(memory, state, args, capture_output)
++        ioctl(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_dup as u64 {
+         duplicate_fd(state, args[0], None, 0, false, capture_metadata)
+     } else if number == libc::SYS_dup2 as u64 {
+@@ -5511,6 +5511,17 @@ impl ElfExecutor {
+         {
+             return Ok(io_error(error));
+         }
++        if request.number() == libc::SYS_ioctl as u64
++            && request.args()[1] as libc::c_uint == libc::FIONBIO as libc::c_uint
++            && self.output.is_some()
++        {
++            let guest_fd = request.args()[0] as libc::c_int;
++            if output_alias(&self.state, guest_fd).is_some()
++                && !self.state.capture_status_flags.contains_key(&guest_fd)
++            {
++                return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
++            }
++        }
+         // install cloned every fdinfo description Arc while holding the
+         // current table. Scalar dispatch below therefore retains its entry
+         // description even if another thread closes/reuses that guest fd after
+@@ -7198,14 +7209,14 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64
+     }
+ }
+ 
+-fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+     let length = args[1] as libc::off_t;
+     if length < 0 {
+         return negative_errno(libc::EINVAL);
+     }
+     // Linux syscall argument decoding consumes only the low descriptor word.
+     let fd = args[0] as libc::c_int;
+-    let Some(host_fd) = host_fd(state, fd) else {
++    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let status = match fd_status_flags(host_fd) {
+@@ -7286,13 +7297,18 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
+-fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
++fn fallocate(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
++    let fd = args[0] as libc::c_int;
++    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+-    let Some(host_fd) = host_fd(state, fd) else {
+-        return negative_errno(libc::EBADF);
++    let status = match fd_status_flags(host_fd) {
++        Ok(status) => status,
++        Err(error) => return error,
+     };
++    if status & libc::O_PATH != 0 {
++        return negative_errno(libc::EBADF);
++    }
+     let mode = args[1] as libc::c_int;
+     let offset = args[2] as libc::off_t;
+     let length = args[3] as libc::off_t;
+@@ -7314,11 +7330,14 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+     }
+ }
+ 
+-fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
+-    let Ok(fd) = i32::try_from(raw_fd) else {
+-        return negative_errno(libc::EBADF);
+-    };
+-    let Some(host_fd) = host_fd(state, fd) else {
++fn sync_file(
++    state: &LoadedStaticElf,
++    raw_fd: u64,
++    data_only: bool,
++    capture: Option<CaptureMetadata>,
++) -> i64 {
++    let fd = raw_fd as libc::c_int;
++    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     // SAFETY: host_fd names a live descriptor. The host syscall validates its type.
+@@ -7471,20 +7490,15 @@ fn sync_filesystem_with_operations(
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
+-fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
+-    let Some(host_fd) = host_fd(state, fd) else {
++fn readahead(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
++    let fd = args[0] as libc::c_int;
++    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+     let offset = args[1] as libc::off64_t;
+     let Ok(count) = usize::try_from(args[2]) else {
+         return negative_errno(libc::EINVAL);
+     };
+-    if offset < 0 {
+-        return negative_errno(libc::EINVAL);
+-    }
+     // SAFETY: host_fd names the guest's live translated descriptor; the call
+     // has no guest pointers, and the host kernel validates the descriptor type.
+     let result = unsafe { libc::syscall(libc::SYS_readahead, host_fd, offset, count) };
+@@ -7497,13 +7511,22 @@ fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
+-fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
++fn sync_file_range(
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture: Option<CaptureMetadata>,
++) -> i64 {
++    let fd = args[0] as libc::c_int;
++    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
+-    let Some(host_fd) = host_fd(state, fd) else {
+-        return negative_errno(libc::EBADF);
++    let status = match fd_status_flags(host_fd) {
++        Ok(status) => status,
++        Err(error) => return error,
+     };
++    if status & libc::O_PATH != 0 {
++        return negative_errno(libc::EBADF);
++    }
+     let offset = args[1] as libc::off64_t;
+     let length = args[2] as libc::off64_t;
+     let flags = args[3] as libc::c_uint;
+@@ -13082,9 +13105,9 @@ fn pipe_fionread(
+     guest_fd: libc::c_int,
+     host_fd: libc::c_int,
+     address: u64,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+-    if capture_output && output_alias(state, guest_fd).is_some() {
++    if capture.is_some() && output_alias(state, guest_fd).is_some() {
+         return negative_errno(libc::ENOTTY);
+     }
+     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+@@ -13097,24 +13120,15 @@ fn pipe_fionread(
+     if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
+         return negative_errno(libc::ENOTTY);
+     }
+-    if capture_output {
++    if let Some(capture) = capture {
+         // Received rights lose OutputAlias metadata. Compare actual objects so
+-        // a transferred capture backing pipe cannot expose supervisor bytes.
+-        // Guest close/dup/exec never close or replace host stdio; those retained
+-        // host references keep the identity live even after queued sender close.
+-        // As elsewhere in inherited-stdio handling, concurrent external host
+-        // replacement of these descriptors is outside the supported lifetime.
+-        for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+-            let mut backing = std::mem::MaybeUninit::<libc::stat>::zeroed();
+-            // SAFETY: backing has writable storage; fstat checks the descriptor.
+-            if unsafe { libc::fstat(standard, backing.as_mut_ptr()) } != 0 {
+-                return negative_errno(libc::ENOTTY);
+-            }
+-            // SAFETY: successful fstat initialized the complete structure.
+-            let backing = unsafe { backing.assume_init() };
+-            if (stat.st_dev, stat.st_ino) == (backing.st_dev, backing.st_ino) {
+-                return negative_errno(libc::ENOTTY);
+-            }
++        // a transferred private capture carrier cannot expose its queue depth.
++        // The capture owner keeps both carrier objects live after guest aliases
++        // close, and no inherited supervisor descriptor participates here.
++        match matches_capture_carrier(&stat, capture) {
++            Ok(true) => return negative_errno(libc::ENOTTY),
++            Ok(false) => {}
++            Err(error) => return error,
+         }
+     }
+     let mut count: libc::c_int = 0;
+@@ -13129,23 +13143,58 @@ fn pipe_fionread(
+     0
+ }
+ 
++fn matches_capture_carrier(candidate: &libc::stat, capture: CaptureMetadata) -> Result<bool, i64> {
++    for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
++        let mut backing = std::mem::MaybeUninit::<libc::stat>::zeroed();
++        // SAFETY: backing has writable storage and capture metadata keeps each
++        // private pipe carrier live for this syscall.
++        if unsafe { libc::fstat(capture.descriptor_carrier(alias), backing.as_mut_ptr()) } != 0 {
++            return Err(negative_errno(libc::EIO));
++        }
++        // SAFETY: successful fstat initialized the complete structure.
++        let backing = unsafe { backing.assume_init() };
++        if (candidate.st_dev, candidate.st_ino) == (backing.st_dev, backing.st_ino) {
++            return Ok(true);
++        }
++    }
++    Ok(false)
++}
++
++fn host_is_capture_carrier(host_fd: RawFd, capture: CaptureMetadata) -> Result<bool, i64> {
++    let mut candidate = std::mem::MaybeUninit::<libc::stat>::zeroed();
++    // SAFETY: candidate has writable storage and host_fd is live.
++    if unsafe { libc::fstat(host_fd, candidate.as_mut_ptr()) } != 0 {
++        return Err(io_error(std::io::Error::last_os_error()));
++    }
++    // SAFETY: successful fstat initialized the complete structure.
++    let candidate = unsafe { candidate.assume_init() };
++    matches_capture_carrier(&candidate, capture)
++}
++
+ // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+ fn ioctl(
+     memory: &mut GuestMemory,
+     state: &mut LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let guest_fd = args[0] as libc::c_int;
+-    let Some(host_fd) = host_fd(state, guest_fd) else {
++    let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
+         return negative_errno(libc::EBADF);
+     };
++    let status = match fd_status_flags(host_fd) {
++        Ok(status) => status,
++        Err(error) => return error,
++    };
++    if status & libc::O_PATH != 0 {
++        return negative_errno(libc::EBADF);
++    }
+     // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
+-    // Keep this limited support independent of the other ioctl dispatch arms.
+-    if args[1] as u32 == libc::FIONREAD as u32 {
+-        return pipe_fionread(memory, state, guest_fd, host_fd, args[2], capture_output);
++    let request = args[1] as libc::c_uint as libc::c_ulong;
++    if request == libc::FIONREAD {
++        return pipe_fionread(memory, state, guest_fd, host_fd, args[2], capture);
+     }
+-    match args[1] as libc::c_ulong {
++    match request {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
+         libc::FIOCLEX => {
+@@ -13158,8 +13207,48 @@ fn ioctl(
+             state.cloexec_fds.remove(&guest_fd);
+             0
+         }
++        libc::FIONBIO => {
++            let enabled = match read_guest_struct::<libc::c_int>(memory, args[2]) {
++                Ok(enabled) => enabled != 0,
++                Err(error) => return error,
++            };
++            if capture.is_some() && output_alias(state, guest_fd).is_some() {
++                // Production dispatch rejects missing status as a typed backend
++                // failure before reaching this raw syscall helper.
++                let status = state
++                    .capture_status_flags
++                    .get(&guest_fd)
++                    .expect("captured FIONBIO status validated before dispatch");
++                if enabled {
++                    status.fetch_or(libc::O_NONBLOCK, Ordering::SeqCst);
++                } else {
++                    status.fetch_and(!libc::O_NONBLOCK, Ordering::SeqCst);
++                }
++                0
++            } else {
++                if let Some(capture) = capture {
++                    match host_is_capture_carrier(host_fd, capture) {
++                        Ok(true) => return negative_errno(libc::ENOTTY),
++                        Ok(false) => {}
++                        Err(error) => return error,
++                    }
++                }
++                if !enabled && signalfd_mask(state, guest_fd).is_some() {
++                    // Blocking virtual signalfd waits require scheduler
++                    // ownership. Match F_SETFL and refuse before changing the
++                    // private eventfd open-file description.
++                    return negative_errno(libc::ENOSYS);
++                }
++                let enabled = libc::c_int::from(enabled);
++                // SAFETY: enabled is local initialized storage and host_fd is live.
++                zero_or_errno(unsafe { libc::ioctl(host_fd, request, &enabled) })
++            }
++        }
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
++        SIOCETHTOOL if capture.is_some() && output_alias(state, guest_fd).is_some() => {
++            negative_errno(libc::ENOTTY)
++        }
+         SIOCETHTOOL => negative_errno(libc::ENODEV),
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
+@@ -16371,7 +16460,9 @@ fn fcntl(
+                 if current & libc::O_PATH != 0 {
+                     return negative_errno(libc::EBADF);
+                 }
+-                status.store((current & !settable) | flags, Ordering::SeqCst);
++                let _ = status.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
++                    Some((current & !settable) | flags)
++                });
+                 0
+             } else {
+                 // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+@@ -43284,6 +43375,48 @@ mod tests {
+                 0,
+             );
+         }
++        const FIONBIO_VALUE: u64 = 0x180;
++        memory.write(FIONBIO_VALUE, &0_i32.to_ne_bytes()).unwrap();
++        for fd in aliases {
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_ioctl,
++                    [
++                        (1_u64 << 32) | fd as u64,
++                        (1_u64 << 32) | libc::FIONBIO,
++                        FIONBIO_VALUE,
++                        0,
++                        0,
++                        0,
++                    ],
++                ),
++                negative_errno(libc::ENOSYS),
++            );
++            for observed in aliases {
++                assert_ne!(
++                    syscall_result(
++                        &mut memory,
++                        &mut state,
++                        libc::SYS_fcntl,
++                        [observed as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
++                    ) & i64::from(libc::O_NONBLOCK),
++                    0,
++                    "FIONBIO refusal through alias {fd} changed shared status flags",
++                );
++            }
++        }
++        memory.write(FIONBIO_VALUE, &1_i32.to_ne_bytes()).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_ioctl,
++                [alias as u64, libc::FIONBIO, FIONBIO_VALUE, 0, 0, 0,],
++            ),
++            0,
++        );
+         for fd in aliases {
+             assert_eq!(
+                 syscall_result(
+diff --git a/reverie-kvm/src/pipe_fionread_tests.rs b/reverie-kvm/src/pipe_fionread_tests.rs
+index b543b18b81860926f5279f92488eb07896b2d5e8..b1956204172b9063370cde4fc2778d42b7b50b93 100644
+--- a/reverie-kvm/src/pipe_fionread_tests.rs
++++ b/reverie-kvm/src/pipe_fionread_tests.rs
+@@ -103,9 +103,9 @@ fn pipe_fionread_complete_memory_and_request_width() {
+ }
+ 
+ #[test]
+-fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
++fn pipe_fionread_refuses_capture_carriers_without_physical_stdio() {
+     const TEST: &str =
+-        "executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused";
++        "executor::tests::pipe_fionread_refuses_capture_carriers_without_physical_stdio";
+     let Ok(mode) = std::env::var("REVERIE_PIPE_CAPTURE_CHILD") else {
+         for mode in ["objects", "missing"] {
+             let output = std::process::Command::new("timeout")
+@@ -153,43 +153,79 @@ fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
+     }
+     let root = TestDir::new();
+     let mut state = test_state(&root.0);
+-    let duplicate = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
++    let [reader, writer] = pipe_fionread_host_pipe();
++    state.files.insert(10, reader);
++    state.files.insert(11, writer);
++    let mut count = -1;
++    assert_eq!(unsafe { libc::ioctl(1, libc::FIONREAD, &mut count) }, 0);
++    assert_eq!(count, 11, "native backing has unrelated supervisor bytes");
++    let output = CapturedOutput::try_new().unwrap();
++    let capture = output.metadata();
++    let carrier_flags = [OutputAlias::Stdout, OutputAlias::Stderr].map(|alias| {
++        let flags = unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETFL) };
++        assert!(flags >= 0);
++        flags
++    });
++    let duplicate = unsafe {
++        libc::fcntl(
++            capture.descriptor_carrier(OutputAlias::Stdout),
++            libc::F_DUPFD_CLOEXEC,
++            3,
++        )
++    };
+     assert!(duplicate >= 0);
+     state
+         .files
+         .insert(9, unsafe { std::fs::File::from_raw_fd(duplicate) });
+     assert!(
+         output_alias(&state, 9).is_none(),
+-        "models received metadata"
++        "models received metadata for a private capture carrier"
+     );
+-    let [reader, writer] = pipe_fionread_host_pipe();
+-    state.files.insert(10, reader);
+-    state.files.insert(11, writer);
+-    let mut count = -1;
+-    assert_eq!(unsafe { libc::ioctl(1, libc::FIONREAD, &mut count) }, 0);
+-    assert_eq!(count, 11, "native backing has unrelated supervisor bytes");
+-    let mut executor = ElfExecutor::new(state, true);
+-    let memory = GuestMemory::new(0, 16384).unwrap();
++    let mut executor = ElfExecutor::with_output(state, Some(output));
++    let mut memory = GuestMemory::new(0, 16384).unwrap();
+     let sentinel = vec![0xa5; 16384];
++    memory.write(64, &1_i32.to_ne_bytes()).unwrap();
++    assert_eq!(
++        executor.execute(
++            &SyscallRequest::new(
++                libc::SYS_ioctl as u64,
++                [9, (1_u64 << 32) | libc::FIONBIO, 64, 0, 0, 0],
++            ),
++            &memory,
++        ),
++        negative_errno(libc::ENOTTY),
++        "an unlabelled capture carrier must not accept status mutation"
++    );
++    for (index, alias) in [OutputAlias::Stdout, OutputAlias::Stderr]
++        .into_iter()
++        .enumerate()
++    {
++        assert_eq!(
++            unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETFL) },
++            carrier_flags[index],
++            "FIONBIO changed private capture carrier {index}"
++        );
++    }
+     if mode == "missing" {
+         // Probe this guard without another file-table installation: installation
+         // may legitimately allocate a cloned File into the just-closed host fd.
+         memory.write_raw(0, &sentinel).unwrap();
+         assert_eq!(unsafe { libc::close(2) }, 0);
+-        assert_eq!(
++        let result =
+             pipe_fionread(
+                 &memory,
+                 &executor.state,
+                 10,
+                 executor.state.files[&10].as_raw_fd(),
+                 123,
+-                true
+-            ),
+-            negative_errno(libc::ENOTTY)
+-        );
++                executor.output.as_ref().map(CapturedOutput::metadata),
++            );
++        assert_eq!(result, 0, "unrelated pipe survives closed physical stderr");
+         let mut actual = vec![0; sentinel.len()];
++        let mut expected = sentinel;
++        expected[123..127].copy_from_slice(&0_i32.to_ne_bytes());
+         memory.read_raw(0, &mut actual).unwrap();
+-        assert_eq!(actual, sentinel);
++        assert_eq!(actual, expected);
+         drop(restore);
+         return;
+     }
+@@ -197,7 +233,8 @@ fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
+         memory.write_raw(0, &sentinel).unwrap();
+         assert_eq!(
+             pipe_fionread_call(&mut executor, &memory, [fd, libc::FIONREAD, 123, 0, 0, 0]),
+-            negative_errno(libc::ENOTTY)
++            negative_errno(libc::ENOTTY),
++            "capture identity was not refused for guest fd {fd}"
+         );
+         let mut actual = vec![0; sentinel.len()];
+         memory.read_raw(0, &mut actual).unwrap();
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index ab6cdbedb07d6c3b039b659f3c01cbc7e4c871b2..1bd0208fe286a20149dba8f91451d54e549fbd31 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -10620,6 +10620,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
+         "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
+         "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
++        "captured_file_operations_ignore_reused_supervisor_files_on_kvm",
+     ] {
+         let output = std::process::Command::new(std::env::current_exe().unwrap())
+             .args([test, "--exact", "--test-threads=1", "--nocapture"])
+@@ -15167,6 +15168,424 @@ int main(void) {
+     assert_eq!(results.3, results.2, "Tool KVM result changed");
+ }
+ 
++// Captured stdout/stderr are O_WRONLY pipes even if the embedding process has
++// reused physical fd 1/2 for mutable regular files. Exercise direct aliases,
++// duplicates, fresh proc-fd reopens, O_PATH descriptions, and high-word ABI
++// arguments. FIONREAD remains an explicitly fail-closed KVM exception because
++// the in-memory output queue does not model pipe occupancy. This is
++// output/exit/status repeat parity only, not L2-log or record/replay parity.
++#[test]
++fn captured_file_operations_ignore_reused_supervisor_files_on_kvm() {
++    const TEST: &str = "captured_file_operations_ignore_reused_supervisor_files_on_kvm";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "captured-file-operations",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define HIGH_WORD 0x5a5a5a5a00000000ULL
++#define TEST_SIOCETHTOOL 0x8946
++
++static void expect_errno(int *failure, int code, long result, int expected) {
++  int observed = errno;
++  if (*failure == 0 && (result != -1 || observed != expected)) *failure = code;
++}
++
++#define EXPECT_ERR(failure, code, expression, expected) do { \
++  errno = 0; \
++  expect_errno((failure), (code), (expression), (expected)); \
++} while (0)
++
++static void check_writable_pipe_ops(int *failure, int fd, int base) {
++  unsigned long raw_fds[] = {
++      (unsigned int)fd,
++      HIGH_WORD | (unsigned int)fd,
++  };
++  for (unsigned pass = 0; pass < 2; ++pass) {
++    unsigned long raw = raw_fds[pass];
++    int code = base + (int)pass * 16;
++    EXPECT_ERR(failure, code + 1,
++               syscall(SYS_ftruncate, raw, (off_t)0), EINVAL);
++    EXPECT_ERR(failure, code + 2,
++               syscall(SYS_ftruncate, raw, (off_t)-1), EINVAL);
++    EXPECT_ERR(failure, code + 3,
++               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)4096),
++               ESPIPE);
++    EXPECT_ERR(failure, code + 4,
++               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)0), EINVAL);
++    EXPECT_ERR(failure, code + 5,
++               syscall(SYS_fallocate, raw, 1U << 30, (off_t)0,
++                       (off_t)4096), EOPNOTSUPP);
++    EXPECT_ERR(failure, code + 6, syscall(SYS_fsync, raw), EINVAL);
++    EXPECT_ERR(failure, code + 7, syscall(SYS_fdatasync, raw), EINVAL);
++    EXPECT_ERR(failure, code + 8,
++               syscall(SYS_readahead, raw, (off64_t)0, (size_t)1), EBADF);
++    EXPECT_ERR(failure, code + 9,
++               syscall(SYS_readahead, raw, (off64_t)-1, (size_t)1), EBADF);
++    EXPECT_ERR(failure, code + 10,
++               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)4096,
++                       SYNC_FILE_RANGE_WRITE), ESPIPE);
++    EXPECT_ERR(failure, code + 11,
++               syscall(SYS_sync_file_range, raw, (off64_t)-1, (off64_t)1,
++                       SYNC_FILE_RANGE_WRITE), EINVAL);
++    EXPECT_ERR(failure, code + 12,
++               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)1, 8),
++               EINVAL);
++  }
++}
++
++static void check_path_ops(int *failure, int fd) {
++  unsigned long raw_fds[] = {
++      (unsigned int)fd,
++      HIGH_WORD | (unsigned int)fd,
++  };
++  for (unsigned pass = 0; pass < 2; ++pass) {
++    unsigned long raw = raw_fds[pass];
++    int code = 100 + (int)pass * 16;
++    EXPECT_ERR(failure, code + 1,
++               syscall(SYS_ftruncate, raw, (off_t)0), EBADF);
++    EXPECT_ERR(failure, code + 2,
++               syscall(SYS_ftruncate, raw, (off_t)-1), EINVAL);
++    EXPECT_ERR(failure, code + 3,
++               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)4096),
++               EBADF);
++    EXPECT_ERR(failure, code + 4,
++               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)0), EBADF);
++    EXPECT_ERR(failure, code + 5,
++               syscall(SYS_fallocate, raw, 1U << 30, (off_t)0,
++                       (off_t)4096), EBADF);
++    EXPECT_ERR(failure, code + 6, syscall(SYS_fsync, raw), EBADF);
++    EXPECT_ERR(failure, code + 7, syscall(SYS_fdatasync, raw), EBADF);
++    EXPECT_ERR(failure, code + 8,
++               syscall(SYS_readahead, raw, (off64_t)0, (size_t)1), EBADF);
++    EXPECT_ERR(failure, code + 9,
++               syscall(SYS_readahead, raw, (off64_t)-1, (size_t)1), EBADF);
++    EXPECT_ERR(failure, code + 10,
++               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)4096,
++                       SYNC_FILE_RANGE_WRITE), EBADF);
++    EXPECT_ERR(failure, code + 11,
++               syscall(SYS_sync_file_range, raw, (off64_t)-1, (off64_t)1, 8),
++               EBADF);
++  }
++}
++
++static void check_ioctls(int *failure, int source, int duplicate,
++                         int reopened, int path_only, int kvm,
++                         int final_nonblock, int final_cloexec) {
++  int one = 1, zero = 0;
++  unsigned long high_duplicate = HIGH_WORD | (unsigned int)duplicate;
++  unsigned long high_source = HIGH_WORD | (unsigned int)source;
++  unsigned long high_request = HIGH_WORD | (unsigned int)FIONBIO;
++  if (syscall(SYS_ioctl, high_duplicate, high_request, &one) != 0)
++    *failure = *failure ? *failure : 160;
++  if (!(fcntl(source, F_GETFL) & O_NONBLOCK) ||
++      !(fcntl(duplicate, F_GETFL) & O_NONBLOCK) ||
++      (fcntl(reopened, F_GETFL) & O_NONBLOCK))
++    *failure = *failure ? *failure : 161;
++  if (ioctl(source, FIONBIO, &zero) != 0 ||
++      (fcntl(source, F_GETFL) & O_NONBLOCK) ||
++      (fcntl(duplicate, F_GETFL) & O_NONBLOCK))
++    *failure = *failure ? *failure : 162;
++  if (ioctl(reopened, FIONBIO, &one) != 0 ||
++      (fcntl(source, F_GETFL) & O_NONBLOCK) ||
++      !(fcntl(reopened, F_GETFL) & O_NONBLOCK))
++    *failure = *failure ? *failure : 163;
++  if (ioctl(reopened, FIONBIO, &zero) != 0)
++    *failure = *failure ? *failure : 164;
++
++  unsigned long high_fioclex = HIGH_WORD | (unsigned int)FIOCLEX;
++  unsigned long high_fionclex = HIGH_WORD | (unsigned int)FIONCLEX;
++  if (syscall(SYS_ioctl, high_source, high_fioclex, 0) != 0 ||
++      !(fcntl(source, F_GETFD) & FD_CLOEXEC))
++    *failure = *failure ? *failure : 165;
++  if (syscall(SYS_ioctl, high_source, high_fionclex, 0) != 0 ||
++      (fcntl(source, F_GETFD) & FD_CLOEXEC))
++    *failure = *failure ? *failure : 166;
++
++  if (final_nonblock) {
++    if (ioctl(source, FIONBIO, &one) != 0)
++      *failure = *failure ? *failure : 167;
++  } else if (ioctl(source, FIONBIO, &zero) != 0) {
++    *failure = *failure ? *failure : 168;
++  }
++  if (final_cloexec) {
++    if (ioctl(source, FIOCLEX) != 0)
++      *failure = *failure ? *failure : 169;
++  } else if (ioctl(source, FIONCLEX) != 0) {
++    *failure = *failure ? *failure : 170;
++  }
++
++  int available = 0x13572468;
++  errno = 0;
++  long fionread = syscall(SYS_ioctl, high_source,
++                          HIGH_WORD | (unsigned int)FIONREAD, &available);
++  if (kvm) {
++    if (fionread != -1 || errno != ENOTTY || available != 0x13572468)
++      *failure = *failure ? *failure : 171;
++  } else if (fionread != 0 || available != 0) {
++    *failure = *failure ? *failure : 172;
++  }
++
++  char buffer[128] = {0};
++  EXPECT_ERR(failure, 173, ioctl(source, TCGETS, buffer), ENOTTY);
++  EXPECT_ERR(failure, 174, ioctl(source, TIOCGWINSZ, buffer), ENOTTY);
++  EXPECT_ERR(failure, 175, ioctl(source, TIOCGPGRP, buffer), ENOTTY);
++  EXPECT_ERR(failure, 176, ioctl(source, TEST_SIOCETHTOOL, buffer), ENOTTY);
++  EXPECT_ERR(failure, 177, ioctl(source, 0xdead, buffer), ENOTTY);
++  EXPECT_ERR(failure, 178, ioctl(path_only, FIONBIO, &one), EBADF);
++  EXPECT_ERR(failure, 179, ioctl(path_only, FIONREAD, &available), EBADF);
++  EXPECT_ERR(failure, 180, ioctl(path_only, FIOCLEX), EBADF);
++}
++
++static int check_stream(int source, int base, int kvm,
++                        int final_nonblock, int final_cloexec) {
++  int failure = 0;
++  int duplicate = dup(source);
++  if (duplicate < 0) return base;
++  char path[64];
++  if (snprintf(path, sizeof(path), "/proc/self/fd/%d", source) >=
++      (int)sizeof(path)) return base + 1;
++  int reopened = open(path, O_WRONLY | O_CLOEXEC);
++  int path_only = open(path, O_PATH | O_CLOEXEC);
++  if (reopened < 0 || path_only < 0) return base + 2;
++  check_writable_pipe_ops(&failure, source, base + 3);
++  check_writable_pipe_ops(&failure, duplicate, base + 35);
++  check_writable_pipe_ops(&failure, reopened, base + 67);
++  check_path_ops(&failure, path_only);
++  check_ioctls(&failure, source, duplicate, reopened, path_only, kvm,
++               final_nonblock, final_cloexec);
++  if (close(duplicate) || close(reopened) || close(path_only))
++    return failure ? failure : base + 99;
++  return failure;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 240;
++  int kvm = !strcmp(argv[1], "kvm");
++  if (!kvm && strcmp(argv[1], "native")) return 241;
++  int result = check_stream(STDOUT_FILENO, 1, kvm, 0, 0);
++  if (result) return result;
++  result = check_stream(STDERR_FILENO, 20, kvm, 1, 1);
++  if (result) return result;
++  if (write(STDOUT_FILENO, "captured-fileops-ok\n", 20) != 20) return 242;
++  if (write(STDERR_FILENO, "captured-fileops-err\n", 21) != 21) return 243;
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .arg("native")
++        .current_dir(&directory.0)
++        .output()
++        .unwrap();
++    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
++    assert_eq!(native.stdout, b"captured-fileops-ok\n");
++    assert_eq!(native.stderr, b"captured-fileops-err\n");
++
++    let executable = executable.to_str().unwrap();
++    let run = |with_tool: bool| {
++        let image = std::fs::read(executable).unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable, "kvm"],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        if with_tool {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<CounterTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        }
++    };
++
++    struct RestoreStandardDescriptors {
++        stdout: std::fs::File,
++        stderr: std::fs::File,
++    }
++    impl Drop for RestoreStandardDescriptors {
++        fn drop(&mut self) {
++            use std::os::fd::AsRawFd;
++            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
++            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
++        }
++    }
++
++    #[derive(Debug, Eq, PartialEq)]
++    struct AmbientSnapshot {
++        bytes: Vec<u8>,
++        device: u64,
++        inode: u64,
++        mode: u32,
++        uid: u32,
++        gid: u32,
++        length: u64,
++        blocks: u64,
++        mtime: i64,
++        mtime_nsec: i64,
++        ctime: i64,
++        ctime_nsec: i64,
++        owner_offset: libc::off_t,
++        raw_offset: libc::off_t,
++        status_flags: libc::c_int,
++        descriptor_flags: libc::c_int,
++        seals: libc::c_int,
++    }
++
++    fn snapshot(file: &std::fs::File, raw_fd: libc::c_int) -> AmbientSnapshot {
++        use std::os::fd::AsRawFd;
++        use std::os::unix::fs::MetadataExt;
++
++        let metadata = file.metadata().unwrap();
++        AmbientSnapshot {
++            bytes: std::fs::read(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap(),
++            device: metadata.dev(),
++            inode: metadata.ino(),
++            mode: metadata.mode(),
++            uid: metadata.uid(),
++            gid: metadata.gid(),
++            length: metadata.len(),
++            blocks: metadata.blocks(),
++            mtime: metadata.mtime(),
++            mtime_nsec: metadata.mtime_nsec(),
++            ctime: metadata.ctime(),
++            ctime_nsec: metadata.ctime_nsec(),
++            owner_offset: unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) },
++            raw_offset: unsafe { libc::lseek(raw_fd, 0, libc::SEEK_CUR) },
++            status_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFL) },
++            descriptor_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFD) },
++            seals: unsafe { libc::fcntl(raw_fd, libc::F_GET_SEALS) },
++        }
++    }
++
++    let panic_hook = std::panic::take_hook();
++    std::panic::set_hook(Box::new(|_| {}));
++    let redirected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        use std::io::Write;
++        use std::os::fd::FromRawFd;
++
++        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
++        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(saved_stdout >= 3 && saved_stderr >= 3);
++        let restore = RestoreStandardDescriptors {
++            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
++            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
++        };
++
++        let mut ambient = Vec::new();
++        for (index, (nonblock, cloexec)) in [(true, true), (false, false)].into_iter().enumerate() {
++            let raw = unsafe {
++                libc::memfd_create(
++                    c"capture-fileops-ambient".as_ptr(),
++                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
++                )
++            };
++            assert!(raw >= 3, "{}", std::io::Error::last_os_error());
++            let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
++            file.write_all(format!("ambient-{index}-sentinel").as_bytes())
++                .unwrap();
++            assert_eq!(unsafe { libc::lseek(raw, 1, libc::SEEK_SET) }, 1);
++            let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
++            let requested_flags =
++                flags | libc::O_APPEND | if nonblock { libc::O_NONBLOCK } else { 0 };
++            assert_eq!(
++                unsafe { libc::fcntl(raw, libc::F_SETFL, requested_flags) },
++                0
++            );
++            assert_eq!(
++                unsafe {
++                    libc::fcntl(
++                        raw,
++                        libc::F_ADD_SEALS,
++                        libc::F_SEAL_WRITE
++                            | libc::F_SEAL_GROW
++                            | libc::F_SEAL_SHRINK
++                            | libc::F_SEAL_SEAL,
++                    )
++                },
++                0
++            );
++            let standard = index as libc::c_int + 1;
++            assert_eq!(unsafe { libc::dup2(raw, standard) }, standard);
++            assert_eq!(
++                unsafe {
++                    libc::fcntl(
++                        standard,
++                        libc::F_SETFD,
++                        if cloexec { libc::FD_CLOEXEC } else { 0 },
++                    )
++                },
++                0
++            );
++            ambient.push(file);
++        }
++
++        let expected = [snapshot(&ambient[0], 1), snapshot(&ambient[1], 2)];
++        let mut observed = Vec::new();
++        let mut results = Vec::new();
++        for with_tool in [false, false, true, true] {
++            results.push(run(with_tool));
++            observed.push([snapshot(&ambient[0], 1), snapshot(&ambient[1], 2)]);
++        }
++        drop(restore);
++        (results, expected, observed)
++    }));
++    std::panic::set_hook(panic_hook);
++    let (results, expected_snapshots, observed_snapshots) = match redirected {
++        Ok(results) => results,
++        Err(payload) => {
++            let message = payload
++                .downcast_ref::<String>()
++                .map(String::as_str)
++                .or_else(|| payload.downcast_ref::<&str>().copied())
++                .unwrap_or("non-string panic payload");
++            panic!("captured file-operation setup/run panicked: {message}");
++        }
++    };
++
++    for (run_index, observed) in observed_snapshots.iter().enumerate() {
++        assert_eq!(
++            observed, &expected_snapshots,
++            "ambient state changed in run {run_index}"
++        );
++    }
++    for (index, result) in results.iter().enumerate() {
++        assert_eq!(
++            result.0,
++            0,
++            "run {index}: stdout={} stderr={}",
++            String::from_utf8_lossy(&result.1),
++            String::from_utf8_lossy(&result.2)
++        );
++        assert_eq!(result.1, native.stdout, "run {index}");
++        assert_eq!(result.2, native.stderr, "run {index}");
++    }
++    assert_eq!(results[1], results[0], "direct KVM result changed");
++    assert_eq!(results[2], results[0], "Tool and direct KVM results differ");
++    assert_eq!(results[3], results[2], "Tool KVM result changed");
++}
++
+ // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
+ // stdin, are intentionally compared only among fresh KVM runs. Native Linux is
+ // the relationship oracle, but its allocator is host-global and therefore

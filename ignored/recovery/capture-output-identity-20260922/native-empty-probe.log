@@ -1,0 +1,10 @@
+fchmodat2 result=0 errno=0
+utimensat result=0 errno=0
+fchownat result=0 errno=0
+newfstatat result=0 errno=0
+statx result=0 errno=0
+faccessat2-0 result=0 errno=0
+faccessat2-4 result=0 errno=0
+faccessat2-2 result=0 errno=0
+faccessat2-1 result=-1 errno=13
+readlinkat result=-1 errno=2

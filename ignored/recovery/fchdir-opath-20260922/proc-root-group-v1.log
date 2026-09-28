@@ -1,0 +1,89 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 16 tests
+test proc_root_cwd_restriction_and_ordinary_positive ... ok
+test proc_root_direct_parent_exit_positive ... ok
+test proc_root_direct_trailing_no_creation ... ok
+test proc_root_local_trailing_positive ... ok
+test proc_root_original_mutation_vectors_match_native ... ok
+test proc_root_real_root_trailing_positive ... ok
+test proc_root_received_aliases_and_reuse ... FAILED
+test proc_root_received_allowlisted_contents ... FAILED
+test proc_root_received_empty_enumeration ... ok
+test proc_root_received_filesystem_stat_refusal ... FAILED
+test proc_root_received_fork_exec ... FAILED
+test proc_root_received_full_metadata ... ok
+test proc_root_received_plain_no_creation ... ok
+test proc_root_received_shared_thread_files ... FAILED
+test proc_root_received_trailing_no_creation ... ok
+test proc_root_retains_fchmodat2_native_control ... ok
+
+failures:
+
+---- proc_root_received_aliases_and_reuse stdout ----
+native consumer=3: Some(0) 
+guest consumer=3: 93 failure line=107 errno=38
+failure line=179 errno=38
+
+
+thread 'proc_root_received_aliases_and_reuse' (92237) panicked at reverie-kvm/tests/static_elf.rs:2696:5:
+assertion `left == right` failed
+  left: 93
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- proc_root_received_allowlisted_contents stdout ----
+native consumer=2: Some(0) 
+guest consumer=2: 93 failure line=107 errno=38
+failure line=173 errno=38
+
+
+thread 'proc_root_received_allowlisted_contents' (92294) panicked at reverie-kvm/tests/static_elf.rs:2696:5:
+assertion `left == right` failed
+  left: 93
+ right: 0
+
+---- proc_root_received_filesystem_stat_refusal stdout ----
+native consumer=5: Some(0) statfs variant=0 result=0 errno=0
+statfs variant=1 result=0 errno=0
+statfs variant=2 result=0 errno=0
+
+guest consumer=5: 0 statfs variant=0 result=-1 errno=13
+statfs variant=1 result=-1 errno=13
+statfs variant=2 result=-1 errno=13
+
+
+thread 'proc_root_received_filesystem_stat_refusal' (93202) panicked at reverie-kvm/tests/static_elf.rs:2697:5:
+assertion `left == right` failed
+  left: [115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 48, 32, 114, 101, 115, 117, 108, 116, 61, 45, 49, 32, 101, 114, 114, 110, 111, 61, 49, 51, 10, 115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 49, 32, 114, 101, 115, 117, 108, 116, 61, 45, 49, 32, 101, 114, 114, 110, 111, 61, 49, 51, 10, 115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 50, 32, 114, 101, 115, 117, 108, 116, 61, 45, 49, 32, 101, 114, 114, 110, 111, 61, 49, 51, 10]
+ right: [115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 48, 32, 114, 101, 115, 117, 108, 116, 61, 48, 32, 101, 114, 114, 110, 111, 61, 48, 10, 115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 49, 32, 114, 101, 115, 117, 108, 116, 61, 48, 32, 101, 114, 114, 110, 111, 61, 48, 10, 115, 116, 97, 116, 102, 115, 32, 118, 97, 114, 105, 97, 110, 116, 61, 50, 32, 114, 101, 115, 117, 108, 116, 61, 48, 32, 101, 114, 114, 110, 111, 61, 48, 10]
+
+---- proc_root_received_fork_exec stdout ----
+native consumer=4: Some(0) 
+
+thread 'proc_root_received_fork_exec' (93481) panicked at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.34/src/local_pool.rs:80:26:
+cannot execute `LocalPool` executor from within another executor: EnterError
+
+---- proc_root_received_shared_thread_files stdout ----
+native consumer=7: Some(0) 
+guest consumer=7: 93 failure line=107 errno=38
+failure line=249 errno=38
+
+
+thread 'proc_root_received_shared_thread_files' (94198) panicked at reverie-kvm/tests/static_elf.rs:2696:5:
+assertion `left == right` failed
+  left: 93
+ right: 0
+
+
+failures:
+    proc_root_received_aliases_and_reuse
+    proc_root_received_allowlisted_contents
+    proc_root_received_filesystem_stat_refusal
+    proc_root_received_fork_exec
+    proc_root_received_shared_thread_files
+
+test result: FAILED. 11 passed; 5 failed; 0 ignored; 0 measured; 335 filtered out; finished in 1.96s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

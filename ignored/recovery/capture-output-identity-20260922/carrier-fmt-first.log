@@ -1,0 +1,59 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/capture_identity.rs:101:
+             return Err(std::io::Error::other("capture identity is not a pipe"));
+         }
+         if capture_pipe_status(read_keeper.as_raw_fd())? & libc::O_ACCMODE != libc::O_RDONLY
+-            || capture_pipe_status(write_carrier.as_raw_fd())? & libc::O_ACCMODE
+-                != libc::O_WRONLY
++            || capture_pipe_status(write_carrier.as_raw_fd())? & libc::O_ACCMODE != libc::O_WRONLY
+         {
+             return Err(std::io::Error::other(
+                 "capture pipe endpoints have invalid access modes",
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:32816:
+         // Active output capture makes both standard slots and every duplicate
+         // private. Exercise the real sendmsg translation with capture enabled;
+         // the ordinary syscall helper intentionally passes false.
+-        let stdout_alias = duplicate_fd(
+-            &mut state,
+-            libc::STDOUT_FILENO as u64,
+-            None,
+-            0,
+-            false,
+-            None,
+-        );
++        let stdout_alias =
++            duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false, None);
+         assert!(stdout_alias >= 0);
+         for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
+             let control = rights_control(&[donated as libc::c_int]);
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:45015:
+             ) as libc::c_int;
+             assert!(source >= 0);
+             assert_eq!(
+-                duplicate_fd(
+-                    &mut state,
+-                    source as u64,
+-                    Some(fd as u64),
+-                    0,
+-                    false,
+-                    None,
+-                ),
++                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
+                 i64::from(fd)
+             );
+             assert!(!is_open_standard(&state, fd));
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:45074:
+             let source = insert_file_with_flags(&mut state, path_file, false, None) as libc::c_int;
+             assert!(source >= 0);
+             assert_eq!(
+-                duplicate_fd(
+-                    &mut state,
+-                    source as u64,
+-                    Some(fd as u64),
+-                    0,
+-                    false,
+-                    None,
+-                ),
++                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
+                 i64::from(fd)
+             );
+             assert!(!is_open_standard(&state, fd));

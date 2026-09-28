@@ -1,0 +1,39 @@
+Prepared, reviewed, and committed the next captured-output KVM parity slice in the authorized Reverie recovery checkout. This is local prepared work only: it has not been pushed, published, merged, or claimed landed.
+
+Commit: c85af5f5a33ca94ef6a95767d242453e4f85539f
+Parent: c4854d8eeb054b73780df3e2abade646e86ecbdd
+Tree: b1a63eb9f377d38f8b1d610972859b553dd086c9
+Subject: Isolate captured KVM timer controls
+Author/committer: rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+
+Exact reviewed artifact: ignored/recovery/capture-output-identity-20260922/timerfd-frozen-v3.diff
+SHA-256: 18d0f281f75eeeb2f7b213668ba29354af869ceff8686b992ecd535b1beb0938
+Size: 24,464 bytes
+The staged and committed parent-to-head diffs were both byte-identical to this artifact with full Git object IDs.
+
+Behavior:
+- timerfd_settime and timerfd_gettime now resolve captured fd 1/2 and their aliases through isolated private capture carriers, never through physical supervisor fd 1/2.
+- timerfd_settime copies guest input before fd/type validation, low-casts fd and flags, uses a -1 host-fd sentinel to retain Linux invalid-flags/timespec-versus-EBADF ordering, and copies old_value only after successful mutation.
+- timerfd_create, eventfd2, and scalar read consume the Linux ABI low 32-bit words instead of rejecting nonzero high halves.
+- The required-KVM regression replaces physical fd 1/2 with disarmed timerfds and asserts their identities, timers, owner, flags, and CLOEXEC remain unchanged after every run. It exercises captured descriptors directly, through dup aliases, through independent /proc reopens, and through O_PATH aliases. Functional eventfd/timerfd controls prevent blanket syscall rejection from passing.
+- The integration claim is strictly native versus KVM output/exit/status repeat parity, not L2-log parity.
+
+Exact-artifact validation:
+- reverie-kvm full library suite, parallel: 880/880 passed in 8.72 s.
+- reverie-kvm full library suite, serial: 880/880 passed in 36.70 s.
+- cargo clippy for all targets with warnings denied: passed in 1.41 s.
+- required KVM timerfd cell: three outer repeats passed; each repeat ran native once, direct KVM twice, and CounterTool KVM twice. Test-body durations were 0.48 s, 0.40 s, and 0.41 s.
+- captured-output required-KVM group: 8/8 passed in 5.65 s.
+- required-KVM anti-skip gate: passed in 0.19 s.
+- formatting and diff checks: passed.
+- A prior parallel-suite run hit unrelated both_clear_tid_paths_keep_distinct_store_and_queued_wake_contracts flakiness; the exact test passed 5/5 focused reruns, and the final exact-artifact parallel suite passed 880/880.
+
+Adversarial review:
+- Three independent exact-artifact reviewers approved with no findings.
+- Reviewers verified the artifact SHA, size, base c4854d8eeb054b73780df3e2abade646e86ecbdd, complete diff, native syscall ordering, low-word ABI behavior, alias/O_PATH coverage, physical-timer mutation causation, anti-skip registration, and the output/exit/status-only label.
+- Goalpost audit found no weakened assertion, widened tolerance, exemption, skip, comparator relaxation, failure relabel, or deleted check.
+- Earlier review rounds rejected a non-causative high-flags setup and caught an unrelated include deletion; both were corrected before v3 was frozen and reviewed.
+
+Publication remains gated: PR 611 is stacked on read-only PR 610, and this recovery branch must not bypass or weaken that authentication/loginuid dependency. No remote history was rewritten.

@@ -1,0 +1,19 @@
+Add stable KVM socket metadata queries
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Expose the stable scalar SOL_SOCKET options required by socket-options and
+socketpair-flags while keeping consumptive or host-policy options refused.
+Validate socket identity before guest option pointers and preserve bounded
+Linux copyout behavior.
+
+Add getpeername and share fixed-storage local/peer name handling. Preserve
+Linux fd/type/connectivity precedence, zero-capacity null-address success,
+signed socklen validation, and length-before-address copyout ordering.
+
+Test Plan:
+- cargo test --offline -p reverie-kvm --lib getsockopt_
+- cargo test --offline -p reverie-kvm --lib executor::tests::socket_name_queries_match_linux_ordering_and_peer_identity -- --exact
+- REVERIE_REQUIRE_KVM=1 cargo test --offline -p reverie-kvm --test static_elf stable_socket_metadata_queries_match_native_linux_on_kvm -- --exact
+- cargo test --offline -p reverie-kvm --lib
+- cargo clippy --offline -p reverie-kvm --lib --tests --all-features --no-deps

@@ -1,0 +1,547 @@
+warning: unused import: `crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE`
+  --> reverie-kvm/src/executor.rs:35:5
+   |
+35 | use crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib) generated 1 warning (run `cargo fix --lib -p reverie-kvm` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+[kvm-strace] brk(NULL) = 4218880
+[kvm-strace] arch_prctl(12289, 0xfffed30) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28479, ...}) = 0
+[kvm-strace] mmap(NULL, 28479, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0c8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcc0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc80, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc30, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdbb0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18104320
+[kvm-strace] mmap(0x116d000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18272256
+[kvm-strace] mmap(0x12e3000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19804160
+[kvm-strace] mmap(0x133c000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20168704
+[kvm-strace] mmap(0x1342000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20193280
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20246528
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20248384) = 0
+[kvm-strace] set_tid_address(0x134fa10) = 1
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] rseq(20250848, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133c000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x404000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffeaa0) = 0
+[kvm-strace] munmap(0x113d000, 28479) = 0
+[kvm-strace] openat(-100, 0x40305f -> "/proc/self/fd", OFlag(O_CLOEXEC | O_DIRECTORY | O_PATH), Mode(0x0)) = 3
+[kvm-strace] socketpair(1, 524290, 0, 0xfffead4) = 0
+[kvm-strace] pipe2(0xfffeadc, OFlag(O_CLOEXEC)) = 0
+[kvm-strace] socketpair(1, 524289, 0, 0xfffeae4) = 0
+[kvm-strace] fstat(0, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/0", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/0", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "0", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/0", OFlag(O_CLOEXEC)) = 10
+[kvm-strace] read(10, 0xfffd980, 4095) = 51
+[kvm-strace] close(10) = 0
+[kvm-strace] dup(0) = 10
+[kvm-strace] fstat(10, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/10", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/10", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(10, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/10", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(10, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/10", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "10", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/10", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(1, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/1", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/1", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(1, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/1", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(1, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/1", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "1", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/1", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(2, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/2", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/2", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(2, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/2", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(2, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/2", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "2", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/2", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 57
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(7, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/7", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/7", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "7", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/7", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 57
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 68
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] fstat(9, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/9", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/9", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(9, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/9", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(9, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/9", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "9", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/9", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 68
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(9, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] dup(6) = 11
+[kvm-strace] dup(8) = 12
+[kvm-strace] fstat(11, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/11", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/11", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "11", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/11", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(12, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/12", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/12", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "12", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/12", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 62
+[kvm-strace] close(13) = 0
+[kvm-strace] getsockopt(12, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] clone(CloneFlags(0x1200011), NULL, NULL, 0x134fa10, 0) = 2
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] fstat(0, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/0", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/0", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "0", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/0", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(11, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/11", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/11", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "11", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/11", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(12, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/12", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/12", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "12", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/12", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 62
+[kvm-strace] close(13) = 0
+[kvm-strace] getsockopt(12, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] exit_group(0) = ?
+[kvm-strace] wait4(2, 0xfffeac4, WaitPidFlag(0x0), NULL) = 2
+[kvm-strace] sendmsg(4, 0xfffec00, 0) = 1
+[kvm-strace] close(6) = 0
+[kvm-strace] close(7) = 0
+[kvm-strace] close(8) = 0
+[kvm-strace] recvmsg(5, 0xfffec00, 0) = 1
+[kvm-strace] close(11) = 0
+[kvm-strace] close(12) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(7, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/7", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/7", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "7", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/7", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 62
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] close(6) = 0
+[kvm-strace] close(7) = 0
+[kvm-strace] close(8) = 0
+[kvm-strace] pipe2(0xfffeaec, OFlag(O_CLOEXEC)) = 0
+[kvm-strace] socketpair(1, 524289, 0, 0xfffeb00) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 12
+[kvm-strace] read(12, 0xfffd980, 4095) = 57
+[kvm-strace] close(12) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 12
+[kvm-strace] read(12, 0xfffd980, 4095) = 68
+[kvm-strace] close(12) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] fstat(1, 0xfffe160 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13474f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4218880
+[kvm-strace] brk(0x427000) = 4354048
+[kvm-strace] write(2, 0x403079, 18) = 18
+[kvm-strace] write(1, 0x4062a0, 527) = 527
+[kvm-strace] exit_group(0) = ?
+[kvm-strace] brk(NULL) = 4218880
+[kvm-strace] arch_prctl(12289, 0xfffed30) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28479, ...}) = 0
+[kvm-strace] mmap(NULL, 28479, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0c8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcc0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc80, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc30, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdbb0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18104320
+[kvm-strace] mmap(0x116d000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18272256
+[kvm-strace] mmap(0x12e3000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19804160
+[kvm-strace] mmap(0x133c000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20168704
+[kvm-strace] mmap(0x1342000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20193280
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20246528
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20248384) = 0
+[kvm-strace] set_tid_address(0x134fa10) = 1
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] rseq(20250848, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133c000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x404000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffeaa0) = 0
+[kvm-strace] munmap(0x113d000, 28479) = 0
+[kvm-strace] openat(-100, 0x40305f -> "/proc/self/fd", OFlag(O_CLOEXEC | O_DIRECTORY | O_PATH), Mode(0x0)) = 3
+[kvm-strace] socketpair(1, 524290, 0, 0xfffead4) = 0
+[kvm-strace] pipe2(0xfffeadc, OFlag(O_CLOEXEC)) = 0
+[kvm-strace] socketpair(1, 524289, 0, 0xfffeae4) = 0
+[kvm-strace] fstat(0, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/0", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/0", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "0", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/0", OFlag(O_CLOEXEC)) = 10
+[kvm-strace] read(10, 0xfffd980, 4095) = 51
+[kvm-strace] close(10) = 0
+[kvm-strace] dup(0) = 10
+[kvm-strace] fstat(10, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/10", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/10", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(10, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/10", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(10, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/10", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "10", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/10", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(1, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/1", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/1", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(1, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/1", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(1, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/1", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "1", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/1", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(2, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/2", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/2", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(2, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/2", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(2, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/2", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "2", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/2", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 57
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(7, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/7", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/7", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "7", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/7", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 57
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 68
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] fstat(9, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/9", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/9", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(9, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/9", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(9, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/9", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "9", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/9", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 68
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(9, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] dup(6) = 11
+[kvm-strace] dup(8) = 12
+[kvm-strace] fstat(11, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/11", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/11", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "11", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/11", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(12, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/12", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/12", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "12", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/12", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 62
+[kvm-strace] close(13) = 0
+[kvm-strace] getsockopt(12, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] clone(CloneFlags(0x1200011), NULL, NULL, 0x134fa10, 0) = 2
+[kvm-strace] set_robust_list(0x134fa20, 24) = 0
+[kvm-strace] fstat(0, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/0", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/0", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(0, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/0", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "0", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/0", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(11, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/11", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/11", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(11, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/11", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "11", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/11", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 51
+[kvm-strace] close(13) = 0
+[kvm-strace] fstat(12, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/12", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/12", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(12, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/12", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "12", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/12", OFlag(O_CLOEXEC)) = 13
+[kvm-strace] read(13, 0xfffd980, 4095) = 62
+[kvm-strace] close(13) = 0
+[kvm-strace] getsockopt(12, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] exit_group(0) = ?
+[kvm-strace] wait4(2, 0xfffeac4, WaitPidFlag(0x0), NULL) = 2
+[kvm-strace] sendmsg(4, 0xfffec00, 0) = 1
+[kvm-strace] close(6) = 0
+[kvm-strace] close(7) = 0
+[kvm-strace] close(8) = 0
+[kvm-strace] recvmsg(5, 0xfffec00, 0) = 1
+[kvm-strace] close(11) = 0
+[kvm-strace] close(12) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(7, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/7", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/7", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(7, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/7", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "7", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/7", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 51
+[kvm-strace] close(11) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 11
+[kvm-strace] read(11, 0xfffd980, 4095) = 62
+[kvm-strace] close(11) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] close(6) = 0
+[kvm-strace] close(7) = 0
+[kvm-strace] close(8) = 0
+[kvm-strace] pipe2(0xfffeaec, OFlag(O_CLOEXEC)) = 0
+[kvm-strace] socketpair(1, 524289, 0, 0xfffeb00) = 0
+[kvm-strace] fstat(6, 0xfffd460 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/6", 0xfffd4f0 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/6", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] statx(6, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/6", 0xfffd2e0, 128) = 16
+[kvm-strace] readlinkat(3, 0xfffd240 -> "6", 0xfffd360, 128) = 16
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/6", OFlag(O_CLOEXEC)) = 12
+[kvm-strace] read(12, 0xfffd980, 4095) = 57
+[kvm-strace] close(12) = 0
+[kvm-strace] fstat(8, 0xfffd460 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] newfstatat(-100, 0xfffd260 -> "/proc/self/fd/8", 0xfffd4f0 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}, AtFlags(0x0)) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 2047, 0xfffd580 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 2047, 0xfffd680 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(-100, 0xfffd260 -> "/proc/self/fd/8", AtFlags(0x0), 6143, 0xfffd780 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] statx(8, 0x40308b -> "", AtFlags(AT_EMPTY_PATH), 0, 0xfffd880 -> {st_mode=SFlag(S_IFDIR | S_IFREG) | 0777, st_size=0, ...}) = 0
+[kvm-strace] readlink(0xfffd260 -> "/proc/self/fd/8", 0xfffd2e0, 128) = 18
+[kvm-strace] readlinkat(3, 0xfffd240 -> "8", 0xfffd360, 128) = 18
+[kvm-strace] openat(-100, 0xfffd2a0 -> "/proc/self/fdinfo/8", OFlag(O_CLOEXEC)) = 12
+[kvm-strace] read(12, 0xfffd980, 4095) = 68
+[kvm-strace] close(12) = 0
+[kvm-strace] getsockopt(8, 1, 57, 0xfffd980, 0xfffd2a0) = 0
+[kvm-strace] fstat(1, 0xfffe160 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13474f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4218880
+[kvm-strace] brk(0x427000) = 4354048
+[kvm-strace] write(2, 0x403079, 18) = 18
+[kvm-strace] write(1, 0x4062a0, 527) = 527
+[kvm-strace] exit_group(0) = ?
+test anonymous_pipe_socket_identities_are_repeatable_on_kvm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 343 filtered out; finished in 0.55s
+

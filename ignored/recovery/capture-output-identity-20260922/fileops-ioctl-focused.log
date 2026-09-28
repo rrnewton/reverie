@@ -1,0 +1,16 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.78s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 8 tests
+test clock::entry_interrupt_tests::reserved_signal_after_activation_prevents_actual_ioctl_guest_progress ... ok
+test executor::tests::ioctl_cloexec_commands_update_guest_descriptor_flags ... ok
+test executor::tests::ioctl_terminal_queries_report_real_tty_ness ... ok
+test vm::tests::entry_main_tests::host_elf_main_closed_wait_group_exit_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::host_raw_main_closed_wait_poison_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_direct_main_closed_wait_global_failure_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_elf_main_closed_wait_global_failure_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_elf_main_closed_wait_group_exit_stops_without_ioctl ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 870 filtered out; finished in 0.27s
+

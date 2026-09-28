@@ -1,0 +1,12 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error: unused import: `crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE`
+  --> reverie-kvm/src/executor.rs:35:5
+   |
+35 | use crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: could not compile `reverie-kvm` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

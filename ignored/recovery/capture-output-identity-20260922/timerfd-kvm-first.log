@@ -1,0 +1,53 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+warning: unused import: `std::os::fd::AsRawFd`
+     --> reverie-kvm/tests/static_elf.rs:15796:13
+      |
+15796 |         use std::os::fd::AsRawFd;
+      |             ^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (test "static_elf") generated 1 warning (run `cargo fix --test "static_elf" -p reverie-kvm` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.10s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+test captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm ... 
+thread 'captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm' (476384) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm: status=Some(101) stdout=
+running 1 test
+test captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 348 filtered out; finished in 0.06s
+
+ stderr=
+thread 'captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm' (476387) panicked at reverie-kvm/tests/static_elf.rs:3407:5:
+gcc failed: stdout= stderr=/tmp/reverie-kvm-coreutils-476386-0/captured-timerfd-controls.c: In function ‘check_pipe_timer_ops’:
+/tmp/reverie-kvm-coreutils-476386-0/captured-timerfd-controls.c:40:20: warning: implicit declaration of function ‘same_spec’ [-Wimplicit-function-declaration]
+   40 |   if (!failure && !same_spec(&old_value, &old_sentinel))
+      |                    ^~~~~~~~~
+/usr/bin/ld: /tmp/ccNOA9uw.o: in function `check_pipe_timer_ops':
+captured-timerfd-controls.c:(.text+0x1e9): undefined reference to `same_spec'
+/usr/bin/ld: captured-timerfd-controls.c:(.text+0x211): undefined reference to `same_spec'
+/usr/bin/ld: /tmp/ccNOA9uw.o: in function `main':
+captured-timerfd-controls.c:(.text.startup+0x287): undefined reference to `same_spec'
+collect2: error: ld returned 1 exit status
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 348 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

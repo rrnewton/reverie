@@ -1,0 +1,18 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.82s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 10 tests
+test entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection ... ok
+test entry::owner::tests::capture_records_before_deferred_notification_and_retains_arcs ... ok
+test entry::owner::tests::retirement_preserves_both_sides_of_capture_race ... ok
+test executor::tests::capture_identity_keeps_closed_standard_descriptors_closed ... ok
+test executor::tests::capture_setup_succeeds_at_emfile_without_consuming_descriptors ... ok
+test executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink ... ok
+test executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused ... ok
+test executor::tests::syncfs_capture_shortcut_requires_open_implicit_output ... ok
+test vm::exec_wait_tests::exec_join_helper_does_not_capture_nested_discard_behind_another_worker ... ok
+test vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 866 filtered out; finished in 1.06s
+

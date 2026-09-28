@@ -1,0 +1,61 @@
+KVM captured-statfs parity update, 2026-09-22
+
+State: prepared locally and unpublished. This is not a landed claim. Publication remains gated on independent exact-head approval and landing of prerequisite https://github.com/rrnewton/reverie/pull/610, followed by a semantics-preserving rebase of recovered https://github.com/rrnewton/reverie/pull/611 and this descendant stack.
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Commit: 6c3d3e3de345f4516172b94995cff739dd29cdd0
+Parent: b3f0de344d4f946b942c2c100c5a8c4215552191
+Tree: 7e1538d927cbf49e6507b9541c3ba443169194fe
+Complete parent-diff SHA-256: 225c86a9678816ee62e4b0bebb4aff1bcf848c7da082475a68d732c50b0132e2
+Diff size: 20795 bytes; exactly four paths; 408 insertions and 5 deletions
+Author and committer: rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+First body line: [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Exact fix:
+- statfs and fstatfs on captured stdout/stderr and their dup, F_DUPFD, proc-fd, O_PATH, and fork aliases now query the capture owner's private pipe keeper, not ambient supervisor fd 1/2.
+- Existing fstatfs canonicalization still clamps free counts and clears host-allocated f_fsid. Pipefs type, page sizes, zero counts, name length, flags, and spare fields come from a real private Linux pipe.
+- Logical descriptor/path validation remains before copyout: closed or invalid fd returns EBADF, missing proc-fd path returns ENOENT, and a live capture with bad output returns EFAULT without modifying the buffer.
+- Noncapture descriptors, ordinary-file replacement into guest fd 1, and synthetic-proc EACCES behavior remain on their prior paths.
+- The exposed keeper accessor is deliberately named statfs_carrier and documented as metadata-only. Its read endpoint must not be reused as the future dup/reopen carrier because that would make a virtual O_WRONLY alias physically readable.
+
+New required-KVM cell:
+- captured_output_statfs_matches_native_and_is_repeatable_on_kvm
+- Native process provides an independent pipefs relationship oracle.
+- The KVM test process replaces physical supervisor fd 1/2 with regular files, proving captured results do not inherit their filesystem type.
+- Each outer run executes direct KVM twice and Tool KVM twice, comparing complete exit, stdout, and stderr tuples.
+- Coverage includes stdout/stderr, dup, F_DUPFD_CLOEXEC, O_WRONLY proc-fd reopen, O_PATH reopen, /dev/fd, /proc/self/fd, /proc/thread-self/fd, numeric-pid proc-fd, guest-created pipes, fork, ordinary-file replacement, closed descriptors, unchanged sentinel buffers, and bad copyout addresses.
+- Required-KVM anti-skip list now includes the exact new test name.
+- Assurance is output, exit, and status repeat parity only; no L2-log or record/replay claim.
+
+Validation on the exact committed diff:
+- cargo fmt --all -- --check: passed
+- git diff --check: passed
+- focused captured-output unit tests: 9 of 9 passed in 8.99 seconds wall
+- full reverie-kvm library default: 877 of 877 passed in 8.01 seconds wall
+- full reverie-kvm library serial: 877 of 877 passed in 29.26 seconds wall
+- required-KVM new cell: three outer runs passed in 0.56, 0.52, and 0.56 seconds; each includes native once plus direct twice and Tool twice
+- synthetic-proc statfs refusal negative control: 1 of 1 passed in 0.25 seconds
+- required-KVM anti-skip: 1 of 1 passed in 0.29 seconds
+- clippy with warnings denied: passed in 5.28 seconds
+- No ad-hoc Hermit invocation was made. Hermit remains downstream and its pin has not moved.
+
+Evidence SHA-256:
+- statfs-focused-unit.log eaa4f361a03746f0f4477c6b5bc523e5c78136528b89a6eed94f152628d21a43
+- statfs-full-lib-default.log 15d45abfcc16119244ff6e41ca897350ed61796d65afc4b8c3b07dd78e3e44c8
+- statfs-full-lib-serial.log 1e1cd5694809521687f0dfa96e03fdecf2dda846be0e332845d405e254ea1ce8
+- statfs-kvm-final-1.log 434b9941f934c98e17b96c90595d6d38a90a9997bf58322859e2d2770ab7ffc0
+- statfs-kvm-final-2.log 1bd72463b64221621132bb77a05b7c657d71bfc95105bd54b9da0e2b067300be
+- statfs-kvm-final-3.log 876c318899614cd7bcc1dde9756d3241a5e0ad7b1fa85dd765f2ab74a1b9c4fc
+- statfs-proc-negative.log 2967d3746e7f31ea5ab3a83805c498ab6e1d806576b57c8574f4806d32d569e1
+- statfs-anti-skip.log 1a9da461115e6268240fb85d51be4ba064f4a63d35576575a6968b440d77de19
+- statfs-clippy.log 065657a142e4dd80d32d6a20c82827c29c222b8fe96487348911b835519c015b
+- empty successful fmt and diff-check logs e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+Review:
+- Three adversarial reviewers approved the exact frozen diff with no findings after checking Linux semantics, raw-fd lifetime, fork and Tool ownership, close/replacement behavior, errno/copyout ordering, noncapture controls, normalization, repeat evidence, anti-skip enforcement, and all goalpost-moving categories.
+- The same three reviewers independently verified exact commit 6c3d3e3d: sole parent, exact diff hash, exactly four paths, bot author and committer, first-line disclosure, retained evidence, and no post-review content change.
+
+Official Hermit census remains unchanged because this commit is unpublished: 243 of 360 total cells green and 243 of 251 enabled cells green. The new required-KVM feature cell is locally green with strong repeated output, exit, and status assurance.
+
+Next residual: captured dup, F_DUPFD, and proc-fd reopen still depend on ambient physical fd 1/2. A sound fix requires a private O_WRONLY carrier while retaining the current read keeper, relocating every internal descriptor to at least 3, and proving the supervisor standard namespace remains untouched. Do not use the metadata-only read keeper for descriptor creation.

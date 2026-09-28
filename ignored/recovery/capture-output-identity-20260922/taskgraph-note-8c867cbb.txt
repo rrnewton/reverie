@@ -1,0 +1,46 @@
+Prepared, adversarially reviewed, validated, and committed the captured-socket KVM isolation slice in the authorized Reverie recovery checkout. This remains local prepared work only: it has not been pushed, published, merged, or claimed landed.
+
+Commit: 8c867cbb3cfdacbec0f825478d1f62b5cac3744b
+Parent: c85af5f5a33ca94ef6a95767d242453e4f85539f
+Tree: ce3df17d1785163e07351ed3d1c47c724cbbd60b
+Subject: Isolate captured KVM socket operations
+Author/committer: rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+
+Exact reviewed artifact: ignored/recovery/capture-output-identity-20260922/socket-frozen-v5.diff
+SHA-256: e23aa956296dd048c2765022fb5db42ceb16972807313a306ba28a1f7d512aa0
+Size: 86,192 bytes
+The staged and committed parent-to-head diffs were byte-identical to this artifact with full Git object IDs.
+
+Behavior:
+- Every supported socket consumer, including the pre-dispatch accept path and serialized recvmsg/recvmmsg paths, now resolves captured stdout/stderr through private capture carriers instead of physical supervisor fd 1/2.
+- O_PATH, ENOTSOCK, argument-copy, and copyout precedence is preserved per native Linux probing. Accept and recvfrom validate signed-high address capacities after consuming the connection/datagram; returned address length precedes address copyout.
+- fd, flags, level, option, backlog, how, sockaddr lengths, and recvmmsg vlen consume their Linux low 32-bit ABI words. recvmmsg now validates timeout input, accepts vlen zero, and clamps vlen above UIO_MAXIOV.
+- sendto ignores addrlen when the destination pointer is NULL. The stale signalfd socket-send interception was removed so normal handlers preserve noncanonical-pointer versus ENOTSOCK ordering for low- and high-word fd forms.
+- SCM_RIGHTS translation refuses both labelled output aliases and metadata-cleared fds whose host object matches a private capture carrier. Translation remains all-or-nothing before the host send.
+
+Evidence:
+- Required KVM regression installs physical fd 1 as a queued AF_UNIX datagram socket and fd 2 as an AF_UNIX listener with a pending connection. Native runs use ordinary output pipes.
+- The fixture exercises direct, dup, independent /proc reopen, and O_PATH forms across setsockopt/getsockopt, bind/listen/connect/shutdown, socket names, sendto/recvfrom, sendmsg/recvmsg/recvmmsg, accept/accept4, low-word arguments, and copyout sentinels.
+- Physical snapshots retain exact object identity, options, flags, local/peer socket addresses, readiness, and FIONREAD state after every run. Destructive final checks prove both queued datagrams and the pending connection remained intact.
+- Real sockets are installed into logical guest fd 1/2 and exercised successfully, preventing blanket rejection by descriptor number.
+- SCM tests donate direct, dup, reopened, O_PATH, and deliberately metadata-cleared private carriers; an ordinary eventfd and existing ordinary-pipe controls still transfer successfully.
+- Integration claim is strictly native versus KVM output/exit/status repeat parity, not L2-log or record/replay parity.
+
+Exact-v5 validation:
+- reverie-kvm full library suite, parallel: 881/881 passed in 13.53 s.
+- reverie-kvm full library suite, serial: 881/881 passed in 53.34 s.
+- cargo clippy for all targets with warnings denied: passed in 5.65 s.
+- required KVM socket cell: three outer repeats passed in 0.45 s, 0.36 s, and 0.78 s; each test run executes native once, direct KVM twice, and CounterTool KVM twice.
+- captured-output integration group: 9/9 passed in 6.62 s.
+- required-KVM anti-skip gate: passed in 0.20 s.
+- formatting, staged diff, committed diff, and whitespace checks: passed.
+
+Adversarial review:
+- Three independent exact-v5 reviewers approved with no blocking findings after verifying SHA, size, base, complete artifact or attested v4-to-v5 delta, and reconstructed postimages.
+- Earlier v1 through v4 reviews found and forced fixes for short sockaddr ordering, signed-high accept/recvfrom capacities, recvfrom length/address copyout order, NULL-destination sendto addrlen, mapped-page admission ordering, stale signalfd interception, missing metadata-cleared carrier causation, socket-address snapshots, and incomplete output sentinels.
+- Goalpost review found no weakened assertion, widened tolerance, exemption, skip, comparator relaxation, failure relabel, or deleted check.
+- Bounded residual: recvmmsg validates timeout input but does not copy remaining time back after a successful receive. This predates the slice, does not affect captured-fd refusal, and no full recvmmsg-timeout parity claim is made.
+
+Publication remains gated: PR 611 is stacked on read-only PR 610, and this recovery branch must not bypass or weaken that authentication/loginuid dependency. No remote history was rewritten.

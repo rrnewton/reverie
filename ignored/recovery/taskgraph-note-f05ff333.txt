@@ -1,0 +1,22 @@
+2026-09-22 KVM proc-fd anchor slice qualified locally; not published or landed.
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Exact commit: f05ff333ac752d820d53f7558b7de6b3c44d5fd8
+Parent: 95723e7b2224f1b6b56d131800d9eb979cbcdd5c
+Base origin/main: 5f5cc66039de38bc07301705753fc6e6de4d1928
+PR dependency: https://github.com/rrnewton/reverie/pull/610 remains read-only pending independent Claude-family approval; https://github.com/rrnewton/reverie/pull/611 remains stacked on it. No push or PR publication was attempted.
+
+Implemented authenticated O_PATH anchors for /proc/self/fd and /proc/thread-self/fd. Descriptions retain the opener file table and exact process or task generation, preserve identity through dup, fork, exec, and supported reopen operations, and fail closed for unsupported descendants and carrier transfer. Cross-process lookup follows Linux commoncap ptrace-read rules: proc-fd FSCREDS uses the caller effective capability set, get_robust_list REALCREDS uses the caller permitted set for the subset rule, and effective CAP_SYS_PTRACE is the override. Capset publishes permitted capabilities to the exact live task generation before local mutation; stale generation is a typed UnexpectedVcpuExit and leaves both states unchanged.
+
+Independent exact-head validation on f05ff333ac752d820d53f7558b7de6b3c44d5fd8:
+- focused proc-fd anchor tests: 2 passed, 0 failed
+- capability lifecycle tests: 3 passed, 0 failed
+- get_robust_list commoncap and copyout ordering: 1 passed, 0 failed
+- required real-KVM proc_fd_link_aliases_run_on_kvm: 1 passed, 0 failed; native once, direct KVM twice, Tool KVM twice; exact stdout, stderr, and exit-status repeat parity only
+- full reverie-kvm library default: 870 passed, 0 failed, 8.00 seconds test body
+- full reverie-kvm library serial: 870 passed, 0 failed, 30.68 seconds test body
+- cargo clippy all targets with warnings denied, cargo fmt check, and git diff check: pass
+- three independent exact-commit adversarial reviews: APPROVE, no findings; all explicitly checked for weakened assertions, tolerances, exemptions, skips, relabeling, and deleted checks
+
+Declared residuals: no readable or getdents proc-fd directory; unsupported descendants fail closed; no synthetic proc fstatfs; O_PATH magic-link O_NOFOLLOW is refused to avoid exposing a supervisor handle; full proc path normalization is incomplete; guest-created pipe and socket inode metadata is still host-derived across runs. No L2 or log parity is claimed.

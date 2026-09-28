@@ -1,0 +1,9 @@
+identity tgid=4010804 leader_tid=4010804 worker_tid=4010806
+target fd=3 errno=0 (Success)
+open anchor=/proc/self/fd fd=4 errno=0 (Success)
+open anchor=/proc/thread-self/fd fd=5 errno=0 (Success)
+readlink phase=worker-alive anchor=/proc/self/fd dirfd=4 target_fd=3 rc=9 errno=0 (Success) destination=/dev/null
+readlink phase=worker-alive anchor=/proc/thread-self/fd dirfd=5 target_fd=3 rc=9 errno=0 (Success) destination=/dev/null
+worker_join rc=0
+readlink phase=worker-exited anchor=/proc/self/fd dirfd=4 target_fd=3 rc=9 errno=0 (Success) destination=/dev/null
+readlink phase=worker-exited anchor=/proc/thread-self/fd dirfd=5 target_fd=3 rc=-1 errno=2 (No such file or directory)

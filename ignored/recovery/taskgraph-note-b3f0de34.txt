@@ -1,0 +1,69 @@
+KVM recovery evidence update, 2026-09-22
+
+State: prepared locally and unpublished. Nothing in this note is a landed claim. Publication remains gated on independent exact-head approval and landing of the backward-compatible prerequisite https://github.com/rrnewton/reverie/pull/610, after which the recovered https://github.com/rrnewton/reverie/pull/611 stack must be rebased without weakening its loginuid_fds authentication dependency.
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Verified starting base: reverie origin/main 5f5cc66039de38bc07301705753fc6e6de4d1928
+Current local stack: 14 commits, 20 files changed, 14056 insertions, 753 deletions
+
+Newest prepared commit:
+- commit b3f0de344d4f946b942c2c100c5a8c4215552191
+- parent 46c7db94338cf259d1232ec86ebdd5074e5e0ba1
+- tree 263366676fe88f1a9ca235cd64ee3f7ff8fd753f
+- complete parent-diff SHA-256 d38e882fbe0cd7289c923a8daaa9113d3452272f188bdae34454650d5a8b4905
+- author and committer rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+- first commit-body line: [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+- exactly five paths: reverie-kvm/src/capture_identity.rs, reverie-kvm/src/capture_identity_tests.rs, reverie-kvm/src/elf.rs, reverie-kvm/src/executor.rs, reverie-kvm/tests/static_elf.rs
+
+Behavior prepared by b3f0de34:
+- Captured stdout and stderr have collision-free deterministic synthetic-pipe identities: device 0:0xff03, inodes 0x20200000 and 0x20200001, legacy mount 0x7fffff03, unique mount 0xffffffffffffff03.
+- fstat, stat, statx, proc links, and fdinfo agree. BASIC statx may return the legacy mount like native Linux; UNIQUE wins when requested.
+- Capture-owned open-description status starts at canonical O_WRONLY, is shared by dup, F_DUPFD, fork, and exec, and is independent of ambient supervisor O_APPEND, O_NONBLOCK, and access mode.
+- proc-fd reopen gets a fresh open-description state and kernel-normalized flags, including x86_64 O_LARGEFILE. O_PATH is normalized exactly and F_SETFL on O_PATH returns EBADF.
+- Non-capture proc-fd reopen does not gain virtual status state. Close, replacement, and SCM receive clear stale capture state.
+- Known-identity insertion prevents captured dup and proc-fd reopen from consuming the next dynamic anonymous inode.
+- Existing keeper pipes, setup failure and EMFILE rollback, CLOEXEC, closed-stdio relocation, and final-owner lifetime behavior are preserved.
+
+Residuals deliberately not claimed fixed:
+- Captured dup, F_DUPFD, and proc-fd reopen still require a physical host carrier when the supervisor's matching fd 1 or fd 2 is closed.
+- Broader captured fstatfs and statfs parity remains.
+- Other host-carrier-dependent operations remain.
+- Evidence establishes KVM output, exit, and status repeat parity only; it does not establish L2 log or record/replay parity.
+
+Final validation on the exact committed diff:
+- cargo fmt --all -- --check: passed
+- git diff --check: passed
+- focused captured-status tests: 9 passed
+- cargo test --locked -p reverie-kvm --lib: 877 passed in 10.49 seconds wall
+- cargo test --locked -p reverie-kvm --lib -- --test-threads=1: 877 passed in 32.65 seconds wall
+- required-KVM static fixture: three outer runs passed in 6.44, 1.19, and 1.01 seconds. Each outer run exercised native once, direct KVM twice, and Tool KVM twice, with exact nonempty stdout and stderr plus zero exit-status repeat equality.
+- required-KVM anti-skip fixture: 1 passed in 0.29 seconds
+- cargo clippy --locked -p reverie-kvm --lib --tests -- -D warnings: passed in 5.10 seconds
+- No ad-hoc Hermit invocation was made. The downstream Hermit pin has not moved.
+
+Final evidence hashes:
+- focused-captured-status-final3.log 455f13aa06bc3d59ff8f1bc917dd2578eed6ac05752277c27423c1f94a6d8fb9
+- full-lib-default-final.log 6f37b65f8b1fc9b74543e015e9fe172256cc197f98882890fb4779f02c12674b
+- full-lib-default-final.time c51fef2db8246412cba128b92e1fa09ee94486cbae37852ddd9fefcbe7b1b540
+- full-lib-serial-final.log c71798de279796ccac62c5d038afee0b8c19ccbc03c9e5fd6ea39504b3d30530
+- full-lib-serial-final.time 63a7ef00bc6622a6db71f952691907d4129e3dca6a69a09a3e7b1894a9eef0ff
+- kvm-final-1.log 90f8c22e19c9a138f0e205f702db12379e229b7da8d6bcc476428fafdd0d8518
+- kvm-final-1.time 25b19831ddfbfeebb82e2f40ff38ce5a71dd63bb6a8d5bb57886145f801c392a
+- kvm-final-2.log 53ac005504c24861e225b89a6e24560a2c20a53ba938462e0024506d190cca6f
+- kvm-final-2.time e4bcf9aa8210d622c9627437dc5824d6d3981bcaa61982646640d43f6b54c557
+- kvm-final-3.log c029ed79a8b463f00e1a290dd4fe9cca152abb9497f20aea73851a7e61a1594b
+- kvm-final-3.time d63cbb9be5dd40b9e8ba576bf163bd5454be0eac228aec200fbb249d581a8f17
+- anti-skip-final.log ccbf45f55e49e24ebdac86ef2377716639b078af31850341080389337d3a43d6
+- anti-skip-final.time 4caadd36905f97c822bc359f584f46c09a08575dac4bc5f9a596f9998e98f38f
+- clippy-final.log c885c1a07b7c2b29251fd578cd330e83015908a0d66b163da700227b7d8af7c2
+- clippy-final.time 8ba9717a4a9e790b9cd1b4da2cb0b092303f82c455ec9d16657e906e0b7c25eb
+
+Review evidence:
+- Three adversarial reviewers independently approved the exact frozen diff hash above with no findings after earlier findings were fixed.
+- The same three reviewers independently reverified exact commit b3f0de34 after creation: sole parent and diff hash match, exactly five approved paths changed, bot author and committer are correct, disclosure is present, git diff --check passes, and no assertion, tolerance, exemption, skip, comparator, label, or gate was weakened.
+- Earlier rejected issues and fixes: ambient supervisor status leakage was replaced with capture-owned state; circular assertions gained non-capture and ambient controls; non-capture reopen state regression was gated out; O_PATH and x86_64 O_LARGEFILE normalization gained exact controls.
+
+Official Hermit census remains unchanged by this unpublished work: 243 of 360 total cells green, and 243 of 251 enabled cells green. The newly green result is a required-KVM feature fixture with strong repeated output, exit, and status assurance, not a newly counted official census cell.
+
+Next bounded target: remove the residual dependence on the supervisor's physical fd 1 or fd 2 for captured dup, F_DUPFD, and proc-fd reopen, subject to exact Linux semantics and adversarial review. If that design would disturb the deliberately preserved keeper-pipe lifecycle, switch to the broader captured fstatfs and statfs parity defect instead.

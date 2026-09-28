@@ -1,0 +1,1390 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index ed3c570a..c463cdf6 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -13467,160 +13467,162 @@ fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i
+         )
+     };
+     if fd < 0 {
+         return Err(io_error(std::io::Error::last_os_error()));
+     }
+     // SAFETY: openat2 returned a new owned descriptor on success.
+     let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
+     ensure_not_procfs(&file)?;
+     Ok(file)
+ }
+ 
+ /// Commit `directory` as the new working directory, deriving the canonical
+ /// `state.cwd` string from the descriptor so `getcwd` stays consistent with it.
+ fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
+     match canonical_fd_path(directory.as_raw_fd()) {
+         Ok(path) => {
+             state.cwd = path;
+             state.cwd_fd = directory;
+             0
+         }
+         Err(error) => error,
+     }
+ }
+ 
+ /// Resolve the canonical absolute path a descriptor refers to via the
+ /// supervisor's own `/proc/self/fd`. This is a host-side operation on a
+ /// supervisor descriptor (like the existing `link_at`/`utimensat` fallbacks),
+ /// not a guest-visible procfs access.
+ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
+     let proc_path =
+         CString::new(format!("/proc/self/fd/{fd}")).map_err(|_| negative_errno(libc::EINVAL))?;
+     let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+     // SAFETY: proc_path is NUL-terminated and buffer is writable for its length.
+     let count = unsafe {
+         libc::readlink(
+             proc_path.as_ptr(),
+             buffer.as_mut_ptr().cast::<libc::c_char>(),
+             buffer.len(),
+         )
+     };
+     if count < 0 {
+         return Err(io_error(std::io::Error::last_os_error()));
+     }
+     buffer.truncate(count as usize);
+     Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+         buffer,
+     )))
+ }
+ 
+ // ===== Synthetic /proc surface =====
+ //
+ // TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc content and determinism.
+ //
+ // Real procfs is refused (see `ensure_not_procfs`) because its contents are
+ // host-specific and would break `--verify`. To still support programs that read
+ // a few well-known /proc files (uptime, diagnostics, self-inspection), a small
+ // allowlist uses backend-owned storage. Most contents are fixed; mount files
+ // retain the actual namespace snapshot for Tool normalization, and fdinfo uses
+ // its own observation/seq state. Fixed files retain ordinary memfd I/O. `fstat`,
+ // `newfstatat`, and `statx` on such a descriptor report synthesized, run-stable
+ // metadata, because the backing memfd's own inode varies per run and would
+ // otherwise perturb determinism. Directory enumeration of /proc itself is not
+ // provided, so tools that scan every PID (e.g. `ps`) are out of scope here.
+ const SYNTHETIC_DEV_MAJOR: u32 = 0;
+ const SYNTHETIC_PROC_DEV_MINOR: u32 = 0xff01;
+ const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
+ const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
+     b"/proc/uptime",
+     b"/proc/loadavg",
+     b"/proc/version",
+     b"/proc/filesystems",
+     b"/proc/mounts",
+     b"/proc/self/mounts",
+     b"/proc/self/mountinfo",
+     b"/proc/stat",
+     b"/proc/meminfo",
+     b"/proc/cpuinfo",
+     b"/proc/locks",
+     b"/proc/self/stat",
+     b"/proc/self/status",
++    b"/proc/thread-self/stat",
++    b"/proc/thread-self/status",
+     b"/proc/self/cmdline",
+     b"/proc/vmstat",
+     b"/proc/sys/kernel/overflowuid",
+     b"/proc/sys/kernel/overflowgid",
+     b"/proc/sys/kernel/random/uuid",
+     b"/proc/sys/kernel/pty/nr",
+     b"/proc/sys/kernel/osrelease",
+     b"/proc/self/maps",
+ ];
+ 
+ fn synthetic_dev(minor: u32) -> libc::dev_t {
+     libc::makedev(SYNTHETIC_DEV_MAJOR, minor)
+ }
+ 
+ /// Deterministic inode for a normalized synthetic /proc path (FNV-1a). Stable
+ /// across runs so `--verify` sees identical `stat` results.
+ fn synthetic_proc_inode(path: &[u8]) -> u64 {
+     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+     for byte in path {
+         hash ^= u64::from(*byte);
+         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+     }
+     // Keep clear of low, conventionally-reserved inode numbers.
+     hash | 0x1000
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-136): Review synthetic procfd link reconstruction.
+ fn synthetic_proc_path_for_inode(inode: u64) -> Option<&'static [u8]> {
+     std::iter::once(b"/proc".as_slice())
+         .chain(SYNTHETIC_REGULAR_PROC_PATHS.iter().copied())
+         .find(|path| synthetic_proc_inode(path) == inode)
+ }
+ 
+ fn is_synthetic_proc_directory_inode(inode: u64) -> bool {
+     inode == synthetic_proc_inode(b"/proc")
+ }
+ 
+ fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
+     if [
+         b"/proc/self/cmdline".as_slice(),
+         b"/proc/sys/kernel/overflowuid".as_slice(),
+         b"/proc/sys/kernel/overflowgid".as_slice(),
+         b"/proc/sys/kernel/random/uuid".as_slice(),
+         b"/proc/sys/kernel/pty/nr".as_slice(),
+         b"/proc/sys/kernel/osrelease".as_slice(),
+     ]
+     .iter()
+     .any(|path| synthetic_proc_inode(path) == inode)
+     {
+         libc::EBADF
+     } else {
+         libc::ESPIPE
+     }
+ }
+ 
+ fn is_synthetic_proc_directory(state: &LoadedStaticElf, path: &[u8]) -> bool {
+     normalize_proc_path(state, path).is_some_and(|path| path == b"/proc")
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-202): Review descriptor-relative synthetic procfs
+ // resolution and its fail-closed handling of unlisted children.
+ fn synthetic_proc_relative_path(
+     state: &LoadedStaticElf,
+     guest_dirfd: libc::c_int,
+     path: &[u8],
+ ) -> Option<Vec<u8>> {
+     if path.starts_with(b"/") {
+         return None;
+     }
+     let inode = state.proc_files.get(&guest_dirfd).copied()?;
+     if !is_synthetic_proc_directory_inode(inode) {
+         return None;
+     }
+     let mut resolved = b"/proc/".to_vec();
+     resolved.extend_from_slice(path);
+     Some(resolved)
+ }
+ 
+ fn parse_proc_id(component: &[u8]) -> Option<i32> {
+     if component.is_empty() || !component.iter().all(u8::is_ascii_digit) {
+@@ -13742,333 +13744,376 @@ fn synthetic_random_uuid_content(seed: u64, tid: i32, sequence: u64) -> Vec<u8>
+         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\n",
+         random[0],
+         random[1],
+         random[2],
+         random[3],
+         random[4],
+         random[5],
+         random[6],
+         random[7],
+         random[8],
+         random[9],
+         random[10],
+         random[11],
+         random[12],
+         random[13],
+         random[14],
+         random[15],
+     )
+     .into_bytes()
+ }
+ 
+ /// Synthesize deterministic content for a recognized /proc path, or `None` when
+ /// the path is not part of the supported surface.
+ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
+     let normalized = normalize_proc_path(state, path)?;
+     let content = match normalized.as_slice() {
+         b"/proc/uptime" => b"0.00 0.00\n".to_vec(),
+         b"/proc/loadavg" => b"0.00 0.00 0.00 1/1 1\n".to_vec(),
+         b"/proc/version" => b"Linux version 6.0.0 (reverie-kvm) #1 SMP x86_64\n".to_vec(),
+         b"/proc/filesystems" => b"nodev\tproc\nnodev\ttmpfs\n\text4\n".to_vec(),
+         b"/proc/mounts" | b"/proc/self/mounts" => state.proc_mounts.mounts.clone(),
+         // Absolute guest paths and owned descriptors use this same ambient
+         // namespace. The Tool normalizes its real mount identities together
+         // with the raw identities returned by ordinary fdinfo observations.
+         b"/proc/self/mountinfo" => state.proc_mounts.mountinfo.clone(),
+         b"/proc/stat" => concat!(
+             "cpu  0 0 0 0 0 0 0 0 0 0\n",
+             "cpu0 0 0 0 0 0 0 0 0 0 0\n",
+             "intr 0\n",
+             "ctxt 0\n",
+             "btime 0\n",
+             "processes 1\n",
+             "procs_running 1\n",
+             "procs_blocked 0\n",
+         )
+         .as_bytes()
+         .to_vec(),
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-231): Review parity with Hermit's configured memory persona.
+         b"/proc/meminfo" => concat!(
+             "MemTotal:         976562 kB\n",
+             "MemFree:          976562 kB\n",
+             "MemAvailable:     976562 kB\n",
+             "Buffers:               0 kB\n",
+             "Cached:                0 kB\n",
+             "SwapTotal:             0 kB\n",
+             "SwapFree:              0 kB\n",
+         )
+         .as_bytes()
+         .to_vec(),
+         b"/proc/cpuinfo" => concat!(
+             "processor\t: 0\n",
+             "vendor_id\t: GenuineIntel\n",
+             "cpu family\t: 6\n",
+             "model\t\t: 0\n",
+             "model name\t: reverie-kvm virtual CPU\n",
+             "cpu MHz\t\t: 1000.000\n",
+             "cache size\t: 0 KB\n",
+             "physical id\t: 0\n",
+             "siblings\t: 1\n",
+             "core id\t\t: 0\n",
+             "cpu cores\t: 1\n",
+             "flags\t\t: fpu\n",
+             "\n",
+         )
+         .as_bytes()
+         .to_vec(),
+         b"/proc/locks" => proc_locks_content(state),
+         b"/proc/self/stat" => proc_self_stat_content(state),
+         b"/proc/self/status" => proc_self_status_content(state),
++        b"/proc/thread-self/stat" => proc_thread_self_stat_content(state),
++        b"/proc/thread-self/status" => proc_thread_self_status_content(state),
+         b"/proc/self/cmdline" => proc_self_cmdline_content(state),
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-224): deterministic /proc/vmstat surface so
+         // procps `vmstat` reads its counters synthetically instead of hitting
+         // the fail-closed real-procfs refusal. All counters are fixed at 0
+         // (memory is not virtualized under KVM), matching the zeroed
+         // /proc/stat and /proc/meminfo surfaces above.
+         b"/proc/vmstat" => concat!(
+             "nr_free_pages 262144\n",
+             "nr_inactive_anon 0\n",
+             "nr_active_anon 0\n",
+             "nr_inactive_file 0\n",
+             "nr_active_file 0\n",
+             "nr_unevictable 0\n",
+             "nr_mlock 0\n",
+             "nr_anon_pages 0\n",
+             "nr_mapped 0\n",
+             "nr_file_pages 0\n",
+             "nr_dirty 0\n",
+             "nr_writeback 0\n",
+             "nr_slab_reclaimable 0\n",
+             "nr_slab_unreclaimable 0\n",
+             "pgpgin 0\n",
+             "pgpgout 0\n",
+             "pswpin 0\n",
+             "pswpout 0\n",
+             "pgfault 0\n",
+             "pgmajfault 0\n",
+         )
+         .as_bytes()
+         .to_vec(),
+         b"/proc/sys/kernel/overflowuid" | b"/proc/sys/kernel/overflowgid" => {
+             format!("{GUEST_OVERFLOW_ID}\n").into_bytes()
+         }
+         b"/proc/sys/kernel/random/uuid" => synthetic_random_uuid_content(
+             state.random_seed,
+             state.tid,
+             state.proc_random_uuid_sequence,
+         ),
+         b"/proc/sys/kernel/pty/nr" => format!("{}\n", synthetic_pty_count(state)).into_bytes(),
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         // TODO-HUMAN-REVIEW(PR-224): deterministic
+         // /proc/sys/kernel/osrelease so `sysctl -n kernel.osrelease` resolves
+         // synthetically. The value matches the KVM `uname(2)` release field
+         // ("6.0.0", see fn uname) and /proc/version above.
+         b"/proc/sys/kernel/osrelease" => b"6.0.0\n".to_vec(),
+         b"/proc/self/maps" => proc_self_maps_content(state),
+         _ => return None,
+     };
+     Some(content)
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-211): Review guest-owned /proc/locks filtering.
+ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
+     let mut seen = std::collections::BTreeSet::new();
+     let mut rows = Vec::new();
+     for file in state.files.values() {
+         let Ok(fdinfo) = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
+         else {
+             continue;
+         };
+         for line in fdinfo.lines() {
+             let Some(details) = line
+                 .strip_prefix("lock:")
+                 .map(str::trim)
+                 .and_then(|line| line.split_once(' ').map(|(_, details)| details))
+             else {
+                 continue;
+             };
+             if !seen.insert(details.to_owned()) {
+                 continue;
+             }
+             let mut fields = details.split_whitespace().collect::<Vec<_>>();
+             if fields.len() != 7 || fields[4].split(':').count() != 3 {
+                 continue;
+             }
+             let object = format!("00:00:{}", rows.len() + 1);
+             fields[4] = &object;
+             rows.push(format!("{}: {}\n", rows.len() + 1, fields.join(" ")));
+         }
+     }
+     rows.concat().into_bytes()
+ }
+ 
++fn task_comm(name: &[u8; TASK_COMM_LEN]) -> Vec<u8> {
++    let length = name
++        .iter()
++        .position(|byte| *byte == 0)
++        .unwrap_or(TASK_COMM_LEN);
++    name[..length].to_vec()
++}
++
+ /// The thread-group leader's `comm`, without its terminating NUL byte.
+ fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
+     let name = state
+         .thread_group_leader_name
+         .lock()
+         .unwrap_or_else(|poisoned| poisoned.into_inner());
+-    let length = name
+-        .iter()
+-        .position(|byte| *byte == 0)
+-        .unwrap_or(TASK_COMM_LEN);
+-    name[..length].to_vec()
++    task_comm(&name)
+ }
+ 
+-/// Format the thread-group leader's name for `/proc/self/status`.
+-///
+-/// Linux renders newline and backslash as two-byte escape sequences in the
+-/// `Name` field. `/proc/self/stat` intentionally continues to use the raw
+-/// bytes returned by [`proc_comm`].
+-fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
+-    let raw = proc_comm(state);
++/// The calling thread's `comm`, without its terminating NUL byte.
++fn proc_thread_comm(state: &LoadedStaticElf) -> Vec<u8> {
++    task_comm(&state.thread_name)
++}
++
++fn format_proc_status_comm(raw: &[u8]) -> Vec<u8> {
+     let mut formatted = Vec::with_capacity(raw.len());
+-    for byte in raw {
++    for &byte in raw {
+         match byte {
+             b'\n' => formatted.extend_from_slice(b"\\n"),
+             b'\\' => formatted.extend_from_slice(b"\\\\"),
+             _ => formatted.push(byte),
+         }
+     }
+     formatted
+ }
+ 
++/// Format the thread-group leader's name for `/proc/self/status`.
++///
++/// Linux renders newline and backslash as two-byte escape sequences in the
++/// `Name` field. `/proc/self/stat` intentionally continues to use the raw
++/// bytes returned by [`proc_comm`].
++fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
++    let raw = proc_comm(state);
++    format_proc_status_comm(&raw)
++}
++
++fn proc_thread_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
++    let raw = proc_thread_comm(state);
++    format_proc_status_comm(&raw)
++}
++
+ fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
+     // Minimal: argv[0] followed by a NUL. reverie-kvm does not retain the full
+     // guest argv here, so consumers needing the complete command line get only
+     // argv[0]; the common "who am I" use is satisfied and the file is
+     // NUL-terminated like the kernel's.
+     let mut content = state.argv0.clone();
+     content.push(0);
+     content
+ }
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED: Expose only the deterministic guest stack map.
+ // TODO-HUMAN-REVIEW(PR-223): Review the minimal synthetic process map surface.
+ fn proc_self_maps_content(state: &LoadedStaticElf) -> Vec<u8> {
+     let stack_start = state.mmap_limit;
+     let stack_end = stack_start.saturating_add(STACK_LIMIT);
+     format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
+ }
+ 
+-fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
++fn proc_stat_content(pid: i32, ppid: i32, comm: &[u8]) -> Vec<u8> {
+     // pid (comm) state ppid ... The fields after ppid are process-accounting
+     // values reported as zero so no nondeterministic host state leaks. The real
+     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
+-    let mut line = format!("{} (", state.pid).into_bytes();
+-    line.extend_from_slice(&proc_comm(state));
+-    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
++    let mut line = format!("{pid} (").into_bytes();
++    line.extend_from_slice(comm);
++    line.extend_from_slice(format!(") R {ppid} 0 0 0 -1 0").as_bytes());
+     for _ in 0..44 {
+         line.extend_from_slice(b" 0");
+     }
+     line.push(b'\n');
+     line
+ }
+ 
+-fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
++fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
++    proc_stat_content(state.pid, state.ppid, &proc_comm(state))
++}
++
++fn proc_thread_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
++    proc_stat_content(state.tid, state.ppid, &proc_thread_comm(state))
++}
++
++fn proc_status_content(state: &LoadedStaticElf, name: &[u8], tgid: i32, pid: i32) -> Vec<u8> {
+     let mut content = b"Name:\t".to_vec();
+-    content.extend_from_slice(&proc_status_comm(state));
++    content.extend_from_slice(name);
+     content.push(b'\n');
+     content.extend_from_slice(
+         format!(
+             "Umask:\t{umask:04o}\n\
+          State:\tR (running)\n\
+-         Tgid:\t{pid}\n\
++         Tgid:\t{tgid}\n\
+          Ngid:\t0\n\
+          Pid:\t{pid}\n\
+          PPid:\t{ppid}\n\
+          TracerPid:\t0\n\
+          Uid:\t0\t0\t0\t0\n\
+          Gid:\t0\t0\t0\t0\n\
+          FDSize:\t64\n\
+          Threads:\t1\n",
+             umask = state.umask,
+-            pid = state.pid,
++            tgid = tgid,
++            pid = pid,
+             ppid = state.ppid,
+         )
+         .as_bytes(),
+     );
+     content
+ }
+ 
++fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
++    proc_status_content(state, &proc_status_comm(state), state.pid, state.pid)
++}
++
++// AUTONOMOUS-BOT-IMPLEMENTED
++// TODO-HUMAN-REVIEW(kvm-thread-self-procfs): Review opener-bound thread proc identity.
++// This models opener identity for output/exit/status repeat parity. It does not
++// claim native first-read timing, live Threads counts, proc inode/link identity,
++// or reads after the opening task exits: authenticated KVM carriers snapshot
++// their bytes at each successful readable open.
++fn proc_thread_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
++    proc_status_content(state, &proc_thread_status_comm(state), state.pid, state.tid)
++}
++
+ /// Back a synthesized /proc file with a memfd holding `content` and record it in
+ /// `proc_files` so `fstat`/`statx` report deterministic metadata.
+ fn open_private_fdinfo_carrier(
+     state: &mut LoadedStaticElf,
+     normalized_path: &[u8],
+     content: &[u8],
+     close_on_exec: bool,
+     path_only: bool,
+     guest_status_flags: libc::c_int,
+ ) -> i64 {
+     // SAFETY: the name is a valid NUL-terminated C string.
+     let raw = unsafe {
+         libc::memfd_create(
+             c"reverie-kvm-proc".as_ptr(),
+             (libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) as libc::c_uint,
+         )
+     };
+     if raw < 0 {
+         return io_error(std::io::Error::last_os_error());
+     }
+     // SAFETY: memfd_create returned a new owned descriptor on success.
+     let mut file = unsafe { std::fs::File::from_raw_fd(raw as RawFd) };
+     if let Err(error) = file.write_all(content) {
+         return io_error(error);
+     }
+     // Match the read-only mode exposed by the synthesized proc metadata. This
+     // also makes a writable proc-fd reopen fail before the private carrier can
+     // enter the guest table.
+     // SAFETY: file owns a live descriptor and the mode contains permission bits only.
+     if unsafe { libc::fchmod(file.as_raw_fd(), 0o444) } != 0 {
+         return io_error(std::io::Error::last_os_error());
+     }
+     // Seal the populated snapshot before publishing any guest-visible handle.
+     // In particular, F_SEAL_SEAL makes this exact immutable set permanent.
+     // SAFETY: file owns a live sealable memfd and the seal mask is valid.
+     if unsafe {
+         libc::fcntl(
+             file.as_raw_fd(),
+             libc::F_ADD_SEALS,
+             SYNTHETIC_PROC_REQUIRED_SEALS,
+         )
+     } != 0
+     {
+         return io_error(std::io::Error::last_os_error());
+     }
+     // The startup capability probe selected one exact host seal shape. Private
+     // fdinfo objects must match it too; accepting either known shape per object
+     // would permit a silent downgrade after startup.
+     // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
+     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+     if seals < 0 {
+         return io_error(std::io::Error::last_os_error());
+     }
+     if seals != state.proc_carrier_authority.selected_seals() {
+         return negative_errno(libc::EOPNOTSUPP);
+     }
+     let proc_path = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+         .expect("host fd path has no NUL");
+     let host_flags = if path_only {
+         libc::O_PATH | libc::O_CLOEXEC
+     } else {
+         libc::O_RDONLY
+             | libc::O_CLOEXEC
+             | (guest_status_flags & SYNTHETIC_PROC_PRESERVED_STATUS_FLAGS)
+     };
+     // Follow the supervisor's private proc magic link to expose the immutable
+     // memfd itself, never an O_PATH handle to that magic link's procfs inode.
+     // SAFETY: proc_path is NUL-terminated and the source descriptor is live.
+     let descriptor = unsafe { libc::open(proc_path.as_ptr(), host_flags) };
+     if descriptor < 0 {
+         return io_error(std::io::Error::last_os_error());
+     }
+     // SAFETY: open returned a new descriptor owned by this call.
+     let exposed = unsafe { std::fs::File::from_raw_fd(descriptor) };
+     // The writable construction handle never enters the guest table. Opening
+     // the proc-fd link creates a fresh O_RDONLY or O_PATH description at offset
+     // zero without sharing the construction description.
+     drop(file);
+     let inode = synthetic_proc_inode(normalized_path);
+     let guest_fd = insert_file_with_flags(state, exposed, close_on_exec, None);
+@@ -21481,160 +21526,303 @@ mod tests {
+             &mut memory,
+             &mut state,
+             libc::SYS_openat,
+             [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+         );
+         assert!(maps_fd >= 0, "openat self/maps failed: {maps_fd}");
+         let maps = read_fd_to_end(&mut memory, &mut state, maps_fd);
+         assert!(maps.ends_with(b"[stack]\n"));
+ 
+         write_c_string(&mut memory, 0x100, "../etc/passwd");
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_openat,
+                 [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+             ),
+             negative_errno(libc::ENOENT),
+             "unlisted relative proc path leaked through"
+         );
+ 
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_getdents64,
+                 [proc_fd as u64, 0x2000, 0x400, 0, 0, 0]
+             ),
+             0,
+             "the intentionally unenumerable synthetic directory must appear empty"
+         );
+     }
+ 
+     #[test]
+     fn synthetic_proc_self_reflects_guest_identity() {
+         let root = TestDir::new();
+         let mut state = test_state(&root.0); // pid=1, ppid=0, argv0="test"
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+ 
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
+         let stat = read_fd_to_end(&mut memory, &mut state, fd);
+         assert!(
+             String::from_utf8_lossy(&stat).starts_with("1 (test) R 0 "),
+             "{}",
+             String::from_utf8_lossy(&stat)
+         );
+ 
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/cmdline");
+         assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+ 
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
+         let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+         assert!(status.contains("Name:\ttest\n"), "{status}");
+         assert!(status.contains("Pid:\t1\n"), "{status}");
+         assert!(status.contains("PPid:\t0\n"), "{status}");
+ 
+         write_c_string(&mut memory, 0x100, "worker-name");
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_prctl,
+                 [libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
+             ),
+             0,
+         );
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
+         let stat = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+         assert!(stat.starts_with("1 (worker-name) R 0 "), "{stat}");
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
+         let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+         assert!(status.contains("Name:\tworker-name\n"), "{status}");
+         let fd = open_readonly(&mut memory, &mut state, "/proc/self/cmdline");
+         assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+ 
+         // /proc/<pid> aliases /proc/self for this guest's own pid.
+         let fd = open_readonly(&mut memory, &mut state, "/proc/1/cmdline");
+         assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+     }
+ 
++    #[test]
++    fn synthetic_proc_thread_self_binds_worker_identity_across_handoff() {
++        let root = TestDir::new();
++        let mut state = test_state(&root.0); // leader pid/tid=1, ppid=0
++        set_signal_test_name(&mut state, b"leader-before");
++        let mut leader = ElfExecutor::new(state, false);
++        let mut worker = leader.thread_child(7).unwrap();
++        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++
++        write_c_string(&mut memory, 0x100, "worker-before");
++        assert_eq!(
++            super::prctl(
++                &mut memory,
++                &mut worker.state,
++                &[libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
++            ),
++            0,
++        );
++        assert_eq!(worker.state.pid, 1);
++        assert_eq!(worker.state.tid, 7);
++
++        // Process-level proc files remain leader-oriented even when a worker
++        // performs the open.
++        let self_stat_fd = open_readonly(&mut memory, &mut worker.state, "/proc/self/stat");
++        assert!(self_stat_fd >= 0);
++        let self_stat = read_fd_to_end(&mut memory, &mut worker.state, self_stat_fd);
++        assert!(
++            self_stat.starts_with(b"1 (leader-before) R 0 "),
++            "{self_stat:?}"
++        );
++        assert_eq!(close(&mut worker.state, self_stat_fd as u64), 0);
++
++        let self_status_fd = open_readonly(&mut memory, &mut worker.state, "/proc/self/status");
++        assert!(self_status_fd >= 0);
++        let self_status = String::from_utf8(read_fd_to_end(
++            &mut memory,
++            &mut worker.state,
++            self_status_fd,
++        ))
++        .unwrap();
++        assert!(
++            self_status.contains("Name:\tleader-before\n"),
++            "{self_status}"
++        );
++        assert!(self_status.contains("Tgid:\t1\n"), "{self_status}");
++        assert!(self_status.contains("Pid:\t1\n"), "{self_status}");
++        assert!(self_status.contains("PPid:\t0\n"), "{self_status}");
++        assert_eq!(close(&mut worker.state, self_status_fd as u64), 0);
++
++        // The thread-self carriers take their immutable snapshot from the
++        // opening worker. Leave both offsets untouched for the leader handoff.
++        let thread_stat_fd =
++            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/stat");
++        let thread_status_fd =
++            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/status");
++        assert!(thread_stat_fd >= 0);
++        assert!(thread_status_fd >= 0);
++        assert_eq!(
++            worker.state.proc_files.get(&(thread_stat_fd as i32)),
++            Some(&synthetic_proc_inode(b"/proc/thread-self/stat"))
++        );
++        assert_eq!(
++            worker.state.proc_files.get(&(thread_status_fd as i32)),
++            Some(&synthetic_proc_inode(b"/proc/thread-self/status"))
++        );
++
++        write_c_string(&mut memory, 0x200, "leader-after");
++        assert_eq!(
++            super::prctl(
++                &mut memory,
++                &mut leader.state,
++                &[libc::PR_SET_NAME as u64, 0x200, 0, 0, 0, 0],
++            ),
++            0,
++        );
++
++        // Model the executor's CLONE_FILES publication/install boundary: the
++        // leader receives the worker-opened descriptions, then reads them only
++        // after its own name changed. Keep the opener's name stable through the
++        // read because native procfs materializes bytes later than this carrier.
++        {
++            let mut shared = worker
++                .file_table
++                .lock()
++                .expect("KVM file-table lock poisoned");
++            shared.update_from_elf(&worker.state).unwrap();
++        }
++        {
++            let shared = leader
++                .file_table
++                .lock()
++                .expect("KVM file-table lock poisoned");
++            shared.install(&mut leader.state).unwrap();
++        }
++
++        let thread_stat = read_fd_to_end(&mut memory, &mut leader.state, thread_stat_fd);
++        assert!(
++            thread_stat.starts_with(b"7 (worker-before) R 0 "),
++            "{thread_stat:?}"
++        );
++        let thread_status = String::from_utf8(read_fd_to_end(
++            &mut memory,
++            &mut leader.state,
++            thread_status_fd,
++        ))
++        .unwrap();
++        assert!(
++            thread_status.contains("Name:\tworker-before\n"),
++            "{thread_status}"
++        );
++        assert!(thread_status.contains("Tgid:\t1\n"), "{thread_status}");
++        assert!(thread_status.contains("Pid:\t7\n"), "{thread_status}");
++        assert!(thread_status.contains("PPid:\t0\n"), "{thread_status}");
++
++        // A later open observes a later worker name. This does not assert what
++        // an earlier unread carrier observes across a name change: native and
++        // Detcore materialize at first read while KVM carriers snapshot at open.
++        write_c_string(&mut memory, 0x100, "worker-after");
++        assert_eq!(
++            super::prctl(
++                &mut memory,
++                &mut worker.state,
++                &[libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
++            ),
++            0,
++        );
++        let fresh_status_fd =
++            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/status");
++        assert!(fresh_status_fd >= 0);
++        let fresh_status = String::from_utf8(read_fd_to_end(
++            &mut memory,
++            &mut worker.state,
++            fresh_status_fd,
++        ))
++        .unwrap();
++        assert!(
++            fresh_status.contains("Name:\tworker-after\n"),
++            "{fresh_status}"
++        );
++        assert!(fresh_status.contains("Tgid:\t1\n"), "{fresh_status}");
++        assert!(fresh_status.contains("Pid:\t7\n"), "{fresh_status}");
++    }
++
+     #[test]
+     fn synthetic_proc_metadata_is_synthetic_and_stable() {
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+ 
+         // fstat of an open synthetic descriptor reports synthesized identity.
+         let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+         let stat_address = 0x1000;
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_fstat,
+                 [fd as u64, stat_address, 0, 0, 0, 0]
+             ),
+             0
+         );
+         let stat: libc::stat = read_struct(&memory, stat_address);
+         assert_eq!(stat.st_mode, libc::S_IFREG | 0o444);
+         assert_eq!(stat.st_ino, synthetic_proc_inode(b"/proc/uptime"));
+         assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_PROC_DEV_MINOR));
+         assert_eq!(stat.st_size, b"0.00 0.00\n".len() as libc::off_t);
+         assert_eq!(stat.st_uid, 0);
+         assert_eq!(stat.st_mtime, 0);
+ 
+         // A path-addressed newfstatat yields the identical synthetic identity.
+         write_c_string(&mut memory, 0x100, "/proc/uptime");
+         let path_stat_address = 0x1200;
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_newfstatat,
+                 [libc::AT_FDCWD as u64, 0x100, path_stat_address, 0, 0, 0]
+             ),
+             0
+         );
+         let path_stat: libc::stat = read_struct(&memory, path_stat_address);
+         assert_eq!(path_stat.st_ino, stat.st_ino);
+         assert_eq!(path_stat.st_size, stat.st_size);
+         assert_eq!(path_stat.st_mode, stat.st_mode);
+     }
+ 
+     #[test]
+     fn captured_output_fstat_is_synthetic_and_stable() {
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+         let mut output = CapturedOutput::default();
+         let mut stats = Vec::new();
+ 
+         for (fd, address) in [(libc::STDOUT_FILENO, 0x1000), (libc::STDERR_FILENO, 0x1200)] {
+             let action = execute_basic_syscall_with_output(
+                 &mut memory,
+                 &mut state,
+                 &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, address, 0, 0, 0, 0]),
+                 None,
+                 Some(&mut output),
+             );
+             assert!(matches!(
+                 action,
+                 SyscallAction::Continue {
+                     result: 0,
+                     segment: None
+                 }
+             ));
+             let stat: libc::stat = read_struct(&memory, address);
+             let identity = output
+                 .metadata()
+                 .identity(output_alias(&state, fd).unwrap());
+             assert_eq!(
+                 (stat.st_dev, stat.st_ino),
+                 (identity.device, identity.inode)
+             );
+             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+             assert_eq!(stat.st_size, 0);
+             assert_eq!(stat.st_blocks, 0);
+             assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+             stats.push(stat);
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index e9a8e834..361f3917 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -8003,160 +8003,354 @@ static int read_proc(const char *path, unsigned char *buffer, size_t capacity) {
+   if (fd < 0) return -1;
+   ssize_t count = read(fd, buffer, capacity);
+   close(fd);
+   return count < 0 ? -1 : (int)count;
+ }
+ 
+ static void *worker(void *unused) {
+   (void)unused;
+   unsigned char worker_name[16] = "worker";
+   unsigned char observed[16] = {0};
+   unsigned char buffer[1024];
+   if (prctl(PR_SET_NAME, worker_name) != 0) return (void *)(uintptr_t)1;
+   if (prctl(PR_GET_NAME, observed) != 0) return (void *)(uintptr_t)2;
+   if (memcmp(observed, worker_name, sizeof(observed)) != 0)
+     return (void *)(uintptr_t)3;
+   if (write(1, observed, sizeof(observed)) != sizeof(observed))
+     return (void *)(uintptr_t)4;
+ 
+   int count = read_proc("/proc/self/stat", buffer, sizeof(buffer));
+   const unsigned char *found = count < 0 ? 0 : find_bytes(
+       buffer, (size_t)count, stat_name, sizeof(stat_name));
+   if (!found) return (void *)(uintptr_t)5;
+   if (write(1, found, sizeof(stat_name)) != sizeof(stat_name))
+     return (void *)(uintptr_t)6;
+ 
+   count = read_proc("/proc/self/status", buffer, sizeof(buffer));
+   found = count < 0 ? 0 : find_bytes(
+       buffer, (size_t)count, status_name, sizeof(status_name));
+   if (!found) return (void *)(uintptr_t)7;
+   if (write(1, found, sizeof(status_name)) != sizeof(status_name))
+     return (void *)(uintptr_t)8;
+   return 0;
+ }
+ 
+ int main(void) {
+   if (prctl(PR_SET_NAME, leader_name) != 0) return 10;
+   pthread_t thread;
+   if (pthread_create(&thread, 0, worker, 0) != 0) return 11;
+   void *result = 0;
+   if (pthread_join(thread, &result) != 0) return 12;
+   if (result != 0) return 20 + (int)(uintptr_t)result;
+ 
+   unsigned char observed[16] = {0};
+   if (prctl(PR_GET_NAME, observed) != 0) return 13;
+   if (memcmp(observed, leader_name, sizeof(leader_name)) != 0) return 14;
+   if (write(1, observed, sizeof(observed)) != sizeof(observed)) return 15;
+   return 0;
+ }
+ "#,
+     );
+     let mut expected = b"worker".to_vec();
+     expected.resize(16, 0);
+     expected.extend_from_slice(&[b'(', 0xff, b'\n', b'\\', b'L', b')']);
+     expected.extend_from_slice(b"Name:\t\xff\\n\\\\L\n");
+     expected.extend_from_slice(&[0xff, b'\n', b'\\', b'L']);
+     expected.resize(51, 0);
+ 
+     let native = std::process::Command::new(&executable)
+         .current_dir(&directory.0)
+         .output()
+         .unwrap();
+     assert!(
+         native.status.success(),
+         "native task-name fixture failed: {native:?}"
+     );
+     assert_eq!(native.stdout, expected, "native Linux format changed");
+     assert!(native.stderr.is_empty());
+ 
+     if !kvm_available("native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes")
+     {
+         return;
+     }
+ 
+     let executable = executable.to_str().unwrap();
+     let (kvm_stdout, kvm_stderr) =
+         run_host_program_captured(executable, &[executable], &directory.0);
+     assert_eq!(kvm_stdout, native.stdout, "KVM must match native Linux");
+     assert!(kvm_stderr.is_empty());
+ }
+ 
++// AUTONOMOUS-BOT-IMPLEMENTED
++// TODO-HUMAN-REVIEW(kvm-thread-self-procfs): Review opener-bound thread proc identity.
++// This fixture proves normalized opener-identity output/exit/status repeat
++// parity only. It deliberately does not claim first-read timing, Threads count,
++// proc inode/link identity, scheduler-state, or post-exit read parity.
++#[test]
++fn kvm_thread_self_procfs_binds_opener_identity_across_handoff() {
++    if !kvm_available("KVM thread-self procfs opener identity handoff") {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "thread-self-procfs-handoff",
++        r#"
++#define _GNU_SOURCE
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++static int ready_pipe[2];
++static int release_pipe[2];
++static _Atomic int worker_stat_fd = -1;
++static _Atomic int worker_status_fd = -1;
++static _Atomic pid_t worker_tid = -1;
++static _Atomic int worker_error;
++
++static int send_byte(int fd) {
++  char byte = 'x';
++  return write(fd, &byte, 1) == 1 ? 0 : -1;
++}
++
++static int receive_byte(int fd) {
++  char byte = 0;
++  return read(fd, &byte, 1) == 1 && byte == 'x' ? 0 : -1;
++}
++
++static int read_all(int fd, char *buffer, size_t capacity) {
++  size_t used = 0;
++  while (used + 1 < capacity) {
++    ssize_t count = read(fd, buffer + used, capacity - used - 1);
++    if (count < 0) return -1;
++    if (count == 0) break;
++    used += (size_t)count;
++  }
++  buffer[used] = 0;
++  return (int)used;
++}
++
++static int read_path(const char *path, char *buffer, size_t capacity) {
++  int fd = open(path, O_RDONLY | O_CLOEXEC);
++  if (fd < 0) return -1;
++  int count = read_all(fd, buffer, capacity);
++  close(fd);
++  return count;
++}
++
++static int parse_stat(const char *content, long *pid, char comm[32], long *ppid) {
++  char state = 0;
++  /* The reader can observe a blocked opener on native Linux. This cell checks
++     identity fields, not scheduler-state parity. */
++  return sscanf(content, "%ld (%31[^)]) %c %ld", pid, comm, &state, ppid) == 4;
++}
++
++static int status_number(const char *content, const char *field, long *value) {
++  size_t length = strlen(field);
++  for (const char *line = content; line && *line;
++       line = strchr(line, '\n') ? strchr(line, '\n') + 1 : 0) {
++    if (!strncmp(line, field, length))
++      return sscanf(line + length, "%ld", value) == 1;
++  }
++  return 0;
++}
++
++static int verify_status(const char *content, const char *name, long tgid,
++                         long pid, long ppid) {
++  char expected_name[64];
++  long actual_tgid = -1, actual_pid = -1, actual_ppid = -1;
++  snprintf(expected_name, sizeof(expected_name), "Name:\t%s\n", name);
++  return strstr(content, expected_name) &&
++         status_number(content, "Tgid:\t", &actual_tgid) &&
++         status_number(content, "Pid:\t", &actual_pid) &&
++         status_number(content, "PPid:\t", &actual_ppid) &&
++         actual_tgid == tgid && actual_pid == pid && actual_ppid == ppid;
++}
++
++static int verify_worker_sees_process_self(void) {
++  char stat_content[4096], status_content[4096], comm[32];
++  long stat_pid = -1, stat_ppid = -1;
++  long pid = (long)getpid(), ppid = (long)getppid();
++  if (read_path("/proc/self/stat", stat_content, sizeof(stat_content)) <= 0 ||
++      !parse_stat(stat_content, &stat_pid, comm, &stat_ppid) ||
++      stat_pid != pid || stat_ppid != ppid || strcmp(comm, "leader-thread"))
++    return 1;
++  if (read_path("/proc/self/status", status_content, sizeof(status_content)) <= 0 ||
++      !verify_status(status_content, "leader-thread", pid, pid, ppid))
++    return 2;
++  return 0;
++}
++
++static void *worker(void *unused) {
++  (void)unused;
++  int error = 0;
++  int stat_fd = -1, status_fd = -1;
++  const char worker_name[] = "worker-thread";
++  if (prctl(PR_SET_NAME, worker_name, 0, 0, 0) != 0) error = 1;
++  pid_t tid = (pid_t)syscall(SYS_gettid);
++  if (!error && tid == getpid()) error = 2;
++  if (!error) error = verify_worker_sees_process_self() * 10;
++  if (!error) {
++    stat_fd = open("/proc/thread-self/stat", O_RDONLY | O_CLOEXEC);
++    status_fd = open("/proc/thread-self/status", O_RDONLY | O_CLOEXEC);
++    if (stat_fd < 0 || status_fd < 0) error = 3;
++  }
++  atomic_store_explicit(&worker_stat_fd, stat_fd, memory_order_relaxed);
++  atomic_store_explicit(&worker_status_fd, status_fd, memory_order_relaxed);
++  atomic_store_explicit(&worker_tid, tid, memory_order_relaxed);
++  atomic_store_explicit(&worker_error, error, memory_order_release);
++  if (send_byte(ready_pipe[1]) != 0) error = 4;
++  if (receive_byte(release_pipe[0]) != 0 && !error) error = 5;
++  if (stat_fd >= 0) close(stat_fd);
++  if (status_fd >= 0) close(status_fd);
++  return (void *)(uintptr_t)error;
++}
++
++int main(void) {
++  const char leader_name[] = "leader-thread";
++  if (prctl(PR_SET_NAME, leader_name, 0, 0, 0) != 0) return 10;
++  if (pipe2(ready_pipe, O_CLOEXEC) != 0 || pipe2(release_pipe, O_CLOEXEC) != 0)
++    return 11;
++  pthread_t thread;
++  if (pthread_create(&thread, 0, worker, 0) != 0) return 12;
++  if (receive_byte(ready_pipe[0]) != 0) return 13;
++
++  int error = atomic_load_explicit(&worker_error, memory_order_acquire);
++  int stat_fd = atomic_load_explicit(&worker_stat_fd, memory_order_relaxed);
++  int status_fd = atomic_load_explicit(&worker_status_fd, memory_order_relaxed);
++  pid_t opener_tid = atomic_load_explicit(&worker_tid, memory_order_relaxed);
++  char stat_content[4096], status_content[4096], comm[32];
++  long stat_tid = -1, stat_ppid = -1;
++  long pid = (long)getpid(), ppid = (long)getppid();
++  if (!error &&
++      (read_all(stat_fd, stat_content, sizeof(stat_content)) <= 0 ||
++       !parse_stat(stat_content, &stat_tid, comm, &stat_ppid) ||
++       stat_tid != opener_tid || stat_ppid != ppid ||
++       strcmp(comm, "worker-thread")))
++    error = 30;
++  if (!error &&
++      (read_all(status_fd, status_content, sizeof(status_content)) <= 0 ||
++       !verify_status(status_content, "worker-thread", pid, opener_tid, ppid)))
++    error = 31;
++
++  if (send_byte(release_pipe[1]) != 0 && !error) error = 32;
++  void *result = 0;
++  if (pthread_join(thread, &result) != 0 && !error) error = 33;
++  if (!error && result != 0) error = 34;
++  if (error) return error;
++  puts("thread-self self_name=leader-thread self_pid=tgid "
++       "thread_name=worker-thread thread_pid=opener_tid opener_not_reader=1");
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable).output().unwrap();
++    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
++    assert_eq!(
++        native.stdout,
++        b"thread-self self_name=leader-thread self_pid=tgid thread_name=worker-thread \
++thread_pid=opener_tid opener_not_reader=1\n"
++    );
++    assert!(native.stderr.is_empty(), "native: {native:?}");
++
++    let executable = executable.to_str().unwrap();
++    let direct = run_host_program_captured(executable, &[executable], &directory.0);
++    let direct_repeat = run_host_program_captured(executable, &[executable], &directory.0);
++    assert_eq!(direct, (native.stdout.clone(), native.stderr.clone()));
++    assert_eq!(direct_repeat, direct);
++
++    let tool = run_host_program_with_tool_captured(executable, &[executable], &directory.0);
++    let tool_repeat = run_host_program_with_tool_captured(executable, &[executable], &directory.0);
++    assert_eq!(tool, (native.stdout, native.stderr));
++    assert_eq!(tool_repeat, tool);
++}
++
+ #[test]
+ fn kvm_direct_and_tool_match_prctl_identity_cell() {
+     let directory = TestDirectory::new();
+     let executable = compile_c_program(
+         &directory.0,
+         "prctl-identity",
+         r#"
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/prctl.h>
+ 
+ int main(void) {
+   const char *wanted = "hermit-probe";
+   char name[16] = {0};
+   int pdeath = -1;
+ 
+   if (prctl(PR_SET_NAME, wanted, 0, 0, 0) != 0 ||
+       prctl(PR_GET_NAME, name, 0, 0, 0) != 0 || strcmp(name, wanted) != 0)
+     return 1;
+   if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
+     return 2;
+   int dumpable_after_clear = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+   if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) != 0)
+     return 3;
+   int dumpable_after_set = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+   if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0)
+     return 4;
+   int keepcaps_after_set = prctl(PR_GET_KEEPCAPS, 0, 0, 0, 0);
+   if (prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0)
+     return 5;
+   int keepcaps_after_clear = prctl(PR_GET_KEEPCAPS, 0, 0, 0, 0);
+   if (prctl(PR_GET_PDEATHSIG, &pdeath, 0, 0, 0) != 0)
+     return 6;
+   if (dumpable_after_clear != 0 || dumpable_after_set != 1 ||
+       keepcaps_after_set != 1 || keepcaps_after_clear != 0 || pdeath != 0)
+     return 7;
+ 
+   printf("prctl-identity name=%s dumpable_after_clear=%d dumpable_after_set=%d "
+          "keepcaps_after_set=%d keepcaps_after_clear=%d pdeathsig_initial=%d\n",
+          name, dumpable_after_clear, dumpable_after_set, keepcaps_after_set,
+          keepcaps_after_clear, pdeath);
+   return 0;
+ }
+ "#,
+     );
+     let expected = concat!(
+         "prctl-identity name=hermit-probe dumpable_after_clear=0 ",
+         "dumpable_after_set=1 keepcaps_after_set=1 keepcaps_after_clear=0 ",
+         "pdeathsig_initial=0\n",
+     )
+     .as_bytes();
+     let native = std::process::Command::new(&executable)
+         .current_dir(&directory.0)
+         .output()
+         .unwrap();
+     assert!(native.status.success(), "native fixture failed: {native:?}");
+     assert_eq!(native.stdout, expected);
+     assert!(native.stderr.is_empty());
+ 
+     if !kvm_available("kvm_direct_and_tool_match_prctl_identity_cell") {
+         return;
+     }
+ 
+     let executable = executable.to_str().unwrap();
+     let (direct_stdout, direct_stderr) =
+         run_host_program_captured(executable, &[executable], &directory.0);
+     assert_eq!(direct_stdout, expected);
+     assert!(direct_stderr.is_empty());
+     let (tool_stdout, tool_stderr) =
+         run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+     assert_eq!(tool_stdout, expected);
+     assert!(tool_stderr.is_empty());
+ }
+ 
+ #[test]
+ fn kvm_direct_and_tool_match_thp_disable_cell() {
+     let directory = TestDirectory::new();
+     let executable = compile_c_program(
+         &directory.0,
+         "thp-disable",
+@@ -10208,160 +10402,161 @@ prctl_elf_copyout_case!(
+     "bss-split",
+     true,
+     true,
+     128
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_bss_split_rw_name_upper,
+     "bss-split",
+     true,
+     true,
+     2304
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_r_pdeath_lower,
+     "file-bss",
+     false,
+     false,
+     128
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_r_pdeath_upper,
+     "file-bss",
+     false,
+     false,
+     2304
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_r_name_lower,
+     "file-bss",
+     false,
+     true,
+     128
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_r_name_upper,
+     "file-bss",
+     false,
+     true,
+     2304
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_rw_pdeath_lower,
+     "file-bss",
+     true,
+     false,
+     128
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_rw_pdeath_upper,
+     "file-bss",
+     true,
+     false,
+     2304
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_rw_name_lower,
+     "file-bss",
+     true,
+     true,
+     128
+ );
+ prctl_elf_copyout_case!(
+     prctl_elf_copyout_file_bss_rw_name_upper,
+     "file-bss",
+     true,
+     true,
+     2304
+ );
+ 
+ #[test]
+ fn repair_prctl_required_kvm_is_not_optional() {
+     let directory = TestDirectory::new();
+     let library = compile_c_program_with_args(
+         &directory.0,
+         "deny-kvm.so",
+         PRCTL_DENY_KVM,
+         &["-shared", "-fPIC", "-ldl"],
+     );
+     for test in [
+         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
++        "kvm_thread_self_procfs_binds_opener_identity_across_handoff",
+         "kvm_direct_and_tool_match_prctl_identity_cell",
+         "kvm_direct_and_tool_match_thp_disable_cell",
+     ] {
+         let output = std::process::Command::new(std::env::current_exe().unwrap())
+             .args([test, "--exact", "--test-threads=1", "--nocapture"])
+             .env("LD_PRELOAD", &library)
+             .env("REVERIE_REQUIRE_KVM", "1")
+             .output()
+             .unwrap();
+         assert_eq!(
+             output.status.code(),
+             Some(101),
+             "required test {test}: {output:?}"
+         );
+         assert!(
+             String::from_utf8_lossy(&output.stderr).contains("requires usable /dev/kvm"),
+             "{output:?}"
+         );
+     }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Default)]
+ struct SignalExitOrderTool {
+     process: i32,
+ }
+ 
+ #[reverie::tool]
+ impl Tool for SignalExitOrderTool {
+     type GlobalState = ();
+     type ThreadState = ();
+ 
+     fn new(pid: Pid, _config: &()) -> Self {
+         Self {
+             process: pid.as_raw(),
+         }
+     }
+ 
+     async fn handle_syscall_event<G: Guest<Self>>(
+         &self,
+         guest: &mut G,
+         syscall: Syscall,
+     ) -> Result<i64, reverie::Error> {
+         Ok(guest.inject(syscall).await?)
+     }
+ 
+     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+         &self,
+         tid: Pid,
+         _global: &G,
+         _thread_state: Self::ThreadState,
+         _status: ExitStatus,
+     ) -> Result<(), reverie::Error> {
+         if tid.as_raw() != self.process {
+             let mut bytes = [0; std::mem::size_of::<i32>()];
+             let mut memory = SIGNAL_EXIT_MEMORY
+                 .lock()
+                 .expect("signal-exit memory lock poisoned");
+             let memory = memory
+                 .as_mut()
+                 .expect("signal-exit memory was not installed");
+             memory
+                 .read(SIGNAL_EXIT_CHILD_TID, &mut bytes)
+                 .expect("child TID word must be readable at signal exit");
+             SIGNAL_EXIT_OBSERVED_TID.store(i32::from_le_bytes(bytes) as u64, Ordering::SeqCst);
+             memory
+                 .write(
+                     SIGNAL_EXIT_CHILD_TID,
+                     &SIGNAL_EXIT_AFTER_CALLBACK.to_le_bytes(),
+                 )
+                 .expect("callback sentinel must be writable at signal exit");
+         }
+         Ok(())
+     }
+ }
+ 
+ const SIGNAL_HOOK_MARKER: usize = 0x0800_0000;
+ 
+ #[derive(Default)]
+ struct SignalHookLog {
+     signals: Mutex<Vec<i32>>,

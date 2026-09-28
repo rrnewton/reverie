@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 4 tests
+test executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat ... ok
+test executor::tests::anonymous_statx_mount_id_selection_preserves_the_returned_mask ... ok
+test executor::tests::memfd_create_registers_writable_anonymous_file ... ok
+test executor::tests::scm_rights_retains_anonymous_identity_after_every_sender_fd_closes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 869 filtered out; finished in 0.01s
+

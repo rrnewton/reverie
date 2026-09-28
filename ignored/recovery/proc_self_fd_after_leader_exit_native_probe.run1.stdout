@@ -1,0 +1,1 @@
+leader_gone=1 self_stat_rc=0 self_stat_errno=0 self_is_dir=1 self_open_ok=1 self_open_errno=0 absolute_rc=-1 absolute_errno=2 self_relative_rc=-1 self_relative_errno=2 thread_open_ok=1 thread_open_errno=0 thread_relative=/dev/null thread_relative_errno=0

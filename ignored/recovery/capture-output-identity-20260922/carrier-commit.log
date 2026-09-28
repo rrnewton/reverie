@@ -1,0 +1,2 @@
+[codex/kvm-pr611-recovery-20260922 cdbe93b7] Isolate captured KVM output descriptors
+ 5 files changed, 1539 insertions(+), 110 deletions(-)

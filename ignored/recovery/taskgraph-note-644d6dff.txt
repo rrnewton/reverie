@@ -1,0 +1,24 @@
+2026-09-22 KVM PR611 recovery checkpoint
+
+Authorized checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Verified starting origin/main: 5f5cc66039de38bc07301705753fc6e6de4d1928
+
+Product constraint preserved. The temporary current-main adaptation that removed loginuid_fds/proc_carrier_authority was discarded before publication. The local qualification graph is current main, then content-equivalent rebases of all five commits from current PR610 head acffb228964041190ff9aa071454a5f0017e34a1, then original PR611 implementation b33a3df0591a0bb610f583c0974d247e814c6c59, then repair 644d6dffc7d6f4ff648d04f13345888a17018d7a. Range/content audit found all 17 PR610 paths byte-identical; acffb228..local PR610 tip differs only in the two DBT paths inherited from current main.
+
+Repair substance: readable synthetic fdinfo syncfs now returns Linux-compatible success without flushing the private carrier; proc_files and loginuid_fds authentication dependencies remain. Production syncfs has a test-only thread-local raw boundary. Dispatcher tests reject no-call, double-call, wrong-host-fd, errno-collapse, O_PATH-host-call, and fdinfo-carrier-flush mutants. Real KVM fixture adds native/KVM stdout, stderr, and zero-exit parity for readable fdinfo while retaining authenticated SCM_RIGHTS carrier sender-close, dup/remint, fork, and exec coverage.
+
+Exact-head evidence at 644d6dff:
+- focused syncfs unit slice: 5 passed, 0 failed
+- exact fdinfo dispatcher: 1 passed, 0 failed
+- all reverie-kvm library tests default parallel: 861 passed, 0 failed, 0 ignored, 8.74 seconds
+- all library tests serial: 861 passed, 0 failed, 0 ignored, 43.55 seconds
+- REVERIE_REQUIRE_KVM=1 exact real-KVM test: 3 of 3 passed; 0.32, 0.28, and 0.29 seconds
+- cargo fmt check and git diff check pass
+- clippy passes with only pre-existing PR610 proc_carrier::public_id dead_code warning
+
+Three independent adversarial reviews approve exact 644d6dff. They explicitly found no weakened assertion, widened tolerance, added skip/exemption, relaxed comparator, relabelled failure, or deleted check. Claims are strictly KVM output/exit/status repeat parity, never L2 log parity.
+
+Publication/landing blocker: PR610 is open draft and clean at exact head acffb228, but has zero CI/check runs and no independent Claude-family exact-head approval. It is not on origin/main. Do not push this combined local stack. After exact PR610 lands, prove it is an ancestor of origin/main, rebuild PR611 from that main using original b33 plus the repair, publish a bot-disclosed PR, bind both TODO markers to the new PR number, and rerun exact-head review.
+
+Legacy anchor classification: kvm-ratchet-90-owner-5.service reports absent/inactive, but PID 1773437 is live in its cgroup with cwd at slot kvm-ratchet-90-run5; the slot is held. Git is clean and published, but frozen 119-cell evidence remains with all eight hashes verified and there is no handoff. Coordinator must not reclaim it yet; first resolve the live owner and evidence handoff, then unhold and let wrkslots re-evaluate.

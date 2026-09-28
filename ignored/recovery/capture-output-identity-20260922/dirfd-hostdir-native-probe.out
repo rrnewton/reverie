@@ -1,0 +1,8 @@
+initial mode=0750 atime=1790121664.846473569 mtime=1790121664.846473569
+fchmodat2-empty ret=0 errno=0(Success)
+after-fchmodat2 mode=0711 atime=1790121664.846473569 mtime=1790121664.846473569
+utimensat-empty ret=0 errno=0(Success)
+after-utimensat-empty mode=0711 atime=1640995198.000000123 mtime=1640995199.000000456
+utimensat-null ret=0 errno=0(Success)
+after-utimensat-null mode=0711 atime=1640995196.000000789 mtime=1640995197.000000987
+victim=native-hostdir-victim-1306911

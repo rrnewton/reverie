@@ -1,0 +1,33 @@
+2026-09-22 KVM inherited-stdin identity and exit-lifetime slice qualified locally; not published or landed.
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Exact commit: 46c7db94338cf259d1232ec86ebdd5074e5e0ba1
+Tree: 99f422cf84ab5b090862e14fdfe72c2348ef5657
+Parent: 5ccad573afc40fb8cda85c07cd9ded5518a12100
+Base origin/main: 5f5cc66039de38bc07301705753fc6e6de4d1928
+Commit delta: 4 files, 226 insertions, 18 deletions
+Reviewed parent-diff SHA-256: ed914c32f96b8bd0ff483079955177c8aad35e7f80852964ece707dc1d04fa40
+PR dependency: https://github.com/rrnewton/reverie/pull/610 remains read-only pending independent Claude-family approval; https://github.com/rrnewton/reverie/pull/611 remains stacked on it. No push or PR publication was attempted.
+
+Implemented deterministic identity initialization for caller-supplied pipe or socket stdin before guest/file-table publication. The existing host-object classifier and shared registry group the inherited object by hidden host device/inode while exposing only the deterministic synthetic device, inode, legacy mount ID, and unique mount ID. Ordinary stdin returns before allocator use and remains native. The identity survives dup, fork, and non-CLOEXEC exec; CLOEXEC removes it.
+
+Fixed the anonymous identity lifetime at process exit. The exiting executor now detaches its old file table, releases file-table and signal guards, drops the old table reference and local identity Arcs, then cleans dead weak registry entries. A live fork or CLONE_FILES sibling retains its strong identity; a descriptor held only by a kernel SCM queue does not become an unbounded implicit identity escrow and may be reminted on later receive, matching the declared live-source SCM scope.
+
+Native evidence: ignored/recovery/inherited-anonymous-fd-native-probe-20260922/REPORT.md SHA-256 b2c2279bea1acd06984ee87ca607a1baacb6c21f3a6165816847ede35055ce11; source SHA-256 50f749599b85dc772115d0824cf8244772c1fb8c9727896897b77020be35c287; binary SHA-256 dea1c7c664504048d94ac5c57322c363c6363b8ddcda1f3ff771c4273cd7c56e. Six bounded native launches, no Hermit. Pipe/socket stat, statx, proc-link, and fdinfo identities agree through dup, fork, exec, and post-exec fork; fresh lineages get different host inodes. Standard-stream aliases share identity only when backed by the same native object.
+
+Validation on the frozen diff and exact commit:
+- inherited stdin epoll, replacement, fork, exec, and CLOEXEC lifecycle tests: 3 passed, 0 failed
+- final-owner versus live-CLONE_FILES identity teardown: 1 passed, 0 failed
+- required real-KVM identity integration: 1 passed, 0 failed in each of three final outer repetitions, with test bodies 0.56, 1.12, and 0.52 seconds; each test runs native once, direct KVM twice, and Tool KVM twice on fresh host pipes
+- the KVM oracle independently rejects raw host device or inode equality, requires exact synthetic pipe device and both mount-ID constants, requires inherited stdin differ from a concurrently live guest pipe, and checks fstat, fstatat, statx, direct and anchored proc-fd links, fdinfo, dup, and fork
+- exact stdout, stderr, and exit-status repeat parity only; required-KVM refusal meta-test: 1 passed, 0 failed in 0.18 seconds
+- full reverie-kvm library default: 875 passed, 0 failed, 10.05 seconds test body
+- full reverie-kvm library serial: 875 passed, 0 failed, 32.63 seconds test body
+- cargo clippy all targets with warnings denied, cargo fmt check, and git diff check: pass
+- three independent exact-diff adversarial reviews: APPROVE, no findings after two evidence-strengthening findings were fixed
+- three independent exact-commit rebinds: APPROVE, no findings; all explicitly checked for weakened assertions, tolerances, exemptions, skips, relabeling, and deleted checks
+
+Declared residuals: the required-KVM fixture exercises pipe stdin; socket stdin uses the same already-reviewed classifier and socket sanitizer but has no new end-to-end case. Noncaptured inherited stdout/stderr still lack initialization. Captured stdout/stderr intentionally remain in their separate host-backed CaptureIdentity domain and are a repeat-parity residual. Queued SCM_RIGHTS receive after every guest source reference closes may remint. Other anonymous inode classes, existing proc-fd restrictions, and lack of synthetic proc statfs remain. No L2, syscall-log, or record/replay parity is claimed.
+
+Current local stack from base through this commit: 13 commits, 19 files, 13489 insertions, 864 deletions. The official Hermit census remains 243 green, 8 red, 109 disabled; this unlanded Reverie work does not change that official count.

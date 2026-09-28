@@ -1,0 +1,2 @@
+[codex/kvm-pr611-recovery-20260922 6c3d3e3d] Stabilize captured KVM pipefs metadata
+ 4 files changed, 408 insertions(+), 5 deletions(-)

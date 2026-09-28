@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 3 tests
+test executor::tests::capability_lifecycle_adoption_registers_current_permitted_set ... ok
+test executor::tests::capability_lifecycle_rejects_stale_generation_updates ... ok
+test executor::tests::capability_syscalls_round_trip_and_bound_the_exec_persona ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 867 filtered out; finished in 0.00s
+

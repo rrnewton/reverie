@@ -1,0 +1,19 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.03s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 1 test
+
+thread 'executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias' (1503141) panicked at reverie-kvm/src/capture_identity_tests.rs:308:5:
+O_PATH capture reopen returned -38
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias ... FAILED
+
+failures:
+
+failures:
+    executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

@@ -1,0 +1,73 @@
+    Blocking waiting for file lock on build directory
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error: this function has too many arguments (8/7)
+   --> reverie-kvm/src/elf.rs:341:5
+    |
+341 | /     pub(crate) fn register_with_bindings(
+342 | |         &mut self,
+343 | |         tid: i32,
+344 | |         tgid: i32,
+...   |
+349 | |         file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+350 | |     ) -> TaskLifecycleState {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: this function has too many arguments (8/7)
+   --> reverie-kvm/src/elf.rs:358:5
+    |
+358 | /     pub(crate) fn ensure_registered_with_bindings(
+359 | |         &mut self,
+360 | |         tid: i32,
+361 | |         tgid: i32,
+...   |
+366 | |         file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+367 | |     ) -> TaskLifecycleState {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this `match` expression can be replaced with `?`
+    --> reverie-kvm/src/executor.rs:9346:9
+     |
+9346 | /         match open_host_fd_path(source_host_fd, flags) {
+9347 | |             Err(error) => return Err(error),
+9348 | |             Ok(probe) => drop(probe),
+9349 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#question_mark
+     = note: `-D clippy::question-mark` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::question_mark)]`
+help: try instead
+     |
+9346 ~         {
+9347 +             let probe = open_host_fd_path(source_host_fd, flags)?;
+9348 +             drop(probe)
+9349 +         }
+     |
+
+error: this `match` expression can be replaced with `?`
+    --> reverie-kvm/src/executor.rs:9386:9
+     |
+9386 | /         match open_host_fd_path(source_host_fd, flags) {
+9387 | |             Ok(probe) => drop(probe),
+9388 | |             Err(error) => return Err(error),
+9389 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#question_mark
+help: try instead
+     |
+9386 ~         {
+9387 +             let probe = open_host_fd_path(source_host_fd, flags)?;
+9388 +             drop(probe)
+9389 +         }
+     |
+
+error: could not compile `reverie-kvm` (lib) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reverie-kvm` (lib test) due to 4 previous errors

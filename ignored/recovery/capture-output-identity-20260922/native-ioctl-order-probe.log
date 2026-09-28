@@ -1,0 +1,4 @@
+writer-fionbio-null result=-1 errno=14
+opath-fionbio-null result=-1 errno=9
+opath-fionread-null result=-1 errno=9
+opath-fioclex result=-1 errno=9

@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 5 tests
+test executor::process_signal_publication::tests::active_publication_and_dequeue_complete_while_file_table_is_held ... ok
+test executor::process_signal_publication::tests::inactive_publication_refuses_poisoned_file_table_without_effects ... ok
+test executor::tests::exited_executor_drops_anonymous_identities_without_live_file_table_owners ... ok
+test executor::tests::shared_file_table_install_emfile_preserves_original_descriptions ... ok
+test executor::tests::shared_file_table_reopen_same_inode_replaces_description ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 872 filtered out; finished in 0.06s
+
