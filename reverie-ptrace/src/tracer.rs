@@ -627,6 +627,15 @@ async fn finish_ordinary_terminal(
         };
         let (state, receipt) = loop {
             match (&mut wait).await {
+                // The notifier publishes the EXIT stop out of band, so a stop
+                // queued before it can still be at the FIFO front. The tracee
+                // left that stop to reach EXIT (a group exit's SIGKILL wakes
+                // it), so wait again without resuming it.
+                Ok(Wait::Stopped(stale, event))
+                    if event != Event::Exit && !matches!(event, Event::Exec(_)) =>
+                {
+                    wait = stale.wait_owned();
+                }
                 Ok(state) => break (state, session.ordinary_receipt()),
                 Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
             }
@@ -701,12 +710,6 @@ async fn finish_ordinary_terminal(
                         replaced_status,
                         receipt,
                     };
-                } else if event != Event::Exit {
-                    session
-                        .fail(anyhow::anyhow!("unexpected ptrace terminal stop: {event:?}").into());
-                    for error in session.signal_groups() {
-                        session.retry_after(error.into()).await;
-                    }
                 }
                 current = Ok(stopped);
             }
@@ -6966,6 +6969,74 @@ mod tests {
             .expect("function tracing failed");
         assert_eq!(status, ExitStatus::Exited(0));
     }
+
+    #[derive(Default)]
+    struct StaleStopTool;
+
+    #[reverie::tool]
+    impl Tool for StaleStopTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getpid, Sysno::getppid].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            if syscall.number() == Sysno::getppid {
+                // Blocks the single-threaded tracer, so other threads' stops
+                // stay queued.
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            guest.tail_inject(syscall).await
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn group_exit_ignores_stop_queued_before_exit() {
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static GO: AtomicBool = AtomicBool::new(false);
+        fn after_go(delay: Duration) {
+            RUNNING.fetch_add(1, Ordering::SeqCst);
+            while !GO.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            std::thread::sleep(delay);
+        }
+        // While the tracer is blocked on getppid, one thread queues a getpid
+        // stop, and then a group exit wakes that thread from it into EXIT.
+        let tracer = spawn_fn::<StaleStopTool, _>(|| {
+            std::thread::spawn(|| {
+                after_go(Duration::from_millis(50));
+                unsafe { libc::syscall(libc::SYS_getpid) };
+            });
+            std::thread::spawn(|| {
+                after_go(Duration::from_millis(100));
+                unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+            });
+            while RUNNING.load(Ordering::SeqCst) < 2 {
+                std::hint::spin_loop();
+            }
+            GO.store(true, Ordering::SeqCst);
+            unsafe { libc::syscall(libc::SYS_getppid) };
+            loop {
+                unsafe { libc::pause() };
+            }
+        })
+        .await
+        .expect("spawn group-exit guest");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(10), tracer.wait())
+            .await
+            .expect("group-exit guest hung")
+            .expect("a stop queued before EXIT must not fail the group exit");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    use std::sync::atomic::AtomicUsize;
 
     use reverie::Guest;
     use reverie::syscalls::Syscall;
