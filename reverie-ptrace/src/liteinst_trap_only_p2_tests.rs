@@ -22,6 +22,7 @@ use super::*;
 use crate::liteinst_trap_only::DisabledReason;
 use crate::liteinst_trap_only::RetiredReason;
 use crate::liteinst_trap_only::SiteState;
+use crate::liteinst_trap_only::SiteTable;
 use crate::liteinst_trap_only::TableState;
 use crate::task::step_count_for_test;
 
@@ -346,7 +347,7 @@ fn p2_guest() -> &'static std::path::Path {
         // -no-pie: the fixture's text addresses are the same in every run, so
         // the two backends' reports and register observations compare.
         let status = std::process::Command::new("cc")
-            .args(["-O0", "-g", "-Wall", "-no-pie"])
+            .args(["-O0", "-g", "-Wall", "-no-pie", "-pthread"])
             .arg(&source)
             .arg("-o")
             .arg(&staging)
@@ -371,6 +372,13 @@ struct P2Run {
     table_state: Option<TableState>,
     site_state: Option<SiteState>,
     site: u64,
+    /// Trap-only only: the site-table lifecycle decisions, in order.
+    lifecycle: Vec<String>,
+    /// Trap-only only: every table created after the root one, by how
+    /// (`fork`, `share`, `exec`), as it was at the end of the run.
+    tables: Vec<(String, SiteTable)>,
+    /// Trap-only only: the root table at the end of the run.
+    root_table: Option<SiteTable>,
 }
 
 impl P2Run {
@@ -403,7 +411,9 @@ fn rename_event(names: &TaskNames, event: &str) -> String {
 async fn run_p2(mode: &str, patching: Option<SitePatching>, tail: bool) -> P2Run {
     run_p2_with(mode, patching, tail, false)
         .await
-        .expect("P2 fixture run failed")
+        .unwrap_or_else(|error| {
+            panic!("P2 fixture run {mode} {patching:?} tail={tail} failed: {error}")
+        })
 }
 
 async fn run_p2_with(
@@ -459,6 +469,24 @@ async fn run_p2_with(
         table_state: handle.as_ref().map(|handle| handle.table_state()),
         site_state: handle.as_ref().and_then(|handle| handle.site_state(site)),
         site,
+        lifecycle: handle
+            .as_ref()
+            .map(|handle| handle.hooks().log.lock().unwrap().clone())
+            .unwrap_or_default(),
+        tables: handle
+            .as_ref()
+            .map(|handle| {
+                handle
+                    .hooks()
+                    .tables
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(label, table)| (label.clone(), table.lock().unwrap().clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        root_table: handle.as_ref().map(|handle| handle.root_table()),
     })
 }
 
@@ -789,6 +817,9 @@ fn clone_run(run: &P2Run) -> P2Run {
         table_state: run.table_state,
         site_state: run.site_state,
         site: run.site,
+        lifecycle: run.lifecycle.clone(),
+        tables: run.tables.clone(),
+        root_table: run.root_table.clone(),
     }
 }
 
@@ -931,4 +962,331 @@ async fn trap_only_p2_stray_slot_stop_fails_closed() {
         .expect_err("a slot stop outside a hop must end the run");
     let text = format!("{error:#} {error:?}");
     assert!(text.contains("TrapOnlyStraySlotStop"), "{text}");
+}
+
+/// The tables of a trap-only run labelled `label`.
+fn tables<'a>(run: &'a P2Run, label: &str) -> Vec<&'a SiteTable> {
+    run.tables
+        .iter()
+        .filter(|(candidate, _)| candidate == label)
+        .map(|(_, table)| table)
+        .collect()
+}
+
+/// Requires a lifecycle decision starting with `prefix`, and returns the
+/// largest number after `restored=` among those decisions, if any.
+fn lifecycle_has(run: &P2Run, prefix: &str) -> Option<usize> {
+    let events: Vec<_> = run
+        .lifecycle
+        .iter()
+        .filter(|event| event.starts_with(prefix))
+        .collect();
+    assert!(
+        !events.is_empty(),
+        "no lifecycle event {prefix:?} in {:#?}",
+        run.lifecycle
+    );
+    events
+        .iter()
+        .filter_map(|event| event.rsplit_once("restored="))
+        .map(|(_, count)| count.parse().expect("a restored count"))
+        .max()
+}
+
+/// Masks the host TID an untraced clone returns, which no traced task names.
+fn mask_untraced_tid(run: &P2Run) -> P2Run {
+    let mask = |events: &BTreeMap<String, Vec<String>>| {
+        events
+            .iter()
+            .map(|(task, events)| {
+                let events = events
+                    .iter()
+                    .map(|event| match event.split_once("syscall clone = ") {
+                        Some((head, _)) => format!("{head}syscall clone = <untraced>"),
+                        None => event.clone(),
+                    })
+                    .collect();
+                (task.clone(), events)
+            })
+            .collect()
+    };
+    P2Run {
+        tool_events: mask(&run.tool_events),
+        ..clone_run(run)
+    }
+}
+
+/// T6b: an exec, by the leader or by a non-leader thread, gives the new image
+/// a new empty table, which patches the image's own site from scratch; the
+/// runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6b_exec_gets_an_empty_table() {
+    for (mode, old_state) in [
+        ("exec_leader", TableState::Patchable),
+        (
+            "exec_thread",
+            TableState::Disabled(DisabledReason::MultiTask),
+        ),
+    ] {
+        let [ptrace, trap_only, _, trap_only_tail] = compare_mode(mode).await;
+        assert_report_has(
+            &ptrace,
+            &["mode exec_image site=", "exec image getpid ok", "done"],
+        );
+        for run in [&trap_only, &trap_only_tail] {
+            lifecycle_has(run, "exec initial=false entries=0 state=Patchable");
+            let exec = tables(run, "exec");
+            assert_eq!(exec.len(), 1, "{mode}: one exec table");
+            assert_eq!(exec[0].state(), TableState::Patchable, "{mode}");
+            assert_eq!(
+                exec[0].site_state(run.site),
+                Some(SiteState::Live),
+                "{mode}: the new image patched its site again"
+            );
+            // The old image's table is untouched by the exec.
+            assert_eq!(run.table_state, Some(old_state), "{mode}");
+        }
+    }
+}
+
+/// T6c: JIT code is patched only while its page is `r-xp`; every mapping
+/// change that reaches a patched site restores it first, so that the guest
+/// reads its own bytes, and the runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6c_jit_code_and_mapping_changes() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("jit").await;
+    assert_report_has(
+        &ptrace,
+        &[
+            "jit a 2 pid=1",
+            "jit fork child a bytes 0f 05",
+            "jit fork child exited=1 code=0",
+            "jit a after fork pid=1",
+            "jit a after mprotect rw bytes 0f 05",
+            "jit a2 2 ppid=1",
+            "jit b2 2 tid=1",
+            "jit d after mmap fixed bytes 00 00",
+            "jit c after mremap bytes 0f 05",
+            "jit c2 2 pid=1",
+            "jit e 2 pid=1",
+            "jit e bytes 0f 05",
+            "after madvise site bytes 0f 05",
+            "done",
+        ],
+    );
+    let mapping = Some(SiteState::Retired(RetiredReason::Mapping));
+    for run in [&trap_only, &trap_only_tail] {
+        let root = run.root_table.as_ref().expect("a trap-only root table");
+        assert_eq!(root.state(), TableState::Patchable);
+        for (site, expected) in [
+            // mprotect RW of patched code, then new code at another offset.
+            (0x5000_0005, mapping),
+            (0x5000_0007, Some(SiteState::Live)),
+            // munmap; the same address is never patched again.
+            (0x5001_0005, mapping),
+            // mmap(MAP_FIXED) over patched code.
+            (0x5005_0005, mapping),
+            // mremap: the old address is restored before the move, and the
+            // moved code patches at its new address.
+            (0x5002_0005, mapping),
+            (0x5003_0005, Some(SiteState::Live)),
+            // A writable and executable page is never patched.
+            (0x5004_0005, None),
+            // madvise(MADV_DONTNEED) on the fixture's own text.
+            (run.site, mapping),
+        ] {
+            assert_eq!(root.site_state(site), expected, "site {site:#x}");
+        }
+        // The fork child restored only its own copy.
+        let fork = tables(run, "fork");
+        assert_eq!(fork.len(), 1);
+        assert_eq!(fork[0].site_state(0x5000_0005), mapping);
+        assert!(lifecycle_has(run, "mapping munmap").unwrap() >= 1);
+        assert!(lifecycle_has(run, "mapping mremap").unwrap() >= 1);
+        assert!(lifecycle_has(run, "mapping madvise").unwrap() >= 1);
+        assert!(lifecycle_has(run, "mapping mmap").unwrap() >= 1);
+    }
+}
+
+/// T6d: posix_spawn and system() create vfork children that share the
+/// parent's table until they exec; the parent's sites stay patched and the
+/// runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6d_vfork_spawn_keeps_the_parent_patched() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("vfork_spawn").await;
+    assert_report_has(
+        &ptrace,
+        &[
+            "exec image getpid ok",
+            "spawn child exited=1 code=0",
+            "system exited=1 code=3",
+            "parent getpid ok",
+            "done",
+        ],
+    );
+    for run in [&trap_only, &trap_only_tail] {
+        assert_patched(run, SiteState::Live);
+        assert_eq!(run.table_state, Some(TableState::Patchable));
+        let vforks: Vec<_> = run
+            .lifecycle
+            .iter()
+            .filter(|event| event.starts_with("new-child Vfork flags="))
+            .collect();
+        assert_eq!(vforks.len(), 2, "{:#?}", run.lifecycle);
+        assert!(vforks.iter().all(|event| event.ends_with("shares=true")));
+        assert!(
+            !run.lifecycle
+                .iter()
+                .any(|event| event.starts_with("creating")),
+            "a vfork must not restore the parent: {:#?}",
+            run.lifecycle
+        );
+        assert_eq!(tables(run, "share").len(), 2);
+        assert_eq!(tables(run, "exec").len(), 2);
+    }
+}
+
+/// T7a: a guest seccomp filter (through the patched site, with TSYNC from a
+/// two-thread process, or with prctl(PR_SET_SECCOMP)) restores every site
+/// before it is installed and disables the lineage: the filter never sees an
+/// IA-32 entry, the fork child and its exec'd image stay unpatched, and the
+/// runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t7a_guest_seccomp_disables_the_lineage() {
+    for (mode, how, install, site_reason) in [
+        (
+            "guest_seccomp",
+            "site",
+            "install seccomp GuestSeccomp",
+            RetiredReason::GuestSeccomp,
+        ),
+        (
+            "guest_seccomp_tsync",
+            "tsync",
+            "install seccomp GuestSeccomp",
+            RetiredReason::MultiTask,
+        ),
+        (
+            "guest_seccomp_prctl",
+            "prctl",
+            "install prctl GuestSeccomp",
+            RetiredReason::GuestSeccomp,
+        ),
+    ] {
+        let [ptrace, trap_only, _, trap_only_tail] = compare_mode(mode).await;
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("install {how} ret=0"),
+                "after install site bytes 0f 05",
+                "getpid 2 pid=1",
+                "getppid ret=-1",
+                "child getpid 2 pid=1",
+                "exec image getpid ok",
+                "child exited=1 code=0 signaled=0 sig=0",
+                "sigsys handled=0",
+            ],
+        );
+        if how == "tsync" {
+            assert_report_has(&ptrace, &["thread getppid ret=-1"]);
+        }
+        let disabled = TableState::Disabled(DisabledReason::GuestSeccomp);
+        for run in [&trap_only, &trap_only_tail] {
+            let restored = lifecycle_has(run, install).unwrap();
+            if how != "tsync" {
+                assert!(restored >= 1, "{mode}: the install restored the live sites");
+            }
+            assert_eq!(run.table_state, Some(disabled), "{mode}");
+            assert_eq!(
+                run.site_state,
+                Some(SiteState::Retired(site_reason)),
+                "{mode}"
+            );
+            assert_eq!(run.patched_sites, 0, "{mode}");
+            let fork = tables(run, "fork");
+            let exec = tables(run, "exec");
+            assert_eq!((fork.len(), exec.len()), (1, 1), "{mode}");
+            for table in fork.iter().chain(&exec) {
+                assert_eq!(table.state(), disabled, "{mode}");
+                assert_eq!(table.patched_sites(), 0, "{mode}");
+            }
+            assert_eq!(
+                exec[0].entries(),
+                0,
+                "{mode}: the exec'd image patched nothing"
+            );
+        }
+    }
+}
+
+/// T7b: syscall user dispatch restores every site before it is enabled, so
+/// that the dispatched SIGSYS reports the x86_64 `syscall` at the site
+/// exactly as under ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t7b_syscall_user_dispatch_sees_the_original_site() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("sud").await;
+    assert_report_has(
+        &ptrace,
+        &[
+            "sud on ret=0",
+            "after sud site bytes 0f 05",
+            "dispatched getpid ret=1234 count=1 syscall=39 arch=0xc000003e call=tp_site_end",
+            "sud off ret=0",
+            "getpid 2 pid=1",
+            "child getpid 2 pid=1",
+            "child exited=1 code=0",
+            "sud handled=1",
+        ],
+    );
+    let disabled = TableState::Disabled(DisabledReason::Sud);
+    for run in [&trap_only, &trap_only_tail] {
+        assert!(lifecycle_has(run, "install prctl Sud").unwrap() >= 1);
+        assert_eq!(run.table_state, Some(disabled));
+        assert_eq!(run.site_state, Some(SiteState::Retired(RetiredReason::Sud)));
+        let fork = tables(run, "fork");
+        assert_eq!(fork.len(), 1);
+        assert_eq!(fork[0].state(), disabled);
+    }
+}
+
+/// A CLONE_UNTRACED thread gets no new-child stop, so every site is restored
+/// at the creating stop, before the clone runs: the untraced thread executes
+/// the original `syscall` (whose rcx is its return address), and its start
+/// address is the guest's own. Cloned from libc and through the patched
+/// site itself.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_untraced_thread_starts_on_restored_text() {
+    for mode in ["untraced_thread", "untraced_thread_site"] {
+        // compare_mode cannot compare these runs: the clone returns a host
+        // TID that no traced task names.
+        let ptrace = mask_untraced_tid(&run_p2(mode, None, false).await);
+        let trap_only = mask_untraced_tid(&run_p2(mode, Some(SitePatching::On), false).await);
+        assert_equal_runs(&trap_only, &ptrace);
+        let ptrace_tail = run_p2(mode, None, true).await;
+        let trap_only_tail = run_p2(mode, Some(SitePatching::On), true).await;
+        assert_equal_runs(&trap_only_tail, &ptrace_tail);
+        for run in [&ptrace, &ptrace_tail] {
+            assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+            assert!(run.report.ends_with("done\n"), "{}", run.report);
+        }
+        assert_report_has(
+            &ptrace,
+            &[
+                "untraced clone ok=1",
+                "untraced thread getpid ret=-38 rcx=tp_site_end",
+                "after untraced site bytes 0f 05",
+            ],
+        );
+        for run in [&trap_only, &trap_only_tail] {
+            assert!(lifecycle_has(run, "creating clone flags=").unwrap() >= 1);
+            assert_eq!(
+                run.table_state,
+                Some(TableState::Disabled(DisabledReason::MultiTask))
+            );
+            assert_eq!(
+                run.site_state,
+                Some(SiteState::Retired(RetiredReason::MultiTask))
+            );
+        }
+    }
 }
