@@ -1,0 +1,132 @@
+{
+  "prepared_at_utc": "2026-09-17T05:34:04.042672+00:00",
+  "status": "PREPARED_NOT_EXECUTED",
+  "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tree": "b86bfdb0703e96d377007c102eccfa57ba362396",
+  "inputs": {
+    "native_report": {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/proc-fd-design-review-24cd/final-source-v3-review/REVIEW.md",
+      "bytes": 8429,
+      "mode": "0o644",
+      "sha256": "9231f5a39c8a538085e9d38f7d4e1aade2ec3334ea6a9efaec8008affe6f182b"
+    },
+    "composition_report": {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/reverie-main-composition-review-4866241e/REVIEW.md",
+      "bytes": 8323,
+      "mode": "0o644",
+      "sha256": "03100c72e8f8af27a3ea4d956e9b40a37eaa2a2b3aa5e754148bcf47f62b2294"
+    },
+    "source_v3_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+      "bytes": 3084,
+      "mode": "0o644",
+      "sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+    },
+    "current_entrypoint": {
+      "path": "/home/newton/work/dev-hermit/ci-hub/bin/gh-merge-verified",
+      "bytes": 70138,
+      "mode": "0o755",
+      "sha256": "7ce23e72db82810518103421f585caf8164ba233e1944855d2cf65619db1afe2"
+    },
+    "approval_grammar": {
+      "path": "/home/newton/work/dev-hermit/ci-hub/health/approval_binding.py",
+      "bytes": 195403,
+      "mode": "0o755",
+      "sha256": "1e4b02aced5b9b6e8582912ce94b3a03ddb272b7f118c1be56ffee74924e48f9"
+    },
+    "review_attest": {
+      "path": "/home/newton/work/dev-hermit/ci-hub/bin/review-attest",
+      "bytes": 15868,
+      "mode": "0o755",
+      "sha256": "b9bed5f1e4460216e2e05668ac1f25c118e869e5f880cabe5c9c09b20c11b66d"
+    },
+    "disclosure_helper": {
+      "path": "/home/newton/work/dev-hermit/ci-hub/lib/disclosure_tag.py",
+      "bytes": 4416,
+      "mode": "0o644",
+      "sha256": "aec3500af1eed5e8b5f6fc477d5833075b07938e6d8cab12a89e9e94007bfbca"
+    },
+    "codex_guide": {
+      "path": "/home/newton/work/dev-hermit/.skills/supplemental_docs/coordinator-codex.md",
+      "bytes": 3020,
+      "mode": "0o644",
+      "sha256": "9f559ce40623162068190b44cea1cebf764f856714f4c16c5d7ca9f8e35025b2"
+    },
+    "code_review_skill": {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": "0o644",
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    }
+  },
+  "artifacts": {
+    "REPORT.md": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/REPORT.md",
+      "bytes": 4647,
+      "mode": "0o644",
+      "sha256": "d390fe674727d63e9101ccf69fd55b94584205ebcd484a691426c9c759334a87"
+    },
+    "comments-request.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/comments-request.json",
+      "bytes": 293,
+      "mode": "0o644",
+      "sha256": "51503de29f50c8c6184561819c6e648e6a8e2ad438b4292514ba5f745b80bb63"
+    },
+    "external-review-pending.md": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/external-review-pending.md",
+      "bytes": 692,
+      "mode": "0o644",
+      "sha256": "b4a637745d47042030ece95470755d8004a21cdfbecc665265fd80c2ad3d96ed"
+    },
+    "merge-command.sh": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-command.sh",
+      "bytes": 975,
+      "mode": "0o644",
+      "sha256": "4003c4efdaf2c7f2ca0d7fd17b29b9953ca2b4db6752cd560b98bf3353e8e74f"
+    },
+    "merge-plan.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-plan.json",
+      "bytes": 2904,
+      "mode": "0o644",
+      "sha256": "8de699beabd1bef32c26ddf3833b3b7129b44a879662db77c52c44ffbb774bf7"
+    },
+    "native-review-comment.md": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/native-review-comment.md",
+      "bytes": 1497,
+      "mode": "0o644",
+      "sha256": "8798420ff214cbbbf18f0486d59260e8d0c6b6ff0be76410672223474d4ceb75"
+    },
+    "public-comments.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/public-comments.json",
+      "bytes": 4,
+      "mode": "0o644",
+      "sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+    },
+    "public-comments.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/public-comments.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "public-reviews.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/public-reviews.json",
+      "bytes": 4,
+      "mode": "0o644",
+      "sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+    },
+    "public-reviews.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/public-reviews.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "reviews-request.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/reviews-request.json",
+      "bytes": 291,
+      "mode": "0o644",
+      "sha256": "dd34c4887249223598847f4bd97455c75a31ea14c1ea002c31d287d0ff72b4f1"
+    }
+  },
+  "external_approval": false,
+  "merge_executed": false
+}

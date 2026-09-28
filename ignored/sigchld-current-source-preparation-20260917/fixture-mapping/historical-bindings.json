@@ -1,0 +1,112 @@
+{
+  "full_copies": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/corrected-execution-readback.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/corrected-execution-readback.json",
+      "bytes": 16245,
+      "sha256": "17eeb2138687c16b8cbef3cc741f2ff414e783279073fcf2f17d3c2d3d3b8482",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/fork-tree-sigchld-20260917/evidence.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/source-evidence.json",
+      "bytes": 86955,
+      "sha256": "cd02196a05c492b629b21ca142d9e4a7948a50f737d6b9f70cab661c8e43b8e8",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-verify.json",
+      "bytes": 1916,
+      "sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/result.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-result.json",
+      "bytes": 57047,
+      "sha256": "ecae39800bc8f05ab35e8f93ca459ccd8eea3d95eb97d3e925a68c713c907e23",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/before-exec.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-before-exec.json",
+      "bytes": 2544,
+      "sha256": "f88d124eac945a79e1f5390de18eccf84d7cd0ab8041a168f6aaf5fbbd93cd50",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/verify.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-verify.json",
+      "bytes": 1548,
+      "sha256": "77b7867a065a229f8e87ed5d624e523cf9fb491a7dcc5d2d17174701c827f265",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/result.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-result.json",
+      "bytes": 37390,
+      "sha256": "daa42665ef8c83dc033f0d3fb6a13788447020ffa6df65e199a078587fe7cad7",
+      "copy_readback_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/before-exec.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-before-exec.json",
+      "bytes": 2553,
+      "sha256": "902ddb405b346d13bd105ea6c720b27729ea7bae84c411fc2808e0ee6b13b680",
+      "copy_readback_equal": true
+    }
+  ],
+  "retained_raw_readback": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/CORRECTED-PILOT-RESULTS.md",
+      "bytes": 2318,
+      "sha256": "24fe5406bb90c88207069b0bf9874fef768079fd41fad8c84d5eb11039306201",
+      "expected_sha256": "24fe5406bb90c88207069b0bf9874fef768079fd41fad8c84d5eb11039306201",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/corrected-execution-readback.json",
+      "bytes": 16245,
+      "sha256": "17eeb2138687c16b8cbef3cc741f2ff414e783279073fcf2f17d3c2d3d3b8482",
+      "expected_sha256": "17eeb2138687c16b8cbef3cc741f2ff414e783279073fcf2f17d3c2d3d3b8482",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+      "bytes": 1916,
+      "sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695",
+      "expected_sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run1_log_8vfmV",
+      "bytes": 552285,
+      "sha256": "5710d7f1443d07b9780f8b154477f9ad8696b4749f2a889e5e6473a06c04e1d2",
+      "expected_sha256": "5710d7f1443d07b9780f8b154477f9ad8696b4749f2a889e5e6473a06c04e1d2",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run2_log_HGw8D",
+      "bytes": 551917,
+      "sha256": "db103881777e43daece402cbefa818303d6c8a2a18453fdd78c8872bc929dba0",
+      "expected_sha256": "db103881777e43daece402cbefa818303d6c8a2a18453fdd78c8872bc929dba0",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run1_log_x1I2n",
+      "bytes": 564453,
+      "sha256": "c9bc71bd07b8240b9203efab2fa584eb6682f981e0825ea8f38218e1772fa9da",
+      "expected_sha256": "c9bc71bd07b8240b9203efab2fa584eb6682f981e0825ea8f38218e1772fa9da",
+      "matches_preserved_binding": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run2_log_nAtMN",
+      "bytes": 564453,
+      "sha256": "49fed03b36ccaaf6eacc0cdc4f6f3e1f5968f28b5ddf377cf5ba4d36da8c465e",
+      "expected_sha256": "49fed03b36ccaaf6eacc0cdc4f6f3e1f5968f28b5ddf377cf5ba4d36da8c465e",
+      "matches_preserved_binding": true
+    }
+  ],
+  "new_execution": false
+}

@@ -1,0 +1,11 @@
+--- landing-preparation/merge-command.sh
++++ external-follow-up/merge-command.sh
+@@ -13,7 +13,7 @@
+     --run-current-main-copy \
+     --expect-head 696f0476aa46cf29e31b947a89379d80b4542ce3 \
+     --receipt "$landing_output/receipt.json" \
+-    -- --rebase > "$landing_output/stdout" 2> "$landing_output/stderr"
++    -- --rebase --match-head-commit 696f0476aa46cf29e31b947a89379d80b4542ce3 > "$landing_output/stdout" 2> "$landing_output/stderr"
+ merge_status=$?
+ printf '%s\n' "$merge_status" > "$landing_output/exit-code.txt"
+ cat "$landing_output/stdout"

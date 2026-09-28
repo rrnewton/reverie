@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/contents/reverie-rpc-transport/src/server.rs?ref=4db9ddb68126ce97ff929c7f30b61a633e48513e"
+  ],
+  "started_utc": "2026-09-17T09:46:57.153032+00:00",
+  "ended_utc": "2026-09-17T09:46:57.528361+00:00",
+  "wall_seconds": 0.3753513179253787,
+  "exit_code": 0,
+  "stdout_bytes": 26083,
+  "stderr_bytes": 0,
+  "stdout_sha256": "9175e607298c5827e5b856f455107d7d943e37522d006c175a3e4e351ff084e0"
+}

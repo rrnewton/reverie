@@ -1,0 +1,193 @@
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -748,24 +748,35 @@
+         // but a pending ordinary RPC can prevent its owner's physical join.
+         // Signal the driver and leave this response unconstructed on failure.
+         // Consuming hooks use KvmGlobal instead and must still deregister.
+-        let mut failure = pin!(wait_for_failure(
+-            self.global_state,
+-            self.executor.failure_subscription(),
+-        ));
+-        let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
+-        poll_fn(|context| {
+-            if failure.as_mut().poll(context).is_ready() {
++        let response = {
++            let mut failure = pin!(wait_for_failure(
++                self.global_state,
++                self.executor.failure_subscription(),
++            ));
++            let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
++            poll_fn(|context| {
++                if failure.as_mut().poll(context).is_ready() {
++                    return Poll::Ready(None);
++                }
++                let result = response.as_mut().poll(context);
++                if failure.as_mut().poll(context).is_ready() {
++                    return Poll::Ready(None);
++                }
++                result.map(Some)
++            })
++            .await
++        };
++        match response {
++            Some(response) => response,
++            None => {
++                // Drop the ordinary request before publishing its nonlocal
++                // result. A callback may poll this RPC again (for example,
++                // after select returns its losing future); terminal polls must
++                // neither resume the completed failure wait nor admit RPC work.
+                 self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
+-                return Poll::Pending;
+-            }
+-            let result = response.as_mut().poll(context);
+-            if failure.as_mut().poll(context).is_ready() {
+-                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
+-                return Poll::Pending;
+-            }
+-            result
+-        })
+-        .await
++                std::future::pending().await
++            }
++        }
+     }
+ 
+     fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
+--- a/reverie-kvm/src/runtime/failure_tests.rs
++++ b/reverie-kvm/src/runtime/failure_tests.rs
+@@ -1028,6 +1028,135 @@
+     }
+ }
+ 
++#[test]
++fn independent_process_select_then_await_keeps_failed_rpc_pending() {
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolCallback;
++    use native_test_support::NativeToolOwner;
++
++    struct SelectThenAwaitRpc {
++        selected: Arc<AtomicBool>,
++        resumed: Arc<AtomicBool>,
++        response: Mutex<Option<oneshot::Sender<i64>>>,
++    }
++    impl NativeToolCallback<RpcTool> for SelectThenAwaitRpc {
++        fn run<'a, G: Guest<RpcTool>>(
++            &'a self,
++            _: &'a RpcTool,
++            guest: &'a mut G,
++        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
++            Box::pin(async move {
++                assert_eq!(guest.pid(), Pid::from_raw(72));
++                let request = pin!(guest.send_rpc((0, 0)));
++                let request =
++                    match futures::future::select(request, futures::future::ready(73)).await {
++                        futures::future::Either::Right((73, request)) => request,
++                        _ => panic!("the control must first select the ready alternative"),
++                    };
++                self.selected.store(true, Ordering::Release);
++                if let Some(response) = self.response.lock().unwrap().take() {
++                    response.send(37).unwrap();
++                }
++                // Poll the same losing RPC again before returning to the
++                // driver. A failed RPC must stay pending, not resume a completed
++                // failure wait or enter its ordinary receive_rpc state.
++                let response = request.await;
++                self.resumed.store(true, Ordering::Release);
++                Ok(response)
++            })
++        }
++    }
++
++    for failed in [true, false] {
++        let global = Arc::new(RpcGlobal::default());
++        let (sender, receiver) = oneshot::channel();
++        let mut sender = Some(sender);
++        *global.response.lock().unwrap() = Some(receiver);
++        let owner = NativeToolOwner::new(
++            Pid::from_raw(71),
++            Arc::new(RpcTool),
++            71,
++            global.clone(),
++            false,
++        )
++        .unwrap();
++        let mut child = owner
++            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
++            .unwrap();
++        let context = owner.failure_context_for_test();
++        let error = failed.then(|| {
++            let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(79),
++                Err(Error::InvalidGuestPid(-17)),
++                |_| {},
++            );
++            result.unwrap_err()
++        });
++        let selected = Arc::new(AtomicBool::new(false));
++        let resumed = Arc::new(AtomicBool::new(false));
++        let callback = SelectThenAwaitRpc {
++            selected: selected.clone(),
++            resumed: resumed.clone(),
++            response: Mutex::new(if failed { None } else { sender.take() }),
++        };
++        let outcome = futures::executor::block_on(child.run_callback(&callback));
++        assert!(selected.load(Ordering::Acquire));
++        assert_eq!(resumed.load(Ordering::Acquire), !failed);
++        assert_eq!(global.pending.load(Ordering::Acquire), !failed);
++        assert_eq!(global.response.lock().unwrap().is_some(), failed);
++        let status;
++        if failed {
++            assert!(matches!(outcome, Err(Error::RunAborted)));
++            let primary = context.run.primary().unwrap();
++            let child_error =
++                futures::executor::block_on(child.finish(Err(Error::RunAborted))).unwrap_err();
++            let root_error =
++                futures::executor::block_on(owner.finish(Err(error.unwrap()))).unwrap_err();
++            assert!(std::ptr::eq(child_error.primary(), primary.primary()));
++            assert!(std::ptr::eq(root_error.primary(), primary.primary()));
++            assert_eq!(
++                *global.failure_events.lock().unwrap(),
++                vec![reverie::BackendFailure {
++                    pid: Pid::from_raw(71),
++                    tid: Pid::from_raw(79),
++                    phase: "host-owned worker",
++                }]
++            );
++            status = 255;
++        } else {
++            assert!(matches!(
++                outcome,
++                Ok(NativeCallbackOutcome::Returned(Ok(37)))
++            ));
++            status = 37;
++            assert_eq!(
++                futures::executor::block_on(child.finish(Ok(ExitStatus::Exited(status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(status)
++            );
++            assert_eq!(
++                futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(status)
++            );
++            assert!(context.run.primary().is_none());
++            assert!(global.failure_events.lock().unwrap().is_empty());
++        }
++        assert_eq!(
++            *global.events.lock().unwrap(),
++            vec![
++                (1, 72, status),
++                (2, 72, status),
++                (1, 71, status),
++                (2, 71, status)
++            ]
++        );
++    }
++}
++
+ struct NativeControlCleanup {
+     response: Option<oneshot::Sender<i64>>,
+     release: Option<std::sync::mpsc::Sender<()>>,

@@ -1,0 +1,35 @@
+--- full-v1/launch.py
++++ full-v3/launch.py
+@@ -8,7 +8,7 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN_SHA256 = '33d6c0d66bbe64f3395c5b47b5036e71ffc17a4bf14d88c98b93cf3a7441e749'
++PLAN_SHA256 = 'ce46884d151174f224bc29aa5850f8c65c684329582bafe42b61d4b36a537021'
+ 
+ 
+ def load_checked():
+@@ -29,7 +29,13 @@
+     artifact = plan['artifacts']['lib']
+     names = json.loads(read_bounded(plan['inventories']['lib']['path'], 1024**2))['names']
+     require(names == plan['registered_tests'] and
+-            len(names) == len(set(names)) == plan['registered_count'] == 453, 'current inventory changed')
++            len(names) == len(set(names)) == plan['registered_count'] == 454, 'current inventory changed')
++    previous = json.loads(read_bounded(plan['previous_full_inventory'], 1024**2))['names']
++    require(len(previous) == len(set(previous)) == 453 and
++            plan['new_library_methods'] == [
++                'vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation'] and
++            set(names) == set(previous) | set(plan['new_library_methods']),
++            'prior full population or new regression changed')
+     require(len(old['registered_tests']) == len(set(old['registered_tests'])) == 427 and
+             set(old['registered_tests']) <= set(names), 'original method missing')
+     args = ['--test-threads=1', '--nocapture', '-Z', 'unstable-options', '--format=json']
+@@ -104,7 +110,7 @@
+     require(environment['REVERIE_REQUIRE_KVM'] == '1', 'hardware refusal must fail')
+     write_new(root / 'launch.json', dict(plan_sha256=PLAN_SHA256, caller_sha256=digest(__file__),
+               source_binding_sha256=digest(plan['source_binding']), source_head=plan['source_head'],
+-              landed_commit=plan['landed_commit'], execution=plan['execution'], environment=environment,
++              previously_landed_base=plan['previously_landed_base'], execution=plan['execution'], environment=environment,
+               artifacts=plan['artifacts'], registered_tests=names, scope=plan['scope']))
+     step = plan['stage']
+     parsed = None

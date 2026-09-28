@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "status": "path-only correction released by root; not yet executed",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+      "bytes": 10755,
+      "mode": 420,
+      "sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch-2.py",
+      "bytes": 6938,
+      "mode": 420,
+      "sha256": "fea40505bf9d64da520d51483cf39e5ebe68129802c4da683e92320ea26f8fe2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/plan-2.json",
+      "bytes": 12052,
+      "mode": 420,
+      "sha256": "e2bef0893b6b83e7e14faaafaa9e6c1ea6ba58c3163dde448a5542fd9c29f651"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch-2.diff",
+      "bytes": 844,
+      "mode": 420,
+      "sha256": "2756d0133bdfaab24c242bea8a8ce421abfa09471dd54d5c9530bace3b3a9f80"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/plan-2.diff",
+      "bytes": 6627,
+      "mode": 420,
+      "sha256": "67332162c872d064d6173a857b0a47ad2272fb6676cc38d7c1644b81906c3688"
+    }
+  ],
+  "previous_prelaunch_refusal_readback": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/execution-1-readback.json",
+  "previous_prelaunch_refusal_readback_sha256": "7ae5be1b7484965841b6353ada467a360f81f4b5d0afd64a124cc67d3dab4656",
+  "observer_evidence_write_scope": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917",
+  "new_run_root_absent": true,
+  "new_observer_evidence_root_absent": true,
+  "all15inputs_unchanged": true
+}

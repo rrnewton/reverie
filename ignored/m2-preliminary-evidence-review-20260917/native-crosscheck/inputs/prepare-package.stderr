@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.py", line 87, in <module>
+    main()
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.py", line 42, in main
+    require(all(any(test.startswith(prefix) for test in names) for prefix in prefixes),
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/common.py", line 19, in require
+    raise RuntimeError(message)
+RuntimeError: an intended module is absent from the actual list

@@ -1,0 +1,13 @@
+{
+  "path": "ci/manifest-plan/src/validation_dag_static.rs",
+  "before_sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c",
+  "after_sha256": "507917046f40cf493af382b49b7eb5883e37b293be7b6ac27b7f968af364252c",
+  "before_bytes": 349470,
+  "after_bytes": 349632,
+  "mode": "100644",
+  "exact_command_append": " && VERIFICATION_REPORT_BIN=\"${VERIFICATION_REPORT_BIN-$PWD/target/debug/verification-report}\" python3 -B tests/backend-parity/test_e9patch_corpus_verification.py",
+  "complete_reverse_append_equal_original": true,
+  "current_source_still_equals_base": true,
+  "generated_json_edited": false,
+  "generator_executed": false
+}

@@ -1,0 +1,153 @@
+{
+  "status": "passed",
+  "source_version": "v23",
+  "source_binding_sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f",
+  "plan_sha256": "dded5fa1f935a87eafb5454437c5e962a5dcce4da60a1b4a94bc2e3cd103618b",
+  "caller_sha256": "1ba5b89d2dbbc41e59812259acace518f28bcf51eb8eb8b7bed36a889a298c11",
+  "launch_sha256": "cb0d8edc85357f49fb4bfdea1e25c5774ecea0c96a4f634587f19b70f69676f2",
+  "stages": [
+    {
+      "stage": "compile",
+      "cpu_seconds": 9.278968,
+      "wall_seconds": 3.742689567,
+      "service": {
+        "Id": "safehermit-20260917T172424Z-1677274.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 1677825,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1824793930339,
+        "CPUUsageNSec": 9278968000
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v6/compile/result.json",
+      "result_sha256": "38ddbe1272ad328558cb36267aceb3a2621e1849c715f1e222c10a0901308c6c",
+      "stdout_sha256": "694216cf07fd657dc2bd4b4627910a2415cfa597771303d8a8fbb0ab354fbca3",
+      "stderr_sha256": "e275e8ba1ba588e76d9462cdd10c44b95bf3a4f2531197804536bb2072dab79a",
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T172424Z-1677274.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "list-lib",
+      "cpu_seconds": 0.214754,
+      "wall_seconds": 1.450248012,
+      "service": {
+        "Id": "safehermit-20260917T172430Z-1691189.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 1691731,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1824799997984,
+        "CPUUsageNSec": 214754000
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v6/list-lib/result.json",
+      "result_sha256": "5ef08e4a7029d22867662828169afd26c031271cdf6c0870d5a0502ad6938718",
+      "stdout_sha256": "db5d9048dfcc82fa53aefb05e2d289f32096c9c6d8945e94fe0565f109bd4967",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T172430Z-1691189.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "list-static-elf",
+      "cpu_seconds": 0.267169,
+      "wall_seconds": 1.265090902,
+      "service": {
+        "Id": "safehermit-20260917T172434Z-1695289.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 1695821,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1824803452275,
+        "CPUUsageNSec": 267169000
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v6/list-static-elf/result.json",
+      "result_sha256": "4e8a573a6791e798ba1b810d1f9f8c9332ac67c980690df3e0f4b3f9d63189cb",
+      "stdout_sha256": "bd38731ea2425cf485118485434e9b99666d1a6e1f6b849f951aff03df291f7f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T172434Z-1695289.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "inventories": {
+    "lib": 453,
+    "static-elf": 288
+  },
+  "compiler_diagnostics": [],
+  "retained_elf_binding_sha256": "e0b956cca60ca39377be8a63f9406dcc11c53cda6546d093891639906709b178",
+  "retained": {
+    "lib": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/run-1/retained-elf-v23/lib",
+      "bytes": 116212232,
+      "mode": 493,
+      "sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b",
+      "separate_inode": true
+    },
+    "static-elf": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/run-1/retained-elf-v23/static-elf",
+      "bytes": 148699992,
+      "mode": 493,
+      "sha256": "f11f2ec042c41f42ca16e062b8ac4da483998635cdd4d621d259a3be12fe2b85",
+      "separate_inode": true
+    }
+  },
+  "scope": "Compilation and actual inventories only; no VM/test/guest execution. Full source/input and emitted artifact checks passed after completion."
+}

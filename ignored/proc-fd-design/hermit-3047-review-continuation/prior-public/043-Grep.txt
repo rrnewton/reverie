@@ -1,0 +1,17 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_0122pxXEUdoKRckxaaJxUNPB",
+  "name": "Grep",
+  "input": {
+    "pattern": "rev = \"|rev=|596b9ade",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/scripts/check-reverie-pin.rs",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+
+Successful public tool result (exact text below):
+379:    let start = line.find("?rev=")? + "?rev=".len();
+2446:        let line = r#"reverie = { git = "https://github.com/rrnewton/reverie.git", rev = "0123456789abcdef0123456789abcdef01234567" }"#;
+2705:        let line = r#"source = "git+https://github.com/rrnewton/reverie.git?rev=0123456789abcdef0123456789abcdef01234567#0123456789abcdef0123456789abcdef01234567""#;
+3704:                "[[package]]\nname = \"reverie-core\"\nsource = \"git+https://github.com/rrnewton/reverie.git?rev={stale}#{stale}\"\n"

@@ -1,0 +1,94 @@
+usage: wrkslots [-h] [--version] [--userguide] [--project-root PROJECT_ROOT] [--machine MACHINE]
+                [--wait-lock SECONDS] [--allow-existing-unregistered-worktrees]
+                COMMAND ...
+
+Create, track, hand off, recover, and remove Git worktree slots for coding agents.
+
+Read-only: status, doctor, audit, import-existing without --apply, and
+clean-caches without --only or --yes. unpushed refreshes remote-tracking refs
+but does not mutate registry state.
+Mutating: init, create, register, import-existing --apply, adopt,
+recover-unbound-owner, heartbeat, hold, unhold, clean-caches deletion, finish,
+read-handoff, remove, recover-absent-validate-rows --apply, and recover. Registry mutations take a state lock and append
+hash-linked events. ACTIVE and ARCHIVED are compatibility views derived from those events.
+Each slot binds an agent identity, coordinator process generation, and one or more linked Git
+worktrees to durable machine-sharded state. Removal fails closed unless the time-to-live,
+registered running command, process evidence, Git state, salvage evidence, and recovery journal
+all agree that deletion is safe.
+
+positional arguments:
+  COMMAND
+    quickstart                print the normal end-to-end workflow
+    init                      initialize wrkslots for one project
+    status                    show active slots and safety diagnoses
+    doctor                    list every registry/storage disagreement at once (read-only)
+    audit                     show leak counts and DELETABLE/BLOCKED/HELD verdicts
+    unpushed                  diagnose unpublished or stale-after-rebase local tips
+    create                    create linked worktrees and register a slot
+    classify-create-journals  prove whether interrupted creates are unrelated to one new slot
+    register                  register already-created live worktrees
+    import-existing           verify an existing slot and print the registration; dry-run by default
+    adopt                     bind an unowned slot to its live owner
+    recover-unbound-owner     record coordinator recovery evidence without replacing historical
+                              ownership
+    heartbeat                 refresh diagnosis data for the exact owner
+    hold                      protect a slot from cache cleanup and removal
+    unhold                    release a slot hold
+    read-handoff              print HANDOFF.md and record that its exact content was read
+    clean-caches              report or remove configured regenerable cache directories
+    finish                    record a clean, published owner handoff
+    remove                    salvage when required and remove a reclaimable slot
+    remove-validate-batch     remove one bounded batch of completed validation slots
+    recover-absent-validate-rows
+                              archive exact validation rows whose physical storage is already absent
+    recover-absent-agent-row  preserve and archive one exact agent row whose storage is absent
+    recover-ownerless-agent-worktree
+                              salvage and remove one exact unregistered agent worktree
+    recover-ownerless-agent-cache
+                              relocate the exact misclassified ignored cache tree
+    classify-ownerless-validate-batch
+                              classify retained validation checkouts without removing them
+    recover-ownerless-validate-batch
+                              recover one bounded batch of private ownerless validation checkouts
+    recover                   resume an interrupted mutation from its journal
+
+options:
+  -h, --help                  show this help message and exit
+  --version                   show program's version number and exit
+  --userguide                 print the complete installed user guide and exit
+  --project-root PROJECT_ROOT
+                              project root containing .wrkslots.yml; otherwise search upward
+  --machine MACHINE           override the configured machine shard (or set WRKSLOTS_MACHINE)
+  --wait-lock SECONDS         wait up to this many seconds for a state lock (default: fail
+                              immediately)
+  --allow-existing-unregistered-worktrees
+                              permit operations on registered slots while retaining and warning
+                              about pre-existing worktree directories that have no wrkslots record;
+                              never treats those directories as free or authorizes their removal
+
+Lifecycle:
+  wrkslots quickstart
+  wrkslots init . --worktrees-dir worktrees/slots --liveness-command tools/agent-liveness.py
+  wrkslots create slot01 --slot-type agent --coordinator-authorized \
+    --agent codex-1 --task task-123 --purpose "fix parser" \
+    --repo product=product --branch product=codex/fix-parser \
+    --coordinator-pid PID --owner-pid PID
+  wrkslots heartbeat slot01 --agent codex-1 --owner-pid PID --expected-generation 1
+  wrkslots finish slot01 --agent codex-1 --owner-pid PID --expected-generation 1 \
+    --validation "exact command and result"
+
+finish proves clean index/tracked/untracked/ignored state outside configured regenerable cache
+paths, no unfinished Git operation, remote durability, exact landed ancestry, and path identity,
+then records the owner-alive handoff while retaining physical storage. Any later participant may
+run remove. It proceeds only after the heartbeat TTL expires, the registered liveness command
+returns rc 0, the exact owner process generation is dead, and independent process/cgroup/mount
+checks prove the slot unused. rc 1, rc 2, and unavailable evidence all refuse.
+
+Any failed precondition leaves every worktree in place. If a process stops during create or
+remove, later mutations refuse and 'wrkslots recover' resumes from the append-only history and
+its journal compatibility view. Never edit EVENTS.*, ACTIVE.*, ARCHIVED.*, or a journal by hand.
+
+Global options (--project-root, --machine, --wait-lock,
+--allow-existing-unregistered-worktrees) precede the command.
+Exit status: 0 success/no gate finding, 1 audit gate action, 2 command-line
+usage or audit gate unknown, 3 fail-closed refusal.

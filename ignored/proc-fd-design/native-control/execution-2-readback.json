@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "status": "native control passed",
+  "source_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "fixture_elf_sha256": "172c00328e9abe39904d946ac990a37e07268eb3786b03833611f5742a2a9a2d",
+  "compiled_fixture_bytes": 27592,
+  "all15inputs_unchanged": true,
+  "case_count": 9,
+  "fork_children": 1,
+  "post_service_readback": [
+    {
+      "step": "compile",
+      "unit": "safehermit-20260917T040613Z-911906.service",
+      "command": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T040613Z-911906.service",
+        "--no-pager",
+        "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID"
+      ],
+      "exit_code": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "retained_accounting_complete": true,
+      "retained_cpu_usage_nsec": 159887000
+    },
+    {
+      "step": "native",
+      "unit": "safehermit-20260917T040614Z-915570.service",
+      "command": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T040614Z-915570.service",
+        "--no-pager",
+        "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID"
+      ],
+      "exit_code": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "retained_accounting_complete": true,
+      "retained_cpu_usage_nsec": 33236000
+    }
+  ],
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/plan-2.json",
+      "bytes": 12052,
+      "sha256": "e2bef0893b6b83e7e14faaafaa9e6c1ea6ba58c3163dde448a5542fd9c29f651"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch-2.py",
+      "bytes": 6938,
+      "sha256": "fea40505bf9d64da520d51483cf39e5ebe68129802c4da683e92320ea26f8fe2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+      "bytes": 10755,
+      "sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/execution-1-readback.json",
+      "bytes": 2422,
+      "sha256": "7ae5be1b7484965841b6353ada467a360f81f4b5d0afd64a124cc67d3dab4656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/summary.json",
+      "bytes": 492,
+      "sha256": "68c08fe43eb71bbc6a66183d11404d0ac5d1e561331e0eabb51cbfa08b892656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/observations.json",
+      "bytes": 3637,
+      "sha256": "57c90110ece66f62d79b7bb60dafc1e2edd993ebbbf4272c9c8077de91cb9143"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fixture-elf.json",
+      "bytes": 339,
+      "sha256": "8aca1774aed50c446765f14e89f6f95d48a079761dcb2f34b48d9c9a2d70fe22"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/compile-readback.json",
+      "bytes": 34244,
+      "sha256": "1ae77541199410cd331191e1a0b39b15993eb0602bd716a7bf360c18ceb96de9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/native-readback.json",
+      "bytes": 33389,
+      "sha256": "98d129f038f2abd21bc634fb587ce40e02f91114e4740c29faf5784084afa907"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile/result.json",
+      "bytes": 32066,
+      "sha256": "deeecd1e21ec74b4a93c36709522bd9a2229a2b89d577e04a2404c28c36d1ea9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile/stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native/result.json",
+      "bytes": 31261,
+      "sha256": "95b358e9d0a289d5e2a7be7581197be41691ac136b6e56dd3aad8a7bc0d54f6e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native/stdout",
+      "bytes": 3040,
+      "sha256": "eb1c657a190f0bb72f52a9fe35d65ce50ac66541c863c05115976ce935a10b35"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "limitations": [
+    "Native Linux semantics only; backend source not changed or executed.",
+    "Attempt1 prelaunch destination refusal remains separately preserved.",
+    "No pread-then-normal-read or changed-nonzero-seek-error/reset control executed yet.",
+    "No target exec or leader-exit control executed here.",
+    "No compiler dependency closure, cross-backend parity or prior loader-causation claim."
+  ]
+}

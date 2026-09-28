@@ -1,0 +1,54 @@
+{
+  ".claude/skills/code-elegance/SKILL.md": [
+    {
+      "line": 430,
+      "text": "- **`--unsafe-strip-lines` and similar diagnostic-only normalizations**, used"
+    }
+  ],
+  ".claude/skills/determinism-regression-debugging/SKILL.md": [
+    {
+      "line": 77,
+      "text": "`--unsafe-strip-lines` is only a non-parity localization aid. It erases the"
+    }
+  ],
+  ".claude/skills/hermit-debugging/SKILL.md": [
+    {
+      "line": 263,
+      "text": "| `--unsafe-strip-lines` | **Non-parity diagnostic only.** Erases timestamps and syscall values; using it to make a failing parity diff pass is cheating. |"
+    },
+    {
+      "line": 265,
+      "text": "| `--ignore-lines <substr>` | Drop lines containing a substring before comparing (repeatable). |"
+    },
+    {
+      "line": 266,
+      "text": "| `--skip-commit` / `--skip-detlog` | Compare only DETLOG, or only COMMIT, to tell a *scheduling* divergence from a *syscall/data* divergence. |"
+    },
+    {
+      "line": 267,
+      "text": "| `--include-detlogs syscall,syscallresult,other` | Narrow which DETLOG classes count. |"
+    },
+    {
+      "line": 337,
+      "text": "- `detcore/src/logdiff.rs` \u2014 the log comparator: `strip_log_entry`"
+    }
+  ],
+  "demos/05-qemu-busybox.sh": [
+    {
+      "line": 137,
+      "text": "  # -- `RunOpts::verification_strictness` returns `Canonical` only under"
+    }
+  ],
+  "docs/ERROR_CATALOG.md": [
+    {
+      "line": 123,
+      "text": "| `unknown value ... for DetLogFilter` | Configuration | A log-diff filter was not `syscall`, `syscallresult`, or `other`. | Use one of those values with `--include-detlogs`. |"
+    }
+  ],
+  "docs/USER_GUIDE.md": [
+    {
+      "line": 332,
+      "text": "`Stripped` when `--unsafe-strip-lines` applies its lossy substitutions, or"
+    }
+  ]
+}

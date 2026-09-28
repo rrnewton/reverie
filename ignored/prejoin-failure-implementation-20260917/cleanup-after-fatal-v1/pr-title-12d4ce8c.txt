@@ -1,0 +1,1 @@
+Do not treat fatal child cancellation as a cleanup failure

@@ -1,0 +1,60 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0xa230
+There are 12 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x008858 0x008858 R   0x1000
+  LOAD           0x009000 0x0000000000009000 0x0000000000009000 0x0d30d1 0x0d30d1 R E 0x1000
+  LOAD           0x0dd000 0x00000000000dd000 0x00000000000dd000 0x0348fd 0x0348fd R   0x1000
+  LOAD           0x111be8 0x0000000000112be8 0x0000000000112be8 0x006708 0x00c4a8 RW  0x1000
+  DYNAMIC        0x115c68 0x0000000000116c68 0x0000000000116c68 0x0001b0 0x0001b0 RW  0x8
+  NOTE           0x0002e0 0x00000000000002e0 0x00000000000002e0 0x000030 0x000030 R   0x8
+  NOTE           0x000310 0x0000000000000310 0x0000000000000310 0x000044 0x000044 R   0x4
+  TLS            0x111be8 0x0000000000112be8 0x0000000000112be8 0x000048 0x000080 R   0x8
+  GNU_PROPERTY   0x0002e0 0x00000000000002e0 0x00000000000002e0 0x000030 0x000030 R   0x8
+  GNU_EH_FRAME   0x0fccf8 0x00000000000fccf8 0x00000000000fccf8 0x00305c 0x00305c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x111be8 0x0000000000112be8 0x0000000000112be8 0x004418 0x004418 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .rela.dyn .rela.plt 
+   01     .init .plt .plt.sec .text __libc_freeres_fn .fini 
+   02     .rodata .stapsdt.base .eh_frame_hdr .eh_frame .gcc_except_table 
+   03     .tdata .init_array .fini_array .data.rel.ro .dynamic .got .data __libc_subfreeres __libc_IO_vtables __libc_atexit .bss __libc_freeres_ptrs 
+   04     .dynamic 
+   05     .note.gnu.property 
+   06     .note.gnu.build-id .note.ABI-tag 
+   07     .tdata .tbss 
+   08     .note.gnu.property 
+   09     .eh_frame_hdr 
+   10     
+   11     .tdata .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x115c68 contains 23 entries:
+  Tag        Type                         Name/Value
+ 0x000000000000000c (INIT)               0x9000
+ 0x000000000000000d (FINI)               0xdc0c4
+ 0x0000000000000019 (INIT_ARRAY)         0x112c30
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x112c38
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x358
+ 0x0000000000000005 (STRTAB)             0x390
+ 0x0000000000000006 (SYMTAB)             0x378
+ 0x000000000000000a (STRSZ)              1 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x116e18
+ 0x0000000000000002 (PLTRELSZ)           864 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x84f8
+ 0x0000000000000007 (RELA)               0x398
+ 0x0000000000000008 (RELASZ)             33120 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffff9 (RELACOUNT)          1380
+ 0x0000000000000000 (NULL)               0x0

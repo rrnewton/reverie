@@ -1,0 +1,182 @@
+{
+  "base": "35af18f34a3238117eecac8b439ac20e13316715",
+  "fetched_main": "b03fd6c16a438060f0013d58948643d8f3d81ab5",
+  "fetched_tree": "13692a17f20ff3c80f88e417913dc7d084b97516",
+  "commits": [
+    "8dcf9a6d5036dc5329fe9cf56ba2965e25b8eb15 Restore missing LiteInst verify arguments",
+    "afdaf632301b5e8650ebbb55f61597f70ed37b21 Fix current receipt and parity command self-tests",
+    "b03fd6c16a438060f0013d58948643d8f3d81ab5 Retain cumulative evidence for cell requalification"
+  ],
+  "complete_patch_sha256": "04e0e27dd218e805b779f7f6845bb64a59cadb7035a16cae0d03da51592fce53",
+  "manifest_semantic_changes": {
+    "tests/e2e/manifests/backend-parity-c.yaml": {
+      "old_sha256": "b1107d8449a57081d82ee60316061c4224ff63395ea13917a1e0d0d55471dfb2",
+      "new_sha256": "8076ae2a3eb0ae24b807b2a506a4eecbcc44d7b3afba820574642dc6a46fdaf8",
+      "semantic_changes": [
+        {
+          "path": [
+            "test",
+            84,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "workdir"
+          ],
+          "change": "added"
+        }
+      ]
+    },
+    "tests/e2e/manifests/c-programs.yaml": {
+      "old_sha256": "7e24186b80e82820432a66812741afa1f39b7e397b30a9bde7c8b25d0399233a",
+      "new_sha256": "1eaef9efa92b50c32483b55b8066d76a8096902b867b7a972a309d7f40373a15",
+      "semantic_changes": [
+        {
+          "path": [
+            "test",
+            37,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "pipe-order"
+          ],
+          "change": "added"
+        },
+        {
+          "path": [
+            "test",
+            43,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "threads"
+          ],
+          "change": "added"
+        },
+        {
+          "path": [
+            "test",
+            78,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "8192"
+          ],
+          "change": "added"
+        },
+        {
+          "path": [
+            "test",
+            106,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "README.md"
+          ],
+          "change": "added"
+        },
+        {
+          "path": [
+            "test",
+            122,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "itimer-delivery"
+          ],
+          "change": "added"
+        },
+        {
+          "path": [
+            "test",
+            153,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "cancellation"
+          ],
+          "change": "added"
+        }
+      ]
+    },
+    "tests/e2e/manifests/determinism-stress-c.yaml": {
+      "old_sha256": "4a428f6301e896b194af019d44b537abd2164914f7e51182a41d0b7752ef41e5",
+      "new_sha256": "36b1b9c52696e25ca1f846e4eda816ddc1dd044200d69ce45b0558861a02c293",
+      "semantic_changes": [
+        {
+          "path": [
+            "test",
+            9,
+            "modes",
+            "verify",
+            "guest_args",
+            "liteinst"
+          ],
+          "before": null,
+          "after": [
+            "contention"
+          ],
+          "change": "added"
+        }
+      ]
+    }
+  },
+  "unchanged_integration_paths": {
+    "ci/dag/validate.json": {
+      "sha256": "9d3046b0d8b0b1edba062355aaa9c2aa4b8380c500312a47407c93307e0d54bb",
+      "bytes": 2855212
+    },
+    "ci/expected-e2e-plan.json": {
+      "sha256": "2c4fc993c12bbe737c35dac702396716c2355792c02d3b2e9a354974c0a19364",
+      "bytes": 147188
+    },
+    "hermit-cli/src/lib.rs": {
+      "sha256": "a5f6b9e8a8fefa2891359d3106f998deec0b029dfa2d6c94ba3af099ee2486c1",
+      "bytes": 194652
+    },
+    "ci/manifest-plan/src/validation_dag_static.rs": {
+      "sha256": "5a51f43c85c9fab7698f04b7a79e8913149a023dda3c93a5b44735423f2d6ed2",
+      "bytes": 347671
+    },
+    "ci/configure-build-jobs.sh": {
+      "sha256": "0a4422593d8eb124b8b43d9d2548d2aa30617b89fd7d5c6149de6421b94a8c42",
+      "bytes": 49124
+    },
+    "ci/run-with-reverie-dbt-budget.sh": {
+      "sha256": "85cc3141154a2d9ed6bdfcbb6b339f756a74f0a775d7f2a5e7648f352db5581f",
+      "bytes": 18885
+    },
+    "hermit-cli/tests/cli.rs": {
+      "sha256": "e54cf2ea6078f2e7b0da238d5bd04f294f8f68a78026269e7fae3dce971e2992",
+      "bytes": 265023
+    }
+  },
+  "no_new_tests_or_generator": true
+}

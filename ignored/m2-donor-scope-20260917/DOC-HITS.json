@@ -1,0 +1,622 @@
+[
+  {
+    "path": "README.md",
+    "line": 140,
+    "text": "`--verify` compares captured status and output and applies the `Stripped`"
+  },
+  {
+    "path": "README.md",
+    "line": 161,
+    "text": "measured post-0.2 `Stripped` envelope, build instructions, and explicit"
+  },
+  {
+    "path": "README.md",
+    "line": 212,
+    "text": "| Verify two executions | `hermit run --verify -- PROGRAM` | Runs the `Stripped` diagnostic over output, status, and selected logs; not strict determinism |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 11,
+    "text": "> Stripped `--strict --verify` comparison \u2014 all of coreutils, crypto/hashing,"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 15,
+    "text": "> expansion produced **134 clean Stripped results as written, or 135 valid"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 16,
+    "text": "> Stripped results after replacing"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 18,
+    "text": "> 30-41)** added **56 more clean Stripped passes** across networking/sockets, signals, time/clock,"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 21,
+    "text": "> passing Stripped verification (\u00a73q). These batch rows overlap"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 28,
+    "text": "> consolidated **9-language Stripped matrix** (C, C++, Rust, Go, Perl, Lua, Node.js, Java, gawk)"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 71,
+    "text": "  Stripped Detcore logs. Selected numeric, address, path, and time fields are"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 84,
+    "text": "## 3. Stripped pass/fail matrix (`--strict --verify`, backend = ptrace)"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 220,
+    "text": "| perl | `perl -e 'print 42'` | **PASS Stripped (20/20)** at `96f9953a`; host load averages remained 146\u2013176 during the run. Repetition does not make this L4. |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 225,
+    "text": "| python3 (pure compute) | `python3 -c 'print(sum(range(100)))'` | **PASS Stripped (20/20)** at `96f9953a`; host load averages remained 146\u2013181 during the run. Repetition does not make this L4. |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 272,
+    "text": "fails `--strict --verify` (that checks Stripped internal syscall-trace equality across a"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 277,
+    "text": "### 3p. Overnight expansion batches 3-29 \u2014 135 valid Stripped checks"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 284,
+    "text": "fixture binaries to the guest. `PASS Stripped` means `hermit run --strict --verify`"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 285,
+    "text": "completed after selected numeric, address, path, and time fields were stripped"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 291,
+    "text": "Stripped verification, yielding the 135 valid passing checks catalogued below."
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 294,
+    "text": "| Category | Batch | Passing commands / workloads | Stripped passes |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 337,
+    "text": "| interpreter expansion | Ruby hello | Default invocation fails natively because RubyGems is broken; `--disable-gems` passes Stripped verification | Host runtime failure; corrected control passes |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 340,
+    "text": "| 8 | blocking FIFO writer+reader | Hangs in plain strict mode and verify | FIFO-open rendezvous livelock |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 350,
+    "text": "a clean Stripped pass,"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 355,
+    "text": "### 3q. Second expansion batches 30-41 \u2014 56 clean Stripped passes + real-app matrix"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 361,
+    "text": "successful under the Stripped comparison across the two `--verify` sub-runs"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 363,
+    "text": "`PASS Stripped` = `:: Success: deterministic. Determinism verified.` and is not L2."
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 387,
+    "text": "**Real userland applications** (`hermit run --strict --verify -- bash -c '<cmd>'`) \u2014 **5/5 PASS Stripped**:"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 391,
+    "text": "| bc | `bc -l` pi via `4*a(1)`, scale=20 | PASS Stripped | `3.14159265358979323844` |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 392,
+    "text": "| awk | `echo '1 2 3 4 5' \\| awk` field sum | PASS Stripped | `15` |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 393,
+    "text": "| sort | `printf '3\\n1\\n4\\n1\\n5\\n' \\| sort -n` | PASS Stripped | `1 1 3 4 5` |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 394,
+    "text": "| sed | `echo 'hello world' \\| sed 's/world/hermit/'` | PASS Stripped | `hello hermit` |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 395,
+    "text": "| sqlite3 | CSV `CREATE`/`INSERT 42`/`SELECT` via pipe | PASS Stripped | `42` |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 404,
+    "text": "  both pass Stripped verification."
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 443,
+    "text": "### 3s. Language-runtime summary \u2014 9 languages pass Stripped verification"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 445,
+    "text": "Consolidated from \u00a73l and batches 36/37/38/40/41, plus a Go check added 2026-07-23. `PASS Stripped`"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 447,
+    "text": "after Stripped comparison; it is not an L2 claim."
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 452,
+    "text": "| C | `gcc hello.c` build + run; batch 37 mini-apps | **PASS Stripped** |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 453,
+    "text": "| C++ | batch 40: `g++ -std=c++17` vector/map/`std::thread`+atomic \u00d7400000/regex/`chrono` | **PASS Stripped** (5/5) |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 454,
+    "text": "| Rust | batch 41 + `rustc -O` integer-sum binary | **PASS Stripped** (3/3 this session) |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 455,
+    "text": "| Go | `go build` integer-sum binary (`go sum: 4950`) | **PASS Stripped** (3/3 this session) \u2014 Go's multithreaded runtime passes for this compute workload |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 456,
+    "text": "| Perl | `perl -e 'print 42'`; batch 38 (strftime/hash/map/line-count) | **PASS Stripped (20/20)** at `96f9953a` under host load averages 146\u2013176; not L4. |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 457,
+    "text": "| Lua | `lua -e 'print(6*7)'` | **PASS Stripped** |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 458,
+    "text": "| Node.js | `node -e 'console.log(6*7)'` | **PASS Stripped** |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 459,
+    "text": "| Java | `java -version` (OpenJDK 1.8.0_492 Temurin, 5/5) \u2014 **requires PR #223** (`saturating_add` `LogicalTime` overflow fix) | **PASS Stripped** |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 460,
+    "text": "| gawk | `gawk 'BEGIN{print 6*7}'` | **PASS Stripped** |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 461,
+    "text": "| Python 3 | `python3 -c 'print(sum(range(100)))'` | **PASS Stripped (20/20)** at `96f9953a` under host load averages 146\u2013181; not L4. Threaded Python remains a separate gap (\u00a73j). |"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 466,
+    "text": "#223), and gawk**. Python's pure-compute witness passed 20 repeated Stripped comparisons;"
+  },
+  {
+    "path": "WHATS_WORKING.md",
+    "line": 541,
+    "text": "   *identical* pipeline passes Stripped `run --verify`, and the same apps record cleanly when"
+  },
+  {
+    "path": "SCORECARD.md",
+    "line": 7,
+    "text": "Every selected `verify` cell, and every seed in a selected `chaos` cell, runs the same backend twice. The manifest runner adds `--verify-strict` when the selected Hermit binary supports it, and accepts a result only when the typed report says `verified=true`, `verdict=matched`, `bitwise_parity=true`, `strictness=canonical`, `compare_logs=true`, a named canonical `record_envelope`, and both INFO-message counts are nonzero. Bare `--verify` remains a Stripped comparison when invoked directly and does not satisfy this regression plan. These same-backend results do not establish cross-backend parity."
+  },
+  {
+    "path": "ci/compat-envelope/README.md",
+    "line": 91,
+    "text": "itself. Bare `--verify` still uses the legacy Stripped comparator. These cells"
+  },
+  {
+    "path": "demos/README.md",
+    "line": 58,
+    "text": "required for that: a plain `--verify` stays on the lossy Stripped comparator and"
+  },
+  {
+    "path": "demos/README.md",
+    "line": 135,
+    "text": "after nine minutes and was stopped; current-main Stripped verification therefore"
+  },
+  {
+    "path": "demos/README.md",
+    "line": 146,
+    "text": "Before the Reverie PMU-default update, a Stripped `VERIFY=1` run completed both"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 6,
+    "text": "- The strict, sequentialized profile passed Stripped verification, not L2. The harness boots to"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 9,
+    "text": "  selected numeric, address, path, and time fields are stripped."
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 99,
+    "text": "successful exit and marker establish L1. Use the bounded harness for Stripped"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 102,
+    "text": "retain historical `L2` names, but bare `--verify` does not establish L2:"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 116,
+    "text": "and 363693 DETLOG/scheduler COMMIT messages after Stripped normalization. It"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 124,
+    "text": "That marker records a Stripped pass; it is not canonical L2 evidence."
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 447,
+    "text": "experiment records the first successful strict Stripped run, including the exact"
+  },
+  {
+    "path": "docs/QEMU_BOOT.md",
+    "line": 450,
+    "text": "Stripped-versus-L2 distinction."
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 13,
+    "text": "named cell matched under SaBRe's `Stripped` comparison and passed its stated"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 81,
+    "text": "## Measured `Stripped` envelope"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 93,
+    "text": "- Comparator: `Stripped` (`run --backend sabre --strict --verify`). The portable"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 96,
+    "text": "  `Stripped` without additional relaxations. These results are not L2."
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 109,
+    "text": "The cell produced a SaBRe `Stripped` match with 9/9 selected"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 110,
+    "text": "DETLOG/scheduler-COMMIT messages matching after `Stripped` normalization. Its"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 115,
+    "text": "corpus measurement. Its latest retained `Stripped` run remains 207/212"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 118,
+    "text": "its first run. The five gaps and the `Stripped` comparator preclude B3, B4, L2,"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 127,
+    "text": "| SaBRe `Stripped` match and ptrace exit/stdout parity | 110 | Enabled by this ratchet |"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 128,
+    "text": "| SaBRe `Stripped` match, but ptrace output differs | 18 | Remains disabled |"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 129,
+    "text": "| SaBRe `Stripped` comparison failed or timed out | 29 | Remains disabled |"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 133,
+    "text": "for the B3 corpus count, but the underlying comparisons were `Stripped`; it"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 163,
+    "text": "gives `backend-parity-c/pid-probe` and `debugger-c/debuggee` SaBRe `Stripped`"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 174,
+    "text": "`Stripped` matches with byte-identical ptrace output under the portable profile;"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 178,
+    "text": "ptrace verify cells (66.5%) under `Stripped`: seven blocking-CI cells and 126"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 189,
+    "text": "The three remaining non-gated cells match under SaBRe's `Stripped` comparison"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 216,
+    "text": "`Stripped` comparison at INFO log level, but direct ptrace/SaBRe stdout"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 222,
+    "text": "`c-programs/mmap-determinism` matched under `Stripped` on both backends but had"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 320,
+    "text": "The following 27 candidates fail SaBRe's `Stripped` comparison or its timeout"
+  },
+  {
+    "path": "docs/SABRE_COMPATIBILITY.md",
+    "line": 357,
+    "text": "  Detcore. The named `patch` workload produced five consecutive `Stripped`"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 22,
+    "text": "--verify`, so a pass establishes Stripped two-run equality, not L2. Stripped"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 43,
+    "text": "| Stripped pass | 156 | Both executions matched after Stripped normalization. |"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 51,
+    "text": "`pgrep`, and `pkill`) all passed Stripped verification and account for the"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 62,
+    "text": "both passed Stripped verification."
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 73,
+    "text": "| Stripped pass | 56 | Every installed extended probe matched after Stripped normalization. |"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 80,
+    "text": "Together, the core and extended matrices cover 212 entrypoints with Stripped"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 89,
+    "text": "then passed Stripped verification from cache. PHP resolves to a large internal"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 91,
+    "text": "about 94 seconds, then passed Stripped verification. The mysql and PHP rows each"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 98,
+    "text": "passed three additional Stripped verification repetitions (36/36) before"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 118,
+    "text": "passed Stripped verification. Hermit now uses the conservative setting and the"
+  },
+  {
+    "path": "docs/E9PATCH_COMPATIBILITY.md",
+    "line": 133,
+    "text": "- The matrix uses bounded semantic workloads. It establishes Stripped equality,"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 17,
+    "text": "Stripped verification ratchet (`--strict --verify`, Hermit's double-run"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 18,
+    "text": "comparison after selected numeric, address, path, and time fields are stripped)"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 19,
+    "text": "are tracked separately. Stripped verification is not L2."
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 29,
+    "text": "Stripped verification (`hermit run --strict --verify`):"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 33,
+    "text": "| ptrace | 28/28 | Stripped DETLOG | 100% |"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 34,
+    "text": "| DBT | 26/28 | Stripped DETLOG | 93% |"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 37,
+    "text": "The verification results must name the comparator that actually ran. **Stripped DETLOG**"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 41,
+    "text": "KVM now compares retained logs too. Plain `--verify` uses the Stripped policy on"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 115,
+    "text": "status: `detlog` for Stripped DETLOG equality, `guest` for guest-visible"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 184,
+    "text": "### Stripped verification (`--verify`)"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 188,
+    "text": "the Stripped retained-log comparison for ptrace, DBT, and KVM;"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 410,
+    "text": "Stripped verification (`hermit run --strict --verify`), e9patch Stripped"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 419,
+    "text": "DETLOG identity *modulo* the deterministic prologue, plus Stripped and"
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "line": 510,
+    "text": "Enforce the Stripped verification ratchet on any backend by adding `--verify`"
+  },
+  {
+    "path": "tests/bin/README.md",
+    "line": 95,
+    "text": "on Detcore's precise waiter queue. It passes Stripped verification, not L2"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 3,
+    "text": "These scripts exercise the ptrace backend with Stripped verification, not L2."
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 10,
+    "text": "Canonical strictness reports `relaxations=none`. Stripped strictness records two"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 11,
+    "text": "stripped-prefix policy tokens: `real-wall-clock-prefix/v1` and"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 30,
+    "text": "twenty times for repeated Stripped stress evidence. Repetition does not promote"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 31,
+    "text": "Stripped evidence to L4 because the underlying comparison is not L2. The"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 32,
+    "text": "default is one Stripped comparison so the full targeted matrix remains"
+  },
+  {
+    "path": "tests/e2e/determinism-stress/README.md",
+    "line": 103,
+    "text": "completeness manifest. This shell suite therefore adds explicit Stripped"
+  },
+  {
+    "path": "tests/e2e/manifests/README.md",
+    "line": 158,
+    "text": "and a matched verdict. Output-only, stripped, empty-log, malformed, or"
+  },
+  {
+    "path": "tests/reproducible-builds/README.md",
+    "line": 12,
+    "text": "status, output, and Stripped execution logs. That comparison removes selected"
+  },
+  {
+    "path": "tests/reproducible-builds/README.md",
+    "line": 28,
+    "text": "  plus a Stripped `--strict --verify` run of the same compiler command. The"
+  },
+  {
+    "path": "tests/reproducible-builds/README.md",
+    "line": 29,
+    "text": "  direct object-file comparison, not bare `--verify`, supplies the bitwise"
+  },
+  {
+    "path": "demos/05-qemu-busybox.sh",
+    "line": 136,
+    "text": "  # A plain `--verify` stays on the lossy Stripped comparator on every backend"
+  },
+  {
+    "path": "demos/05-qemu-busybox.sh",
+    "line": 203,
+    "text": "  # `bitwise_parity: false`, so scraping it cannot tell a stripped match from a"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "line": 186,
+    "text": "`Stripped` comparison to selected Detcore scheduler messages; it is useful"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "line": 209,
+    "text": "`Stripped` allowlist, build commands, and known gaps. An enabled probe is"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "line": 293,
+    "text": "The default log comparison is `Stripped`: it can erase numbers, addresses,"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "line": 299,
+    "text": "Matching verification logs are temporary by default; divergent comparisons"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "line": 332,
+    "text": "`Stripped` when `--unsafe-strip-lines` applies its lossy substitutions, or"
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "helpers": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/nextest-binaries.rs",
+      "reason": "No generated project/lock in configured XDG cache; exact dependency resolution and helper ELFs do not yet exist there"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/nextest-timeout-config.rs",
+      "reason": "No generated project/lock in configured XDG cache; exact dependency resolution and helper ELFs do not yet exist there"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/nextest-test-results.rs",
+      "reason": "No generated project/lock in configured XDG cache; exact dependency resolution and helper ELFs do not yet exist there"
+    }
+  ],
+  "missing_candidate_inputs": [],
+  "comparison_only": true
+}

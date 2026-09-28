@@ -1,0 +1,176 @@
+{
+  "formatter": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+  "sha256": "016e3712bb170692190f20ce3356646d6d2c59343b81516de66af7c5fd2e5e7c",
+  "runs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/detcore/src/logdiff.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/detcore/src/logdiff.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.034801197005435824
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/detcore/tests/testutils/src/lib.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/detcore/tests/testutils/src/lib.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.015572911826893687
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/analyze/phases.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.014395473059266806
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/backends.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/backends.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.02993979211896658
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/logdiff.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/logdiff.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.018424436915665865
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/record_start.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/record_start.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.015877990052103996
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/run.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/run.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.04459187900647521
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/verify.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/verify.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.030683568911626935
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/chaos_replay.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/chaos_replay.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.010265726130455732
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/common/verify.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/common/verify.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.011232709977775812
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/trace_replay.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/trace_replay.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.008897931082174182
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/use_case/run_usecase.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/use_case/run_usecase.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.00938143813982606
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/use_case.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-verify/src/use_case.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.009687228128314018
+    }
+  ],
+  "scope": "Formatting source previews only; no Cargo/build/test/guest"
+}

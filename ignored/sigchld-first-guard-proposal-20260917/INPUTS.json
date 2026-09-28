@@ -1,0 +1,233 @@
+{
+  "base_commit": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "base_tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+  "records": [
+    {
+      "path": "AGENTS.md",
+      "git_blob": "3d4e2a5672b4b2e4c9d39ec409bd9fb52d0883fa",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 34047,
+        "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "ci/manifest-plan/src/validation_dag.rs",
+      "git_blob": "a97b1fed17826f905fc8174a776a4866c59c8018",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 117322,
+        "sha256": "0d82d82a9987ee1f624aa96b4fdd6573aac51936d9997d226b3bf2fa41a63401",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "ci/manifest-plan/src/validation_dag_static.rs",
+      "git_blob": "7dfc4a7c5945b3f235dc4b13a4befccd651f83e9",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 349470,
+        "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/Cargo.toml",
+      "git_blob": "ecb6eb1372bb7123ab5a33fbce53132646fcd1d6",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 4387,
+        "sha256": "976092b5e8576080f9d3870705fffc796c22dd1dc10e556b5795ac42ff81db29",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/config.rs",
+      "git_blob": "9d9b6504b4dd1ba3c0f4a08f6118a0fee74ea4a1",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 415,
+        "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/lib.rs",
+      "git_blob": "0b80163383d2fe770bfd4652e798d1f1b4cd9569",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/preemptions.rs",
+      "git_blob": "f9dbc9f636e0b21ae0a99361d5b63687906cb400",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 40908,
+        "sha256": "9c6e0d508e1e22fac89211e34e5564b339602a0ada6436d31786b2d8f5a4bef1",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/scheduler/timed_waiters.rs",
+      "git_blob": "c4902a90e837f2213fc42b938a2c7233dd7a4783",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 22573,
+        "sha256": "ef76b42df86d469ed35accd54e0a44f9e1932241c06b7e73a3c56af6b7a3fab9",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/scheduler.rs",
+      "git_blob": "466b0e8957223da6be5742f0ab226aa6ffa216a7",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 353840,
+        "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/time.rs",
+      "git_blob": "a196a0b531b2997527ebf594ca50aa38872f0462",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 3769,
+        "sha256": "5bc794d6255494feae370da27d9efd22873e496e07e76751e2edfa88e0bd1217",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/tool_global/tests/backend_failure_tests.rs",
+      "git_blob": "929716888550aedfdc6c33aaee226a7964619938",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 27241,
+        "sha256": "115357f22d3b42c0a44b701789476a107a1284acbd70e0d17dfa6bc2be8ff97d",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore/src/tool_global.rs",
+      "git_blob": "8d0c19e140d5fb190467f6e1c14ef25231f3f3f8",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 254033,
+        "sha256": "a8d1df963c23b7143346f080c5eabc0bbcf3db81c977fcf4d8e994231aa66e61",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore-model/src/config.rs",
+      "git_blob": "6205e6751fb0256d363214404e37e17d420e384b",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 73871,
+        "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore-model/src/schedule.rs",
+      "git_blob": "72ffe149f316006b6783ecae128d9e47976fac04",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 14629,
+        "sha256": "f11ad4b841f870d234a400a801fb1106b83c46845017c7d2a08e403ecad85c1f",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "detcore-model/src/time.rs",
+      "git_blob": "092988f393e09b9f23e3a49ec19031b3ed33ddcc",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 43561,
+        "sha256": "d65bf6190c679ec15dbeb82263bf71aae003d346929cc36fc95b4354356c656c",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "hermit-cli/Cargo.toml",
+      "git_blob": "c71ecb33ac773b2056c8c7550d325d872e02a902",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 4358,
+        "sha256": "b9b275fbe4280150a8baa334d4d698e8683bee978171db4640180b354cbfd744",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "hermit-cli/src/error.rs",
+      "git_blob": "07061315058c483ffa43d688ac34c44dda83aa23",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 10782,
+        "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "hermit-cli/src/kvm_failure_tests.rs",
+      "git_blob": "42b14d13641ea672efd352a270545eeab9106aa0",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 22390,
+        "sha256": "dcb2ec5d59dfe9c6ab599895dc5701c6dd7bacd63a60c5fd0a2978048164ecab",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "git_blob": "771ee698016eaca572a347de236903a3459339ac",
+      "git_mode": "100644",
+      "copy": {
+        "bytes": 205203,
+        "sha256": "2c354a05de69312b0c2ccebecfc2b023d5fc3d8de6f06704b1e8d2bcd63eade0",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "scripts/check-detcore-backend-abstraction.sh",
+      "git_blob": "b4ea99632b8200d6544dbd777717792788fa6bf6",
+      "git_mode": "100755",
+      "copy": {
+        "bytes": 20063,
+        "sha256": "0e2ab33b3c8c423a90a595f64f7fe5d022434d3d9dec94a784b47402436ed0ff",
+        "mode": "0o755"
+      }
+    },
+    {
+      "path": "root-REPORT.md",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-sigchld-current-source-root-20260917/REPORT.md",
+      "copy": {
+        "bytes": 7067,
+        "sha256": "e8a41c050b667e059ab63e2feb251c1c25270c529112833e0fe2237a295f9556",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "retained-PLAN.md",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-sigchld-follow-up-preparation-20260917/PLAN.md",
+      "copy": {
+        "bytes": 10987,
+        "sha256": "fba6efb4235a0a3ff37306c4f0ebf32158a2e807683fb6362575b3033a1493ca",
+        "mode": "0o644"
+      }
+    },
+    {
+      "path": "fixture-mapping-REPORT.md",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/REPORT.md",
+      "copy": {
+        "bytes": 9576,
+        "sha256": "a890e383ac256a3b92d636006660386cfe56ab947802b0ebf62eb0cbeb6bf349",
+        "mode": "0o644"
+      }
+    }
+  ]
+}

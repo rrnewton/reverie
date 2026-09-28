@@ -1,0 +1,10 @@
+[
+  {
+    "path": "py/wrkslots/cli.py",
+    "same": true
+  },
+  {
+    "path": "py/wrkslots/tests/test_lifecycle.py",
+    "same": true
+  }
+]

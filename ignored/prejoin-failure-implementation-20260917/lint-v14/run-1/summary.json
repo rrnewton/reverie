@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    },
+    {
+      "stage": "clippy",
+      "status": "passed"
+    }
+  ],
+  "scope": "Read-only workspace formatting and --workspace --all-targets --all-features Clippy on committed forward head 9db60ab9, source v23. No native, VM or guest execution. Default-feature v22 evidence remains distinct."
+}

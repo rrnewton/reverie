@@ -1,0 +1,39 @@
+--- preparation-v1/input-binding.json
++++ preparation-v2/input-binding.json
+@@ -2623,14 +2623,14 @@
+   },
+   {
+     "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/prompt.txt",
+-    "bytes": 9295,
+-    "sha256": "361893ced064b4fc985c44a1a7dff4f17284a9c9c929fdc8b33deaede19423b8",
++    "bytes": 9668,
++    "sha256": "ef212605d1db6efa254fb19bf6313e682021e0c4f615c1fc12657ac5a5b9ecac",
+     "mode": "0o644"
+   },
+   {
+     "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/EVIDENCE-APPENDIX.md",
+-    "bytes": 5353,
+-    "sha256": "0014c2ddf8342ab3a869ec15e5a42e71ca92897f6f5f757ba38534c807a33d15",
++    "bytes": 5773,
++    "sha256": "f1a088c35698dca9e9fed2df57df05443648e28a66124fe06c909055a1560c3a",
+     "mode": "0o644"
+   },
+   {
+@@ -2656,5 +2656,17 @@
+     "bytes": 4667,
+     "sha256": "ad957c3e434371c29233a94de6609c75d9511f026af83f130dad51815e8783a8",
+     "mode": "0o644"
++  },
++  {
++    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/appendix/official-admission/run-record.json",
++    "bytes": 2580,
++    "sha256": "1a47f8fd96895338baa4dd7c15cce0a12efa947244576830f1eb9ae64532e911",
++    "mode": "0o600"
++  },
++  {
++    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/appendix/official-admission/admission.log",
++    "bytes": 333,
++    "sha256": "94dddce718a1b8a47045ea5123663fc028d113a5404acc904a46efc6adcefc8d",
++    "mode": "0o600"
+   }
+ ]

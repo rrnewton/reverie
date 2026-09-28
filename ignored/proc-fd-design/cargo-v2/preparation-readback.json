@@ -1,0 +1,31 @@
+{
+  "status": "prepared and applied source-v2; no compile/list/native execution",
+  "plan_sha256": "4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e",
+  "caller_sha256": "c08dc3d5dab9ff6ef03ac528cc2bb13e8ee85cfd3369296c124eaa40bcb2ae8a",
+  "source_binding_sha256": "3d6c2c0711946558e71e58a8ff63801a7ce9526deb1ef1432129c093fdd15aea",
+  "ast_parse": "passed, caller not executed",
+  "input_count": 30,
+  "all_inputs_paths_modes_bytes_match": true,
+  "verified_surrounding_source_files": 2550,
+  "six_candidate_files_match": true,
+  "old_source_v1_artifacts_unchanged": true,
+  "selected_identities_unchanged": 36,
+  "argv_changes": "--locked addition and fresh observer output paths only; same compiler/test args otherwise",
+  "environment_changes": "fresh owned TMPDIR only",
+  "original_memory_correction_retained": "16GiB/zero swap actual unchanged observer",
+  "target_cache": "owned existing path; prelaunch requires bound old terminal accounting and fresh service read",
+  "new_run_and_observer_roots_absent": true,
+  "head": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "status_output": " M reverie-kvm/src/elf.rs\n M reverie-kvm/src/executor.rs\n M reverie-kvm/src/lib.rs\n M reverie-kvm/src/memory.rs\n?? HANDOFF.md\n?? ignored/\n?? reverie-kvm/src/fdinfo.rs\n?? reverie-kvm/src/proc_mounts.rs\n",
+  "fmt_check_exit": 0,
+  "git_diff_check_exit": 0,
+  "prior_failure_readback_sha256": "9cb42add9eeb071e9cc459819cd74e68bc10bb68f13fb993248f09df9bca8fba",
+  "cargo_lockfile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+  }
+}

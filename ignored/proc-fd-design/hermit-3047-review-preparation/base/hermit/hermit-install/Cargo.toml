@@ -1,0 +1,13 @@
+[package]
+name = "hermit-install"
+version = "0.2.0"
+edition = "2024"
+license = "BSD-3-Clause"
+repository = "https://github.com/facebookexperimental/hermit"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false }

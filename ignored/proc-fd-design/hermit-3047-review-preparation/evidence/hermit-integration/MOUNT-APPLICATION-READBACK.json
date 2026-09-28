@@ -1,0 +1,23 @@
+{
+  "actual_mount_sources": {
+    "ci/manifest-plan/src/validation_dag_static.rs": {
+      "blob": "862e177839b47edbba97fd78af1b31f2544459fa",
+      "bytes": 347671,
+      "mode": "100644",
+      "sha256": "6e269f20deaea05d3996fea90f5035d41fe4a602173d1517a6c985ca96e2f674"
+    },
+    "hermit-cli/src/lib.rs": {
+      "blob": "4b606f33275836489986b9383e6987dcdd9c1259",
+      "bytes": 202202,
+      "mode": "100644",
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c"
+    }
+  },
+  "all_other_source_files_unchanged": true,
+  "baseline_dag_sha256": "9d3046b0d8b0b1edba062355aaa9c2aa4b8380c500312a47407c93307e0d54bb",
+  "generation_binding_sha256": "dc05233d53f41dbe32fb91e09199c01073a10a73d218997b42bc88d9dc9327ba",
+  "generator_caller_sha256": "e566ea225934883cbce38801e92ac548404d546869c47e39f37ea9626b6809e7",
+  "generator_delta_sha256": "659b36b2e4ce4c637fcfcc68bfae3ce20dede08ddb6c784ca2b7b383d9ed3b0c",
+  "native_callers_unchanged_and_disabled": true,
+  "source_snapshot_sha256": "a8a2e221ba71909e858014f2ebb68e0b9a2c0447472302642985f00d921c4a3b"
+}

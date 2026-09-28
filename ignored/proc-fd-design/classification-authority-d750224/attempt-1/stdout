@@ -1,0 +1,1 @@
+{"classifications": [{"blocks_entry": true, "checkout": "/home/newton/work/.dev-hermit-frozen-validate/validate-fresh-a88f948021a2-3493122-c93d50f4", "reason": "cannot authenticate agent-utils superproject checkout: Git returned an invalid value", "state": "could-not-classify"}], "create_journals": [], "process_censuses": 1, "requested": 1, "schema": 1}

@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    }
+  ],
+  "scope": "Final read-only workspace format check on Reverie source-v11; lint-v3 full Clippy passed on source-v10 before this formatting-only delta. No tests, VM, guests, source or lock mutations."
+}

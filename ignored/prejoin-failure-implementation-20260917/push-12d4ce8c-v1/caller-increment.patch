@@ -1,0 +1,59 @@
+--- push-9db-v2/launch.py
++++ push-12d-v1/launch.py
+@@ -8,7 +8,7 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN_SHA256 = '47747acb3ede07f26bfc442e2e198997ef17de6b9ca2a30dde722e5c1e251630'
++PLAN_SHA256 = 'abd022f22e52df70a70a56c134b58b5518e79659f1c65305b49bb70503cc29b5'
+ 
+ 
+ def digest(path):
+@@ -50,9 +50,9 @@
+     def check_source():
+         for source_plan in plans:
+             helper['check_inputs'](source_plan)
+-        helper['check_executable'](plans[0]['artifact'])
+-        for artifact in plans[1]['artifacts'].values():
+-            helper['check_executable'](artifact)
++        for source_plan in plans:
++            for artifact in source_plan.get('artifacts', {}).values():
++                helper['check_executable'](artifact)
+         for args, expected in [(['rev-parse', 'HEAD'], plan['head']),
+                                (['branch', '--show-current'], plan['local_branch']),
+                                (['status', '--porcelain=v1', '--untracked-files=no'], ''),
+@@ -64,21 +64,26 @@
+ 
+     def remote(name):
+         result = command(['/usr/bin/with-proxy', '/usr/bin/git', 'ls-remote', '--heads', 'origin',
+-                          plan['remote_branch'], plan['preserved_remote_branch']], plan['source_root'])
++                          plan['remote_branch'], *plan['preserved_remote_refs']], plan['source_root'])
+         write(root / (name + '.json'), result)
+         assert result['exit'] == 0, result
+         refs = {line.split()[1]: line.split()[0] for line in result['stdout'].splitlines()}
+-        assert refs[plan['preserved_remote_branch']] == plan['preserved_remote_tip'], refs
++        assert all(refs.get(branch) == tip for branch, tip in plan['preserved_remote_refs'].items()), refs
+         return refs
+ 
+     try:
+         check_source()
+-        native = json.loads((HERE.parent / 'native-forward-v1/RESULT.json').read_text())
+-        qualification = json.loads((HERE.parent / 'qualification-execution-v6/RESULT.json').read_text())
+-        assert native['status'] == 'passed'
+-        assert qualification['status'] == 'passed' and qualification['accepted_count'] == 26
+-        assert qualification['accepted_vm_count'] == 4 and qualification['accepted_static_count'] == 22
+-        assert qualification['unexecuted_count'] == 0
++        results = {name: json.loads(Path(path).read_text())
++                   for name, path in plan['validation_results'].items()}
++        assert results['full']['status'] == 'passed'
++        assert results['full']['registered_count'] == 454
++        assert results['full']['outcome_counts'] == {'ok': 454, 'failed': 0, 'ignored': 0}
++        qualification = results['static']
++        assert qualification['status'] == 'passed with one explicitly retained accounting retry'
++        assert qualification['original_methods'] == 22
++        assert qualification['accepted_first_attempts'] == 21 and qualification['accepted_retries'] == 1
++        assert len(qualification['rows']) == 22
++        assert results['build']['status'] == results['lint']['status'] == 'passed'
+         before = remote('remote-before')
+         assert plan['remote_branch'] not in before, before
+         write(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),

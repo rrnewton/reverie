@@ -1,0 +1,141 @@
+{
+  "status": "passed",
+  "time_unix": 1789668233.165575,
+  "source_head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "source_binding_sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f",
+  "source_manifest_sha256": "ea2a23b7996b55638a74a9ffc357a5ff43c947f2cd777daa7baca40a1b77b1ff",
+  "plan_sha256": "33d6c0d66bbe64f3395c5b47b5036e71ffc17a4bf14d88c98b93cf3a7441e749",
+  "caller_sha256": "0cc7673efac1102aa9ecc112fea145122b2c4c232744f7e25ada8228ecc3c6bd",
+  "admission_sha256": "f34e3086e2f05e5f234bde6475e71c0fae8da0f0f11f1bf9dc2db8fa9b8aa3e5",
+  "complete_input_count": 130,
+  "library": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b",
+    "bytes": 116212232,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+      "fresh": false
+    }
+  },
+  "old_names_retained": 427,
+  "current_registered": 453,
+  "original_full_argv_tail": [
+    "--test-threads=1",
+    "--nocapture",
+    "-Z",
+    "unstable-options",
+    "--format=json"
+  ],
+  "same_slot_active_work": [],
+  "prior_focused_services": [
+    {
+      "unit": "safehermit-20260917T175420Z-934136.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T175420Z-934136.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "unit": "safehermit-20260917T175430Z-953468.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T175430Z-953468.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "unit": "safehermit-20260917T175436Z-966037.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T175436Z-966037.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "unit": "safehermit-20260917T175442Z-977033.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T175442Z-977033.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    }
+  ],
+  "fresh_outputs_absent": true,
+  "scope": "Preparation and liveness/source checks only; no test invocation."
+}

@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "gh",
+    "api",
+    "--method",
+    "GET",
+    "repos/rrnewton/reverie/pulls?state=open&per_page=100&sort=created&direction=desc"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1",
+  "pid": 3381433,
+  "started_at": "2026-09-17T19:31:51.525206+00:00",
+  "ended_at": "2026-09-17T19:32:02.207947+00:00",
+  "wall_seconds": 10.68275836110115,
+  "exit_code": -6,
+  "timed_out": false,
+  "bounds": {
+    "cpu_seconds_per_process": 15,
+    "wall_seconds": 60,
+    "address_space_bytes": 1073741824,
+    "bytes_per_stream": 16777216,
+    "core_bytes": 0
+  },
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_bytes": 0,
+  "stderr_sha256": "a6bcacd93a3f8dd8c68c93fc5e627b0ee3a320ced48c19f8f0f7819309fd0af2",
+  "stderr_bytes": 245628
+}

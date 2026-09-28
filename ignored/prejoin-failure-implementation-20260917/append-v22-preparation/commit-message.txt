@@ -1,0 +1,39 @@
+Preserve KVM child completion and fatal RPC cleanup
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Keep an already-started independent child running through its ordinary
+callbacks after another process fails, while interrupting pending ordinary
+Tool RPCs before an owner joins. Consume explicit handler signals even when
+a callback selects a ready alternative, and keep an interrupted RPC safely
+pending when that callback polls it again. Preserve the real child writes,
+normal exit status, original diagnostics and consuming hook order.
+
+Task: kvm-lane-to-full-determinism-and-parity
+
+Retain the first typed failure and its real worker identity through cleanup,
+without duplicate diagnostics or losing separate hook errors. Carry explicit
+ordinary and failed-run child gate commands, publish caught worker panics
+before join-dependent cleanup, and preserve healthy started-thread status.
+The failure notification and consuming-hook API documentation describes the
+multi-publisher and nonlocal completion contract.
+
+Validation: all 44 selected native controls passed on source v22, including
+actual pending Tool RPC plus owned OS join, independent process behavior,
+select-then-return and select-then-await regressions. Workspace format and
+default-feature reverie-kvm all-targets Clippy with -D warnings passed.
+The original four VM and all 22 static_elf methods passed with unchanged
+assertions and real KVM admission: 25 accepted first attempts and one
+accounting-refusal retry on v22. The original refusal remains recorded;
+the observer and all bounds were unchanged. This includes both actual
+fork-child writes, natural status 0, waitability, all ten exec diagnostic
+modes, and distinct typed execution/cleanup causes. Accepted services used
+9.701618 CPU seconds and 31.953927814 summed observed wall seconds.
+
+This remains selected Reverie evidence. Coordinated Hermit native/initialized
+VM/pthread qualification and final forward-head checks remain separate.
+Successful-exec cancellation of an already-started sibling parked in RPC,
+arbitrary panic cleanup, the retained whole-suite failure and virtual PID
+SIGCHLD behavior remain explicit limits. No canonical parity claim follows.

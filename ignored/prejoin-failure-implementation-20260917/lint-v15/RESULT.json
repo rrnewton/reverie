@@ -1,0 +1,189 @@
+{
+  "status": "passed",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "source_binding_sha256": "aa5fecbfa4360cc8bcc55a6df50c7e2e47e1d0d99e9551a9516c8037d0edd5ff",
+  "plan_sha256": "a388b4d6449c06ddb29e96fcbc5776af6d5dab95153449096691f1fb80bc22d1",
+  "caller_sha256": "8415d2d80345c7fe06e579ccf0b5fbd4da3d56f8b9c139543895ebb8e37b982d",
+  "launch_sha256": "ac067194ab2549bfbf5674c5f4c5a4795a44eb03befa8628f3212c14d810dc22",
+  "stages": [
+    {
+      "stage": "format",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cpu_seconds": 1.713784,
+      "wall_seconds": 2.301554868,
+      "service": {
+        "unit": "safehermit-20260917T182731Z-875424.service",
+        "initial_properties": {
+          "Id": "safehermit-20260917T182731Z-875424.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182731Z-875424.service",
+          "MainPID": 876006,
+          "ExecMainPID": 876006,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1828581060262,
+          "CPUUsageNSec": 2652000,
+          "RuntimeMaxUSec": 60000000,
+          "MemoryMax": 17179869184,
+          "MemorySwapMax": 0,
+          "IgnoreSIGPIPE": 1,
+          "ExecStart": {
+            "value": {
+              "type": "a(sasbttttuii)",
+              "data": [
+                [
+                  "/usr/bin/python3",
+                  [
+                    "/usr/bin/python3",
+                    "-B",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/format/before-exec.json",
+                    "90395fe3d08015bb407130c24d93a77054b2a3731cfd1c9d8a9fb7a47efa9820"
+                  ],
+                  false,
+                  1789669652302033,
+                  1828581060262,
+                  0,
+                  0,
+                  876006,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "query_argv": [
+              "/usr/bin/busctl",
+              "--user",
+              "--json=short",
+              "get-property",
+              "org.freedesktop.systemd1",
+              "/org/freedesktop/systemd1/unit/safehermit_2d20260917T182731Z_2d875424_2eservice",
+              "org.freedesktop.systemd1.Service",
+              "ExecStart"
+            ],
+            "stdout_sha256": "e5dd7c984dab0c2baa6d6ecb454269f2e9f4e180fd6b285faefbc01ef68e0eef",
+            "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/format/before-exec.json\",\"90395fe3d08015bb407130c24d93a77054b2a3731cfd1c9d8a9fb7a47efa9820\"],false,1789669652302033,1828581060262,0,0,876006,0,0]]}\n",
+            "returncode": 0
+          }
+        },
+        "main_process": {
+          "pid": 876006,
+          "start_ticks": 182858106,
+          "parent_pid": 32320,
+          "state": "R",
+          "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182731Z-875424.service"
+        },
+        "cgroup_inode": 39584679,
+        "cgroup_device": 27
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/format/result.json",
+      "result_sha256": "d3c3f598f89eb975a6dc50e341bfffe78707fe1111800fee61bdfab2cba0fae9",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "stage": "clippy",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cpu_seconds": 11.693974,
+      "wall_seconds": 6.985359617,
+      "service": {
+        "unit": "safehermit-20260917T182735Z-883100.service",
+        "initial_properties": {
+          "Id": "safehermit-20260917T182735Z-883100.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182735Z-883100.service",
+          "MainPID": 883739,
+          "ExecMainPID": 883739,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1828584770901,
+          "CPUUsageNSec": 9503000,
+          "RuntimeMaxUSec": 900000000,
+          "MemoryMax": 17179869184,
+          "MemorySwapMax": 0,
+          "IgnoreSIGPIPE": 1,
+          "ExecStart": {
+            "value": {
+              "type": "a(sasbttttuii)",
+              "data": [
+                [
+                  "/usr/bin/python3",
+                  [
+                    "/usr/bin/python3",
+                    "-B",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/clippy/before-exec.json",
+                    "75ec51f82199c76f7859acbe7e62845541ce7d0d9719dc14f83219ef06b01284"
+                  ],
+                  false,
+                  1789669656012672,
+                  1828584770901,
+                  0,
+                  0,
+                  883739,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "query_argv": [
+              "/usr/bin/busctl",
+              "--user",
+              "--json=short",
+              "get-property",
+              "org.freedesktop.systemd1",
+              "/org/freedesktop/systemd1/unit/safehermit_2d20260917T182735Z_2d883100_2eservice",
+              "org.freedesktop.systemd1.Service",
+              "ExecStart"
+            ],
+            "stdout_sha256": "1193c2c7b1727c3e1fc048173aa39967177af539ee351fad940a33402a064add",
+            "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/clippy/before-exec.json\",\"75ec51f82199c76f7859acbe7e62845541ce7d0d9719dc14f83219ef06b01284\"],false,1789669656012672,1828584770901,0,0,883739,0,0]]}\n",
+            "returncode": 0
+          }
+        },
+        "main_process": {
+          "pid": 883739,
+          "start_ticks": 182858477,
+          "parent_pid": 32320,
+          "state": "R",
+          "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182735Z-883100.service"
+        },
+        "cgroup_inode": 39584923,
+        "cgroup_device": 27
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v15/clippy/result.json",
+      "result_sha256": "3bf861e8d1ef849814ab0f39c512c9f23f11005c59e78e849ae33b578deccdaf",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "c70398cb4fe0b309a66376c75568e2ca6af4348ceb1938c6b9aa62f0557d4afc",
+      "stdout_bytes": 0,
+      "stderr_bytes": 2950
+    }
+  ],
+  "terminal_sha256": "af7b7f9d76f28110c4c54d669c134a387d356f2c4757c3d6ace10fe94daa38d6",
+  "full_source_and_inputs_verified": true,
+  "input_count": 60,
+  "scope": "Workspace formatting and all-target/all-feature Clippy with -D warnings. No test or VM execution."
+}

@@ -1,0 +1,533 @@
+{
+  "base_commit": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/candidate-v10.patch",
+    "bytes": 200081,
+    "sha256": "9d880d6be995f55b6d05173284030d3b1959303f5a68cd88843cf86d2b18709a"
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "base_entry": {
+        "path": "README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "a20ad925db2a7aeb55058e80d73613851173dd4d"
+      },
+      "base_sha256": "a03d7c2732b8e4ef88bd5034394478482cb78ca7f46fb6f999e9d63f31a05b6f",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/README.md",
+      "mode": "100644",
+      "bytes": 20921,
+      "sha256": "e7540f8911ff45bca7a1a10680e21dfdb8afc0ab51986c53b8a2be8499d7f37d",
+      "git_blob": "cece1cfe12be6221c7a621ba14dbef5df5604966",
+      "preview_v10_sha256": "e7540f8911ff45bca7a1a10680e21dfdb8afc0ab51986c53b8a2be8499d7f37d"
+    },
+    {
+      "path": "ci/compat-envelope/README.md",
+      "base_entry": {
+        "path": "ci/compat-envelope/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "fa9d9034ed77be1ab3e991b594a1de5b0d99fae0"
+      },
+      "base_sha256": "302f90c5148f8678a2a50f58f1990a29ffae5418981f56cad455821e832fef75",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/ci/compat-envelope/README.md",
+      "mode": "100644",
+      "bytes": 21935,
+      "sha256": "dd0c6228f17781783529eccd7631b75e7dc974d2401828d37af60ac37dc5ef6b",
+      "git_blob": "e9431c708dc8e0f39c1476fc5555a3a6d164ce7e",
+      "preview_v10_sha256": "dd0c6228f17781783529eccd7631b75e7dc974d2401828d37af60ac37dc5ef6b"
+    },
+    {
+      "path": "ci/configure-build-jobs.sh",
+      "base_entry": {
+        "path": "ci/configure-build-jobs.sh",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "35ec98a4091791ef9bce69fcd5443dabfc243c8a"
+      },
+      "base_sha256": "e00ee8b82d3595038cec610eb6b3c0967801f6a63899e28f74bd0885aeef7a10",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/ci/configure-build-jobs.sh",
+      "mode": "100644",
+      "bytes": 55677,
+      "sha256": "8cff119ec58fdccd051df33a8341efecb45113bf8bf321fe5c4840057bedb8aa",
+      "git_blob": "aadf4d19d1992f2ee7de5dc455dfca2ac9ea821f",
+      "preview_v10_sha256": "8cff119ec58fdccd051df33a8341efecb45113bf8bf321fe5c4840057bedb8aa"
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "base_entry": {
+        "path": "demos/05-qemu-busybox.sh",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "afec7a395706824934e41125c0053019a1b6531a"
+      },
+      "base_sha256": "d9a17e9d9db35f81cce117d3b96c15f891e1abbbeb28849d7e69861bce2da48b",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/demos/05-qemu-busybox.sh",
+      "mode": "100755",
+      "bytes": 10263,
+      "sha256": "dd8d23b0c9d02eb27a8b1d87a2022b2ef11c48bac5111a58ad48355b457f2e23",
+      "git_blob": "3da7b2c2f026e9f0b16423fc374ec015a4808c71",
+      "preview_v10_sha256": "dd8d23b0c9d02eb27a8b1d87a2022b2ef11c48bac5111a58ad48355b457f2e23"
+    },
+    {
+      "path": "demos/README.md",
+      "base_entry": {
+        "path": "demos/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "5699be0095bb44d527db7263489be6d9cf963ba2"
+      },
+      "base_sha256": "0595a83ae04753f43a7792fc645441b6925174b1ddc4437f11195a65b0889174",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/demos/README.md",
+      "mode": "100644",
+      "bytes": 7716,
+      "sha256": "d918db50d45747e982a6b99d82e29da00e42e43bacd2df065eaff1e57e85d870",
+      "git_blob": "cd02dfd505c68cd2f7bdb0ea1b3da5bea61d1dc6",
+      "preview_v10_sha256": "d918db50d45747e982a6b99d82e29da00e42e43bacd2df065eaff1e57e85d870"
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_entry": {
+        "path": "detcore/src/logdiff.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "3c3e916c8db6f2193ee1e4face9887afb81cc3e7"
+      },
+      "base_sha256": "d1021d8334488bbd3a8fc2f66228fc7b20f161482204ae8f592a5ef6226358eb",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/detcore/src/logdiff.rs",
+      "mode": "100644",
+      "bytes": 174121,
+      "sha256": "1c06f7605d5f708e9fe952c1692c0b52f6d323b981b67e70426dc05fd928ed8c",
+      "git_blob": "18d6438dca0f696784781fafc5bc6b3371e4f403",
+      "preview_v10_sha256": "1c06f7605d5f708e9fe952c1692c0b52f6d323b981b67e70426dc05fd928ed8c"
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "base_entry": {
+        "path": "detcore/tests/testutils/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "c540d6f4c836559f72a78ae3e05854788197c465"
+      },
+      "base_sha256": "87fabd5c6a30a5224ac609ba15c0991187e67784cad5fb8d0bc19d0779666132",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/detcore/tests/testutils/src/lib.rs",
+      "mode": "100644",
+      "bytes": 31935,
+      "sha256": "46f4ce21d44193aed462754592d5a7741ff9e115c36d93b386a8537576c04c0e",
+      "git_blob": "4e26a3ba2f72b4f59bdaa2425564ca6c37b8640e",
+      "preview_v10_sha256": "46f4ce21d44193aed462754592d5a7741ff9e115c36d93b386a8537576c04c0e"
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "base_entry": {
+        "path": "docs/ERROR_CATALOG.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "e0a7be04ae9e0d6f7fee53595c28abfcb302c092"
+      },
+      "base_sha256": "0bb445570eb7118f5ec0bb977b62a101c985fd18af7aaa8138da809e46ac680e",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/docs/ERROR_CATALOG.md",
+      "mode": "100644",
+      "bytes": 33580,
+      "sha256": "7a1bbe181df84ccf1f2bece0c53a271940385e1b1daf2ed58b06b57f998dd3fe",
+      "git_blob": "3a2289f23f16372b11248d878aa5796e84a417d9",
+      "preview_v10_sha256": "7a1bbe181df84ccf1f2bece0c53a271940385e1b1daf2ed58b06b57f998dd3fe"
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_entry": {
+        "path": "docs/USER_GUIDE.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "951b2028978279b909971f7f3f655be76f4dcfeb"
+      },
+      "base_sha256": "18d739ba9b43be185a6dcb48113617cd6cf5f6ba3484eb268943d49742221816",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/docs/USER_GUIDE.md",
+      "mode": "100644",
+      "bytes": 31251,
+      "sha256": "b9c6e0b4e028f86f9bd5ac6292d2849a74cc264ef062dbc2cad7b8673a78c616",
+      "git_blob": "4275ac739552c28b760de1295b8727739662fbeb",
+      "preview_v10_sha256": "b9c6e0b4e028f86f9bd5ac6292d2849a74cc264ef062dbc2cad7b8673a78c616"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "8925c2daa9f079429ead9028193e5a57245c04fd"
+      },
+      "base_sha256": "0f201e2deb8b45b30fa16d75233bd57e8f957affa518d22d5fa9634acd790483",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "mode": "100644",
+      "bytes": 37263,
+      "sha256": "9d6697b6c04bd57e6d4e0d6f07d86f4576d415ee473dda5323fce64439349bfd",
+      "git_blob": "ea6b22b49580c06265ba09eae41e7d1e9d1ba3fa",
+      "preview_v10_sha256": "9d6697b6c04bd57e6d4e0d6f07d86f4576d415ee473dda5323fce64439349bfd"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/backends.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "05f07ddbf2495e3e9c3bf3e6dd573c00e3bac67d"
+      },
+      "base_sha256": "cb14e17e3b4669a29eed3933cca3eadcfc41ab5b2fadb2261607f6dee90105cb",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/backends.rs",
+      "mode": "100644",
+      "bytes": 101762,
+      "sha256": "3414ef8350d5c047ba4048401e1cd86127d29b6651cb15c3887fac9e8319b65c",
+      "git_blob": "ba99b6547e9a1f5a75cfefe248ec0df3f29d068c",
+      "preview_v10_sha256": "3414ef8350d5c047ba4048401e1cd86127d29b6651cb15c3887fac9e8319b65c"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "497978d7646bade232f807af45579e7765aedf49"
+      },
+      "base_sha256": "7f83414e4c8f09040a3796579600b24c9e3cfaaacd6114767023b0c79c7a25c6",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/logdiff.rs",
+      "mode": "100644",
+      "bytes": 62818,
+      "sha256": "c5e1e50e8ce323d007ee827a51908c9738587f5748d8b10ac4132e82d50c2429",
+      "git_blob": "c3f25d6ff22afc3c8e0ffba07fdaa120f3251515",
+      "preview_v10_sha256": "c5e1e50e8ce323d007ee827a51908c9738587f5748d8b10ac4132e82d50c2429"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/record_start.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ed49e298efd07c7afc7bbbcd1ecd46096cb71ec8"
+      },
+      "base_sha256": "48229a9cc82a1b75df99583b1c4646766abba7130b23e4550c5169eba7424470",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/record_start.rs",
+      "mode": "100644",
+      "bytes": 35041,
+      "sha256": "bfff71ff40179e301cb47fd3177f3ef2a1ebe3ed7ec1ef67b8c3b43de838978a",
+      "git_blob": "10f8d3892cf797a24d8579b8199b94f3a5d78f04",
+      "preview_v10_sha256": "bfff71ff40179e301cb47fd3177f3ef2a1ebe3ed7ec1ef67b8c3b43de838978a"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/run.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "97b2bb98361cbf786b5669ddccd42d9b2f88753c"
+      },
+      "base_sha256": "29bd21b6ac3a267288fe1440e561f59a657226ff601c3be9828ae2526dbf8155",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/run.rs",
+      "mode": "100644",
+      "bytes": 239730,
+      "sha256": "7638e6321c0119de46e1b3bf0ea0eaf8ec4098eefbc03f901022aa58420db612",
+      "git_blob": "4b9635fc1bc8e09aea15a3fc8f8d2c68ebbe460a",
+      "preview_v10_sha256": "7638e6321c0119de46e1b3bf0ea0eaf8ec4098eefbc03f901022aa58420db612"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/bin/hermit/verify.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "fab34db8b7df8238ce9c60677c633584b5a3d0a4"
+      },
+      "base_sha256": "cc961fc62ba42e4cea9b37b9744e234522158ec0acc899c9712ebf6b503bd7d2",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/verify.rs",
+      "mode": "100644",
+      "bytes": 132721,
+      "sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9",
+      "git_blob": "8221db6bb6eea070d5068b56fcbb8f58f9f069dc",
+      "preview_v10_sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9"
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "base_entry": {
+        "path": "hermit-cli/src/canonical_verdict.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b41bf71c993e5a6a07c3fb4fe0e2ccbcf7927eea"
+      },
+      "base_sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/canonical_verdict.rs",
+      "mode": "100644",
+      "bytes": 60594,
+      "sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101",
+      "git_blob": "65351f0bcf853b871a6e09be6aec23770f5dee8a",
+      "preview_v10_sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101"
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_entry": {
+        "path": "hermit-cli/tests/verification_report_consumers.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "92d001c7f998e072bed715fc9aff425cb4eac4a1"
+      },
+      "base_sha256": "5f79232ebbf264f59d9faa6d9808055a02f1d74c2d1804fdb30e752c9a306669",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/tests/verification_report_consumers.rs",
+      "mode": "100644",
+      "bytes": 40160,
+      "sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc",
+      "git_blob": "6754b8336f3cc72175fbdad079a02877d4191340",
+      "preview_v10_sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc"
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "base_entry": {
+        "path": "hermit-verify/src/chaos_replay.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "3352eac540310de96d10dfd82ce2c59faed079ad"
+      },
+      "base_sha256": "20ee20ccf992cc7c512cab041c669798fd2adf9a2cb3d0fed3aa1980afd05bab",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-verify/src/chaos_replay.rs",
+      "mode": "100644",
+      "bytes": 3658,
+      "sha256": "b24ce39d6e54cfc4e93ef6409a2d4e613b8076d261cc64bf31ce60d003d8ff08",
+      "git_blob": "a4775cf52dceaa177b8b26517ecae0fd3b94273b",
+      "preview_v10_sha256": "b24ce39d6e54cfc4e93ef6409a2d4e613b8076d261cc64bf31ce60d003d8ff08"
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_entry": {
+        "path": "hermit-verify/src/common/verify.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "e6ad28fca9234126c2a2a13cd1cc6de288ed4915"
+      },
+      "base_sha256": "93b32880b33ba1cc7d1edc314f1c64bac1386da80de0d0ec88b98cd3a10d6874",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-verify/src/common/verify.rs",
+      "mode": "100644",
+      "bytes": 12168,
+      "sha256": "040a4fc39ad39316e80ebe7f1506da2a5a285c0bdda2e8837b4209aec2561b4a",
+      "git_blob": "fd1ba5ddb30badc1ec60ac93f85b291882d99b77",
+      "preview_v10_sha256": "040a4fc39ad39316e80ebe7f1506da2a5a285c0bdda2e8837b4209aec2561b4a"
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "base_entry": {
+        "path": "hermit-verify/src/trace_replay.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "1cb6ae932e4f8622d62b788fc9aff71d160ef1c9"
+      },
+      "base_sha256": "251b72604553af9b8693a48cf7b7f4f4abaf7c1711144e48e9567faf871a5bcf",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-verify/src/trace_replay.rs",
+      "mode": "100644",
+      "bytes": 6677,
+      "sha256": "14a8a75c78111c77b237b5b8ef9cc08e93cacd93bd15ad8fd83313b505d6e416",
+      "git_blob": "0a095c7d25525e79117e85016498e03c175096f8",
+      "preview_v10_sha256": "14a8a75c78111c77b237b5b8ef9cc08e93cacd93bd15ad8fd83313b505d6e416"
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "base_entry": {
+        "path": "hermit-verify/src/use_case.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "4f0b35e06ac4e8d112b6dbc7a43378b6cabfc13b"
+      },
+      "base_sha256": "80b328bed959d19b35df1ddb17a3056a93d26e435f567dceb82fa430c67b768b",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-verify/src/use_case.rs",
+      "mode": "100644",
+      "bytes": 2295,
+      "sha256": "39ee743207ae76e79e25d1efe8ee2785abf96bd267707fec799110f1aec727fc",
+      "git_blob": "53bb888bb2f521e1e743ebc29a72d34a8f368345",
+      "preview_v10_sha256": "39ee743207ae76e79e25d1efe8ee2785abf96bd267707fec799110f1aec727fc"
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "base_entry": {
+        "path": "hermit-verify/src/use_case/run_usecase.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "83243e1c127591023d1e422f4a0840a6354840cf"
+      },
+      "base_sha256": "5551582360d3cb0d77c9402c167eb2d7d07eb8086f8b9899efeb3ff82ea313b8",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-verify/src/use_case/run_usecase.rs",
+      "mode": "100644",
+      "bytes": 3394,
+      "sha256": "feb93a343b1ee0cd309403b721e83c1bc245adbc4d34202143a52677856f7d55",
+      "git_blob": "5022cf9142e5c54250bff5ac04fba71c95bc220c",
+      "preview_v10_sha256": "feb93a343b1ee0cd309403b721e83c1bc245adbc4d34202143a52677856f7d55"
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "base_entry": {
+        "path": "scripts/lib/validate_cell_results.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "cbb2a8e9f112729e45e3da9b045b198415f608c7"
+      },
+      "base_sha256": "9d75d0bc36fa44faa16e700027b831be6db7631cd2ab721e3ce9e7439cf061d6",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/scripts/lib/validate_cell_results.rs",
+      "mode": "100644",
+      "bytes": 80775,
+      "sha256": "58e63ea8cf4a50f7a6c7e267b3aa7e14adea1c0c8060022be780bc4f7475629d",
+      "git_blob": "5e2fde94951c14a04542a747ec51fa07a921a0d7",
+      "preview_v10_sha256": "58e63ea8cf4a50f7a6c7e267b3aa7e14adea1c0c8060022be780bc4f7475629d"
+    },
+    {
+      "path": "scripts/lib/verified_command.rs",
+      "base_entry": null,
+      "base_sha256": null,
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/scripts/lib/verified_command.rs",
+      "mode": "100644",
+      "bytes": 1462,
+      "sha256": "814e3b7284ccebe7e660c138ef80f685cdfbe686c14c0a9c83d290d8075fe2e4",
+      "git_blob": "f59af94f80721301ea6f7c7619aa1664dc71d376",
+      "preview_v10_sha256": "814e3b7284ccebe7e660c138ef80f685cdfbe686c14c0a9c83d290d8075fe2e4"
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "base_entry": {
+        "path": "scripts/manifest-to-commands.rs",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "70fdb5dce690ec2fa96356bfc787b5e511523ca4"
+      },
+      "base_sha256": "aa834d4f47a64e80fae94bdd62871b76979b609cdd4375b577e3a412d48f3dff",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/scripts/manifest-to-commands.rs",
+      "mode": "100755",
+      "bytes": 45910,
+      "sha256": "60b71fc50ad9e6eb992e8cfabaad411ea8f4ff9069683417e6f19950a4560398",
+      "git_blob": "6402639e8835a2702b8b285920f322f15a84ff04",
+      "preview_v10_sha256": "60b71fc50ad9e6eb992e8cfabaad411ea8f4ff9069683417e6f19950a4560398"
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_entry": {
+        "path": "tests/backend-parity/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "2240751ae06f17a35d34eafe625b15ba3d3aa3e3"
+      },
+      "base_sha256": "fb42e68367fde5a9dc19c23e75788252887bcf4c66bb699ee4bad733a00b29df",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/backend-parity/README.md",
+      "mode": "100644",
+      "bytes": 30302,
+      "sha256": "be60766cb1ea1994becd723b49e68f5ab29029553cf3d628eab9ed0ebfd47136",
+      "git_blob": "7e89d22446b605bbdbd8029c3bf7a3f6bfa76745",
+      "preview_v10_sha256": "be60766cb1ea1994becd723b49e68f5ab29029553cf3d628eab9ed0ebfd47136"
+    },
+    {
+      "path": "tests/bin/README.md",
+      "base_entry": {
+        "path": "tests/bin/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "20ed02930b93f2569352c3b2f260fdc9377a1620"
+      },
+      "base_sha256": "4e96e6a791ba09b441003721c2c9e8dd8bc5b664b46cec1ff580e0e682a08ef5",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/bin/README.md",
+      "mode": "100644",
+      "bytes": 6761,
+      "sha256": "41010131c741bc9f1a30bd3102c648472f1b6e77862528f020aa89de8fa505ed",
+      "git_blob": "df7f52071a41de3efe1e3bcacbef62ab11e9f06a",
+      "preview_v10_sha256": "41010131c741bc9f1a30bd3102c648472f1b6e77862528f020aa89de8fa505ed"
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_entry": {
+        "path": "tests/e2e/determinism-stress/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "534acd350a24e550fbe56527d6fd30972b51f74a"
+      },
+      "base_sha256": "ae1d86cd5d466b0b2313c4da38879acdc6baee7861cf60c384555be55260d0b2",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/e2e/determinism-stress/README.md",
+      "mode": "100644",
+      "bytes": 6335,
+      "sha256": "c405371620c01fdbbacedb5bdd6de3d495448c7fc359d4f2b6ba9d24245adee3",
+      "git_blob": "bdc23225e918b26367187c7893af841760a31c1f",
+      "preview_v10_sha256": "c405371620c01fdbbacedb5bdd6de3d495448c7fc359d4f2b6ba9d24245adee3"
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_entry": {
+        "path": "tests/e2e/lib/applications/common.sh",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "cf0fc07d8df293bbb9afd3a262d12f2d0da85dba"
+      },
+      "base_sha256": "8fbdc2ebf414e761d4b75207dd69b1ba97bb4f0ea4c590707e4733210140ba06",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/e2e/lib/applications/common.sh",
+      "mode": "100755",
+      "bytes": 12690,
+      "sha256": "54f4117aae6a18a1ad0c314dcef7f7afce03d5e637eb511a684895f0a1418747",
+      "git_blob": "2e406fb88ae1a0d02c87e488a683adae38960d5d",
+      "preview_v10_sha256": "54f4117aae6a18a1ad0c314dcef7f7afce03d5e637eb511a684895f0a1418747"
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_entry": {
+        "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "d94b17f139fcb1af428fac88fd16b5fab258b016"
+      },
+      "base_sha256": "348d1720ae72d00fdd7e24025525de6330e3a9610b70dcc19c431940e2cbbd9f",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "mode": "100755",
+      "bytes": 10422,
+      "sha256": "20c0ab5521b15ec55386cdddff89ed232dc858c1a850653d7ee9af2d7e81c7f1",
+      "git_blob": "23f4f42233a0d88479ce752f254b649b5d89d695",
+      "preview_v10_sha256": "20c0ab5521b15ec55386cdddff89ed232dc858c1a850653d7ee9af2d7e81c7f1"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "base_entry": {
+        "path": "tests/qemu-boot/strict_l2_test.sh",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "c53deb6ddeb9b8a33c250210fc680e63e2ac66fc"
+      },
+      "base_sha256": "73c078b4a0c3fc5113a5dedb8fc5a2d09ebb633d39a71307f4feb4f55ec4195a",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/qemu-boot/strict_l2_test.sh",
+      "mode": "100755",
+      "bytes": 6307,
+      "sha256": "eb2a03ce53b3ae6457d931222ec13ab1a930386d0be8fcd0e348f1377b04e9cc",
+      "git_blob": "4e8bf427a1a1e1f9b413a5ac7f4f7e27712c9ee3",
+      "preview_v10_sha256": "eb2a03ce53b3ae6457d931222ec13ab1a930386d0be8fcd0e348f1377b04e9cc"
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "base_entry": {
+        "path": "tests/reproducible-builds/README.md",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "06517cd2c787edd85e2a5ad85a36197363263c28"
+      },
+      "base_sha256": "bfd791bf95e7e3a4b31603d9b89d1e4ab42a2187b17d917c309ff9abfed85ddd",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/reproducible-builds/README.md",
+      "mode": "100644",
+      "bytes": 2414,
+      "sha256": "64735ff7b386ea1c2a40097cce38982cec90833662a1bd53f4e17708670e2591",
+      "git_blob": "192852613a1ba7e1752f0ec80ab07830a2d4bea0",
+      "preview_v10_sha256": "64735ff7b386ea1c2a40097cce38982cec90833662a1bd53f4e17708670e2591"
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "base_entry": {
+        "path": "tests/reproducible-builds/run.sh",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "94a919147ba8ebfb711f168476096315bfa62c8c"
+      },
+      "base_sha256": "7839a4623a577c422b09b226347877855d5eb0a7a3df868b619b95491281f96a",
+      "output_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/tests/reproducible-builds/run.sh",
+      "mode": "100755",
+      "bytes": 3625,
+      "sha256": "e672c2e097da578b44bdb20e1b4b3fd450c21bec87e2228f9b33c04a345cc183",
+      "git_blob": "c472803c650349cc2629c282c0861fad2f6bad5f",
+      "preview_v10_sha256": "e672c2e097da578b44bdb20e1b4b3fd450c21bec87e2228f9b33c04a345cc183"
+    }
+  ]
+}

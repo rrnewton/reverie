@@ -1,0 +1,9 @@
+{
+  "tip": "9dfffd7ef114c10ede7e092107a36a6da2fb3df0",
+  "ref": "refs/rescue/kvm-prejoin-v22-before-forward-20260917",
+  "bundle": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/v22-before-forward.bundle",
+  "bundle_bytes": 12270899,
+  "bundle_sha256": "66af71e9afb1dfd89ed9114df58bc389b261acae10a7d9460745bc8b767e67ab",
+  "bundle_heads": "9dfffd7ef114c10ede7e092107a36a6da2fb3df0 refs/rescue/kvm-prejoin-v22-before-forward-20260917\n",
+  "verified": true
+}

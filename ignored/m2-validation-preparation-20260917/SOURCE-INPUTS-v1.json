@@ -1,0 +1,36 @@
+{
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+  "base_commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "inputs": [
+    {
+      "path": "AGENTS.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/source/AGENTS.md",
+      "bytes": 34047,
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+    },
+    {
+      "path": "Makefile",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/source/Makefile",
+      "bytes": 17838,
+      "sha256": "5eb0f2afac348b142d63e20d639c052324be035e9636c5d810a28887a3dfa921"
+    },
+    {
+      "path": "Cargo.toml",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/source/Cargo.toml",
+      "bytes": 2117,
+      "sha256": "61fe9f5c4a726beb73ac4117c0ca2a3b6604e115cf8cbdf3bc36889e9265b3b4"
+    },
+    {
+      "path": "ci/manifest-plan/src/validation_dag_static.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/source/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349470,
+      "sha256": "177fe75584ae18873c7fd0110e901b9fdf131cbbbb931fef8a72ae1e5844ed31"
+    },
+    {
+      "path": "ci/dag/validate.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/source/ci/dag/validate.json",
+      "bytes": 2857381,
+      "sha256": "2f0c19f819a98695889b32995f519a2b3e1a581bd187f10ab65d40a101c9673c"
+    }
+  ]
+}

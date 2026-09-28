@@ -1,0 +1,97 @@
+{
+  "original_result_sha256": "a686f52f60d3ad5abeb635095f9f4dcbe4a6e6445762bc30a708db5a2184b13d",
+  "original_service": {
+    "unit": "safehermit-20260917T183407Z-1746570.service",
+    "initial_properties": {
+      "Id": "safehermit-20260917T183407Z-1746570.service",
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T183407Z-1746570.service",
+      "MainPID": 1747494,
+      "ExecMainPID": 1747494,
+      "ExecMainCode": 0,
+      "ExecMainStatus": 0,
+      "ExecMainStartTimestampMonotonic": 1828976183558,
+      "CPUUsageNSec": 4337000,
+      "RuntimeMaxUSec": 60000000,
+      "MemoryMax": 17179869184,
+      "MemorySwapMax": 0,
+      "IgnoreSIGPIPE": 1,
+      "ExecStart": {
+        "value": {
+          "type": "a(sasbttttuii)",
+          "data": [
+            [
+              "/usr/bin/python3",
+              [
+                "/usr/bin/python3",
+                "-B",
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v7/static-elf-07/before-exec.json",
+                "80acc965d9251d49390abcb9a0ba58128e17741d6af639c08edfb62486546c3d"
+              ],
+              false,
+              1789670047425329,
+              1828976183558,
+              0,
+              0,
+              1747494,
+              0,
+              0
+            ]
+          ]
+        },
+        "query_argv": [
+          "/usr/bin/busctl",
+          "--user",
+          "--json=short",
+          "get-property",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1/unit/safehermit_2d20260917T183407Z_2d1746570_2eservice",
+          "org.freedesktop.systemd1.Service",
+          "ExecStart"
+        ],
+        "stdout_sha256": "17985cbb9d94b2755f6785f600f1533d17f4ab114802bd4fed92d895b9bb07d1",
+        "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v7/static-elf-07/before-exec.json\",\"80acc965d9251d49390abcb9a0ba58128e17741d6af639c08edfb62486546c3d\"],false,1789670047425329,1828976183558,0,0,1747494,0,0]]}\n",
+        "returncode": 0
+      }
+    },
+    "main_process": {
+      "pid": 1747494,
+      "start_ticks": 182897618,
+      "parent_pid": 32320,
+      "state": "R",
+      "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T183407Z-1746570.service"
+    },
+    "cgroup_inode": 39601642,
+    "cgroup_device": 27
+  },
+  "readbacks": [
+    {
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T183407Z-1746570.service",
+        "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,ExecMainPID,ExecMainCode,ExecMainStatus,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+      ],
+      "exit": 0,
+      "stdout": "Id=safehermit-20260917T183407Z-1746570.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nExecMainStartTimestampMonotonic=0\nExecMainPID=0\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T183407Z-1746570.service",
+        "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,ExecMainPID,ExecMainCode,ExecMainStatus,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+      ],
+      "exit": 0,
+      "stdout": "Id=safehermit-20260917T183407Z-1746570.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nExecMainStartTimestampMonotonic=0\nExecMainPID=0\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+      "stderr": ""
+    }
+  ],
+  "qualification": "original result remains refused"
+}

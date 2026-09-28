@@ -1,0 +1,173 @@
+--- cargo-v3/clippy/launch.py
++++ native-full-v1/launch.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/python3
+-"""Execute one explicitly released Clippy check after bound native controls pass."""
++"""Execute one released full native library run of the retained source-v3 ELF."""
+ import hashlib
+ import json
+ import os
+@@ -10,7 +10,7 @@
+ 
+ HERE = Path(__file__).resolve().parent
+ PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = 'a13af803508b0175c78755499b366801312da4cf8fbd584b7162c2b11bc89ec5'
++PLAN_SHA256 = '4cf802e57f3d314c4582884824acb1999b92beb91e28d079f293d1866f32a1b2'
+ 
+ 
+ def require(condition, message):
+@@ -195,55 +195,134 @@
+             'individual_output_sha256': hashlib.sha256(raw).hexdigest()}
+ 
+ 
++
++def check_population(plan, artifact):
++    require(artifact == plan['retained_executable'], 'native executable differs from the reviewed retained artifact')
++    check_executable(artifact)
++    raw = read_bounded(plan['retained_listing']['path'], 1024**2)
++    require(hashlib.sha256(raw).hexdigest() == plan['retained_listing']['sha256'], 'retained listing changed')
++    names = [line[:-6] for line in raw.decode().splitlines() if line.endswith(': test')]
++    require(len(names) == len(set(names)) == plan['registered_count'] == 427
++            and names == plan['registered_tests'], 'retained complete population differs')
++    expected = [artifact['path'], '--test-threads=1', '--nocapture',
++                '-Z', 'unstable-options', '--format=json']
++    step = plan['stage']
++    require(step['payload'] == expected, 'full native payload changed or gained a selection')
++    require(step['argv'] == ['/usr/bin/python3', '-B', plan['observer'], '--out', step['out'],
++                            '--cpu-usec', '30000000', '--wall-seconds', '60',
++                            '--log-bytes', '1048576', *expected], 'actual observer argv differs')
++    require(step['cpu_usec'] == 30000000 and step['wall_seconds'] == 60
++            and step['stderr_limit_bytes'] == step['reader_limit_bytes'] == 1048576,
++            'native resource/read limits changed')
++    return names
++
++
++def parse_native_output(raw, stderr, plan):
++    events = []
++    parse_errors = []
++    for index, line in enumerate(raw.decode(errors='replace').splitlines()):
++        if not line.startswith('{'):
++            continue
++        try:
++            event = json.loads(line)
++        except (ValueError, TypeError) as error:
++            parse_errors.append({'line': index + 1, 'error': str(error)})
++            continue
++        if isinstance(event, dict) and event.get('type') in ['suite', 'test']:
++            events.append(event)
++    outcomes = [e for e in events if e.get('type') == 'test'
++                and e.get('event') in ['ok', 'failed', 'ignored']]
++    starts = [e for e in events if e.get('type') == 'suite' and e.get('event') == 'started']
++    summaries = [e for e in events if e.get('type') == 'suite' and e.get('event') in ['ok', 'failed']]
++    counts = {status: sum(e.get('event') == status for e in outcomes) for status in ['ok', 'failed', 'ignored']}
++    unavailable = [line for raw_stream in [raw, stderr]
++                   for line in raw_stream.decode(errors='replace').splitlines()
++                   if 'skipping' in line.lower() and 'kvm' in line.lower()]
++    return {'events': events, 'outcomes': outcomes, 'outcome_counts': counts,
++            'suite_starts': starts, 'suite_summaries': summaries, 'json_parse_errors': parse_errors,
++            'kvm_unavailable_diagnostics': unavailable,
++            'stdout_sha256': hashlib.sha256(raw).hexdigest(), 'stderr_sha256': hashlib.sha256(stderr).hexdigest(),
++            'expected_registered_count': plan['registered_count'],
++            'scope': 'Actual normal libtest outcomes; conditional early returns are not libtest ignored tests.'}
++
++
++def require_complete_population(parsed, names):
++    outcomes = parsed['outcomes']
++    require(not parsed['json_parse_errors'], 'native output contained a malformed JSON event or diagnostic line')
++    require(len(parsed['suite_starts']) == 1
++            and parsed['suite_starts'][0].get('test_count') == len(names), 'full native suite start differs')
++    observed_names = [e.get('name') for e in outcomes]
++    require(len(outcomes) == len(names) and len(set(observed_names)) == len(names)
++            and set(observed_names) == set(names), 'native outcome population missing or duplicated')
++    require(len(parsed['suite_summaries']) == 1, 'native suite did not retain exactly one terminal summary')
++    summary = parsed['suite_summaries'][0]
++    counts = parsed['outcome_counts']
++    require(summary.get('passed') == counts['ok'] and summary.get('failed') == counts['failed']
++            and summary.get('ignored') == counts['ignored'] and summary.get('measured') == 0
++            and summary.get('filtered_out') == 0, 'native terminal totals disagree with individual outcomes')
++    require(summary.get('event') == 'ok' and counts['failed'] == 0, 'full native suite contains failures')
++
++
+ def main():
+-    require(digest(PLAN) == PLAN_SHA256, 'concrete Clippy plan changed')
++    require(digest(PLAN) == PLAN_SHA256, 'concrete full native plan changed')
+     plan = json.loads(read_bounded(PLAN, 1024**2))
+     root = Path(plan['run_root'])
+-    require(root == HERE / 'run-1', 'unexpected Clippy output destination')
+-    require(plan['stage']['name'] == 'clippy', 'unexpected Clippy stage')
++    require(root == HERE / 'run-1', 'unexpected full native output destination')
++    require(plan['stage']['name'] == 'native-full', 'unexpected native stage')
+     for path in [root, Path(plan['observer_root'])]:
+         require(not path.exists() and not path.is_symlink(), 'retain every earlier attempt: ' + str(path))
+     check_inputs(plan)
+     environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
+     environment.update(plan['environment_fixed'])
+     native = check_native_prerequisite(plan, environment)
++    names = check_population(plan, native['artifact'])
++    clippy = plan['clippy_prerequisite']
++    clippy_summary = json.loads(read_bounded(clippy['summary'], 1024**2))
++    require(clippy_summary['status'] == 'passed' and clippy_summary['exit'] == 0, 'prior Clippy success differs')
++    clippy_result = json.loads(read_bounded(clippy['result'], 1024**2))
+     root.mkdir(mode=0o700)
+     Path(plan['tmpdir']).mkdir(mode=0o700)
+     write_new(root / 'native-prerequisite-readback.json', native)
+     write_new(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),
+               'source_binding_sha256': digest(plan['source_binding']), 'environment': environment,
+-              'scope': 'One native Clippy check only; no tests or guests executed by this check.'})
++              'scope': 'One full native library run, including its existing native VM/C controls; no Hermit canonical parity claim.'})
+     step = plan['stage']
++    parsed = None
+     try:
++        require_terminal(clippy_result, 0, {'name': 'prior-clippy'}, root, environment)
+         check_inputs(plan)
+-        check_executable(native['artifact'])
+-        write_new(root / 'clippy-dispatch.json', {'argv': step['argv'], 'cwd': step['cwd'],
+-                  'clippy_components': plan['clippy_components'], 'native_artifact': native['artifact']})
+-        with (root / 'clippy-observer.stdout').open('xb') as stdout:
+-            with (root / 'clippy-observer.stderr').open('xb') as stderr:
++        check_population(plan, native['artifact'])
++        write_new(root / 'native-full-dispatch.json', {'argv': step['argv'], 'cwd': step['cwd'],
++                  'native_artifact': native['artifact'], 'registered_tests': names})
++        with (root / 'native-full-observer.stdout').open('xb') as stdout:
++            with (root / 'native-full-observer.stderr').open('xb') as stderr:
+                 process = subprocess.run(step['argv'], cwd=step['cwd'], env=environment,
+                                          stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+         result_path = Path(step['out']) / 'result.json'
+-        require(result_path.is_file(), 'observer did not retain a Clippy result')
++        require(result_path.is_file(), 'observer did not retain a native result')
+         result = json.loads(read_bounded(result_path, 1024**2))
+-        write_new(root / 'clippy-readback.json', {'observer_exit': process.returncode,
++        write_new(root / 'native-full-readback.json', {'observer_exit': process.returncode,
+                   'result_path': str(result_path), 'result_sha256': digest(result_path), 'result': result})
+-        # Validate source and the native artifact on success or a Clippy refusal.
++        raw = read_bounded(Path(step['out']) / 'stdout', step['reader_limit_bytes'])
++        stderr = read_bounded(Path(step['out']) / 'stderr', step['reader_limit_bytes'])
++        parsed = parse_native_output(raw, stderr, plan)
++        write_new(root / 'native-outcomes.json', parsed)
++        # Preserve all outcomes before checking success; a failure does not trigger a retry.
++        require_terminal(result, process.returncode, step, root, environment)
+         check_inputs(plan)
+         check_executable(native['artifact'])
+-        require_terminal(result, process.returncode, step, root, environment)
+-        diagnostics = []
+-        for name in ['stdout', 'stderr']:
+-            raw = read_bounded(Path(step['out']) / name, step['reader_limit_bytes'])
+-            diagnostics.append({'name': name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
++        require_complete_population(parsed, names)
+     except Exception as error:
+         write_new(root / 'summary.json', {'status': 'failed', 'error': str(error),
+-                  'scope': 'Retained Clippy failure; no repair, retry or guest.'})
++                  'outcome_counts': None if parsed is None else parsed['outcome_counts'],
++                  'scope': 'Retained native outcome or preparation/accounting failure; no repair or retry.'})
+         raise
+     write_new(root / 'summary.json', {'status': 'passed', 'exit': result['wrapper_exit_code'],
+               'aggregate_cpu_nsec': result['final_accounting']['cpu_usage_nsec'],
+-              'wall_seconds': result['elapsed_seconds'], 'diagnostics': diagnostics,
+-              'scope': 'Clippy success only; no runtime or cross-backend qualification.'})
++              'wall_seconds': result['elapsed_seconds'], 'registered_count': len(names),
++              'outcome_counts': parsed['outcome_counts'], 'native_artifact': native['artifact'],
++              'kvm_unavailable_diagnostics': parsed['kvm_unavailable_diagnostics'],
++              'scope': 'Normal library outcomes only; no Hermit canonical guest or cross-backend qualification.'})
+     print(json.dumps({'status': 'passed', 'summary': str(root / 'summary.json')}))
+ 
+ 

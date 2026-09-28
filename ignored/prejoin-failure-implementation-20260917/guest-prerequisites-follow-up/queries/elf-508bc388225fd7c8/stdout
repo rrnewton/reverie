@@ -1,0 +1,65 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x46d0
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x003030 0x003030 R   0x1000
+  LOAD           0x004000 0x0000000000004000 0x0000000000004000 0x008049 0x008049 R E 0x1000
+  LOAD           0x00d000 0x000000000000d000 0x000000000000d000 0x00240c 0x00240c R   0x1000
+  LOAD           0x00f5d0 0x00000000000105d0 0x00000000000105d0 0x000c90 0x003478 RW  0x1000
+  DYNAMIC        0x00fd88 0x0000000000010d88 0x0000000000010d88 0x000220 0x000220 RW  0x8
+  NOTE           0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000030 0x000030 R   0x8
+  NOTE           0x0002d8 0x00000000000002d8 0x00000000000002d8 0x000044 0x000044 R   0x4
+  GNU_PROPERTY   0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000030 0x000030 R   0x8
+  GNU_EH_FRAME   0x00db30 0x000000000000db30 0x000000000000db30 0x000294 0x000294 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x00f5d0 0x00000000000105d0 0x00000000000105d0 0x000a30 0x000a30 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_d .gnu.version_r .rela.dyn .rela.plt 
+   01     .init .plt .plt.sec .text .fini 
+   02     .rodata .eh_frame_hdr .eh_frame .hash 
+   03     .init_array .fini_array .data.rel.ro .dynamic .got .got.plt .data .bss 
+   04     .dynamic 
+   05     .note.gnu.property 
+   06     .note.gnu.build-id .note.ABI-tag 
+   07     .note.gnu.property 
+   08     .eh_frame_hdr 
+   09     
+   10     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0xfd88 contains 30 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [libresolv.so.2]
+ 0x000000000000000c (INIT)               0x4000
+ 0x000000000000000d (FINI)               0xc03c
+ 0x0000000000000019 (INIT_ARRAY)         0x105d0
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x105d8
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x0000000000000004 (HASH)               0xee60
+ 0x000000006ffffef5 (GNU_HASH)           0x320
+ 0x0000000000000005 (STRTAB)             0x1340
+ 0x0000000000000006 (SYMTAB)             0x698
+ 0x000000000000000a (STRSZ)              1696 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x11000
+ 0x0000000000000002 (PLTRELSZ)           1272 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x2b38
+ 0x0000000000000007 (RELA)               0x1c08
+ 0x0000000000000008 (RELASZ)             3888 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffc (VERDEF)             0x1af0
+ 0x000000006ffffffd (VERDEFNUM)          5
+ 0x000000000000001e (FLAGS)              BIND_NOW STATIC_TLS
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0x1b98
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0x19e0
+ 0x000000006ffffff9 (RELACOUNT)          151
+ 0x0000000000000000 (NULL)               0x0

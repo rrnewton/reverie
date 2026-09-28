@@ -1,0 +1,575 @@
+diff --git a/reverie-preload/Cargo.toml b/reverie-preload/Cargo.toml
+index 052ff652..74e8a865 100644
+--- a/reverie-preload/Cargo.toml
++++ b/reverie-preload/Cargo.toml
+@@ -45,3 +45,7 @@ path = "tests/pkeys.rs"
+ [[bin]]
+ name = "reverie-preload-pkey-buffers"
+ path = "src/bin/pkey_buffers.rs"
++
++[[bin]]
++name = "reverie-preload-native-syscall-result"
++path = "src/bin/native_syscall_result.rs"
+diff --git a/reverie-preload/src/bin/native_syscall_result.rs b/reverie-preload/src/bin/native_syscall_result.rs
+new file mode 100644
+index 00000000..4c2ce7ee
+--- /dev/null
++++ b/reverie-preload/src/bin/native_syscall_result.rs
+@@ -0,0 +1,361 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Bounded native controls for one physical syscall and returned PKRU.
++use std::os::fd::AsRawFd;
++use std::os::fd::FromRawFd;
++use std::os::fd::OwnedFd;
++use std::ptr;
++
++use reverie_preload::trap::NativeSyscallResult;
++use reverie_preload::trap::raw_syscall6;
++use reverie_preload::trap::raw_syscall6_with_pkru;
++use reverie_preload::trap::raw_syscall6_with_result;
++
++fn pkru() -> u32 {
++    let result: u32;
++    unsafe {
++        core::arch::asm!("rdpkru", in("ecx") 0_u32, out("eax") result, out("edx") _, options(nostack, nomem, preserves_flags));
++    }
++    result
++}
++fn set_pkru(value: u32) {
++    unsafe {
++        core::arch::asm!("wrpkru", "lfence", in("eax") value, in("ecx") 0_u32, in("edx") 0_u32, options(nostack, preserves_flags));
++    }
++}
++fn native(number: i64, args: [u64; 6]) -> NativeSyscallResult {
++    let result: i64;
++    let rights: u64;
++    // This independent direct instruction never enters the runtime gate. All
++    // native cases leave key 0 accessible; returned rights are captured before
++    // Rust can make another syscall or touch any other protection key.
++    unsafe {
++        core::arch::asm!(
++            "syscall", "mov r12, rax", "xor ecx, ecx", "rdpkru",
++            inlateout("rax") number => rights, in("rdi") args[0], in("rsi") args[1],
++            inlateout("rdx") args[2] => _, in("r10") args[3], in("r8") args[4], in("r9") args[5],
++            lateout("r12") result, lateout("rcx") _, lateout("r11") _, options(nostack)
++        );
++    }
++    NativeSyscallResult {
++        result,
++        pkru: Some(rights as u32),
++    }
++}
++fn helper(number: i64, args: [u64; 6], guest: u32) -> NativeSyscallResult {
++    let caller = pkru();
++    let result = unsafe { raw_syscall6_with_result(number, args, Some(guest)) };
++    assert_eq!(
++        pkru(),
++        caller,
++        "caller rights were not restored before Rust returned"
++    );
++    result
++}
++fn page() -> usize {
++    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
++}
++fn map(length: usize) -> *mut u8 {
++    let p = unsafe {
++        libc::mmap(
++            ptr::null_mut(),
++            length,
++            libc::PROT_READ | libc::PROT_WRITE,
++            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
++            -1,
++            0,
++        )
++    };
++    assert_ne!(p, libc::MAP_FAILED);
++    p.cast()
++}
++fn unmap(p: *mut u8, length: usize) {
++    assert_eq!(unsafe { libc::munmap(p.cast(), length) }, 0);
++}
++fn allocation() {
++    for rights in 0..4 {
++        let initial = 0x5555_5554;
++        set_pkru(initial);
++        let expected = native(libc::SYS_pkey_alloc, [0, rights, 0, 0, 0, 0]);
++        assert!(
++            (1..16).contains(&expected.result),
++            "pkey_alloc unavailable: {expected:?}"
++        );
++        let shift = expected.result as u32 * 2;
++        assert_eq!(
++            expected.pkru,
++            Some((initial & !(3 << shift)) | ((rights as u32) << shift))
++        );
++        let native_free = native(libc::SYS_pkey_free, [expected.result as u64, 0, 0, 0, 0, 0]);
++        assert_eq!(native_free.result, 0);
++        set_pkru(0);
++        let actual = helper(libc::SYS_pkey_alloc, [0, rights, 0, 0, 0, 0], initial);
++        assert_eq!(actual, expected);
++        let free = helper(
++            libc::SYS_pkey_free,
++            [actual.result as u64, 0, 0, 0, 0, 0],
++            actual.pkru.unwrap(),
++        );
++        assert_eq!(
++            free,
++            NativeSyscallResult {
++                result: 0,
++                pkru: actual.pkru
++            }
++        );
++        assert_eq!(free, native_free);
++        println!(
++            "allocation rights={rights} native={expected:?} helper={actual:?} native_free={native_free:?} helper_free={free:?}"
++        );
++    }
++    for args in [[0, 4, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]] {
++        set_pkru(0x5555_5554);
++        let expected = native(libc::SYS_pkey_alloc, args);
++        set_pkru(0);
++        let actual = helper(libc::SYS_pkey_alloc, args, 0x5555_5554);
++        assert_eq!(expected.result, -i64::from(libc::EINVAL));
++        assert_eq!(actual, expected);
++        println!("invalid {args:?} native={expected:?} helper={actual:?}");
++    }
++}
++fn execute_only(partial: bool) {
++    let perform = |use_helper: bool| {
++        set_pkru(0);
++        let bytes = page();
++        let p = map(2 * bytes);
++        if partial {
++            unmap(unsafe { p.add(bytes) }, bytes);
++        }
++        let args = [
++            p as u64,
++            (2 * bytes) as u64,
++            libc::PROT_EXEC as u64,
++            0,
++            0,
++            0,
++        ];
++        let result = if use_helper {
++            helper(libc::SYS_mprotect, args, 0)
++        } else {
++            native(libc::SYS_mprotect, args)
++        };
++        set_pkru(0);
++        assert_eq!(
++            result.result,
++            if partial { -i64::from(libc::ENOMEM) } else { 0 }
++        );
++        assert_ne!(
++            result.pkru,
++            Some(0),
++            "implicit execute-only key effect was not measured"
++        );
++        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
++        let prefix = format!("{:x}-", p as usize);
++        let line = maps.lines().find(|line| line.starts_with(&prefix)).unwrap();
++        assert_eq!(
++            line.split_whitespace().nth(1),
++            Some("--xp"),
++            "first VMA effect missing: {line}"
++        );
++        println!("mprotect helper={use_helper} partial={partial} result={result:?} vma={line}");
++        unmap(p, if partial { bytes } else { 2 * bytes });
++        result
++    };
++    let expected = perform(false);
++    let actual = perform(true);
++    assert_eq!(actual, expected);
++}
++fn pointers() {
++    set_pkru(0);
++    let key = unsafe { raw_syscall6(libc::SYS_pkey_alloc, [0; 6]) };
++    assert!((1..16).contains(&key), "pkey allocation unavailable: {key}");
++    set_pkru(0);
++    let p = map(page());
++    unsafe {
++        p.copy_from_nonoverlapping(b"key".as_ptr(), 3);
++    }
++    assert_eq!(
++        unsafe {
++            raw_syscall6(
++                libc::SYS_pkey_mprotect,
++                [
++                    p as u64,
++                    page() as u64,
++                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                    key as u64,
++                    0,
++                    0,
++                ],
++            )
++        },
++        0
++    );
++    let mut fds = [-1; 2];
++    assert_eq!(
++        unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
++        0
++    );
++    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
++    let denied = 1 << (key as u32 * 2);
++    let args = [write.as_raw_fd() as u64, p as u64, 3, 0, 0, 0];
++    set_pkru(denied);
++    let expected = native(libc::SYS_write, args);
++    set_pkru(0);
++    let actual = helper(libc::SYS_write, args, denied);
++    assert_eq!(actual, expected);
++    assert_eq!(actual.result, -i64::from(libc::EFAULT));
++    let mut bytes = [0; 3];
++    assert_eq!(
++        unsafe { libc::read(read.as_raw_fd(), bytes.as_mut_ptr().cast(), 3) },
++        -1
++    );
++    assert_eq!(
++        std::io::Error::last_os_error().raw_os_error(),
++        Some(libc::EAGAIN)
++    );
++    let permitted = helper(libc::SYS_write, args, 0);
++    assert_eq!(
++        permitted,
++        NativeSyscallResult {
++            result: 3,
++            pkru: Some(0)
++        }
++    );
++    assert_eq!(
++        unsafe { libc::read(read.as_raw_fd(), bytes.as_mut_ptr().cast(), 3) },
++        3
++    );
++    assert_eq!(&bytes, b"key");
++    println!(
++        "original pointer={p:p} native={expected:?} helper={actual:?} permitted={permitted:?}"
++    );
++    unmap(p, page());
++    assert_eq!(
++        unsafe { raw_syscall6(libc::SYS_pkey_free, [key as u64, 0, 0, 0, 0, 0]) },
++        0
++    );
++}
++fn six_arguments() {
++    set_pkru(0);
++    let bytes = page();
++    let raw = unsafe { libc::memfd_create(c"native-result".as_ptr(), libc::MFD_CLOEXEC) };
++    assert!(
++        raw >= 0,
++        "memfd_create failed: {}",
++        std::io::Error::last_os_error()
++    );
++    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
++    assert_eq!(
++        unsafe { libc::ftruncate(fd.as_raw_fd(), (2 * bytes) as i64) },
++        0
++    );
++    let data = vec![0x73; bytes];
++    assert_eq!(
++        unsafe { libc::pwrite(fd.as_raw_fd(), data.as_ptr().cast(), bytes, bytes as i64) },
++        bytes as isize
++    );
++    let p = map(bytes);
++    unmap(p, bytes);
++    let args = [
++        p as u64,
++        bytes as u64,
++        libc::PROT_READ as u64,
++        (libc::MAP_SHARED | libc::MAP_FIXED_NOREPLACE) as u64,
++        fd.as_raw_fd() as u64,
++        bytes as u64,
++    ];
++    let actual = helper(libc::SYS_mmap, args, 0);
++    assert_eq!(actual.result, p as i64);
++    assert_eq!(actual.pkru, Some(0));
++    assert_eq!(unsafe { std::slice::from_raw_parts(p, bytes) }, data);
++    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
++    let prefix = format!("{:x}-", p as usize);
++    let line = maps.lines().find(|line| line.starts_with(&prefix)).unwrap();
++    assert_eq!(line.split_whitespace().nth(1), Some("r--s"));
++    assert_eq!(
++        line.split_whitespace().nth(2),
++        Some(format!("{bytes:08x}").as_str())
++    );
++    println!("six args={args:?} result={actual:?} vma={line}");
++    unmap(p, bytes);
++}
++fn caller_rights() {
++    // The guest denies key 0 only inside the register-only gate. Unregister the
++    // exact current glibc rseq first, matching the existing native pkey fixture.
++    let offset =
++        unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()).cast::<isize>() };
++    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()).cast::<u32>() };
++    assert!(!offset.is_null() && !size.is_null());
++    assert!(unsafe { *size } <= 32);
++    let mut fs = 0_usize;
++    assert_eq!(
++        unsafe { libc::syscall(libc::SYS_arch_prctl, 0x1003, &raw mut fs) },
++        0
++    );
++    let area = fs.wrapping_add_signed(unsafe { *offset }) as *mut libc::c_void;
++    let registered = unsafe { *size } != 0;
++    if registered {
++        assert_eq!(
++            unsafe { libc::syscall(libc::SYS_rseq, area, 32, 1, 0x5305_3053_u32) },
++            0
++        );
++    }
++    set_pkru(0x5555_5554);
++    let expected = unsafe { libc::getpid() } as i64;
++    let actual = helper(libc::SYS_getpid, [0; 6], 1);
++    assert_eq!(
++        actual,
++        NativeSyscallResult {
++            result: expected,
++            pkru: Some(1)
++        }
++    );
++    assert_eq!(pkru(), 0x5555_5554);
++    let old = unsafe { raw_syscall6_with_pkru(libc::SYS_getpid, [0; 6], 1) };
++    assert_eq!(old, expected);
++    assert_eq!(pkru(), 0x5555_5554);
++    set_pkru(0);
++    if registered {
++        assert_eq!(
++            unsafe { libc::syscall(libc::SYS_rseq, area, 32, 0, 0x5305_3053_u32) },
++            0
++        );
++    }
++    println!("denied guest stack result={actual:?}; original scalar={old}");
++}
++fn main() {
++    let mode = std::env::args().nth(1).expect("native result case");
++    if mode == "no-pkru" {
++        let result = unsafe { raw_syscall6_with_result(libc::SYS_getpid, [0; 6], None) };
++        assert_eq!(
++            result,
++            NativeSyscallResult {
++                result: unsafe { libc::getpid() } as i64,
++                pkru: None
++            }
++        );
++        println!("scalar path {result:?}; no capability claim");
++        return;
++    }
++    assert!(
++        core::arch::x86_64::__cpuid_count(7, 0).ecx & (1 << 4) != 0,
++        "OSPKE unavailable: requested hardware case remains unmeasured"
++    );
++    let original = pkru();
++    match mode.as_str() {
++        "allocation" => allocation(),
++        "mprotect" => execute_only(false),
++        "partial-error" => execute_only(true),
++        "pointers" => pointers(),
++        "six-arguments" => six_arguments(),
++        "caller-rights" => caller_rights(),
++        _ => panic!("unknown case"),
++    }
++    set_pkru(original);
++}
+diff --git a/reverie-preload/src/trap.rs b/reverie-preload/src/trap.rs
+index a2488ae5..b85e1d87 100644
+--- a/reverie-preload/src/trap.rs
++++ b/reverie-preload/src/trap.rs
+@@ -96,12 +96,18 @@ reverie_preload_guest_syscall_return_ip:
+     // The guest may deny this very stack. Restore caller rights entirely in
+     // registers before any stack/global/TLS access, also in a COW fork child.
+     mov r12, rax
++    // Capture Linux's actual returned rights even when RAX is negative. A
++    // syscall error does not prove that the operation had no partial effects.
++    xor ecx, ecx
++    rdpkru
++    mov r14d, eax
+     mov eax, r15d
+     xor ecx, ecx
+     xor edx, edx
+     wrpkru
+     lfence
+     mov rax, r12
++    mov edx, r14d
+     pop r15
+     pop r14
+     pop r13
+@@ -111,6 +117,21 @@ reverie_preload_guest_syscall_return_ip:
+ "#
+ );
+ 
++// SysV classifies this concrete 16-byte integer pair into RAX and RDX. Rust's
++// Option layout never crosses the assembly boundary.
++#[repr(C)]
++struct GuestSyscallResult {
++    result: i64,
++    pkru: u64,
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<GuestSyscallResult>() == 16);
++    assert!(std::mem::align_of::<GuestSyscallResult>() == 8);
++    assert!(std::mem::offset_of!(GuestSyscallResult, result) == 0);
++    assert!(std::mem::offset_of!(GuestSyscallResult, pkru) == 8);
++};
++
+ unsafe extern "C" {
+     fn reverie_preload_trusted_syscall(
+         number: u64,
+@@ -123,7 +144,11 @@ unsafe extern "C" {
+     ) -> i64;
+     static reverie_preload_trusted_syscall_ip: u8;
+     static reverie_preload_trusted_syscall_return_ip: u8;
+-    fn reverie_preload_guest_syscall(number: i64, args: *const u64, pkru: u32) -> i64;
++    fn reverie_preload_guest_syscall(
++        number: i64,
++        args: *const u64,
++        pkru: u32,
++    ) -> GuestSyscallResult;
+     static reverie_preload_guest_syscall_ip: u8;
+     static reverie_preload_guest_syscall_return_ip: u8;
+ }
+@@ -173,7 +198,61 @@ pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
+ /// Like the ordinary gate, this cannot resume a clone with a different stack
+ /// and must not be used as an ordinary wrapper around rt_sigreturn.
+ pub unsafe fn raw_syscall6_with_pkru(number: i64, args: [u64; 6], pkru: u32) -> i64 {
+-    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) }
++    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru).result }
++}
++
++/// The scalar result and, when requested, permissions returned by one physical
++/// syscall. This does not update a dispatcher, signal frame or guest context.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct NativeSyscallResult {
++    pub result: i64,
++    /// Actual PKRU immediately after the syscall, including an error result.
++    /// `None` means the caller selected the scalar gate without a permission
++    /// observation; it does not independently certify hardware absence.
++    pub pkru: Option<u32>,
++}
++
++/// Execute one native syscall with its original arguments and observe its
++/// returned permissions before restoring the caller's permissions.
++///
++/// `Some(pkru)` selects the existing exact guest gate. `None` selects the
++/// existing scalar gate and executes no PKRU instructions, including on a CPU
++/// without OSPKE. Capability-aware callers establish support before selecting
++/// `Some`; this function performs no CPUID operation during interception.
++///
++/// # Safety
++///
++/// The caller must uphold the safety of successful kernel writes, mapping
++/// changes and other operation effects. Invalid or denied original pointers
++/// with a kernel-defined error such as EFAULT remain admitted. `Some` requires
++/// OSPKE, and the selected exact trusted gate must be allowed by any
++/// installed syscall filter. Caller permissions must allow this helper's call
++/// and return storage before and after the syscall. The operation must not
++/// unmap or revoke that storage, resume a clone on a different stack, or use
++/// ordinary wrapper return for rt_sigreturn. These are internal raw-helper
++/// requirements, not restrictions on guest syscalls: an integrating runtime
++/// must own surviving callback/return storage before forwarding such calls.
++/// Original guest pointers are passed unchanged and checked by Linux under the
++/// supplied guest permissions. Caller permissions are restored before the first
++/// return-side memory access, even if Linux changes PKRU or returns an error.
++pub unsafe fn raw_syscall6_with_result(
++    number: i64,
++    args: [u64; 6],
++    guest_pkru: Option<u32>,
++) -> NativeSyscallResult {
++    match guest_pkru {
++        Some(pkru) => {
++            let result = unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) };
++            NativeSyscallResult {
++                result: result.result,
++                pkru: Some(result.pkru as u32),
++            }
++        }
++        None => NativeSyscallResult {
++            result: unsafe { raw_syscall6(number, args) },
++            pkru: None,
++        },
++    }
+ }
+ 
+ /// The address range of the trusted gate, for building the seccomp filter.
+diff --git a/reverie-preload/tests/native_syscall_result.rs b/reverie-preload/tests/native_syscall_result.rs
+new file mode 100644
+index 00000000..aa231955
+--- /dev/null
++++ b/reverie-preload/tests/native_syscall_result.rs
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::process::Command;
++use std::time::Duration;
++#[path = "../../reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs"]
++mod owned_lifecycle;
++fn run(mode: &str) {
++    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-preload-native-syscall-result"));
++    command.arg(mode);
++    let (output, _) = owned_lifecycle::run(command, Duration::from_secs(10)).unwrap();
++    println!(
++        "mode={mode}; stdout={} stderr={}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    assert!(output.status.success(), "mode={mode}: {output:?}");
++    assert!(output.stderr.is_empty(), "mode={mode}: {output:?}");
++}
++#[test]
++fn scalar_path_without_pkru_observation() {
++    run("no-pkru");
++}
++#[test]
++fn native_pkey_allocation_and_free_effects() {
++    run("allocation");
++}
++#[test]
++fn native_implicit_execute_only_key_effect() {
++    run("mprotect");
++}
++#[test]
++fn native_partial_mprotect_error_keeps_permission_effect() {
++    run("partial-error");
++}
++#[test]
++fn original_denied_pointer_is_checked_by_linux() {
++    run("pointers");
++}
++#[test]
++fn all_six_mmap_arguments_reach_linux() {
++    run("six-arguments");
++}
++#[test]
++fn caller_rights_return_before_stack_access() {
++    run("caller-rights");
++}
+diff --git a/reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs b/reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs
+index fb76059e..e8fa9698 100644
+--- a/reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs
++++ b/reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs
+@@ -186,10 +186,8 @@ pub fn run(mut command: Command, bound: Duration) -> io::Result<(Output, Vec<Sig
+                 // wait status and disarm Drop. Descendants may still hold pipes.
+                 status = Some(fixture.child.take().unwrap().wait()?);
+             }
+-            if out_closed && err_closed {
+-                if let Some(status) = status {
+-                    return Ok(status);
+-                }
++            if let (true, Some(status)) = (out_closed && err_closed, status) {
++                return Ok(status);
+             }
+             std::thread::sleep(Duration::from_millis(1));
+         }

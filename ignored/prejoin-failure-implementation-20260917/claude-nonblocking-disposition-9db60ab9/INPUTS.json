@@ -1,0 +1,111 @@
+{
+  "reverie_head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "read_only": true,
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/reverie-prejoin-claude-review-9db60ab9/REPORT.md",
+      "bytes": 27218,
+      "sha256": "4c003aa043378481ce9370be882208bf74b17ad1f08663e03dd7612acaa6ca34"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v23-preparation/binding.json",
+      "bytes": 3527,
+      "sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v14/RESULT.json",
+      "bytes": 2833,
+      "sha256": "d9a291d5138a63b9a80e0a57d7c7c50ccb3f1c6d062043c0a375e209ea132b55"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/RESULT.json",
+      "bytes": 11449,
+      "sha256": "a471d543bd6e4e0b76fc90907d322edcbf0a60cdc9287925a82a55a0376ca426"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/RESULT.json",
+      "bytes": 61198,
+      "sha256": "10861f2ebc67b791fe384f841cb94da88358c12859c55e2206a17618c78f527b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/failure.rs",
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/runtime.rs",
+      "bytes": 160114,
+      "sha256": "401b33b2b7a099c52470804dbd2c53f2ccca1fc834ef15ec2584bf8f52a74946"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/runtime/failure_tests.rs",
+      "bytes": 52732,
+      "sha256": "a918ff5f389e47cc6a21d418e34ee8fc917072d2afa1618ff01a14529252cf44"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/runtime/native_test_support.rs",
+      "bytes": 17882,
+      "sha256": "c3be9c6a4a0ad3e2910a1a1c490c203077da70e9b5308ea9f2f5c990536bb6c5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/executor.rs",
+      "bytes": 1398935,
+      "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/vm.rs",
+      "bytes": 306150,
+      "sha256": "5f6de8ca47096d9485f61814dcdc435cee4a19234c4a4dd1371a8f07332d8dfa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/error.rs",
+      "bytes": 16191,
+      "sha256": "eb130f64177a6e9d0cd851ce069fd992e0c0eca6eea2eb444ba378506c3fe7ac"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie/src/tool.rs",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+      "bytes": 4358,
+      "sha256": "5cfacc8b67324eb17bb535d88589e81af4037339bc77bad5f41fefb0ca59c0bc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/src/lib.rs",
+      "bytes": 204180,
+      "sha256": "2c1acdb200d7d661cd0bec53d9f9f778578c7f6a4ea3f52a81fd0c59c90f94b8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/src/kvm_failure_tests.rs",
+      "bytes": 16094,
+      "sha256": "4c8680448fea02adbf125bb0cc5839a7af201699b3d69bbecfa67599b42a623c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/src/kvm_execution_tests.rs",
+      "bytes": 6340,
+      "sha256": "4999738c5e429b8da9fc4dc882ebe1bb88a1c9cb5fbe7f450db9d84af50a4459"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore/src/tool_global.rs",
+      "bytes": 252090,
+      "sha256": "eb1b453f204641198438781850e65718262e4a3d1fd0db0d22e28737a60f7f3a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349470,
+      "sha256": "4f14bc3a1c80d741b7e81ec2114a077d84f8173d5ca7e9c8628f56e26e80f665"
+    }
+  ],
+  "hermit_context": "Current composed worktree only, read without mutation; these context hashes do not assert its later source or execution is fixed.",
+  "failed_path_reads": [
+    "hermit-cli/src/backends/kvm.rs absent; actual product caller is hermit-cli/src/lib.rs",
+    "hermit-cli/src/kvm_setup_failure_tests.rs absent; actual prepared module is kvm_execution_tests.rs"
+  ]
+}

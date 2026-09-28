@@ -1,0 +1,26 @@
+[
+  {
+    "name": "liblto_plugin.so",
+    "required": false,
+    "state": "GCC print-file-name returned unresolved name",
+    "query": "cc-file-liblto_plugin.so"
+  },
+  {
+    "name": "libpthread.so",
+    "required": false,
+    "state": "GCC print-file-name returned unresolved name",
+    "query": "cc-file-libpthread.so"
+  },
+  {
+    "name": "specs",
+    "required": false,
+    "state": "GCC print-file-name returned unresolved name",
+    "query": "cc-file-specs"
+  },
+  {
+    "path": "/etc/ld.so.preload",
+    "role": "dynamic loader configuration",
+    "required": false,
+    "state": "absent"
+  }
+]

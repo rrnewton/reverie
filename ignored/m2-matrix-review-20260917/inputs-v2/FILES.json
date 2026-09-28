@@ -1,0 +1,23 @@
+[
+  {
+    "path": "tests/backend-parity/run_matrix.py",
+    "base_sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024",
+    "proposal_sha256": "79be69ed3986d95e2352e7bc590672d72642574fdcc3f94f123ad3d3e9310a0f",
+    "mode": "100755",
+    "bytes": 82824
+  },
+  {
+    "path": "tests/backend-parity/test_verify_tier_evidence.py",
+    "base_sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda",
+    "proposal_sha256": "0c94b3a795d25aea06a2403361d5f25a1ad6895b644cda3c0fcc107b3e938030",
+    "mode": "100755",
+    "bytes": 32897
+  },
+  {
+    "path": "tests/backend-parity/test_scorecard_header_compat.py",
+    "base_sha256": "da610b2ae0de6bc7a8d6662c73272fe33d302d83cac44aed31ee9c3271bcfca7",
+    "proposal_sha256": "c7e185260af10ac6c5a34eb7247e7d827f8cf98692f1639a8ad39b5dae76403c",
+    "mode": "100755",
+    "bytes": 34537
+  }
+]

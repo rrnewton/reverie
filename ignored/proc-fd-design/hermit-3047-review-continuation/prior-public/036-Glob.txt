@@ -1,0 +1,14 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_018pfcwnzmsyLF9e1C9xkFye",
+  "name": "Glob",
+  "input": {
+    "pattern": "ci/*.sh",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit"
+  }
+}
+
+Successful public tool result (exact text below):
+ci/configure-build-jobs.sh
+ci/run-with-reverie-dbt-budget.sh
+ci/publish-hermit-e2e-artifact.sh

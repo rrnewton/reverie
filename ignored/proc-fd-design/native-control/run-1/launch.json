@@ -1,0 +1,17 @@
+{
+  "plan_sha256": "5fef719f0b6fcc4f3e3da6731c6506d8349e89ebb1e4b034f74a0df12f0665b8",
+  "caller_sha256": "226c9e81245f5bfbc9dae065184138075ff300a830bd798e5298d639d9bef137",
+  "environment": {
+    "HOME": "/home/newton",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "observer": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+  "scope": "Native fdinfo semantics only; no Hermit or KVM guest is launched."
+}

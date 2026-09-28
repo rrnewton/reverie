@@ -1,0 +1,8 @@
+
+running 3 tests
+test procfs::tests::mount_id_subset_requires_unique_members_in_captured_order ... ok
+test procfs::tests::fdinfo_mount_id_is_strict_and_unique ... ok
+test procfs::tests::mountinfo_parser_accepts_empty_and_refuses_malformed_or_duplicate_rows ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+

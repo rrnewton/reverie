@@ -1,0 +1,2 @@
+validate-lock: validation admission check for a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0 did not resolve (ERROR: gh api compare c88196aeb6b9...a9d3b1faa450 failed: gh: Not Found (HTTP 404)); treating fixed-floor ancestry as STALE.
+# ci-hub/validate-lock tool COST ACTUAL wall=1.088s cpu=0.792s cpu_user=0.575s cpu_system=0.216s exit=3

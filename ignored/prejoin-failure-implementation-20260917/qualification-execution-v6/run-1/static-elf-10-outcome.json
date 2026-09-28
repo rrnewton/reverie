@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-10",
+  "test": "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "926c064e54c7478195e477b59224e2eadb0dfc9a3d3101e2a7ee9ee0da174a92",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "4426f51f4b5d7b2dcfde25fe2f5630479bc134f2f224ff89dd98291f419c46fd",
+  "cpu_nsec": 372251000,
+  "wall_seconds": 0.894482432
+}

@@ -1,0 +1,64 @@
+{
+  "scope": "standalone owned-preview formatting, not build/test/guest execution",
+  "formatter": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+  "formatter_sha256": "016e3712bb170692190f20ce3356646d6d2c59343b81516de66af7c5fd2e5e7c",
+  "cpu_seconds_per_file": 10,
+  "wall_seconds_per_file": 20,
+  "output_bytes_cap": 1048576,
+  "files": [
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview-v7/scripts/manifest-to-commands.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.032980474876239896,
+      "cpu_seconds": 0.020514,
+      "before_sha256": "94ca1002c31b111c6443c9929667ebb7c483eb7aa879d77211de2738f0931efa",
+      "after_sha256": "94ca1002c31b111c6443c9929667ebb7c483eb7aa879d77211de2738f0931efa",
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/scripts_manifest-to-commands.rs.stdout",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/scripts_manifest-to-commands.rs.stderr"
+    },
+    {
+      "path": "scripts/lib/verified_command.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview-v7/scripts/lib/verified_command.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.01711205206811428,
+      "cpu_seconds": 0.009199000000000002,
+      "before_sha256": "814e3b7284ccebe7e660c138ef80f685cdfbe686c14c0a9c83d290d8075fe2e4",
+      "after_sha256": "814e3b7284ccebe7e660c138ef80f685cdfbe686c14c0a9c83d290d8075fe2e4",
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/scripts_lib_verified_command.rs.stdout",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/scripts_lib_verified_command.rs.stderr"
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview-v7/hermit-cli/tests/verification_report_consumers.rs"
+      ],
+      "status": 0,
+      "wall_seconds": 0.016539041185751557,
+      "cpu_seconds": 0.015541000000000003,
+      "before_sha256": "5805b9450bcd021abc73ffc7b6893353263a932cdb3cee3b67cb2eedc605add7",
+      "after_sha256": "5ec7711d27388bbcff7218d1897034792377db2b764be7bd957acbdd95c903f1",
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/hermit-cli_tests_verification_report_consumers.rs.stdout",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v7/hermit-cli_tests_verification_report_consumers.rs.stderr"
+    }
+  ]
+}

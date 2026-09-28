@@ -1,0 +1,52 @@
+{
+  "fetched_remote_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tree": "b86bfdb0703e96d377007c102eccfa57ba362396",
+  "headers": [
+    "tree b86bfdb0703e96d377007c102eccfa57ba362396",
+    "parent 24cd5bb518b027eddb62a226805210d74d31c3d8",
+    "author Ryan Newton <rrnewton@gmail.com> 1789621856 -0700",
+    "committer Ryan Newton <rrnewton@gmail.com> 1789621856 -0700"
+  ],
+  "message_exact": true,
+  "files": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "git_entry": "100644 blob 7959e7780cec9d3b41a6cf13088e474e3b03c1bf\treverie-kvm/src/elf.rs",
+      "bytes": 64373,
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "git_entry": "100644 blob 44ee9f7c26dd71075291aad4446051eeee6eba02\treverie-kvm/src/executor.rs",
+      "bytes": 1393581,
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1"
+    },
+    {
+      "path": "reverie-kvm/src/fdinfo.rs",
+      "git_entry": "100644 blob 2518463e81b35fb2c27ef823edc3d103ec3bba01\treverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "git_entry": "100644 blob b0645d69507e33ca76880691ccb5c5f9c8d9d190\treverie-kvm/src/lib.rs",
+      "bytes": 1594,
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9"
+    },
+    {
+      "path": "reverie-kvm/src/memory.rs",
+      "git_entry": "100644 blob ce39403ae27b32ff5c0952868759951a10acbb40\treverie-kvm/src/memory.rs",
+      "bytes": 55591,
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6"
+    },
+    {
+      "path": "reverie-kvm/src/proc_mounts.rs",
+      "git_entry": "100644 blob 413c53832e52d380814741306e7a2ba528d78424\treverie-kvm/src/proc_mounts.rs",
+      "bytes": 2674,
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    }
+  ],
+  "all_six_bytes_modes_match": true,
+  "source_v3_binding_sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496",
+  "no_source_or_index_change": true
+}

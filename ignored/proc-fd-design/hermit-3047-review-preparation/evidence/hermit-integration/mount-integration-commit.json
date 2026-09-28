@@ -1,0 +1,82 @@
+{
+  "message_sha256": "79a6de97906b1929317b67fd70b0d54987631c6eebec08ef6d63548b3d27fd6e",
+  "argv": [
+    "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+    "--passthrough",
+    "--cpu-budget",
+    "120",
+    "--wall",
+    "180",
+    "--mem",
+    "4Gi",
+    "--label",
+    "kvm-parity-mount-integration-commit",
+    "--actual-json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-integration-commit-box.json",
+    "--diag-log",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-integration-commit-box.log",
+    "--",
+    "with-proxy",
+    "git",
+    "commit",
+    "--cleanup=verbatim",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-integration-commit-message.txt"
+  ],
+  "command": [
+    "with-proxy",
+    "git",
+    "commit",
+    "--cleanup=verbatim",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-integration-commit-message.txt"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+  "before_head": "df8f668f9956797ffaeb72a26a938619c0be5df9",
+  "before_staged_tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "started_at": "2026-09-17T06:14:18.971992+00:00",
+  "environment": {
+    "inherit_current": true,
+    "overrides": {
+      "CARGO_BUILD_JOBS": "2",
+      "THIRD_PARTY_BUILD_JOBS": "2",
+      "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/target",
+      "XDG_CACHE_HOME": "/tmp/kvm-parity-recovery-20260916-rust-script-cache",
+      "GIT_OPTIONAL_LOCKS": "0"
+    }
+  },
+  "limits": {
+    "cpu_seconds": 120,
+    "wall_seconds": 180,
+    "memory": "4Gi",
+    "swap_bytes": 0,
+    "output_bytes": 16777216,
+    "outer_wall_seconds": 200
+  },
+  "box_script_sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639",
+  "caller_sha256": "c6489e0e1488d0681f17a974b2ee00c8f6121145ba95c2d7c484ce551f7c9f26",
+  "pid": 1823277,
+  "exit_code": 1,
+  "elapsed_seconds": 11.689585814019665,
+  "guard": null,
+  "output_bytes_seen": 2869,
+  "output_bytes_retained": 2869,
+  "log_sha256": "feb4257cbab2ebc699b62b6f9e534b81917e6edde82f008968e0067374a5b26b",
+  "after_head": "df8f668f9956797ffaeb72a26a938619c0be5df9",
+  "source_changed": false,
+  "commit_correct": false,
+  "actual_box": {
+    "cgroup_usage_usec": 6045241,
+    "cpu_budget_seconds": 120,
+    "cpu_seconds": 6.045241,
+    "cpu_source": "systemd CPUUsageNSec after scope exit",
+    "cpu_usage_nsec": 6045241000,
+    "exit_code": 1,
+    "label": "kvm-parity-mount-integration-commit",
+    "reaped": false,
+    "schema": "hermit-box-run-actual/v1",
+    "scope": "hermit-box-run-1823277-1789625659057477924.scope",
+    "termination": "completed",
+    "wall_backstop_seconds": 180
+  }
+}

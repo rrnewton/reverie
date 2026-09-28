@@ -1,0 +1,61 @@
+{
+  "base": "b03fd6c16a438060f0013d58948643d8f3d81ab5",
+  "head": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
+  "tree": "340e146bb4e3943f33393cc71792bcc8a3b31079",
+  "prior_base": "35af18f34a3238117eecac8b439ac20e13316715",
+  "prior_head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "all1726entries_equal_exact_union": true,
+  "changed_paths": [
+    "Cargo.lock",
+    "ci/configure-build-jobs.sh",
+    "ci/dag/validate.json",
+    "ci/manifest-plan/src/validation_dag_static.rs",
+    "ci/run-with-reverie-dbt-budget.sh",
+    "detcore-dbt/Cargo.toml",
+    "detcore-model/Cargo.toml",
+    "detcore-sabre/Cargo.toml",
+    "detcore/Cargo.toml",
+    "detcore/src/syscalls.rs",
+    "detcore/src/syscalls/files.rs",
+    "detcore/src/syscalls/namespace.rs",
+    "detcore/src/tool_local.rs",
+    "detcore/tests/testutils/Cargo.toml",
+    "hermit-cli/Cargo.toml",
+    "hermit-cli/src/lib.rs",
+    "hermit-cli/tests/cli.rs",
+    "hermit-install/Cargo.toml",
+    "liteinst-runtime-build/Cargo.lock",
+    "liteinst-runtime-build/runtime/Cargo.toml",
+    "tests/c/fixtures/stdio_inode_identity.c"
+  ],
+  "incoming_main_paths": [
+    "ci/manifest-plan/src/ledger.rs",
+    "ci/manifest-plan/src/ledger/schema10/tests.rs",
+    "scripts/lib/validate_evidence.rs",
+    "scripts/lib/validate_receipt.rs",
+    "scripts/validate.rs",
+    "tests/e2e/manifests/backend-parity-c.yaml",
+    "tests/e2e/manifests/c-programs.yaml",
+    "tests/e2e/manifests/determinism-stress-c.yaml"
+  ],
+  "overlap_paths": [],
+  "authored_patch_identical": true,
+  "patch_sha256": "96502f9880df67b8423b1ed111c65f1f08feb0eede6c30657db25f281f92083a",
+  "authors_and_messages": [
+    {
+      "old": "df8f668f9956797ffaeb72a26a938619c0be5df9",
+      "new": "1d695a78051b84febaec32ee358a1d45296f2405",
+      "author_equal": true,
+      "full_message_equal": true,
+      "message_sha256": "7e96d0a92c3c09eb6faa8bba29e81241885d07327d1d6910d876998a44276851"
+    },
+    {
+      "old": "aa7ea4827b8328345e715d76518d7f2205e41110",
+      "new": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
+      "author_equal": true,
+      "full_message_equal": true,
+      "message_sha256": "79a6de97906b1929317b67fd70b0d54987631c6eebec08ef6d63548b3d27fd6e"
+    }
+  ],
+  "no_runtime_result_transferred_to_new_head": true
+}

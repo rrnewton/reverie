@@ -1,0 +1,1 @@
+/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8: /home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs /home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/rust_script_prelude.rs

@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--json",
+    "headRefOid,state,isDraft,url,comments,reviews,reviewDecision"
+  ],
+  "exit": 0,
+  "started": "2026-09-17T05:53:52.788581+00:00",
+  "finished": "2026-09-17T05:53:53.297893+00:00",
+  "stdout_sha256": "fd8805656e82a68bf6771ad1a74aafc593b8a29d0aa4e48599357e717a18f008",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

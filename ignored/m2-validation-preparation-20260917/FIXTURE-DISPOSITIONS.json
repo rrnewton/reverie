@@ -1,0 +1,96 @@
+{
+  "generated_from_retained_source": [
+    {
+      "unresolved_literal_candidate": "tests/c/guest.c",
+      "disposition": "filename created in a temporary/build directory by retained Rust caller; source template embedded in that caller",
+      "caller": "hermit-cli/tests/hermit_modes.rs",
+      "line": 1315,
+      "context": [
+        "    let source = tmp.path().join(\"guest.c\");",
+        "    let guest = tmp.path().join(\"guest\");",
+        "    fs::write(",
+        "        &source,",
+        "        r#\"#include <stdlib.h>",
+        "#include <string.h>",
+        "",
+        "int main(void) {"
+      ],
+      "caller_sha256": "f01e3b931556f66a0ed7025f148504ffe85f6d8a903eab1abf458857c3d1b2af"
+    },
+    {
+      "unresolved_literal_candidate": "tests/c/io_buffer_mutator.c",
+      "disposition": "filename created in a temporary/build directory by retained Rust caller; source template embedded in that caller",
+      "caller": "hermit-cli/tests/cli.rs",
+      "line": 1544,
+      "context": [
+        "    let source = build_root.path().join(\"io_buffer_mutator.c\");",
+        "    let guest = build_root.path().join(\"io_buffer_mutator\");",
+        "    fs::write(&source, DBT_IO_BUFFER_MUTATOR_SOURCE)",
+        "        .expect(\"failed to write DBT io-buffer mutator source\");",
+        "    let compile = Command::new(\"cc\")",
+        "        .args([\"-std=c11\", \"-O2\", \"-Wall\", \"-Wextra\", \"-Werror\"])",
+        "        .arg(&source)",
+        "        .arg(\"-o\")"
+      ],
+      "caller_sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0"
+    },
+    {
+      "unresolved_literal_candidate": "tests/c/pipe_roundtrip.c",
+      "disposition": "filename created in a temporary/build directory by retained Rust caller; source template embedded in that caller",
+      "caller": "hermit-cli/tests/cli.rs",
+      "line": 3607,
+      "context": [
+        "    let source = temp.path().join(\"pipe_roundtrip.c\");",
+        "    let binary = temp.path().join(\"pipe_roundtrip\");",
+        "    fs::write(",
+        "        &source,",
+        "        br#\"#define _GNU_SOURCE",
+        "#include <fcntl.h>",
+        "#include <grp.h>",
+        "#include <stdio.h>"
+      ],
+      "caller_sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0"
+    },
+    {
+      "unresolved_literal_candidate": "tests/c/pipecap.c",
+      "disposition": "filename created in a temporary/build directory by retained Rust caller; source template embedded in that caller",
+      "caller": "hermit-cli/tests/cli.rs",
+      "line": 5021,
+      "context": [
+        "    let source = build_root.join(\"pipecap.c\");",
+        "    fs::write(",
+        "        &source,",
+        "        r#\"",
+        "#define _GNU_SOURCE",
+        "#include <fcntl.h>",
+        "#include <stdio.h>",
+        "#include <unistd.h>"
+      ],
+      "caller_sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0"
+    },
+    {
+      "unresolved_literal_candidate": "tests/c/random_device_lseek.c",
+      "disposition": "filename created in a temporary/build directory by retained Rust caller; source template embedded in that caller",
+      "caller": "hermit-cli/tests/cli.rs",
+      "line": 3694,
+      "context": [
+        "    let source = temp.path().join(\"random_device_lseek.c\");",
+        "    let binary = temp.path().join(\"random_device_lseek\");",
+        "    fs::write(",
+        "        &source,",
+        "        br#\"#define _GNU_SOURCE",
+        "#include <errno.h>",
+        "#include <fcntl.h>",
+        "#include <stdio.h>"
+      ],
+      "caller_sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0"
+    }
+  ],
+  "prior_guessed_paths": {
+    "detcore/tests/tests_misc.rs": "actual Cargo target tests_misc points to tests/misc/mod.rs",
+    "detcore/tests/tests_parallelism.rs": "actual Cargo target tests_parallelism points to tests/parallelism/mod.rs",
+    "detcore/tests/tests_stats.rs": "not a Cargo target; Buck stats declaration commented out",
+    "ci/verify-smoke.sh": "no such script at base; smoke command is authored directly in DAG",
+    "ci/record-replay-smoke.sh": "no such script at base; smoke command is authored directly in DAG"
+  }
+}

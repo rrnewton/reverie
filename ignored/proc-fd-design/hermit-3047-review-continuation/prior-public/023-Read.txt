@@ -1,0 +1,192 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_012CsNoJE7uEtava7U85Ent1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/bin/hermit/container.rs",
+    "offset": 225,
+    "limit": 180
+  }
+}
+
+Successful public tool result (exact text below):
+225	    }
+226	}
+227	
+228	// Bind mount sources must outlive Reverie's pre-exec container setup, which
+229	// applies the mounts in the forked child before exec. Hold this guard in the
+230	// caller until after `Container::run` returns so the backing temp files still
+231	// exist when the child binds them.
+232	pub(super) struct IdentityGuard {
+233	    _group_file: Option<tempfile::NamedTempFile>,
+234	    _nscd_dir: Option<tempfile::TempDir>,
+235	    mountinfo_roots: Vec<MountInfoRootSource>,
+236	    user_mount_targets: Vec<PathBuf>,
+237	}
+238	
+239	impl IdentityGuard {
+240	    /// A guard that owns no backing temp files, for container configurations
+241	    /// (e.g. `--image`) that supply their filesystem from another source and do
+242	    /// not use the frozen-identity bind mounts.
+243	    pub(super) fn empty() -> Self {
+244	        Self {
+245	            _group_file: None,
+246	            _nscd_dir: None,
+247	            mountinfo_roots: Vec::new(),
+248	            user_mount_targets: Vec::new(),
+249	        }
+250	    }
+251	
+252	    /// Include an automatically-created private `/tmp` in mountinfo provenance.
+253	    /// User-supplied `--tmp` paths deliberately do not call this method.
+254	    pub(super) fn add_private_tmp(&mut self, source: &Path) -> Result<(), Error> {
+255	        self.mountinfo_roots
+256	            .push(MountInfoRootSource::private_tmp(source)?);
+257	        Ok(())
+258	    }
+259	
+260	    /// Translate the internal staging path used for an explicit user mount at
+261	    /// `/tmp`, without rewriting the user mount's root or claiming it as a
+262	    /// Hermit-owned filesystem.
+263	    pub(super) fn add_translated_tmp_mountpoint(&mut self, staging_path: &Path) {
+264	        self.mountinfo_roots
+265	            .push(MountInfoRootSource::translated_tmp_mountpoint(staging_path));
+266	    }
+267	
+268	    /// Drop provenance for a Hermit mount hidden by an explicit user mount.
+269	    /// The hidden mount must also be omitted from the mount plan: otherwise its
+270	    /// private root would remain visible as a lower stacked mountinfo row even
+271	    /// though no pathname could reopen that exact layer afterward.
+272	    pub(super) fn discard_mounts_shadowed_by(
+273	        &mut self,
+274	        mounts: &mut Vec<Mount>,
+275	        overriding_target: &Path,
+276	    ) {
+277	        // Host canonicalization describes the namespace only until the first
+278	        // user mount that can replace an ancestor of this target. After that,
+279	        // pathname resolution must follow the ordered mount plan rather than
+280	        // the launcher's host tree. For example, mounting a new `/var` changes
+281	        // what a later `/var/run/nscd` names and must not remove the earlier
+282	        // hardening mount installed at the host-resolved `/run/nscd`.
+283	        let resolution_changed = self
+284	            .user_mount_targets
+285	            .iter()
+286	            .any(|earlier| overriding_target.starts_with(earlier));
+287	        let resolved_override = if resolution_changed {
+288	            overriding_target.to_path_buf()
+289	        } else {
+290	            canonical_mount_target(overriding_target)
+291	        };
+292	        mounts.retain(|mount| {
+293	            !canonical_mount_target(mount.get_target()).starts_with(&resolved_override)
+294	        });
+295	        self.mountinfo_roots.retain(|source| {
+296	            !canonical_mount_target(&source.target).starts_with(&resolved_override)
+297	        });
+298	        self.user_mount_targets
+299	            .push(overriding_target.to_path_buf());
+300	    }
+301	
+302	    /// Resolve proven source objects to exact mount IDs in the completed guest
+303	    /// namespace.  This runs after all mounts are installed and before the guest
+304	    /// starts, while the namespace is quiescent.  Held source and target
+305	    /// descriptors plus the target fd's `mnt_id` avoid both pathname TOCTOU and
+306	    /// ambiguity from stacked mounts sharing one textual mountpoint.
+307	    pub(super) fn mountinfo_root_rewrites(&self) -> Result<Vec<MountInfoRootRewrite>, Error> {
+308	        self.mountinfo_roots
+309	            .iter()
+310	            .map(MountInfoRootSource::resolve)
+311	            .collect()
+312	    }
+313	
+314	    /// Capture the exact raw mount-ID order used by Detcore's snapshot-local
+315	    /// canonicalizer. This runs in the completed, quiescent guest namespace.
+316	    pub(super) fn mountinfo_identity_order(&self) -> Result<Vec<u64>, Error> {
+317	        capture_mountinfo_identity_order()
+318	            .context("Failed to capture guest mountinfo identity order")
+319	    }
+320	}
+321	
+322	fn canonical_mount_target(path: &Path) -> PathBuf {
+323	    for ancestor in path.ancestors() {
+324	        if let Ok(mut canonical) = fs::canonicalize(ancestor)
+325	            && let Ok(suffix) = path.strip_prefix(ancestor)
+326	        {
+327	            canonical.push(suffix);
+328	            return canonical;
+329	        }
+330	    }
+331	    path.to_path_buf()
+332	}
+333	
+334	#[cfg(test)]
+335	pub(super) fn mount_target_is_shadowed(target: &Path, overriding_target: &Path) -> bool {
+336	    canonical_mount_target(target).starts_with(canonical_mount_target(overriding_target))
+337	}
+338	
+339	/// Snapshot the host group database into a private temp file, appending a
+340	/// synthetic overflow group (`nobody:x:65534`) when the host lacks one. Binding
+341	/// this frozen copy read-only over `/etc/group` keeps guest group-name
+342	/// resolution stable across otherwise-identical runs.
+343	fn frozen_group_file() -> Result<tempfile::NamedTempFile, Error> {
+344	    let mut contents = fs::read_to_string(GROUP_FILE)
+345	        .context("Failed to read the host group database for the guest")?;
+346	    let has_overflow_group = contents.lines().any(|line| {
+347	        line.split(':')
+348	            .nth(2)
+349	            .is_some_and(|gid| gid == OVERFLOW_GID)
+350	    });
+351	    if !has_overflow_group {
+352	        if !contents.ends_with('\n') {
+353	            contents.push('\n');
+354	        }
+355	        contents.push_str("nobody:x:");
+356	        contents.push_str(OVERFLOW_GID);
+357	        contents.push_str(":\n");
+358	    }
+359	
+360	    let mut group_file = tempfile::NamedTempFile::new()
+361	        .context("Failed to create the frozen group database for the guest")?;
+362	    group_file
+363	        .write_all(contents.as_bytes())
+364	        .context("Failed to populate the frozen group database for the guest")?;
+365	    group_file
+366	        .as_file()
+367	        .set_permissions(fs::Permissions::from_mode(0o644))
+368	        .context("Failed to set permissions on the frozen guest group database")?;
+369	    Ok(group_file)
+370	}
+371	
+372	/// Deterministic identity-resolution mounts shared by `run`, `record`, and
+373	/// `replay`: a frozen `/etc/group` and an empty directory over the host nscd
+374	/// cache. These keep guest NSS lookups from reaching nondeterministic host
+375	/// state (the nscd cache and the systemd-userdb socket), so record/replay
+376	/// reproduce the same group/user resolution that `run` mode already enforces.
+377	/// Returns the mounts plus a guard that must outlive container setup.
+378	pub(super) fn identity_hardening_mounts() -> Result<(Vec<Mount>, IdentityGuard), Error> {
+379	    let group_file = frozen_group_file()?;
+380	    let mut mountinfo_roots = vec![MountInfoRootSource::new(
+381	        group_file.path(),
+382	        Path::new(GROUP_FILE),
+383	        DETERMINISTIC_GROUP_ROOT,
+384	    )?];
+385	    let mut mounts = vec![Mount::bind(group_file.path(), GROUP_FILE).readonly()];
+386	
+387	    // Host nscd cache readiness is external state and can differ between runs.
+388	    let nscd_dir = if Path::new(NSCD_DIR).is_dir() {
+389	        let directory =
+390	            tempfile::TempDir::new().context("Failed to create the empty guest nscd directory")?;
+391	        // Preserve Linux pathname resolution: on distributions where
+392	        // /var/run is a symlink to /run, mounting the hardening directory at
+393	        // the resolved target keeps it reachable even if a user later mounts
+394	        // an unrelated /var tree.
+395	        let target = canonical_mount_target(Path::new(NSCD_DIR));
+396	        mountinfo_roots.push(MountInfoRootSource::new(
+397	            directory.path(),
+398	            &target,
+399	            DETERMINISTIC_NSCD_ROOT,
+400	        )?);
+401	        mounts.push(Mount::bind(directory.path(), target).readonly());
+402	        Some(directory)
+403	    } else {
+404	        None

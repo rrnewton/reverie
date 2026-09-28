@@ -1,0 +1,83 @@
+[
+  {
+    "directory": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190",
+    "manifest": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.toml",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.toml",
+      "bytes": 688,
+      "mode": 384,
+      "sha256": "9fbb7bea2614e901fd38467d6919fdd65cc660c27cb545eea57399fbe0b2accd",
+      "symlink": null
+    },
+    "lock": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.lock",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.lock",
+      "bytes": 29210,
+      "mode": 420,
+      "sha256": "7ac15e1160645500d16e81148b76eda918471e0b386c263064e45cb301408c1a",
+      "symlink": null
+    },
+    "package": {
+      "authors": [
+        "Anonymous"
+      ],
+      "edition": "2021",
+      "name": "validate_b81ceab65609123303f94190",
+      "version": "0.1.0"
+    },
+    "bins": [
+      {
+        "name": "validate_b81ceab65609123303f94190",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/validate.rs"
+      }
+    ],
+    "dependencies": {
+      "libc": "0.2",
+      "serde_json": "1",
+      "sha2": "0.10",
+      "shell-words": "1.1",
+      "tempfile": "3",
+      "toml": "0.8.23",
+      "dagrun": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/../agent-utils/rs/dagrun"
+      },
+      "hermit-manifest-plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/../ci/manifest-plan"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/be776c6e0dc0044fb82ec5a8",
+    "manifest": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/be776c6e0dc0044fb82ec5a8/Cargo.toml",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/be776c6e0dc0044fb82ec5a8/Cargo.toml",
+      "bytes": 354,
+      "mode": 384,
+      "sha256": "9b141f1a75ca1108721fc76d3773989ef22802023b748c2d6bfb901b9f8a438c",
+      "symlink": null
+    },
+    "lock": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/be776c6e0dc0044fb82ec5a8/Cargo.lock",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/be776c6e0dc0044fb82ec5a8/Cargo.lock",
+      "bytes": 191,
+      "mode": 420,
+      "sha256": "587bcd2c6184550fd1b3fe6f452cf9daca91b3978270bac274873eb22b5d49d9",
+      "symlink": null
+    },
+    "package": {
+      "authors": [
+        "Anonymous"
+      ],
+      "edition": "2021",
+      "name": "check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+      "version": "0.1.0"
+    },
+    "bins": [
+      {
+        "name": "check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs"
+      }
+    ],
+    "dependencies": {}
+  }
+]

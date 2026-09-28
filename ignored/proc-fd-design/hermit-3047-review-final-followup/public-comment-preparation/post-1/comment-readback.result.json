@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/issues/comments/5710693759"
+  ],
+  "started_at": "2026-09-17T07:30:29.783737+00:00",
+  "exit_code": 0,
+  "elapsed_seconds": 0.5157713599037379,
+  "finished_at": "2026-09-17T07:30:30.300929+00:00"
+}

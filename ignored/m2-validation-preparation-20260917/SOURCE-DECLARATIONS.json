@@ -1,0 +1,4353 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "scope": "All function declarations in mapped fixture/test sources, including helpers; not a test count or inventory",
+  "files": [
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "functions": [
+        {
+          "line": 46,
+          "name": "subscriptions",
+          "preceding_attributes_or_context": [
+            "impl Tool for PhysicalTimerSlackProbe {",
+            "    type GlobalState = detcore::GlobalState;",
+            "    type ThreadState = ();",
+            ""
+          ]
+        },
+        {
+          "line": 50,
+          "name": "handle_syscall_event",
+          "preceding_attributes_or_context": [
+            "    fn subscriptions(_config: &detcore::Config) -> Subscription {",
+            "        Subscription::none()",
+            "    }",
+            ""
+          ]
+        },
+        {
+          "line": 78,
+          "name": "hardware_random_features",
+          "preceding_attributes_or_context": [
+            "    rdrand: bool,",
+            "    rdseed: bool,",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 88,
+          "name": "cpuid_faulting_supported",
+          "preceding_attributes_or_context": [
+            "            .is_some_and(|f| f.has_rdseed()),",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 103,
+          "name": "det_test_fn_without_pmu",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);",
+            "    libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 114,
+          "name": "det_test_fn_sequential_without_pmu",
+          "preceding_attributes_or_context": [
+            "    };",
+            "    detcore_testutils::det_test_fn_with_config(true, f, config, detcore_testutils::expect_success)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 121,
+          "name": "det_test_fn_sequential_without_pmu_with_post_fork",
+          "preceding_attributes_or_context": [
+            "{",
+            "    det_test_fn_sequential_without_pmu_with_post_fork(detcore::RunsPostFork::Child, f);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 134,
+          "name": "madvise_result",
+          "preceding_attributes_or_context": [
+            "    };",
+            "    detcore_testutils::det_test_fn_with_config(true, f, config, detcore_testutils::expect_success)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 145,
+          "name": "run_madvise_policy_test",
+          "preceding_attributes_or_context": [
+            "            .expect(\"madvise failure must set errno\"))",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 278,
+          "name": "madvise_policy_is_deterministic_and_preserves_semantic_advice",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 283,
+          "name": "passthru_opt_still_intercepts_madvise",
+          "preceding_attributes_or_context": [
+            "    run_madvise_policy_test(false);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 288,
+          "name": "prctl_keepcaps_round_trips_deterministically",
+          "preceding_attributes_or_context": [
+            "    run_madvise_policy_test(true);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 304,
+          "name": "timer_slack_prctl_and_procfs_share_virtual_state",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 433,
+          "name": "timer_slack_procfs_vector_io_matches_linux",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 619,
+          "name": "timer_slack_procfs_binds_target_at_open",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 714,
+          "name": "timer_slack_is_mediated_under_passthru_opt",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 743,
+          "name": "timer_slack_virtual_state_is_isolated_from_physical_tracee",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 750,
+          "name": "drop",
+          "preceding_attributes_or_context": [
+            "    const VIRTUAL_PROC_REQUEST_NS: libc::c_int = 888_888_888;",
+            "",
+            "    struct RestoreTimerSlack(libc::c_int);",
+            "    impl Drop for RestoreTimerSlack {"
+          ]
+        },
+        {
+          "line": 845,
+          "name": "await_stage",
+          "preceding_attributes_or_context": [
+            "            .await",
+            "            .unwrap();",
+            "        let bracket = unsafe { &*bracket };",
+            ""
+          ]
+        },
+        {
+          "line": 884,
+          "name": "sched_affinity_is_normalized_to_virtual_cpu_zero",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1042,
+          "name": "waitid_polls_until_child_exit_and_supports_wnohang",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1211,
+          "name": "ordinary_clone_child_starts_before_parent_resumes",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1234,
+          "name": "ordinary_clone_parent_mode_can_resume_before_child",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1257,
+          "name": "dup_shares_status_flags_but_not_cloexec",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1301,
+          "name": "fcntl_advisory_set_lock_succeeds",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1326,
+          "name": "bound_port_survives_closing_dup_alias",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1346,
+          "name": "bind_loopback",
+          "preceding_attributes_or_context": [
+            "    // independent host test processes do not bind the same address and port.",
+            "    // Repetitions inside this test process retain one address and still exercise",
+            "    // the same deterministic port sequence.",
+            "    det_test_fn_sequential_without_pmu(move || {"
+          ]
+        },
+        {
+          "line": 1364,
+          "name": "socket_name",
+          "preceding_attributes_or_context": [
+            "                )",
+            "            }",
+            "        }",
+            ""
+          ]
+        },
+        {
+          "line": 1385,
+          "name": "socket_option",
+          "preceding_attributes_or_context": [
+            "                address.sin_port.to_be(),",
+            "            )",
+            "        }",
+            ""
+          ]
+        },
+        {
+          "line": 1404,
+          "name": "socket_identity",
+          "preceding_attributes_or_context": [
+            "            assert_eq!(length as usize, std::mem::size_of::<libc::c_int>());",
+            "            value",
+            "        }",
+            ""
+          ]
+        },
+        {
+          "line": 1470,
+          "name": "unix_autobind_names_are_deterministic",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1543,
+          "name": "netlink_autobind_port_ids_are_deterministic",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1545,
+          "name": "bind_netlink",
+          "preceding_attributes_or_context": [
+            "",
+            "#[test]",
+            "fn netlink_autobind_port_ids_are_deterministic() {",
+            "    det_test_fn_sequential_without_pmu(|| {"
+          ]
+        },
+        {
+          "line": 1602,
+          "name": "shared_futex_modes_are_supported_and_validate_bitsets",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1629,
+          "name": "shared_anonymous_futex_wakes_across_processes",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1694,
+          "name": "dup2_same_fd_preserves_cloexec",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1715,
+          "name": "failed_exec_preserves_shared_fd_table",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1770,
+          "name": "futex_wait_bitset_timeout_is_absolute_and_removes_waiter",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1772,
+          "name": "as_nanos",
+          "preceding_attributes_or_context": [
+            "",
+            "#[test]",
+            "fn futex_wait_bitset_timeout_is_absolute_and_removes_waiter() {",
+            "    det_test_fn_sequential_without_pmu(|| {"
+          ]
+        },
+        {
+          "line": 1841,
+          "name": "getrandom_intercepted",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1876,
+          "name": "has_rdrand_without_detcore",
+          "preceding_attributes_or_context": [
+            "    })",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1889,
+          "name": "rdrand_rdseed_is_masked",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1915,
+          "name": "network_syscalls_are_deterministic_across_five_runs",
+          "preceding_attributes_or_context": [
+            "    })",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1936,
+          "name": "send_exact",
+          "preceding_attributes_or_context": [
+            "            use std::os::unix::net::UnixStream;",
+            "            use std::sync::Arc;",
+            "            use std::sync::Barrier;",
+            ""
+          ]
+        },
+        {
+          "line": 1943,
+          "name": "recv_exact",
+          "preceding_attributes_or_context": [
+            "                    bytes.len() as isize",
+            "                );",
+            "            }",
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "path": "detcore/tests/misc/vfork.rs",
+      "functions": [
+        {
+          "line": 20,
+          "name": "clone_vfork_parent_waits_for_child_exit",
+          "preceding_attributes_or_context": [
+            "    0",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 48,
+          "name": "vfork_parent_resumes_after_child_exec",
+          "preceding_attributes_or_context": [
+            "    });",
+            "}",
+            "",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "functions": [
+        {
+          "line": 56,
+          "name": "clone",
+          "preceding_attributes_or_context": [
+            "unsafe impl Send for SharedCells {}",
+            "unsafe impl Sync for SharedCells {}",
+            "",
+            "impl Clone for SharedCells {"
+          ]
+        },
+        {
+          "line": 88,
+          "name": "count_switch_points",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "/// Calculate the number of switch points. E.g. the number of times we observed interleaved",
+            "/// writes between the threads."
+          ]
+        },
+        {
+          "line": 117,
+          "name": "raw",
+          "preceding_attributes_or_context": [
+            "",
+            "    /// In guest mode two threads will try to fill up half of the data array with their thread id as",
+            "    /// value. The threads grab indices through an atomic int. For sufficiently large arrays we expect",
+            "    /// the thread ids to show up interleaved."
+          ]
+        },
+        {
+          "line": 128,
+          "name": "worker",
+          "preceding_attributes_or_context": [
+            "        // `count_switch_points` compares adjacent elements and never inspects the",
+            "        // value itself. They must nevertheless stay DISTINCT and nonzero: give both",
+            "        // workers the same tag and the switch-point count collapses to zero, which",
+            "        // is the test measuring nothing while still compiling and running."
+          ]
+        },
+        {
+          "line": 165,
+          "name": "raw_run_par_mode",
+          "preceding_attributes_or_context": [
+            "        switch_points",
+            "    }",
+            "",
+            "    #[test] // Optional: raw, uninstrumented test."
+          ]
+        },
+        {
+          "line": 175,
+          "name": "raw_run_par_mode_reverie",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "",
+            "    // Running under Reverie, there SHOULD be interleavings, but we can't 100% count on it."
+          ]
+        },
+        {
+          "line": 185,
+          "name": "run_noop_mode",
+          "preceding_attributes_or_context": [
+            "    }",
+            "",
+            "    // An additional test under a non-Detcore Reverie tool:",
+            "    #[allow(dead_code)]"
+          ]
+        },
+        {
+          "line": 191,
+          "name": "noop_mode",
+          "preceding_attributes_or_context": [
+            "    }",
+            "",
+            "    #[test]",
+            "    #[cfg(not(sanitized))]"
+          ]
+        },
+        {
+          "line": 200,
+          "name": "detcore",
+          "preceding_attributes_or_context": [
+            "    detcore_testutils::make_det_test_variants!(detcore, \"all\");",
+            "",
+            "    /// Two threads print different characters, interleaved.",
+            "    #[allow(dead_code)]"
+          ]
+        },
+        {
+          "line": 201,
+          "name": "run_seq_mode",
+          "preceding_attributes_or_context": [
+            "",
+            "    /// Two threads print different characters, interleaved.",
+            "    #[allow(dead_code)]",
+            "    pub fn detcore(cfg: &detcore::Config) {"
+          ]
+        },
+        {
+          "line": 219,
+          "name": "with_signal",
+          "preceding_attributes_or_context": [
+            "    }",
+            "",
+            "    #[test]",
+            "    #[cfg(not(sanitized))]"
+          ]
+        },
+        {
+          "line": 238,
+          "name": "raw",
+          "preceding_attributes_or_context": [
+            "    // the ptrace variants spend minutes exercising the same scheduling path.",
+            "    const NUM_ELEMENTS: usize = 2_000_000;",
+            "    const CHUNKS: usize = 5;",
+            ""
+          ]
+        },
+        {
+          "line": 242,
+          "name": "worker",
+          "preceding_attributes_or_context": [
+            "    fn raw() -> u64 {",
+            "        let shared_data = super::SharedCells::zeroed(NUM_ELEMENTS);",
+            "        let shared_idx = Arc::new(AtomicUsize::new(0));",
+            ""
+          ]
+        },
+        {
+          "line": 272,
+          "name": "raw_assert",
+          "preceding_attributes_or_context": [
+            "        println!(\"{}\", s);",
+            "        switch_points",
+            "    }",
+            ""
+          ]
+        },
+        {
+          "line": 283,
+          "name": "raw_run_par_mode",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 293,
+          "name": "detcore",
+          "preceding_attributes_or_context": [
+            "    detcore_testutils::make_det_test_variants!(detcore, \"all\");",
+            "",
+            "    /// Two threads print different characters, interleaved.",
+            "    #[allow(dead_code)]"
+          ]
+        },
+        {
+          "line": 328,
+          "name": "raw",
+          "preceding_attributes_or_context": [
+            "        \"default\"",
+            "    );",
+            "",
+            "    #[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "detcore/tests/stats/mod.rs",
+      "functions": [
+        {
+          "line": 39,
+          "name": "stat_file",
+          "preceding_attributes_or_context": [
+            "    const FILE_NON_EXIST: *const libc::c_char =",
+            "        \"/this_file_definitely_dost_not_exist!#\\0\".as_ptr() as _;",
+            "",
+            "    /// Needs a null terminated input"
+          ]
+        },
+        {
+          "line": 51,
+          "name": "stat_blksize_sanity",
+          "preceding_attributes_or_context": [
+            "        unsafe { maybe_stat.assume_init() }",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 63,
+          "name": "stat_two_files",
+          "preceding_attributes_or_context": [
+            "        );",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 95,
+          "name": "run_test",
+          "preceding_attributes_or_context": [
+            "        use std::io::Write;",
+            "",
+            "        use tempfile::Builder;",
+            ""
+          ]
+        },
+        {
+          "line": 116,
+          "name": "raw",
+          "preceding_attributes_or_context": [
+            "            // The TempPath will delete the file when it passes out of scope.",
+            "        }",
+            "",
+            "        #[test]"
+          ]
+        },
+        {
+          "line": 125,
+          "name": "detcore",
+          "preceding_attributes_or_context": [
+            "            prefix.push_str(\"_\");",
+            "            run_test(&prefix)",
+            "        }",
+            ""
+          ]
+        },
+        {
+          "line": 153,
+          "name": "default_detcore",
+          "preceding_attributes_or_context": [
+            "        //     detcore(\"middle\", &detcore_testutils::MIDDLE_CFG);",
+            "        // }",
+            "",
+            "        #[test]"
+          ]
+        },
+        {
+          "line": 158,
+          "name": "top_detcore",
+          "preceding_attributes_or_context": [
+            "            detcore(\"default\", &Default::default());",
+            "        }",
+            "",
+            "        #[test]"
+          ]
+        },
+        {
+          "line": 164,
+          "name": "stat_with_nullptr_errno_sanity",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 177,
+          "name": "fstat_with_nullptr_errno_sanity",
+          "preceding_attributes_or_context": [
+            "        });",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 189,
+          "name": "stat_nonexist_file",
+          "preceding_attributes_or_context": [
+            "        });",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 205,
+          "name": "stat_lstat_symlink",
+          "preceding_attributes_or_context": [
+            "        });",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        },
+        {
+          "line": 224,
+          "name": "stat_fstat_is_consistent",
+          "preceding_attributes_or_context": [
+            "        });",
+            "    }",
+            "",
+            "    #[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/cli.rs",
+      "functions": [
+        {
+          "line": 88,
+          "name": "hermit_run_guard",
+          "preceding_attributes_or_context": [
+            "\"#;",
+            "",
+            "// This lock only serializes independent child processes; a failed assertion carries no",
+            "// protected state invariant and must not poison unrelated tests."
+          ]
+        },
+        {
+          "line": 94,
+          "name": "execution_root_args",
+          "preceding_attributes_or_context": [
+            "        .lock()",
+            "        .unwrap_or_else(|poisoned| poisoned.into_inner())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 107,
+          "name": "append_hermit_args_with_execution_root",
+          "preceding_attributes_or_context": [
+            "        )),",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 125,
+          "name": "append_hermit_args_with_execution_root_mode",
+          "preceding_attributes_or_context": [
+            "            .any(|pair| pair == [OsStr::new(\"--backend\"), OsStr::new(\"dbt\")]);",
+            "    append_hermit_args_with_execution_root_mode(command, args, requested_workdir, !uses_outer_mount)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 194,
+          "name": "append_hermit_args",
+          "preceding_attributes_or_context": [
+            "        .args(&args[guest_separator..]);",
+            "    Ok(())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 200,
+          "name": "append_hermit_args_using_outer_mount",
+          "preceding_attributes_or_context": [
+            "    append_hermit_args_with_execution_root(command, args, requested.as_deref())",
+            "        .unwrap_or_else(|error| panic!(\"PATH-CONTRACT: {error}\"));",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 206,
+          "name": "hermit_command",
+          "preceding_attributes_or_context": [
+            "    append_hermit_args_with_execution_root_mode(command, args, requested.as_deref(), false)",
+            "        .unwrap_or_else(|error| panic!(\"PATH-CONTRACT: {error}\"));",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 212,
+          "name": "hermit",
+          "preceding_attributes_or_context": [
+            "    append_hermit_args(&mut command, args);",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 218,
+          "name": "hermit_with_stdin",
+          "preceding_attributes_or_context": [
+            "        .output()",
+            "        .unwrap_or_else(|error| panic!(\"failed to run hermit with {args:?}: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 238,
+          "name": "dbt_stderr_guest",
+          "preceding_attributes_or_context": [
+            "        .wait_with_output()",
+            "        .unwrap_or_else(|error| panic!(\"failed to wait for hermit with {args:?}: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 271,
+          "name": "dbt_log_env_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 296,
+          "name": "read_terminal_dbt_verdict",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 342,
+          "name": "write_matching_liteinst_revision",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    verdict",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 349,
+          "name": "liteinst_runtime_cache_requires_the_current_revision",
+          "preceding_attributes_or_context": [
+            "        .expect(\"failed to write LiteInst runtime revision fixture\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 374,
+          "name": "liteinst_inert_runtime",
+          "preceding_attributes_or_context": [
+            "        &runtime",
+            "    ));",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 400,
+          "name": "exec_clock_continuity_guest",
+          "preceding_attributes_or_context": [
+            "        runtime",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 426,
+          "name": "stdio_lseek_identity_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 455,
+          "name": "stdio_inode_identity_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 481,
+          "name": "fork_child_getrandom_guest",
+          "preceding_attributes_or_context": [
+            "    })",
+            "}",
+            "",
+            "// TODO-HUMAN-REVIEW(PR-1052): Review no-namespace fork-child RNG coverage."
+          ]
+        },
+        {
+          "line": 511,
+          "name": "dbt_mmap_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 536,
+          "name": "dbt_exec_failure_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 561,
+          "name": "dbt_execveat_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 586,
+          "name": "dbt_wait_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 611,
+          "name": "kvm_exact_child_waits_guest",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 638,
+          "name": "dbt_pid_guest",
+          "preceding_attributes_or_context": [
+            "    })",
+            "}",
+            "",
+            "// TODO-HUMAN-REVIEW(PR-723): Review the DBT PID fixture build."
+          ]
+        },
+        {
+          "line": 665,
+          "name": "dbt_prlimit_self_guest",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-1065): Review DBT self-prlimit fixture coverage."
+          ]
+        },
+        {
+          "line": 692,
+          "name": "dbt_unsupported_syscall_guest",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-644): Review the DBT unsupported-syscall fixture build."
+          ]
+        },
+        {
+          "line": 719,
+          "name": "dbt_self_sigqueue_guest",
+          "preceding_attributes_or_context": [
+            "    })",
+            "}",
+            "",
+            "// TODO-HUMAN-REVIEW(PR-1038): Review the DBT self-signal fixture build."
+          ]
+        },
+        {
+          "line": 745,
+          "name": "hermit_with_closed_stdin",
+          "preceding_attributes_or_context": [
+            "        guest",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 764,
+          "name": "assert_success",
+          "preceding_attributes_or_context": [
+            "        .output()",
+            "        .unwrap_or_else(|error| panic!(\"failed to run hermit with {args:?}: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 774,
+          "name": "stdout",
+          "preceding_attributes_or_context": [
+            "        String::from_utf8_lossy(&output.stderr),",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 778,
+          "name": "stderr",
+          "preceding_attributes_or_context": [
+            "fn stdout(output: &Output) -> String {",
+            "    String::from_utf8(output.stdout.clone()).expect(\"hermit stdout should be UTF-8\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 783,
+          "name": "kvm_pinned_root_arguments_are_exact_and_fail_closed",
+          "preceding_attributes_or_context": [
+            "    String::from_utf8(output.stderr.clone()).expect(\"hermit stderr should be UTF-8\")",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 925,
+          "name": "pinned_root_arguments_cover_split_guest_commands",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1018,
+          "name": "strip_ansi_sgr",
+          "preceding_attributes_or_context": [
+            "        .map(OsStr::new)",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 1059,
+          "name": "code",
+          "preceding_attributes_or_context": [
+            "    GuestNotExecutable,",
+            "}",
+            "",
+            "impl Refusal {"
+          ]
+        },
+        {
+          "line": 1067,
+          "name": "describe",
+          "preceding_attributes_or_context": [
+            "            Refusal::GuestNotExecutable => GUEST_PROGRAM_NOT_EXECUTABLE_EXIT,",
+            "        }",
+            "    }",
+            ""
+          ]
+        },
+        {
+          "line": 1089,
+          "name": "assert_hermit_refusal_contains",
+          "preceding_attributes_or_context": [
+            "/// This assertion was `Some(1)` until hermit#2558 and was passing for the wrong",
+            "/// reason: `1` is also the commonest guest exit, so it accepted \"hermit refused\"",
+            "/// and \"the guest ran and failed\" alike. Substituting today's observed value",
+            "/// without deciding what the test MEANS reintroduces that, one number later."
+          ]
+        },
+        {
+          "line": 1117,
+          "name": "deny_syscall",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    assert!(!stderr.contains(\"panicked\"), \"unexpected panic:\\n{stderr}\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 1169,
+          "name": "run_strict_flag_is_accepted_and_runs",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1189,
+          "name": "verify_verbose_requires_verify",
+          "preceding_attributes_or_context": [
+            "    assert_success(&output, &args);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1204,
+          "name": "run_rejects_unknown_backends_during_argument_parsing",
+          "preceding_attributes_or_context": [
+            "    assert!(stderr.contains(\"required\"), \"unexpected error:\\n{stderr}\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1240,
+          "name": "dbt_unavailable",
+          "preceding_attributes_or_context": [
+            "/// Setting `HERMIT_REQUIRE_DBT` turns the skip back into a failure, so a CI job",
+            "/// that intends to cover DBT cannot silently stop covering it. That mirrors",
+            "/// `sabre_examples.rs`, which panics when an explicitly configured artifact is",
+            "/// missing and only skips when the default path is absent."
+          ]
+        },
+        {
+          "line": 1260,
+          "name": "run_dbt_executes_integrated_backend",
+          "preceding_attributes_or_context": [
+            "    true",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1270,
+          "name": "run_dbt_uses_the_requested_guest_environment",
+          "preceding_attributes_or_context": [
+            "    assert_success(&output, &args);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1305,
+          "name": "run_dbt_verifies_simple_env_shebang",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// TODO(#2791): Remove the portable test.cli skip when DBT env-shebang defect #2805 is fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1342,
+          "name": "run_dbt_verifies_fresh_physical_workdirs",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"requires the pinned-root isolation validation node and its /test marker\"]"
+          ]
+        },
+        {
+          "line": 1454,
+          "name": "dbt_verify_retains_captures_under_the_names_the_harness_scans_for",
+          "preceding_attributes_or_context": [
+            "/// undefended: the mismatch could return by editing one string with no test",
+            "/// failing. This asserts BOTH directions -- the scanned names are present, and",
+            "/// the old spelling is absent -- so a revert is visible.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1537,
+          "name": "dbt_verify_without_json_rejects_io_buffer_content_divergence",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1627,
+          "name": "run_ptrace_fails_closed_by_default_on_unsupported_syscall",
+          "preceding_attributes_or_context": [
+            "// Detcore subscription so ordinary execution fails closed before the guest can",
+            "// publish its success marker. The explicit compatibility opt-out remains noisy",
+            "// and preserves the native -EINTR result.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1686,
+          "name": "run_dbt_fails_closed_by_default_and_opt_out_aggregates_unsupported_syscalls",
+          "preceding_attributes_or_context": [
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-644): Review DBT normal aggregation and strict failure coverage.",
+            "// TODO(#2791): Remove the portable test.cli skip when DBT aggregation defect #2804 is fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1871,
+          "name": "run_dbt_strict_returns_with_blocked_stdin_source",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-644): Review strict DBT teardown with a blocked stdin source.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1906,
+          "name": "run_liteinst_verifies_detcore_backend",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-736): Review the real LiteInst Detcore CLI assertion.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1953,
+          "name": "backend_stats_are_debug_gated_and_absent_from_the_info_envelope",
+          "preceding_attributes_or_context": [
+            "/// a real ptrace INFO stream that named a backend \u2014 so two backends running an",
+            "/// identical guest could not agree under that envelope however correct they",
+            "/// were. Putting it back at INFO restores a divergence by construction.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2004,
+          "name": "inherited_container_output_does_not_expose_capture_offset",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2058,
+          "name": "run_liteinst_rejects_a_non_runtime_override_before_activation_claim",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2084,
+          "name": "run_liteinst_rejects_an_inert_dso_before_activation_claim",
+          "preceding_attributes_or_context": [
+            "    assert!(!stderr.contains(\"Success: deterministic\"), \"{stderr}\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2110,
+          "name": "run_dbt_keeps_diagnostics_out_of_guest_stderr",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(#679): validate the dedicated DBT diagnostic channel.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2208,
+          "name": "run_dbt_forwards_detcore_info_logs",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2233,
+          "name": "run_dbt_uses_the_normalized_backend_config",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2268,
+          "name": "run_dbt_verifies_queued_self_signals",
+          "preceding_attributes_or_context": [
+            "",
+            "// TODO-HUMAN-REVIEW(PR-1038): Review DBT queued self-signal verification.",
+            "// TODO(#2791): Remove the portable test.cli skip when DBT queued-signal defect #1818 is fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2298,
+          "name": "run_dbt_verifies_application_mmap",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(#543): validate the explicit application-mmap DBT regression.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2317,
+          "name": "run_dbt_verifies_process_wait_lifecycle",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2348,
+          "name": "run_kvm_exact_child_waits_have_stable_scheduler_turns",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2413,
+          "name": "run_dbt_virtualizes_process_identities",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-723): Review DBT PID virtualization L2 coverage.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2461,
+          "name": "run_dbt_verifies_self_prlimit",
+          "preceding_attributes_or_context": [
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-1065): Review DBT self-prlimit L2 coverage.",
+            "// TODO(#2791): Remove the portable test.cli skip when DBT self-prlimit defect #2806 is fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2490,
+          "name": "run_dbt_verifies_shell_process_lifecycle",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// TODO(#2791): Remove the portable test.cli skip when DBT process-group defect #605 is fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2519,
+          "name": "run_dbt_verifies_pipe_backpressure",
+          "preceding_attributes_or_context": [
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(#598): Confirm this captures the host-inherited O_NONBLOCK regression.",
+            "// TODO-HUMAN-REVIEW(#689): Confirm the split-write case protects partial-read semantics.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2545,
+          "name": "run_dbt_recovers_after_failed_exec",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2572,
+          "name": "run_dbt_rejects_unfollowed_execveat",
+          "preceding_attributes_or_context": [
+            "        stderr(&output),",
+            "    );",
+            "}",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2603,
+          "name": "run_kvm_executes_dynamic_guest",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2670,
+          "name": "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stderr_flags",
+          "preceding_attributes_or_context": [
+            "/// mechanism, not an independent trigger for it -- and if awk ever stops setting",
+            "/// the flag conditionally, BOTH cells go quiet together. That residual risk is",
+            "/// real and is stated here rather than papered over with a claim of independence.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2757,
+          "name": "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stdout_flags",
+          "preceding_attributes_or_context": [
+            "/// suite with `-E 'test(/^run_kvm_/)'` and that is the only lane with /dev/kvm.",
+            "/// Without the prefix this is selected on PORTABLE, its guard returns early, and",
+            "/// it reports a silent pass -- the exact hazard that node's description warns of.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2810,
+          "name": "run_kvm_awk_mincore_probe_terminates",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2849,
+          "name": "run_kvm_resolves_bare_program_from_guest_path",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2872,
+          "name": "run_kvm_setpriv_capability_wrapper_is_deterministic",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), \"from-kvm-path\\n\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2929,
+          "name": "guest_env_difference",
+          "preceding_attributes_or_context": [
+            "/// dropped, so it could not tell a working `--base-env=empty` from a broken",
+            "/// one. This test has already been non-discriminating once -- it silently",
+            "/// skipped and reported success -- and a `contains` check would be the same",
+            "/// defect wearing a different costume."
+          ]
+        },
+        {
+          "line": 2964,
+          "name": "guest_env_difference_accepts_the_forced_pair_plus_the_explicit_value",
+          "preceding_attributes_or_context": [
+            "// applies to `test.cli`. A control that only runs where the thing it controls",
+            "// runs is not a control.",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2974,
+          "name": "guest_env_difference_rejects_the_pre_parity_fix_output",
+          "preceding_attributes_or_context": [
+            "/// the *pre-parity-fix* KVM behaviour, where the guest saw the explicit value",
+            "/// and not the two sanitizer variables. The corrected expectation must reject",
+            "/// it, or it would still pass against the divergence the product already fixed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2988,
+          "name": "guest_env_difference_rejects_a_leaked_host_variable",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3000,
+          "name": "guest_env_difference_rejects_a_dropped_explicit_variable",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3008,
+          "name": "run_kvm_propagates_explicit_environment",
+          "preceding_attributes_or_context": [
+            "    assert!(difference.contains(\"KVM_M3C=passed\"), \"{difference}\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3046,
+          "name": "run_kvm_bash_process_substitution_is_deterministic",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3075,
+          "name": "run_kvm_cpuid_policy_is_deterministic",
+          "preceding_attributes_or_context": [
+            "    assert!(stderr(&output).contains(\":: Success: deterministic. Determinism verified.\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3131,
+          "name": "run_kvm_respects_workdir_for_relative_paths",
+          "preceding_attributes_or_context": [
+            "    assert!(stderr(&output).contains(\":: Success: deterministic. Determinism verified.\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3192,
+          "name": "run_kvm_lists_host_directory_metadata",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), \"from-kvm-cwd\\n\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3274,
+          "name": "run_kvm_reads_host_file",
+          "preceding_attributes_or_context": [
+            "    assert!(link.starts_with(\"l\"), \"bad symlink type: {link}\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3298,
+          "name": "run_kvm_reads_standard_input",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), expected);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3319,
+          "name": "run_kvm_f_getfl_and_reads_standard_input",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), \"hello\\n\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3343,
+          "name": "run_kvm_verify_f_getfl_and_replays_standard_input",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), \"fcntl-stdin-ok\\n\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3369,
+          "name": "run_kvm_verify_replays_standard_input",
+          "preceding_attributes_or_context": [
+            "    assert!(stderr(&output).contains(\":: Success: deterministic. Determinism verified.\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3401,
+          "name": "run_kvm_preserves_closed_standard_input",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3488,
+          "name": "run_kvm_verify_does_not_write_to_standard_input",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3536,
+          "name": "run_kvm_counts_standard_input",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3560,
+          "name": "run_kvm_reports_hostname",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3584,
+          "name": "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(#544): Confirm the host C compiler is acceptable for this KVM smoke guest.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3670,
+          "name": "run_kvm_random_device_lseek_matches_linux",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stdout(&output), \"kvm-syscalls-ok\\n\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3840,
+          "name": "run_kvm_reports_fixed_supplementary_groups",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(#544): Confirm 65534 remains the fixed container overflow group.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3866,
+          "name": "namespace_only_rejects_every_explicit_backend",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3891,
+          "name": "namespace_only_applies_minimal_and_explicit_environment",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3925,
+          "name": "namespace_only_preserves_default_host_environment",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stderr(&output), \"\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 3962,
+          "name": "namespace_only_applies_a_fresh_private_tmpfs_workdir",
+          "preceding_attributes_or_context": [
+            "    assert!(!guest_stderr.contains(unrelated_secret));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4007,
+          "name": "namespace_only_propagates_guest_exit_status",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4022,
+          "name": "namespace_only_reports_invalid_process_settings",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(stderr(&output), \"\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4071,
+          "name": "backend_accepted_in_global_position",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4095,
+          "name": "sabre_backend_validation_honors_command_scope",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4136,
+          "name": "sabre_rpc_socket_is_hidden_from_proc_environ",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4174,
+          "name": "sabre_rpc_socket_ignores_host_tmpdir_hidden_by_container_tmp",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4243,
+          "name": "global_position_rejects_unknown_backends",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4255,
+          "name": "namespace_only_rejects_global_position_backend",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4277,
+          "name": "incompatible_run_modes_fail_during_argument_parsing",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4295,
+          "name": "no_namespace_rejects_container_only_options",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4334,
+          "name": "no_namespace_runs_without_container_setup",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4360,
+          "name": "no_namespace_preserves_affinity_for_run_and_verify",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4395,
+          "name": "no_namespace_fork_children_have_deterministic_distinct_rng_streams",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4420,
+          "name": "record_list_json_reports_an_empty_inventory",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4441,
+          "name": "record_list_rejects_a_non_directory_inventory",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(value, serde_json::json!([]));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4475,
+          "name": "run_rejects_invalid_programs_with_actionable_errors",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4547,
+          "name": "run_rejects_invalid_configuration_without_panicking",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4564,
+          "name": "run_rejects_a_missing_bind_source_before_mounting",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4591,
+          "name": "run_reports_denied_ptrace_and_seccomp_capabilities",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4632,
+          "name": "run_ptrace_virtual_clock_advances_across_execve",
+          "preceding_attributes_or_context": [
+            "///",
+            "/// ptrace is the golden reference and keeps one container-wide `GlobalTime`",
+            "/// out-of-process, so this is a regression guard for that reference.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4652,
+          "name": "run_ptrace_virtual_clock_across_execve_is_deterministic",
+          "preceding_attributes_or_context": [
+            "",
+            "/// The same exec-boundary clock trajectory must also be reproducible, so the",
+            "/// continuity above cannot be bought with a nondeterministic clock.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4686,
+          "name": "log_file_under_tmp_lands_on_the_host",
+          "preceding_attributes_or_context": [
+            "///",
+            "/// /tmp is the case that matters because it is both the natural place to put a",
+            "/// scratch log and the one directory the container replaces.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4723,
+          "name": "log_file_that_cannot_be_opened_is_refused_by_path",
+          "preceding_attributes_or_context": [
+            "/// A log destination that cannot be opened must say so and fail, never exit 0",
+            "/// having written nothing. This half needs no policy ruling: silent success is",
+            "/// never the right answer to \"write my diagnostics here\".",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4743,
+          "name": "hermit_dap_forwards_remote_settings_to_gdb",
+          "preceding_attributes_or_context": [
+            "        ],",
+            "    );",
+            "}",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4763,
+          "name": "hermit_dap_reports_a_missing_gdb_path",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4778,
+          "name": "hermit_dap_help_describes_managed_replay",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4792,
+          "name": "hermit_dap_rejects_replay_options_without_replay",
+          "preceding_attributes_or_context": [
+            "    assert!(stdout.contains(\"reverseContinue\"), \"stdout:\\n{stdout}\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4824,
+          "name": "skid_overshoot_and_guest_failure_have_different_exit_codes",
+          "preceding_attributes_or_context": [
+            "/// The overshoot is induced with Reverie's own fault injector rather than a mock,",
+            "/// so this exercises the real timer, Tool callback, structural counter,",
+            "/// container boundary, receipt writer, and policy-refusal exit.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 4917,
+          "name": "container_child_exit_is_distinguishable_from_an_ordinary_cli_error",
+          "preceding_attributes_or_context": [
+            "/// It deliberately asserts on the TYPED classification rather than on an exit",
+            "/// code: every value in `0..=255` is a legal guest status, so no exit code can",
+            "/// separate these classes without colliding with some guest.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5018,
+          "name": "a_guest_cannot_escape_the_deterministic_pipe_capacity_pin",
+          "preceding_attributes_or_context": [
+            "/// success and a 1 MiB pipe; on a host with the common hardened 65536 the same",
+            "/// guest got EPERM and kept 8192. Same binary, same `--strict`, different answer",
+            "/// per host.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5097,
+          "name": "a_guest_side_fault_is_not_reported_as_a_hermit_internal_failure",
+          "preceding_attributes_or_context": [
+            "///",
+            "/// Measured before the fix, at main `b97a4bc3a4`: `/no/such/program` and an",
+            "/// unwritable `--log-file` both returned 125 with the same class.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5237,
+          "name": "record_classifies_a_gdbserver_replay_stage_container_child_failure",
+          "preceding_attributes_or_context": [
+            "/// can run Python. No production change, no new injector, and no external",
+            "/// process supervision: the kill is issued from inside the run being tested and",
+            "/// the same `-ex` sequence then shuts GDB down.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5395,
+          "name": "record_classifies_a_replay_stage_container_child_failure",
+          "preceding_attributes_or_context": [
+            "/// accept is satisfied long before the kill. It will keep passing after the hang",
+            "/// is fixed, which is correct for a coverage test and is exactly why the hang",
+            "/// needs its own.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5409,
+          "name": "children_of",
+          "preceding_attributes_or_context": [
+            "    // instant, with the child plainly alive: `children` across every task read",
+            "    // `[]` while a ppid scan found it. The first version of this test used",
+            "    // `children`, found nothing on five runs out of five, and reported \"no",
+            "    // container child appeared\" about a child that was there."
+          ]
+        },
+        {
+          "line": 5571,
+          "name": "record_classifies_a_container_child_failure_the_same_way_run_does",
+          "preceding_attributes_or_context": [
+            "/// `record_classifies_a_gdbserver_replay_stage_container_child_failure` pins",
+            "/// `:660` by killing from inside GDB and then quitting it. All six sites are",
+            "/// covered; this test carries four of them.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5649,
+          "name": "every_record_container_site_classifies_a_child_fault_by_name",
+          "preceding_attributes_or_context": [
+            "/// because each `run_guarded` forks a fresh child and the injector runs in the",
+            "/// CHILD, so a static counter resets every time. The label is identity, which is",
+            "/// the thing whose absence made these sites untestable.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5690,
+          "name": "a_fault_aimed_at_no_existing_site_fires_nowhere",
+          "preceding_attributes_or_context": [
+            "/// therefore fault NOTHING: the recording completes and no internal-failure class is",
+            "/// printed. That is what distinguishes \"the fault was aimed\" from \"the fault always",
+            "/// fires\".",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5749,
+          "name": "no_container_site_is_unreachable_by_the_fault_injector",
+          "preceding_attributes_or_context": [
+            "/// [`FAULT_SITES_DRIVEN_ELSEWHERE`] with a reason. A site added without a row",
+            "/// fails THIS test by name, at the moment it is added, rather than being",
+            "/// untestable by default and noticed years later.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5835,
+          "name": "a_guest_exiting_a_reserved_status_is_not_reported_as_hermit",
+          "preceding_attributes_or_context": [
+            "/// The discriminator is the MARKER, never the code: every value in `0..=255` is a",
+            "/// legal guest status, so a bare code cannot separate these and a test asserting",
+            "/// only the code would pass while the defect was live.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5906,
+          "name": "a_signal_killed_container_reports_a_signal_death_not_a_refusal",
+          "preceding_attributes_or_context": [
+            "/// sentence said otherwise for three heads after the cell existed, which",
+            "/// agent(hermit-005)'s codex lane caught. The two cells exercise DIFFERENT",
+            "/// producers and both are needed -- that is why this one is still here.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5992,
+          "name": "sigint_instakill_reports_a_signal_death_not_a_policy_refusal",
+          "preceding_attributes_or_context": [
+            "/// matches the searching process's own command line -- three probes for this test",
+            "/// signalled themselves before this was written, one of them exiting 130 from its",
+            "/// own SIGINT and looking briefly like a product result.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 5993,
+          "name": "parent_of",
+          "preceding_attributes_or_context": [
+            "/// signalled themselves before this was written, one of them exiting 130 from its",
+            "/// own SIGINT and looking briefly like a product result.",
+            "#[test]",
+            "fn sigint_instakill_reports_a_signal_death_not_a_policy_refusal() {"
+          ]
+        },
+        {
+          "line": 6002,
+          "name": "children_of",
+          "preceding_attributes_or_context": [
+            "            .nth(1)?",
+            "            .parse()",
+            "            .ok()",
+            "    }"
+          ]
+        },
+        {
+          "line": 6111,
+          "name": "wait_bounded",
+          "preceding_attributes_or_context": [
+            "/// itself in one line. Raised by agent(hermit-006) and agent(hermit-007).",
+            "///",
+            "/// The child is killed on expiry so the failure is a named red and leaves nothing",
+            "/// running."
+          ]
+        },
+        {
+          "line": 6151,
+          "name": "drain_bounded",
+          "preceding_attributes_or_context": [
+            "/// indefinitely \u2014 after the child has been waited for and after the test believes",
+            "/// it is finished. Bounding the WAIT and leaving the DRAIN unbounded moves the",
+            "/// hang one line down rather than removing it. Found by agent(hermit-005)'s codex",
+            "/// lane."
+          ]
+        },
+        {
+          "line": 6191,
+          "name": "record_reports_an_unsupported_syscall_as_a_refusal_not_an_internal_failure",
+          "preceding_attributes_or_context": [
+            "/// `shutdown_on_unsupported_syscall`, so the STATUS carries the meaning. Record mode",
+            "/// sets `exit_on_unsupported_syscall` instead and returns a typed error, producing no",
+            "/// status of its own \u2014 which is why the two spellings of one policy disagreed.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6250,
+          "name": "a_stopped_stderr_reader_does_not_hang_hermit_on_its_way_out",
+          "preceding_attributes_or_context": [
+            "/// delivered bytes were NOT a prefix of the true text -- 92 good bytes followed",
+            "/// by the tail of the panic message, which reads as a complete short error",
+            "/// rather than a severed one.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6367,
+          "name": "the_stderr_diagnostic_deadline_fits_inside_the_unwind_grace",
+          "preceding_attributes_or_context": [
+            "/// Raising either side alone now fails HERE, by name, instead of silently",
+            "/// producing an inner bound that cannot fit inside its outer one. That is the",
+            "/// third instance of this shape found on 2026-08-26; see docs/TIMEOUT_LADDER.md.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6404,
+          "name": "diagnostics_survive_a_nonblocking_stderr_under_back_pressure",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6526,
+          "name": "run_timeout_session_of",
+          "preceding_attributes_or_context": [
+            "///",
+            "/// The comm field is parenthesised and may itself contain spaces and",
+            "/// parentheses, so it is skipped from the LAST `)`. `session` is the sixth",
+            "/// field overall, i.e. index 3 after `state`."
+          ]
+        },
+        {
+          "line": 6535,
+          "name": "run_timeout_pids_in_session",
+          "preceding_attributes_or_context": [
+            "",
+            "/// Every live pid in `session`: the outer `hermit`, the container init, and the",
+            "/// guest. Scanning the SESSION rather than a pid is what lets the test see a",
+            "/// process that was reparented away from us."
+          ]
+        },
+        {
+          "line": 6552,
+          "name": "spawn_timed_run",
+          "preceding_attributes_or_context": [
+            "/// Its own session so the test can account for every process the run creates,",
+            "/// including one that outlives its parent and is reparented to host PID 1 --",
+            "/// which is precisely the residue this bound exists to prevent and which a",
+            "/// parent-child check cannot see."
+          ]
+        },
+        {
+          "line": 6585,
+          "name": "run_timeout_fires_by_name_and_unwinds_the_container",
+          "preceding_attributes_or_context": [
+            "/// the class string would pass over a hermit that printed the right words and",
+            "/// left the guest spinning -- the out-of-disk incident's exact shape. So this",
+            "/// asserts on process liveness directly.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6664,
+          "name": "run_timeout_leaves_a_guest_that_finishes_in_time_alone",
+          "preceding_attributes_or_context": [
+            "/// Without this direction the cell above is satisfied by a `--timeout` that",
+            "/// simply kills every run, which would be a strictly worse product than having",
+            "/// no flag at all.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6711,
+          "name": "run_timeout_fallback_fires_when_the_unwind_does_not_finish",
+          "preceding_attributes_or_context": [
+            "/// `classify_container_result` had no arm for that status, and the run reported",
+            "/// exit 125 `class=container-child-exit` -- \"hermit broke\" -- for a bound doing",
+            "/// its job. That is why `HERMIT_DEADLINE_EXIT` and its arm exist.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6809,
+          "name": "run_timeout_refuses_backends_where_it_cannot_bound_the_run",
+          "preceding_attributes_or_context": [
+            "/// from working, and dbt still accepted the flag and ran unbounded. Same shape",
+            "/// as the `--namespace-only` second launch path. Move the check back into",
+            "/// `run()` and this cell fails on dbt while the others still pass.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 6879,
+          "name": "the_stderr_deadline_is_spent_once_across_writes_not_restarted_by_each",
+          "preceding_attributes_or_context": [
+            "/// Only ONE process reports here: a missing guest fails before the container init",
+            "/// is forked. The real-guest case costs twice this, which is why the derivation in",
+            "/// `detcore/src/util.rs` divides by two.",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/hermit_modes.rs",
+      "functions": [
+        {
+          "line": 58,
+          "name": "name",
+          "preceding_attributes_or_context": [
+            "    Verify,",
+            "}",
+            "",
+            "impl RunMode {"
+          ]
+        },
+        {
+          "line": 68,
+          "name": "command_output",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 83,
+          "name": "hermit_run_lock",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 89,
+          "name": "execution_root_args",
+          "preceding_attributes_or_context": [
+            "        .lock()",
+            "        .unwrap_or_else(|poisoned| poisoned.into_inner())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 102,
+          "name": "configure_execution_root",
+          "preceding_attributes_or_context": [
+            "        )),",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 109,
+          "name": "minimal_execution_root_args",
+          "preceding_attributes_or_context": [
+            "        .unwrap_or_else(|error| panic!(\"PATH-CONTRACT: {error}\"));",
+            "    command.args(args);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 117,
+          "name": "compile_c",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    Ok(args)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 133,
+          "name": "compile_c_without_libc",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"C workload compilation\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 143,
+          "name": "compile_rust",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"C workload compilation without libc\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 157,
+          "name": "cargo_guest_workloads",
+          "preceding_attributes_or_context": [
+            "#[path = \"../../ci/cargo-guest-binaries.rs\"]",
+            "mod cargo_guests;",
+            "use cargo_guests::CARGO_GUEST_BINARIES;",
+            ""
+          ]
+        },
+        {
+          "line": 185,
+          "name": "workload",
+          "preceding_attributes_or_context": [
+            "        })",
+            "        .collect()",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 193,
+          "name": "workloads",
+          "preceding_attributes_or_context": [
+            "        args: &[],",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 352,
+          "name": "hermit_command",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 358,
+          "name": "hermit_command_with_execution_root",
+          "preceding_attributes_or_context": [
+            "    hermit_command_with_execution_root(base_env, requested.as_deref())",
+            "        .unwrap_or_else(|error| panic!(\"PATH-CONTRACT: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 371,
+          "name": "verify_guest_command",
+          "preceding_attributes_or_context": [
+            "        .args(execution_root_args(requested_workdir)?);",
+            "    Ok(command)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 403,
+          "name": "read_verification_report",
+          "preceding_attributes_or_context": [
+            "        .arg(\"/tmp/guest\");",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 413,
+          "name": "verification_verdict",
+          "preceding_attributes_or_context": [
+            "    }))",
+            "    .unwrap_or_else(|error| panic!(\"verification report was not valid JSON: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 423,
+          "name": "remove_retained_verify_logs",
+          "preceding_attributes_or_context": [
+            "    )",
+            "    .expect(\"verification report verdict is not a known Verdict\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 431,
+          "name": "default_hermit_command",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 437,
+          "name": "hermit_run",
+          "preceding_attributes_or_context": [
+            "    command.args([\"--no-sequentialize-threads\", \"--no-deterministic-io\"]);",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 462,
+          "name": "run_stable_matrix",
+          "preceding_attributes_or_context": [
+            "        &format!(\"{} mode for {}\", mode.name(), workload.name),",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 469,
+          "name": "run_buck_chaos_workload",
+          "preceding_attributes_or_context": [
+            "        hermit_run(mode, workload);",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 499,
+          "name": "pinned_root_arguments_are_exact_and_fail_closed",
+          "preceding_attributes_or_context": [
+            "    command_output(command, &format!(\"Buck chaos mode for {}\", workload.name));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 562,
+          "name": "chaos_buck_nanosleep_parallel",
+          "preceding_attributes_or_context": [
+            "// prerequisite selection once that policy is decided.",
+            "#[test]",
+            "#[ignore = \"known PMU chaos failure; tracked by #2791\"]",
+            "// TODO(#2791): The workload fails after an interrupted nanosleep reports EINTR."
+          ]
+        },
+        {
+          "line": 569,
+          "name": "chaos_buck_mem_race",
+          "preceding_attributes_or_context": [
+            "",
+            "#[test]",
+            "#[ignore = \"known PMU chaos no-verdict; tracked by #2791\"]",
+            "// TODO(#2791): The workload produced no verdict within its 300-second bound."
+          ]
+        },
+        {
+          "line": 574,
+          "name": "default_mode_matrix",
+          "preceding_attributes_or_context": [
+            "    run_buck_chaos_workload(\"rust_mem_race\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 579,
+          "name": "resource_syscalls_are_deterministic_across_five_runs",
+          "preceding_attributes_or_context": [
+            "    run_stable_matrix(RunMode::Default);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 625,
+          "name": "run_default_workload",
+          "preceding_attributes_or_context": [
+            "        }",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 637,
+          "name": "run_bounded_sabre_strict_verify",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-1023): Review the SaBRe exit-group teardown regression."
+          ]
+        },
+        {
+          "line": 716,
+          "name": "sabre_exit_group_cancels_parked_futex_thread",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 728,
+          "name": "sabre_exec_pipeline_preserves_blocking_pipe_semantics",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-1154): Review the SaBRe fork/exec pipe-state regression.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 740,
+          "name": "sabre_timeout_observes_child_exit_before_virtual_alarm",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 749,
+          "name": "sabre_root_exit_with_orphan_child_is_bounded",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 758,
+          "name": "sabre_ignored_sigchld_does_not_block_parent_timer",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 770,
+          "name": "sabre_ignored_blocked_sigchld_external_wait_does_not_block_alarm",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 841,
+          "name": "default_cargo_bind_connect_race",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"racy default mode can block in Hermit's connect emulation\"]"
+          ]
+        },
+        {
+          "line": 847,
+          "name": "default_cargo_clock_total_order",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"default mode can block in clock total-order scheduling\"]"
+          ]
+        },
+        {
+          "line": 852,
+          "name": "default_minimal_hello",
+          "preceding_attributes_or_context": [
+            "    run_default_workload(\"rustbin_clock_total_order\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 858,
+          "name": "default_lit_networking",
+          "preceding_attributes_or_context": [
+            "    run_default_workload(\"pread64_nostdlib\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 880,
+          "name": "default_exit_codes",
+          "preceding_attributes_or_context": [
+            "    assert!(diagnostics.contains(\":::1299\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 904,
+          "name": "default_virtualized_uname",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 916,
+          "name": "default_cat_issue",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 925,
+          "name": "default_bind_mounts",
+          "preceding_attributes_or_context": [
+            "    assert!(!output.stdout.is_empty());",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 949,
+          "name": "default_preserved_tmpfs",
+          "preceding_attributes_or_context": [
+            "    command_output(command, \"tmpfs bind mounts\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 964,
+          "name": "default_environment_selection",
+          "preceding_attributes_or_context": [
+            "    assert!(guest_tmp.join(\"two.txt\").is_file());",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 991,
+          "name": "no_hardware_minimal_hello_backtraces",
+          "preceding_attributes_or_context": [
+            "    assert!(selected_stdout.lines().any(|line| line == \"FIXED_VALUE=33\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1033,
+          "name": "no_hardware_stacktrace_signal",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1068,
+          "name": "strict_mode_matrix",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1073,
+          "name": "chaos_mode_matrix",
+          "preceding_attributes_or_context": [
+            "    run_stable_matrix(RunMode::Strict);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1078,
+          "name": "verify_mode_matrix",
+          "preceding_attributes_or_context": [
+            "    run_stable_matrix(RunMode::Chaos);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1083,
+          "name": "verify_rejects_explicit_log_levels_below_info",
+          "preceding_attributes_or_context": [
+            "    run_stable_matrix(RunMode::Verify);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1109,
+          "name": "verify_reports_stdout_divergence",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1143,
+          "name": "verify_reports_exit_status_divergence",
+          "preceding_attributes_or_context": [
+            "    remove_retained_verify_logs(&stderr);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1178,
+          "name": "verify_verbose_compares_the_full_trace",
+          "preceding_attributes_or_context": [
+            "    remove_retained_verify_logs(&stderr);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1217,
+          "name": "verify_strict_info_reports_typed_memory_parity_on_landed_fixture",
+          "preceding_attributes_or_context": [
+            "    remove_retained_verify_logs(&stderr);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1312,
+          "name": "verify_honors_tmp_and_environment",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1356,
+          "name": "hello_race_chaos_verify",
+          "preceding_attributes_or_context": [
+            "    command_output(command, \"verify configuration\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/record_replay.rs",
+      "functions": [
+        {
+          "line": 35,
+          "name": "public_record_entry_points_do_not_start_a_nested_runtime",
+          "preceding_attributes_or_context": [
+            "static HERMIT_RECORD_LOCK: Mutex<()> = Mutex::new(());",
+            "static WORKLOADS: OnceLock<Vec<Workload>> = OnceLock::new();",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 55,
+          "name": "public_record_uses_the_completed_command_namespace_and_stdio",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 150,
+          "name": "public_record_replay_preserves_distinct_forked_child_streams",
+          "preceding_attributes_or_context": [
+            "    assert!(!captured.contains(\"unmounted-content\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 229,
+          "name": "public_record_replay_handles_a_deep_serial_fork_chain",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(replay.stdout, recording.stdout);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 301,
+          "name": "section_contents",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(replay.status, reverie::process::ExitStatus::Exited(0));",
+            "    assert_eq!(replay.stdout, recording.stdout);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 348,
+          "name": "command_output",
+          "preceding_attributes_or_context": [
+            "    name: &'static str,",
+            "    path: PathBuf,",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 363,
+          "name": "hermit_record_lock",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 369,
+          "name": "assert_recordings_equal_while_host_mountinfo_stable",
+          "preceding_attributes_or_context": [
+            "        .lock()",
+            "        .unwrap_or_else(|poisoned| poisoned.into_inner())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 424,
+          "name": "mountinfo_without_device_column",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    unreachable!()",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 445,
+          "name": "first_mountinfo_row_difference",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    Ok(normalized)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 462,
+          "name": "compile_c",
+          "preceding_attributes_or_context": [
+            "    }",
+            "    unreachable!(\"different mountinfo byte strings must have a differing row\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 474,
+          "name": "nix_rlibs",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "// Reuse Cargo's Nix artifact so this test can compile the existing Rust guest",
+            "// without a generated manifest edit or a recursive Cargo invocation."
+          ]
+        },
+        {
+          "line": 499,
+          "name": "compile_rust_clock",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    candidates",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 538,
+          "name": "cargo_record_workloads",
+          "preceding_attributes_or_context": [
+            "        failures.join(\"\\n\\n\")",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 570,
+          "name": "workloads",
+          "preceding_attributes_or_context": [
+            "        })",
+            "        .collect()",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 644,
+          "name": "workload",
+          "preceding_attributes_or_context": [
+            "        workloads",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 651,
+          "name": "record_replay_command",
+          "preceding_attributes_or_context": [
+            "        .find(|workload| workload.name == name)",
+            "        .unwrap_or_else(|| panic!(\"unknown record/replay workload: {name}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 655,
+          "name": "record_replay_strict_command",
+          "preceding_attributes_or_context": [
+            "fn record_replay_command(name: &str, program: &Path, args: &[&OsStr]) {",
+            "    record_replay_command_with_policy(name, program, args, false);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 659,
+          "name": "record_replay_command_with_policy",
+          "preceding_attributes_or_context": [
+            "fn record_replay_strict_command(name: &str, program: &Path, args: &[&OsStr]) {",
+            "    record_replay_command_with_policy(name, program, args, true);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 708,
+          "name": "canonical_record_replay_command",
+          "preceding_attributes_or_context": [
+            "        );",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 761,
+          "name": "record_then_replay_command",
+          "preceding_attributes_or_context": [
+            "            .is_some_and(|count| count > 0)",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 788,
+          "name": "record_then_mutate_and_replay_command",
+          "preceding_attributes_or_context": [
+            "        \"replayed guest stdout did not match the recording for {name}\"",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 832,
+          "name": "record_rejects_initial_executable_without_shebang",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 869,
+          "name": "replay_bootstrap_uses_snapshot_after_original_executable_is_removed",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 890,
+          "name": "replay_bootstrap_uses_recorded_custom_interpreter_after_host_mutation",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 923,
+          "name": "replay_bootstrap_records_relative_interpreter_from_symlink_cwd",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 968,
+          "name": "record_replay",
+          "preceding_attributes_or_context": [
+            "        },",
+            "    );",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 972,
+          "name": "run_record_replay",
+          "preceding_attributes_or_context": [
+            "fn record_replay(workload: &Workload) {",
+            "    record_replay_command(workload.name, &workload.path, &[]);",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 978,
+          "name": "record_strict_direct_cli_records_and_replays_echo",
+          "preceding_attributes_or_context": [
+            "    record_replay(workload(name));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1005,
+          "name": "record_proc_mountinfo_replays_the_captured_read_buffer",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1020,
+          "name": "record_proc_fdinfo_reuses_the_recording_mountinfo_identity_map",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1030,
+          "name": "record_mount_namespace_fdinfo_replays_the_observed_unlisted_identity",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1041,
+          "name": "independent_mountinfo_recordings_are_canonical",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1068,
+          "name": "independent_mountinfo_comparison_ignores_only_the_device_column",
+          "preceding_attributes_or_context": [
+            "    assert!(!text.contains(\"/.tmp\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1105,
+          "name": "record_start_preserves_ordered_nested_user_mounts",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1144,
+          "name": "record_start_ordered_var_then_nscd_keeps_run_nscd_hardening",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1206,
+          "name": "replay_output_sink_failure_aborts_once_without_guest_retry",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(replayed.stdout, recorded.stdout);",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1275,
+          "name": "replay_captured_output_ftruncate_failure_aborts_without_panicking",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1368,
+          "name": "recording_rejects_an_unsupported_syscall_by_name",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1408,
+          "name": "replay_rejects_an_unsupported_syscall_by_name",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1482,
+          "name": "record_replay_matrix",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1492,
+          "name": "record_reopened_inherited_and_cloned_file_state",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1511,
+          "name": "record_regular_file_lseek_seek_cur",
+          "preceding_attributes_or_context": [
+            "/// in the replay root and is served as a virtual placeholder on replay -- the",
+            "/// descriptor shape that triggered the bug. Without the fix this aborts replay",
+            "/// with a divergence panic; with it, record and replay stdout match.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1525,
+          "name": "record_find_directory_tree",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1548,
+          "name": "record_mkdir_and_rmdir_side_effects",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1566,
+          "name": "record_nested_mkdir_side_effects",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1587,
+          "name": "record_mkdir_eexist_materialization_semantics",
+          "preceding_attributes_or_context": [
+            "/// Exercises the replay-only distinction between an EEXIST directory and an",
+            "/// EEXIST file/symlink, including Linux's symlink-before-`..` resolution order",
+            "/// and mkdirat's absolute-path rule that ignores an unusable dirfd.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1636,
+          "name": "record_writable_filesystem_side_effects",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1654,
+          "name": "record_mkfifo_in_replay_tmp",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1677,
+          "name": "record_shell_forked_external_command",
+          "preceding_attributes_or_context": [
+            "/// previously contained only the root executable, so the forked child's",
+            "/// `execve` failed with `ENOENT` and the guest desynchronized (it took its",
+            "/// exec-failure path and issued an extra `newfstatat`).",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1708,
+          "name": "record_shell_relative_child_script",
+          "preceding_attributes_or_context": [
+            "/// but the replayed `execveat` must retain the original relative pathname. The",
+            "/// recorder therefore snapshots the resolved script and its shebang/ELF",
+            "/// interpreter chain at the corresponding absolute guest destination.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1743,
+          "name": "record_exec_symlink_before_parent_resolution",
+          "preceding_attributes_or_context": [
+            "/// Linux follows an encountered symlink before applying a later `..`. A",
+            "/// lexical collapse would incorrectly stage `a/prog`; the actual target here is",
+            "/// `resolved/prog`.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1779,
+          "name": "record_exec_failure_then_temporal_path_reuse",
+          "preceding_attributes_or_context": [
+            "/// Failed execs must not prepopulate a later pathname. The same pathname is",
+            "/// then successfully executed twice with different contents, proving snapshots",
+            "/// are associated with the matching successful event rather than globally.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1818,
+          "name": "record_shell_sigpipe_pipeline",
+          "preceding_attributes_or_context": [
+            "/// effect of a recorded write returning EPIPE. Returning the recorded errno",
+            "/// without executing the write left `yes` alive after `head` exited, causing",
+            "/// excess output and a replay hang.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1849,
+          "name": "record_shell_pipeline_stdout_matches",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1873,
+          "name": "record_large_captured_output_does_not_deadlock",
+          "preceding_attributes_or_context": [
+            "",
+            "// AUTONOMOUS-BOT-IMPLEMENTED",
+            "// TODO-HUMAN-REVIEW(PR-696): Review same-executor replay output backpressure coverage.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1903,
+          "name": "record_shell_command_substitution_stdout_matches",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1923,
+          "name": "record_shell_redirected_stdout_stays_hidden",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1940,
+          "name": "record_shell_original_output_aliases_and_swaps",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1962,
+          "name": "record_node_eventfd_epoll_sequence",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 1992,
+          "name": "record_sqlite_memory_query",
+          "preceding_attributes_or_context": [
+            "/// realigned the stream; this test exercises the real `sqlite3` binary",
+            "/// end-to-end so that regression is caught with the actual workload (the",
+            "/// synthetic `c_recvmsg_scm_rights_mmap` guest covers only the mechanism).",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2013,
+          "name": "record_timeout_kills_guest_without_committing_partial_data",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2051,
+          "name": "timeout_recording_command",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "/// Builds a `hermit record start --record-timeout` command for a guest that",
+            "/// never exits on its own, so the deadline must terminate it."
+          ]
+        },
+        {
+          "line": 2064,
+          "name": "count_tmp_partials",
+          "preceding_attributes_or_context": [
+            "        .args(guest);",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 2076,
+          "name": "record_timeout_fires_even_when_sigalrm_is_blocked",
+          "preceding_attributes_or_context": [
+            "/// deadline. The precise arm/drop mask handling is covered by the",
+            "/// `recording_deadline_manages_sigalrm_mask` unit test; this test locks in the",
+            "/// observable guarantee that a blocked caller mask still yields a timeout.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2125,
+          "name": "record_timeout_preserves_existing_last",
+          "preceding_attributes_or_context": [
+            "",
+            "/// A recording that times out must never disturb a previously committed",
+            "/// recording: `last` and the existing recording directory must be preserved.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2185,
+          "name": "record_timeout_terminates_descendant_processes",
+          "preceding_attributes_or_context": [
+            "/// deadline. Exiting PID 1 collapses the recording namespace, so the whole",
+            "/// process tree dies and `record start` returns promptly instead of hanging on",
+            "/// the surviving descendant.",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2237,
+          "name": "record_pidfd_open_modeled_descriptor_ops",
+          "preceding_attributes_or_context": [
+            "/// The `--verify` path records then replays and asserts the two agree, which is",
+            "/// the record/replay witness the earlier `hermit run --verify`-only coverage",
+            "/// lacked (that path never exercises the recorder/replayer at all).",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2244,
+          "name": "record_poll_partial_revents_copyout",
+          "preceding_attributes_or_context": [
+            "    record_replay(workload(\"c_pidfd_poll_self\"));",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2254,
+          "name": "record_ppoll_partial_revents_and_timeout_copyout",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2264,
+          "name": "record_poll_invalid_nfds_preserves_einval",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 2280,
+          "name": "record_timer_slack_proc_read_write",
+          "preceding_attributes_or_context": [
+            "/// read/pread and pre-snapshot lseek must remain entirely virtual, then one",
+            "/// timer-slack scalar must compose across proc read/write and prctl access in",
+            "/// both phases.",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/analyze.rs",
+      "functions": [
+        {
+          "line": 51,
+          "name": "command_output",
+          "preceding_attributes_or_context": [
+            "    racewrite_nostdlib: PathBuf,",
+            "    nanosleep_nocrash: PathBuf,",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 66,
+          "name": "analyze_lock",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 72,
+          "name": "add_calibrated_skid_margin",
+          "preceding_attributes_or_context": [
+            "        .lock()",
+            "        .unwrap_or_else(|poisoned| poisoned.into_inner())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 90,
+          "name": "repository",
+          "preceding_attributes_or_context": [
+            "    eprintln!(\"{label}: using calibrated PMU skid margin {margin} RCB\");",
+            "    command.arg(format!(\"--run-arg=--skid-margin={margin}\"));",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 96,
+          "name": "compile_c_pthread",
+          "preceding_attributes_or_context": [
+            "        .parent()",
+            "        .expect(\"hermit-cli should be inside the repository\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 106,
+          "name": "compile_c_without_libc",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"C workload compilation\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 116,
+          "name": "compile_rust",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"C workload compilation without libc\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 126,
+          "name": "workloads",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"Rust workload compilation\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 163,
+          "name": "run_analyze",
+          "preceding_attributes_or_context": [
+            "///",
+            "/// Mirrors `tests/util/hermit_analyze_test.sh`: `--analyze-seed=0 --search`,",
+            "/// then a chaotic run with a tight preemption timeout so the search has enough",
+            "/// scheduling change points to expose the race."
+          ]
+        },
+        {
+          "line": 200,
+          "name": "run_analyze_expect_baseline_collision",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "/// Exercises analyze's fail-closed endpoint check for a workload whose target",
+            "/// outcome now also occurs under the non-chaos baseline schedule."
+          ]
+        },
+        {
+          "line": 237,
+          "name": "analyze_hello_race",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"slow: bisecting chaos schedules; requires PMU branch counters and working mount namespaces\"]"
+          ]
+        },
+        {
+          "line": 248,
+          "name": "analyze_racewrite_nostdlib",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"slow: bisecting chaos schedules; requires PMU branch counters and working mount namespaces\"]"
+          ]
+        },
+        {
+          "line": 267,
+          "name": "analyze_nanosleep_threads_rejects_indistinguishable_baseline",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"slow: bisecting chaos schedules; requires PMU branch counters and working mount namespaces\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/stress_suite.rs",
+      "functions": [
+        {
+          "line": 94,
+          "name": "hermit_run_lock",
+          "preceding_attributes_or_context": [
+            "    Clean,",
+            "    Exposed,",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 100,
+          "name": "command_output",
+          "preceding_attributes_or_context": [
+            "        .lock()",
+            "        .unwrap_or_else(|poisoned| poisoned.into_inner())",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 115,
+          "name": "compile_rust",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 128,
+          "name": "compile_c",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"stress guest compilation\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 141,
+          "name": "chaos_demo_binary",
+          "preceding_attributes_or_context": [
+            "        .arg(output);",
+            "    command_output(command, \"chaos demo guest compilation\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 153,
+          "name": "stress_binaries",
+          "preceding_attributes_or_context": [
+            "        output",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 170,
+          "name": "timed_hermit_command",
+          "preceding_attributes_or_context": [
+            "        StressBinaries { concurrency, cas }",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 178,
+          "name": "stress_command",
+          "preceding_attributes_or_context": [
+            "        .arg(env!(\"CARGO_BIN_EXE_hermit\"));",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 196,
+          "name": "chaos_demo_command",
+          "preceding_attributes_or_context": [
+            "        .arg(threads.to_string());",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 215,
+          "name": "chaos_demo_command_targeted",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "/// Like [`chaos_demo_command`] but always in chaos mode, optionally enabling",
+            "/// targeted chaos (`--chaos-target-races`)."
+          ]
+        },
+        {
+          "line": 233,
+          "name": "run_chaos_demo_targeted",
+          "preceding_attributes_or_context": [
+            "    command.arg(chaos_demo_binary());",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 250,
+          "name": "run_chaos_demo",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 270,
+          "name": "run_guest",
+          "preceding_attributes_or_context": [
+            "    );",
+            "    output",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 292,
+          "name": "count_exposures",
+          "preceding_attributes_or_context": [
+            "        ),",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 305,
+          "name": "chaos_finds_and_reproduces_order_violation",
+          "preceding_attributes_or_context": [
+            "        .count()",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 339,
+          "name": "targeted_chaos_finds_order_violation_at_least_as_often",
+          "preceding_attributes_or_context": [
+            "/// order-violation race in at least as many seeds as uniform chaos, while",
+            "/// remaining reproducible under a fixed seed.",
+            "#[test]",
+            "#[ignore = \"explicit fast stress tier\"]"
+          ]
+        },
+        {
+          "line": 373,
+          "name": "fast_chaos_matrix",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"explicit fast stress tier\"]"
+          ]
+        },
+        {
+          "line": 410,
+          "name": "slow_race_matrix",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"explicit slow stress tier\"]"
+          ]
+        },
+        {
+          "line": 426,
+          "name": "publish_ordering_schedule_command",
+          "preceding_attributes_or_context": [
+            "        );",
+            "    }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 445,
+          "name": "schedule_bisect_localizes_publish_ordering_race",
+          "preceding_attributes_or_context": [
+            "    command",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 514,
+          "name": "cas_search_command",
+          "preceding_attributes_or_context": [
+            "    assert!(!report[\"critical_event1\"][\"stack\"].is_null());",
+            "    assert!(!report[\"critical_event2\"][\"stack\"].is_null());",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 531,
+          "name": "cas_replay_command",
+          "preceding_attributes_or_context": [
+            "        .arg(&stress_binaries().cas);",
+            "    command",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 549,
+          "name": "slow_cas_search_and_replay",
+          "preceding_attributes_or_context": [
+            "}",
+            "",
+            "#[test]",
+            "#[ignore = \"explicit PMU-dependent slow stress tier\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_cli.rs",
+      "functions": [
+        {
+          "line": 4,
+          "name": "run",
+          "preceding_attributes_or_context": [
+            "use std::process::Command;",
+            "use std::process::Output;",
+            ""
+          ]
+        },
+        {
+          "line": 12,
+          "name": "conventional_help_is_successful_and_consistent",
+          "preceding_attributes_or_context": [
+            "        .expect(\"failed to execute verification-report\")",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 36,
+          "name": "missing_arguments_remain_a_refusal",
+          "preceding_attributes_or_context": [
+            "    assert_eq!(short.stdout, long.stdout, \"-h and --help must agree\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 45,
+          "name": "no_result_prints_the_typed_cause",
+          "preceding_attributes_or_context": [
+            "    assert!(stderr.contains(\"usage:\"), \"{stderr}\");",
+            "    assert!(output.stdout.is_empty(), \"{output:?}\");",
+            "}",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 82,
+          "name": "no_result_prints_explicit_absence_without_calling_it_omission",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 120,
+          "name": "duplicate_report_fields_are_a_refusal_with_no_inspection_output",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "functions": [
+        {
+          "line": 101,
+          "name": "root",
+          "preceding_attributes_or_context": [
+            "        minimum_invocations: 1,",
+            "    },",
+            "];",
+            ""
+          ]
+        },
+        {
+          "line": 105,
+          "name": "temporary_directory",
+          "preceding_attributes_or_context": [
+            "fn root() -> PathBuf {",
+            "    PathBuf::from(env!(\"CARGO_MANIFEST_DIR\")).join(\"..\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 121,
+          "name": "write_executable",
+          "preceding_attributes_or_context": [
+            "const ARTIFACT_CONSUMER_ENTRY_MARKER: &str = \"HERMIT_ARTIFACT_CONSUMER_ENTRY_MARKER\";",
+            "const ARTIFACT_CONSUMER_MODE: &str = \"artifact\";",
+            "const STANDALONE_CARGO_MODE: &str = \"standalone-cargo\";",
+            ""
+          ]
+        },
+        {
+          "line": 127,
+          "name": "run_artifact_consumer",
+          "preceding_attributes_or_context": [
+            "    fs::set_permissions(path, fs::Permissions::from_mode(0o755))",
+            "        .unwrap_or_else(|error| panic!(\"make {} executable: {error}\", path.display()));",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 142,
+          "name": "copy_binary_only_bundle",
+          "preceding_attributes_or_context": [
+            "        .output()",
+            "        .expect(\"run the integration-test consumer through the artifact wrapper\")",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 153,
+          "name": "immutable_artifact_controls_a_real_integration_consumer",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 314,
+          "name": "measured_match",
+          "preceding_attributes_or_context": [
+            "",
+            "    fs::remove_dir_all(temporary).expect(\"remove artifact-contract temporary directory\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 355,
+          "name": "current_synthetic_match",
+          "preceding_attributes_or_context": [
+            "        \"first_divergent_right_message\": null",
+            "    })",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 372,
+          "name": "write_report",
+          "preceding_attributes_or_context": [
+            "    report[\"compared_log_messages\"] = serde_json::json!({\"left\": 2, \"right\": 2});",
+            "    report",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 376,
+          "name": "verdict",
+          "preceding_attributes_or_context": [
+            "fn write_report(path: &Path, report: &Value) {",
+            "    fs::write(path, format!(\"{report}\\n\")).expect(\"write verification report\");",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 385,
+          "name": "every_named_consumer_delegates_to_the_shared_typed_reader",
+          "preceding_attributes_or_context": [
+            "        .expect(\"run verification-report\")",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 421,
+          "name": "current_match_and_a_typed_verdict_mutation_bracket_every_consumer",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 497,
+          "name": "current_shape_and_canonical_evidence_fail_by_name",
+          "preceding_attributes_or_context": [
+            "    fs::remove_dir_all(temporary).expect(\"remove temporary directory\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 543,
+          "name": "json_output_retains_failure_evidence_without_satisfying_a_match_requirement",
+          "preceding_attributes_or_context": [
+            "    fs::remove_dir_all(temporary).expect(\"remove temporary directory\");",
+            "}",
+            "",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "functions": [
+        {
+          "line": 16,
+          "name": "schedule",
+          "preceding_attributes_or_context": [
+            "",
+            "const PASSING_SCHEDULE: &str = \"flaky_cas_sequence_schedules-passing.json\";",
+            "const FAILING_SCHEDULE: &str = \"flaky_cas_sequence_schedules-failing.json\";",
+            ""
+          ]
+        },
+        {
+          "line": 24,
+          "name": "hermit_verify",
+          "preceding_attributes_or_context": [
+            "        .join(\"hermit-cli/test-resources\")",
+            "        .join(name)",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 31,
+          "name": "assert_success",
+          "preceding_attributes_or_context": [
+            "        .output()",
+            "        .unwrap_or_else(|error| panic!(\"failed to run hermit-verify with {args:?}: {error}\"))",
+            "}",
+            ""
+          ]
+        },
+        {
+          "line": 42,
+          "name": "help_lists_verification_and_trace_commands",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 60,
+          "name": "schedule_diff_reports_stable_trace_distances",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 86,
+          "name": "schedule_inspect_reports_context_switches_per_thread",
+          "preceding_attributes_or_context": [
+            "    );",
+            "}",
+            "",
+            "#[test]"
+          ]
+        },
+        {
+          "line": 112,
+          "name": "schedule_print_filters_thread_and_strips_times",
+          "preceding_attributes_or_context": [
+            "    }",
+            "}",
+            "",
+            "#[test]"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/BUCK",
+      "functions": []
+    },
+    {
+      "path": "tests/helpers.bzl",
+      "functions": []
+    }
+  ]
+}

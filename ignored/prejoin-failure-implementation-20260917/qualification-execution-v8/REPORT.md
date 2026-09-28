@@ -1,0 +1,7 @@
+All original 22 static integration methods are now accepted on committed 12d4ce8c: 21 first attempts and one explicitly recorded retry after observer accounting refusal. The original stage 07 refusal remains refused. The continuation ran exactly original 07–22; it did not repeat the six already accepted methods or any library methods. No product assertion failed, no source/helper changed and no resource bound increased.
+
+The 16 continuation services used 5.877769 CPU seconds and 16.883891692 summed observed stage wall seconds. Accepted evidence across all 22 methods totals 8.410475 CPU seconds and 25.211394556 summed observed stage wall seconds; the refused attempt is separate. Every accepted stage has actual API 12 admission, REVERIE_REQUIRE_KVM=1, exact named output, expected recursive summary counts, complete accounting and two fresh inactive/empty readbacks.
+
+The original ten-mode diagnostic method, all 17 leader methods and all four terminal-fork methods are retained. Original child writes, status 0, wait events, typed diagnostic and distinct cleanup assertions passed. Exact stdout/stderr, source/258 inputs, emitted ELF and admission records are bound. Raw output is bounded and untruncated.
+
+The separate complete serial library run passed all 454 methods first attempt and already includes the selected native/four-VM population. The historical 426/1 futex timing failure remains unexplained; prior 450/3 and all observer refusals remain retained. This is Reverie component qualification, not Hermit INFO, determinism or canonical parity evidence.

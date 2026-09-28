@@ -1,0 +1,72 @@
+{
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "bytes": 64373,
+      "mode": "0o644",
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7",
+      "base_sha256": "d71983ee9819ffcb47317a2c7fbdf65e9e70aacdd0d43bd558f48262ceffede2",
+      "v2_sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1393581,
+      "mode": "0o644",
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1",
+      "base_sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878",
+      "v2_sha256": "513b0b7f88440e76f2f0a5c84a396a5b3c8db87eade2486ede92847e12848b25"
+    },
+    {
+      "path": "reverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "mode": "0o644",
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3",
+      "base_sha256": null,
+      "v2_sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "bytes": 1594,
+      "mode": "0o644",
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9",
+      "base_sha256": "b53231138434831d7ce1d08d2e770b336a31a96eda9516e3696b882a7b7633e0",
+      "v2_sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9"
+    },
+    {
+      "path": "reverie-kvm/src/memory.rs",
+      "bytes": 55591,
+      "mode": "0o644",
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6",
+      "base_sha256": "228ed762dda6b892286149757530d2a6e55539e0898721e255642b32c4ec708c",
+      "v2_sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6"
+    },
+    {
+      "path": "reverie-kvm/src/proc_mounts.rs",
+      "bytes": 2674,
+      "mode": "0o644",
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494",
+      "base_sha256": null,
+      "v2_sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    }
+  ],
+  "candidate_patch_sha256": "ec9fb3eba2bbf5788d7f3bcde5a9e726488e9f0fa94956148adb5b70331019a7",
+  "candidate_patch_bytes": 116153,
+  "delta_from_v2_sha256": "107d8831058583ac92ad706c8608d8c245b81a08368cde8a06eea321693bb877",
+  "selected_test_count": 37,
+  "new_test_count": 17,
+  "tracked_source_manifest_sha256": "1d16067b6d63962afa58c64b44bdeb26da936f17dc4e0aa756b995096eb87253",
+  "checks": {
+    "artifact_rustfmt_exit": 0,
+    "build": "not run",
+    "tests": "not run",
+    "guest": "not run"
+  },
+  "no_publication": true,
+  "live_source_still_v2": true,
+  "status": "ignored-only test correction, not applied or executed",
+  "preserved_v2_failure_readback_sha256": "1fbfab914d5a454c02e442fe287a5bc235007a38a02f446f2cd04b1afea00ae5",
+  "only_changed_test": "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned"
+}

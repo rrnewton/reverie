@@ -1,0 +1,34 @@
+{
+  "prepared_at": "2026-09-17T08:33:30.003171+00:00",
+  "input_count": 80,
+  "source_copy_count": 25,
+  "evidence_copy_count": 37,
+  "all_input_bytes_modes_verified": true,
+  "both_full_patches_reconstructed_against_immutable_bases": true,
+  "normal_AU_make_validate": "pending; not included in frozen inputs",
+  "no_review_execution_yet": true,
+  "identity": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "head": "1145835fc804f47ae48b29b89009e6937184175a",
+      "tree": "e470a86697cbb9590c23d45ee5fab9ade12aab01",
+      "changed": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_lifecycle.py"
+      ],
+      "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940"
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "recorded_results": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "a3e2f9",
+        "wall_time_seconds": 0.365720741,
+        "exit_code": 0,
+        "original_token_count": 15,
+        "output": "4866241e15c18bdbd717865c504b9facdcaf1ae0\trefs/heads/main\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "54cc3e",
+        "wall_time_seconds": 0.406947547,
+        "exit_code": 0,
+        "original_token_count": 1,
+        "output": "[]\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "4b0598",
+        "wall_time_seconds": 0.397602289,
+        "exit_code": 0,
+        "original_token_count": 164,
+        "output": "📊 Subtree — 0/1 complete (0%)\n\n  Tags: kvm (1)\n\nMission View (by execution phase)\n\nPhase 1 (Ready Now):\n  🏃 [P1] kvm-lane-to-full-determinism-and-parity \"KVM backend lane: drive to 100 percent determinism and 100 percent parity\" (i=50 e=1 v=5000) 📝 190 notes [in_progress] (owner: Ensure deterministic KVM parity | dev-hermit)\n\n\nLegend:\n  📍 Open  🏃 In Progress  ✅ Closed\n  i=impact  e=effort(days)  v=ROI(i/e×100)\n  Phase View: Tasks grouped by execution order\n  Phase 1 = ready now, Phase 2 = unblocked after Phase 1, etc.\n  Sorted by ROI within each phase (highest first)\n\n💡 Some tasks have descriptions. Use -v to show details.\n"
+      }
+    }
+  ],
+  "expected_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "observed_remote_main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "normal_push_only": true
+}

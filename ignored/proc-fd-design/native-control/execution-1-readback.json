@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "status": "observer prelaunch refusal",
+  "controller_exit_code": 1,
+  "controller_tool_wall_seconds": 0.10718524,
+  "plan_sha256": "5fef719f0b6fcc4f3e3da6731c6506d8349e89ebb1e4b034f74a0df12f0665b8",
+  "caller_sha256": "226c9e81245f5bfbc9dae065184138075ff300a830bd798e5298d639d9bef137",
+  "fixture_source_sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865",
+  "first_incomplete_stage": "compile",
+  "first_incomplete_native_case": null,
+  "native_cases_executed": [],
+  "native_cases_not_executed": [
+    "change-after-open",
+    "close-before-first-read",
+    "replace-before-first-read",
+    "partial-read-and-rewind",
+    "nonzero-seek-observation",
+    "positioned-read-regeneration",
+    "duplicate-description-buffer",
+    "vectored-first-read",
+    "fork-retains-original-task"
+  ],
+  "compiler_executed": false,
+  "native_executed": false,
+  "service_created": false,
+  "service_accounting": "Not applicable: observer refused at line318 before creating out or spawning safehermit at369; no unit identity or result exists.",
+  "observer_refusal": "observer evidence must be new and under its owned directory",
+  "observer_output_directory_exists": false,
+  "native_output_directory_exists": false,
+  "compiled_fixture_exists": false,
+  "all_bound_inputs_unchanged": true,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/compile-observer.stderr",
+      "bytes": 1277,
+      "sha256": "838ad1994483b655361c9f63a71335a4589c8e1443abcfdee753335267af7ddd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/compile-observer.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/launch.json",
+      "bytes": 765,
+      "sha256": "a4fb66da0ae27b7691945b08aceb65bdf6d12026a803af7e7bdf3278c9040fdb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/summary.json",
+      "bytes": 208,
+      "sha256": "1998333a4a4485bb29c557a0afefe9c0f7292448a241051e0d94480cb2ba1753"
+    }
+  ]
+}

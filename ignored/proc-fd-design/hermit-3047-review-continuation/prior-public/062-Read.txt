@@ -1,0 +1,122 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_013r4appSwsTKfxJvqbpx4G4",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_global.rs",
+    "offset": 319,
+    "limit": 110
+  }
+}
+
+Successful public tool result (exact text below):
+319	        else {
+320	            return false;
+321	        };
+322	        if *allow_visible_subsets {
+323	            mount_ids_are_ordered_subset(mountinfo_order, expected)
+324	        } else {
+325	            mountinfo_order == expected
+326	        }
+327	    }
+328	
+329	    fn determinize(&mut self, raw_mount_id: u64, mountinfo_order: Option<&[u64]>) -> Option<u64> {
+330	        // Linux uses zero for anonymous objects such as memfd. It is one
+331	        // equivalence class regardless of Detcore's descriptor classification.
+332	        if raw_mount_id == 0 {
+333	            return Some(0);
+334	        }
+335	        if let Some(order) = mountinfo_order {
+336	            if !self.validate_mountinfo_order(order) {
+337	                return None;
+338	            }
+339	        } else if matches!(self, Self::Uninitialized) {
+340	            return None;
+341	        }
+342	        let Self::Ready {
+343	            mount_ids,
+344	            unlisted_order,
+345	            next_mount_id,
+346	            ..
+347	        } = self
+348	        else {
+349	            return None;
+350	        };
+351	
+352	        if let Some(virtual_mount_id) = mount_ids.get(&raw_mount_id) {
+353	            return Some(*virtual_mount_id);
+354	        }
+355	        let virtual_mount_id = *next_mount_id;
+356	        *next_mount_id = next_mount_id.checked_add(1)?;
+357	        mount_ids.insert(raw_mount_id, virtual_mount_id);
+358	        unlisted_order.push(raw_mount_id);
+359	        Some(virtual_mount_id)
+360	    }
+361	
+362	    fn provenance(&self) -> Result<Option<MountIdentityProvenance>, &'static str> {
+363	        match self {
+364	            Self::Uninitialized => Ok(None),
+365	            Self::Invalid => Err("mount identity provenance is invalid"),
+366	            Self::Ready {
+367	                mountinfo_order,
+368	                unlisted_order,
+369	                ..
+370	            } => Ok(Some(MountIdentityProvenance {
+371	                mountinfo_order: mountinfo_order.clone(),
+372	                unlisted_order: unlisted_order.clone(),
+373	            })),
+374	        }
+375	    }
+376	}
+377	
+378	impl Default for DevicePool {
+379	    fn default() -> Self {
+380	        DevicePool::new()
+381	    }
+382	}
+383	
+384	impl DevicePool {
+385	    fn new() -> Self {
+386	        // Start at 1 so no file reports st_dev == 0, which some tools treat as
+387	        // "no device".
+388	        DevicePool {
+389	            devices: HashMap::new(),
+390	            next_device: 1,
+391	        }
+392	    }
+393	
+394	    /// Return the deterministic device id for `raw_device`, allocating a new one
+395	    /// (in first-observation order) the first time a raw device is seen.
+396	    fn determinize(&mut self, raw_device: u64) -> u64 {
+397	        match self.devices.get(&raw_device) {
+398	            Some(dev) => *dev,
+399	            None => {
+400	                let new = self.next_device;
+401	                self.next_device += 1;
+402	                self.devices.insert(raw_device, new);
+403	                new
+404	            }
+405	        }
+406	    }
+407	}
+408	
+409	/// Global state associated with the detcore tool.
+410	///
+411	/// This is a singleton, and the one object of this type lives inside a central
+412	/// address space, generally the "tracer" in a Reverie backend.
+413	#[derive(Debug)]
+414	pub struct GlobalState {
+415	    sched: Arc<Mutex<Scheduler>>,
+416	
+417	    inodes: Arc<Mutex<InodePool>>,
+418	
+419	    // AUTONOMOUS-BOT-IMPLEMENTED
+420	    // TODO-HUMAN-REVIEW(PR-1056): Deterministic st_dev remapping state.
+421	    devices: Arc<Mutex<DevicePool>>,
+422	
+423	    /// Shared fdinfo mount-ID equivalence classes for this Detcore run.
+424	    mount_ids: Mutex<MountIdPool>,
+425	
+426	    // next port to use if input port is 0
+427	    next_port: AtomicU16,
+428	

@@ -1,0 +1,46 @@
+{
+  "scope": "nine remaining weak matched consumers; source mapping only",
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/REPORT.md",
+      "bytes": 16449,
+      "sha256": "5fae5504402725ffcfcd425bf65876fbd03721e6c346d3127569f429b2ae6664"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/SOURCE-READBACK.json",
+      "bytes": 17785,
+      "sha256": "a40fa114fa9b55ce208e6ece1c172828a0dfc7c2ba2cccc256db1ac4e9eafe7c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/SOURCE-INPUTS.json",
+      "bytes": 1633,
+      "sha256": "cfedadd2cd0c5fcfeb6c5083ab20ac484305f5473e1c6a7a0858fd7d38b95e0d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/ADDITIONAL-INPUTS.json",
+      "bytes": 1892,
+      "sha256": "d3fad0b2c687c1ea0526a2fc4c9e90584610e08dfe043445a3602e05525262bb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/CONSUMER-PROPOSALS.json",
+      "bytes": 5046,
+      "sha256": "4d661177d5013e44f20870717f1f797a7b9dca81a14ccb44df239770e53da1e2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/REPORT.md",
+      "bytes": 12443,
+      "sha256": "9f85185c10ced9ada4b2aad084c8c1dad7f828bf1c2ddcfc21a38609bccb0c13"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/PACKET.json",
+      "bytes": 8759,
+      "sha256": "141f60be301376bc1010e37d613196eb78e7d804c95490f87ab009297cceeff1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/CONSUMER-MAP.json",
+      "bytes": 6871,
+      "sha256": "5e3033f3cd7848ba16b3969d73dad5610da6144c9bbac978a52d576acffaa8ce"
+    }
+  ],
+  "no_product_mutation_or_execution": true
+}

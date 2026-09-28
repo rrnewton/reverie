@@ -1,0 +1,33 @@
+{
+  "name": "cc-file-liblto_plugin.so",
+  "argv": [
+    "/usr/bin/cc",
+    "-print-file-name=liblto_plugin.so"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up",
+  "pid": 1705587,
+  "exit_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.0022805570624768734,
+  "cpu_seconds": 0.0012520000000000031,
+  "bounds": {
+    "cpu_seconds_per_process": 5,
+    "wall_seconds": 15,
+    "address_space_bytes": 1073741824,
+    "file_bytes_per_stream": 1048576,
+    "core_bytes": 0
+  },
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea",
+  "streams": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/cc-file-liblto_plugin.so/stdout",
+      "bytes": 17,
+      "sha256": "e61d1920cff4bb9b068cbccb2a60eece6dae52589ce0ee997bfa260101f4f4bf"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/cc-file-liblto_plugin.so/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

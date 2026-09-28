@@ -1,0 +1,1001 @@
+diff --git a/ci/compat/corpus-strict.json b/ci/compat/corpus-strict.json
+index a78f59d4e..67313c7e4 100644
+--- a/ci/compat/corpus-strict.json
++++ b/ci/compat/corpus-strict.json
+@@ -510,7 +510,9 @@
+    "argv": [
+     "bash",
+     "-c",
+-    "bzip2 -c {{REAL_COMPAT_FIXTURES}}/README.md | sha256sum"
++    "set -euo pipefail; bzip2 -c \"$1\" | sha256sum",
++    "compat-bzip2",
++    "{{REAL_COMPAT_FIXTURES}}/README.md"
+    ]
+   },
+   {
+@@ -518,7 +520,9 @@
+    "argv": [
+     "bash",
+     "-c",
+-    "gzip -cn {{REAL_COMPAT_FIXTURES}}/README.md | sha256sum"
++    "set -euo pipefail; gzip -cn \"$1\" | sha256sum",
++    "compat-gzip",
++    "{{REAL_COMPAT_FIXTURES}}/README.md"
+    ]
+   },
+   {
+@@ -526,7 +530,9 @@
+    "argv": [
+     "bash",
+     "-c",
+-    "xz -c {{REAL_COMPAT_FIXTURES}}/README.md | sha256sum"
++    "set -euo pipefail; xz -c \"$1\" | sha256sum",
++    "compat-xz",
++    "{{REAL_COMPAT_FIXTURES}}/README.md"
+    ]
+   },
+   {
+@@ -534,7 +540,9 @@
+    "argv": [
+     "bash",
+     "-c",
+-    "zstd -q -c {{REAL_COMPAT_FIXTURES}}/README.md | sha256sum"
++    "set -euo pipefail; zstd -q -c \"$1\" | sha256sum",
++    "compat-zstd",
++    "{{REAL_COMPAT_FIXTURES}}/README.md"
+    ]
+   },
+   {
+diff --git a/ci/dag/validate.json b/ci/dag/validate.json
+index 7133f77f8..0f9e66a86 100644
+--- a/ci/dag/validate.json
++++ b/ci/dag/validate.json
+@@ -7821,7 +7821,7 @@
+       "env": {
+         "HERMIT_E2E_EMPTY_WORKDIR": "/test",
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "694",
++        "NEXTEST_EXPECTED_EXECUTED": "697",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends,kvm-native-test-support\",\"--lib\",\"--bins\"]"
+       },
+       "networkonly": false,
+@@ -7870,7 +7870,7 @@
+       "env": {
+         "HERMIT_E2E_EMPTY_WORKDIR": "/test",
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "698",
++        "NEXTEST_EXPECTED_EXECUTED": "701",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit-detcore\",\"--lib\",\"--bins\"]"
+       },
+       "networkonly": false,
+@@ -23283,7 +23283,7 @@
+         "full",
+         "portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'bzip2 -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; bzip2 -c \"$1\" | sha256sum' compat-bzip2 \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures",
+@@ -23318,7 +23318,7 @@
+         "full",
+         "portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'gzip -cn $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; gzip -cn \"$1\" | sha256sum' compat-gzip \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures",
+@@ -23353,7 +23353,7 @@
+         "full",
+         "portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'xz -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; xz -c \"$1\" | sha256sum' compat-xz \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures",
+@@ -23388,7 +23388,7 @@
+         "full",
+         "portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'zstd -q -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; zstd -q -c \"$1\" | sha256sum' compat-zstd \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures",
+@@ -29982,7 +29982,7 @@
+       "labels": [
+         "portable-strict-compat-only"
+       ],
+-      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''bzip2 -c $VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md | sha256sum'\\'' </dev/null'",
++      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''set -euo pipefail; bzip2 -c \"$1\" | sha256sum'\\'' compat-bzip2 \"$VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md\" </dev/null'",
+       "result_manifests": [],
+       "deps": [
+         "build.rust_scripts_in_pinned_root",
+@@ -30018,7 +30018,7 @@
+       "labels": [
+         "portable-strict-compat-only"
+       ],
+-      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''gzip -cn $VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md | sha256sum'\\'' </dev/null'",
++      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''set -euo pipefail; gzip -cn \"$1\" | sha256sum'\\'' compat-gzip \"$VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md\" </dev/null'",
+       "result_manifests": [],
+       "deps": [
+         "build.rust_scripts_in_pinned_root",
+@@ -30054,7 +30054,7 @@
+       "labels": [
+         "portable-strict-compat-only"
+       ],
+-      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''xz -c $VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md | sha256sum'\\'' </dev/null'",
++      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''set -euo pipefail; xz -c \"$1\" | sha256sum'\\'' compat-xz \"$VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md\" </dev/null'",
+       "result_manifests": [],
+       "deps": [
+         "build.rust_scripts_in_pinned_root",
+@@ -30090,7 +30090,7 @@
+       "labels": [
+         "portable-strict-compat-only"
+       ],
+-      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''zstd -q -c $VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md | sha256sum'\\'' </dev/null'",
++      "cmd": "./ci/hermetic/run-in-pinned-root.sh --src . --out ignored/hermetic/split --src-rw --cargo-home ignored/hermetic/split/cargo --env CARGO_BUILD_JOBS --env CI --env DAGRUN_STEP_STARTED_MONOTONIC_NS --env E2E_BUILD_ROOT --env E2E_KERNEL_VERSION --env E2E_MACHINE_SHORTNAME --env E2E_RESULT_ROOT --env E2E_RUN_ID --env HERMIT_E2E_EMPTY_WORKDIR --env HERMIT_TEST_CPU_TIMEOUT_MULTIPLIER --env HERMIT_TEST_WALL_TIMEOUT_MULTIPLIER --env HERMIT_VALIDATE_HOST_CAPABILITY_PRESENT --env L4_REPS --env NEXTEST_TEST_THREADS --env PR_NUMBER --env SUPER_REPETITIONS --env THIRD_PARTY_BUILD_JOBS --env VALIDATE_RUN_STATE --env VALIDATE_VERBOSITY -- bash -c '/src/ci/hermetic/assert-no-network.sh && /src/ci/hermetic/assert-build-dependencies.sh && hermit_payload=$1 && shift && if [ \"$#\" -gt 0 ]; then printf -v hermit_extra '\\'' %q'\\'' \"$@\"; hermit_payload+=$hermit_extra; fi && exec bash -c \"$hermit_payload\"' bash 'export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c '\\''set -euo pipefail; zstd -q -c \"$1\" | sha256sum'\\'' compat-zstd \"$VALIDATE_RUN_STATE/portablecompat/real-compat-fixtures/README.md\" </dev/null'",
+       "result_manifests": [],
+       "deps": [
+         "build.rust_scripts_in_pinned_root",
+@@ -36750,7 +36750,7 @@
+       "labels": [
+         "strict-compat-only"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'bzip2 -c $VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; bzip2 -c \"$1\" | sha256sum' compat-bzip2 \"$VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "strictcompatprep.fixtures"
+@@ -36782,7 +36782,7 @@
+       "labels": [
+         "strict-compat-only"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'gzip -cn $VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; gzip -cn \"$1\" | sha256sum' compat-gzip \"$VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "strictcompatprep.fixtures"
+@@ -36814,7 +36814,7 @@
+       "labels": [
+         "strict-compat-only"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'xz -c $VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; xz -c \"$1\" | sha256sum' compat-xz \"$VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "strictcompatprep.fixtures"
+@@ -36846,7 +36846,7 @@
+       "labels": [
+         "strict-compat-only"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'zstd -q -c $VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/release/hermit run --strict --verify --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; zstd -q -c \"$1\" | sha256sum' compat-zstd \"$VALIDATE_RUN_STATE/strictcompat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "strictcompatprep.fixtures"
+@@ -61877,7 +61877,7 @@
+       ],
+       "env": {
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "694",
++        "NEXTEST_EXPECTED_EXECUTED": "697",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends,kvm-native-test-support\",\"--lib\",\"--bins\"]"
+       },
+       "networkonly": false,
+@@ -61923,7 +61923,7 @@
+       ],
+       "env": {
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "698",
++        "NEXTEST_EXPECTED_EXECUTED": "701",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit-detcore\",\"--lib\",\"--bins\"]"
+       },
+       "networkonly": false,
+@@ -64273,7 +64273,7 @@
+       "labels": [
+         "hosted-portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'bzip2 -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; bzip2 -c \"$1\" | sha256sum' compat-bzip2 \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures_on_host",
+@@ -64307,7 +64307,7 @@
+       "labels": [
+         "hosted-portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'gzip -cn $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; gzip -cn \"$1\" | sha256sum' compat-gzip \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures_on_host",
+@@ -64341,7 +64341,7 @@
+       "labels": [
+         "hosted-portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'xz -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; xz -c \"$1\" | sha256sum' compat-xz \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures_on_host",
+@@ -64375,7 +64375,7 @@
+       "labels": [
+         "hosted-portable"
+       ],
+-      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'zstd -q -c $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum' </dev/null",
++      "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; $PWD/target/ci/hermit-strict run --strict --verify --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled --mount=type=tmpfs,target=/test --workdir=/test --env TMPDIR=/tmp -- bash -c 'set -euo pipefail; zstd -q -c \"$1\" | sha256sum' compat-zstd \"$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md\" </dev/null",
+       "result_manifests": [],
+       "deps": [
+         "compatprep.fixtures_on_host",
+diff --git a/ci/manifest-plan/src/validation_dag_static.rs b/ci/manifest-plan/src/validation_dag_static.rs
+index 3637aee22..7dfc4a7c5 100644
+--- a/ci/manifest-plan/src/validation_dag_static.rs
++++ b/ci/manifest-plan/src/validation_dag_static.rs
+@@ -203,8 +203,8 @@ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+     ("test.isolated_dbt_workdir", 2),
+     ("test.isolated_detcore_workdir", 1),
+     ("test.regular_crates", 508),
+-    ("test.hermit_unit", 694),
+-    ("test.detcore_unit", 698),
++    ("test.hermit_unit", 697),
++    ("test.detcore_unit", 701),
+     ("test.detcore_misc", 27),
+     ("test.detcore_parallel", 5),
+     ("test.hermit_integration", 158),
+@@ -230,9 +230,9 @@ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+     ("test.command_strict_verify_on_host", 9),
+     ("test.detcore_misc_on_host", 27),
+     ("test.detcore_parallel_on_host", 5),
+-    ("test.detcore_unit_on_host", 698),
++    ("test.detcore_unit_on_host", 701),
+     ("test.hermit_integration_on_host", 158),
+-    ("test.hermit_unit_on_host", 694),
++    ("test.hermit_unit_on_host", 697),
+     ("test.ignored_syscall_regressions_on_host", 4),
+     ("test.liteinst_strict_on_host", 24),
+     ("test.regular_crates_on_host", 508),
+diff --git a/ci/run-with-reverie-dbt-budget.sh b/ci/run-with-reverie-dbt-budget.sh
+index f9675e6f8..2da74043b 100755
+--- a/ci/run-with-reverie-dbt-budget.sh
++++ b/ci/run-with-reverie-dbt-budget.sh
+@@ -292,6 +292,15 @@ fi
+ # Preserve CMAKE/CMAKE_GENERATOR selection, the 1050 effective-job-second
+ # threshold and the 16-job clamp. This is a source-identity carry,
+ # not a new timing calibration or Hermit guest result.
++# CARRY TO c8f4ca9d (2026-09-17): the landed KVM failure-notification repair
++# https://github.com/rrnewton/reverie/pull/577 preserves the SDK recipe from
++# 526c21cf: build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and
++# DynamoRIO vendor tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35 are identical.
++# Root Cargo.toml, rust-toolchain.toml and the third-party gitlink also match.
++# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset, retaining
++# SDK key 0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4,
++# the 16-job clamp and 1050 effective-job-second threshold. This is source
++# evidence for carrying the build budget, not a new timing or runtime result.
+ # CARRY TO 7d863ab3 (2026-09-17): the landed KVM cleanup correction
+ # https://github.com/rrnewton/reverie/pull/578 changes only reverie-kvm/src/vm.rs.
+ # The build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0, DynamoRIO
+diff --git a/detcore/src/lib.rs b/detcore/src/lib.rs
+index 464bcb41f..0b8016338 100644
+--- a/detcore/src/lib.rs
++++ b/detcore/src/lib.rs
+@@ -118,6 +118,7 @@ pub use scheduler::Priority;
+ pub use scheduler::runqueue::DEFAULT_PRIORITY;
+ pub use scheduler::runqueue::FIRST_PRIORITY;
+ pub use scheduler::runqueue::LAST_PRIORITY;
++pub use tool_global::BackendFailureCleanup;
+ pub use tool_global::GlobalState;
+ use tool_global::ThreadDeregistration;
+ use tool_global::acknowledge_robust_list_exit_time;
+diff --git a/detcore/src/tool_global.rs b/detcore/src/tool_global.rs
+index 79067dece..8d0c19e14 100644
+--- a/detcore/src/tool_global.rs
++++ b/detcore/src/tool_global.rs
+@@ -145,6 +145,14 @@ struct PendingExecState {
+     fd_blocking: ExecFdBlockingOverrides,
+ }
+ 
++/// Separate terminal cleanup outcomes; neither replaces the backend failure.
++pub struct BackendFailureCleanup {
++    /// Natural scheduler completion, retaining a task panic or cancellation.
++    pub scheduler: Result<(), tokio::task::JoinError>,
++    /// The requested partial recording's write result; no destination is success.
++    pub preemption_recording: Result<(), String>,
++}
++
+ #[derive(Clone, Copy)]
+ struct RpcIncarnation {
+     dettid: DetTid,
+@@ -703,6 +711,39 @@ impl GlobalState {
+         }
+     }
+ 
++    /// Consume failed-run state after the scheduler has naturally finished.
++    ///
++    /// A failed run has no successful run summary. Preserve the scheduler's
++    /// join error and any requested partial preemption recording's write error
++    /// for the caller, without allowing either to replace the backend failure.
++    pub async fn clean_up_after_backend_failure(mut self) -> BackendFailureCleanup {
++        let scheduler = if let Some(handle) = self.sched_handle.take() {
++            handle.await
++        } else {
++            Ok(())
++        };
++        // A scheduler panic can poison this mutex. Its JoinError is returned
++        // below; recovering only to finish output must not replace that error.
++        let writer = self
++            .sched
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .preemption_writer
++            .take();
++        let preemption_recording = if self.cfg.record_preemptions_to.is_some() {
++            writer.map_or(Ok(()), |writer| writer.flush())
++        } else {
++            // The writer's destination is fixed from this same configuration.
++            // In-memory-only recordings have no Drop write to finish.
++            drop(writer);
++            Ok(())
++        };
++        BackendFailureCleanup {
++            scheduler,
++            preemption_recording,
++        }
++    }
++
+     /// Shut down anything running, in particular wait on the scheduler.
+     ///
+     /// This is basically the destructor for the global state, but is here rather than in the
+@@ -880,7 +921,9 @@ impl GlobalTool for GlobalState {
+                     "deregistration must belong to its sender"
+                 );
+                 assert_eq!(owner.mm, request_mm, "deregistration must retain its MmId");
+-                if !sched.thread_was_registered(dtid) {
++                // DBT can reject StartNewThread before parent registration.
++                // Its tombstone still needs the existing final accounting path.
++                if !sched.thread_was_registered(dtid) && !sched.thread_is_logically_killed(dtid) {
+                     assert!(
+                         sched.backend_failed() || !owner.thread_start_entered,
+                         "a started thread must have a scheduler registration before deregistration"
+diff --git a/detcore/src/tool_global/tests/backend_failure_tests.rs b/detcore/src/tool_global/tests/backend_failure_tests.rs
+index 29b795c8a..929716888 100644
+--- a/detcore/src/tool_global/tests/backend_failure_tests.rs
++++ b/detcore/src/tool_global/tests/backend_failure_tests.rs
+@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicUsize;
+ use std::sync::atomic::Ordering;
+ use std::task::Context;
+ use std::task::Poll;
++use std::time::SystemTime;
+ 
+ use futures::Future;
+ use reverie::ExitStatus;
+@@ -527,6 +528,169 @@ async fn ordinary_unknown_started_owner_is_not_acknowledged_as_unstarted() {
+     unknown_deregistration(19, 19, 17, 17, true).await;
+ }
+ 
++#[tokio::test]
++async fn dbt_missing_physical_id_start_preserves_tombstone_deregistration_accounting() {
++    let config = Config {
++        sequentialize_threads: true,
++        cancel_killed_thread_rpcs: true,
++        backend_requires_thread_directed_process_signals: true,
++        ..Config::default()
++    };
++    let state = GlobalState::initialize(&config, false);
++    let tid = DetTid::from_raw(19);
++    let process = DetPid::from_raw(17);
++    let mm = MmId::initial(process);
++    // The parent process is already running while its new child's Start RPC
++    // races the parent's CreateChildThread. Only the child is unregistered.
++    state
++        .sched
++        .lock()
++        .unwrap()
++        .thread_tree
++        .add_child(process, process, true);
++    install_test_registration(&state, process, Ivar::new());
++    {
++        let sched = state.sched.lock().unwrap();
++        assert!(sched.thread_was_registered(process));
++        assert!(!sched.thread_was_registered(tid));
++    }
++    // Exercise the real DBT defensive refusal before CreateChildThread. Do
++    // not install the child registration or fabricate its logical tombstone.
++    let response = tokio::time::timeout(
++        Duration::from_millis(100),
++        state.receive_rpc(
++            Tid::from_raw(tid.as_raw()),
++            (
++                DetTime::new(&config),
++                mm,
++                GlobalRequest::StartNewThread(tid, process, None),
++            ),
++        ),
++    )
++    .await
++    .expect("a missing physical ID must not wait for parent registration");
++    assert_eq!(response, (None, GlobalResponse::ThreadExited));
++    {
++        let sched = state.sched.lock().unwrap();
++        assert!(!sched.backend_failed());
++        assert!(!sched.thread_was_registered(tid));
++        assert!(sched.thread_is_logically_killed(tid));
++    }
++    let before = serde_json::to_value(&*state.global_time.lock().unwrap()).unwrap();
++    let mut stats = TimesliceStats::default();
++    stats.record(7);
++    // Distinct final and duplicate payloads prove that the consuming RPC
++    // reaches existing accounting exactly once, rather than an early reply.
++    for count in [17, 99] {
++        let response = state
++            .receive_rpc(
++                Tid::from_raw(tid.as_raw()),
++                (
++                    DetTime::new(&config),
++                    mm,
++                    GlobalRequest::DeregisterThread(ThreadDeregistration {
++                        dettid: tid,
++                        detpid: process,
++                        mm,
++                        thread_start_entered: true,
++                        timeslice_stats: stats,
++                        syscall_count: count,
++                        chaos_epochs: Vec::new(),
++                    }),
++                ),
++            )
++            .await;
++        assert_eq!(response, (None, GlobalResponse::DeregisterThread(())));
++        let mut sched = state.sched.lock().unwrap();
++        assert!(!sched.note_deregistration_accounted(tid));
++        assert_eq!(sched.per_thread_timeslice.get(&tid), Some(&stats));
++        assert_eq!(sched.per_thread_syscalls.get(&tid), Some(&17));
++        assert!(!sched.next_turns.contains_key(&tid));
++        assert_eq!(sched.turn, 0);
++    }
++    assert_eq!(
++        serde_json::to_value(&*state.global_time.lock().unwrap()).unwrap(),
++        before
++    );
++}
++
++#[tokio::test]
++async fn backend_failure_cleanup_does_not_build_an_invalid_run_summary() {
++    let config = Config {
++        sequentialize_threads: true,
++        ..Config::default()
++    };
++    let future = SystemTime::now() + Duration::from_secs(60);
++    let mut premise = GlobalState::initialize(&config, false);
++    premise.realtime_start = future;
++    assert!(premise.into_run_summary().is_err());
++    let directory = tempfile::tempdir().unwrap();
++    let recording = directory.path().join("partial-preemptions.json");
++    let config = Config {
++        record_preemptions: true,
++        record_preemptions_to: Some(recording.clone()),
++        ..config
++    };
++    let mut state = GlobalState::initialize(&config, true);
++    state.realtime_start = future;
++    let tid = DetTid::from_raw(17);
++    let time = LogicalTime::from_nanos(37);
++    {
++        let mut sched = state.sched.lock().unwrap();
++        let writer = sched.preemption_writer.as_mut().unwrap();
++        writer.register_thread(tid, DEFAULT_PRIORITY);
++        writer.insert_reprioritization(tid, time, 23, DEFAULT_PRIORITY, DEFAULT_PRIORITY + 1);
++    }
++    assert!(!recording.exists());
++    state.report_backend_failure(failure(tid));
++    let cleanup = tokio::time::timeout(
++        Duration::from_millis(100),
++        state.clean_up_after_backend_failure(),
++    )
++    .await
++    .expect("the failed daemon must finish naturally");
++    assert!(cleanup.scheduler.is_ok());
++    assert!(cleanup.preemption_recording.is_ok());
++    let actual: crate::preemptions::PreemptionRecord =
++        serde_json::from_slice(&std::fs::read(recording).unwrap()).unwrap();
++    actual.validate().unwrap();
++    let mut expected = crate::preemptions::ThreadHistory::new()
++        .with_prio_changes(vec![(time, DEFAULT_PRIORITY)])
++        .with_preemption_rcbs(vec![23]);
++    expected.final_prio = DEFAULT_PRIORITY + 1;
++    assert_eq!(
++        actual.extract_all(),
++        std::collections::BTreeMap::from([(tid, expected)])
++    );
++    assert!(actual.schedevents().is_empty());
++}
++
++#[tokio::test]
++async fn backend_failure_cleanup_retains_panicked_scheduler_and_recording_error() {
++    let directory = tempfile::tempdir().unwrap();
++    let config = Config {
++        sequentialize_threads: true,
++        record_preemptions: true,
++        record_preemptions_to: Some(directory.path().to_path_buf()),
++        ..Config::default()
++    };
++    let mut state = GlobalState::initialize(&config, false);
++    let sched = state.sched.clone();
++    state.sched_handle = Some(tokio::spawn(async move {
++        let _lock = sched.lock().unwrap();
++        panic!("scheduler cleanup control");
++    }));
++    let cleanup = tokio::time::timeout(
++        Duration::from_millis(100),
++        state.clean_up_after_backend_failure(),
++    )
++    .await
++    .expect("the owned task must finish without an abort");
++    assert!(cleanup.scheduler.unwrap_err().is_panic());
++    assert!(cleanup.preemption_recording.is_err());
++    assert!(directory.path().is_dir());
++}
++
+ #[tokio::test]
+ #[should_panic(expected = "deregistration must belong to its sender")]
+ async fn unstarted_cleanup_rejects_another_senders_identity() {
+diff --git a/hermit-cli/src/kvm_failure_tests.rs b/hermit-cli/src/kvm_failure_tests.rs
+index fce2dd4ad..42b14d136 100644
+--- a/hermit-cli/src/kvm_failure_tests.rs
++++ b/hermit-cli/src/kvm_failure_tests.rs
+@@ -37,6 +37,14 @@ async fn kvm_failed_completion_cleans_unstarted_scheduler_and_retains_typed_caus
+     .await
+     .expect("failure completion must naturally finish the daemon");
+     let error = result.expect_err("failure is not a guest status");
++    assert!(
++        format!("Error: {error}")
++            .lines()
++            .next()
++            .unwrap()
++            .contains("KVM guest execution failed: invalid KVM root guest PID -17"),
++        "the manifest runner retains only the first Error line"
++    );
+     let backend = error
+         .downcast_ref::<reverie_kvm::Error>()
+         .expect("typed backend cause");
+@@ -70,6 +78,158 @@ async fn kvm_normal_completion_preserves_status_and_output() {
+             .unwrap(),
+         (37, b"stdout\n".to_vec(), b"stderr\n".to_vec()),
+     );
++
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("summary.json");
++    let completion = reverie_kvm::ToolRunCompletion {
++        global_state: detcore::GlobalState::init_global_state(&config).await,
++        result: Ok((37, b"stdout\n".to_vec(), b"stderr\n".to_vec())),
++    };
++    assert_eq!(
++        finish_kvm_tool_completion(completion, false, &Some(path.clone()))
++            .await
++            .unwrap(),
++        (37, b"stdout\n".to_vec(), b"stderr\n".to_vec()),
++    );
++    let bytes = std::fs::read(path).unwrap();
++    let summary: detcore_model::summary::RunSummary = serde_json::from_slice(&bytes).unwrap();
++    assert_eq!(
++        bytes,
++        (serde_json::to_string_pretty(&summary).unwrap() + "\n").as_bytes()
++    );
++}
++
++#[tokio::test]
++async fn kvm_failed_completion_never_publishes_a_success_summary() {
++    let directory = tempfile::tempdir().unwrap();
++    let absent = directory.path().join("absent.json");
++    let existing = directory.path().join("existing.json");
++    std::fs::write(&existing, b"existing summary\n").unwrap();
++    let unwritable = directory.path().join("directory");
++    std::fs::create_dir(&unwritable).unwrap();
++    for path in [&absent, &existing, &unwritable] {
++        let config = DetConfig {
++            sequentialize_threads: true,
++            ..DetConfig::default()
++        };
++        let global_state = detcore::GlobalState::init_global_state(&config).await;
++        global_state.report_backend_failure(reverie::BackendFailure {
++            pid: reverie::Pid::from_raw(17),
++            tid: reverie::Pid::from_raw(18),
++            phase: "failed summary publication control",
++        });
++        let completion = reverie_kvm::ToolRunCompletion {
++            global_state,
++            result: Err(reverie_kvm::Error::InvalidGuestPid(-17)),
++        };
++        let error = tokio::time::timeout(
++            Duration::from_millis(100),
++            finish_kvm_tool_completion(completion, true, &Some(path.clone())),
++        )
++        .await
++        .expect("failure cleanup must finish naturally")
++        .expect_err("an unwritable summary must not replace the backend failure");
++        assert!(matches!(
++            error.downcast_ref::<reverie_kvm::Error>(),
++            Some(reverie_kvm::Error::InvalidGuestPid(-17))
++        ));
++        assert_eq!(
++            error.to_string(),
++            "KVM guest execution failed: invalid KVM root guest PID -17"
++        );
++    }
++    assert!(!absent.exists());
++    assert_eq!(std::fs::read(existing).unwrap(), b"existing summary\n");
++    assert!(unwritable.is_dir());
++    assert_eq!(std::fs::read_dir(unwritable).unwrap().count(), 0);
++}
++
++#[tokio::test]
++async fn kvm_failed_completion_preserves_requested_partial_preemption_recording() {
++    let directory = tempfile::tempdir().unwrap();
++    let writable = directory.path().join("preemptions.json");
++    let unwritable = directory.path().join("directory");
++    std::fs::create_dir(&unwritable).unwrap();
++    for path in [None, Some(writable.clone()), Some(unwritable.clone())] {
++        let config = DetConfig {
++            sequentialize_threads: true,
++            record_preemptions: true,
++            record_preemptions_to: path.clone(),
++            ..DetConfig::default()
++        };
++        let global_state = detcore::GlobalState::init_global_state(&config).await;
++        global_state.report_backend_failure(reverie::BackendFailure {
++            pid: reverie::Pid::from_raw(17),
++            tid: reverie::Pid::from_raw(18),
++            phase: "partial preemption recording control",
++        });
++        let completion = reverie_kvm::ToolRunCompletion {
++            global_state,
++            result: Err(reverie_kvm::Error::InvalidGuestPid(-17)),
++        };
++        let error = tokio::time::timeout(
++            Duration::from_millis(100),
++            finish_kvm_tool_completion(completion, false, &None),
++        )
++        .await
++        .expect("failure cleanup must finish naturally")
++        .expect_err("recording cleanup must retain the backend failure");
++        assert!(matches!(
++            error.downcast_ref::<reverie_kvm::Error>(),
++            Some(reverie_kvm::Error::InvalidGuestPid(-17))
++        ));
++        assert_eq!(
++            error.to_string(),
++            "KVM guest execution failed: invalid KVM root guest PID -17"
++        );
++        assert_eq!(
++            format!("{error:#}").contains("partial preemption recording failed:"),
++            path.as_ref() == Some(&unwritable)
++        );
++    }
++    let bytes = std::fs::read(writable).unwrap();
++    let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
++    assert!(unwritable.is_dir());
++}
++
++#[tokio::test]
++async fn kvm_failure_error_retains_scheduler_recording_and_primary_causes() {
++    let scheduler = tokio::spawn(async { panic!("scheduler cleanup control") })
++        .await
++        .expect_err("the control must supply a real JoinError");
++    let error = kvm_execution_error(
++        reverie_kvm::Error::InvalidGuestPid(-17),
++        Some(detcore::BackendFailureCleanup {
++            scheduler: Err(scheduler),
++            preemption_recording: Err("recording control".to_owned()),
++        }),
++    );
++    assert_eq!(
++        error.to_string(),
++        "KVM guest execution failed: invalid KVM root guest PID -17"
++    );
++    assert!(matches!(
++        error.downcast_ref::<reverie_kvm::Error>(),
++        Some(reverie_kvm::Error::InvalidGuestPid(-17))
++    ));
++    assert!(
++        error
++            .downcast_ref::<tokio::task::JoinError>()
++            .unwrap()
++            .is_panic()
++    );
++    assert!(
++        format!("{error:#}").contains("partial preemption recording failed: recording control")
++    );
++    let unrecovered = kvm_execution_error(reverie_kvm::Error::InvalidGuestPid(-19), None);
++    assert_eq!(
++        unrecovered.to_string(),
++        "KVM guest execution failed: invalid KVM root guest PID -19"
++    );
++    assert!(matches!(
++        unrecovered.downcast_ref::<reverie_kvm::Error>(),
++        Some(reverie_kvm::Error::InvalidGuestPid(-19))
++    ));
+ }
+ 
+ #[cfg(feature = "kvm-native-test-support")]
+diff --git a/hermit-cli/src/lib.rs b/hermit-cli/src/lib.rs
+index 1290ae92a..771ee6980 100644
+--- a/hermit-cli/src/lib.rs
++++ b/hermit-cli/src/lib.rs
+@@ -2109,7 +2109,7 @@ async fn run_kvm(
+     let completion = backend
+         .run_static_elf_with_tool_completion::<Detcore>(config, capture_output)
+         .await
+-        .context("KVM guest execution failed before global state recovery")?;
++        .map_err(|error| kvm_execution_error(error, None))?;
+     let cleanup_started = Instant::now();
+     let result =
+         finish_kvm_tool_completion(completion, print_summary, print_summary_to_json_file).await;
+@@ -2153,11 +2153,41 @@ async fn finish_kvm_tool_completion(
+     print_summary: bool,
+     print_summary_to_json_file: &Option<PathBuf>,
+ ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+-    completion
+-        .global_state
+-        .clean_up(print_summary, print_summary_to_json_file)
+-        .await;
+-    completion.result.context("KVM guest execution failed")
++    match completion.result {
++        Ok(output) => {
++            completion
++                .global_state
++                .clean_up(print_summary, print_summary_to_json_file)
++                .await;
++            Ok(output)
++        }
++        Err(error) => {
++            let cleanup = completion
++                .global_state
++                .clean_up_after_backend_failure()
++                .await;
++            Err(kvm_execution_error(error, Some(cleanup)))
++        }
++    }
++}
++
++fn kvm_execution_error(
++    primary: reverie_kvm::Error,
++    cleanup: Option<detcore::BackendFailureCleanup>,
++) -> Error {
++    // The manifest runner retains the first Error line. Keep the cause there,
++    // as well as the typed backend and optional scheduler errors in the chain.
++    let message = format!("KVM guest execution failed: {primary}");
++    let mut error = Error::new(primary);
++    if let Some(cleanup) = cleanup {
++        if let Err(recording) = cleanup.preemption_recording {
++            error = error.context(format!("partial preemption recording failed: {recording}"));
++        }
++        if let Err(scheduler) = cleanup.scheduler {
++            error = error.context(scheduler);
++        }
++    }
++    error.context(message)
+ }
+ 
+ #[cfg(test)]
+diff --git a/scripts/validate.rs b/scripts/validate.rs
+index fbd075e39..c30a36362 100755
+--- a/scripts/validate.rs
++++ b/scripts/validate.rs
+@@ -9187,6 +9187,207 @@ fn compat_fixture_operand_bracket(root: &Path, committed: &[&Step]) -> Result<St
+     Ok("compat fixture operand: constructed + committed chown/install preserve clean guest environment, literal paths, owner/mode/size; old expansion and missing fixture fail".into())
+ }
+ 
++/// A digest of empty input is a successful hash operation, not proof that its
++/// compressor succeeded. Run the actual generated guest argv under Minimal's
++/// cleared environment and compare against independently compressed real input.
++fn compat_compression_fixture_bracket(root: &Path, committed: &[&Step]) -> Result<String, String> {
++    use std::os::unix::process::CommandExt;
++
++    let fixture = tempfile::Builder::new()
++        .prefix("validate-compression-operand-")
++        .tempdir()
++        .map_err(|error| format!("compression fixture: create tempdir: {error}"))?;
++    let run_state = fixture.path().join("run state ' \" \\ $missing `false`");
++    let fixtures = run_state.join("strict-compat/real-compat-fixtures");
++    let failed_producers = fixture.path().join("failed-producers");
++    for path in [&fixtures, &failed_producers] {
++        std::fs::create_dir_all(path)
++            .map_err(|error| format!("compression fixture: create directory: {error}"))?;
++    }
++    let readme = fixtures.join("README.md");
++    let input = std::fs::read(root.join("README.md"))
++        .map_err(|error| format!("compression fixture: read real README: {error}"))?;
++    if input.is_empty() {
++        return Err("compression fixture: the positive input is empty".into());
++    }
++    std::fs::write(&readme, &input)
++        .map_err(|error| format!("compression fixture: write README: {error}"))?;
++    let root_text = root.to_string_lossy();
++    let fixtures_text = fixtures.to_string_lossy();
++    let tmp_text = fixture.path().to_string_lossy();
++    let paths = validate_corpus::CorpusPaths {
++        root_dir: &root_text,
++        real_compat_fixtures: &fixtures_text,
++        validation_tmp_dir: &tmp_text,
++        shell_build_dir: &tmp_text,
++    };
++    let compressors: [(&str, &[&str]); 4] = [
++        ("bzip2", &["-c"]),
++        ("gzip", &["-cn"]),
++        ("xz", &["-c"]),
++        ("zstd", &["-q", "-c"]),
++    ];
++    let only = compressors
++        .iter()
++        .map(|(label, _)| (*label).to_string())
++        .collect();
++    let constructed = validate_plan::compat_nodes_for(
++        root,
++        validate_plan::CompatMode::PortableStrict,
++        "fixture-hermit",
++        "unused",
++        &paths,
++        None,
++        Some(&only),
++        None,
++    )?;
++    let mut commands = Vec::new();
++    let empty_digest = format!("{:x}  -\n", Sha256::digest([]));
++    for (label, flags) in compressors {
++        let direct = Command::new(label)
++            .args(flags)
++            .arg(&readme)
++            .env_clear()
++            .env("PATH", "/usr/bin:/bin")
++            .output()
++            .map_err(|error| format!("compression fixture: launch {label}: {error}"))?;
++        if !direct.status.success() || direct.stdout.is_empty() || !direct.stderr.is_empty() {
++            return Err(format!(
++                "compression fixture: real {label} control failed: {direct:?}"
++            ));
++        }
++        let expected = format!("{:x}  -\n", Sha256::digest(&direct.stdout));
++        // Retain the precise old false-pass mechanism as a negative control:
++        // the absent guest variable loses its prefix and sha256sum masks rc 1.
++        let old = Command::new("bash")
++            .args(["-c", &format!(
++                "{label} {} $VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md | sha256sum",
++                flags.join(" ")
++            )])
++            .env_clear()
++            .env("PATH", "/usr/bin:/bin")
++            .output()
++            .map_err(|error| format!("compression fixture: old {label}: {error}"))?;
++        if !old.status.success() || old.stdout != empty_digest.as_bytes() || old.stderr.is_empty() {
++            return Err(format!(
++                "compression fixture: old {label} no longer reproduces the false pass: {old:?}"
++            ));
++        }
++        let stub = failed_producers.join(label);
++        std::fs::write(
++            &stub,
++            "#!/bin/sh\nprintf 'partial producer output\\n'\nexit 23\n",
++        )
++        .and_then(|()| std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)))
++        .map_err(|error| format!("compression fixture: failing producer: {error}"))?;
++        for (kind, nodes) in [
++            ("constructed", constructed.iter().collect::<Vec<_>>()),
++            ("committed", committed.to_vec()),
++        ] {
++            let node = nodes
++                .iter()
++                .find(|node| node.job == label)
++                .ok_or_else(|| format!("compression fixture: missing {kind} {label}"))?;
++            let (_, guest) = node.cmd.split_once(" -- ").ok_or_else(|| {
++                format!("compression fixture: missing guest boundary: {}", node.cmd)
++            })?;
++            // Observe actual outer-shell expansion, not substring presence in
++            // the whole command. A literal/comment mentioning a variable is not
++            // an environment dependency; a path hidden inside bash -c is not an
++            // expanded operand. NUL framing preserves spaces and metacharacters.
++            let expanded = Command::new("bash")
++                .args(["-eu", "-c", &format!("printf '%s\\0' {guest}")])
++                .env_clear()
++                .env("PATH", "/usr/bin:/bin")
++                .env("VALIDATE_RUN_STATE", &run_state)
++                .output()
++                .map_err(|error| format!("compression fixture: expand {kind} {label}: {error}"))?;
++            let argv = expanded
++                .stdout
++                .strip_suffix(&[0])
++                .ok_or_else(|| {
++                    format!("compression fixture: {kind} {label} has no final argv delimiter")
++                })?
++                .split(|byte| *byte == 0)
++                .map(|bytes| std::ffi::OsString::from(OsStr::from_bytes(bytes)))
++                .collect::<Vec<_>>();
++            if !expanded.status.success()
++                || !expanded.stderr.is_empty()
++                || argv.len() != 5
++                || argv[0] != "bash"
++                || argv[1] != "-c"
++                || argv[4] != readme.as_os_str()
++            {
++                return Err(format!(
++                    "compression fixture: {kind} {label} did not pass the actual fixture at the guest argv boundary: {expanded:?}"
++                ));
++            }
++            commands.push((kind, label, argv, expected.clone()));
++        }
++    }
++    let run = |argv: &[std::ffi::OsString], failed: bool, unreadable: bool| {
++        let path = if failed {
++            format!("{}:/usr/bin:/bin", failed_producers.display())
++        } else {
++            "/usr/bin:/bin".into()
++        };
++        let mut command = Command::new("/bin/bash");
++        command
++            .args(&argv[1..])
++            .env_clear()
++            .env("PATH", path)
++            .env("HOME", "/root")
++            .env("TMPDIR", fixture.path())
++            .current_dir("/");
++        // Root can read mode-000 files. A privileged self-test must exercise
++        // genuine denied access too, rather than skip or falsely pass this case.
++        if unreadable && unsafe { libc::geteuid() } == 0 {
++            command.gid(65534).uid(65534);
++        }
++        command
++            .output()
++            .map_err(|error| format!("compression fixture: launch guest: {error}"))
++    };
++    for (kind, label, argv, expected) in &commands {
++        let output = run(argv, false, false)?;
++        if !output.status.success()
++            || output.stdout != expected.as_bytes()
++            || !output.stderr.is_empty()
++        {
++            return Err(format!(
++                "compression fixture: {kind} {label} did not hash real compression: {output:?}, expected {expected:?}"
++            ));
++        }
++        let output = run(argv, true, false)?;
++        if output.status.code() != Some(23) {
++            return Err(format!(
++                "compression fixture: {kind} {label} hid a failed producer behind sha256sum: {output:?}"
++            ));
++        }
++    }
++    std::fs::set_permissions(&readme, std::fs::Permissions::from_mode(0o000))
++        .map_err(|error| format!("compression fixture: make unreadable: {error}"))?;
++    for (kind, label, argv, _) in &commands {
++        let output = run(argv, false, true)?;
++        if output.status.success() || output.stderr.is_empty() {
++            return Err(format!(
++                "compression fixture: {kind} {label} passed unreadable input: {output:?}"
++            ));
++        }
++    }
++    std::fs::remove_file(&readme)
++        .map_err(|error| format!("compression fixture: remove negative input: {error}"))?;
++    for (kind, label, argv, _) in &commands {
++        let output = run(argv, false, false)?;
++        if output.status.success() || output.stderr.is_empty() {
++            return Err(format!(
++                "compression fixture: {kind} {label} passed missing input: {output:?}"
++            ));
++        }
++    }
++    Ok("compression fixture: 4 old false passes reproduced; 8 constructed/committed argv preserve real input; 24 failed-producer/unreadable/missing cases fail".into())
++}
++
+ /// Exercise committed strict-compatibility nodes through the real outer
+ /// scheduler without running the corpus.
+ ///
+@@ -9273,6 +9474,7 @@ fn committed_validation_execution_bracket(root: &Path) -> Result<String, String>
+         );
+     }
+     println!("  {}", compat_fixture_operand_bracket(root, &probes)?);
++    println!("  {}", compat_compression_fixture_bracket(root, &probes)?);
+     let fixture_readme = "$VALIDATE_RUN_STATE/strict-compat/real-compat-fixtures/README.md";
+     let readme_labels = probes
+         .iter()

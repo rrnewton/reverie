@@ -1,0 +1,34 @@
+Do not treat fatal child cancellation as a cleanup failure
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Keep the original parent action error when an exactly owned, unstarted KVM
+child completes fatal-cancellation cleanup with only RunAborted. The parent
+has already retained and published the fatal error. Physical joins, consuming
+hooks, fatal child status and all real cleanup errors remain intact.
+Ordinary cancellation continues to propagate even a bare RunAborted.
+
+Task: kvm-lane-to-full-determinism-and-parity
+
+The first complete 453-method run on the preceding landed tree produced
+450 passes and three failures. Two original boundary-restoration controls
+mistook the derived child marker for a second cleanup failure. Preserve their
+direct InvalidGuestAddress requirement and strengthen it to the exact address
+and frame length. Correct the partial-start fixture to require the explicit
+CancelAfterFailure command after its lost gate, retaining all drain, registry
+and already-started-worker assertions and separate ordinary Cancel controls.
+
+Add an eight-case control through actual child cancellation, registry removal
+and owned OS-thread joins. It covers fork and Tool-thread ownership, ordinary
+and fatal commands, and bare versus aggregate errors; the original non-Clone
+HostIo cleanup Arc must survive unchanged.
+
+Validation: source review and diff checks completed; compilation, actual test
+inventories, complete serial library execution, original 22 static integration
+methods, workspace formatting and all-feature Clippy are recorded separately
+against this final commit before publication. Prior failures remain retained.
+The historical futex enrollment failure has not been explained; its four
+controls passed both the focused and current full-library attempts. No Hermit
+determinism, strict INFO or canonical cross-backend parity claim follows.

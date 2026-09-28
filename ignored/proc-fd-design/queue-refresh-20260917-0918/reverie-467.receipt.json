@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/pulls/467"
+  ],
+  "started_utc": "2026-09-17T09:46:57.623945+00:00",
+  "ended_utc": "2026-09-17T09:46:58.259335+00:00",
+  "wall_seconds": 0.6354297949001193,
+  "exit_code": 0,
+  "stdout_bytes": 24838,
+  "stderr_bytes": 0,
+  "stdout_sha256": "eef762a7bee1478bb1d070c349af1c11a70a8a0fcf9c4f011ca33e4546c3dee6"
+}

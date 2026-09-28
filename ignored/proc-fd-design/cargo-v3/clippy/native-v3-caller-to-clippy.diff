@@ -1,0 +1,254 @@
+--- cargo-v3/launch.py
++++ cargo-v3/clippy/launch.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/python3
+-"""Execute one explicitly released, source-bound native Cargo plan."""
++"""Execute one explicitly released Clippy check after bound native controls pass."""
+ import hashlib
+ import json
+ import os
+@@ -10,7 +10,7 @@
+ 
+ HERE = Path(__file__).resolve().parent
+ PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = '8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad'
++PLAN_SHA256 = 'a13af803508b0175c78755499b366801312da4cf8fbd584b7162c2b11bc89ec5'
+ 
+ 
+ def require(condition, message):
+@@ -131,149 +131,119 @@
+             and digest(path) == artifact['sha256'], 'compiled test executable changed')
+ 
+ 
+-def check_prior_sequence(plan, environment):
+-    prior = plan['prior_sequence']
+-    prior_plan = json.loads(read_bounded(prior['plan'], 1024**2))
+-    prior_readback = json.loads(read_bounded(prior['readback'], 1024**2))
+-    prior_summary = json.loads(read_bounded(prior['summary'], 1024**2))
+-    require(prior_plan['target_dir'] == plan['target_dir']
+-            == plan['environment_fixed']['CARGO_TARGET_DIR'], 'cache is not the previously owned target')
++def check_native_prerequisite(plan, environment):
++    prerequisite = plan['native_prerequisite']
++    native_plan = json.loads(read_bounded(prerequisite['plan'], 1024**2))
++    native_root = Path(prerequisite['run_root'])
++    require(native_plan['run_root'] == str(native_root)
++            and native_plan['source_binding'] == plan['source_binding']
++            and native_plan['source_manifest'] == plan['source_manifest']
++            and native_plan['target_dir'] == plan['target_dir'], 'native prerequisite source or target differs')
++    require(prerequisite['required_selected_count'] == native_plan['required_count'] == 37
++            and len(set(native_plan['selected_tests'])) == 37, 'native population differs')
++    summary = json.loads(read_bounded(native_root / 'summary.json', 1024**2))
++    launch = json.loads(read_bounded(native_root / 'launch.json', 1024**2))
++    require(summary['status'] == 'passed' and summary['selected_count'] == 37,
++            'native controls have not passed')
++    require(launch['plan_sha256'] == digest(prerequisite['plan'])
++            and launch['caller_sha256'] == digest(prerequisite['caller'])
++            and launch['source_binding_sha256'] == digest(plan['source_binding']),
++            'native execution source or caller binding differs')
++    artifact = json.loads(read_bounded(native_root / 'compiled-executable.json', 1024**2))
++    require(summary['artifact'] == artifact, 'native executable records disagree')
++    executable = Path(artifact['path'])
++    require(executable.resolve(strict=True).is_relative_to(Path(plan['target_dir']))
++            and stat.S_ISREG(executable.stat().st_mode), 'native executable escaped owned target')
++    check_executable(artifact)
++    native_stage = next(step for step in native_plan['stages'] if step['name'] == 'native')
++    raw = read_bounded(Path(native_stage['out']) / 'stdout', 1024**2)
++    outcomes = re.findall(r'^test ([A-Za-z0-9_:]+) \.\.\. (ok|FAILED)$', raw.decode(), re.M)
++    require(len(outcomes) == 37 and len(set(name for name, _ in outcomes)) == 37
++            and set(name for name, _ in outcomes) == set(native_plan['selected_tests'])
++            and all(status == 'ok' for _, status in outcomes), 'native individual controls did not all pass')
++    require(re.findall(r'^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured;',
++                       raw.decode(), re.M) == [('37', '0', '0', '0')], 'native summary differs')
+     target = Path(plan['target_dir'])
+-    require(not target.is_symlink() and target.is_dir()
+-            and target.resolve(strict=True) == target and target.stat().st_uid == os.getuid(),
+-            'target cache is not an owned, unredirected directory')
+-    require(prior_summary['status'] == 'failed' and prior_summary['active_stage'] == 'native'
+-            and prior_summary['retained_stages'] == ['compile', 'list', 'native'],
+-            'prior sequence did not stop at its native failure')
+-    require(len(prior_readback['passed_test_names']) == 35
+-            and prior_readback['failed_test_names'] ==
+-            ['executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned'],
+-            'prior native outcomes differ')
+-    retained = json.loads(read_bounded(prior['retained_executable'], 1024**2))
+-    require(retained['original'] == prior_readback['compiled_executable']
+-            == prior_summary['artifact'], 'prior executable identity differs')
+-    copy = retained['retained_copy']
+-    require(copy['sha256'] == retained['original']['sha256']
+-            and copy['bytes'] == retained['original']['bytes']
+-            and copy['mode'] == retained['original']['mode'], 'retained executable identity differs')
+-    check_executable(copy)
+-    require([step['name'] for step in prior['stages']] == ['compile', 'list', 'native'],
+-            'prior stage population differs')
+-    posts = []
+-    for step in prior['stages']:
+-        result = json.loads(read_bounded(step['result'], 1024**2))
+-        expected = 101 if step['name'] == 'native' else 0
+-        require(step['expected_exit'] == expected and result['wrapper_exit_code'] == expected,
+-                'prior stage exit changed')
+-        require(result['accounting_complete'] is True
+-                and result['final_accounting']['cgroup_empty'] is True
+-                and result['observer_error'] is None and result['stop_reason'] is None,
+-                'prior stage lacks complete, empty terminal accounting')
++    require(not target.is_symlink() and target.is_dir() and target.resolve(strict=True) == target
++            and target.stat().st_uid == os.getuid(), 'target is not an owned unredirected directory')
++    require([step['name'] for step in native_plan['stages']] == ['compile', 'list', 'native'],
++            'native stage population differs')
++    readbacks = []
++    for step in native_plan['stages']:
++        result_path = Path(step['out']) / 'result.json'
++        result = json.loads(read_bounded(result_path, 1024**2))
++        require(result['wrapper_exit_code'] == 0 and result['accounting_complete'] is True
++                and result['observer_error'] is None and result['stop_reason'] is None
++                and result['final_accounting']['cgroup_empty'] is True, 'native stage did not complete cleanly')
+         props = result['final_accounting']['properties']
+         require(props['ActiveState'] == 'inactive' and props['MainPID'] == 0
+-                and props['ControlGroup'] == '', 'prior stage retained processes')
++                and props['ControlGroup'] == '', 'native stage retained processes')
+         unit = props['Id']
+-        require(re.fullmatch(r'safehermit-[A-Za-z0-9T_-]+\.service', unit), 'unexpected prior service name')
++        require(re.fullmatch(r'safehermit-[A-Za-z0-9T_-]+\.service', unit), 'unexpected native service name')
+         command = ['/usr/bin/systemctl', '--user', 'show', unit,
+                    '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup']
+         post = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+-        require(len(post.stdout) <= 8192 and len(post.stderr) <= 8192, 'unexpected prior service output size')
++        require(len(post.stdout) <= 8192 and len(post.stderr) <= 8192, 'unexpected native service output size')
+         fields = dict(line.split('=', 1) for line in post.stdout.decode().splitlines() if '=' in line)
+         require(post.returncode == 0 and fields.get('ActiveState') == 'inactive'
+                 and fields.get('MainPID') == '0' and fields.get('ControlGroup') == '',
+-                'prior service is no longer inactive and empty')
+-        posts.append({'stage': step['name'], 'argv': command, 'exit': post.returncode,
+-                      'properties': fields, 'stderr': post.stderr.decode(errors='replace')})
+-    return {'services': posts, 'target_dir': str(target), 'retained_executable': copy,
+-            'scope': 'Prior owned cache reuse; source and actual Cargo artifact remain independently verified.'}
++                'native service remains active')
++        readbacks.append({'stage': step['name'], 'result_path': str(result_path),
++                          'result_sha256': digest(result_path), 'properties': fields, 'exit': post.returncode})
++    return {'artifact': artifact, 'services': readbacks, 'selected_count': 37,
++            'individual_output_sha256': hashlib.sha256(raw).hexdigest()}
+ 
+ 
+ def main():
+-    require(digest(PLAN) == PLAN_SHA256, 'concrete execution plan changed')
++    require(digest(PLAN) == PLAN_SHA256, 'concrete Clippy plan changed')
+     plan = json.loads(read_bounded(PLAN, 1024**2))
+-    require(Path(plan['run_root']) == HERE / 'run-1', 'unexpected run output destination')
+-    require([step['name'] for step in plan['stages']] == ['compile', 'list', 'native'], 'unexpected stage order')
+-    require(plan['required_count'] == 37 and len(set(plan['selected_tests'])) == 37, 'selected population changed')
+     root = Path(plan['run_root'])
++    require(root == HERE / 'run-1', 'unexpected Clippy output destination')
++    require(plan['stage']['name'] == 'clippy', 'unexpected Clippy stage')
+     for path in [root, Path(plan['observer_root'])]:
+         require(not path.exists() and not path.is_symlink(), 'retain every earlier attempt: ' + str(path))
+     check_inputs(plan)
+     environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
+     environment.update(plan['environment_fixed'])
+-    prior_terminal = check_prior_sequence(plan, environment)
++    native = check_native_prerequisite(plan, environment)
+     root.mkdir(mode=0o700)
+     Path(plan['tmpdir']).mkdir(mode=0o700)
+-    write_new(root / 'prior-sequence-terminal-readback.json', prior_terminal)
++    write_new(root / 'native-prerequisite-readback.json', native)
+     write_new(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),
+-              'environment': environment, 'source_binding_sha256': digest(plan['source_binding']),
+-              'scope': 'One native KVM library build/list/selected run; no Hermit or KVM guest.'})
+-    records = []
+-    artifact = None
+-    active_stage = None
++              'source_binding_sha256': digest(plan['source_binding']), 'environment': environment,
++              'scope': 'One native Clippy check only; no tests or guests executed by this check.'})
++    step = plan['stage']
+     try:
+-        for step in plan['stages']:
+-            active_stage = step['name']
+-            check_inputs(plan)
+-            argv = list(step['argv'])
+-            if artifact is not None:
+-                check_executable(artifact)
+-                require(argv.count('<verified-compiled-test-executable>') == 1, 'unbound executable placeholder')
+-                argv[argv.index('<verified-compiled-test-executable>')] = artifact['path']
+-            else:
+-                require(active_stage == 'compile' and '<verified-compiled-test-executable>' not in argv,
+-                        'native dispatch before successful build')
+-            write_new(root / (active_stage + '-dispatch.json'), {'argv': argv, 'cwd': step['cwd'],
+-                      'artifact': artifact, 'selected_tests': plan['selected_tests'] if active_stage == 'native' else None})
+-            # The unchanged reviewed observer owns lifetime, service bounds and
+-            # cleanup. Do not interrupt its final accounting with a shorter wait.
+-            with (root / (active_stage + '-observer.stdout')).open('xb') as stdout:
+-                with (root / (active_stage + '-observer.stderr')).open('xb') as stderr:
+-                    process = subprocess.run(argv, cwd=step['cwd'], env=environment,
+-                                             stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+-            result_path = Path(step['out']) / 'result.json'
+-            require(result_path.is_file(), 'observer did not retain a result: ' + active_stage)
+-            result = json.loads(read_bounded(result_path, 1024**2))
+-            record = {'stage': active_stage, 'observer_exit': process.returncode,
+-                      'result_path': str(result_path), 'result_sha256': digest(result_path), 'result': result}
+-            records.append(record)
+-            write_new(root / (active_stage + '-readback.json'), record)
+-            require_terminal(result, process.returncode, step, root, environment)
+-            raw = read_bounded(Path(step['out']) / 'stdout', step['reader_limit_bytes'])
+-            read_bounded(Path(step['out']) / 'stderr', step['reader_limit_bytes'])
+-            if active_stage == 'compile':
+-                artifact = select_executable(raw, plan)
+-                write_new(root / 'compiled-executable.json', artifact)
+-                lockfile = Path(plan['source_root']) / 'Cargo.lock'
+-                require(lockfile.is_file() and digest(lockfile) == plan['dependency_lockfile']['sha256'],
+-                        'Cargo changed the bound dependency lock')
+-                write_new(root / 'dependency-lockfile.json', {'path': str(lockfile),
+-                          'bytes': lockfile.stat().st_size, 'sha256': digest(lockfile)})
+-            elif active_stage == 'list':
+-                listed = [line[:-6] for line in raw.decode().splitlines() if line.endswith(': test')]
+-                require(all(listed.count(name) == 1 for name in plan['selected_tests']), 'a selected native test is absent or duplicated')
+-                write_new(root / 'selected-list-readback.json', {'selected': plan['selected_tests'], 'count': 37,
+-                          'listed_total': len(listed), 'raw_sha256': hashlib.sha256(raw).hexdigest()})
+-            else:
+-                text = raw.decode()
+-                summaries = re.findall(r'^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;', text, re.M)
+-                require(len(summaries) == 1 and summaries[0][:4] == ('37', '0', '0', '0'),
+-                        'native summary lacks exactly 37 passing, unignored tests')
+-                write_new(root / 'native-summary-readback.json', {'selected': plan['selected_tests'], 'count': 37,
+-                          'summary_counts': summaries[0], 'raw_sha256': hashlib.sha256(raw).hexdigest()})
+-            check_inputs(plan)
+-            if artifact is not None:
+-                check_executable(artifact)
++        check_inputs(plan)
++        check_executable(native['artifact'])
++        write_new(root / 'clippy-dispatch.json', {'argv': step['argv'], 'cwd': step['cwd'],
++                  'clippy_components': plan['clippy_components'], 'native_artifact': native['artifact']})
++        with (root / 'clippy-observer.stdout').open('xb') as stdout:
++            with (root / 'clippy-observer.stderr').open('xb') as stderr:
++                process = subprocess.run(step['argv'], cwd=step['cwd'], env=environment,
++                                         stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
++        result_path = Path(step['out']) / 'result.json'
++        require(result_path.is_file(), 'observer did not retain a Clippy result')
++        result = json.loads(read_bounded(result_path, 1024**2))
++        write_new(root / 'clippy-readback.json', {'observer_exit': process.returncode,
++                  'result_path': str(result_path), 'result_sha256': digest(result_path), 'result': result})
++        # Validate source and the native artifact on success or a Clippy refusal.
++        check_inputs(plan)
++        check_executable(native['artifact'])
++        require_terminal(result, process.returncode, step, root, environment)
++        diagnostics = []
++        for name in ['stdout', 'stderr']:
++            raw = read_bounded(Path(step['out']) / name, step['reader_limit_bytes'])
++            diagnostics.append({'name': name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+     except Exception as error:
+-        write_new(root / 'summary.json', {'status': 'failed', 'active_stage': active_stage, 'error': str(error),
+-                  'retained_stages': [row['stage'] for row in records], 'artifact': artifact,
+-                  'scope': 'Retained failure; no source repair, retry, guest or parity claim.'})
++        write_new(root / 'summary.json', {'status': 'failed', 'error': str(error),
++                  'scope': 'Retained Clippy failure; no repair, retry or guest.'})
+         raise
+-    write_new(root / 'summary.json', {'status': 'passed', 'artifact': artifact, 'selected_count': 37,
+-              'observed': [{'stage': row['stage'], 'exit': row['result']['wrapper_exit_code'],
+-                            'aggregate_cpu_nsec': row['result']['final_accounting']['cpu_usage_nsec'],
+-                            'wall_seconds': row['result']['elapsed_seconds']} for row in records],
+-              'scope': 'Native selected controls only; no Hermit guest or cross-backend qualification.'})
++    write_new(root / 'summary.json', {'status': 'passed', 'exit': result['wrapper_exit_code'],
++              'aggregate_cpu_nsec': result['final_accounting']['cpu_usage_nsec'],
++              'wall_seconds': result['elapsed_seconds'], 'diagnostics': diagnostics,
++              'scope': 'Clippy success only; no runtime or cross-backend qualification.'})
+     print(json.dumps({'status': 'passed', 'summary': str(root / 'summary.json')}))
+ 
+ 

@@ -1,0 +1,164 @@
+--- v8/ci/configure-build-jobs.sh
++++ v9/ci/configure-build-jobs.sh
+@@ -334,7 +334,7 @@
+ # not a new timing calibration or Hermit guest result.
+ # CARRY TO c8f4ca9d (2026-09-17): the landed KVM failure-notification repair
+ # https://github.com/rrnewton/reverie/pull/577 preserves the SDK recipe from
+-# 30fee360: build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and
++# 526c21cf: build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and
+ # DynamoRIO vendor tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35 are identical.
+ # Root Cargo.toml, rust-toolchain.toml and the third-party gitlink also match.
+ # CMAKE remains the default cmake and CMAKE_GENERATOR remains unset, retaining
+--- v8/hermit-cli/tests/verification_report_consumers.rs
++++ v9/hermit-cli/tests/verification_report_consumers.rs
+@@ -89,8 +89,8 @@
+     },
+     Consumer {
+         path: "tests/qemu-boot/strict_l2_test.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+@@ -552,6 +552,44 @@
+         String::from_utf8_lossy(&refused.stderr)
+     );
+     fs::remove_dir_all(temporary).expect("remove temporary directory");
++}
++
++#[test]
++fn qemu_boot_consumer_rejects_noncanonical_and_unequal_match_claims() {
++    let consumer = CONSUMERS
++        .iter()
++        .find(|consumer| consumer.path == "tests/qemu-boot/strict_l2_test.sh")
++        .unwrap();
++    assert_eq!(consumer.requirement, "canonical-match");
++    let script = fs::read_to_string(root().join(consumer.path)).unwrap();
++    assert_eq!(script.matches(consumer.invocation).count(), 1);
++    let temporary = temporary_directory();
++    let path = temporary.join("verify.json");
++    for case in ["matched", "stripped", "no-log-comparison", "unequal-counts"] {
++        let mut report = current_synthetic_match();
++        report["compared_log_messages"] = serde_json::json!({"left": 123, "right": 123});
++        match case {
++            "matched" => {}
++            "stripped" => report["comparison"]["strictness"] = serde_json::json!("stripped"),
++            "no-log-comparison" => report["comparison"]["compare_logs"] = serde_json::json!(false),
++            "unequal-counts" => report["compared_log_messages"]["right"] = serde_json::json!(124),
++            _ => unreachable!(),
++        }
++        write_report(&path, &report);
++        let output = verdict(consumer.requirement, &path);
++        assert_eq!(
++            output.status.code(),
++            Some(if case == "matched" { 0 } else { 1 }),
++            "{case}: {output:?}"
++        );
++        if case == "unequal-counts" {
++            assert!(
++                String::from_utf8_lossy(&output.stderr)
++                    .contains("canonical match has unequal compared log-message counts: 123/124")
++            );
++        }
++    }
++    fs::remove_dir_all(temporary).unwrap();
+ }
+ 
+ #[test]
+--- v8/scripts/lib/validate_cell_results.rs
++++ v9/scripts/lib/validate_cell_results.rs
+@@ -291,9 +291,7 @@
+         }
+     }
+     let classify = |(report, _, _): &(VerificationReport, ComparisonSpec, ComparedLogCounts)| {
+-        let matched = report.verified
+-            && report.verdict == VerificationVerdict::Matched
+-            && report.bitwise_parity;
++        let matched = report.require_canonical_match().is_ok();
+         let diverged = report.verdict == VerificationVerdict::Diverged && !report.bitwise_parity;
+         (matched, diverged)
+     };
+@@ -1405,6 +1403,58 @@
+     }
+ 
+     #[test]
++    fn matched_projection_rejects_unequal_counts_and_retains_sticky_divergence() {
++        let mut row = result_row(
++            "validate-counts",
++            "1818181818181818181818181818181818181818",
++        );
++        assert!(matches!(
++            cell_verdict(&row).unwrap(),
++            CellVerdict::ComparedAndMatched { .. }
++        ));
++        let mut contradictory: Value = serde_json::from_str(&report("matched", "info")).unwrap();
++        contradictory["compared_log_messages"]["right"] = Value::from(124);
++        replace_report(&mut row, &contradictory);
++        let CellVerdict::UnavailableWithReason { reason, .. } = cell_verdict(&row).unwrap() else {
++            panic!("a claimed 123/124 match became compared evidence");
++        };
++        assert_eq!(
++            reason,
++            "typed canonical report was neither a match nor a divergence"
++        );
++        let unequal_match = serde_json::to_string(&contradictory).unwrap();
++        let divergent = report("diverged", "info");
++        let matched = report("matched", "info");
++        for attempts in [
++            vec![attempt(&divergent)],
++            vec![attempt(&unequal_match), attempt(&divergent)],
++            vec![attempt(&divergent), attempt(&unequal_match)],
++            vec![attempt(&matched), attempt(&divergent)],
++            vec![attempt(&divergent), attempt(&matched)],
++        ] {
++            row["attempts"] = Value::Array(attempts);
++            let CellVerdict::ComparedAndDiverged {
++                comparison_tier,
++                bitwise_parity,
++                compared_log_messages: RequiredNullable::Value(counts),
++                ..
++            } = cell_verdict(&row).unwrap()
++            else {
++                panic!("the real unequal-count divergence was lost: {row}");
++            };
++            assert_eq!(comparison_tier, ComparisonTier::CanonicalBitwise);
++            assert!(!bitwise_parity);
++            assert_eq!(
++                counts,
++                ComparedLogCounts {
++                    left: 123,
++                    right: 124
++                }
++            );
++        }
++    }
++
++    #[test]
+     fn schema7_binds_virtual_time_to_the_comparison_mode() {
+         for (mode, virtualize_time, expected_state) in [
+             ("replay", false, "compared-and-matched"),
+--- v8/tests/e2e/lib/applications/common.sh
++++ v9/tests/e2e/lib/applications/common.sh
+@@ -61,7 +61,8 @@
+ # CONFIGURATION is not evidence that the configured comparison had any data.
+ # The field reads below preserve established diagnostics. Positive acceptance
+ # additionally requires the producer-owned verification-report canonical-match
+-# reader, which rejects contradictory, incomplete, or filtered evidence.
++# reader, which checks the current report, canonical strictness/envelope,
++# log comparison, positive equal counts, and the verified/matched/parity claim.
+ #
+ # Four outcomes are kept distinct, because collapsing them is how a harness
+ # reports green for work it never did:
+--- v8/tests/qemu-boot/strict_l2_test.sh
++++ v9/tests/qemu-boot/strict_l2_test.sh
+@@ -216,7 +216,7 @@
+ if ((status != 0)); then
+   fail "QEMU strict L2 verification exited with status $status"
+ fi
+-"$VERIFICATION_REPORT_BIN" matched "$verify_report" || \
++"$VERIFICATION_REPORT_BIN" canonical-match "$verify_report" || \
+   fail "typed verification report did not match"
+ stop_active_group
+ 

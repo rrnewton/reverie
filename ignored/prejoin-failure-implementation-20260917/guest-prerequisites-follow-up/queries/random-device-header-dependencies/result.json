@@ -1,0 +1,38 @@
+{
+  "name": "random-device-header-dependencies",
+  "argv": [
+    "/usr/bin/cc",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-M",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/random_device_lseek.c"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up",
+  "pid": 1705632,
+  "exit_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.01658928906545043,
+  "cpu_seconds": 0.009272000000000016,
+  "bounds": {
+    "cpu_seconds_per_process": 5,
+    "wall_seconds": 15,
+    "address_space_bytes": 1073741824,
+    "file_bytes_per_stream": 1048576,
+    "core_bytes": 0
+  },
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea",
+  "streams": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/random-device-header-dependencies/stdout",
+      "bytes": 2191,
+      "sha256": "dbceacef35fa49e5ebd74c8afd1f0b5270f9740be6dc807c2608bae5265711ae"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/random-device-header-dependencies/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

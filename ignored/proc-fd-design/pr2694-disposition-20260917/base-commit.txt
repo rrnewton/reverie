@@ -1,0 +1,17 @@
+dade02611a0988aaa2f234411c16462fdbfb5519
+7d2393d2149143d7056d2acf5ea1bb07076b73bd
+8a51217021b0c7ddabb2fcc2f0ed6bc9bd7ef8d8
+Ryan Newton
+rrnewton@gmail.com
+Provide the pinned tools required by CLI tests
+
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Provide pinned GDB with Python and the nproc/stat FHS paths used by existing CLI tests. Keep the original tool prerequisites and add exact GDB Python-marker checks. Preserve the previous image ID under a verified same-repository tag before loading the new image so its recorded name@digest remains usable for rollback.
+
+The normal local Nix producer built the recorded digest successfully in 128.068 seconds. Its enclosing old-image-name check then failed; a separately verified exact-ID tag restored that name without rebuilding. Both failures and the earlier TLS refusal remain retained. Six actual new-image controls pass, including four missing-tool/incorrect-marker refusals; nine complete-producer fake-tool controls reproduce the old lost-name defect and cover positive retention, collisions and tool-error handling. No guest assertion, status or limit was relaxed. These are image/native checks, not corrected Hermit guest qualification.
+
+Task: astra-lane-drains-hermit-reverie-pr-queues-to-zero
+

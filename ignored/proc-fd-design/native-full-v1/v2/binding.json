@@ -1,0 +1,37 @@
+{
+  "REPORT.md": {
+    "bytes": 1435,
+    "mode": 420,
+    "sha256": "7e9ac917854ed7bba7ba85e13464bfeda89640b06e933259253951f2b3ca66d5"
+  },
+  "caller.diff": {
+    "bytes": 481,
+    "mode": 420,
+    "sha256": "9ce97c95cf8ac5de2ae701abe95985bf8507c2d9964cf0f5d46212992aa54bb2"
+  },
+  "launch.py": {
+    "bytes": 20329,
+    "mode": 420,
+    "sha256": "d580eae20a9a4d76369229c5935a3d083738824ca2da927dd045409c6dbe0746"
+  },
+  "plan-differences.json": {
+    "bytes": 3002,
+    "mode": 420,
+    "sha256": "9bfac77466e4f93b135b48532d003bdd2f6b504f3fdeb53a8f0e00368bc7d3ec"
+  },
+  "plan.diff": {
+    "bytes": 3243,
+    "mode": 420,
+    "sha256": "48614189e6d5b3b51e0301f56c07d77a0d9a3888114b24c8a7571782b5394a2e"
+  },
+  "plan.json": {
+    "bytes": 73430,
+    "mode": 420,
+    "sha256": "7f3cc72f062437331ebc8138953809511c099b8824451f6bcd95fb58badd337c"
+  },
+  "readback.json": {
+    "bytes": 571,
+    "mode": 420,
+    "sha256": "909e83b77bb1555c1709b43912450953995eccf3ba3c3f5a8f1613aeaddd4786"
+  }
+}

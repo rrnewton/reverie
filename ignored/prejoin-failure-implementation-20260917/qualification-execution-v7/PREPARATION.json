@@ -1,0 +1,9 @@
+{
+  "source_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "55924d1ecbdf4b8609eeca796829243cb1409dded5388d6aa96b97b97d235d91",
+  "caller_sha256": "b884897e349c1990c2bb84063c126ba60be5b58186a25b9563b6f8a04a2b28bf",
+  "actual_inventory_count": 288,
+  "stages": 22,
+  "full_prerequisite_sha256": "3c465b2f08f2fc24cb7ab94a089a60ca603d605a54eaec6d71199f1774da34f1",
+  "scope": "First original 22 static integration methods after the complete serial 454 library pass, on final committed 12d4ce8c. The full library already executed every earlier selected native and four focused VM method; these are not repeated here. Original static names, order, ten exec modes, assertions, admission, bounds and first-failure stop remain. Earlier failures remain retained. No Hermit INFO, repeat determinism or canonical parity claim."
+}

@@ -1,0 +1,5 @@
+{
+  "status": "partial immutable source copy; no source edits",
+  "refusal": "guessed hermit-cli/src/bin/hermit/canonical_verdict.rs does not exist in 8051335e; original 11 copied files retained",
+  "next": "find actual canonical_verdict path from immutable tree; complete BASE manifest before edits"
+}

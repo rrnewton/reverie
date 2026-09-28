@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/wrkslots",
+    "status",
+    "--slot",
+    "kvm-proc-fd-identity-20260917",
+    "--format",
+    "json"
+  ],
+  "exit": 0
+}

@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "exit": 0,
+  "aggregate_cpu_nsec": 40807860000,
+  "wall_seconds": 22.047195164,
+  "diagnostics": [
+    {
+      "name": "stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "stderr",
+      "bytes": 3253,
+      "sha256": "1d9718e27d6a5609db44a8413b0dab2c34769e44356f1d6a7250d859eb66cf6a"
+    }
+  ],
+  "scope": "Clippy success only; no runtime or cross-backend qualification."
+}

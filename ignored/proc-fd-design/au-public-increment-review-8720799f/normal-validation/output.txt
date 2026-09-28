@@ -1,0 +1,1390 @@
+python3 scripts/validate.py
+validate: 3 changed path(s)
+  RUN   cross       — code with a paired cross-language implementation changed [py/tests/test_packaging_infrastructure.py]
+  skip  docs        — nothing changed that it can observe
+  skip  gent-talk   — nothing changed that it can observe
+  RUN   hygiene     — always: a consuming project's name can be typed into any file, and a documented default can be broken from either the prose or the code side [always]
+  RUN   packages    — something that ships inside a distribution changed [py/tests/test_packaging_infrastructure.py]
+  skip  timeline-browser — nothing changed that it can observe
+  RUN   workspace   — workspace Rust or Python source changed [py/tests/test_packaging_infrastructure.py]
+
+=== client-names-self-test ===
+check-client-names --self-test: PASSED (12 controls)
+
+=== client-names ===
+check-client-names: ok — 828 files name no consuming project
+
+=== documented-defaults-self-test ===
+check-documented-defaults --self-test: PASSED (111 controls, 9 pins)
+
+=== documented-defaults ===
+check-documented-defaults: ok — 28 documented occurrences of 9 defaults agree with the code
+
+=== rust-fmt ===
+
+=== build ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+./setup both
+==> [docs] render standalone package docs from shared templates + edition fragments
+embed_userguides: refreshed 0 rendered files and package links:
+==> [py] mypy strict typecheck + wire bin
+Success: no issues found in 331 source files
+==> [py] check-deps (dependency-free entrypoint smoke test)
+check-deps: ok — 33 dependency-free invocations across 11 entrypoints start cleanly. PyYAML present (YAML read/write enabled).
+==> [py] ok
+==> [rs] verify/build tracked Cargo-backed launchers
+[dagrun] rust cache=verified source=7489e7b343b3 binary=b60d1ab580b1
+rs: ready dagrun -> rs/target/x86_64-unknown-linux-gnu/release/dagrun
+[cpuset-alloc] rust cache=verified source=7489e7b343b3 binary=f5f813e78626
+rs: ready cpuset-alloc -> rs/target/x86_64-unknown-linux-gnu/release/cpuset-alloc
+[tick-hub] rust cache=verified source=7489e7b343b3 binary=941b77b9629d
+rs: ready tick-hub -> rs/target/x86_64-unknown-linux-gnu/release/tick-hub
+[pr-landing-planner] rust cache=verified source=7489e7b343b3 binary=8de46f0eb5d7
+rs: ready pr-landing-planner -> rs/target/x86_64-unknown-linux-gnu/release/pr-landing-planner
+[herdr-run] rust cache=verified source=7489e7b343b3 binary=18df7fe39ce5
+rs: ready herdr-run -> rs/target/x86_64-unknown-linux-gnu/release/herdr-run
+[herdr-agent] rust cache=verified source=7489e7b343b3 binary=cb96520f616e
+rs: ready herdr-agent -> rs/target/x86_64-unknown-linux-gnu/release/herdr-agent
+==> [rs] ok
+==> ./bin -> common/bin
+setup: done (both)
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== lint-and-typecheck ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+python3 scripts/check_deps.py
+check-deps: ok — 33 dependency-free invocations across 11 entrypoints start cleanly. PyYAML present (YAML read/write enabled).
+python3 -m mypy --config-file py/pyproject.toml --strict --disallow-any-explicit --disallow-any-decorated .
+Success: no issues found in 353 source files
+python3 scripts/check_no_any.py .
+check-no-any: ok — 354 Python files contain no typing.Any
+python3 scripts/validate.py --self-test
+validate --self-test: PASSED (16 mapping controls, 8 always-on controls)
+python3 scripts/check_client_names.py --self-test
+check-client-names --self-test: PASSED (12 controls)
+python3 scripts/check_client_names.py
+check-client-names: ok — 828 files name no consuming project
+python3 scripts/check_documented_defaults.py --self-test
+check-documented-defaults --self-test: PASSED (111 controls, 9 pins)
+python3 scripts/check_documented_defaults.py
+check-documented-defaults: ok — 28 documented occurrences of 9 defaults agree with the code
+    Finished `release` profile [optimized] target(s) in 0.06s
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== test ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+........................................................................ [  2%]
+........................................................................ [  4%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+................                                                         [100%]
+=============================== warnings summary ===============================
+tests/test_supervisor_crash.py::test_a_supervisor_that_vanishes_without_a_traceback_is_still_reaped
+  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-577 (die_without_publishing)
+  
+  Traceback (most recent call last):
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/py/tests/test_supervisor_crash.py", line 129, in die_without_publishing
+      raise RuntimeError("layer one is not present on this thread")
+  RuntimeError: layer one is not present on this thread
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_supervisor_crash.py::test_the_sweep_sees_a_crash_that_lands_between_running_and_done
+  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-579 (retire_then_die)
+  
+  Traceback (most recent call last):
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/py/tests/test_supervisor_crash.py", line 164, in retire_then_die
+      raise RuntimeError("died after retiring, before publishing")
+  RuntimeError: died after retiring, before publishing
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2968 passed, 2 warnings in 517.00s (0:08:37)
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 51%]
+........................................................................ [ 64%]
+........................................................................ [ 77%]
+........................................................................ [ 90%]
+....................................................                     [100%]
+556 passed, 241 deselected in 564.91s (0:09:24)
+........................................................................ [ 29%]
+........................................................................ [ 59%]
+........................................................................ [ 89%]
+.........................                                                [100%]
+241 passed, 556 deselected in 402.11s (0:06:42)
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling itoa v1.0.18
+   Compiling unsafe-libyaml-norway v0.2.15
+   Compiling ryu v1.0.23
+   Compiling typenum v1.20.1
+   Compiling regex-syntax v0.8.11
+   Compiling cfg-if v1.0.4
+   Compiling cpufeatures v0.2.17
+   Compiling base64 v0.22.1
+   Compiling shell-words v1.1.1
+   Compiling glob v0.3.4
+   Compiling zmij v1.0.23
+   Compiling libc v0.2.189
+   Compiling aho-corasick v1.1.5
+   Compiling indexmap v2.14.0
+   Compiling errno v0.3.14
+   Compiling fs2 v0.4.3
+   Compiling signal-hook-registry v1.4.8
+   Compiling signal-hook v0.4.4
+   Compiling generic-array v0.14.7
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling regex-automata v0.4.18
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling serde_norway v0.9.42
+   Compiling dagrun v0.15.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/dagrun)
+   Compiling tick-hub v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/tick-hub)
+   Compiling regex v1.13.1
+   Compiling herdr-run v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/herdr-run)
+   Compiling pr-landing-planner v0.1.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/pr-landing-planner)
+    Finished `release` profile [optimized] target(s) in 15.73s
+     Running unittests src/lib.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/27074bcf5b587b0f/out/dagrun-27074bcf5b587b0f)
+
+running 491 tests
+ERROR: step could not join its dagrun cgroup; refusing uncontained run
+ERROR: encoded step tag exceeds the cgroup filename limit; refusing uncontained run
+test admission::tests::the_byte_rendering_matches_the_python_engine ... ok
+test admission::tests::the_default_budget_keeps_back_the_named_fraction_and_the_flat_margin ... ok
+test admission::tests::the_flat_margin_never_swallows_a_small_hosts_entire_budget ... ok
+test admission::tests::a_request_larger_than_the_host_budget_is_refused_and_names_the_number_to_ask_for ... ok
+test ambient::tests::bucket_thresholds_match_reference ... ok
+test attribution::tests::culprit_prefers_the_unterminated_tail ... ok
+test attribution::tests::a_clean_suite_accuses_nobody ... ok
+test attribution::tests::culprit_uses_started_without_end_when_the_tail_is_clean ... ok
+test admission::tests::host_memory_held_outside_the_tool_queues_on_a_named_different_cause ... ok
+test attribution::tests::exact_libtest_process_binding_accepts_both_argument_orders_without_guessing ... ok
+test attribution::tests::libtest_bare_prefix_is_a_start ... ok
+test attribution::tests::libtest_completed_line_is_an_end ... ok
+test attribution::tests::nonces_are_unique_per_step ... ok
+test attribution::tests::ordinary_output_is_not_mistaken_for_a_test ... ok
+test attribution::tests::pytest_and_tap_and_explicit_protocol ... ok
+test attribution::tests::evidence_refuses_overlong_step_log_names ... ok
+test admission::tests::an_absurd_wait_is_clamped_instead_of_aborting_the_process ... ok
+test attribution::tests::sanitized_names_are_injective_for_former_aliases ... ok
+test attribution::tests::partial_tail_is_bounded ... ok
+test attribution::tests::classification_survives_a_truncated_log ... ok
+test attribution::tests::the_default_capture_ceiling_is_four_mebibytes_literally ... ok
+test attribution::tests::evidence_directory_and_files_are_private ... ok
+test attribution::tests::evidence_refuses_fifos_without_blocking ... ok
+test attribution::tests::unparsable_output_degrades_to_naming_no_test ... ok
+test attribution::tests::evidence_refuses_public_or_symlink_directories ... ok
+test capabilities::tests::is_enforced_answers_per_lane ... ok
+test capabilities::tests::a_misspelled_guard_site_panics_instead_of_reading_as_unenforced - should panic ... ok
+test capabilities::tests::a_panicking_bracket_still_restores_the_registry ... ok
+test capabilities::tests::manifest_is_exactly_the_published_bytes ... ok
+test capabilities::tests::is_enforced_reads_the_registry_and_the_override ... ok
+test capabilities::tests::a_single_lane_override_leaves_the_other_lane_alone ... ok
+test capabilities::tests::manifest_moves_when_a_flag_is_flipped ... ok
+test capabilities::tests::of_boxed_maps_boxing_to_the_lane_the_manifest_publishes ... ok
+test cgroup::tests::a_nonpositive_ceiling_request_is_refused_rather_than_widened ... ok
+test cgroup::tests::a_policy_skip_never_claims_the_scope_was_unavailable ... ok
+test cgroup::tests::a_silent_manager_reports_an_unknown_cap_rather_than_an_unbounded_one ... ok
+test cgroup::tests::controller_enable_redrains_a_member_that_arrives_in_the_check_act_gap ... ok
+test cgroup::tests::cpuset_parser_preserves_exact_identity ... ok
+test cgroup::tests::device_rows_are_counted_and_architectural_rows_are_not ... ok
+test cgroup::tests::cpu_quota_percent_floor_is_one_core ... ok
+test cgroup::tests::disabled_manager_is_a_noop_outside_a_scope ... ok
+test cgroup::tests::empty_or_headerless_input_yields_an_absent_signal_not_zeroes ... ok
+test cgroup::tests::max_mem_becomes_the_outer_scope_ceiling_and_can_only_tighten ... ok
+test attribution::tests::unlimited_ceiling_writes_everything ... ok
+test cgroup::tests::only_observed_containment_can_qualify ... ok
+test admission::tests::this_process_can_recognise_its_own_reservation_in_the_ledger ... ok
+test cgroup::tests::rolled_back_cpu_counters_are_invalid ... ok
+test cgroup::tests::sanitize_makes_safe_names ... ok
+test cgroup::tests::scope_attempt_separates_the_four_outcomes ... ok
+test attribution::tests::step_log_is_bounded_exactly_and_says_so ... ok
+test cgroup::tests::scope_drain_propagates_an_unreadable_roster ... ok
+test cgroup::tests::scope_drain_refuses_a_root_that_never_quiesces ... ok
+test cgroup::tests::observation_of_this_live_process_is_two_directional ... ok
+test cgroup::tests::scope_drain_waits_past_first_empty_sample_for_late_member ... ok
+test cgroup::tests::short_rows_are_skipped_whole_so_counts_are_not_misattributed ... ok
+test attribution::tests::step_log_refuses_a_hard_link_without_truncating_its_target ... ok
+test cgroup::tests::silence_records_unknown_and_never_boxed ... ok
+test cgroup::tests::steps_contained_is_not_run_boxed ... ok
+test cgroup::tests::systemd_duration_parses_both_renderings ... ok
+test cgroup::tests::the_environment_override_and_max_mem_compose_to_the_smallest ... ok
+test cli::tests::a_bad_memory_spec_is_refused_rather_than_run_uncapped ... ok
+test admission::tests::two_concurrent_requests_that_only_one_can_have_do_not_both_grant ... ok
+test cli::tests::a_nonpositive_cores_or_timeout_is_refused_by_name_rather_than_clamped ... ok
+test cli::tests::admission_consumes_a_negative_number_the_way_argparse_does ... ok
+test cli::tests::admission_wait_is_bounded_above_so_a_validated_value_cannot_abort_the_run ... ok
+test admission::tests::a_dead_holders_reservation_is_reclaimed_rather_than_subtracted_forever ... ok
+test cli::tests::argv_is_shell_quoted_element_by_element_not_joined ... ok
+test cli::tests::an_absent_step_ceiling_defaults_to_the_resolved_cpu_budget ... ok
+test cli::tests::box_flags_parse_in_both_spellings_and_the_command_starts_at_the_separator ... ok
+test cgroup::tests::an_uncapped_step_reports_the_outer_scope_cap_it_actually_ran_under ... ok
+test cli::tests::box_is_listed_in_the_top_level_help_and_accepted_as_a_command ... ok
+test cli::tests::box_with_no_command_is_a_named_usage_error_not_a_boxed_nothing ... ok
+test cli::tests::cgroup_setup_failure_is_attributed_to_the_environment_before_any_node ... ok
+test cli::tests::cores_becomes_the_cgroup_width_and_not_a_synthetic_jobs_flag ... ok
+test cli::tests::a_wrong_document_error_names_the_path_contents_and_next_action ... ok
+test cgroup::tests::one_unparsable_memory_events_line_does_not_discard_the_others ... ok
+test cli::tests::cores_and_memory_can_only_tighten_run_limits ... ok
+test cli::tests::final_stress_footprint_does_not_multiply_an_expanded_graph_twice ... ok
+test cli::tests::ignoring_selected_dependencies_requires_a_selection ... ok
+test cli::tests::mem_becomes_the_steps_own_hard_inner_cap ... ok
+test cli::tests::labels_select_a_union_and_include_dependency_ancestry ... ok
+test cli::tests::mem_is_also_the_ceiling_the_outer_scope_is_brought_up_with ... ok
+test cli::tests::nonbinding_max_mem_cannot_loosen_default_max_steps_past_max_cpus ... ok
+test cli::tests::max_mem_refuses_when_one_step_cannot_fit ... ok
+test cli::tests::nested_summary_help_routes_by_action ... ok
+test cli::tests::one_width_sweep_has_an_explicit_capture_fallback ... ok
+test cgroup::tests::memory_events_carry_every_counter_and_the_oom_count_agrees ... ok
+test cli::tests::passthrough_requires_declaration_and_substitutes ... ok
+test cgroup::tests::whole_run_cpu_usage_reads_only_the_outer_usage_counter ... ok
+test cli::tests::plan_parser_accepts_a_positive_max_steps_ceiling ... ok
+test cli::tests::profile_enforcement_tracks_cgroup_manager_presence ... ok
+test cli::tests::perf_wrapper_keeps_the_width_on_the_guest_command ... ok
+test cli::tests::profile_timeseries_interval_is_bounded_and_conflicts_with_no_profile ... ok
+test cgroup::tests::outer_oom_group_write_is_read_back ... ok
+test cgroup::tests::outer_scope_audit_requires_group_oom ... ok
+test cli::tests::profiler_capture_width_is_fit_only_from_current_sweep_samples ... ok
+test cgroup::tests::inner_memory_cap_follows_the_memory_max_capability_flag ... ok
+test cli::tests::resource_caps_path_flag_is_explicit_and_non_empty ... ok
+test ambient::tests::attribute_external_cores_guards_zero_window ... ok
+test cli::tests::retired_only_flag_and_boolean_value_are_rejected ... ok
+test cli::tests::run_parser_accepts_hidden_jobs_alias_but_rejects_conflicting_limits ... ok
+test cli::tests::run_parser_separates_bare_max_steps_and_max_cpus_and_rejects_zero ... ok
+test cli::tests::run_help_exposes_every_run_surface ... ok
+test cgroup::tests::the_applied_cap_is_read_back_and_unbounded_is_not_unknown ... ok
+test cli::tests::run_core_budget_reaches_every_planner_but_memory_remains_cpa_only ... ok
+test cgroup::tests::the_applied_cap_is_the_tighter_of_the_step_and_scope_caps ... ok
+test cli::tests::run_refuses_an_unrewritable_width_before_cgroup_setup ... ok
+test cli::tests::selected_dependencies_can_be_explicitly_ignored ... ok
+test cli::tests::selected_step_includes_every_dependency_it_requires ... ok
+test cli::tests::stress_expansion_guard_bounds_generated_nodes_before_allocation ... ok
+test cli::tests::stress_rewires_each_shard_internally ... ok
+test cli::tests::stress_sizing_uses_the_run_cpu_ceiling_before_expansion ... ok
+test cli::tests::run_timeseries_refuses_unboxed_before_spawning_a_step ... ok
+test cli::tests::summary_action_help_exposes_only_the_action_contract ... ok
+test cli::tests::summary_action_schemas_reject_invalid_invocations ... ok
+test admission::tests::a_second_request_that_no_longer_fits_is_queued_behind_the_first ... ok
+test cli::tests::sweep_profiler_flags_are_opt_in_and_validate_before_execution ... ok
+test cgroup::tests::failed_cgroup_migration_refuses_user_command ... ok
+test admission::tests::releasing_is_idempotent_and_does_not_free_a_peers_reservation ... ok
+test cli::tests::sweep_help_explains_modes_widths_and_profile_artifacts ... ok
+test cli::tests::sweep_report_output_flags_validate_before_execution ... ok
+test cli::tests::sweep_refuses_a_step_whose_guest_width_cannot_be_varied ... ok
+test cli::tests::sync_upload_reuses_the_local_execution_identity ... ok
+test cli::tests::the_parsed_max_mem_flag_is_what_the_outer_scope_ceiling_is_built_from ... ok
+test cli::tests::the_cpu_ceiling_is_derived_from_the_wall_ceiling_and_the_core_count ... ok
+test cli::tests::the_stress_expansion_carries_the_whole_lane_policy_forward ... ok
+test cli::tests::sweep_timeseries_refuses_unboxed_before_spawning_a_step ... ok
+test cpuset_allocator::tests::cpulist_is_sorted ... ok
+test cpuset_allocator::tests::max_irq_rate_is_absent_by_default_and_validated_when_given ... ok
+test cpuset_allocator::tests::executable_preflight_rejects_missing_paths ... ok
+test cpuset_allocator::tests::parse_options_accepts_inline_values ... ok
+test cgroup::tests::overlong_encoded_cgroup_name_refuses_user_command ... ok
+test cpuset_allocator::tests::probe_requires_blocked_mutation_and_every_assigned_core ... ok
+test cpuset_allocator::tests::parser_rejects_invalid_counts_samples_and_selftest_tags ... ok
+test cpuset_allocator::tests::wrapped_command_help_is_not_allocator_help ... ok
+test estimates::tests::affinity_width_is_ascii_digit_only ... ok
+test estimates::tests::apply_plan_preserves_all_non_hint_step_fields ... ok
+test estimates::tests::applying_a_plan_carries_the_whole_lane_policy_forward ... ok
+test estimates::tests::contention_discounts_duration ... ok
+test estimates::tests::censored_floor_never_replaces_a_larger_width_fallback ... ok
+test estimates::tests::censored_width_peak_remains_a_planning_floor ... ok
+test estimates::tests::cpa_allocates_and_applies_width_for_an_env_only_step ... ok
+test estimates::tests::cpa_charges_the_undeclared_step_cpu_default_as_rigid_width ... ok
+test estimates::tests::cpa_excludes_cpu_inefficient_widths_individually ... ok
+test estimates::tests::cpa_memory_treats_max_steps_as_a_ceiling_and_models_serial_fallback ... ok
+test estimates::tests::cpa_never_accepts_a_negative_gain_widening ... ok
+test estimates::tests::cpa_overlap_search_retains_larger_ceiling_on_makespan_tie ... ok
+test estimates::tests::cpa_allocation_is_idempotent ... ok
+test estimates::tests::cpa_excludes_intentional_skips_from_cpu_memory_and_curve_allocation ... ok
+test estimates::tests::cpa_refits_the_plateau_to_the_executable_budget ... ok
+test estimates::tests::cpa_keeps_an_empty_jobs_flag_step_at_its_rigid_declared_width ... ok
+test estimates::tests::cpa_refuses_malformed_programmatic_jobs_env_before_publishing_an_allocation - should panic ... ok
+test estimates::tests::cpa_memory_uses_learned_rss_before_allocating ... ok
+test estimates::tests::cpa_plan_application_cannot_launder_an_overbudget_self_managed_width ... ok
+test estimates::tests::cpa_searches_past_a_barely_feasible_ninety_mib_overlap_seed ... ok
+test estimates::tests::cpa_piles_cores_on_the_chain_and_leaves_plateau_narrow ... ok
+test estimates::tests::cpa_seed_applies_outer_memory_envelope_and_returns_typed_error ... ok
+test estimates::tests::cpa_memory_blocks_widening_even_with_free_cores ... ok
+test estimates::tests::critical_path_planner_differs_from_lpt ... ok
+test estimates::tests::cpa_trades_overlap_for_width_when_that_lowers_makespan ... ok
+test estimates::tests::high_percentile_nearest_rank ... ok
+test estimates::tests::parse_float_rejects_non_finite ... ok
+test estimates::tests::parse_helpers_trim_and_reject ... ok
+test estimates::tests::exact_width_memory_is_not_scaled_twice_when_plan_is_applied ... ok
+test estimates::tests::cpa_spreads_cores_on_independent_tasks ... ok
+test estimates::tests::plateau_is_global_and_grid_invariant ... ok
+test estimates::tests::every_planner_omits_a_profile_curve_wholly_above_the_run_core_budget ... ok
+test estimates::tests::robust_median_discards_outlier ... ok
+test estimates::tests::every_planner_bounds_profile_recommendations_to_the_run_core_budget ... ok
+test cpuset_allocator::tests::signal_status_uses_shell_convention ... ok
+test estimates::tests::load_step_samples_trims_and_rejects_hostile_cells ... ok
+test estimates::tests::width_specific_memory_excludes_censored_modern_rows ... ok
+test estimates::tests::workload_selection_prefers_matching_digest_and_never_mixes_revisions ... ok
+test estimates::tests::scaling_model_sidecar_is_deterministic ... ok
+test io::tests::a_demand_above_a_positive_cap_is_refused_but_a_cap_of_zero_stays_a_deliberate_block ... ok
+test io::tests::a_duplicate_step_tag_is_refused_rather_than_silently_dropping_a_step ... ok
+test io::tests::a_duplicate_tag_short_circuits_the_edge_checks ... ok
+test io::tests::a_key_naming_no_config_field_at_all_is_still_tolerated ... ok
+test estimates::tests::speedup_model_detects_knee_and_linear ... ok
+test io::tests::a_graph_with_several_faults_reports_them_all_at_once ... ok
+test io::tests::a_missing_dependency_is_refused_at_load_not_after_a_full_build ... ok
+test io::tests::a_non_dag_document_names_what_was_read_and_what_to_do ... ok
+test io::tests::a_top_level_key_the_format_cannot_carry_is_refused_by_name ... ok
+test io::tests::a_step_declaring_only_known_fields_still_loads ... ok
+test io::tests::an_unknown_step_field_is_refused_and_named_with_its_step ... ok
+test io::tests::default_step_timeout_applied ... ok
+test io::tests::classified_result_manifest_is_explicit_and_roundtrips ... ok
+test io::tests::float_literal_round_trips_bit_exactly ... ok
+test io::tests::every_key_the_serializer_emits_survives_a_round_trip ... ok
+test io::tests::fail_fast_family_roundtrips_and_rejects_empty ... ok
+test io::tests::json_float_exact_halfway_tie_is_a_known_residual ... ok
+test io::tests::integration_test_binaries_roundtrip_and_refuse_malformed_values ... ok
+test io::tests::json_float_matches_python_repr ... ok
+test io::tests::labels_refuse_malformed_values ... ok
+test io::tests::malformed_jobs_env_fields_are_refused_by_location ... ok
+test io::tests::minimal_document_defaults ... ok
+test io::tests::manifest_selection_roundtrips_and_refuses_malformed_values ... ok
+test io::tests::result_manifests_refuse_malformed_and_duplicate_selectors ... ok
+test io::tests::strict_parse_errors ... ok
+test io::tests::the_refusal_counts_and_names_every_offending_key_at_once ... ok
+test io::tests::the_refused_key_set_is_exactly_the_six_names_the_contract_lists ... ok
+test io::tests::structured_result_manifests_refuse_wrong_contract_and_owner ... ok
+test io::tests::roundtrip_is_stable ... ok
+test io::tests::result_manifests_roundtrip_preserves_absent_null_and_explicit_empty ... ok
+test io::tests::typed_intentional_skip_roundtrips_and_rejects_dependents ... ok
+test memory_feedback::tests::a_decline_keeps_sub_threshold_uncensored_evidence_as_a_floor ... ok
+test memory_feedback::tests::a_decline_keeps_the_censored_floor_when_it_is_above_the_authored_hint ... ok
+test io::tests::write_domain_policy_roundtrips_and_refuses_omission ... ok
+test memory_feedback::tests::a_decline_never_lowers_a_baseline_the_author_already_set_high_enough ... ok
+test io::tests::yaml_emit_round_trips ... ok
+test memory_feedback::tests::a_declined_step_is_restored_to_the_baseline_its_author_wrote ... ok
+test io::tests::yaml_is_isomorphic_to_json ... ok
+test memory_feedback::tests::a_peak_that_met_a_ceiling_is_censored ... ok
+test memory_feedback::tests::a_peak_under_a_known_quiet_cap_is_a_real_observation ... ok
+test memory_feedback::tests::a_row_that_cannot_answer_is_unknown_not_uncensored ... ok
+test memory_feedback::tests::a_row_that_records_a_failed_step_is_censored ... ok
+test memory_feedback::tests::a_skipped_step_is_left_alone_even_when_the_authored_baseline_is_known ... ok
+test memory_feedback::tests::a_step_whose_recorded_runs_all_failed_keeps_the_authored_hint ... ok
+test memory_feedback::tests::a_step_with_no_authored_baseline_at_all_is_restored_to_none ... ok
+test memory_feedback::tests::a_step_with_no_authored_baseline_still_takes_the_floor_its_peaks_prove ... ok
+test memory_feedback::tests::an_explicit_hard_cap_is_never_rewritten_by_the_profile_path ... ok
+test memory_feedback::tests::an_unbounded_step_that_never_reclaimed_is_a_real_observation ... ok
+test memory_feedback::tests::enough_quiet_samples_produce_a_percentile_estimate_with_margin ... ok
+test memory_feedback::tests::every_pressure_counter_the_writer_records_is_read ... ok
+test memory_feedback::tests::every_peak_censored_keeps_the_static_hint_and_says_so ... ok
+test memory_feedback::tests::only_a_profile_backed_admission_replaces_the_authored_hint ... ok
+test memory_feedback::tests::the_default_margin_is_twenty_percent ... ok
+test memory_feedback::tests::the_decision_line_says_when_a_decline_still_raised_the_baseline ... ok
+test memory_feedback::tests::samples_from_another_revision_are_excluded_and_counted ... ok
+test memory_feedback::tests::the_default_minimum_uncensored_sample_count_is_five ... ok
+test memory_feedback::tests::the_estimate_never_falls_below_the_largest_censored_peak ... ok
+test memory_feedback::tests::the_estimate_never_falls_below_the_largest_uncensored_peak ... ok
+test memory_feedback::tests::the_legacy_oom_column_still_censors_when_the_event_counter_is_absent ... ok
+test memory_feedback::tests::the_proven_floor_is_the_larger_of_the_censored_and_uncensored_peaks ... ok
+test memory_feedback::tests::too_few_uncensored_samples_keeps_the_static_hint_and_says_how_many ... ok
+test model::carry_tests::a_nan_factor_is_not_reported_as_a_dropped_field ... ok
+test model::carry_tests::an_absent_default_cap_is_reported_as_absent_not_as_zero ... ok
+test memory_feedback::tests::unprovenanced_samples_alone_keep_the_static_hint_and_say_so ... ok
+test model::carry_tests::carry_diff_is_empty_for_a_config_compared_with_itself ... ok
+test model::carry_tests::carry_diff_names_every_field_a_default_rebuild_drops ... ok
+test model::carry_tests::the_field_checklist_matches_the_comparison ... ok
+test model::carry_tests::with_steps_carries_every_field_the_default_rebuild_drops ... ok
+test model::cpu_timeout_multiplier_tests::a_nonpositive_explicit_multiplier_is_refused ... ok
+test model::cpu_timeout_multiplier_tests::breach_is_unchanged_at_unity_and_platform_label_is_optional ... ok
+test model::cpu_timeout_multiplier_tests::declared_and_default_budgets_both_scale ... ok
+test cli::tests::final_stress_guard_refuses_profile_raised_rss_before_spawn ... ok
+test model::cpu_timeout_multiplier_tests::oom_still_outranks_a_scaled_cpu_timeout ... ok
+test model::cpu_timeout_multiplier_tests::rounding_matches_python_half_away_from_zero ... ok
+test model::cpu_timeout_multiplier_tests::scaled_breach_names_canonical_multiplier_and_platform ... ok
+test model::cpu_timeout_multiplier_tests::scaling_can_never_become_an_opt_out ... ok
+test model::cpu_timeout_multiplier_tests::unity_is_a_strict_no_op ... ok
+test model::tests::classification_browser_promotes_to_latency ... ok
+test model::tests::command_with_inner_jobs_appends_and_respects_defaults ... ok
+test model::tests::default_config_enables_small_forcing_caps ... ok
+test model::tests::failure_reason_precedence ... ok
+test model::tests::jobs_env_resolves_overrides_and_marks_env_only_steps_resizable ... ok
+test model::tests::render_jobs_flag_forms ... ok
+test memory_feedback::tests::the_shipped_default_threshold_refuses_four_samples_and_accepts_five ... ok
+test model::tests::malformed_programmatic_jobs_env_is_refused ... ok
+test model::tests::result_manifest_owner_preserves_fallback_and_explicit_empty ... ok
+test model::tests::result_manifest_owner_refuses_inexact_missing_and_cross_node_ownership ... ok
+test model::tests::step_outcome_retains_every_failure_fact_hidden_by_reason_precedence ... ok
+test model::tests::structured_result_manifest_owner_and_cardinality_are_structural ... ok
+test perflog::tests::civil_from_days_epoch ... ok
+test perflog::tests::empty_time_series_creates_no_trace_directory ... ok
+test perflog::tests::timestamp_shape ... ok
+test proccpu::tests::refuses_degenerate_pgids ... ok
+test perflog::tests::csv_parser_and_appender_preserve_quoted_multiline_fields ... ok
+test profile_capture::tests::centered_window_preserves_edges_and_reports_clipping ... ok
+test profile_capture::tests::sweet_spot_uses_recommended_level_and_raw_wall ... ok
+test profile_enrich::tests::fractional_cpu_quota_is_conservatively_floored ... ok
+test profile_capture::tests::privileged_wprof_launch_reports_the_exact_signal_target ... ok
+test proccpu::tests::zero_is_a_reading_but_absence_is_unknown ... ok
+test proccpu::tests::unreadable_or_malformed_procfs_is_unknown ... ok
+test memory_feedback::tests::a_missing_store_means_keep_every_hint_rather_than_no_memory ... ok
+test reservation::tests::acquire_rejects_invalid_sample_windows ... ok
+test proccpu::tests::sums_only_the_named_group_and_includes_reaped_children ... ok
+test profile_capture::tests::missing_tools_are_explicit_and_never_add_sudo ... ok
+test perflog::tests::append_step_profiles_sorts_dynamic_cpu_columns ... ok
+test resource_caps::tests::zero_demand_needs_no_shared_request ... ok
+test profile_report::tests::report_embeds_historical_records_graph_and_traces ... ok
+test scheduler::tests::a_graph_with_the_guard_switched_off_everywhere_is_not_nagged ... ok
+test profile_report::tests::missing_required_csv_columns_are_reported ... ok
+test scheduler::tests::a_panicking_supervisor_becomes_a_failed_step_that_names_the_panic ... ok
+test scheduler::tests::an_absent_cpu_counter_is_unmeasurable_not_zero ... ok
+test scheduler::tests::absent_cap_reads_differently_from_a_declared_zero ... ok
+test scheduler::tests::an_undeclared_resource_demand_is_named_and_a_declared_zero_is_not ... ok
+test resource_caps::tests::malformed_state_is_refused ... ok
+test scheduler::tests::a_poisoned_lock_is_recovered_instead_of_cascading_into_every_other_thread ... ok
+test scheduler::tests::an_unlimited_capture_is_an_explicit_opt_out_not_a_fallback ... ok
+test scheduler::tests::an_unwrapped_ring_is_exactly_what_was_fed ... ok
+test resource_caps::tests::missing_configured_state_is_refused ... ok
+test reservation::tests::dead_holder_is_reclaimed ... ok
+test profile_report::tests::generated_html_is_offline_interactive_and_script_safe ... ok
+test resource_caps::tests::state_without_process_starttime_is_refused ... ok
+test reservation::tests::invalid_record_schema_is_rejected_without_coercion ... ok
+test profile_report::tests::capture_manifests_are_filtered_sorted_and_linked_safely ... ok
+test reservation::tests::corrupt_and_special_ledgers_fail_closed ... ok
+test scheduler::tests::an_undeclared_resource_is_refused_before_anything_runs ... ok
+test scheduler::tests::dangling_dep_refuses_instead_of_sleeping_forever ... ok
+test scheduler::tests::dependency_cycle_refuses_before_anything_runs_and_names_the_cycle ... ok
+test scheduler::tests::classified_terminal_causes_do_not_rewrite_outer_failure_facts ... ok
+test profile_report::tests::report_destination_guard_preserves_inputs_and_allows_reports ... ok
+test scheduler::tests::level_five_console_lines_always_name_the_deepest_test_identity ... ok
+test resource_caps::tests::conflicting_live_capacities_are_refused ... ok
+test scheduler::tests::proc_stat_parser_excludes_zombies_from_the_term_grace ... ok
+test scheduler::tests::public_cap_refuses_malformed_programmatic_jobs_env - should panic ... ok
+test scheduler::tests::publishing_a_crash_does_not_overwrite_an_outcome_the_step_already_recorded ... ok
+test scheduler::tests::a_supervisor_that_ends_without_publishing_cannot_wedge_a_whole_run ... ok
+test scheduler::tests::complete_capture_keeps_zero_distinct_from_unknown ... ok
+test scheduler::tests::complete_capture_counts_tests_independently_of_console_verbosity ... ok
+test scheduler::tests::current_results_are_required_only_for_declared_result_producers ... ok
+test scheduler::tests::cpu_journal_fields_name_their_units_and_never_invent_a_zero ... ok
+test resource_caps::tests::second_request_waits_until_the_first_releases ... ok
+test scheduler::tests::level_five_failure_replay_preserves_identity_without_cross_stream_borrowing ... ok
+test scheduler::tests::retiring_twice_gives_the_resource_back_only_once ... ok
+test scheduler::tests::sampling_deadlines_advance_from_the_original_cadence ... ok
+test scheduler::tests::the_capture_truncation_notice_is_identical_to_the_python_engines ... ok
+test scheduler::tests::the_console_line_bound_is_pinned_to_one_mib_literally ... ok
+test scheduler::tests::the_default_budget_counts_for_the_best_effort_floor ... ok
+test scheduler::tests::the_last_line_survives_a_step_that_overran_the_ceiling ... ok
+test scheduler::tests::the_ring_is_byte_exact_across_a_wrap ... ok
+test scheduler::tests::the_split_notice_is_identical_to_the_sibling_engine ... ok
+test scheduler::tests::the_ring_keeps_the_tail_and_reports_how_much_it_dropped ... ok
+test scheduler::tests::the_ring_never_allocates_more_than_its_ceiling_however_much_is_fed ... ok
+test attribution::tests::parallel_explicit_boundaries_report_the_complete_live_set_and_elapsed_time ... ok
+test scheduler::tests::the_platform_multiplier_is_applied_before_the_notice_quotes_a_number ... ok
+test scheduler::tests::the_split_notice_names_the_bound_in_force_not_the_constant ... ok
+test scheduler::tests::the_uncontained_notice_counts_the_budgets_and_names_the_largest ... ok
+test scheduler::tests::timeseries_deltas_are_blank_after_missing_or_reset_counters ... ok
+test scheduler::tests::the_split_notice_says_it_was_forced_and_that_nothing_was_lost ... ok
+test scheduler::tests::timeseries_library_path_refuses_unboxed_before_spawn ... ok
+test scheduler::tests::whole_run_cpu_budget_refuses_when_exact_accounting_is_absent ... ok
+test sizing::tests::a_forwarded_answer_beats_the_runners_own_write ... ok
+test sizing::tests::a_positive_integer_is_intent ... ok
+test sizing::tests::a_stated_width_wins_and_the_derivation_is_still_recorded ... ok
+test sizing::tests::empty_stress_footprint_uses_default_then_floor ... ok
+test sizing::tests::exact_width_baseline_is_not_scaled_twice ... ok
+test scheduler::tests::ungrantable_cap_refuses_before_anything_runs ... ok
+test sizing::tests::parse_size_cases ... ok
+test sizing::tests::schedulable_peak_picks_best_feasible_set ... ok
+test scheduler::tests::the_sweep_reaps_a_supervisor_that_ended_without_publishing ... ok
+test scheduler::tests::whole_run_cpu_budget_fails_closed_if_the_counter_moves_backwards ... ok
+test sizing::tests::memory_classes_and_hard_cap_width_rules ... ok
+test sizing::tests::nothing_else_is_intent ... ok
+test sizing::tests::stress_footprint_charges_every_step ... ok
+test sizing::tests::stress_footprint_uses_width_aware_runtime_caps ... ok
+test scheduler::tests::the_sweep_sees_a_crash_that_lands_between_retiring_and_publishing ... ok
+test scheduler::tests::the_sweep_never_contradicts_a_supervisor_that_did_publish ... ok
+test sizing::tests::stress_without_default_only_marks_uncharacterized_steps_unbounded ... ok
+test sizing::tests::stress_footprint_has_the_default_floor ... ok
+test sizing::tests::the_notice_also_says_when_nothing_was_overridden ... ok
+test sizing::tests::the_outermost_process_reads_the_ambient_variable ... ok
+test sizing::tests::step_mem_cap_hard_override_wins ... ok
+test sizing::tests::transitive_deps_cases ... ok
+test sizing::tests::wide_dag_uses_bounded_conservative_memory_fallback ... ok
+test sizing::tests::the_notice_names_the_winner_the_loser_and_the_risk ... ok
+test sizing::tests::the_awkward_digit_strings_are_not_intent ... ok
+test summary::tests::estimates_from_summary_match_raw_union ... ok
+test summary::tests::from_json_rejects_unknown_version_and_non_finite ... ok
+test sizing::tests::the_containment_default_governs_when_nothing_was_stated ... ok
+test summary::tests::merge_rejects_identity_mismatch ... ok
+test summary::tests::merge_is_commutative_and_associative ... ok
+test summary::tests::merge_with_empty_is_identity ... ok
+test summary::tests::serialization_roundtrip_is_stable ... ok
+test summary::tests::version_one_summary_upgrades_to_blank_workload_and_legacy_exact_peak ... ok
+test summary::tests::version_two_rejects_sample_and_bucket_workload_mismatch ... ok
+test summary::tests::workload_revisions_have_independent_reservoirs_before_selection ... ok
+test sweep::tests::coarse_and_cumulative_grids_match_the_large_smt_host_policy ... ok
+test sweep::tests::workload_digest_covers_width_channels_and_sorted_environment ... ok
+test sweep::tests::affinity_topology_counts_packages_and_cores ... ok
+test sweep::tests::target_duration_accepts_zero_and_suffixes ... ok
+test test_results::additive_tests::default_schema_and_legacy_bytes_are_unchanged ... ok
+test sync::tests::parse_backend_dispatch_and_rejects ... ok
+test test_results::additive_tests::writers_and_declarations_refuse_implicit_conversion ... ok
+test test_results::classified_tests::current_schema_refuses_duplicate_keys_at_every_object_depth_in_both_orders ... ok
+test test_results::classified_tests::current_shape_round_trips_and_keeps_retry_count ... ok
+test test_results::classified_tests::malformed_current_results_fail_by_field_name ... ok
+test test_results::additive_tests::each_nonpass_requires_real_detail_and_keeps_its_cause ... ok
+test test_results::tests::current_shape_round_trips_and_keeps_retry_count ... ok
+test test_results::tests::retained_counts_remain_readable_but_have_no_current_write_path ... ok
+test test_results::tests::malformed_current_results_fail_by_field_name ... ok
+test viz::tests::critical_path_is_longest_weighted_chain ... ok
+test viz::tests::dot_annotates_profiling_and_scaling ... ok
+test viz::tests::dot_has_clusters_nodes_and_edges ... ok
+test viz::tests::dot_omits_profiling_when_no_estimates ... ok
+test sweep::tests::explicit_widths_preserve_legacy_ranges_and_add_lists ... ok
+test sweep::tests::stable_topology_uses_document_order_for_ready_ties ... ok
+test sync::tests::select_latest_artifact_picks_newest_non_expired ... ok
+test test_results::additive_tests::raw_duplicate_keys_refuse_identical_values_and_legacy_ambiguity ... ok
+test test_results::classified_tests::current_schema_refuses_missing_attempt_results ... ok
+test summary::tests::reservoir_does_not_badly_bias_median_on_skewed_set ... ok
+test test_results::additive_tests::inconsistent_or_ambiguous_attempt_histories_are_refused ... ok
+test test_results::classified_tests::strict_json_reader_still_refuses_trailing_input ... ok
+test test_results::classified_tests::retained_counts_remain_readable_but_have_no_current_write_path ... ok
+test viz::tests::ascii_shows_layers_deps_and_resources ... ok
+test summary::tests::merge_is_bounded_across_many_runs ... ok
+test sizing::tests::width_one_sizing_skips_closure_on_5000_node_reverse_chain ... ok
+test summary::tests::reservoir_ranks_observations_not_distinct_values ... ok
+test sizing::tests::sizing_counts_hard_default_and_selected_engine_steps ... ok
+test sizing::tests::jobs_for_budget_scales_each_cpu_bound_steps_effective_width ... ok
+test sizing::tests::sizing_saturates_i64_instead_of_overflowing ... ok
+test sizing::tests::invalid_nonpositive_memory_hints_fall_back_safely ... ok
+test sizing::tests::jobs_for_budget_monotonic_and_at_least_one ... ok
+test scheduler::tests::write_domain_policy_refuses_before_spawning ... ok
+test scheduler::tests::structured_counts_replace_printed_banners_when_required ... ok
+test scheduler::tests::the_crash_record_in_the_journal_names_the_cause ... ok
+test sync::tests::local_backend_roundtrip_and_accumulate ... ok
+test perflog::tests::time_series_uses_run_scoped_path_and_stamps_provenance ... ok
+test resource_caps::tests::request_from_exited_process_is_reclaimed ... ok
+test io::tests::a_dependency_cycle_is_refused_and_the_refusal_names_the_cycle ... ok
+test reservation::tests::acquire_release_and_shared_schema ... ok
+test scheduler::tests::over_budget_width_with_empty_jobs_flag_is_not_rewritten_and_refuses_before_spawn ... ok
+test resource_caps::tests::capacity_counts_apply_across_requests_not_only_at_one ... ok
+test perflog::tests::append_step_profiles_writes_schema_header ... ok
+test perflog::tests::perf_window_writes_whole_run_row ... ok
+test profile_capture::tests::guest_launch_bridge_timestamps_after_delayed_inner_guest_setup ... ok
+test reservation::tests::releasing_one_same_tag_reservation_keeps_the_other ... ok
+test sizing::tests::transitive_deps_handles_1100_node_reverse_chain_iteratively ... ok
+test profile_capture::tests::wprof_readiness_timeout_skips_workload_and_retains_failure_log ... ok
+test profile_capture::tests::wprof_failure_is_explicit_and_retains_manifest_and_log ... ok
+test scheduler::tests::undeclared_step_profiles_the_default_cpu_cap_as_inner_jobs ... ok
+test scheduler::tests::boxed_readonly_jobs_env_refuses_before_guest_command ... ok
+test scheduler::tests::boxed_child_keeps_the_per_step_width_after_the_scope_export ... ok
+test profile_capture::tests::wprof_early_exit_after_ready_is_safe_and_reaps_its_process_group ... ok
+test profile_capture::tests::perf_capture_uses_fifo_window_and_never_models_trial ... ok
+test scheduler::tests::timeseries_is_empty_without_opt_in ... ok
+test scheduler::tests::runtime_nonpositive_memory_hints_use_positive_default ... ok
+test scheduler::tests::runtime_memory_caps_scale_with_preferred_and_default_widths ... ok
+test scheduler::tests::boxed_scope_or_operator_width_is_unchanged_without_a_jobs_env_channel ... ok
+test scheduler::tests::legacy_oom_kill_cannot_be_a_false_exit_zero_pass ... ok
+test scheduler::tests::classified_failed_declared_results_replace_the_false_exit_zero_reason ... ok
+test scheduler::tests::whole_run_cpu_budget_is_silent_below_the_limit ... ok
+test scheduler::tests::classified_malformed_declared_results_refuse_without_run_evidence ... ok
+test scheduler::tests::a_peak_below_its_cap_is_not_reported_as_touching_it ... ok
+test scheduler::tests::step_exports_unforgeable_monotonic_start_epoch ... ok
+test scheduler::tests::classified_declared_results_use_scheduler_owned_path_without_run_evidence ... ok
+test scheduler::tests::timeseries_has_start_periodic_and_final_samples_before_cleanup ... ok
+test scheduler::tests::unboxed_bash_readonly_jobs_env_refuses_before_guest_command ... ok
+test scheduler::tests::classified_oom_kill_preserves_valid_inner_pass_and_outer_failure ... ok
+test scheduler::tests::legacy_terminal_failure_cannot_be_a_false_exit_zero_pass ... ok
+test scheduler::tests::level_one_outcomes_retain_typed_counts_from_suppressed_output ... ok
+test scheduler::tests::a_cap_declared_as_zero_stays_the_deliberate_block_the_guide_documents ... ok
+test scheduler::tests::classified_ordinary_failed_declared_results_replace_the_false_exit_zero_reason ... ok
+test scheduler::tests::whole_run_cpu_budget_is_cumulative_across_scheduler_calls ... ok
+test scheduler::tests::malformed_declared_results_refuse_without_run_evidence ... ok
+test scheduler::tests::inner_jobs_flag_is_appended_to_command ... ok
+test scheduler::tests::oversized_width_and_default_cpu_cap_are_clamped_to_max_cpus ... ok
+test scheduler::tests::an_exact_cap_pass_and_an_oom_kill_stay_distinguishable_in_the_profile_row ... ok
+test scheduler::tests::classified_missing_declared_results_refuse_without_run_evidence ... ok
+test scheduler::tests::declared_results_use_scheduler_owned_path_without_run_evidence ... ok
+test scheduler::tests::an_unboxed_run_leaves_every_censoring_column_blank ... ok
+test cli::tests::a_mem_below_the_modeled_floor_still_runs_the_command ... ok
+test cli::tests::explicit_report_collision_fails_after_preserving_measurements ... ok
+test scheduler::tests::fail_fast_reports_independent_step_as_not_launched ... ok
+test scheduler::tests::a_run_with_an_undeclared_demand_is_refused_rather_than_waited_out ... ok
+test scheduler::tests::missing_declared_results_refuse_without_run_evidence ... ok
+test scheduler::tests::failure_output_carries_no_escape_sequences_when_stdout_is_not_a_terminal ... ok
+test scheduler::tests::an_unbounded_step_says_max_and_an_unmeasured_one_says_nothing ... ok
+test scheduler::tests::dep_failure_skips_dependent ... ok
+test scheduler::tests::intentional_skip_never_spawns_and_nonempty_peer_runs ... ok
+test cli::tests::successful_profiled_sweep_writes_interactive_report_by_default ... ok
+test cli::tests::default_report_collision_warns_without_failing_sweep ... ok
+test sync::tests::git_backend_retry_on_conflict_does_not_clobber ... ok
+test scheduler::tests::run_offsets_place_concurrent_steps_on_one_overlapping_timeline ... ok
+test scheduler::tests::a_termination_record_names_the_quantity_it_compared ... ok
+test scheduler::tests::scoped_eager_exit_does_not_launch_a_queued_family_peer ... ok
+test scheduler::tests::unboxed_child_observes_the_admitted_env_only_width ... ok
+test scheduler::tests::positive_satisfiable_caps_yield_no_refusal_and_the_dag_still_runs ... ok
+test scheduler::tests::simple_dag_all_pass_respects_deps ... ok
+test scheduler::tests::whole_run_cpu_budget_fires_and_the_wall_backstop_does_not_carry_it ... ok
+test scheduler::tests::keep_going_launches_independent_step_after_failure ... ok
+test cli::tests::ordinary_run_profiles_share_one_run_id_and_name_the_unboxed_runner ... ok
+test profile_capture::tests::wprof_windows_are_separate_private_trials_with_interoperable_manifest ... ok
+test scheduler::tests::keep_going_collects_every_independent_failure_in_one_run ... ok
+test scheduler::tests::classified_oom_kill_keeps_result_refusal_or_valid_inner_cause_separate ... ok
+test scheduler::tests::the_step_error_marker_leads_a_failure_and_marks_neither_a_pass_nor_an_abort ... ok
+test scheduler::tests::eager_exit_aborts_inflight_step ... ok
+test scheduler::tests::scoped_eager_exit_cancels_its_family_and_completes_an_independent_family ... ok
+test sync::tests::git_backend_roundtrip_and_subdir ... ok
+test scheduler::tests::spawn_failure_eager_aborts_an_inflight_sibling ... ok
+test scheduler::tests::run_offsets_place_dependent_steps_in_order_without_overlap ... ok
+test cli::tests::stress_generation_removes_named_resource_serialization ... ok
+test scheduler::tests::resource_cap_serializes_concurrent_steps ... ok
+test scheduler::tests::classified_cpu_timeout_keeps_exact_outer_reason_beside_missing_evidence_refusal ... ok
+test scheduler::tests::classified_cpu_timeout_keeps_exact_outer_reason_beside_malformed_evidence_refusal ... ok
+test scheduler::tests::classified_wall_timeout_keeps_exact_outer_reason_beside_missing_evidence_refusal ... ok
+test scheduler::tests::classified_wall_timeout_keeps_exact_outer_reason_beside_malformed_evidence_refusal ... ok
+test scheduler::tests::a_dead_cpu_budget_monitor_says_the_budget_is_no_longer_enforced ... ok
+test scheduler::tests::max_steps_governs_overlap_while_max_cpus_caps_each_step ... ok
+test scheduler::tests::per_step_wall_ceiling_follows_the_wall_timeout_capability_flag ... ok
+
+test result: ok. 491 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
+
+     Running unittests src/bin/cpuset_alloc.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/a870717d75e4c7c5/out/cpuset_alloc-a870717d75e4c7c5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/b998f71ff573d045/out/dagrun-b998f71ff573d045)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/boxed_stdin_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/3d7c710c6953c920/out/boxed_stdin_smoke-3d7c710c6953c920)
+
+running 1 test
+test boxed_stdin_dag_keeps_step_and_cpu_limits_independent ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+
+     Running tests/boxing_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/fcc068701f262625/out/boxing_smoke-fcc068701f262625)
+
+running 2 tests
+test boxing_oom_kills_a_step_past_its_cap ... ok
+test boxed_oom_does_not_truncate_a_neighbour_artifact ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running tests/cmdtype.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/f84002c5059a5f47/out/cmdtype-f84002c5059a5f47)
+
+running 8 tests
+test cmdtype_and_jobs_flag_combinations_are_unambiguous ... ok
+test compound_command_without_extra_args_is_refused ... ok
+test cmdtype_round_trips_and_unknown_values_are_refused ... ok
+test every_cmdtype_has_known_arguments ... ok
+test multi_word_extra_args_must_not_be_quoted ... ok
+test unknown_neither_appends_cmdtype_arguments_nor_sets_the_variable ... ok
+test compound_command_expands_extra_args_once ... ok
+test known_simple_command_gets_arguments_appended ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/core_box_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/d643222cb4257115/out/core_box_smoke-d643222cb4257115)
+
+running 1 test
+test cores_flag_refuses_unboxed_soft_affinity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/cpu_breach_units.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/88e33a296b7eaf0d/out/cpu_breach_units-88e33a296b7eaf0d)
+
+running 1 test
+test a_cpu_breach_records_the_cpu_quantity_it_compared_not_the_wall_clock ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+     Running tests/cpu_timeout_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/8784006b2ef3afa0/out/cpu_timeout_smoke-8784006b2ef3afa0)
+
+running 1 test
+test boxing_cpu_timeout_reaps_a_step_past_its_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests/default_cap_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/4e68f33d887c9692/out/default_cap_smoke-4e68f33d887c9692)
+
+running 3 tests
+test unsafe_no_cgroups_is_the_explicit_opt_out ... ok
+test default_small_cap_boxes_an_undeclared_step ... ok
+test default_cpu_caps_fire_and_allow_compliant_work ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.78s
+
+     Running tests/enforcement_flag_brackets.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/672ebcfe0780aeca/out/enforcement_flag_brackets-672ebcfe0780aeca)
+
+running 1 test
+test scheduler_guards_follow_their_published_capability_flags ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.74s
+
+     Running tests/enforcement_manifest.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/2ba5792db5edc4c1/out/enforcement_manifest-2ba5792db5edc4c1)
+
+running 6 tests
+test every_published_flag_is_what_a_guard_site_would_be_told ... ok
+test the_contained_lane_matches_the_hand_written_table ... ok
+test the_manifest_declares_both_lanes_and_nothing_else ... ok
+test the_uncontained_lane_does_not_claim_the_cgroup_guards ... ok
+test the_manifest_is_compact_json_with_no_incidental_whitespace ... ok
+test the_uncontained_lane_matches_the_hand_written_table ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/label_selection_api.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/77e7060cd98f4718/out/label_selection_api-77e7060cd98f4718)
+
+running 5 tests
+test label_selection_unions_matches_and_refuses_unknown_labels ... ok
+test tag_selection_refuses_non_exact_or_unknown_ids_without_changing_the_source ... ok
+test library_consumers_can_ignore_unselected_dependencies_without_rewriting_the_source ... ok
+test library_consumers_select_labels_with_dependency_ancestry ... ok
+test library_consumers_select_exact_tags_with_dependency_ancestry_and_typed_result ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/max_mem_outer_scope_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/fc21189a72e11e85/out/max_mem_outer_scope_smoke-fc21189a72e11e85)
+
+running 3 tests
+test a_nonpositive_max_mem_is_refused_by_name_and_no_step_runs ... ok
+test max_mem_is_the_memory_max_handed_to_systemd_run ... ok
+test max_mem_is_the_outer_scope_ceiling_the_run_announces ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests/nested_run_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/25fdee59ca75ebe2/out/nested_run_smoke-25fdee59ca75ebe2)
+
+running 1 test
+test nested_run_refuses_by_outer_run_and_override_is_explicit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/profile_timeseries_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/aaa495eced9eea35/out/profile_timeseries_smoke-aaa495eced9eea35)
+
+running 2 tests
+test boxed_run_writes_start_periodic_and_final_trace_rows ... ok
+test boxed_sweep_adds_sweep_provenance_to_each_trace ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/resource_caps_shared.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/b492ec489e0c34d7/out/resource_caps_shared-b492ec489e0c34d7)
+
+running 4 tests
+test missing_configured_state_is_refused_before_the_command_runs ... ok
+test malformed_shared_state_is_refused_before_the_command_runs ... ok
+test environment_path_is_supported_and_an_explicit_flag_wins ... ok
+test two_processes_collide_without_the_fix_and_wait_with_it ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s
+
+     Running tests/result_error_terminal_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/72383118e7e9770c/out/result_error_terminal_smoke-72383118e7e9770c)
+
+running 3 tests
+test a_result_refusal_that_is_already_primary_is_not_printed_twice ... ok
+test peer_abort_and_ordinary_failure_each_print_their_distinct_result_refusal ... ok
+test outer_budget_abort_prints_its_distinct_result_refusal_without_a_step_error_marker ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.31s
+
+     Running tests/run_timeout_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/0abd4f54de8868bb/out/run_timeout_smoke-0abd4f54de8868bb)
+
+running 4 tests
+test misordered_budgets_are_refused_and_the_offenders_named ... ok
+test inner_bound_fires_before_the_outer_one_so_the_node_is_named ... ok
+test clean_run_inside_its_budget_is_untouched ... ok
+test outer_budget_cuts_a_long_run_early_and_still_writes_rows ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.31s
+
+     Running tests/scope_attempt_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/e4d648272f6e9205/out/scope_attempt_smoke-e4d648272f6e9205)
+
+running 9 tests
+test a_forged_in_scope_sentinel_is_refused_not_believed ... ok
+test policy_skip_is_named_as_untested_not_as_unavailable ... ok
+test a_sentinel_naming_the_wrong_unit_is_refused_and_names_what_it_found ... ok
+test a_forced_attempt_that_fails_reports_a_probe_failure_not_a_skip ... ok
+test a_forged_sentinel_with_the_opt_out_degrades_rather_than_claiming ... ok
+test the_sanctioned_opt_out_is_untouched ... ok
+test forcing_the_attempt_boxes_where_boxing_is_possible ... ok
+test the_boxed_path_observes_the_live_pid_in_the_promised_cgroup ... ok
+test every_containment_state_reaches_the_banner_and_the_durable_journal ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/sweep_target_time_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/bedfce50edfb564f/out/sweep_target_time_smoke-bedfce50edfb564f)
+
+running 2 tests
+test legacy_sweep_records_sweep_runner_and_unboxed_enforcement ... ok
+test zero_target_finishes_one_topological_pass_and_drives_jobs_flag ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/termination_attribution_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/63f7677f25f9c499/out/termination_attribution_smoke-63f7677f25f9c499)
+
+running 3 tests
+test clean_suite_still_passes_and_accuses_nobody ... ok
+test journal_identifies_the_in_flight_test_after_the_runner_is_sigkilled ... ok
+test hung_test_is_terminated_named_and_logged_while_a_bystander_survives ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.66s
+
+     Running tests/test_runner_integration_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/2dc7735de9758296/out/test_runner_integration_smoke-2dc7735de9758296)
+
+running 1 test
+   Compiling test-runner-probe v0.0.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/dagrun/tests/fixtures/test-runner-probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+  Executable unittests src/lib.rs (tests/fixtures/test-runner-probe/target/debug/build/test-runner-probe/b974dbc7d05af540/out/test_runner_probe-b974dbc7d05af540)
+cargo-nextest 0.9.100 (7e6129fe2 2025-07-07)
+release: 0.9.100
+commit-hash: 7e6129fe2c410ba2b5fd0da0755c61f9f2252b59
+commit-date: 2025-07-07
+host: x86_64-unknown-linux-gnu
+test controlled_and_third_party_runners_leave_attributable_kill_evidence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.77s
+
+     Running tests/unboxed_cpu_timeout_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/22a2e5a122162792/out/unboxed_cpu_timeout_smoke-22a2e5a122162792)
+
+running 1 test
+test unboxed_cpu_timeout_enforces_a_lower_bound_and_exposes_its_escape ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.17s
+
+     Running tests/unsafe_no_cgroups_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/d599675f7bf6f553/out/unsafe_no_cgroups_smoke-d599675f7bf6f553)
+
+running 1 test
+test unsafe_no_cgroups_deliberately_skips_boxing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/verbosity_smoke.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/3a3da5023a31e0e0/out/verbosity_smoke-3a3da5023a31e0e0)
+
+running 1 test
+test levels_bound_success_but_never_hide_failure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+
+     Running tests/wall_backstop_enforcement.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/bf86dd2de931676d/out/wall_backstop_enforcement-bf86dd2de931676d)
+
+running 2 tests
+test a_step_declaring_only_a_cpu_budget_runs_under_the_derived_ceiling ... ok
+test the_journalled_wall_ceiling_is_the_one_the_killer_enforces ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+     Running tests/wall_timeout_derivation.rs (rs/target/x86_64-unknown-linux-gnu/release/build/dagrun/63fe13dc97e7bcdd/out/wall_timeout_derivation-63fe13dc97e7bcdd)
+
+running 14 tests
+test a_declared_cpu_budget_derives_the_backstop ... ok
+test a_declared_budget_still_round_trips_as_a_number ... ok
+test a_document_default_wins_over_the_derivation ... ok
+test a_small_cpu_budget_does_not_retime_an_already_authored_step ... ok
+test a_document_default_still_round_trips_as_a_number ... ok
+test a_step_that_declared_nothing_keeps_the_1800_second_backstop ... ok
+test an_explicit_step_budget_wins_over_everything ... ok
+test an_undeclared_step_is_still_caught_by_the_run_budget_check ... ok
+test the_derivation_does_not_quietly_admit_a_graph_the_ordering_check_refused ... ok
+test the_derivation_tracks_the_platform_scaled_budget ... ok
+test the_factor_is_three_as_the_established_idiom_spells_it ... ok
+test the_run_budget_ordering_is_checked_on_the_resolved_value ... ok
+test the_floor_is_exactly_where_the_derivation_overtakes_the_default ... ok
+test the_sentinel_is_absence_and_round_trips_as_absence ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (rs/target/x86_64-unknown-linux-gnu/release/build/herdr-run/0569152616db914c/out/herdr_run-0569152616db914c)
+
+running 199 tests
+test agent::tests::resolved_pane_lock_digest_is_byte_for_byte_compatible ... ok
+test agent::tests::session_resolution_refuses_ambiguity_and_contradictory_exact_pane ... ok
+test agent_cli::tests::empty_target_is_rejected_before_herdr_executable_resolution ... ok
+test agent_cli::tests::parser_accepts_intermixed_options_and_rejects_bad_domains ... ok
+test agent_cli::tests::message_source_is_exactly_one_of_text_or_file ... ok
+test agent_cli::tests::parser_refuses_stolen_options_and_non_ascii_or_unbounded_numbers ... ok
+test allowlist::tests::cargo_is_disabled_by_default_and_explicit_opt_in_is_fail_closed ... ok
+test allowlist::tests::cargo_minimum_injection_denies_cannot_be_removed ... ok
+test allowlist::tests::cargo_opt_in_cannot_drop_its_positive_subcommand_policy ... ok
+test allowlist::tests::deny_rules_observe_global_subcommand_and_anywhere_scopes ... ok
+test allowlist::tests::custom_policy_can_widen_narrow_and_replace_defaults ... ok
+test allowlist::tests::distinct_prefixes_can_chain_but_each_can_appear_only_once ... ok
+test allowlist::tests::intended_commands_are_admitted_with_program_prefix_and_subcommand ... ok
+test allowlist::tests::leading_tilde_expands_and_remains_quoted ... ok
+test allowlist::tests::metacharacters_are_literal_arguments_and_rendered_inert ... ok
+test allowlist::tests::every_terminal_control_range_is_refused_before_pty_injection ... ok
+test allowlist::tests::project_can_explicitly_widen_the_cargo_subcommand_policy ... ok
+test allowlist::tests::render_is_byte_for_byte_python_shlex_quote_style ... ok
+test allowlist::tests::refuses_empty_unbalanced_paths_prefix_repetition_and_unknown_programs ... ok
+test agent::tests::status_is_read_only_and_read_falls_back_from_empty_unwrapped_source ... ok
+test allowlist::tests::the_allow_wildcard_admits_any_program_and_keeps_every_other_rule ... ok
+test allowlist::tests::named_current_user_expands_through_nss ... ok
+test allowlist::tests::tokenizer_matches_python_shlex_for_quotes_escapes_comments_and_empty_words ... ok
+test audit::tests::unwritable_audit_is_best_effort ... ok
+test cli::tests::a_double_dash_hands_the_rest_to_the_command ... ok
+test cli::tests::agent_is_refused_by_the_subcommands_that_name_no_tab ... ok
+test cli::tests::an_option_at_the_wrong_level_is_refused_and_says_which_level_it_belongs_to ... ok
+test cli::tests::config_is_refused_by_the_subcommands_that_read_no_configuration ... ok
+test cli::tests::default_command_cwd_is_the_callers_current_directory ... ok
+test cli::tests::each_documentation_subcommand_prints_its_own_document ... ok
+test cli::tests::each_help_level_documents_exactly_its_own_options ... ok
+test cli::tests::every_blind_subcommand_says_so_in_its_own_help ... ok
+test cli::tests::every_subcommand_is_reachable_and_uniquely_named ... ok
+test audit::tests::audit_appends_sorted_valid_json_lines ... ok
+test cli::tests::explicit_empty_cwd_means_the_project_root ... ok
+test cli::tests::global_options_are_accepted_before_the_subcommand ... ok
+test audit::tests::audit_refuses_a_symlink_instead_of_modifying_its_target ... ok
+test audit::tests::audit_does_not_chmod_an_existing_parent_directory ... ok
+test cli::tests::help_distinguishes_the_quickstart_from_the_userguide ... ok
+test cli::tests::invalid_cli_timeouts_are_rejected ... ok
+test cli::tests::json_is_refused_by_the_subcommands_with_no_machine_readable_output ... ok
+test cli::tests::net_doctor_announces_its_narrow_scope_before_probing ... ok
+test cli::tests::net_doctor_failures_have_one_verdict_and_metadata_shape ... ok
+test cli::tests::option_values_cannot_be_stolen_by_help_or_version ... ok
+test cli::tests::run_needs_exactly_one_quoted_command ... ok
+test cli::tests::run_options_are_accepted_after_the_subcommand ... ok
+test cli::tests::the_bare_command_form_is_refused_with_the_run_replacement ... ok
+test cli::tests::the_quickstart_is_a_shorter_amended_version_of_the_guide ... ok
+test cli::tests::the_subcommands_own_parse_wins_over_the_config_refusal ... ok
+test cli::tests::vanished_caller_cwd_is_a_typed_config_error ... ok
+test client::tests::agent_prompt_uses_native_paste_while_shell_run_stays_raw ... ok
+test client::tests::create_commands_never_steal_focus_and_narrow_ids ... ok
+test client::tests::duplicate_workspace_labels_fail_closed ... ok
+test client::tests::embedded_nul_identifier_is_typed_unavailable ... ok
+test client::tests::filtered_pane_list_refuses_another_workspace ... ok
+test client::tests::interactive_agent_identity_workspace_and_wait_event_are_narrowed ... ok
+test client::tests::interactive_agent_protocol_refuses_cross_pane_and_wrong_wait_event ... ok
+test client::tests::interactive_agent_protocol_refuses_malformed_session_and_event ... ok
+test client::tests::malformed_json_and_wrong_integer_types_are_unavailable ... ok
+test client::tests::missing_herdr_is_deferred_until_preflight_or_a_live_query ... ok
+test client::tests::missing_required_protocol_list_fails_closed ... ok
+test client::tests::pane_read_is_plain_text_but_run_success_requires_no_json ... ok
+test client::tests::process_info_refuses_a_response_for_another_pane ... ok
+test client::tests::process_info_refuses_boolean_process_ids ... ok
+test client::tests::process_info_refuses_out_of_range_process_ids ... ok
+test client::tests::real_runner_removes_path_and_pins_account_home ... ok
+test client::tests::server_launch_is_always_outside_and_tolerates_unit_collision ... ok
+test client::tests::systemd_broker_uses_absolute_paths_and_only_account_home ... ok
+test config::tests::cargo_allow_requires_its_positive_subcommand_map ... ok
+test config::tests::defaults_match_the_python_policy ... ok
+test config::tests::every_malformed_shape_is_a_typed_config_error ... ok
+test config::tests::parses_every_supported_key_and_replaces_maps_wholesale ... ok
+test config::tests::the_allow_wildcard_must_stand_alone ... ok
+test config::tests::user_guide_prose_defaults_are_the_built_in_defaults ... ok
+test config::tests::templates_empty_policy_names_and_controls_are_rejected ... ok
+test error::tests::constructors_preserve_kind_message_and_display ... ok
+test error::tests::every_public_failure_kind_has_the_python_exit_code ... ok
+test error::tests::timeout_context_preserves_partial_output_and_spool ... ok
+test identity::tests::a_comm_with_spaces_and_parentheses_does_not_shift_the_fields ... ok
+test identity::tests::a_negative_pid_is_an_error_rather_than_a_death_certificate ... ok
+test identity::tests::a_pid_of_zero_is_an_error_rather_than_a_death_certificate ... ok
+test identity::tests::a_truncated_stat_line_is_unknown_not_a_guess ... ok
+test identity::tests::start_ticks_come_from_field_22 ... ok
+test identity::tests::this_process_can_be_bound_against_the_real_proc ... ok
+test config::tests::empty_yaml_uses_defaults_but_records_its_source ... ok
+test init::tests::the_template_carries_every_configuration_key ... ok
+test init::tests::the_template_names_the_allow_everything_mode_and_the_human_only_rule ... ok
+test readiness::tests::combined_readiness_treats_prompt_as_veto_not_authority ... ok
+test readiness::tests::process_only_mode_does_not_read_prompt ... ok
+test readiness::tests::process_signal_requires_shell_pid_group_and_known_name ... ok
+test readiness::tests::prompt_tail_is_clean_only_once_at_the_end ... ok
+test reap::tests::agent_thinking_is_not_reaped ... ok
+test reap::tests::an_empty_population_still_reports_every_verdict ... ok
+test reap::tests::evidence_error_is_unknown ... ok
+test reap::tests::live_shell_is_not_reaped ... ok
+test reap::tests::mixed_population_reports_counts_on_both_sides ... ok
+test reap::tests::missing_current_boot_is_unknown ... ok
+test reap::tests::new_pane_incarnation_with_a_different_shell_pid_is_unknown ... ok
+test reap::tests::out_of_scope_tab_is_never_considered ... ok
+test reap::tests::pane_unknown_to_herdr_is_not_stale ... ok
+test config::tests::explicit_missing_and_invalid_yaml_are_code_78_errors ... ok
+test reap::tests::planted_stale_tab_is_reaped ... ok
+test reap::tests::rebooted_host_is_unknown_even_when_the_recorded_pid_is_gone ... ok
+test reap::tests::recycled_pid_is_unknown_not_stale ... ok
+test reap::tests::unbound_recorded_identity_is_unknown ... ok
+test config::tests::yaml_uses_core_12_scalar_resolution ... ok
+test client::tests::herdr_resolution_uses_fixed_home_candidates_and_rejects_loose_mode ... ok
+test readiness::tests::ps1_parser_ignores_comments_and_last_assignment_wins ... ok
+test runner::tests::public_runtime_apis_reject_invalid_timeouts_before_launch ... ok
+test runner::tests::shell_wrapper_is_portable_outer_command_and_quotes_paths ... ok
+test runner::tests::pane_lock_is_account_global_across_project_configs ... ok
+test state::tests::relative_account_home_is_rejected ... ok
+test status::tests::a_failing_control_call_is_reported_rather_than_guessed_at ... ok
+test status::tests::a_running_server_reports_panes_and_whether_the_tab_exists ... ok
+test status::tests::a_stopped_server_is_reported_without_being_started ... ok
+test status::tests::an_unreachable_herdr_is_said_plainly_and_leaves_the_counts_unknown ... ok
+test status::tests::the_allow_everything_mode_is_reported_as_such_rather_than_as_a_program_named_star ... ok
+test sweep::tests::a_cache_hit_does_not_manufacture_a_candidate ... ok
+test status::tests::the_report_names_the_configuration_the_policy_and_the_session ... ok
+test sweep::tests::conflicting_pane_shell_incarnations_forfeit_the_identity ... ok
+test config::tests::nearest_config_wins_and_yaml_name_precedes_yml ... ok
+test timefmt::tests::epoch_and_leap_day_are_formatted_in_utc ... ok
+test identity::tests::a_stat_entry_that_cannot_be_opened_is_unknown_not_gone ... ok
+test init::tests::the_written_template_parses_to_the_built_in_defaults ... ok
+test allowlist::tests::unknown_or_interior_nul_user_is_left_literal ... ok
+test identity::tests::an_absent_process_is_gone_and_an_unreadable_one_is_not ... ok
+test readiness::tests::prompt_inference_uses_explicit_value_then_account_files ... ok
+test init::tests::force_overwrites_an_existing_configuration ... ok
+test agent::tests::status_rejects_unsafe_existing_queue_without_mutating_it ... ok
+test sweep::tests::load_run_records_skips_a_corrupt_entry_without_losing_the_rest ... ok
+test agent::tests::message_ids_and_queue_files_cannot_escape_the_private_root ... ok
+test identity::tests::an_implausibly_long_stat_entry_is_unknown_not_gone ... ok
+test agent::tests::existing_python_subagent_message_shape_is_accepted ... ok
+test retention::tests::missing_root_is_a_noop_and_paths_resolve_under_the_spool ... ok
+test retention::tests::fifo_completion_marker_cannot_block_retention ... ok
+test agent::tests::exhausted_head_is_pending_and_missing_target_mutates_nothing ... ok
+test session::tests::split_tab_is_refused_instead_of_selecting_an_arbitrary_pane ... ok
+test retention::tests::root_siblings_and_loose_files_are_untouched ... ok
+test session::tests::concurrent_cache_writers_preserve_both_entries ... ok
+test agent::tests::restart_quarantines_inflight_without_resubmission ... ok
+test retention::tests::excessive_window_fails_closed ... ok
+test retention::tests::old_incomplete_run_survives_while_old_completed_run_is_removed ... ok
+test sweep::tests::a_workspace_herdr_does_not_know_is_reported_as_a_missing_listing ... ok
+test retention::tests::symlink_root_and_symlink_entries_are_never_followed_or_removed ... ok
+test sweep::tests::evidence_carries_the_recorded_identity_the_policy_needs ... ok
+test retention::tests::boundary_and_all_fresh_controls_keep_expected_runs ... ok
+test session::tests::restricted_tab_renderer_accepts_only_exact_fields_and_escaped_braces ... ok
+test sweep::tests::an_unanswering_herdr_reaps_nothing ... ok
+test retention::tests::symlinked_spool_ancestor_is_rejected_as_deletion_scope ... ok
+test init::tests::an_existing_configuration_is_not_clobbered_without_force ... ok
+test retention::tests::old_run_is_pruned_and_recent_run_survives ... ok
+test session::tests::pane_cap_never_locks_an_agent_out_of_its_existing_tab ... ok
+test config::tests::duplicate_merge_tag_and_nonfinite_yaml_are_rejected ... ok
+test runner::tests::timeout_context_carries_lossy_partial_output_and_spool_path ... ok
+test agent::tests::planted_delivery_lock_symlink_is_refused_without_touching_target ... ok
+test sweep::tests::records_arrive_in_run_order_whatever_the_directory_listing_says ... ok
+test runner::tests::retention_hook_prunes_old_run_but_preserves_recent_run ... ok
+test sweep::tests::an_empty_spool_reports_zero_of_everything ... ok
+test sweep::tests::a_pane_in_another_workspace_is_out_of_scope ... ok
+test sweep::tests::retention_takes_the_oldest_leaked_tabs_out_of_the_candidate_set ... ok
+test sweep::tests::a_tab_retargeted_out_of_the_schema_is_out_of_scope ... ok
+test codex_goal::tests::absent_goal_and_protocol_failures_remain_distinct ... ok
+test agent::tests::invalid_json_domains_and_empty_text_are_quarantined ... ok
+test sweep::tests::load_run_records_skips_an_absurdly_large_entry ... ok
+test sweep::tests::a_failing_process_info_call_is_unknown_not_stale ... ok
+test sweep::tests::an_unreadable_proc_entry_is_unknown_not_stale ... ok
+test sweep::tests::a_husk_pane_whose_shell_died_is_reaped ... ok
+test client::tests::real_runner_kills_a_hung_control_command_at_its_bound ... ok
+test state::tests::paths_are_account_global_private_and_pane_ids_are_hashed ... ok
+test agent::tests::queue_directories_tighten_legacy_modes_but_reject_symlinks ... ok
+test sweep::tests::a_run_still_waiting_on_its_exit_code_stays_in_flight ... ok
+test sweep::tests::an_unfinished_run_beats_a_dead_shell ... ok
+test sweep::tests::a_run_that_finished_after_the_timeout_stops_looking_in_flight ... ok
+test sweep::tests::a_pane_herdr_no_longer_lists_is_unknown ... ok
+test sweep::tests::a_proc_entry_that_cannot_be_opened_is_unknown_not_stale ... ok
+test sweep::tests::scope_comes_from_the_latest_record_not_the_first ... ok
+test sweep::tests::an_oversized_proc_entry_is_unknown_not_stale ... ok
+test sweep::tests::a_live_shell_is_spared ... ok
+test session::tests::pane_cap_names_the_remedy_rather_than_only_refusing ... ok
+test session::tests::pane_cap_leaves_room_up_to_the_limit ... ok
+test agent::tests::blocked_agent_is_pending_without_injection ... ok
+test session::tests::cache_rejects_reused_workspace_id_with_wrong_label ... ok
+test session::tests::pane_cap_refuses_a_new_tab_once_the_workspace_is_full ... ok
+test session::tests::pane_cap_of_zero_is_unlimited ... ok
+test session::tests::first_resolution_reuses_root_tab_and_second_uses_validated_cache ... ok
+test session::tests::concurrent_first_resolution_across_projects_creates_session_once ... ok
+test agent::tests::multiline_busy_then_idle_is_atomic_and_confirmed ... ok
+test agent::tests::malformed_fifo_head_preserves_raw_and_does_not_block_valid_prompt ... ok
+test agent::tests::readiness_timeout_is_typed_pending_and_consumes_no_attempt ... ok
+test agent::tests::queue_binding_refuses_a_different_session_without_moving_prompt ... ok
+test agent::tests::done_is_submit_safe_and_zero_working_timeout_still_waits_one_millisecond ... ok
+test agent::tests::post_injection_failures_are_quarantined_once_as_possibly_submitted ... ok
+test codex_goal::tests::read_performs_no_resume_or_turn_and_drains_both_streams ... ok
+test agent::tests::concurrent_senders_serialize_within_and_across_queue_roots ... ok
+test codex_goal::tests::timeout_kills_transport_descendants ... ok
+test runner::tests::meta_records_the_identity_the_reaper_needs ... ok
+test runner::tests::execution_captures_bytes_exit_and_uses_exclusive_collision_suffix ... ok
+test runner::tests::existing_configured_spool_root_is_never_chmoded ... ok
+test runner::tests::a_timed_out_run_is_recorded_as_unfinished ... ok
+
+test result: ok. 199 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running unittests src/agent_main.rs (rs/target/x86_64-unknown-linux-gnu/release/build/herdr-run/9a808d599dc01c50/out/herdr_agent-9a808d599dc01c50)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (rs/target/x86_64-unknown-linux-gnu/release/build/herdr-run/f46e1de1d662be95/out/herdr_run-f46e1de1d662be95)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (rs/target/x86_64-unknown-linux-gnu/release/build/pr-landing-planner/c0bcc89047971ecf/out/pr_landing_planner-c0bcc89047971ecf)
+
+running 58 tests
+test classify::tests::canonical_vocabulary_keeps_nonfailures_as_no_result ... ok
+test classify::tests::state_vocabulary_matches_reference ... ok
+test cli::tests::accepts_equals_forms_and_rejects_unknown_formats ... ok
+test cli::tests::archive_timestamp_matches_the_utc_filename_contract ... ok
+test cli::tests::docs_are_rust_package_specific ... ok
+test collect::tests::content_identity_guard_aborts_before_planning ... ok
+test classify::tests::selection_accepts_wrappers_orders_by_run_then_time_and_preserves_context_order ... ok
+test classify::tests::exact_head_latest_and_tied_contrary_attempts ... ok
+test collect::tests::fixture_collection_builds_real_and_semantic_dimensions ... ok
+test collect::tests::review_evidence_unavailable_survives_collection ... ok
+test collect::tests::review_snapshot_cannot_erase_or_contradict_changes_requested ... ok
+test classify::tests::five_red_classes_and_precedence_match_contract ... ok
+test collect::tests::review_snapshot_head_must_match_the_exact_fetched_head ... ok
+test collect::tests::selection_includes_transitive_stacks_then_applies_only ... ok
+test context::tests::bare_label_is_cache_only_but_dereferenced_context_is_evidence ... ok
+test context::tests::clean_records_keep_exact_head_and_delegate_older_base_to_authority ... ok
+test context::tests::review_pass_labels_without_receipts_are_unbound_and_bad_receipts_refuse ... ok
+test context::tests::review_passes_bind_exact_head_and_head_moves_fail_closed ... ok
+test context::tests::comment_refusal_survives_valid_and_malformed_by_metadata ... ok
+test context::tests::validation_authority_requires_a_clean_record ... ok
+test emit::tests::canonical_json_recursively_sorts_keys_with_any_serde_json_map_backend ... ok
+test emit::tests::empty_json_schema_is_stable_and_sorted ... ok
+test fixture::tests::parses_yaml_defaults_and_simulates_drift ... ok
+test fixture::tests::review_evidence_unavailable_is_a_strict_boolean ... ok
+test graph::tests::exact_head_objection_resolution_only_clears_changes_requested ... ok
+test graph::tests::mechanism_aliases_form_semantic_edges ... ok
+test graph::tests::overlap_components_and_stack_order_match_contract ... ok
+test collect::tests::matching_review_decisions_are_accepted ... ok
+test context::tests::review_digest_covers_every_normalized_authority_field ... ok
+test graph::tests::partition_ranks_and_degrades_ordering_cycles_without_looping ... ok
+test graph::tests::reduction_stacks_holds_and_partition_are_deterministic ... ok
+test context::tests::review_objection_resolution_is_boolean_and_exact_head_bound ... ok
+test collect::tests::canonical_comment_refusal_holds_without_native_review_decision ... ok
+test context::tests::unverified_retirement_stays_visible_and_does_not_clear_objection ... ok
+test graph::tests::review_and_ordering_cycles_are_held_fail_closed ... ok
+test host::tests::failed_enrichment_is_explicit_in_the_production_list_record ... ok
+test context::tests::unverified_who_metadata_is_optional_only_as_an_exact_prose_line ... ok
+test context::tests::review_marker_attribution_is_metadata_for_every_marker ... ok
+test host::tests::incomplete_graphql_connection_fails_closed ... ok
+test host::tests::graphql_partial_data_with_errors_fails_closed ... ok
+test host::tests::paginated_graphql_connection_includes_every_page ... ok
+test context::tests::non_ascii_whitespace_is_not_review_evidence_syntax ... ok
+test host::tests::paginated_inline_comments_are_flattened_without_dropping_pages ... ok
+test context::tests::retirement_uses_event_author_permission_and_ignores_claimed_identity ... ok
+test host::tests::production_light_list_refuses_unknown_availability ... ok
+test host::tests::production_snapshot_rejects_missing_inline_identity ... ok
+test host::tests::production_snapshot_binds_same_timestamp_inline_retirement ... ok
+test host::tests::repository_permission_requires_matching_actor_and_triage_or_higher ... ok
+test host::tests::production_snapshot_rejects_missing_authority_fields ... ok
+test mechanism::tests::recognizes_spellings_and_preserves_unknown ... ok
+test plan::tests::all_red_actions_no_result_variants_batch_and_diagnostics ... ok
+test plan::tests::dependencies_block_landable_children_and_batches_exclude_children ... ok
+test plan::tests::fusion_table_respects_evidence_policy_and_freshness ... ok
+test plan::tests::gate_policy_escalates_and_main_advance_requires_rebase_without_revalidation ... ok
+test plan::tests::passing_non_gate_ci_never_substitutes_for_required_gate ... ok
+test plan::tests::unavailable_review_evidence_waits_before_base_conflict_rebase ... ok
+test priority::tests::labels_choose_most_urgent ... ok
+test priority::tests::command_substitutes_pr_and_fails_loudly_to_default ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/main.rs (rs/target/x86_64-unknown-linux-gnu/release/build/pr-landing-planner/2d5ada12bc49f866/out/pr_landing_planner-2d5ada12bc49f866)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (rs/target/x86_64-unknown-linux-gnu/release/build/tick-hub/148e915463104ac2/out/tick_hub-148e915463104ac2)
+
+running 76 tests
+test cadence::tests::an_off_phase_last_fired_is_pulled_back_onto_the_phase ... ok
+test cadence::tests::due_reminders_preserve_registration_order ... ok
+test cadence::tests::exact_cadence_boundary_is_due ... ok
+test cadence::tests::each_phase_fires_once_per_hour_and_never_together ... ok
+test cadence::tests::never_fired_is_due_in_both_modes ... ok
+test cadence::tests::no_offset_keeps_the_elapsed_rule ... ok
+test cadence::tests::scheduled_instants_land_on_the_phase ... ok
+test cadence::tests::the_window_keeps_a_cut_off_reminder_on_its_own_phase ... ok
+test cli::tests::clock_and_tick_cadence_enforce_domain_bounds ... ok
+test cadence::tests::fired_state_removes_temporary_file_after_rename_failure ... ok
+test cli::tests::missing_required_option_is_usage_error ... ok
+test emit::tests::action_bare_and_quoted_fields_match_contract ... ok
+test cli::tests::version_and_userguide_are_standalone ... ok
+test emit::tests::note_error_and_health_match_contract ... ok
+test cadence::tests::fired_state_round_trips_and_ignores_garbage ... ok
+test cli::tests::failed_report_write_returns_nonzero_without_persisting_cadence ... ok
+test engine::tests::any_later_non_render_failure_outcome_clears_render_failure_state ... ok
+test engine::tests::captured_values_honor_all_line_boundaries ... ok
+test cli::tests::tick_is_dry_by_default_and_uses_fallback_state ... ok
+test engine::tests::capture_interpolates_and_preserves_field_order ... ok
+test engine::tests::could_not_determine_renders_no_result_not_a_pass ... ok
+test engine::tests::dependency_never_suppresses_a_real_finding ... ok
+test engine::tests::dependency_propagates_through_quiet_chain_only ... ok
+test cli::tests::list_and_json_load_yaml ... ok
+test engine::tests::emission_failure_stops_the_tick ... ok
+test cli::tests::flush_failure_is_controlled_and_cleans_temporary_file ... ok
+test engine::tests::empty_success_is_not_inferred_to_be_no_result ... ok
+test engine::tests::flag_suppression_does_not_consume_cadence ... ok
+test engine::tests::gate_execution_failure_is_retried ... ok
+test engine::tests::foundation_no_result_marks_quiet_dependents_unevaluable ... ok
+test engine::tests::health_and_trailing_summary_are_ordered ... ok
+test engine::tests::independent_prefix_streams_before_a_later_dependency_group ... ok
+test engine::tests::no_evaluation_keeps_active_reminder_render_failure_state ... ok
+test engine::tests::no_result_does_not_consume_cadence ... ok
+test engine::tests::no_result_is_emittable_when_the_gate_printed_nothing ... ok
+test engine::tests::no_result_is_not_reinterpreted_by_when_success ... ok
+test engine::tests::positive_control_a_determinable_gate_is_unchanged ... ok
+test engine::tests::removed_reminder_render_failure_state_is_pruned_without_touching_cadence ... ok
+test engine::tests::static_fields_can_interpolate_other_static_and_captured_fields ... ok
+test engine::tests::suppressed_verdict_keeps_config_order_between_runnable_gates ... ok
+test engine::tests::third_consecutive_unresolved_placeholder_adds_persistent_escalation ... ok
+test io::tests::canonical_json_matches_stable_contract ... ok
+test io::tests::hardened_schema_rejects_empty_duplicate_and_negative_values ... ok
+test engine::tests::unresolved_placeholder_is_refused_loudly_and_retried ... ok
+test io::tests::dependency_edges_round_trip_and_reject_invalid_graphs ... ok
+test io::tests::minimal_defaults_and_note_without_skill ... ok
+test io::tests::json_rejects_duplicate_keys_at_any_depth ... ok
+test io::tests::hardened_schema_rejects_unknown_fields_at_every_level ... ok
+test io::tests::strict_errors_cover_all_nested_shapes ... ok
+test io::tests::reserved_merge_key_is_rejected_by_readers_and_writers ... ok
+test io::tests::yaml_emitter_quotes_strings_that_resemble_signed_prefixed_ints ... ok
+test io::tests::yaml_norway_tokens_stay_strings_and_round_trip ... ok
+test io::tests::yaml_core_scalar_matrix_matches_strict_string_fields ... ok
+test io::tests::yaml_rejects_non_string_keys_and_treats_signed_prefixed_ints_as_numbers ... ok
+test probes::tests::file_glob_matches_nonrecursive_hidden_file_rules ... ok
+test state::tests::flag_integers_accept_only_signed_i64_range ... ok
+test state::tests::reserved_merge_key_is_rejected_in_state_maps ... ok
+test state::tests::invalid_direct_state_is_rejected_before_serialization ... ok
+test state::tests::parses_norway_safe_flags_and_trims_label ... ok
+test state::tests::state_yaml_round_trips_sorted_typed_flags ... ok
+test state::tests::state_lines_are_stable ... ok
+test text::tests::chooses_and_escapes_quotes_and_controls ... ok
+test state::tests::strict_validation_rejects_unknown_and_wrong_types ... ok
+test text::tests::splits_ascii_and_unicode_line_boundaries ... ok
+test probes::tests::timeout_kills_background_descendants_holding_capture_pipes ... ok
+test text::tests::trimming_includes_ascii_information_separators ... ok
+test probes::tests::subprocess_gate_times_out_loudly ... ok
+test cli::tests::report_pending_is_compatible_with_flush_and_cadence ... ok
+test probes::tests::a_healthy_command_inside_its_gate_bound_still_succeeds ... ok
+test probes::tests::subprocess_gate_captures_stdout_and_exit_status ... ok
+test probes::tests::subprocess_gate_replaces_invalid_utf8 ... ok
+test engine::tests::parallel_prefix_is_emitted_while_a_later_gate_is_running ... ok
+test engine::tests::explicitly_parallel_gates_overlap_and_keep_config_order ... ok
+test probes::tests::a_gate_bound_shorter_than_the_runner_default_is_the_one_enforced ... ok
+test probes::tests::no_gate_bound_falls_back_to_the_runner_default ... ok
+test probes::tests::a_gate_bound_longer_than_the_runner_default_is_also_honoured ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+     Running unittests src/main.rs (rs/target/x86_64-unknown-linux-gnu/release/build/tick-hub/04c3a7fbbeceb0e6/out/tick_hub-04c3a7fbbeceb0e6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests dagrun
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests herdr_run
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pr_landing_planner
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests tick_hub
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== mypy-differential ===
+Success: no issues found in 1 source file
+
+=== cross-differential ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+python3 cross/differential.py --tool all
+cross[dagrun]: OK - 764 checks across 48 fixtures agree (6 shipped JSON examples static-only; 5 YAML fixtures isomorphic to JSON; json byte-identical: 43, yaml isomorphic: 5, scalar-resolution parity cases: 63)
+cross[cpuset-alloc]: OK - 58 behavioral and ledger-schema checks agree
+cross[tick-hub]: OK - 106 deterministic, randomized, and adversarial checks agree
+cross[pr-landing-planner]: OK - 291 graph, CI, randomized, and adversarial checks agree
+NOTE [herdr-run] external fake-Herdr lifecycle/protocol checks were not run: production resolution intentionally ignores caller PATH and exposes no safe executable override
+NOTE [herdr-run] reap is paired on safety-equivalent verdicts (empty spool, unresolvable or unavailable workspace evidence, out of scope); STALE and SHELL_ALIVE need a pane a live Herdr server still lists, and are covered by planted-population unit tests in each edition instead
+NOTE [herdr-run] NUL cannot be represented in a POSIX argv entry; all other terminal-control classes are covered
+cross[herdr-run]: OK - 228 paired checks agree
+cross[herdr-agent]: OK - 90 paired checks agree
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== packages ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+python3 scripts/check_python_packages.py
+check_python_packages: ok dagrun 0.15.0 wheel + sdist (dagrun, cpuset-alloc)
+check_python_packages: ok tick-hub 0.2.0 wheel + sdist (tick-hub)
+check_python_packages: ok pr-landing-planner 0.1.0 wheel + sdist (pr-landing-planner)
+check_python_packages: ok wrkviz 0.1.0 wheel + sdist (wrkviz)
+check_python_packages: ok parallel-experiment-runner 0.3.1 wheel + sdist (parallel-experiment-runner)
+check_python_packages: ok herdr-run 0.2.0 wheel + sdist (herdr-run, herdr-agent, herdr-subagents, herdr-chat)
+check_python_packages: ok wrkslots 0.6.0 wheel + sdist (wrkslots)
+check_python_packages: all 7 distributions passed
+python3 scripts/check_rust_packages.py
+check_rust_packages: ok dagrun 0.15.0 (dagrun, cpuset-alloc)
+check_rust_packages: ok tick-hub 0.2.0 (tick-hub)
+check_rust_packages: ok pr-landing-planner 0.1.0 (pr-landing-planner)
+check_rust_packages: ok herdr-run 0.2.0 (herdr-run, herdr-agent)
+check_rust_packages: all 4 crates passed
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+validate: OK

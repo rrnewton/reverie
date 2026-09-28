@@ -1,0 +1,14 @@
+[
+  {
+    "path": "tests/backend-parity/e9patch_corpus.py",
+    "hunks": 4,
+    "applied_bytes_equal_complete_preview": true,
+    "sha256": "d0c31729b8bcbea446cc8d5f6c127ad75e55658cb0fb5b6fd7e0cd727c70cc75"
+  },
+  {
+    "path": "tests/backend-parity/test_e9patch_corpus_verification.py",
+    "hunks": 1,
+    "applied_bytes_equal_complete_preview": true,
+    "sha256": "dc706509947a86109d8c8988e9c5f86f893d722ecabb8f30ba8b1b9200dd14f4"
+  }
+]

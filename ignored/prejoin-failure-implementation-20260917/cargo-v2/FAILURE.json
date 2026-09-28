@@ -1,0 +1,22 @@
+{
+  "status": "compile refused before compilation; later stages not run",
+  "cause": "error: cannot update the lock file /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock because --locked was passed to prevent this\nhelp: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.\n",
+  "wrapper_exit_code": 101,
+  "observer_exit_code": 1,
+  "cpu_usage_nsec": 157321000,
+  "wall_seconds": 0.816144485,
+  "accounting_complete": true,
+  "cgroup_empty": true,
+  "observer_error": null,
+  "stop_reason": null,
+  "source_readback": "all frozen source, lockfile and observer inputs identical after refusal",
+  "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/result.json",
+  "result_sha256": "df7e7d90c6b886531b650eb3b56f038e1736de54a2a7d9a9216894475301063d",
+  "stderr_sha256": "9d3d50110f7faf9fdc1e3a69ae9bb0643168d44cbd681af15ef8fae3c044eaad",
+  "launch_record": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v2/run-1/launch.json",
+  "launch_record_sha256": "dab0f60b20f359540417bc0db01cf347a05e413faa85ee27e077cfe1cfb60b92",
+  "later_stage_outputs": {
+    "list": false,
+    "native": false
+  }
+}

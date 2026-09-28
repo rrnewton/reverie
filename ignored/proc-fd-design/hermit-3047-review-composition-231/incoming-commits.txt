@@ -1,0 +1,63 @@
+commit 1ef956b6b16a19080c94838ead0c88926f7231ff
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Thu Sep 17 00:11:20 2026 -0700
+Commit:     Ryan Newton <ryan.newton@alum.mit.edu>
+CommitDate: Thu Sep 17 03:18:15 2026 -0400
+
+    Refresh the measured regular-crates test count
+    
+    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+    
+    Plain Language Summary and Project Impact
+    
+    The full regular-crates selection now contains 507 tests, but its host and
+    pinned declarations still require 505. Update both exact population guards and
+    the normally generated DAG so the new schema10 tests remain required without
+    rejecting the complete current selection.
+    
+    Task: hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2
+    
+    Summary
+    
+    Only the two authored regular-crates counts and their two generated values move
+    from 505 to 507. All methods, selectors, comparisons and resource limits stay
+    unchanged. No core determinism or Linux execution behavior changes.
+    
+    Validation
+    
+    The source-identical base compiled and listed 507 selected, zero ignored and
+    zero filtered methods across 29 real binaries. Complete Cargo/Nextest records
+    and all executable bytes are retained; no test bodies ran. Both newly added
+    b03 schema10 methods are present. The normal generator refused the stale DAG,
+    then regeneration and freshness checks passed. Workspace Clippy, formatting
+    and whitespace checks passed under the unchanged 4-CPU/8-GiB preparation bound.
+
+commit 231228c010541561a81dcb1353ac200f5c791b1a
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Thu Sep 17 00:35:21 2026 -0700
+Commit:     Ryan Newton <ryan.newton@alum.mit.edu>
+CommitDate: Thu Sep 17 03:51:19 2026 -0400
+
+    Match the LiteInst PID test to synchronous tracing
+    
+    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+    
+    Plain Language Summary and Project Impact
+    
+    Require the current root guest PID in the LiteInst Python entropy test.
+    Synchronous verification now consumes the same tracing-thread TID as the
+    other logging paths, so the root guest starts at PID 3. The previous exact
+    PID 2 assertion rejects a successful guest for the old launch topology.
+    
+    Task: liteinst-lane-to-full-determinism-and-parity
+    
+    Change only the exact expected PID and its explanatory comment. Preserve
+    all field-count, entropy-length, hexadecimal, activation, exit-status and
+    existing verification assertions. No runtime or comparator behavior changes.
+    
+    The original official run at 158a89f6 executed this test and retained its
+    PID 3 output. Both ptrace and LiteInst independently printed pid=3 in the
+    same run. Source commit 1d9c9094 explains the consumed tracing-thread slot;
+    the old assertion predates that change. Focused rebuilt-test validation
+    and independent review are recorded separately before publication. The
+    existing named helper uses Stripped verification, not canonical parity.

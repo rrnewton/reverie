@@ -1,0 +1,96 @@
+[
+  {
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/Cargo.toml",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/Cargo.toml",
+      "bytes": 3047,
+      "mode": 420,
+      "sha256": "de88a5419c14cf4c3b68df01e4b00a36d53364c127cd7d0bdad8a8b8251182da",
+      "device": 48,
+      "inode": 796873207,
+      "mtime_ns": 1789661013655891427,
+      "roles": [
+        "local package used by generated validate crate"
+      ]
+    },
+    "package": {
+      "name": "dagrun",
+      "version": "0.15.0",
+      "description": "Run a DAG of CI/build steps with independent step and total-CPU limits, nested cgroup boxing, and resource profiling.",
+      "readme": "README.md",
+      "keywords": [
+        "ci",
+        "dag",
+        "cgroup",
+        "scheduler"
+      ],
+      "categories": [
+        "command-line-utilities",
+        "development-tools"
+      ],
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "license": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "authors": {
+        "workspace": true
+      }
+    },
+    "already_bound": true
+  },
+  {
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/Cargo.toml",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/Cargo.toml",
+      "bytes": 453,
+      "mode": 420,
+      "sha256": "98bc9c24e4c0deef113140e961c04d332dc96ec7767802454de716d146459d0c",
+      "device": 48,
+      "inode": 796870264,
+      "mtime_ns": 1789661008198291375,
+      "roles": [
+        "local package used by generated validate crate"
+      ]
+    },
+    "package": {
+      "name": "hermit-manifest-plan",
+      "version": "0.2.0",
+      "edition": "2021",
+      "publish": false,
+      "default-run": "hermit-manifest-plan"
+    },
+    "already_bound": true
+  },
+  {
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/Cargo.toml",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/Cargo.toml",
+      "bytes": 1434,
+      "mode": 420,
+      "sha256": "9bdba687d1c9b824b7378eb49480fe8ce3314f728ce7eb54b13ac30c715b558d",
+      "device": 48,
+      "inode": 801100197,
+      "mtime_ns": 1789673290302617078,
+      "roles": [
+        "local package used by generated validate crate"
+      ]
+    },
+    "package": {
+      "name": "detcore-model",
+      "description": "Core data model and types for Detcore, the Hermit deterministic execution engine.",
+      "version": "0.2.0",
+      "edition": "2024",
+      "repository": "https://github.com/facebookexperimental/hermit",
+      "license": "BSD-3-Clause"
+    },
+    "already_bound": true
+  }
+]

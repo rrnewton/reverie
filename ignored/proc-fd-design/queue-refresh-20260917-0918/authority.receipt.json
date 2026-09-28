@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/ci-hub",
+    "active-work",
+    "--json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "started_utc": "2026-09-17T09:45:40.840015+00:00",
+  "ended_utc": "2026-09-17T09:45:41.552845+00:00",
+  "wall_seconds": 0.7128509820904583,
+  "exit_code": 1,
+  "stdout_bytes": 107650,
+  "stderr_bytes": 102,
+  "stdout_sha256": "7be06dbf4776755f6a10a9ac98196426059ac6082a106f1bc662fdf006d09724",
+  "stderr_sha256": "def3f34c82e6ef202301c5e118a77a16364dc4f90fc58cec91916276e910a954"
+}

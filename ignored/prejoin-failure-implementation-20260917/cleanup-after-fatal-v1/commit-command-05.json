@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "add",
+    "--",
+    "reverie-kvm/src/vm.rs"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

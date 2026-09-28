@@ -1,0 +1,20 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch-review.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch-review.py
+@@ -4,7 +4,7 @@
+ p = Path(__file__).resolve().parent
+ # Disabled by default. The explicit argument is an accidental-launch guard,
+ # not authorization; root must review/release the exact package first.
+-if sys.argv[1:] != ['--execute-reviewed-1145835f-fba5d50c']:
++if sys.argv[1:] != ['--execute-reviewed-d750224c-inventory']:
+     raise SystemExit('review launch is disabled pending root review; no subprocess started')
+ source = json.loads((p / 'candidate-binding.json').read_text())
+ inputs = json.loads((p / 'input-binding.json').read_text())
+@@ -28,7 +28,7 @@
+        'claude', '-p', '--no-session-persistence', '--output-format', 'stream-json',
+        '--verbose', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+        '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob', '--strict-mcp-config']
+-record = {'command': cmd, 'cwd': str(Path(source['root']) / 'parent'),
++record = {'command': cmd, 'cwd': str(Path(source['root']) / 'agent-utils'),
+           'base': source['base'], 'head': source['head'], 'tree': source['tree'],
+           'repositories': source['repositories'],
+           'input_binding_sha256': hashlib.sha256((p / 'input-binding.json').read_bytes()).hexdigest(),

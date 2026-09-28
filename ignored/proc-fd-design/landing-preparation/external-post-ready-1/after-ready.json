@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--json",
+    "headRefOid,state,isDraft,url,comments,reviews,reviewDecision"
+  ],
+  "exit": 0,
+  "utc": "2026-09-17T05:55:03.413986+00:00"
+}

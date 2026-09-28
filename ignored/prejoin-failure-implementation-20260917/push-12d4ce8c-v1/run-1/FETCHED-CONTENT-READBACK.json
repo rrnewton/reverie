@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "fetched_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "remote_ref": "refs/heads/codex/kvm-fatal-cleanup-20260917",
+  "tree": "ba584b989e7dc89fce4ac7eabaa05166ba035069",
+  "tree_entries": 2596,
+  "complete_tree_equal": true,
+  "ls_tree_sha256": "d56becefac3a0b695d9a491a9b199e4598bf784581cd5b90f6b818d5ebf73cf4",
+  "changed_blob_sha256": "42ecbb5238c074cb901f50e1e04b45b0ddf9d9dcdecb56dbd54fdb0610db952d",
+  "fetch_record_sha256": "d3a5824067e76161624d27d0476bd159bb2d275035a293db8bf3cb740a5ce121",
+  "preserved_remote_refs": {
+    "refs/heads/codex/kvm-proc-fd-identity-20260917": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "refs/heads/codex/kvm-prejoin-failure-20260917": "9db60ab95587d4cb5e0438dfeca409471eb9baf5"
+  },
+  "push_result_sha256": "329765ab2f39fc5ca3bc851c9789ff5e0aa9af99efce5f4adf236ac1d0cc68c0",
+  "fresh_terminal": [
+    {
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T184318Z-2799415.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T184318Z-2799415.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    },
+    {
+      "stage": "clippy",
+      "status": "passed"
+    }
+  ],
+  "scope": "Read-only workspace format check and default-feature reverie-kvm all-targets Clippy on source v21. No native, VM or guest execution."
+}

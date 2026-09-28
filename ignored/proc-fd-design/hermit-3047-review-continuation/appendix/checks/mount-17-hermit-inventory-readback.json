@@ -1,0 +1,23 @@
+{
+  "name": "mount-17-hermit-inventory",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2571903-1789626294549669820.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 72.962212,
+  "wall_seconds": 30.797555858036503,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "b0ca67844918d4628f2656e8dd211b0d6435169ce06feb2c8df496eedf03637a",
+  "full_source_snapshots_equal": true,
+  "expected_method_names_equal": true
+}

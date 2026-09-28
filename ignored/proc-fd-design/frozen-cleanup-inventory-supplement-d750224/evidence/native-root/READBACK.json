@@ -1,0 +1,46 @@
+{
+  "source": "1145835fc804f47ae48b29b89009e6937184175a",
+  "followup": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "counts": {
+    "all": {
+      "before": 654,
+      "after": 797,
+      "added": 143,
+      "removed": 0
+    },
+    "ordinary": {
+      "before": 98,
+      "after": 241,
+      "added": 143,
+      "removed": 0
+    },
+    "mapped": {
+      "before": 556,
+      "after": 556,
+      "added": 0,
+      "removed": 0
+    },
+    "mapped_root": {
+      "before": 2,
+      "after": 2,
+      "added": 0,
+      "removed": 0
+    }
+  },
+  "old_source_unchanged_prefix": true,
+  "exact_followup_reconstructed": true,
+  "added_methods": [
+    "test_current_incomplete_frozen_binds_checkout_and_gitlink_identity",
+    "test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot",
+    "test_current_incomplete_frozen_rechecks_after_fresh_census",
+    "test_current_incomplete_frozen_refuses_untrusted_or_live_evidence",
+    "test_current_incomplete_frozen_requires_exact_current_shape",
+    "test_current_incomplete_frozen_requires_pristine_recursive_checkout",
+    "test_current_incomplete_frozen_retains_evidence_and_allows_stable_source_work",
+    "test_current_incomplete_frozen_retention_does_not_authorize_direct_recovery"
+  ],
+  "proof_sha256": "cec98ff6fc0a04d57241feff5f456de54787c979dd3685dc843902e2a59205b3",
+  "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+  "packaging_source_sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b"
+}

@@ -1,0 +1,35 @@
+commit 1d9c9094dea0e7a4a85bb641165088bded1386bd
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Sep 13 13:54:39 2026 -0700
+Commit:     Ryan Newton <ryan.newton@alum.mit.edu>
+CommitDate: Wed Sep 16 21:50:50 2026 -0400
+
+    Preserve the initial thread identity in synchronous tracing
+    
+    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+    
+    Plain Language Summary and Project Impact
+    
+    Synchronous verification logging now consumes the same PID/TID slot as the
+    existing file and stderr logging paths by calling their existing tracing
+    thread equalizer. This preserves the expected initial Detcore identity while
+    keeping verification evidence synchronous. The retained ptrace/KVM parity
+    failures remain failures; this does not repair or qualify clock parity.
+    
+    Task: astra-lane-drains-hermit-reverie-pr-queues-to-zero
+    https://github.com/rrnewton/hermit/pull/2945
+
+diff --git a/hermit-cli/src/bin/hermit/tracing.rs b/hermit-cli/src/bin/hermit/tracing.rs
+index e4ac01060..5ff6cc6e0 100644
+--- a/hermit-cli/src/bin/hermit/tracing.rs
++++ b/hermit-cli/src/bin/hermit/tracing.rs
+@@ -338,6 +338,9 @@ pub fn init_sync_file_tracing<W: Write + Send + 'static>(
+     level: Option<LevelFilter>,
+     f: W,
+ ) -> TracingGuard {
++    // Match the PID/TID slot consumed by file tracing's worker and by the
++    // stderr logger, while keeping verification evidence synchronous.
++    equalize_tracing_thread_number();
+     let level = level.unwrap_or(DEFAULT_TRACE_LEVEL);
+     let subscriber = sync_file_subscriber(level, f);
+     subscriber

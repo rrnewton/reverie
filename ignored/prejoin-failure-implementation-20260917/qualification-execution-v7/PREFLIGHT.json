@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "time_unix": 1789669986.8050146,
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "55924d1ecbdf4b8609eeca796829243cb1409dded5388d6aa96b97b97d235d91",
+  "caller_sha256": "b884897e349c1990c2bb84063c126ba60be5b58186a25b9563b6f8a04a2b28bf",
+  "inputs": 175,
+  "stage_count": 22,
+  "full_source_input_artifact_checks": true,
+  "original_22_stages_equal_except_fresh_paths_and_actual_hash": true,
+  "complete_454_full_prerequisite": true,
+  "fresh_destinations": true,
+  "active_owned_work": []
+}

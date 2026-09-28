@@ -1,0 +1,81 @@
+{
+  "status": "passed native selected controls",
+  "source_binding_sha256": "fba65b3fa1797f33a7598687a245603727b0e03ee0fcd03f9c77d38bf77dbbc4",
+  "lock_sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+  "plan_sha256": "c297510a70887146cacf9fd68fe1d0c97f551918554e891421eb201b84976fd2",
+  "caller_sha256": "61a895b980f5f90b5254f1773fa817b97d228e9b059f7ec6dc5eb605b6f3b82f",
+  "test_executable": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "16c7ef52ccbeecf98da2e29d1d865977960cba599441b574fce9beac056a8569",
+    "bytes": 110491440,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "selected": 27,
+  "new_tests": 8,
+  "existing_tests": 19,
+  "inventoried": 435,
+  "filtered_out": 408,
+  "passed": 27,
+  "failed": 0,
+  "ignored": 0,
+  "measured": 0,
+  "observed": [
+    {
+      "stage": "compile",
+      "exit": 0,
+      "aggregate_cpu_nsec": 85110235000,
+      "wall_seconds": 45.583959234
+    },
+    {
+      "stage": "list",
+      "exit": 0,
+      "aggregate_cpu_nsec": 205115000,
+      "wall_seconds": 0.906773083
+    },
+    {
+      "stage": "native",
+      "exit": 0,
+      "aggregate_cpu_nsec": 225295000,
+      "wall_seconds": 1.090184755
+    }
+  ],
+  "compiler_messages": [],
+  "actual_libtest_seconds": 0.11,
+  "scope": "Native actual ToolRPC/OS-thread join and adjacent controls only. No KVM guest, Hermit scheduler integration, parity or mutation run.",
+  "earlier_attempts": {
+    "cargo_v2": "retained pre-compilation stale-lock refusal",
+    "cargo_v3": "accepted existing-manifest-only lock refresh"
+  }
+}

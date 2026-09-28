@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "180s",
+    "python3",
+    "-m",
+    "unittest",
+    "-v",
+    "test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal",
+    "test_start_unit.StartUnitTest.test_frozen_cleanup_refuses_missing_record_and_wrong_roots",
+    "test_start_unit.StartUnitTest.test_frozen_cleanup_rejects_provider_success_with_retained_path",
+    "test_start_unit.StartUnitTest.test_frozen_inner_refusal_threads_actual_record_from_worker_slot"
+  ],
+  "started_at": "2026-09-17T08:23:58.418917+00:00",
+  "wall_seconds": 0.38351529696956277,
+  "cpu_seconds": 0.34623,
+  "exit_code": 0,
+  "source_unchanged": true,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_bytes": 0,
+  "stderr_sha256": "739987b9f1f96a13cd99f4fb7b30f59848e7f48914672541432bc96386b5bddc",
+  "stderr_bytes": 752
+}

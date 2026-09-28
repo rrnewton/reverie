@@ -1,0 +1,132 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01GnHJ2jcEBC6yXG5GZjYy3m",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 2420,
+    "limit": 120
+  }
+}
+
+Successful public tool result (exact text below):
+2420	        ty: FdType,
+2421	        stat: Option<DetStat>,
+2422	    ) -> Result<(), Errno> {
+2423	        self.metadata().add_fd(
+2424	            self.open_file_creator.unwrap_or(self.dettid),
+2425	            fd,
+2426	            flags,
+2427	            ty,
+2428	            stat,
+2429	        )
+2430	    }
+2431	
+2432	    // AUTONOMOUS-BOT-IMPLEMENTED
+2433	    // TODO-HUMAN-REVIEW(PR-1063): Review backend-supplied open-file creator identity.
+2434	    /// Overrides the task identity embedded in subsequently allocated open-file descriptions.
+2435	    pub fn set_open_file_creator(&mut self, creator: DetTid) {
+2436	        self.open_file_creator = Some(creator);
+2437	    }
+2438	
+2439	    /// Get a mutable reference of `DetFd` from a raw file descriptor, and
+2440	    /// run mutable function `f` on it (`&mut DetFd`).
+2441	    pub fn with_detfd<F, U>(&self, fd: RawFd, f: F) -> Result<U, Errno>
+2442	    where
+2443	        F: FnMut(&mut DetFd) -> U,
+2444	    {
+2445	        let mut metadata = self.metadata();
+2446	        if self.discover_live_file_metadata {
+2447	            metadata.discover_fd_from_current_process(self.dettid, fd)?;
+2448	        }
+2449	        metadata.with_detfd(fd, f)
+2450	    }
+2451	
+2452	    pub(crate) fn count_open_files_at_paths(&self, paths: &[&Path]) -> usize {
+2453	        self.metadata().count_open_files_at_paths(paths)
+2454	    }
+2455	
+2456	    /// Whether this task owns a socket that attempted a loopback connection.
+2457	    pub(crate) fn has_loopback_peer(&self) -> bool {
+2458	        self.metadata().has_loopback_peer()
+2459	    }
+2460	
+2461	    /// Whether any open file description is held or not proven unlocked.
+2462	    pub fn has_unsafe_vfork_flock_state(&self) -> bool {
+2463	        self.metadata().has_unsafe_vfork_flock_state()
+2464	    }
+2465	
+2466	    /// A new process can change every inherited open file description through
+2467	    /// a separately hosted tool state, so neither side may keep treating its
+2468	    /// cached flock mode as authoritative after fork.
+2469	    pub fn forget_flock_modes(&self) {
+2470	        self.metadata().forget_flock_modes();
+2471	    }
+2472	
+2473	    /// remove a rawfd
+2474	    pub fn remove_fd(&self, fd: RawFd) -> Option<OpenFileId> {
+2475	        self.metadata().remove_fd(fd)
+2476	    }
+2477	
+2478	    /// Remove every modeled descriptor in an inclusive close_range interval.
+2479	    pub(crate) fn remove_fd_range(&self, first: u32, last: u32) -> Vec<OpenFileId> {
+2480	        self.metadata().remove_fd_range(first, last)
+2481	    }
+2482	
+2483	    /// dup raw fds.
+2484	    pub fn dup_fd(
+2485	        &mut self,
+2486	        oldfd: RawFd,
+2487	        newfd: RawFd,
+2488	        flags: OFlag,
+2489	    ) -> Result<Option<OpenFileId>, Errno> {
+2490	        let mut metadata = self.metadata();
+2491	        if self.discover_live_file_metadata {
+2492	            metadata.discover_fd_from_current_process(self.dettid, oldfd)?;
+2493	        }
+2494	        metadata.dup_fd(oldfd, newfd, flags)
+2495	    }
+2496	
+2497	    /// Atomically validate a pidfd target and capture its source descriptor.
+2498	    ///
+2499	    /// Both lookups occur under the one descriptor-table mutex. The caller must
+2500	    /// hold the normal serialized Tool turn until the nonblocking kernel call
+2501	    /// returns and the captured alias is installed.
+2502	    pub(crate) fn capture_pidfd_getfd_source(
+2503	        &self,
+2504	        pidfd: RawFd,
+2505	        targetfd: RawFd,
+2506	        current_tgid: DetPid,
+2507	        current_tid: DetTid,
+2508	    ) -> Result<CapturedDetFd, Errno> {
+2509	        let mut metadata = self.metadata();
+2510	        if self.discover_live_file_metadata {
+2511	            metadata.discover_fd_from_current_process(self.dettid, pidfd)?;
+2512	        }
+2513	        let (is_pidfd, target) = metadata.with_detfd(pidfd, |detfd| {
+2514	            (matches!(detfd.ty(), FdType::Pidfd), detfd.pidfd_target())
+2515	        })?;
+2516	        if !is_pidfd {
+2517	            return Err(Errno::EBADF);
+2518	        }
+2519	        if !pidfd_getfd_targets_calling_task(target, current_tgid, current_tid) {
+2520	            return Err(Errno::EOPNOTSUPP);
+2521	        }
+2522	        if self.discover_live_file_metadata {
+2523	            metadata.discover_fd_from_current_process(self.dettid, targetfd)?;
+2524	        }
+2525	        metadata.capture_fd(targetfd)
+2526	    }
+2527	
+2528	    /// Install an alias from a pre-syscall capture without resolving the source
+2529	    /// fd slot a second time.
+2530	    pub(crate) fn install_captured_fd(
+2531	        &mut self,
+2532	        captured: CapturedDetFd,
+2533	        newfd: RawFd,
+2534	        flags: OFlag,
+2535	    ) -> Result<Option<OpenFileId>, CapturedDetFdInstallError> {
+2536	        self.metadata().install_captured_fd(captured, newfd, flags)
+2537	    }
+2538	
+2539	    /// Abandon an uninstalled capture and identify a deferred final-OFD release.

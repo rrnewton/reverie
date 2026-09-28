@@ -1,0 +1,33 @@
+{
+  "scope": "independent read-only matrix v2/consumer-docs source review",
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/REPORT-v1.md",
+      "bytes": 2167,
+      "sha256": "c373df8280ab7376643b657f3fce89de049fb319ac8d2487c65e1140c02ab23b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/REPORT-v2.md",
+      "bytes": 10732,
+      "sha256": "3468020a5e3617298c234fe76f47b50cdc3170cccb7263501d88b2671f128a20"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/READBACK-v1.json",
+      "bytes": 9200,
+      "sha256": "d7b03beddb89da8ae12855a36ebb836d058cea20f67e170381475b695bf8ffae"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/READBACK-v2.json",
+      "bytes": 6974,
+      "sha256": "0b5bf028d5816e6b63e61174e1e5e4a763a94e37670523e49ae2e8d8ef92422c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/callers-v1.txt",
+      "bytes": 1793,
+      "sha256": "50004817108ad4c5943d48838177303f13b695808b54a239624b7b88cc0aaa35"
+    }
+  ],
+  "v1_verdict": "changes requested",
+  "v2_source_verdict": "approve for composition and bounded validation",
+  "product_execution": false
+}

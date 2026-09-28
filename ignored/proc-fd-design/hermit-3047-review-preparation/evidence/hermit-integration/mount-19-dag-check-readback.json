@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2183102-1789625954626423248.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "cpu_seconds": 3.056024,
+  "wall_seconds": 3.208491169847548,
+  "source_unchanged": true,
+  "receipt_sha256": "cc7a84cdb03f07b932c27e9359af2b2bcd38f4c34b8c9d09c359aeebb50eb097"
+}

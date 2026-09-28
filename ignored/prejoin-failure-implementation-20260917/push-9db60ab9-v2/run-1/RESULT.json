@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "remote_refs": {
+    "refs/heads/codex/kvm-prejoin-failure-20260917": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917": "696f0476aa46cf29e31b947a89379d80b4542ce3"
+  },
+  "plan_sha256": "47747acb3ede07f26bfc442e2e198997ef17de6b9ca2a30dde722e5c1e251630",
+  "caller_sha256": "7d070de1313232712a394a7ba178c145cf5985a9551bae25deadc7568af987f8",
+  "launch_sha256": "cbe63bb21e8c9273b963d4ff16116a226089051dda7d3cc11cdb7d7ce1bcc2ec",
+  "cpu_nsec": 607657000,
+  "wall_seconds": 2.597005574,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "1a6ab8098287aed6a8052e8eff241069b896fe1ca4fca82b5190134b1a292ade",
+  "hook_expectation": "Normal installed composite pre-push dispatcher remains enabled. The current source has no tracked or existing .githooks/pre-push, so that hook exits normally without running a repository build; completed final-head checks are separately bound. No hook override or skip variable is used."
+}

@@ -1,0 +1,26 @@
+{
+  "stage": "static-elf-20",
+  "test": "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ],
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "74b11a2406a09d62ffb8af033b13057360920e2ed892063f4c72168f5d263cfa",
+  "stderr_sha256": "8d7e70d435548ff3b525a1640fc818eb61c0f7dea17ec18bd89982965cd779a9",
+  "admission_sha256": "250ab91a7800af57abe45b191206fbf01525d4c21c863d6db5ca73fbe9885cc6",
+  "cpu_nsec": 369383000,
+  "wall_seconds": 1.007143685
+}

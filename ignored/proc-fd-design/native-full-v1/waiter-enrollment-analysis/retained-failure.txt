@@ -1,0 +1,5 @@
+thread 'vm::tests::fatal_worker_ro_delayed_waiter_qualifies' (1601731) panicked at reverie-kvm/src/vm.rs:5221:9:
+assertion `left == right` failed: waiter must be queued at its original word; waiter result: Ok((-1, Some(110)))
+  left: 0
+ right: 1
+

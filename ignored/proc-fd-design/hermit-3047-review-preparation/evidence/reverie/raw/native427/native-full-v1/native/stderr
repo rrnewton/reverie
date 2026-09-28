@@ -1,0 +1,108 @@
+
+thread 'clock::tests::unwind_closes_counter_and_poison_prevents_future_success' (1597554) panicked at reverie-kvm/src/clock.rs:778:13:
+simulated vCPU unwinding
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index' (1597555) panicked at reverie-kvm/src/cpuid.rs:152:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+
+thread '<unnamed>' (1597619) panicked at reverie-kvm/src/executor.rs:34733:25:
+forced completed child panic
+
+thread '<unnamed>' (1597613) panicked at reverie-kvm/src/executor.rs:34697:26:
+forced pending child panic
+
+thread '<unnamed>' (1597616) panicked at reverie-kvm/src/executor.rs:34706:29:
+forced completion lock poison
+number=19 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=19 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=20 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=20 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=295 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=295 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=296 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=296 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=327 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=327 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=328 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=328 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=19 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=19 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=19 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=19 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=19 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=4101 full_file_and_buffer_match=true
+syscall=19 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=19 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=4101 full_file_and_buffer_match=true
+syscall=19 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=59 case=path result=Some(-14) expected=-14
+syscall=59 case=argv result=Some(-14) expected=-14
+syscall=59 case=envp result=Some(-14) expected=-14
+syscall=59 case=missing result=Some(-2) expected=-2
+syscall=59 case=malformed result=Some(-8) expected=-8
+syscall=59 case=valid result=Some(-38) expected=-38
+syscall=322 case=path result=Some(-14) expected=-14
+syscall=322 case=argv result=Some(-14) expected=-14
+syscall=322 case=envp result=Some(-14) expected=-14
+syscall=322 case=missing result=Some(-2) expected=-2
+syscall=322 case=malformed result=Some(-8) expected=-8
+syscall=322 case=valid result=Some(-38) expected=-38
+untouched snapshot: SEEK_DATA(0)=-1, error=Some(Os { code: 6, kind: Uncategorized, message: "No such device or address" }), initial_enxio=true, sparse_copy=Ok(())
+
+thread 'runtime::tests::same_thread_stack_checkout_still_panics' (1598752) panicked at reverie-kvm/src/runtime.rs:944:9:
+cannot retrieve a KVM guest stack while its previous guard is live
+
+thread '<unnamed>' (1599166) panicked at reverie-kvm/src/terminal_vm_tests.rs:32:54:
+forced worker panic
+
+thread 'vm::tests::fatal_worker_ro_delayed_waiter_qualifies' (1601731) panicked at reverie-kvm/src/vm.rs:5221:9:
+assertion `left == right` failed: waiter must be queued at its original word; waiter result: Ok((-1, Some(110)))
+  left: 0
+ right: 1
+
+thread '<unnamed>' (1614207) panicked at reverie-kvm/src/vm.rs:6853:17:
+controlled start-gate registry poison
+park=true result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true
+park=false result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true
+
+thread '<unnamed>' (1615780) panicked at reverie-kvm/src/vm.rs:6834:17:
+controlled worker failure-state poison

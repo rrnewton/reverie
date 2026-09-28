@@ -1,0 +1,673 @@
+diff --git a/hermit-cli/tests/verification_report_consumers.rs b/hermit-cli/tests/verification_report_consumers.rs
+--- a/hermit-cli/tests/verification_report_consumers.rs
++++ b/hermit-cli/tests/verification_report_consumers.rs
+@@ -8,6 +8,9 @@
+ 
+ #[path = "common/hermit_binary.rs"]
+ mod hermit_test;
++
++#[path = "../../scripts/lib/verified_command.rs"]
++mod verified_command;
+ 
+ use std::fs;
+ use std::fs::OpenOptions;
+@@ -30,6 +33,18 @@
+ }
+ 
+ const CONSUMERS: &[Consumer] = &[
++    Consumer {
++        path: "tests/e2e/lib/applications/common.sh",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verdict_file\"",
++        minimum_invocations: 1,
++    },
++    Consumer {
++        path: "tests/reproducible-builds/run.sh",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
++        minimum_invocations: 1,
++    },
+     Consumer {
+         path: "tests/backend-parity/e9patch_corpus.py",
+         requirement: "matched",
+@@ -384,7 +399,7 @@
+ #[test]
+ fn every_named_consumer_delegates_to_the_shared_typed_reader() {
+     let root = root();
+-    assert_eq!(CONSUMERS.len(), 11, "the published consumer list changed");
++    assert_eq!(CONSUMERS.len(), 13, "the published consumer list changed");
+     for consumer in CONSUMERS {
+         let source = fs::read_to_string(root.join(consumer.path))
+             .unwrap_or_else(|error| panic!("cannot read {}: {error}", consumer.path));
+@@ -626,3 +641,310 @@
+     }
+     fs::remove_dir_all(temporary).expect("remove temporary directory");
+ }
++
++#[test]
++fn generated_verification_commands_validate_fresh_evidence_before_guest_status() {
++    let temporary = temporary_directory();
++    let cell = temporary.join("cell with spaces");
++    fs::create_dir_all(cell.join("captures")).unwrap();
++    std::os::unix::fs::symlink(
++        env!("CARGO_BIN_EXE_verification-report"),
++        temporary.join("verification-report"),
++    )
++    .unwrap();
++    let producer = temporary.join("producer");
++    write_executable(
++        &producer,
++        r#"#!/usr/bin/env bash
++set -eu
++printf 'entered\n' >"$PRODUCER_ENTRY"
++case "$REPORT_MODE" in
++  copy) cp -- "$REPORT_INPUT" "$1";;
++  empty) : >"$1";;
++  absent) :;;
++  *) exit 99;;
++esac
++exit "$PRODUCER_STATUS"
++"#,
++    );
++    let input = temporary.join("input.json");
++    let entry = temporary.join("producer-entered");
++    let valid = current_synthetic_match();
++    let mut status23 = valid.clone();
++    status23["guest_exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["left"]["exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["right"]["exit_code"] = serde_json::json!(23);
++    let mut cases = vec![
++        ("valid", valid.clone(), "copy", 0, Some(0)),
++        ("guest23", status23, "copy", 23, Some(23)),
++        ("absent", valid.clone(), "absent", 23, None),
++        ("empty", valid.clone(), "empty", 23, None),
++        (
++            "invalid-json-type",
++            Value::String("not a report".into()),
++            "copy",
++            23,
++            None,
++        ),
++    ];
++    for field in [
++        "strictness",
++        "compare_logs",
++        "verified",
++        "missing",
++        "zero",
++        "unequal",
++    ] {
++        let mut report = valid.clone();
++        match field {
++            "strictness" => report["comparison"]["strictness"] = serde_json::json!("stripped"),
++            "compare_logs" => report["comparison"]["compare_logs"] = serde_json::json!(false),
++            "verified" => report["verified"] = serde_json::json!(false),
++            "missing" => {
++                report.as_object_mut().unwrap().remove("guest_signal");
++            }
++            "zero" => report["compared_log_messages"] = serde_json::json!({"left": 0, "right": 0}),
++            "unequal" => report["compared_log_messages"]["right"] = serde_json::json!(3),
++            _ => unreachable!(),
++        }
++        cases.push((field, report, "copy", 23, None));
++    }
++    for mode in ["verify", "replay", "chaos"] {
++        let report_path = cell.join("captures").join(if mode == "chaos" {
++            "verify-seed-17.json"
++        } else {
++            "verify.json"
++        });
++        let command = verified_command::hermit_verification_command(
++            mode,
++            Some(17),
++            "\"$FAKE_PRODUCER\" \"$verify_report\"",
++        );
++        for (name, report, report_mode, status, expected) in &cases {
++            write_report(&input, report);
++            // A report from a previous attempt must never qualify this one.
++            write_report(&report_path, &valid);
++            let output = Command::new("bash")
++                .args(["-c", &command])
++                .env("cell", &cell)
++                .env("hermit_bin", temporary.join("synthetic-hermit"))
++                .env_remove("VERIFICATION_REPORT_BIN")
++                .env("FAKE_PRODUCER", &producer)
++                .env("REPORT_INPUT", &input)
++                .env("REPORT_MODE", report_mode)
++                .env("PRODUCER_STATUS", status.to_string())
++                .env("PRODUCER_ENTRY", &entry)
++                .output()
++                .expect("execute the actual generated shell wrapper and typed reader");
++            assert!(entry.is_file(), "{mode}/{name} did not reach its producer");
++            fs::remove_file(&entry).unwrap();
++            if let Some(code) = expected {
++                assert_eq!(
++                    output.status.code(),
++                    Some(*code),
++                    "{mode}/{name}: {output:?}"
++                );
++            } else {
++                assert!(
++                    matches!(output.status.code(), Some(1 | 2)),
++                    "{mode}/{name}: {output:?}"
++                );
++                assert!(String::from_utf8_lossy(&output.stderr).contains("verification-report"));
++            }
++        }
++        let output = Command::new("bash")
++            .args(["-c", &command])
++            .env("cell", &cell)
++            .env("hermit_bin", temporary.join("synthetic-hermit"))
++            .env("VERIFICATION_REPORT_BIN", temporary.join("absent-reader"))
++            .env("FAKE_PRODUCER", &producer)
++            .env("PRODUCER_ENTRY", &entry)
++            .output()
++            .unwrap();
++        assert_eq!(output.status.code(), Some(2));
++        assert!(
++            !entry.exists(),
++            "missing reader must refuse before the producer"
++        );
++    }
++    assert_eq!(
++        verified_command::hermit_verification_command("custom", None, "exit 23"),
++        "exit 23"
++    );
++    let generator = fs::read_to_string(root().join("scripts/manifest-to-commands.rs")).unwrap();
++    assert!(
++        generator.contains("verified_command::hermit_verification_command(mode, seed, &command)")
++    );
++    fs::remove_dir_all(temporary).unwrap();
++}
++
++#[test]
++fn application_shell_consumer_uses_the_real_typed_reader() {
++    let output = Command::new("bash")
++        .arg(root().join("tests/e2e/lib/applications/test_verdict_discrimination.sh"))
++        .env(
++            "VERIFICATION_REPORT_BIN",
++            env!("CARGO_BIN_EXE_verification-report"),
++        )
++        .env_remove("HERMIT_E2E_EMPTY_WORKDIR")
++        .output()
++        .expect("run synthetic producers through the actual application shell consumer");
++    assert!(output.status.success(), "{output:?}");
++    let stdout = String::from_utf8(output.stdout).unwrap();
++    for case in [
++        "strict-parity",
++        "valid-guest-status23",
++        "contradictory-compare_logs",
++        "contradictory-strictness",
++        "contradictory-verified",
++        "empty-report",
++        "infrastructure-error",
++        "pinned-root-workdir",
++    ] {
++        assert!(
++            stdout.contains(case),
++            "missing actual case {case}: {stdout}"
++        );
++    }
++    assert!(stdout.contains("all verdict-discrimination cases passed"));
++}
++
++#[test]
++fn reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements() {
++    let temporary = temporary_directory();
++    let script = temporary.join("tests/reproducible-builds/run.sh");
++    fs::create_dir_all(script.parent().unwrap()).unwrap();
++    fs::copy(root().join("tests/reproducible-builds/run.sh"), &script).unwrap();
++    let fixture = script.parent().unwrap().join("build-time-0.1.3");
++    fs::create_dir_all(fixture.join("target/release/deps")).unwrap();
++    fs::write(
++        fixture.join("target/release/deps/libbuild_time-control.so"),
++        b"synthetic",
++    )
++    .unwrap();
++    let tools = temporary.join("tools");
++    fs::create_dir(&tools).unwrap();
++    // Controlled command outputs exercise the real shell pipeline. No compiler,
++    // Hermit guest, proc macro, or VM executes in this native consumer control.
++    write_executable(&tools.join("cargo"), "#!/usr/bin/env bash\nexit 0\n");
++    write_executable(&tools.join("sleep"), "#!/usr/bin/env bash\nexit 0\n");
++    write_executable(
++        &tools.join("rustc"),
++        r#"#!/usr/bin/env python3
++import os,pathlib,sys
++if sys.argv[1:] == ['--version']:
++    print('rustc nightly synthetic-control')
++else:
++    output=pathlib.Path(sys.argv[sys.argv.index('-o')+1])
++    output.write_text('same' if os.environ['NATIVE_EQUAL']=='1' else output.name)
++"#,
++    );
++    let producer = tools.join("hermit");
++    write_executable(
++        &producer,
++        r#"#!/usr/bin/env python3
++import os,pathlib,shutil,sys
++args=sys.argv[1:]
++if '--verify-json' in args:
++    pathlib.Path(os.environ['PRODUCER_ENTRY']).write_text('entered')
++    report=pathlib.Path(args[args.index('--verify-json')+1])
++    mode=os.environ['REPORT_MODE']
++    if mode=='copy': shutil.copyfile(os.environ['REPORT_INPUT'],report)
++    elif mode=='empty': report.write_bytes(b'')
++    elif mode!='absent': raise AssertionError(mode)
++    sys.exit(int(os.environ['PRODUCER_STATUS']))
++output=pathlib.Path(args[args.index('-o')+1])
++output.write_text(output.name if os.environ['HERMIT_DIFFERENT']=='1' else 'same')
++"#,
++    );
++    let valid = current_synthetic_match();
++    let input = temporary.join("input.json");
++    let entry = temporary.join("verification-entered");
++    let artifacts = fixture.join("target/reproducible-builds");
++    fs::create_dir_all(&artifacts).unwrap();
++    let mut contradictory = valid.clone();
++    contradictory["comparison"]["compare_logs"] = serde_json::json!(false);
++    let mut status23 = valid.clone();
++    status23["guest_exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["left"]["exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["right"]["exit_code"] = serde_json::json!(23);
++    for (
++        name,
++        report,
++        report_mode,
++        guest_status,
++        native_equal,
++        hermit_different,
++        expected,
++        entered,
++    ) in [
++        ("valid", valid.clone(), "copy", 0, "0", "0", 0, true),
++        ("guest23", status23, "copy", 23, "0", "0", 23, true),
++        (
++            "contradictory",
++            contradictory,
++            "copy",
++            23,
++            "0",
++            "0",
++            1,
++            true,
++        ),
++        ("absent", valid.clone(), "absent", 23, "0", "0", 1, true),
++        ("empty", valid.clone(), "empty", 23, "0", "0", 1, true),
++        ("native-equal", valid.clone(), "copy", 0, "1", "0", 1, false),
++        (
++            "hermit-different",
++            valid.clone(),
++            "copy",
++            0,
++            "0",
++            "1",
++            1,
++            false,
++        ),
++    ] {
++        write_report(&input, &report);
++        write_report(&artifacts.join("verify.json"), &valid);
++        let output = Command::new("bash")
++            .arg(&script)
++            .env(
++                "PATH",
++                format!("{}:{}", tools.display(), std::env::var("PATH").unwrap()),
++            )
++            .env("HERMIT_BIN", &producer)
++            .env(
++                "VERIFICATION_REPORT_BIN",
++                env!("CARGO_BIN_EXE_verification-report"),
++            )
++            .env("REPORT_INPUT", &input)
++            .env("REPORT_MODE", report_mode)
++            .env("PRODUCER_STATUS", guest_status.to_string())
++            .env("PRODUCER_ENTRY", &entry)
++            .env("NATIVE_EQUAL", native_equal)
++            .env("HERMIT_DIFFERENT", hermit_different)
++            .output()
++            .expect("execute actual artifact checks and typed-report consumption");
++        assert_eq!(output.status.code(), Some(expected), "{name}: {output:?}");
++        assert_eq!(entry.exists(), entered, "{name}: {output:?}");
++        if entered {
++            fs::remove_file(&entry).unwrap();
++        }
++        assert_eq!(
++            String::from_utf8_lossy(&output.stdout)
++                .contains("PASS: native artifacts differ; strict ptrace Hermit artifacts match."),
++            expected == 0,
++            "{name}: {output:?}"
++        );
++        if name == "native-equal" {
++            assert!(
++                String::from_utf8_lossy(&output.stderr)
++                    .contains("Native builds unexpectedly matched")
++            );
++        }
++        if name == "hermit-different" {
++            assert!(String::from_utf8_lossy(&output.stderr).contains("Hermit builds differed"));
++        }
++    }
++    fs::remove_dir_all(temporary).unwrap();
++}
+diff --git a/scripts/lib/verified_command.rs b/scripts/lib/verified_command.rs
+new file mode 100644
+--- /dev/null
++++ b/scripts/lib/verified_command.rs
+@@ -0,0 +1,24 @@
++//! Shell rendering shared by the manifest command generator and its native controls.
++
++/// Preserve the producer's exit status only after its fresh `--verify-json`
++/// report satisfies the current typed canonical-match requirement.
++///
++/// The caller owns the outer timeout, environment, and complete command argv.
++/// This adds no build or fallback: the maintained sibling reader must already
++/// exist, or the caller must select it with `VERIFICATION_REPORT_BIN`.
++pub fn hermit_verification_command(mode: &str, seed: Option<i64>, command: &str) -> String {
++    let report_path = match mode {
++        "verify" | "replay" => "\"$cell/captures/verify.json\"".to_owned(),
++        "chaos" => format!("\"$cell/captures/verify-seed-{}.json\"", seed.unwrap_or(0)),
++        _ => return command.to_owned(),
++    };
++    format!(
++        "( verification_report_bin=${{VERIFICATION_REPORT_BIN:-$(dirname -- \"$hermit_bin\")/verification-report}}; \
++         if [ ! -x \"$verification_report_bin\" ]; then \
++         printf 'verification-report reader unavailable: %s; build with cargo build -p hermit --bin verification-report or set VERIFICATION_REPORT_BIN\\n' \"$verification_report_bin\" >&2; exit 2; fi; \
++         verify_report={report_path}; rm -f -- \"$verify_report\" || exit; \
++         verify_status=0; {command} || verify_status=$?; \
++         \"$verification_report_bin\" canonical-match \"$verify_report\" || exit; \
++         exit \"$verify_status\" )"
++    )
++}
+diff --git a/scripts/manifest-to-commands.rs b/scripts/manifest-to-commands.rs
+--- a/scripts/manifest-to-commands.rs
++++ b/scripts/manifest-to-commands.rs
+@@ -17,6 +17,9 @@
+ //! shell command per enabled `(test, mode, backend)` cell. Commands compile
+ //! implicit C/Rust guests and prepare shell wrappers before invoking Hermit, so
+ //! any individual line can be rerun from the repository root.
++//! Verification cells also require the sibling `verification-report` binary
++//! (`cargo build --release -p hermit --bin hermit --bin verification-report`),
++//! or an already-built reader selected with `VERIFICATION_REPORT_BIN`.
+ //!
+ //! ```cargo
+ //! [dependencies]
+@@ -28,6 +31,9 @@
+ 
+ #[path = "lib/rust_script_prelude.rs"]
+ mod rust_script_prelude;
++
++#[path = "lib/verified_command.rs"]
++mod verified_command;
+ 
+ #[path = "../ci/manifest-plan/src/manifest_value.rs"]
+ mod manifest_value;
+@@ -365,7 +371,7 @@
+         }
+         other => fail(format!("unsupported mode `{other}`")),
+     };
+-    command
++    verified_command::hermit_verification_command(mode, seed, &command)
+ }
+ 
+ fn bounded_invocation(command: &str, id: &str, attempt: &str) -> String {
+diff --git a/tests/backend-parity/README.md b/tests/backend-parity/README.md
+--- a/tests/backend-parity/README.md
++++ b/tests/backend-parity/README.md
+@@ -197,6 +197,14 @@
+ matched canonical verdict with `bitwise_parity: true` and equal positive
+ compared-message counts.
+ 
++The current matrix still expects `stripped` for non-KVM cells and `guest` for
++KVM cells, and prints those policy/ratchet labels. Those are active consumers,
++not merely historical decoding: a `bitwise` result can satisfy their weaker
++expected tier, while the printed requested-policy description remains stale.
++Updating those expectations and labels, with their discrimination controls,
++remains a separate obligation; this default-policy change does not update the
++matrix or remeasure its cells.
++
+ Because `--verify` diverts the guest's own stdout into per-run temporary logs,
+ this path cannot re-check stdout the way the L1 path does; instead it enforces
+ that the guest exit status matches and that Hermit's double-run comparison
+diff --git a/tests/e2e/lib/applications/common.sh b/tests/e2e/lib/applications/common.sh
+--- a/tests/e2e/lib/applications/common.sh
++++ b/tests/e2e/lib/applications/common.sh
+@@ -12,6 +12,7 @@
+ REPO_ROOT=$(cd -- "$APPLICATION_DIR/../../../.." && pwd)
+ readonly REPO_ROOT
+ readonly HERMIT_BIN=${HERMIT_BIN:-"$REPO_ROOT/target/debug/hermit"}
++readonly VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-$(dirname -- "$HERMIT_BIN")/verification-report}
+ readonly HERMIT_APPLICATION_TIMEOUT=${HERMIT_APPLICATION_TIMEOUT:-120}
+ 
+ function require_commands {
+@@ -58,6 +59,9 @@
+ # too. `bitwise_parity` is true only under the canonical (`--verify-strict`)
+ # policy with syscall output-buffer hashes present, and `compared_log_messages` is what makes it falsifiable: a strict
+ # CONFIGURATION is not evidence that the configured comparison had any data.
++# The field reads below preserve established diagnostics. Positive acceptance
++# additionally requires the producer-owned verification-report canonical-match
++# reader, which rejects contradictory, incomplete, or filtered evidence.
+ #
+ # Four outcomes are kept distinct, because collapsing them is how a harness
+ # reports green for work it never did:
+@@ -134,6 +138,12 @@
+         execution_root_args=("--mount=type=tmpfs,target=/test" "--workdir=/test")
+     fi
+ 
++    if [[ ! -x $VERIFICATION_REPORT_BIN ]]; then
++        printf '%s: REFUSED: verification-report reader unavailable: %s; build with cargo build -p hermit --bin verification-report or set VERIFICATION_REPORT_BIN\n' \
++            "$label" "$VERIFICATION_REPORT_BIN" >&2
++        return 1
++    fi
++
+     local stdout_file stderr_file verdict_file status=0
+     stdout_file=$(mktemp "${TMPDIR:-/tmp}/hermit-app-stdout.XXXXXX")
+     stderr_file=$(mktemp "${TMPDIR:-/tmp}/hermit-app-stderr.XXXXXX")
+@@ -203,6 +213,8 @@
+             failure="NO-RESULT: compared 0 log messages (left=$counts_left right=$counts_right); a strict configuration is not evidence the comparison had data"
+         elif [[ $parity != True ]]; then
+             failure="DIVERGED: bitwise_parity=$parity verdict=$verdict_name (a stripped match does NOT earn L2)"
++        elif ! "$VERIFICATION_REPORT_BIN" canonical-match "$verdict_file"; then
++            failure="REFUSED: typed report did not establish nonempty canonical parity"
+         fi
+     fi
+ 
+diff --git a/tests/e2e/lib/applications/test_verdict_discrimination.sh b/tests/e2e/lib/applications/test_verdict_discrimination.sh
+--- a/tests/e2e/lib/applications/test_verdict_discrimination.sh
++++ b/tests/e2e/lib/applications/test_verdict_discrimination.sh
+@@ -25,6 +25,13 @@
+ trap 'rm -rf -- "$WORK"' EXIT
+ 
+ failures=0
++
++# The producer is synthetic; the report reader is the real current binary.
++export VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-"$HERE/../../../../target/debug/verification-report"}
++if [[ ! -x $VERIFICATION_REPORT_BIN ]]; then
++    printf 'Build the current reader with cargo build -p hermit --bin verification-report, or set VERIFICATION_REPORT_BIN\n' >&2
++    exit 1
++fi
+ 
+ # A fake Hermit that writes $FAKE_REPORT (if set) to the --verify-json path and
+ # exits $FAKE_STATUS. Nothing here depends on a real guest or a real comparison.
+@@ -40,6 +47,9 @@
+ if [[ -n ${FAKE_REPORT:-} && -n $verdict_path ]]; then
+     printf '%s' "$FAKE_REPORT" >"$verdict_path"
+ fi
++if [[ ${FAKE_EMPTY_REPORT:-0} == 1 && -n $verdict_path ]]; then
++    : >"$verdict_path"
++fi
+ if [[ -n ${FAKE_ARGS_FILE:-} ]]; then
+     printf '%s\n' "$@" >"$FAKE_ARGS_FILE"
+ fi
+@@ -69,6 +79,16 @@
+     out=$(cd "${EXPECT_CWD:-$PWD}" && \
+         run_hermit_verify "$name" "${invocation[@]}" 2>&1) || rc=$?
+     unset FAKE_REPORT FAKE_STATUS
++
++    if [[ $want == STATUS23 ]]; then
++        if ((rc == 23)) && [[ $out == *'strict L2 parity held, but the guest exited nonzero (status 23)'* ]]; then
++            printf '  ok   %-28s valid evidence before guest status 23\n' "$name"
++        else
++            printf '  FAIL %-28s expected typed parity and status 23, got rc=%s:\n%s\n' "$name" "$rc" "$out"
++            failures=$((failures + 1))
++        fi
++        return
++    fi
+ 
+     if [[ $want == PASS ]]; then
+         if ((rc == 0)); then
+@@ -80,7 +100,7 @@
+         return
+     fi
+ 
+-    if ((rc == 0)); then
++    if ((rc == 0 || rc == 23)); then
+         printf '  FAIL %-28s expected refusal (%s) but it PASSED\n' "$name" "$want"
+         failures=$((failures + 1))
+     elif [[ $out != *"$want"* ]]; then
+@@ -91,13 +111,63 @@
+     fi
+ }
+ 
+-parity_report='{"verified":true,"bitwise_parity":true,"verdict":"matched","comparison":{"strictness":"canonical"},"compared_log_messages":{"left":1200,"right":1200},"guest_exit_code":0,"guest_signal":null}'
++# Complete synthetic current producer report, including both output operands.
++# The retained historical reports below intentionally remain unchanged.
++parity_report=$(python3 - <<'PY'
++import json
++empty = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++output = dict(exit_code=0, signal=None, stdout_sha256=empty, stdout_bytes=0,
++              stderr_sha256=empty, stderr_bytes=0)
++print(json.dumps(dict(
++    verified=True, bitwise_parity=True, verdict='matched',
++    infrastructure_error=None, no_result_reason=None,
++    comparison=dict(strictness='canonical', display_name='BitwiseInfoV1',
++        compare_logs=True, compare_io_buffers=True, log_scope='info',
++        record_envelope='all_records_v1', virtualize_time=True, strip_lines=False,
++        canonicalize_addresses=True, full_trace=True, exact_remainder=True,
++        stripped_prefixes=['real-wall-clock-prefix/v1'],
++        canonicalizations=['host-address-to-first-appearance-ordinal/v1'],
++        ignore_lines=False, skip_commit=False, skip_detlog=False),
++    compared_log_messages=dict(left=1200, right=1200),
++    compared_outputs=dict(left=output, right=output),
++    guest_exit_code=0, guest_signal=None,
++    first_divergent_scheduler_turn=None, first_divergent_virtual_nanoseconds=None,
++    first_divergent_record=None, first_divergent_syscall=None,
++    first_divergent_left_message=None, first_divergent_right_message=None)))
++PY
++)
+ 
+ printf 'run_hermit_verify verdict discrimination\n'
+ 
+ # POSITIVE. Without this the negatives prove nothing: a reader that always
+ # refused would pass every one of them.
+ expect strict-parity PASS "$parity_report" 0
++
++status23_report=$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); r["guest_exit_code"]=23; r["compared_outputs"]["left"]["exit_code"]=23; r["compared_outputs"]["right"]["exit_code"]=23; print(json.dumps(r))' "$parity_report")
++expect valid-guest-status23 STATUS23 "$status23_report" 23
++
++for mutation in strictness compare_logs verified missing_field unequal_counts; do
++    report=$(python3 - "$parity_report" "$mutation" <<'PY'
++import json,sys
++r=json.loads(sys.argv[1])
++if sys.argv[2] == 'strictness': r['comparison']['strictness']='stripped'
++elif sys.argv[2] == 'compare_logs': r['comparison']['compare_logs']=False
++elif sys.argv[2] == 'verified': r['verified']=False
++elif sys.argv[2] == 'missing_field': del r['guest_signal']
++elif sys.argv[2] == 'unequal_counts': r['compared_log_messages']['right']=1199
++else: raise AssertionError(sys.argv[2])
++print(json.dumps(r))
++PY
++)
++    expect "contradictory-$mutation" REFUSED "$report" 23
++done
++
++export FAKE_EMPTY_REPORT=1
++expect empty-report REFUSED "$parity_report" 0
++unset FAKE_EMPTY_REPORT
++
++expect infrastructure-error 'INFRASTRUCTURE ERROR: kind=skid_overshoot count=2' \
++    '{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error","infrastructure_error":{"kind":"skid_overshoot","count":2},"comparison":null,"compared_log_messages":null}' 1
+ 
+ export HERMIT_E2E_EMPTY_WORKDIR=/test FAKE_ARGS_FILE="$WORK/pinned-root-args"
+ expect pinned-root-workdir PASS "$parity_report" 0
+diff --git a/tests/reproducible-builds/README.md b/tests/reproducible-builds/README.md
+--- a/tests/reproducible-builds/README.md
++++ b/tests/reproducible-builds/README.md
+@@ -10,16 +10,19 @@
+ Hermit virtualizes that clock, so its two object files are byte-for-byte
+ identical. It also runs the compiler command with `--strict --verify` to check
+ status, output, and canonical INFO logs under the default policy. The runner
+-does not yet retain and validate the typed verification report, so its command
+-status alone must not be reported as a nonempty canonical-verification result.
++retains `verify.json` beside the objects and requires the current typed reader's
++nonempty canonical match before accepting the verification command's status.
+ The independent object-file comparison remains the artifact oracle.
+ 
+ ```bash
+-cargo build --release -p hermit --bin hermit
++cargo build --release -p hermit --bin hermit --bin verification-report
+ with-proxy ./tests/reproducible-builds/run.sh
+ ```
+ 
+-Set `HERMIT_BIN` to test another Hermit binary. Generated objects remain under
++Set `HERMIT_BIN` to test another Hermit binary. The typed reader defaults to its
++sibling `verification-report`; use `VERIFICATION_REPORT_BIN` to select an
++already-built reader at another path. Missing readers are refused before the
++fixture builds. Generated objects remain under
+ the fixture's ignored `target/reproducible-builds/` directory for inspection.
+ 
+ ## Scope
+@@ -28,7 +31,7 @@
+ - Hermit mode: strict, with no determinism relaxations.
+ - Assurance: two independent L1 builds with a direct bitwise artifact check,
+   plus a default canonical `--strict --verify` invocation of the same compiler
+-  command. Typed-report consumption remains a separate runner obligation. The
++  command whose current typed report must satisfy canonical-match. The
+   direct object-file comparison supplies the bitwise artifact claim.
+ - Artifact: an ELF object produced with `rustc --emit=obj`. Avoiding the linker
+   keeps the example focused on the compile-time clock input.
+diff --git a/tests/reproducible-builds/run.sh b/tests/reproducible-builds/run.sh
+--- a/tests/reproducible-builds/run.sh
++++ b/tests/reproducible-builds/run.sh
+@@ -5,11 +5,18 @@
+ repo_root=$(cd -- "$script_dir/../.." && pwd)
+ fixture="$script_dir/build-time-0.1.3"
+ hermit_bin=${HERMIT_BIN:-"$repo_root/target/release/hermit"}
++VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-$(dirname -- "$hermit_bin")/verification-report}
+ artifact_dir="$fixture/target/reproducible-builds"
+ 
+ if [[ ! -x "$hermit_bin" ]]; then
+     printf 'Hermit binary not found: %s\n' "$hermit_bin" >&2
+     printf 'Build it with: cargo build --release -p hermit --bin hermit\n' >&2
++    exit 1
++fi
++
++if [[ ! -x "$VERIFICATION_REPORT_BIN" ]]; then
++    printf 'verification-report reader unavailable: %s\n' "$VERIFICATION_REPORT_BIN" >&2
++    printf 'Build it with: cargo build --release -p hermit --bin verification-report, or set VERIFICATION_REPORT_BIN\n' >&2
+     exit 1
+ fi
+ 
+@@ -67,11 +74,20 @@
+ 
+ # Pre-create the output so both verification runs observe the same unlink.
+ : > "$artifact_dir/verified.o"
++verify_report="$artifact_dir/verify.json"
++rm -f -- "$verify_report"
++verify_status=0
+ # The single-quoted variables expand in the guest bash process.
+ # shellcheck disable=SC2016
+-"$hermit_bin" run --strict --verify --workdir "$fixture" -- \
++"$hermit_bin" run --strict --verify --verify-json "$verify_report" --workdir "$fixture" -- \
+     bash -c 'output=$1; shift; rm -f "$output"; "$@" -o "$output"' \
+-    _ "$artifact_dir/verified.o" "${compile[@]}"
++    _ "$artifact_dir/verified.o" "${compile[@]}" || verify_status=$?
++
++"$VERIFICATION_REPORT_BIN" canonical-match "$verify_report" || exit 1
++if ((verify_status != 0)); then
++    printf 'Compiler verification matched, but the guest exited %s\n' "$verify_status" >&2
++    exit "$verify_status"
++fi
+ 
+ printf 'native-one  %s\n' "$native_one"
+ printf 'native-two  %s\n' "$native_two"

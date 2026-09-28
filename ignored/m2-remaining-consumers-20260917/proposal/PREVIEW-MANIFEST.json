@@ -1,0 +1,168 @@
+{
+  "scope": "seven shell readers, KVM wording, seven of thirteen consumer entries, one new source/actual-reader control",
+  "files": [
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_kind": "immutable M2 preview-v10",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview-v10/hermit-cli/tests/verification_report_consumers.rs",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/hermit-cli/tests/verification_report_consumers.rs",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/hermit-cli/tests/verification_report_consumers.rs",
+      "git_mode": "100644",
+      "before": {
+        "bytes": 40160,
+        "sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc",
+        "git_blob": "6754b8336f3cc72175fbdad079a02877d4191340"
+      },
+      "after": {
+        "bytes": 43858,
+        "sha256": "16166d56985c0b6cd1052cf73db86df2b1d4f69da43a1db27277619ae38887b3",
+        "git_blob": "b57c1b76ad2b0569b1c9a4921bbdaefa159f9589"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/e2e/lib/data-handling/common.bash",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/data-handling/common.bash",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/e2e/lib/data-handling/common.bash",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/e2e/lib/data-handling/common.bash",
+      "git_mode": "100644",
+      "before": {
+        "bytes": 4684,
+        "sha256": "329e9bcd8931a6394938dec57678f15a0cb91221c0c6cd1a0ee81ac9f07336c9",
+        "git_blob": "ab661db82d646555c91b8b525560666ac6542fc1"
+      },
+      "after": {
+        "bytes": 4692,
+        "sha256": "261998989a630826ae7c13d1389adeb1c0238ccc4ca69058b7e147df0092d9d2",
+        "git_blob": "404c03606e198f6f24fe6e0192c676e02461e467"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/e2e/lib/determinism-stress/common.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/determinism-stress/common.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/e2e/lib/determinism-stress/common.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/e2e/lib/determinism-stress/common.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 8569,
+        "sha256": "38a70abc0078e6dd718ac2a8d75b61a1058d341b09ffdac19cf893e82fbdcf26",
+        "git_blob": "e835de91d9642874e8bb6c7e3cb9abe17b6c1e79"
+      },
+      "after": {
+        "bytes": 8577,
+        "sha256": "b416d30de46b3c1a676fe485e6987fdbdefabb78ed3efc7281e7f41521fa2693",
+        "git_blob": "9a044b3a7a7b8891b3864195b9bab210a7ea3b6f"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/e2e/lib/language-runtimes/run.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/language-runtimes/run.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/e2e/lib/language-runtimes/run.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/e2e/lib/language-runtimes/run.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 4347,
+        "sha256": "9fa2cd462f1dbc358e90dffc3a61dafa589f5bf212070873c7f9a650dff32e57",
+        "git_blob": "180688289e6ed4997a53c3f69b37cdb04076188e"
+      },
+      "after": {
+        "bytes": 4355,
+        "sha256": "32d4ad8b839364da84cd95cdc762101827e1901a2b31505a54b2b66c50edb3fc",
+        "git_blob": "725bb9f5b45041a23ba9e71e3b604ebfaf474d0c"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/e2e/lib/system-utils/_common.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/system-utils/_common.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/e2e/lib/system-utils/_common.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/e2e/lib/system-utils/_common.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 7120,
+        "sha256": "cd08a5a44c22757ac73ad106a968dab330163fa116d94d69d377e7280df48864",
+        "git_blob": "b83823ee638827d0196d9784c98088f724785c38"
+      },
+      "after": {
+        "bytes": 7089,
+        "sha256": "f570e32affc2c8c58aadcd0f41672948314e9584c39971f15603ae1c10103914",
+        "git_blob": "5614fbeba82cbf8b2228053d9c458c7078b4f283"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/qemu-boot/strict_l2_userspace_test.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/qemu-boot/strict_l2_userspace_test.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/qemu-boot/strict_l2_userspace_test.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 10833,
+        "sha256": "e75fca3a7bc832db83d80a3415c116752d4552b8a562d3e9c9e6f96a29ed15d1",
+        "git_blob": "8ab76a1f6dafb1eaf00d31661d52b2fbc5590cef"
+      },
+      "after": {
+        "bytes": 10841,
+        "sha256": "432958fd254ad5e5440c54b924f703715c89c230db3fd2e6e2f2843599184640",
+        "git_blob": "0937527d6a9607cff9218f27defbf39c3c1a0859"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/standalone/strict_setitimer.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/standalone/strict_setitimer.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/standalone/strict_setitimer.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/standalone/strict_setitimer.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 5976,
+        "sha256": "d7c1bcf30860624fed6cebde51e7243b37833921e60e5dcbc522b2071faa05fa",
+        "git_blob": "28f25c66aa67b27ca8c3e93c8c0cbff11ee25672"
+      },
+      "after": {
+        "bytes": 5984,
+        "sha256": "4c8bf0c425c7919ed8cdbf9a681b1cbcdb32020ac401eb6b3aef896a120d22d5",
+        "git_blob": "37d1e5199e67f2fadf625aff60b31ac8129d5f65"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    },
+    {
+      "path": "tests/standalone/strict_timer_create.sh",
+      "base_kind": "immutable Hermit 14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/standalone/strict_timer_create.sh",
+      "base_copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/base/tests/standalone/strict_timer_create.sh",
+      "preview": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/tests/standalone/strict_timer_create.sh",
+      "git_mode": "100755",
+      "before": {
+        "bytes": 3309,
+        "sha256": "ba8a6d49595c4e02d578369814d554c2e350956baafa9e53e138a1cdd62ccb57",
+        "git_blob": "0abd174fd14752ebebe9852585e2846a1c86fcec"
+      },
+      "after": {
+        "bytes": 3317,
+        "sha256": "4d7484bc1cfd8a532fe26f53abd9c85c3812bdd4abb088c720fd80d003008e70",
+        "git_blob": "78d8ba78b299d29e76809caecfabf8dbcbf80665"
+      },
+      "mode_unchanged": true,
+      "unified_hunks_apply_in_memory_exactly": true
+    }
+  ],
+  "live_application": false,
+  "product_execution": false,
+  "formatters_run": false
+}

@@ -1,0 +1,339 @@
+[
+  {
+    "path": "experimental/reverie-sabre-macros/src/expand.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "be6db6bed8f0b0605b3f50d21df8e27660201b57"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "3a36474e7bf3fc419be1f651f583df158aa07a4e"
+    },
+    "base_sha256": "98245b8c46d1ee5478e2705a32b7bd0bd53d63bbd280d4e2eb7541976366ebe4",
+    "base_bytes": 5679,
+    "main_sha256": "fa5d16c66b926e9d711994750b7b9260e17cb317e9256b25625d76bdb44bfff5",
+    "main_bytes": 6217
+  },
+  {
+    "path": "experimental/reverie-sabre/src/bootstrap.rs",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "e8795b3fec2aa840b0eebee035bd97e83ce819d2"
+    },
+    "main_sha256": "71df42869a116db5b6e8f65d8bd833f06ba19805b0d8eb1fd425636e8cbc6b69",
+    "main_bytes": 5296
+  },
+  {
+    "path": "experimental/reverie-sabre/src/ffi/clone.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "c2fb173b8e5de755084f2df8c7856cfeeb01b351"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "14a9e407200594d7502f26c51371ad9c9ee713c5"
+    },
+    "base_sha256": "ba6f6570a15c54bcdddb3f55a837ead0ca5d0a853d2d57015f8cf315687b1614",
+    "base_bytes": 18446,
+    "main_sha256": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+    "main_bytes": 17157
+  },
+  {
+    "path": "experimental/reverie-sabre/src/ffi/mod.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "8b84d377bdf9e33bc61e37733c562f6fd28d48b6"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "3d6385688d4f03238acccd5c2b673a33e8e36e21"
+    },
+    "base_sha256": "4efae7932705f3388a35dc12229792c2a290622bf5ffc8270838540c0f84849e",
+    "base_bytes": 4482,
+    "main_sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+    "main_bytes": 4832
+  },
+  {
+    "path": "experimental/reverie-sabre/src/lib.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "2c6af9d8c6723e82d18e4c88db5471c458b3d882"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "fb4bd1c602591d4d651c701802a07abc9635d46d"
+    },
+    "base_sha256": "1802a219d1e3dff6b598e33908a701a05ef1e34955d05ce5c2728bdd508434f7",
+    "base_bytes": 4673,
+    "main_sha256": "d4d38a86bfe2e9e4387308b4ade0ea567a526aa005993302639ae66e4cd7ca22",
+    "main_bytes": 4692
+  },
+  {
+    "path": "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "1636fa5b4fab512c66a37fe8f5f6c3d0db7c09f8"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "143ef45757b546773aea32aade7e8901a3f1ae3e"
+    },
+    "base_sha256": "277b722f33717ead5f1befc6cbce63d877935418291fd140d4d1f91065008cf4",
+    "base_bytes": 87101,
+    "main_sha256": "6c225afea15d16f2284bb1de9078f6209e82913ea86bc1ad0498bd75cafb7278",
+    "main_bytes": 92793
+  },
+  {
+    "path": "experimental/reverie-sabre/src/tool.rs",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "52bbc2aacc49b9e1839c1787b68667a8dacb938f"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "f7c26eea7c582181b58d5754792edf26e1078e72"
+    },
+    "base_sha256": "113375146c5fffa06d3b739fcbfe2bfd77029965f7c22d49644b075000fd7119",
+    "base_bytes": 10273,
+    "main_sha256": "e3f26f6842ecf72ea37dc4ad6c25db5dc345d158dd05412c8080a2267b20221b",
+    "main_bytes": 10609
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "bbfb497cdf5c545e2ce097b483a944820538d41a"
+    },
+    "main_sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+    "main_bytes": 2198
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "a7454a2380c5ddfb24945be018a55a9a9b3b939c"
+    },
+    "main_sha256": "9da521926e0b407d129f3400ccbe096bbaa6b09893a8ee00d6d778053e9cd565",
+    "main_bytes": 5694
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "aa1097a6e25bacfd1a58d8fc594c235ba90c2ed1"
+    },
+    "main_sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+    "main_bytes": 580
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/loader_bootstrap.c",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "4c0ccad1f00a0a74e2a031bd67dd81af76f6edc0"
+    },
+    "main_sha256": "bd56bc8cd7e077c4222e6636aadab5bb9e33b4ab51e77a3b694ce59a9bc2754a",
+    "main_bytes": 10180
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/loader_bootstrap.rs",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "6b2c9b21a2bad46f1110a82598f881cdfaeeaacf"
+    },
+    "main_sha256": "b92d67526221d114ca46e0089f1718a786f2c782a7fc154be0b2485a8ea27c77",
+    "main_bytes": 1780
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "b4a430d6935e87f4ccffd251b1b85e81719b1841"
+    },
+    "main_sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+    "main_bytes": 5142
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "8ab40b5631f9460af45c56847eb55af966875d8f"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "b3c680b41bfdc715a7984bd8713d2d8d222c1dfe"
+    },
+    "base_sha256": "fb1c2a97720532da5405c6baa965efb6534f450f77c3168b51733ed445338f7e",
+    "base_bytes": 1767,
+    "main_sha256": "2a440aaa2469303ad12a7e9f41f6efc14650236376499d8e5ae72db53c2d1991",
+    "main_bytes": 1985
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "b5c0a8b83ae4ce22d43ac05483ce6c1827e1911b"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "9118bd8492b3af2e3d3bdffdc11db75870580fc6"
+    },
+    "base_sha256": "a0d1ef0344b3280048efefbf5b9e63e9b8130eadb06b07af13557f706b352c37",
+    "base_bytes": 727,
+    "main_sha256": "21b286af1cfd446ed3cecb640be4056860e8f91f931d15b318195a91909a47df",
+    "main_bytes": 1488
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "a5dee4c484e86a7bccc74e9e508e9ace30acacee"
+    },
+    "main_sha256": "eef51505fb06e1cf17a13b6c366c54d2a66a1952986793a35d1e2df934e58321",
+    "main_bytes": 2724
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "fc5a43a657edb7807bd16a2dad75187e7dd5125c"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "903012a419ec3007c2e9c410ad48ef314acf0737"
+    },
+    "base_sha256": "40b22a548d47d1dc64989c298d52914ef9e5fc60128e300aeb9eb88c5ffc19d8",
+    "base_bytes": 484,
+    "main_sha256": "b34dd4f2a6d24d59a48f530ddfca77b38be07927402736ac3e394d86d34d1b66",
+    "main_bytes": 498
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c",
+    "base_entry": null,
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "f0176197cbf9bb77029287e6d881ab942c8e0230"
+    },
+    "main_sha256": "bdd506520c4d0844364e4dd73d396e2a65da746f31ef060322e638f6d1f10e2d",
+    "main_bytes": 5540
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "d6565362a660e78e7f390ad58947ff7bee8f5a9c"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "a0f22a06efe2f837b6520737ebfd9816e437a615"
+    },
+    "base_sha256": "f8abb4f71a267672397ab9ada30ad86bec3a20642a24ac11b6c55c0e988ce19d",
+    "base_bytes": 18810,
+    "main_sha256": "ef3f6e0115a13df1a6313334d35858c3dced77ff16f83552bd689e68282ace16",
+    "main_bytes": 19239
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/loader.c",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "2afe1e5ea507b5dfd255178203f63c4d8a9e85e7"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "f8fb0334ec9ff101d1f84cad7b7a68d33fdae2b0"
+    },
+    "base_sha256": "269b03b6541f549b3973eb8f0fed8549f730b4789f56fcb0f7e0938c1791108d",
+    "base_bytes": 15800,
+    "main_sha256": "c4f9574c20a6d807563eac5a71e4d307d17789e29dbaab3c4f7731cc3788db7f",
+    "main_bytes": 16253
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/premain.c",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "24b3df774052227ca3585cc41f31d3d6e6354022"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "c7b7d4b41530a5dfd72808f7a70ab80d29dd03d9"
+    },
+    "base_sha256": "f5610a0b7adeb89c4c04af273a9bd9cbd705076d824100e007bb820be863b897",
+    "base_bytes": 14181,
+    "main_sha256": "e60c19054bf6a28923ecc5e7b557445ceeedd66b532fae1d401b89cf7f6be2eb",
+    "main_bytes": 14939
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/loader/rewriter.c",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "7a4c65b2200722325ba600b231753e0660b41613"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "4f34dab37164692f70b88419ecad41a8df25b281"
+    },
+    "base_sha256": "d4b06281301621f001464700234467fb848f586b2a56c7c1791e1c825de1ebae",
+    "base_bytes": 29136,
+    "main_sha256": "adbd10d2c6b95dd673cd3dd0091ce947d744562531a76cfd53d5a8de6d9b2327",
+    "main_bytes": 29823
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "base_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "9db9090294ad02348c362aacc0dd9ec85d83d300"
+    },
+    "main_entry": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "a83f7f128f5cd784e6898ce8a95cb084b6ffedca"
+    },
+    "base_sha256": "2b090dfd752ceea7129d5088c7276e8a6436d630d8324b1321862a41dde95c96",
+    "base_bytes": 1248,
+    "main_sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+    "main_bytes": 976
+  }
+]

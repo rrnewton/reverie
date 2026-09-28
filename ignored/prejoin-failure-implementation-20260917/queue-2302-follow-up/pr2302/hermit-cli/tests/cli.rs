@@ -1,0 +1,2268 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#[path = "common/liteinst.rs"]
+mod liteinst_runtime;
+
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
+use std::process::Output;
+use std::process::Stdio;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+static DBT_MMAP_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_EXEC_FAILURE_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_EXECVEAT_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_PID_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_PRLIMIT_SELF_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_WAIT_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_UNSUPPORTED_SYSCALL_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static DBT_SELF_SIGQUEUE_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static LITEINST_INERT_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
+static EXEC_CLOCK_CONTINUITY_GUEST: OnceLock<PathBuf> = OnceLock::new();
+static HERMIT_RUN_LOCK: Mutex<()> = Mutex::new(());
+
+fn hermit(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+}
+
+fn hermit_with_stdin(args: &[&str], input: &[u8]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+    child
+        .stdin
+        .take()
+        .expect("hermit stdin should be piped")
+        .write_all(input)
+        .expect("failed to write hermit stdin");
+    child
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("failed to wait for hermit with {args:?}: {error}"))
+}
+
+fn liteinst_inert_runtime() -> &'static Path {
+    LITEINST_INERT_RUNTIME.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("liteinst-inert-runtime");
+        fs::create_dir_all(&build_root).expect("failed to create inert runtime directory");
+        let runtime = build_root.join("libreverie_liteinst_inert.so");
+        let output = Command::new("cc")
+            .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/liteinst_inert_runtime.c"))
+            .arg("-o")
+            .arg(&runtime)
+            .output()
+            .expect("failed to compile inert LiteInst runtime fixture");
+        assert!(
+            output.status.success(),
+            "inert LiteInst fixture compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        runtime
+    })
+}
+
+fn exec_clock_continuity_guest() -> &'static Path {
+    EXEC_CLOCK_CONTINUITY_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("exec-clock-continuity");
+        fs::create_dir_all(&build_root)
+            .expect("failed to create exec-clock-continuity guest directory");
+        let guest = build_root.join("exec_clock_continuity");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/exec_clock_continuity.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile exec-clock-continuity guest");
+        assert!(
+            output.status.success(),
+            "exec-clock-continuity guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+fn dbt_mmap_guest() -> &'static Path {
+    DBT_MMAP_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-mmap");
+        fs::create_dir_all(&build_root).expect("failed to create DBT mmap guest directory");
+        let guest = build_root.join("dbt_mmap_exec");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_mmap_exec.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT mmap guest");
+        assert!(
+            output.status.success(),
+            "DBT mmap guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+fn dbt_exec_failure_guest() -> &'static Path {
+    DBT_EXEC_FAILURE_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-exec-failure");
+        fs::create_dir_all(&build_root).expect("failed to create DBT exec-failure guest directory");
+        let guest = build_root.join("dbt_exec_failure");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_exec_failure.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT exec-failure guest");
+        assert!(
+            output.status.success(),
+            "DBT exec-failure guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+fn dbt_execveat_guest() -> &'static Path {
+    DBT_EXECVEAT_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-execveat");
+        fs::create_dir_all(&build_root).expect("failed to create DBT execveat guest directory");
+        let guest = build_root.join("dbt_execveat_unsupported");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_execveat_unsupported.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT execveat guest");
+        assert!(
+            output.status.success(),
+            "DBT execveat guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+fn dbt_wait_guest() -> &'static Path {
+    DBT_WAIT_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-wait");
+        fs::create_dir_all(&build_root).expect("failed to create DBT wait guest directory");
+        let guest = build_root.join("dbt_wait_lifecycle");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_wait_lifecycle.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT wait guest");
+        assert!(
+            output.status.success(),
+            "DBT wait guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+// TODO-HUMAN-REVIEW(PR-723): Review the DBT PID fixture build.
+fn dbt_pid_guest() -> &'static Path {
+    DBT_PID_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-pid");
+        fs::create_dir_all(&build_root).expect("failed to create DBT PID guest directory");
+        let guest = build_root.join("dbt_pid_virtualization");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_pid_virtualization.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT PID guest");
+        assert!(
+            output.status.success(),
+            "DBT PID guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-1065): Review DBT self-prlimit fixture coverage.
+fn dbt_prlimit_self_guest() -> &'static Path {
+    DBT_PRLIMIT_SELF_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-prlimit-self");
+        fs::create_dir_all(&build_root).expect("failed to create DBT self-prlimit guest directory");
+        let guest = build_root.join("dbt_prlimit_self");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_prlimit_self.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT self-prlimit guest");
+        assert!(
+            output.status.success(),
+            "DBT self-prlimit guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-644): Review the DBT unsupported-syscall fixture build.
+fn dbt_unsupported_syscall_guest() -> &'static Path {
+    DBT_UNSUPPORTED_SYSCALL_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-unsupported-syscall");
+        fs::create_dir_all(&build_root)
+            .expect("failed to create DBT unsupported-syscall guest directory");
+        let guest = build_root.join("dbt_unsupported_syscall");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_unsupported_syscall.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT unsupported-syscall guest");
+        assert!(
+            output.status.success(),
+            "DBT unsupported-syscall guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+// TODO-HUMAN-REVIEW(PR-1038): Review the DBT self-signal fixture build.
+fn dbt_self_sigqueue_guest() -> &'static Path {
+    DBT_SELF_SIGQUEUE_GUEST.get_or_init(|| {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hermit-cli should be inside the repository");
+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-self-sigqueue");
+        fs::create_dir_all(&build_root)
+            .expect("failed to create DBT self-sigqueue guest directory");
+        let guest = build_root.join("dbt_self_sigqueue");
+        let output = Command::new("cc")
+            .args(["-O0", "-g", "-Wall", "-Wextra", "-Werror"])
+            .arg(repository.join("tests/c/dbt_self_sigqueue.c"))
+            .arg("-o")
+            .arg(&guest)
+            .output()
+            .expect("failed to compile DBT self-sigqueue guest");
+        assert!(
+            output.status.success(),
+            "DBT self-sigqueue guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        guest
+    })
+}
+
+fn hermit_with_closed_stdin(args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: pre_exec closes only the child descriptor immediately before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::close(libc::STDIN_FILENO) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    command
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+}
+
+fn assert_success(output: &Output, args: &[&str]) {
+    assert!(
+        output.status.success(),
+        "hermit {args:?} failed with {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8(output.stdout.clone()).expect("hermit stdout should be UTF-8")
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("hermit stderr should be UTF-8")
+}
+
+fn assert_failure_contains(output: &Output, expected: &[&str]) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected status: {output:?}"
+    );
+    let stderr = stderr(output);
+    for message in expected {
+        assert!(
+            stderr.contains(message),
+            "missing {message:?} in:\n{stderr}"
+        );
+    }
+    assert!(!stderr.contains("panicked"), "unexpected panic:\n{stderr}");
+}
+
+fn deny_syscall(command: &mut Command, syscall: libc::c_long) {
+    // SAFETY: The callback makes only async-signal-safe syscalls before exec. The filter is an
+    // allow-all policy except for the single syscall used by each capability-probe test.
+    unsafe {
+        command.pre_exec(move || {
+            let mut filter = [
+                libc::sock_filter {
+                    code: 0x20, // BPF_LD | BPF_W | BPF_ABS
+                    jt: 0,
+                    jf: 0,
+                    k: 0, // offsetof(seccomp_data, nr)
+                },
+                libc::sock_filter {
+                    code: 0x15, // BPF_JMP | BPF_JEQ | BPF_K
+                    jt: 0,
+                    jf: 1,
+                    k: syscall as u32,
+                },
+                libc::sock_filter {
+                    code: 0x06, // BPF_RET | BPF_K
+                    jt: 0,
+                    jf: 0,
+                    k: 0x0005_0000 | libc::EPERM as u32, // SECCOMP_RET_ERRNO
+                },
+                libc::sock_filter {
+                    code: 0x06,
+                    jt: 0,
+                    jf: 0,
+                    k: 0x7fff_0000, // SECCOMP_RET_ALLOW
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_mut_ptr(),
+            };
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &program as *const libc::sock_fprog,
+            ) == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[test]
+fn run_strict_flag_is_accepted_and_runs() {
+    // Regression test for GH #12: `docs/Users.md` documents
+    // `hermit run --strict ...`, and the CLI must accept that spelling and run
+    // the guest to completion. Strict determinism is the default, so `--strict`
+    // is a compatibility no-op over the defaults. `--max-timeslice=disabled`
+    // and `--no-virtualize-cpuid` keep this runnable on hosts without accessible
+    // PMU counters or CPUID faulting; neither weakens what `--strict` controls.
+    let args = [
+        "run",
+        "--strict",
+        "--max-timeslice=disabled",
+        "--no-virtualize-cpuid",
+        "--",
+        "/bin/true",
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+}
+
+#[test]
+fn verify_verbose_requires_verify() {
+    let args = ["run", "--verify-verbose", "--", "/bin/true"];
+    let output = hermit(&args);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("--verify-verbose"),
+        "unexpected error:\n{stderr}"
+    );
+    assert!(stderr.contains("--verify"), "unexpected error:\n{stderr}");
+    assert!(stderr.contains("required"), "unexpected error:\n{stderr}");
+}
+
+#[test]
+fn run_rejects_unknown_backends_during_argument_parsing() {
+    let args = ["run", "--backend", "unknown", "--", "/bin/true"];
+    let output = hermit(&args);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("invalid value 'unknown'"),
+        "unexpected error:\n{stderr}"
+    );
+    for backend in ["ptrace", "dbt", "kvm"] {
+        assert!(
+            stderr.contains(backend),
+            "missing {backend:?} in:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn run_dbt_executes_integrated_backend() {
+    let args = ["run", "--backend", "dbt", "--", "/bin/true"];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+}
+
+#[test]
+fn run_dbt_uses_the_requested_guest_environment() {
+    let args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--strict",
+        "--base-env=empty",
+        "--env=DBT_GUEST_ONLY=present",
+        "--",
+        "/usr/bin/env",
+    ];
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .env("DBT_HOST_ONLY", "must-not-leak")
+        .args(args)
+        .output()
+        .expect("failed to run DBT environment regression");
+
+    assert_success(&output, &args);
+    let stdout = stdout(&output);
+    assert!(
+        stdout.lines().any(|line| line == "DBT_GUEST_ONLY=present"),
+        "DBT guest environment omitted the requested value:\n{stdout}",
+    );
+    assert!(
+        !stdout
+            .lines()
+            .any(|line| line.starts_with("DBT_HOST_ONLY=")),
+        "DBT guest inherited a host-only value:\n{stdout}",
+    );
+}
+
+#[test]
+fn run_dbt_verify_publishes_canonical_evidence() {
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("failed to create DBT canonical-verification directory");
+    let logs = directory.path().join("logs");
+    let report = directory.path().join("verify.json");
+    fs::create_dir(&logs).expect("failed to create DBT verification-log directory");
+    let logs_text = logs
+        .to_str()
+        .expect("DBT verification-log path should be UTF-8");
+    let report_text = report.to_str().expect("DBT report path should be UTF-8");
+    let args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--strict",
+        "--verify",
+        "--keep-logs",
+        "--verify-log-dir",
+        logs_text,
+        "--verify-json",
+        report_text,
+        "--",
+        "/bin/true",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert!(output.stdout.is_empty(), "unexpected stdout: {output:?}");
+    let diagnostic = stderr(&output);
+    assert!(
+        diagnostic.contains("Success: deterministic. Determinism verified."),
+        "{diagnostic}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(report).expect("verification JSON should exist"))
+            .expect("verification JSON should parse");
+    assert_eq!(report["verified"], true);
+    assert_eq!(report["bitwise_parity"], true);
+    assert_eq!(report["verdict"], "matched");
+    assert_eq!(report["comparison"]["strictness"], "canonical");
+    for side in ["left", "right"] {
+        assert!(
+            report["compared_log_messages"][side]
+                .as_u64()
+                .is_some_and(|count| count > 0),
+            "missing DBT {side} INFO count: {report}"
+        );
+    }
+
+    let retained = fs::read_dir(&logs)
+        .expect("failed to read retained DBT logs")
+        .map(|entry| entry.expect("failed to read retained DBT log").path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retained.len(),
+        2,
+        "unexpected retained DBT logs: {retained:?}"
+    );
+    for path in retained {
+        assert!(
+            detcore::logdiff::canonical_info_count(&path).expect("retained DBT log should parse")
+                > 0,
+            "retained DBT log had no canonical INFO: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn run_dbt_executes_simple_env_shebang() {
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("failed to create DBT env-shebang test directory");
+    let script = directory.path().join("env-echo");
+    fs::write(&script, b"#!/usr/bin/env echo\n")
+        .expect("failed to write DBT env-shebang test script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+        .expect("failed to mark DBT env-shebang test script executable");
+    let program = script
+        .to_str()
+        .expect("DBT env-shebang test path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), format!("{}\n", script.display()));
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-644): Review ptrace verification warning delivery.
+// After pidfd_send_signal/pidfd_getfd were determinized, restart_syscall is the
+// lone remaining Unsupported syscall. Under ptrace it is consumed by reverie's
+// syscall-restart machinery before Detcore classification, so it never surfaces
+// as a guest aggregate "used but not yet supported" warning. The ptrace verify
+// path therefore emits zero such warnings for this fixture; the DBT backend
+// (which routes it through Detcore classification) still aggregates it, covered
+// by run_dbt_aggregates_unsupported_syscalls_and_strict_rejects_them.
+#[test]
+fn run_ptrace_verify_emits_no_unsupported_syscall_warning() {
+    let program = dbt_unsupported_syscall_guest()
+        .to_str()
+        .expect("unsupported-syscall guest path should be UTF-8");
+    let args = ["--log", "info", "run", "--verify", "--", program];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    let warning = "used but not yet supported";
+    assert_eq!(
+        stderr(&output).matches(warning).count(),
+        0,
+        "ptrace verify unexpectedly emitted an unsupported-syscall warning:\n{}",
+        stderr(&output)
+    );
+}
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-644): Review DBT normal aggregation and strict failure coverage.
+#[test]
+fn run_dbt_aggregates_unsupported_syscalls_and_strict_rejects_them() {
+    let program = dbt_unsupported_syscall_guest()
+        .to_str()
+        .expect("DBT unsupported-syscall guest path should be UTF-8");
+
+    let normal_args = ["run", "--backend", "dbt", "--", program];
+    let normal = hermit(&normal_args);
+    assert_success(&normal, &normal_args);
+    assert_eq!(stdout(&normal), "dbt-unsupported-ok\n");
+    let normal_stderr = stderr(&normal);
+    let warning = "syscalls restart_syscall used but not yet supported";
+    assert_eq!(
+        normal_stderr.matches(warning).count(),
+        1,
+        "expected one aggregate warning:\n{normal_stderr}"
+    );
+
+    let tamper_args = ["run", "--backend", "dbt", "--", program, "report-tamper"];
+    let tamper = hermit(&tamper_args);
+    assert_success(&tamper, &tamper_args);
+    assert_eq!(stdout(&tamper), "dbt-unsupported-report-tamper-ok\n");
+    assert_eq!(
+        stderr(&tamper).matches(warning).count(),
+        1,
+        "report tampering suppressed the aggregate warning:\n{}",
+        stderr(&tamper)
+    );
+
+    let fork_tamper_args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--",
+        program,
+        "fork-report-tamper",
+    ];
+    let fork_tamper = hermit(&fork_tamper_args);
+    assert_success(&fork_tamper, &fork_tamper_args);
+    assert_eq!(
+        stdout(&fork_tamper),
+        "dbt-unsupported-fork-report-tamper-ok\n"
+    );
+    assert_eq!(
+        stderr(&fork_tamper).matches(warning).count(),
+        1,
+        "fork-child report tampering suppressed the aggregate warning:\n{}",
+        stderr(&fork_tamper)
+    );
+
+    let strict_args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let strict = hermit(&strict_args);
+    assert!(
+        !strict.status.success(),
+        "strict DBT unexpectedly succeeded:\n{}",
+        stderr(&strict)
+    );
+    assert!(
+        stderr(&strict).contains("unsupported syscall: restart_syscall"),
+        "strict DBT failure omitted unsupported syscall:\n{}",
+        stderr(&strict)
+    );
+    let normal_fork_args = ["run", "--backend", "dbt", "--", program, "fork"];
+    let normal_fork = hermit(&normal_fork_args);
+    assert_success(&normal_fork, &normal_fork_args);
+    assert_eq!(stdout(&normal_fork), "dbt-unsupported-fork-ok\n");
+    assert_eq!(
+        stderr(&normal_fork).matches(warning).count(),
+        1,
+        "fork-child warning was not aggregated exactly once:\n{}",
+        stderr(&normal_fork)
+    );
+
+    let normal_fork_exec_args = ["run", "--backend", "dbt", "--", program, "fork-exec"];
+    let normal_fork_exec = hermit(&normal_fork_exec_args);
+    assert_success(&normal_fork_exec, &normal_fork_exec_args);
+    assert_eq!(
+        stdout(&normal_fork_exec),
+        "dbt-unsupported-exec-ok\ndbt-unsupported-fork-exec-parent-ok\n"
+    );
+    assert_eq!(
+        stderr(&normal_fork_exec).matches(warning).count(),
+        1,
+        "fork-exec warning was not aggregated exactly once:\n{}",
+        stderr(&normal_fork_exec)
+    );
+
+    for mode in ["fork", "fork-exec", "fork-setsid-exec", "exec-empty"] {
+        let args = ["run", "--backend", "dbt", "--strict", "--", program, mode];
+        let output = hermit(&args);
+        assert!(
+            !output.status.success(),
+            "strict DBT {mode} unexpectedly succeeded:\n{}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("unsupported syscall"),
+            "strict DBT {mode} omitted unsupported-syscall diagnostic:\n{}",
+            stderr(&output)
+        );
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-644): Review strict DBT teardown with a blocked stdin source.
+#[test]
+fn run_dbt_strict_returns_with_blocked_stdin_source() {
+    let program = dbt_unsupported_syscall_guest()
+        .to_str()
+        .expect("DBT unsupported-syscall guest path should be UTF-8");
+    let mut source = Command::new("sleep")
+        .arg("30")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to start blocked DBT stdin source");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = Command::new("timeout")
+        .args(["--kill-after", "2s", "10s"])
+        .arg(env!("CARGO_BIN_EXE_hermit"))
+        .args(args)
+        .stdin(source.stdout.take().expect("sleep stdout was not piped"))
+        .output()
+        .expect("failed to run strict DBT blocked-input regression");
+    let _ = source.kill();
+    let _ = source.wait();
+    assert_ne!(output.status.code(), Some(124), "strict DBT hung on stdin");
+    assert!(
+        !output.status.success(),
+        "strict DBT unexpectedly succeeded"
+    );
+    assert!(stderr(&output).contains("unsupported syscall"));
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-736): Review the real LiteInst Detcore CLI assertion.
+#[test]
+fn run_liteinst_verifies_detcore_backend() {
+    liteinst_runtime::ensure_liteinst_runtime();
+    let args = [
+        "run",
+        "--backend",
+        "liteinst",
+        "--strict",
+        "--",
+        "/bin/echo",
+        "liteinst-cli-ok",
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "liteinst-cli-ok\n");
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains(
+            "liteinst host hybrid] activation verified (traps=1, hooks=31); Detcore Tool active in ptrace host"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Success: deterministic. Determinism verified."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "LiteInst host hybrid (reverie-liteinst patch runtime + ptrace Detcore Tool)"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn backend_stats_are_info_gated_for_ptrace() {
+    let default_args = ["run", "--strict", "--", "/bin/true"];
+    let default_output = hermit(&default_args);
+    assert_success(&default_output, &default_args);
+    assert!(!stderr(&default_output).contains("backend run complete"));
+
+    let info_args = ["--log", "info", "run", "--strict", "--", "/bin/true"];
+    let info_output = hermit(&info_args);
+    assert_success(&info_output, &info_args);
+    assert!(
+        stderr(&info_output).contains("backend run complete backend=ptrace stats=metrics=none"),
+        "{}",
+        stderr(&info_output)
+    );
+}
+
+#[test]
+fn run_liteinst_rejects_a_non_runtime_override_before_activation_claim() {
+    let args = [
+        "run",
+        "--backend",
+        "liteinst",
+        "--strict",
+        "--",
+        "/bin/true",
+    ];
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .env("HERMIT_LITEINST_RUNTIME", "/bin/true")
+        .args(args)
+        .output()
+        .expect("failed to run Hermit with a false LiteInst runtime");
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = stderr(&output);
+    assert!(stderr.contains("missing required export"), "{stderr}");
+    assert!(!stderr.contains("activation verified"), "{stderr}");
+    assert!(!stderr.contains("Success: deterministic"), "{stderr}");
+}
+
+#[test]
+fn run_liteinst_rejects_an_inert_dso_before_activation_claim() {
+    let args = [
+        "run",
+        "--backend",
+        "liteinst",
+        "--strict",
+        "--",
+        "/bin/true",
+    ];
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .env("HERMIT_LITEINST_RUNTIME", liteinst_inert_runtime())
+        .args(args)
+        .output()
+        .expect("failed to run Hermit with an inert LiteInst runtime");
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("does not register reverie_liteinst_initialize as a preload constructor"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("activation verified"), "{stderr}");
+    assert!(!stderr.contains("Success: deterministic"), "{stderr}");
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#679): validate the dedicated DBT diagnostic channel.
+#[test]
+fn run_dbt_keeps_diagnostics_out_of_guest_stderr() {
+    let script = r#"set -euo pipefail; output=$(/bin/sh -c 'printf guest-stderr >&2' 2>&1); test "$output" = guest-stderr; printf 'isolated=%s\n' "$output""#;
+    let args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--strict",
+        "--",
+        "/bin/bash",
+        "-c",
+        script,
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "isolated=guest-stderr\n");
+}
+
+#[test]
+fn run_dbt_forwards_detcore_info_logs() {
+    let args = [
+        "--log",
+        "INFO",
+        "run",
+        "--backend",
+        "dbt",
+        "--strict",
+        "--",
+        "/bin/true",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("INFO detcore") && stderr.contains("DETLOG [syscall]"),
+        "DBT did not forward the Detcore INFO syscall stream:\n{stderr}",
+    );
+}
+
+// TODO-HUMAN-REVIEW(PR-1038): Review DBT queued self-signal execution.
+#[test]
+fn run_dbt_executes_queued_self_signals() {
+    let program = dbt_self_sigqueue_guest()
+        .to_str()
+        .expect("DBT self-sigqueue guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "dbt-self-sigqueue-ok\n");
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#543): validate the explicit application-mmap DBT regression.
+#[test]
+fn run_dbt_executes_application_mmap() {
+    let program = dbt_mmap_guest()
+        .to_str()
+        .expect("DBT mmap guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--", program];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "dbt-mmap-exec-ok\n");
+}
+
+#[test]
+fn run_dbt_executes_process_wait_lifecycle() {
+    let program = dbt_wait_guest()
+        .to_str()
+        .expect("DBT wait guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(
+        stdout(&output),
+        "wait4=7 waitid=9 sigchld=observed reaped=2 cpu=zero\n"
+    );
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-723): Review DBT PID virtualization strict coverage.
+#[test]
+fn run_dbt_virtualizes_process_identities() {
+    let program = dbt_pid_guest()
+        .to_str()
+        .expect("DBT PID guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            "root pid=3 ppid=1 tid=3\n",
+            "grandchild pid=5 ppid=4 tid=5\n",
+            "child pid=4 ppid=3 tid=4\n",
+            "child grandchild=5 waited=5 exit=5\n",
+            "root child=4 waited=4 exit=6\n",
+            "exec-child pid=6 ppid=3 tid=6\n",
+            "exec-proc stat=6/3 status=6/3 tracer=1\n",
+            "root exec=6 waited=6 exit=8\n",
+            "waitid-child pid=7 ppid=3 tid=7\n",
+            "root waitid=7 reported=7 exit=9\n",
+            "root vfork=8 waited=8 exit=0 pid=3 tid=3\n",
+            "vfork-exec-child pid=9 ppid=3 tid=9\n",
+            "root vfork-exec=9 waited=9 exit=10 pid=3 tid=3\n",
+        )
+    );
+}
+
+#[test]
+fn run_ptrace_verify_completes_vfork_lifecycle() {
+    const EXPECTED_STDOUT: &str = concat!(
+        "root pid=3 ppid=1 tid=3\n",
+        "grandchild pid=7 ppid=5 tid=7\n",
+        "child pid=5 ppid=3 tid=5\n",
+        "child grandchild=7 waited=7 exit=5\n",
+        "root child=5 waited=5 exit=6\n",
+        "exec-child pid=9 ppid=3 tid=9\n",
+        "exec-proc stat=9/3 status=9/3 tracer=1\n",
+        "root exec=9 waited=9 exit=12\n",
+        "waitid-child pid=11 ppid=3 tid=11\n",
+        "root waitid=11 reported=11 exit=9\n",
+        "root vfork=13 waited=13 exit=5 pid=3 tid=3\n",
+        "vfork-exec-child pid=15 ppid=3 tid=15\n",
+        "root vfork-exec=15 waited=15 exit=10 pid=3 tid=3\n",
+    );
+
+    let _guard = HERMIT_RUN_LOCK.lock().unwrap();
+    let program = dbt_pid_guest()
+        .to_str()
+        .expect("DBT PID guest path should be UTF-8");
+    for iteration in 1..=5 {
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+            .expect("failed to create vfork lifecycle verification directory");
+        let report = directory.path().join("verify.json");
+        let report_text = report
+            .to_str()
+            .expect("vfork lifecycle report path should be UTF-8");
+        let args = [
+            "--log=info",
+            "run",
+            "--strict",
+            "--verify",
+            "--verify-json",
+            report_text,
+            "--",
+            program,
+        ];
+        let output = Command::new("timeout")
+            .args(["--kill-after", "2s", "20s"])
+            .arg(env!("CARGO_BIN_EXE_hermit"))
+            .args(args)
+            .output()
+            .expect("failed to run ptrace vfork lifecycle regression");
+
+        assert_ne!(
+            output.status.code(),
+            Some(124),
+            "ptrace vfork lifecycle iteration {iteration} hung"
+        );
+        assert_success(&output, &args);
+        assert_eq!(stdout(&output), EXPECTED_STDOUT, "iteration {iteration}");
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &fs::read(report).expect("vfork lifecycle verification JSON should exist"),
+        )
+        .expect("vfork lifecycle verification JSON should parse");
+        assert_eq!(report["verdict"], "matched", "iteration {iteration}");
+        assert_eq!(report["bitwise_parity"], true, "iteration {iteration}");
+        let left = report["compared_log_messages"]["left"]
+            .as_u64()
+            .expect("vfork lifecycle report omitted left INFO count");
+        let right = report["compared_log_messages"]["right"]
+            .as_u64()
+            .expect("vfork lifecycle report omitted right INFO count");
+        assert!(left > 0, "iteration {iteration} compared no INFO messages");
+        assert_eq!(left, right, "iteration {iteration} INFO counts differed");
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-1065): Review cross-backend self-prlimit identity coverage.
+#[test]
+fn run_ptrace_and_dbt_verify_virtual_self_prlimit() {
+    let _guard = HERMIT_RUN_LOCK.lock().unwrap();
+    let program = dbt_prlimit_self_guest()
+        .to_str()
+        .expect("DBT self-prlimit guest path should be UTF-8");
+    for backend in ["ptrace", "dbt"] {
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+            .expect("failed to create self-prlimit verification directory");
+        let logs = directory.path().join("logs");
+        fs::create_dir(&logs).expect("failed to create self-prlimit verification-log directory");
+        let logs_text = logs
+            .to_str()
+            .expect("self-prlimit verification-log path should be UTF-8");
+        let args = [
+            "run",
+            "--backend",
+            backend,
+            "--strict",
+            "--verify",
+            "--keep-logs",
+            "--verify-log-dir",
+            logs_text,
+            "--",
+            program,
+        ];
+        let output = hermit(&args);
+
+        assert_success(&output, &args);
+        assert_eq!(stdout(&output), "dbt-prlimit-self-ok\n");
+        let retained = fs::read_dir(&logs)
+            .expect("failed to read self-prlimit verification logs")
+            .map(|entry| {
+                entry
+                    .expect("failed to read self-prlimit verification log")
+                    .path()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained.len(),
+            2,
+            "unexpected {backend} self-prlimit verification logs: {retained:?}"
+        );
+        for path in retained {
+            let log = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+            assert!(
+                log.lines()
+                    .any(|line| line.contains("inbound syscall: prlimit64(3, 7,")),
+                "{backend} canonical evidence lost the virtual self pid in {}:\n{log}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn run_dbt_executes_shell_process_lifecycle() {
+    let args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--",
+        "/bin/sh",
+        "-c",
+        "/bin/echo hello; :",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "hello\n");
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#598): Confirm this captures the host-inherited O_NONBLOCK regression.
+// TODO-HUMAN-REVIEW(#689): Confirm the split-write case protects partial-read semantics.
+#[test]
+fn run_dbt_executes_pipe_backpressure() {
+    let args = [
+        "run",
+        "--backend",
+        "dbt",
+        "--",
+        "/bin/bash",
+        "-c",
+        r#"{ printf "%4096s" x; for _ in {1..100000}; do :; done; printf "%1371s" y; } | wc -c"#,
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "5467\n");
+}
+
+#[test]
+fn run_dbt_recovers_after_failed_exec() {
+    let program = dbt_exec_failure_guest()
+        .to_str()
+        .expect("DBT exec-failure guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "recovered after failed exec\n");
+}
+#[test]
+fn run_dbt_rejects_unfollowed_execveat() {
+    let program = dbt_execveat_guest()
+        .to_str()
+        .expect("DBT execveat guest path should be UTF-8");
+    let args = ["run", "--backend", "dbt", "--strict", "--", program];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(
+        stdout(&output),
+        "execveat unsupported in root and fork child\n"
+    );
+}
+
+#[test]
+fn run_kvm_executes_dynamic_guest() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--",
+        "/bin/echo",
+        "hello",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "hello\n");
+    assert!(
+        !stderr(&output).contains("Hermit cannot use ptrace"),
+        "kvm must not fall through to the ptrace backend:\n{}",
+        stderr(&output),
+    );
+}
+
+#[test]
+fn run_kvm_awk_mincore_probe_terminates() {
+    if !Path::new("/dev/kvm").exists() || !Path::new("/usr/bin/awk").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--",
+        "/usr/bin/awk",
+        "BEGIN { print 42 }",
+    ];
+    let output = Command::new("timeout")
+        .args(["--kill-after", "2s", "20s"])
+        .arg(env!("CARGO_BIN_EXE_hermit"))
+        .args(args)
+        .output()
+        .expect("failed to run the KVM awk mincore regression");
+
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "KVM awk mincore probe hung"
+    );
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "42\n");
+    assert!(
+        stderr(&output).contains("Success: KVM guest output and exit status matched."),
+        "KVM determinism confirmation missing:\n{}",
+        stderr(&output),
+    );
+}
+
+#[test]
+fn run_kvm_resolves_bare_program_from_guest_path() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "echo",
+        "from-kvm-path",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "from-kvm-path\n");
+}
+
+#[test]
+fn run_kvm_setpriv_capability_wrapper_is_deterministic() {
+    if !Path::new("/dev/kvm").exists()
+        || !Path::new("/usr/bin/setpriv").exists()
+        || !Path::new("/bin/date").exists()
+    {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/setpriv",
+        "--bounding-set=-sys_time",
+        "/bin/date",
+        "-u",
+        "+%s",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "1767225600\n");
+    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
+}
+
+#[test]
+fn run_kvm_propagates_explicit_environment() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=empty",
+        "--env=KVM_M3C=passed",
+        "--",
+        "/usr/bin/env",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "KVM_M3C=passed\n");
+}
+
+#[test]
+fn run_kvm_bash_process_substitution_is_deterministic() {
+    if !Path::new("/dev/kvm").exists()
+        || !Path::new("/bin/bash").exists()
+        || !Path::new("/usr/bin/paste").exists()
+        || !Path::new("/usr/bin/diff").exists()
+    {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/bin/bash",
+        "-c",
+        r#"set -euo pipefail; /usr/bin/paste -d: <(printf "alpha\nbeta\n") <(printf "1\n2\n") | /usr/bin/diff -u <(printf "alpha:1\nbeta:2\n") -; printf "paste-ok\n""#,
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "paste-ok\n");
+    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
+}
+
+#[test]
+fn run_kvm_cpuid_policy_is_deterministic() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+    let compiler = ["cc", "gcc", "clang"]
+        .into_iter()
+        .find(|program| {
+            Command::new(program)
+                .args(["-x", "c", "-fsyntax-only", "-"])
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .expect("KVM CPUID regression requires cc, gcc, or clang on PATH");
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hermit-cli should be inside the repository");
+    let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kvm-cpuid");
+    fs::create_dir_all(&build_root).expect("failed to create KVM CPUID guest directory");
+    let binary = build_root.join("cpuid_probe");
+    let compile = Command::new(compiler)
+        .args(["-O2", "-g", "-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .arg(repository.join("tests/backend-parity/fixtures/cpuid_probe.c"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("failed to compile KVM CPUID guest");
+    assert!(
+        compile.status.success(),
+        "KVM CPUID guest compilation failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let program = binary.to_str().expect("CPUID guest path should be UTF-8");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        program,
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(
+        stdout(&output),
+        "CPUID-SUCCESS vendor=GenuineIntel signature=00000663\n"
+    );
+    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
+}
+
+#[test]
+fn run_kvm_respects_workdir_for_relative_paths() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("failed to create KVM cwd fixture");
+    fs::write(temp.path().join("message.txt"), b"from-kvm-cwd\n")
+        .expect("failed to write KVM cwd fixture");
+    let workdir = temp
+        .path()
+        .to_str()
+        .expect("temporary path should be UTF-8");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--tmp=/tmp",
+        "--workdir",
+        workdir,
+        "--",
+        "/bin/cat",
+        "message.txt",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "from-kvm-cwd\n");
+}
+
+#[test]
+fn run_kvm_lists_host_directory_metadata() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("failed to create KVM directory fixture");
+    fs::write(temp.path().join("alpha.txt"), b"alpha\n")
+        .expect("failed to write KVM directory fixture");
+    fs::create_dir(temp.path().join("subdir")).expect("failed to create KVM subdirectory");
+    std::os::unix::fs::symlink("alpha.txt", temp.path().join("alpha-link"))
+        .expect("failed to create KVM symlink fixture");
+    let workdir = temp
+        .path()
+        .to_str()
+        .expect("temporary path should be UTF-8");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--verify",
+        "--base-env=minimal",
+        "--tmp=/tmp",
+        "--workdir",
+        workdir,
+        "--",
+        "/bin/ls",
+        "-ln",
+        ".",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    let listing = stdout(&output);
+    let alpha = listing
+        .lines()
+        .find(|line| line.ends_with(" alpha.txt") && !line.contains(" -> "))
+        .unwrap_or_else(|| panic!("missing file in:\n{listing}"));
+    let alpha_fields: Vec<_> = alpha.split_whitespace().collect();
+    assert!(alpha_fields[0].starts_with("-rw"), "bad file mode: {alpha}");
+    assert_eq!(alpha_fields[4], "6", "bad file size: {alpha}");
+    let subdir = listing
+        .lines()
+        .find(|line| line.ends_with(" subdir"))
+        .unwrap_or_else(|| panic!("missing directory in:\n{listing}"));
+    assert!(subdir.starts_with("d"), "bad directory type: {subdir}");
+    let link = listing
+        .lines()
+        .find(|line| line.ends_with(" alpha-link -> alpha.txt"))
+        .unwrap_or_else(|| panic!("missing symlink in:\n{listing}"));
+    assert!(link.starts_with("l"), "bad symlink type: {link}");
+}
+
+#[test]
+fn run_kvm_reads_host_file() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let expected = fs::read_to_string("/etc/hostname").expect("failed to read host hostname");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/bin/cat",
+        "/etc/hostname",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), expected);
+}
+
+#[test]
+fn run_kvm_reads_standard_input() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--base-env=minimal",
+        "--",
+        "/bin/cat",
+    ];
+    let output = hermit_with_stdin(&args, b"hello\n");
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "hello\n");
+}
+
+#[test]
+fn run_kvm_f_getfl_and_reads_standard_input() {
+    if !Path::new("/dev/kvm").exists() || !Path::new("/usr/bin/perl").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/perl",
+        "-MFcntl=F_GETFL",
+        "-e",
+        r#"defined(fcntl(STDIN, F_GETFL, 0)) or die "fcntl failed: $!\n"; my $line = <STDIN>; defined($line) && $line eq "hello\n" or die "stdin mismatch\n"; print "fcntl-stdin-ok\n";"#,
+    ];
+    let output = hermit_with_stdin(&args, b"hello\n");
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "fcntl-stdin-ok\n");
+}
+
+#[test]
+fn run_kvm_verify_f_getfl_with_isolated_standard_input() {
+    if !Path::new("/dev/kvm").exists() || !Path::new("/usr/bin/perl").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/perl",
+        "-MFcntl=F_GETFL",
+        "-e",
+        r#"defined(fcntl(STDIN, F_GETFL, 0)) or die "fcntl failed: $!\n"; my $line = <STDIN>; !defined($line) or die "verify stdin was not isolated\n"; print "fcntl-verify-ok\n";"#,
+    ];
+    let output = hermit_with_stdin(&args, b"not-visible-during-capture\n");
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "fcntl-verify-ok\n");
+    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
+}
+
+#[test]
+fn run_kvm_verify_isolates_standard_input() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/bin/cat",
+    ];
+    let output = hermit_with_stdin(&args, b"not-visible-during-capture\n");
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
+fn run_kvm_preserves_closed_standard_input() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--base-env=minimal",
+        "--",
+        "/bin/cat",
+    ];
+    let output = hermit_with_closed_stdin(&args);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected output: {output:?}"
+    );
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output)
+            .to_ascii_lowercase()
+            .contains("bad file descriptor")
+    );
+}
+
+#[test]
+fn run_kvm_verify_does_not_write_to_standard_input() {
+    if !Path::new("/dev/kvm").exists() || !Path::new("/usr/bin/perl").exists() {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("failed to create stdin fixture");
+    let path = temp.path().join("stdin");
+    fs::write(&path, b"original-data").expect("failed to write stdin fixture");
+    let stdin = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("failed to open stdin fixture");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/perl",
+        "-MPOSIX",
+        "-e",
+        "POSIX::write(0, \"leak\", 4); exit 0",
+    ];
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(args)
+        .stdin(Stdio::from(stdin))
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+
+    assert_success(&output, &args);
+    assert_eq!(fs::read(path).unwrap(), b"original-data");
+}
+
+#[test]
+fn run_kvm_counts_standard_input() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/wc",
+    ];
+    let output = hermit_with_stdin(&args, b"hello\n");
+
+    assert_success(&output, &args);
+    assert_eq!(
+        stdout(&output).split_whitespace().collect::<Vec<_>>(),
+        ["1", "1", "6"]
+    );
+}
+
+#[test]
+fn run_kvm_reports_hostname() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/bin/hostname",
+    ];
+    let output = hermit(&args);
+
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "hermetic-container.local\n");
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#544): Confirm the host C compiler is acceptable for this KVM smoke guest.
+#[test]
+fn run_kvm_pipe_pipe2_and_getgroups_round_trip() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+    let compiler = ["cc", "gcc", "clang"]
+        .into_iter()
+        .find(|program| {
+            Command::new(program)
+                .args(["-x", "c", "-fsyntax-only", "-"])
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .expect("KVM syscall regression requires cc, gcc, or clang on PATH");
+
+    let temp = tempfile::tempdir().expect("failed to create pipe guest directory");
+    let source = temp.path().join("pipe_roundtrip.c");
+    let binary = temp.path().join("pipe_roundtrip");
+    fs::write(
+        &source,
+        br#"#define _GNU_SOURCE
+#include <fcntl.h>
+#include <grp.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+static int roundtrip(int flags) {
+    int fds[2];
+    char buffer[3] = {0};
+    int result = flags < 0 ? pipe(fds) : pipe2(fds, flags);
+    if (result != 0) return 1;
+    if (write(fds[1], "ok", 2) != 2) return 2;
+    if (read(fds[0], buffer, 2) != 2) return 3;
+    if (close(fds[0]) != 0 || close(fds[1]) != 0) return 4;
+    return strcmp(buffer, "ok") != 0;
+}
+
+int main(void) {
+    gid_t groups[1] = {0};
+    if (roundtrip(-1) || roundtrip(O_CLOEXEC | O_NONBLOCK)) return 1;
+    if (getgroups(0, NULL) != 1) return 5;
+    if (getgroups(1, groups) != 1 || groups[0] != 65534) return 6;
+    puts("kvm-syscalls-ok");
+    return 0;
+}
+"#,
+    )
+    .expect("failed to write pipe guest");
+    let compile = Command::new(compiler)
+        .args(["-O2", "-Wall", "-Wextra", "-Werror", "-o"])
+        .arg(&binary)
+        .arg(&source)
+        .output()
+        .expect("failed to invoke C compiler");
+    assert!(
+        compile.status.success(),
+        "failed to compile pipe guest: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let program = binary.to_str().expect("pipe guest path should be UTF-8");
+    let args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--tmp=/tmp",
+        "--base-env=minimal",
+        "--",
+        program,
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "kvm-syscalls-ok\n");
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#544): Confirm 65534 remains the fixed container overflow group.
+#[test]
+fn run_kvm_reports_fixed_supplementary_groups() {
+    if !Path::new("/dev/kvm").exists() {
+        return;
+    }
+
+    let kvm_args = [
+        "run",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "id",
+        "-G",
+    ];
+    let kvm_output = hermit(&kvm_args);
+    assert_success(&kvm_output, &kvm_args);
+    assert_eq!(
+        stdout(&kvm_output),
+        "0 65534\n",
+        "KVM must report its root-plus-overflow-group credential persona"
+    );
+}
+
+#[test]
+fn namespace_only_rejects_every_explicit_backend() {
+    for backend in ["ptrace", "dbt", "kvm"] {
+        let args = [
+            "run",
+            "--backend",
+            backend,
+            "--namespace-only",
+            "--",
+            "/bin/true",
+        ];
+        let output = hermit(&args);
+        assert_eq!(output.status.code(), Some(2));
+        let message = stderr(&output);
+        assert!(
+            message.contains("--backend"),
+            "unexpected error:\n{message}"
+        );
+        assert!(
+            message.contains("--namespace-only"),
+            "unexpected error:\n{message}"
+        );
+    }
+}
+
+#[test]
+fn backend_accepted_in_global_position() {
+    // The global-position `--backend` (before the subcommand) must be threaded
+    // through to `run` and reach the integrated DBT backend.
+    let dbt_args = ["--backend", "dbt", "run", "--", "/bin/true"];
+    let dbt = hermit(&dbt_args);
+
+    assert_success(&dbt, &dbt_args);
+
+    if Path::new("/dev/kvm").exists() {
+        let args = ["--backend", "kvm", "run", "--", "/bin/true"];
+        let kvm = hermit(&args);
+        assert_success(&kvm, &args);
+        assert!(
+            !stderr(&kvm).contains("Hermit cannot use ptrace"),
+            "global-position kvm should reach its dispatch:\n{}",
+            stderr(&kvm),
+        );
+    }
+}
+
+#[test]
+fn sabre_backend_validation_honors_command_scope() {
+    let non_run = hermit(&["--backend", "sabre", "record", "list"]);
+    assert_failure_contains(&non_run, &["SaBRe backend", "only through", "strace"]);
+
+    let local_override = hermit(&[
+        "--backend",
+        "sabre",
+        "run",
+        "--backend",
+        "ptrace",
+        "--",
+        "/definitely/missing/sabre-backend-override-test",
+    ]);
+    assert_failure_contains(&local_override, &["does not exist or is not accessible"]);
+    assert!(!stderr(&local_override).contains("SaBRe backend"));
+
+    let log = hermit(&[
+        "--backend",
+        "sabre",
+        "--log",
+        "info",
+        "strace",
+        "--",
+        "/bin/true",
+    ]);
+    assert_failure_contains(&log, &["does not support --log or --log-file"]);
+}
+
+#[test]
+fn sabre_rpc_socket_is_hidden_from_proc_environ() {
+    let hermit_binary = Path::new(env!("CARGO_BIN_EXE_hermit"));
+    let executable_dir = hermit_binary.parent().unwrap();
+    let target_dir = executable_dir.parent().unwrap();
+    let loader = target_dir.join("sabre/sabre");
+    let plugin = executable_dir.join("libdetcore_sabre.so");
+    if !loader.is_file() || !plugin.is_file() {
+        return;
+    }
+
+    let _guard = HERMIT_RUN_LOCK.lock().unwrap();
+    let args = [
+        "run",
+        "--backend",
+        "sabre",
+        "--strict",
+        "--verify",
+        "--base-env=minimal",
+        "--",
+        "/usr/bin/cat",
+        "/proc/self/environ",
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+
+    let guest_environment = stdout(&output);
+    assert!(
+        !guest_environment.contains("REVERIE_SABRE_HERMIT_RPC_SOCKET"),
+        "private coordinator setting leaked through procfs: {guest_environment:?}"
+    );
+    assert!(
+        stderr(&output).contains("Determinism verified"),
+        "strict repeat verification did not complete:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn global_position_rejects_unknown_backends() {
+    let args = ["--backend", "unknown", "run", "--", "/bin/true"];
+    let output = hermit(&args);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("invalid value 'unknown'"),
+        "unexpected error:\n{stderr}"
+    );
+}
+
+#[test]
+fn namespace_only_rejects_global_position_backend() {
+    let args = [
+        "--backend",
+        "ptrace",
+        "run",
+        "--namespace-only",
+        "--",
+        "/bin/true",
+    ];
+    let output = hermit(&args);
+    let message = stderr(&output);
+    assert!(
+        message.contains("--backend"),
+        "unexpected error:\n{message}"
+    );
+    assert!(
+        message.contains("--namespace-only"),
+        "unexpected error:\n{message}"
+    );
+}
+
+#[test]
+fn incompatible_run_modes_fail_during_argument_parsing() {
+    let args = ["run", "--namespace-only", "--chaos", "/bin/true"];
+    let output = hermit(&args);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("hermit stderr should be UTF-8");
+    assert!(
+        stderr.contains("--namespace-only"),
+        "unexpected error:\n{stderr}"
+    );
+    assert!(stderr.contains("--chaos"), "unexpected error:\n{stderr}");
+    assert!(
+        stderr.contains("cannot be used with"),
+        "unexpected error:\n{stderr}"
+    );
+}
+
+#[test]
+fn no_namespace_rejects_container_only_options() {
+    let cases = [
+        "--namespace-only",
+        "--analyze-networking",
+        "--mount=type=bind,source=/tmp,target=/tmp",
+        "--bind=/tmp",
+        "--network=local",
+        "--network=host",
+        "--tmp=/tmp/custom",
+        "--replay-schedule-from=/tmp/schedule.json",
+        "--replay-preemptions-from=/tmp/preemptions.json",
+    ];
+
+    for incompatible in cases {
+        let args = ["run", "--no-namespace", incompatible, "/bin/true"];
+        let output = hermit(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "hermit {args:?} unexpectedly ran"
+        );
+
+        let stderr = String::from_utf8(output.stderr).expect("hermit stderr should be UTF-8");
+        assert!(
+            stderr.contains("--no-namespace"),
+            "unexpected error:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(incompatible.split_once("=").map_or(incompatible, |x| x.0)),
+            "unexpected error:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot be used with"),
+            "unexpected error:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn no_namespace_runs_without_container_setup() {
+    let _guard = HERMIT_RUN_LOCK.lock().unwrap();
+    let args = [
+        "run",
+        "--no-namespace",
+        "--max-timeslice=disabled",
+        "--",
+        "/bin/echo",
+        "hello",
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+
+    assert_eq!(stdout(&output), "hello\n");
+    let stderr = String::from_utf8(output.stderr).expect("hermit stderr should be UTF-8");
+    assert!(
+        stderr.contains("WARNING: --no-namespace"),
+        "unexpected stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("less deterministic"),
+        "unexpected stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn no_namespace_preserves_affinity_for_run_and_verify() {
+    let _guard = HERMIT_RUN_LOCK.lock().unwrap();
+
+    let run_args = [
+        "run",
+        "--no-namespace",
+        "--pin-threads",
+        "--max-timeslice=disabled",
+        "--",
+        "/usr/bin/nproc",
+    ];
+    let output = hermit(&run_args);
+    assert_success(&output, &run_args);
+    assert_eq!(stdout(&output), "1\n");
+
+    let verify_args = [
+        "run",
+        "--no-namespace",
+        "--verify",
+        "--pin-threads",
+        "--max-timeslice=disabled",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test $(nproc) -eq 1",
+    ];
+    let output = hermit(&verify_args);
+    assert_success(&output, &verify_args);
+}
+
+#[test]
+fn record_list_json_reports_an_empty_inventory() {
+    let data_dir = tempfile::tempdir().expect("failed to create recording data directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(["record", "list", "--json", "--data-dir"])
+        .arg(data_dir.path())
+        .output()
+        .expect("failed to run hermit record list");
+    assert!(
+        output.status.success(),
+        "hermit record list failed with {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("record list should emit JSON");
+    assert_eq!(value, serde_json::json!([]));
+}
+
+#[test]
+fn run_rejects_invalid_programs_with_actionable_errors() {
+    let output = hermit(&["run", "--", "/definitely/missing/hermit-program"]);
+    assert_failure_contains(
+        &output,
+        &["does not exist or is not accessible", "Check the path"],
+    );
+
+    let output = hermit(&["run", "--", "definitely-missing-hermit-program"]);
+    assert_failure_contains(&output, &["Could not resolve program", "guest PATH"]);
+
+    let temp = tempfile::tempdir().expect("failed to create program fixture directory");
+    let non_executable = temp.path().join("non-executable");
+    fs::write(&non_executable, "#!/bin/sh\nexit 0\n").expect("failed to write program fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(["run", "--tmp=/tmp", "--"])
+        .arg(&non_executable)
+        .output()
+        .expect("failed to run hermit");
+    assert_failure_contains(&output, &["is not executable", "chmod +x"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(["run", "--tmp=/tmp", "--"])
+        .arg(temp.path())
+        .output()
+        .expect("failed to run hermit");
+    assert_failure_contains(&output, &["is a directory", "executable file"]);
+
+    let bad_shebang = temp.path().join("bad-shebang");
+    fs::write(&bad_shebang, "#!/definitely/missing/interpreter\n").expect("failed to write script");
+    let mut permissions = fs::metadata(&bad_shebang)
+        .expect("failed to stat script")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&bad_shebang, permissions).expect("failed to make script executable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hermit"))
+        .args(["run", "--tmp=/tmp", "--"])
+        .arg(&bad_shebang)
+        .output()
+        .expect("failed to run hermit");
+    assert_failure_contains(
+        &output,
+        &["uses shebang interpreter", "does not exist", "#! line"],
+    );
+}
+
+#[test]
+fn run_rejects_invalid_configuration_without_panicking() {
+    let output = hermit(&["run", "--no-virtualize-time", "--", "/bin/true"]);
+    assert_failure_contains(
+        &output,
+        &["also requires --no-virtualize-metadata", "timestamps"],
+    );
+
+    let output = hermit(&["run", "--sched-sticky-random-param=-0.1", "--", "/bin/true"]);
+    assert_failure_contains(&output, &["must be between 0 and 1", "received -0.1"]);
+}
+
+#[test]
+fn run_rejects_a_missing_bind_source_before_mounting() {
+    let output = hermit(&[
+        "run",
+        "--bind=/definitely/missing/hermit-test:/tmp/input",
+        "--",
+        "/bin/true",
+    ]);
+    assert_failure_contains(&output, &["--bind source", "does not exist", "correct"]);
+
+    let output = hermit(&[
+        "run",
+        "--mount=type=bind,source=/definitely/missing/hermit-test,target=/tmp/input",
+        "--",
+        "/bin/true",
+    ]);
+    assert_failure_contains(&output, &["--mount source", "does not exist", "correct"]);
+}
+
+#[test]
+fn run_reports_denied_ptrace_and_seccomp_capabilities() {
+    for (syscall, expected) in [
+        (
+            libc::SYS_ptrace,
+            ["cannot use ptrace", "PTRACE_TRACEME", "--namespace-only"],
+        ),
+        (
+            libc::SYS_seccomp,
+            [
+                "cannot install",
+                "SECCOMP_SET_MODE_FILTER",
+                "--namespace-only",
+            ],
+        ),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+        command.args([
+            "run",
+            "--max-timeslice=disabled",
+            "--no-virtualize-cpuid",
+            "--",
+            "/bin/true",
+        ]);
+        deny_syscall(&mut command, syscall);
+        let output = command.output().expect("failed to run restricted hermit");
+        assert_failure_contains(&output, &expected);
+    }
+}
+
+/// The container's virtual clock must keep advancing across `execve`.
+///
+/// `execve` replaces the process image, not the container, so a guest must
+/// never see time restart at the configured epoch after an exec. This is the
+/// property hermit#705 was ultimately about: showing the guest a *plausible*
+/// epoch is not clock virtualization if the clock rewinds at every image
+/// boundary. The guest itself samples the whole trajectory (repeated reads
+/// before and after the exec) rather than a single value, because first-sample
+/// agreement on a tidy origin is the classic false green here.
+///
+/// ptrace is the golden reference and keeps one container-wide `GlobalTime`
+/// out-of-process, so this is a regression guard for that reference.
+#[test]
+fn run_ptrace_virtual_clock_advances_across_execve() {
+    let program = exec_clock_continuity_guest()
+        .to_str()
+        .expect("exec-clock-continuity guest path should be UTF-8");
+    let args = [
+        "run",
+        "--strict",
+        "--max-timeslice=disabled",
+        "--no-virtualize-cpuid",
+        "--",
+        program,
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    assert_eq!(stdout(&output), "exec-clock-continuity-ok\n");
+}
+
+/// The same exec-boundary clock trajectory must also be reproducible, so the
+/// continuity above cannot be bought with a nondeterministic clock.
+#[test]
+fn run_ptrace_virtual_clock_across_execve_is_deterministic() {
+    let program = exec_clock_continuity_guest()
+        .to_str()
+        .expect("exec-clock-continuity guest path should be UTF-8");
+    let args = [
+        "run",
+        "--strict",
+        "--verify",
+        "--max-timeslice=disabled",
+        "--no-virtualize-cpuid",
+        "--",
+        program,
+    ];
+    let output = hermit(&args);
+    assert_success(&output, &args);
+    assert!(
+        stderr(&output).contains("deterministic"),
+        "expected a determinism verdict from --verify:\n{}",
+        stderr(&output),
+    );
+}
