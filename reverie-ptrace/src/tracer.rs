@@ -178,6 +178,8 @@ pub(crate) struct FatalTaskStop {
     pub(crate) terminal: TerminalCleanup,
     pub(crate) held: Arc<StdMutex<Option<HeldRootStop>>>,
     pub(crate) frozen: AtomicBool,
+    // Written only by the actual run_ordinary frame and its Drop guard.
+    pub(crate) driver_phase: std::sync::atomic::AtomicUsize,
 }
 
 pub(crate) struct FatalNewborn {
@@ -266,6 +268,14 @@ impl FatalNewborn {
 
 impl FatalTaskStop {
     pub(crate) fn freeze(&self, capture: impl Fn(Pid, &Running)) -> Result<(), Error> {
+        self.freeze_until(Instant::now() + Duration::from_secs(2), capture)
+    }
+
+    pub(crate) fn freeze_until(
+        &self,
+        deadline: Instant,
+        capture: impl Fn(Pid, &Running),
+    ) -> Result<(), Error> {
         let held = self.held.lock().unwrap();
         if let Some(held) = held.as_ref() {
             if !held.armed
@@ -284,9 +294,11 @@ impl FatalTaskStop {
         }
         let already_stopped = held.is_some();
         drop(held);
-        let deadline = Instant::now() + Duration::from_secs(2);
         let mut stopped = already_stopped;
         loop {
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("fatal task {} freeze deadline", self.tid).into());
+            }
             let timeout = if stopped {
                 Duration::ZERO
             } else {
@@ -1740,6 +1752,43 @@ fn from_nix_error(err: nix::Error) -> Errno {
     Errno::new(err as i32)
 }
 
+// Private initialization outcomes. Exited carries an already observed status,
+// never a manufactured Running/Stopped/Zombie capability.
+#[derive(Debug)]
+enum PostspawnError {
+    Trace(TraceError),
+    Exited { pid: Pid, exit_status: ExitStatus },
+}
+
+impl From<TraceError> for PostspawnError {
+    fn from(error: TraceError) -> Self {
+        Self::Trace(error)
+    }
+}
+
+impl From<Errno> for PostspawnError {
+    fn from(error: Errno) -> Self {
+        Self::Trace(error.into())
+    }
+}
+
+fn initialization_exit_error(pid: Pid, exit_status: ExitStatus) -> Error {
+    tracing::error!(
+        target: "reverie_ptrace::lifecycle",
+        %pid,
+        ?exit_status,
+        "guest exited during ptrace initialization"
+    );
+    anyhow::anyhow!("tracee {pid} exited during ptrace initialization with {exit_status:?}").into()
+}
+
+async fn postspawn_error(pid: Pid, error: PostspawnError) -> Error {
+    match error {
+        PostspawnError::Trace(error) => initialization_error(pid, error).await,
+        PostspawnError::Exited { pid, exit_status } => initialization_exit_error(pid, exit_status),
+    }
+}
+
 async fn initialization_error(pid: Pid, err: TraceError) -> Error {
     match err {
         TraceError::Errno(errno) => {
@@ -1755,14 +1804,7 @@ async fn initialization_error(pid: Pid, err: TraceError) -> Error {
                     .into();
                 }
             };
-            tracing::error!(
-                target: "reverie_ptrace::lifecycle",
-                %pid,
-                ?exit_status,
-                "guest exited during ptrace initialization"
-            );
-            anyhow::anyhow!("tracee {pid} exited during ptrace initialization with {exit_status:?}")
-                .into()
+            initialization_exit_error(pid, exit_status)
         }
     }
 }
@@ -1776,7 +1818,7 @@ fn report_pre_exec_capability_error(message: &'static [u8]) -> Errno {
 }
 
 /// Sets up the child process for ptracing right before execve is called.
-fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
+pub(crate) fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     // NOTE: There should be *NO* allocations along the happy path here.
     // Allocating between a fork() and execve() can cause deadlocks in glibc
     // when using jemalloc.
@@ -1957,6 +1999,19 @@ async fn run_task_tree<T: Tool + 'static>(
     }
 }
 
+// Shared by the legacy constructor and the explicit owning first-stop path.
+pub(crate) fn initial_ptrace_options() -> ptrace::Options {
+    ptrace::Options::PTRACE_O_TRACEEXEC
+        | ptrace::Options::PTRACE_O_EXITKILL
+        | ptrace::Options::PTRACE_O_TRACECLONE
+        | ptrace::Options::PTRACE_O_TRACEFORK
+        | ptrace::Options::PTRACE_O_TRACEVFORK
+        | ptrace::Options::PTRACE_O_TRACEVFORKDONE
+        | ptrace::Options::PTRACE_O_TRACEEXIT
+        | ptrace::Options::PTRACE_O_TRACESECCOMP
+        | ptrace::Options::PTRACE_O_TRACESYSGOOD
+}
+
 /// Helper function for everything after the child is spawned.
 #[tracing::instrument(
     target = "reverie_ptrace::lifecycle",
@@ -1971,7 +2026,7 @@ async fn postspawn<L: Tool + 'static>(
     config: <L::GlobalState as GlobalTool>::Config,
     options: TracedTaskOptions<'_>,
     gdbserver: Option<GdbServer>,
-) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, TraceError> {
+) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, PostspawnError> {
     let pid = child.pid();
 
     // Wait for the child to enter a stopped state. The child will enter a
@@ -1979,23 +2034,15 @@ async fn postspawn<L: Tool + 'static>(
     //
     // NOTE: We may rarely get spurious signals here, like SIGWINCH, so we must
     // skip past them.
-    let (mut child, event) = child
-        .wait_for_signal(Signal::SIGSTOP)
-        .await?
-        .assume_stopped();
+    let (mut child, event) = match child.wait_for_signal(Signal::SIGSTOP).await? {
+        Wait::Stopped(child, event) => (child, event),
+        Wait::Exited(pid, exit_status) => {
+            return Err(PostspawnError::Exited { pid, exit_status });
+        }
+    };
     assert_eq!(event, Event::Signal(Signal::SIGSTOP));
 
-    child.setoptions(
-        ptrace::Options::PTRACE_O_TRACEEXEC
-            | ptrace::Options::PTRACE_O_EXITKILL
-            | ptrace::Options::PTRACE_O_TRACECLONE
-            | ptrace::Options::PTRACE_O_TRACEFORK
-            | ptrace::Options::PTRACE_O_TRACEVFORK
-            | ptrace::Options::PTRACE_O_TRACEVFORKDONE
-            | ptrace::Options::PTRACE_O_TRACEEXIT
-            | ptrace::Options::PTRACE_O_TRACESECCOMP
-            | ptrace::Options::PTRACE_O_TRACESYSGOOD,
-    )?;
+    child.setoptions(initial_ptrace_options())?;
 
     let (orphan_sender, orphan_receiver) = mpsc::channel(1);
     let (daemon_kill, _) = broadcast::channel(1);
@@ -2107,6 +2154,20 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     #[cfg(all(test, target_arch = "x86_64"))]
     clock_test_launcher_branches: u64,
+}
+
+// Complete pre-birth payload shared by ordinary spawn and the owning boundary.
+// No Tool/task constructor or GDB/LiteInst post-birth initialization has run yet.
+pub(crate) struct PreparedCommand<T: Tool + 'static> {
+    pub(crate) command: Command,
+    pub(crate) config: <T::GlobalState as GlobalTool>::Config,
+    pub(crate) gref: Arc<T::GlobalState>,
+    pub(crate) events: Subscription,
+    pub(crate) gdbserver: Option<GdbConnection>,
+    pub(crate) sequentialized_guest: bool,
+    pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
+    pub(crate) liteinst_runtime: Option<LiteinstRuntimeConfig>,
+    pub(crate) backend_stats: Option<PtraceBackendStatsSource>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -2508,8 +2569,24 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         Ok(self)
     }
 
-    /// Spawns the tracer.
-    pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
+    /// Retains production command preparation and native startup outside a
+    /// borrowed client, on the original physical thread.
+    ///
+    /// Call at an outer synchronous boundary, before entering Tokio. The returned
+    /// opaque owner can transfer its entire payload to held-first-stop ownership;
+    /// it does not initialize a Tool/task or repair existing async spawn callers.
+    /// No child/stop extraction or new signal authority is exposed. Its outer
+    /// lifetime still requires a future owning disposition, not unconditional Drop.
+    pub fn into_startup_owner<R>(
+        self,
+        resources: R,
+    ) -> std::io::Result<crate::startup_owner::TracerStartupOwner<T, R>> {
+        crate::startup_owner::TracerStartupOwner::new(self, resources)
+    }
+
+    // Keep the exact production preparation order in one place. This future
+    // owns the Builder until the complete payload is stored by its caller.
+    pub(crate) async fn prepare(self) -> Result<PreparedCommand<T>, Error> {
         if self.liteinst_runtime.is_some() && self.gdbserver.is_some() {
             return Err(Error::Tool(anyhow::anyhow!(
                 "LiteInst runtime activation with a GDB server is unsupported ({}): both controllers would own the executable-entry software breakpoint",
@@ -2519,7 +2596,6 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
-        let liteinst_fail_closed = self.liteinst_runtime.is_some();
 
         // Because this ptrace backend is CENTRALIZED, it can keep all the
         // tool's state here in a single address space.
@@ -2577,9 +2653,37 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         command.seccomp(seccomp_filter(&traced_events));
 
+        Ok(PreparedCommand {
+            command,
+            config,
+            gref,
+            events,
+            gdbserver: self.gdbserver,
+            sequentialized_guest: self.sequentialized_guest,
+            injected_syscall_trap: self.injected_syscall_trap,
+            liteinst_runtime: self.liteinst_runtime,
+            backend_stats,
+        })
+    }
+
+    /// Spawns the tracer.
+    pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
+        let PreparedCommand {
+            mut command,
+            config,
+            gref,
+            events,
+            gdbserver,
+            sequentialized_guest,
+            injected_syscall_trap,
+            liteinst_runtime,
+            backend_stats,
+        } = self.prepare().await?;
+        let liteinst_fail_closed = liteinst_runtime.is_some();
+
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
-        if let Some(runtime) = self.liteinst_runtime.as_ref() {
+        if let Some(runtime) = liteinst_runtime.as_ref() {
             // Publish the session root before any task can observe the config.
             // Everything LiteInst-root-scoped keys off this exact TID rather
             // than the `tid == pid` shape, which a forked child also has.
@@ -2589,31 +2693,25 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 .expect("LiteInst root TID is published exactly once per spawn");
         }
         let running_child = Running::new(guest_pid);
-        let liteinst_newborn_tracees = self
-            .liteinst_runtime
+        let liteinst_newborn_tracees = liteinst_runtime
             .as_ref()
             .map(|runtime| Arc::clone(&runtime.newborn_tracees));
-        let liteinst_held_root_stop = self
-            .liteinst_runtime
+        let liteinst_held_root_stop = liteinst_runtime
             .as_ref()
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
-        let liteinst_instrumentation_stats = self
-            .liteinst_runtime
+        let liteinst_instrumentation_stats = liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone));
         #[cfg(test)]
-        let fail_discovery_once = self
-            .liteinst_runtime
+        let fail_discovery_once = liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.fail_discovery_once.clone());
         #[cfg(test)]
-        let fail_after_scan_once = self
-            .liteinst_runtime
+        let fail_after_scan_once = liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.fail_after_scan_once.clone());
         #[cfg(test)]
-        let force_task_scan_once = self
-            .liteinst_runtime
+        let force_task_scan_once = liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.force_task_scan_once.clone());
         let mut liteinst_cleanup = if liteinst_fail_closed {
@@ -2655,7 +2753,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         };
 
         // Configure the gdb server (if any).
-        let gdbserver = match self.gdbserver {
+        let gdbserver = match gdbserver {
             None => None,
             Some(connection) => {
                 let server = match connection {
@@ -2667,7 +2765,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                     format!("failed to start GDB server for tracee {guest_pid}")
                 })?;
 
-                if self.sequentialized_guest {
+                if sequentialized_guest {
                     server.sequentialized_guest();
                 }
 
@@ -2690,8 +2788,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             TracedTaskOptions {
                 command_bootstrap: true,
                 events: &events,
-                injected_syscall_trap: self.injected_syscall_trap,
-                liteinst_runtime: self.liteinst_runtime,
+                injected_syscall_trap,
+                liteinst_runtime,
                 backend_stats: backend_stats.clone(),
             },
             gdbserver,
@@ -2700,7 +2798,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         {
             Ok(tracer) => tracer,
             Err(err) => {
-                let error = initialization_error(guest_pid, err).await;
+                let error = postspawn_error(guest_pid, err).await;
                 if let Some(cleanup) = liteinst_cleanup.as_mut()
                     && let Err(cleanup_error) = cleanup.terminate_and_confirm()
                 {
@@ -2851,7 +2949,7 @@ where
             .await
             {
                 Ok(tracer) => tracer,
-                Err(err) => return Err(initialization_error(guest_pid, err).await),
+                Err(err) => return Err(postspawn_error(guest_pid, err).await),
             };
 
             Ok(Tracer {
@@ -2937,9 +3035,14 @@ mod tests {
             guest: &mut G,
             syscall: Syscall,
         ) -> Result<i64, Error> {
+            if *guest.config() == 6 && guest.tid() == guest.pid() {
+                let value = guest.inject(syscall).await?;
+                guest.set_timer_precise(reverie::TimerSchedule::Rcbs(1))?;
+                return Ok(value);
+            }
             assert_ne!(guest.tid(), guest.pid(), "failure must be a live nonleader");
             assert!(std::path::Path::new(&format!("/proc/{}", guest.tid())).exists());
-            if *guest.config() == 3 {
+            if matches!(*guest.config(), 3 | 6) {
                 let pause = crate::task::FATAL_FORK_PAUSE
                     .with(|slot| slot.borrow().clone())
                     .unwrap();
@@ -2948,7 +3051,26 @@ mod tests {
                     .store(1, Ordering::SeqCst);
                 loop {
                     let ready = pause.ready.notified();
-                    if pause.child.lock().unwrap().is_some() {
+                    if if pause.timer {
+                        pause.timer_receive_blocked.load(Ordering::SeqCst)
+                    } else {
+                        pause.child.lock().unwrap().is_some()
+                    } {
+                        break;
+                    }
+                    ready.await;
+                }
+            }
+            if *guest.config() == 5 {
+                let control = crate::task::FATAL_REGISTERED_CONTROL
+                    .with(|slot| slot.borrow().clone())
+                    .unwrap();
+                let address = control.waiting_word.load(Ordering::SeqCst);
+                unsafe { &*(address as *const std::sync::atomic::AtomicUsize) }
+                    .store(1, Ordering::SeqCst);
+                loop {
+                    let ready = control.ready.notified();
+                    if control.task.lock().unwrap().is_some() {
                         break;
                     }
                     ready.await;
@@ -3181,7 +3303,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_tool_failure_reaps_fork_descendants() {
-        ordinary_nonleader_control(true, true, false).await;
+        fatal_reaper_control(
+            "tracer::tests::ordinary_nonleader_tool_failure_reaps_fork_descendants",
+            false,
+            true,
+            false,
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3267,7 +3395,19 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_freeze_refusal_releases_waiters_without_claiming_reap() {
-        let control = Arc::new(crate::task::FatalFreezeControl::default());
+        let barrier = Arc::new(crate::task::FatalRecoveryBarrier::default());
+        struct ReleaseRecovery(Arc<crate::task::FatalRecoveryBarrier>);
+        impl Drop for ReleaseRecovery {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        // An assertion/unwind cannot strand the test-only scheduling gate.
+        let release = ReleaseRecovery(barrier.clone());
+        let control = Arc::new(crate::task::FatalFreezeControl {
+            recovery_barrier: Some(barrier.clone()),
+            ..Default::default()
+        });
         crate::task::FATAL_FREEZE_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
         let words = FatalWords::new();
         let address = words.0 as usize;
@@ -3295,27 +3435,87 @@ mod tests {
         )
         .unwrap();
         emergency.register_notifier(&Running::new(root));
-        let result = tokio::time::timeout(Duration::from_secs(3), tracer.wait()).await;
-        crate::task::FATAL_FREEZE_CONTROL.with(|slot| *slot.borrow_mut() = None);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout_at(deadline, async {
+            tokio::select! {
+                biased;
+                result = &mut wait => Some(result),
+                () = barrier.wait_for_arrivals(2) => None,
+            }
+        })
+        .await;
+        let barrier_reached = matches!(&first, Ok(None));
+        // Both real refusal paths are parked before drain_closed_refusal.
+        // The existing strong test session is transferred, not supplemented.
         let session = control.session.lock().unwrap().take().unwrap();
         let retained = session.unconfirmed_task_count();
         let refused = session.cleanup_was_refused();
         let root_present = std::path::Path::new(&format!("/proc/{root}")).exists();
         let events = log.0.lock().unwrap().clone();
+        let freeze_calls = control.calls.load(Ordering::SeqCst);
+        let resumed_before_recovery = words.read(0);
+        let arrivals = barrier.arrivals.load(Ordering::SeqCst);
+        if barrier_reached {
+            // Save only the already-owned fixture fallback. Do not invoke it
+            // until all product observations below have been captured.
+            emergency.held_root_stop = session.retained_task_stop(root);
+        }
         eprintln!(
-            "freeze refusal before external cleanup: timeout={}, root_present={root_present}, retained={retained}, refused={refused}, events={events:?}",
+            "freeze refusal before recovery: barrier_reached={barrier_reached}, arrivals={arrivals}, root_present={root_present}, retained={retained}, refused={refused}, freeze_calls={freeze_calls}, resumed={resumed_before_recovery}, events={events:?}"
+        );
+        drop(release);
+        let result = match first {
+            Ok(None) => tokio::time::timeout_at(deadline, &mut wait).await,
+            Ok(Some(result)) => Ok(result),
+            Err(elapsed) => Err(elapsed),
+        };
+        crate::task::FATAL_FREEZE_CONTROL.with(|slot| *slot.borrow_mut() = None);
+        let post_events = log.0.lock().unwrap().clone();
+        let absence: Vec<_> = events
+            .iter()
+            .filter(|(_, status)| status.is_none())
+            .map(|(tid, _)| {
+                let absent = match std::fs::metadata(format!("/proc/{tid}")) {
+                    Ok(_) => Some(false),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+                    Err(_) => None,
+                };
+                (*tid, absent)
+            })
+            .collect();
+        let retained_after_recovery = session.unconfirmed_task_count();
+        let refused_after_recovery = session.cleanup_was_refused();
+        let resumed_after_recovery = words.read(0);
+        let before_deadline = tokio::time::Instant::now() <= deadline;
+        eprintln!(
+            "freeze refusal after product recovery: timeout={}, retained={retained_after_recovery}, refused={refused_after_recovery}, events={post_events:?}, absence={absence:?}, resumed={resumed_after_recovery}, before_deadline={before_deadline}",
             result.is_err()
         );
-        emergency.held_root_stop = session.retained_task_stop(root);
+        // Freeze product observations before any fallback or future disposal.
+        drop(wait);
         let emergency_result = emergency.terminate_and_confirm();
         eprintln!(
             "freeze-refusal emergency cleanup (not product completion): {emergency_result:?}"
+        );
+        assert!(
+            barrier_reached,
+            "wait ended or timed out before the causal refusal barrier"
+        );
+        assert_eq!(
+            arrivals, 2,
+            "both refusal waiters must reach recovery entry"
         );
         assert!(
             root_present && refused,
             "refusal was erased or relabelled as cleanup"
         );
         assert_eq!(retained, 2, "unconfirmed task authority was lost");
+        assert_eq!(freeze_calls, 2);
+        assert_eq!(
+            resumed_before_recovery, 0,
+            "failed thread resumed before recovery"
+        );
         assert_eq!(control.calls.load(Ordering::SeqCst), 2);
         assert_eq!(words.read(0), 0, "failed thread resumed");
         assert_eq!(
@@ -3332,8 +3532,262 @@ mod tests {
             matches!(error, Error::Tool(ref inner) if inner.downcast_ref::<NonleaderFailure>().is_some()),
             "{error}"
         );
+        assert!(
+            before_deadline,
+            "product recovery evidence exceeded original 3s"
+        );
+        assert!(
+            refused_after_recovery,
+            "successful recovery erased the sticky refusal"
+        );
+        assert_eq!(
+            retained_after_recovery, 0,
+            "product did not finish its registered tasks"
+        );
+        assert_eq!(
+            resumed_after_recovery, 0,
+            "failed thread resumed during recovery"
+        );
+        assert_eq!(absence.len(), 2);
+        assert_ne!(absence[0].0, absence[1].0);
+        assert_eq!(absence.iter().filter(|(tid, _)| *tid == root).count(), 1);
+        for (tid, absent) in &absence {
+            assert_eq!(
+                post_events
+                    .iter()
+                    .filter(|(started, status)| started == tid && status.is_none())
+                    .count(),
+                1
+            );
+            assert_eq!(
+                post_events
+                    .iter()
+                    .filter(|(exited, status)| exited == tid
+                        && *status == Some(ExitStatus::Signaled(Signal::SIGKILL, false)))
+                    .count(),
+                1,
+                "missing or fabricated product terminal callback: {post_events:?}"
+            );
+            assert_eq!(
+                *absent,
+                Some(true),
+                "product left {tid} present or UNKNOWN before fallback"
+            );
+        }
+        assert_eq!(
+            post_events.len(),
+            4,
+            "missing or duplicate lifecycle callbacks"
+        );
         emergency_result.expect("test-owned emergency cleanup failed");
         assert_reaped("refusal fixture root after emergency only", root);
+    }
+
+    // Run only in separately admitted finite process/cgroup containment while
+    // this discriminator is expected to fail. The test does not rescue a guest
+    // or retain production cleanup authority; outer cleanup is not a pass.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_freeze_refusal_consuming_wait_and_error_drop_requires_reap() {
+        let control = Arc::new(crate::task::FatalFreezeControl {
+            observe_return_drop: true,
+            ..Default::default()
+        });
+        crate::task::FATAL_FREEZE_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
+        let words = FatalWords::new();
+        let address = words.0 as usize;
+        let tracer = spawn_fn_with_config::<FatalTool, _>(
+            move || {
+                std::thread::spawn(move || {
+                    unsafe { libc::syscall(libc::SYS_getpgid, 0) };
+                    unsafe { &*(address as *const std::sync::atomic::AtomicUsize) }
+                        .store(1, Ordering::SeqCst);
+                })
+                .join()
+                .unwrap();
+            },
+            1,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(tracer.liteinst_cleanup.is_none());
+        let root = tracer.guest_pid;
+        // FatalLog owns only event data, not FatalSession or task futures.
+        let log = tracer.gref.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let result = tokio::time::timeout_at(deadline, tracer.wait()).await;
+        crate::task::FATAL_FREEZE_CONTROL.with(|slot| *slot.borrow_mut() = None);
+        let weak = control.session_weak.lock().unwrap().take();
+        let owners_at_return = weak.as_ref().map(std::sync::Weak::strong_count);
+        // This is the real consuming anyhow boundary: successful downcast
+        // destroys other contexts; then the caller drops the extracted result.
+        let (returned, original_typed, rendered) = match result {
+            Ok(Err(Error::Tool(inner))) => {
+                let rendered = inner.to_string();
+                let original = inner.downcast::<NonleaderFailure>();
+                let original_typed = original.is_ok();
+                drop(original);
+                (true, original_typed, rendered)
+            }
+            Ok(Err(error)) => {
+                let rendered = error.to_string();
+                drop(error);
+                (true, false, rendered)
+            }
+            Ok(Ok(_)) => (true, false, "unexpected success".to_owned()),
+            Err(error) => (false, false, error.to_string()),
+        };
+        let owners_after_drop = weak.as_ref().map(std::sync::Weak::strong_count);
+        let roster = control.roster.lock().unwrap().clone();
+        let refusal = control.refusal.lock().unwrap().clone();
+        let events = log.0.lock().unwrap().clone();
+        // No active wait/continuation, signal, stop lease, or session upgrade
+        // runs here. Only NotFound is absence; an unreadable /proc is UNKNOWN.
+        let absence: Vec<_> = roster
+            .iter()
+            .map(|(tid, start, inode)| {
+                let absent = match std::fs::metadata(format!("/proc/{tid}")) {
+                    Ok(_) => Some(false),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+                    Err(_) => None,
+                };
+                (*tid, *start, *inode, absent)
+            })
+            .collect();
+        let before_deadline = tokio::time::Instant::now() <= deadline;
+        eprintln!(
+            "production return/drop boundary: root={root}, returned={returned}, original_typed={original_typed}, rendered={rendered:?}, refusal={refusal:?}, owners_at_return={owners_at_return:?}, owners_after_drop={owners_after_drop:?}, absence={absence:?}, events={events:?}, resumed={}, before_deadline={before_deadline}",
+            words.read(0)
+        );
+        assert!(
+            control.session.lock().unwrap().is_none(),
+            "test pinned production session"
+        );
+        assert!(weak.is_some(), "production session was never observed");
+        assert!(
+            returned && original_typed,
+            "original typed Tool error did not return"
+        );
+        assert!(
+            before_deadline,
+            "return/drop evidence exceeded original 3s deadline"
+        );
+        assert_eq!(control.calls.load(Ordering::SeqCst), 2);
+        assert!(refusal.as_deref().is_some_and(|message| {
+            message.contains("injected refusal after actual owned freeze stop")
+        }));
+        assert_eq!(words.read(0), 0, "failed nonleader resumed guest code");
+        assert_eq!(roster.len(), 2, "expected root plus one real nonleader");
+        assert_eq!(roster.iter().filter(|(tid, ..)| *tid == root).count(), 1);
+        assert_ne!(roster[0].0, roster[1].0);
+        for (tid, ..) in &roster {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|(started, status)| started == tid && status.is_none())
+                    .count(),
+                1
+            );
+            // run_ordinary sends this callback only after its actual Wait::Exited
+            // path; no fixture wait consumes or manufactures a terminal status.
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|(exited, status)| exited == tid
+                        && *status == Some(ExitStatus::Signaled(Signal::SIGKILL, false)))
+                    .count(),
+                1,
+                "missing actual terminal callback: {events:?}"
+            );
+        }
+        assert_eq!(events.len(), 4, "missing or duplicate lifecycle callbacks");
+        assert!(
+            absence
+                .iter()
+                .all(|(_, _, _, absent)| *absent == Some(true)),
+            "consuming wait/error drop left a generation present or UNKNOWN: {absence:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_registered_never_started_child_has_no_exit_callback() {
+        let control = Arc::new(crate::task::FatalRegisteredControl::default());
+        crate::task::FATAL_REGISTERED_CONTROL
+            .with(|slot| *slot.borrow_mut() = Some(control.clone()));
+        let words = FatalWords::new();
+        let address = words.0 as usize;
+        control.waiting_word.store(address, Ordering::SeqCst);
+        let sentinel = fork_paused_child();
+        let sentinel_identity = untraced_process_identity(sentinel);
+        let tracer = spawn_fn_with_config::<FatalTool, _>(
+            move || {
+                let failed = std::thread::spawn(move || {
+                    unsafe { libc::syscall(libc::SYS_getpgid, 0) };
+                    unsafe { &*((address as *const std::sync::atomic::AtomicUsize).add(1)) }
+                        .store(1, Ordering::SeqCst);
+                });
+                while unsafe { &*(address as *const std::sync::atomic::AtomicUsize) }
+                    .load(Ordering::SeqCst)
+                    == 0
+                {
+                    std::thread::yield_now();
+                }
+                let unstarted =
+                    std::thread::spawn(|| panic!("never-started child reached guest code"));
+                failed.join().unwrap();
+                unstarted.join().unwrap();
+            },
+            5,
+            false,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid;
+        let log = tracer.gref.clone();
+        let result = tokio::time::timeout(Duration::from_secs(3), tracer.wait()).await;
+        crate::task::FATAL_REGISTERED_CONTROL.with(|slot| *slot.borrow_mut() = None);
+        let (child, start, inode, terminal) = control.task.lock().unwrap().take().unwrap();
+        let events = log.0.lock().unwrap().clone();
+        eprintln!(
+            "registered never-started child: pid={child}, start={start}, inode={inode}, actual_status={:?}, terminal_ack={}, events={events:?}",
+            *control.status.lock().unwrap(),
+            terminal.wait(Duration::ZERO)
+        );
+        assert!(sentinel_identity.same_process());
+        assert_eq!(
+            unsafe { libc::waitpid(sentinel.as_raw(), std::ptr::null_mut(), libc::WNOHANG) },
+            0
+        );
+        sentinel_identity.send_signal(Signal::SIGKILL).unwrap();
+        assert_eq!(
+            unsafe { libc::waitpid(sentinel.as_raw(), std::ptr::null_mut(), 0) },
+            sentinel.as_raw()
+        );
+        assert_eq!(
+            *control.status.lock().unwrap(),
+            Some(ExitStatus::Signaled(Signal::SIGKILL, false))
+        );
+        assert!(terminal.wait(Duration::ZERO));
+        assert_eq!(control.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(words.read(1), 0);
+        assert_eq!(events.len(), 4, "unstarted child acquired a callback");
+        assert!(!events.iter().any(|(tid, _)| *tid == child));
+        for (tid, status) in &events {
+            assert_reaped("registered cancellation task", *tid);
+            if let Some(status) = status {
+                assert_eq!(*status, ExitStatus::Signaled(Signal::SIGKILL, false));
+            }
+        }
+        assert_reaped("registered cancellation root", root);
+        assert_reaped("registered never-started child", child);
+        let error = result
+            .expect("registered cancellation exceeded 3s")
+            .err()
+            .expect("original Tool error lost");
+        assert!(
+            matches!(error, Error::Tool(ref inner) if inner.downcast_ref::<NonleaderFailure>().is_some()),
+            "{error}"
+        );
     }
 
     fn fatal_control_write<const N: usize>(
@@ -3380,10 +3834,21 @@ mod tests {
         state
     }
 
+    // Nested libtest diagnostics belong on stderr so they cannot interleave with
+    // the outer test framework's structured stdout.
+    fn nested_test_stdout() -> std::os::fd::OwnedFd {
+        use std::os::fd::AsFd;
+        std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .expect("duplicate stderr for nested libtest diagnostics")
+    }
+
     fn fatal_child_command(test: &str, role: &str) -> std::process::Command {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .stdout(nested_test_stdout())
             .env("REVERIE_FATAL_REAP_TEST", test)
             .env("REVERIE_FATAL_REAP_ROLE", role);
         command
@@ -3541,7 +4006,143 @@ mod tests {
         );
     }
 
-    async fn fatal_unhanded_tracer(opponent: bool) {
+    async fn fatal_handed_tracer() {
+        use std::os::unix::net::UnixStream;
+        assert_eq!(fatal_subreaper_state(), 0);
+        let mut channel = unsafe { UnixStream::from_raw_fd(libc::STDIN_FILENO) };
+        let control = Arc::new(crate::task::FatalRegisteredControl {
+            record_fork: true,
+            ..Default::default()
+        });
+        crate::task::FATAL_REGISTERED_CONTROL
+            .with(|slot| *slot.borrow_mut() = Some(control.clone()));
+        let words = FatalWords::new();
+        let address = words.0 as usize;
+        let sentinel = fork_paused_child();
+        let sentinel_identity = untraced_process_identity(sentinel);
+        let tracer = spawn_fn_with_config::<FatalTool, _>(
+            move || {
+                match unsafe { unistd::fork() }.unwrap() {
+                    ForkResult::Child => {
+                        unsafe { &*((address as *const std::sync::atomic::AtomicUsize).add(1)) }
+                            .store(unsafe { libc::getpid() } as usize, Ordering::SeqCst);
+                        loop {
+                            unsafe { libc::pause() };
+                        }
+                    }
+                    ForkResult::Parent { .. } => {
+                        while unsafe {
+                            &*((address as *const std::sync::atomic::AtomicUsize).add(1))
+                        }
+                        .load(Ordering::SeqCst)
+                            == 0
+                        {
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+                std::thread::spawn(move || {
+                    unsafe { libc::syscall(libc::SYS_getpgid, 0) };
+                    unsafe { &*(address as *const std::sync::atomic::AtomicUsize) }
+                        .store(1, Ordering::SeqCst);
+                    loop {
+                        unsafe { libc::pause() };
+                    }
+                })
+                .join()
+                .unwrap();
+            },
+            1,
+            false,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid;
+        let log = tracer.gref.clone();
+        fatal_control_write(
+            &mut channel,
+            [
+                root.as_raw() as u64,
+                tracee_snapshot(root).unwrap().start_time,
+                fs::metadata(format!("/proc/{root}")).unwrap().ino(),
+            ],
+        );
+        let [deadline] = fatal_control_read::<1>(&mut channel);
+        channel
+            .set_read_timeout(Some(fatal_remaining(deadline)))
+            .unwrap();
+        let result = tokio::time::timeout(fatal_remaining(deadline), tracer.wait()).await;
+        let (child, start, inode, terminal) = control
+            .task
+            .lock()
+            .unwrap()
+            .take()
+            .expect("real fork descendant registered before failure");
+        assert_eq!(words.read(1), child.as_raw() as usize);
+        let backend_sigkill =
+            *control.status.lock().unwrap() == Some(ExitStatus::Signaled(Signal::SIGKILL, false));
+        let acknowledged = terminal.wait(Duration::ZERO);
+        let original_error = matches!(&result, Ok(Err(Error::Tool(inner))) if inner.downcast_ref::<NonleaderFailure>().is_some());
+        let events = log.0.lock().unwrap().clone();
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|(tid, status)| status.is_none().then_some(*tid))
+            .collect();
+        let callbacks_valid = starts.len() == 3
+            && events.len() == 6
+            && starts.iter().all(|tid| {
+                events
+                    .iter()
+                    .filter(|(exited, status)| {
+                        exited == tid
+                            && *status == Some(ExitStatus::Signaled(Signal::SIGKILL, false))
+                    })
+                    .count()
+                    == 1
+            });
+        let status = fs::read_to_string(format!("/proc/{child}/status")).unwrap();
+        eprintln!(
+            "handed child before natural wait: pid={child}, start={start}, inode={inode}, actual_status={:?}, terminal_ack={acknowledged}, status={status:?}",
+            *control.status.lock().unwrap()
+        );
+        assert!(sentinel_identity.same_process());
+        assert_eq!(
+            unsafe { libc::waitpid(sentinel.as_raw(), std::ptr::null_mut(), libc::WNOHANG) },
+            0,
+            "cleanup touched unrelated sentinel"
+        );
+        sentinel_identity.send_signal(Signal::SIGKILL).unwrap();
+        assert_eq!(
+            unsafe { libc::waitpid(sentinel.as_raw(), std::ptr::null_mut(), 0) },
+            sentinel.as_raw()
+        );
+        fatal_control_write(
+            &mut channel,
+            [
+                child.as_raw() as u64,
+                start,
+                inode,
+                u64::from(backend_sigkill),
+                u64::from(acknowledged),
+                u64::from(original_error),
+                words.read(0) as u64,
+                u64::from(callbacks_valid),
+                unsafe { libc::syscall(libc::SYS_gettid) } as u64,
+            ],
+        );
+        assert_eq!(fatal_control_read::<1>(&mut channel), [1]);
+        crate::task::FATAL_REGISTERED_CONTROL.with(|slot| *slot.borrow_mut() = None);
+        assert!(original_error && callbacks_valid && backend_sigkill && acknowledged);
+        assert_eq!(words.read(0), 0, "failed nonleader resumed guest code");
+        for tid in starts {
+            assert_reaped("ordinary task after owned natural wait", tid);
+        }
+        assert_reaped("ordinary root after owned natural wait", root);
+        assert_reaped("ordinary descendant after owned natural wait", child);
+        let _remaining = fatal_remaining(deadline);
+    }
+
+    async fn fatal_unhanded_tracer(opponent: bool, timer: bool) {
         use std::os::unix::net::UnixStream;
         assert_eq!(
             fatal_subreaper_state(),
@@ -3549,7 +4150,10 @@ mod tests {
             "tracer must be distinct from natural reaper"
         );
         let mut channel = unsafe { UnixStream::from_raw_fd(libc::STDIN_FILENO) };
-        let pause = Arc::new(crate::task::FatalForkPause::default());
+        let pause = Arc::new(crate::task::FatalForkPause {
+            timer,
+            ..Default::default()
+        });
         pause.live_stop_opponent.store(opponent, Ordering::SeqCst);
         let words = FatalWords::new();
         let address = words.0 as usize;
@@ -3570,14 +4174,42 @@ mod tests {
                 {
                     std::thread::yield_now();
                 }
-                match unsafe { unistd::fork() }.unwrap() {
-                    ForkResult::Child => panic!("unhanded newborn reached guest code"),
-                    ForkResult::Parent { .. } => {
-                        thread.join().unwrap();
+                if timer {
+                    // The subscribed marker arms the existing precise timer.
+                    // There is no conditional branch before the raw fork, so
+                    // the timer's real single-step path encounters NewChild.
+                    // Any user continuation of either stopped fork side is a
+                    // separately observed failure, never a successful cleanup.
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        core::arch::asm!(
+                            "syscall",
+                            "mov eax, {fork_number}",
+                            "syscall",
+                            "mov qword ptr [{words} + 16], 1",
+                            "2:",
+                            "pause",
+                            "jmp 2b",
+                            fork_number = const libc::SYS_fork,
+                            words = in(reg) address,
+                            inlateout("rax") libc::SYS_getpgid => _,
+                            inlateout("rdi") 0usize => _,
+                            lateout("rcx") _,
+                            lateout("r11") _,
+                        );
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    panic!("timer fork control requires its x86_64 instruction sequence");
+                } else {
+                    match unsafe { unistd::fork() }.unwrap() {
+                        ForkResult::Child => panic!("unhanded newborn reached guest code"),
+                        ForkResult::Parent { .. } => {
+                            thread.join().unwrap();
+                        }
                     }
                 }
             },
-            3,
+            if timer { 6 } else { 3 },
             false,
         )
         .await
@@ -3592,15 +4224,41 @@ mod tests {
             .set_read_timeout(Some(fatal_remaining(deadline)))
             .unwrap();
         let result = tokio::time::timeout(fatal_remaining(deadline), tracer.wait()).await;
-        let child = pause
-            .child
-            .lock()
-            .unwrap()
-            .take()
-            .expect("actual fork event was reached");
-        let child_pid = child.pid();
-        let (start, inode) = pause.generation.lock().unwrap().unwrap();
-        let terminal = child.terminal_cleanup();
+        let child = pause.child.lock().unwrap().take();
+        let (child_pid, start, inode, terminal) = if timer {
+            assert!(pause.timer_published.load(Ordering::SeqCst));
+            assert!(pause.timer_receive_blocked.load(Ordering::SeqCst));
+            assert!(
+                child.is_none(),
+                "timer child unexpectedly reached handle_new_child"
+            );
+            assert_eq!(
+                words.read(2),
+                0,
+                "fork side executed after its decoded stop"
+            );
+            let observed = pause
+                .timer_child
+                .lock()
+                .unwrap()
+                .take()
+                .expect("timer decoded a real fork");
+            (
+                observed.pid,
+                observed.start_time,
+                observed.proc_inode,
+                observed.terminal,
+            )
+        } else {
+            let child = child.as_ref().expect("actual fork event was reached");
+            let (start, inode) = pause.generation.lock().unwrap().unwrap();
+            (
+                child.pid(),
+                start,
+                inode,
+                Arc::new(child.terminal_cleanup()),
+            )
+        };
         let acknowledged = terminal.wait(Duration::ZERO);
         let original_error = matches!(&result, Ok(Err(Error::Tool(inner))) if inner.downcast_ref::<NonleaderFailure>().is_some());
         let backend_sigkill = *pause.terminal_status.lock().unwrap()
@@ -3648,7 +4306,7 @@ mod tests {
             // Only the tracer performs negative-control teardown, after the
             // separate reaper sealed the failed product predicate. This cannot
             // convert that predicate into a successful cleanup observation.
-            let rescue = FatalNewborn::new(root, &child);
+            let rescue = FatalNewborn::new(root, child.as_ref().unwrap());
             rescue.signal().unwrap();
             tokio::time::timeout(fatal_remaining(deadline), rescue.reap())
                 .await
@@ -3670,14 +4328,15 @@ mod tests {
         let _remaining = fatal_remaining(deadline);
     }
 
-    async fn fatal_unhanded_control(test: &str, opponent: bool) {
+    async fn fatal_reaper_control(test: &str, opponent: bool, handed: bool, timer: bool) {
         use std::os::unix::process::CommandExt;
         if std::env::var("REVERIE_FATAL_REAP_TEST").as_deref() == Ok(test) {
             assert!(std::env::args().any(|arg| arg == test));
             assert!(std::env::args().any(|arg| arg == "--exact"));
             match std::env::var("REVERIE_FATAL_REAP_ROLE").as_deref() {
                 Ok("reaper") => fatal_natural_reaper(test, opponent),
-                Ok("tracer") => fatal_unhanded_tracer(opponent).await,
+                Ok("tracer") if handed => fatal_handed_tracer().await,
+                Ok("tracer") => fatal_unhanded_tracer(opponent, timer).await,
                 other => panic!("invalid isolated test role: {other:?}"),
             }
             return;
@@ -3701,8 +4360,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_tool_failure_reaps_unhanded_fork_child() {
-        fatal_unhanded_control(
+        fatal_reaper_control(
             "tracer::tests::ordinary_nonleader_tool_failure_reaps_unhanded_fork_child",
+            false,
+            false,
             false,
         )
         .await;
@@ -3710,8 +4371,22 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_unhanded_reaper_rejects_real_live_stop_opponent() {
-        fatal_unhanded_control(
+        fatal_reaper_control(
             "tracer::tests::ordinary_unhanded_reaper_rejects_real_live_stop_opponent",
+            true,
+            false,
+            false,
+        )
+        .await;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_timer_decoded_fork_is_owned_before_loop_consumption() {
+        fatal_reaper_control(
+            "tracer::tests::ordinary_timer_decoded_fork_is_owned_before_loop_consumption",
+            false,
+            false,
             true,
         )
         .await;
@@ -4699,6 +5374,7 @@ mod tests {
             "tracer::tests::liteinst_root_stop_pause_guest",
             "--nocapture",
         ]);
+        command.stdout(nested_test_stdout());
         command.env("REVERIE_LITEINST_ROOT_STOP_GUEST", mode);
         command
     }
@@ -5249,6 +5925,7 @@ mod tests {
             "tracer::tests::liteinst_clone_thread_guest",
             "--nocapture",
         ]);
+        command.stdout(nested_test_stdout());
         command.env("REVERIE_LITEINST_CLONE_THREAD_GUEST", "1");
         command
     }
@@ -5579,5 +6256,145 @@ mod tests {
         drop(wait);
         assert_reaped("root", root_pid);
         assert_reaped("CLONE_PARENT sibling", sibling_pid);
+    }
+
+    // Start from a real consumed SIGSTOP, retain that capability, and make the
+    // kernel report its death without consuming the terminal wait status.
+    // This deliberately uses only synchronous waiting until initialization_error
+    // takes over: an async notifier must not pre-consume the pending test status.
+    async fn initial_wait_pending_death_control(consume_elsewhere: bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let pid = match unsafe { unistd::fork() }.expect("fork stopped initialization child") {
+            ForkResult::Child => {
+                if safeptrace::traceme_and_stop().is_err() {
+                    unsafe { libc::_exit(91) };
+                }
+                unsafe { libc::_exit(92) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let peek = |options: i32| {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid.as_raw() as u32,
+                        &mut info,
+                        options | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                },
+                0,
+                "nonconsuming exact-child wait failed: {}",
+                Errno::last()
+            );
+            info
+        };
+        loop {
+            let info = peek(libc::WSTOPPED);
+            if unsafe { info.si_pid() } == pid.as_raw() {
+                assert_eq!(unsafe { info.si_status() }, libc::SIGSTOP);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "initial stop deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .expect("consume the already observed stop")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        let before = tracee_snapshot(pid).expect("real stopped child generation");
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
+        assert!(fd >= 0, "open held child pidfd: {}", Errno::last());
+        let pidfd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            },
+            0,
+            "signal only the held stopped generation"
+        );
+        loop {
+            let info = peek(libc::WEXITED);
+            if unsafe { info.si_pid() } == pid.as_raw() {
+                assert_eq!(info.si_code, libc::CLD_KILLED);
+                assert_eq!(unsafe { info.si_status() }, libc::SIGKILL);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pending death deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let zombie = tracee_snapshot(pid).expect("WNOWAIT must retain the actual zombie");
+        assert_eq!(before.start_time, zombie.start_time);
+        let died = stopped
+            .getregs()
+            .expect_err("actual killed stop must report death");
+        assert!(matches!(died, TraceError::Died(_)));
+        eprintln!(
+            "initial-wait pending-reap pid={pid} start={} kernel_signal={} consume_elsewhere={consume_elsewhere}",
+            zombie.start_time,
+            libc::SIGKILL
+        );
+        if consume_elsewhere {
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) },
+                pid.as_raw(),
+                "opposing waiter consumes the already observed real status"
+            );
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+        }
+        let error = tokio::time::timeout_at(deadline, initialization_error(pid, died))
+            .await
+            .expect("initialization conversion exceeded the one total three-second bound");
+        assert!(matches!(error, Error::Tool(_)));
+        let message = error.to_string();
+        if consume_elsewhere {
+            assert!(
+                message.contains("terminal status could not be reaped"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("exited during ptrace initialization with"),
+                "{message}"
+            );
+        } else {
+            assert_eq!(
+                message,
+                format!(
+                    "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+                )
+            );
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "real child remains after its terminal status should be consumed"
+        );
+        assert!(tokio::time::Instant::now() <= deadline);
+        eprintln!("initial-wait final pid={pid} root_absent=true error={message}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initial_wait_reaps_a_genuinely_pending_died_status() {
+        initial_wait_pending_death_control(false).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initial_wait_refuses_a_died_status_consumed_by_another_waiter() {
+        initial_wait_pending_death_control(true).await;
     }
 }

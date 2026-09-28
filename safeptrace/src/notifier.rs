@@ -2897,6 +2897,44 @@ impl WaitFuture {
     }
 }
 
+// Unlike an async wrapper owning a local waiter, this outer field survives
+// an unwind from the borrowed native poll. The caller must retain this future.
+pub(super) struct OwnedWaitFuture {
+    waiter: Option<WaitFuture>,
+}
+
+impl OwnedWaitFuture {
+    pub(super) fn new(running: Running) -> Self {
+        Self {
+            waiter: Some(WaitFuture::new(running)),
+        }
+    }
+}
+
+impl Future for OwnedWaitFuture {
+    type Output = Result<Wait, crate::RunningWaitError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let result = futures::ready!(
+            Pin::new(
+                this.waiter
+                    .as_mut()
+                    .expect("owned wait must not be repolled after completion"),
+            )
+            .poll(cx)
+        );
+        let waiter = this
+            .waiter
+            .take()
+            .expect("completed native wait remains owned");
+        Poll::Ready(result.map_err(|error| crate::RunningWaitError {
+            running: waiter.running,
+            error,
+        }))
+    }
+}
+
 impl Future for WaitFuture {
     type Output = Result<Wait, Error>;
 

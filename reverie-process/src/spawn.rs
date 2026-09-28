@@ -12,16 +12,13 @@ use std::io::Write;
 use super::Child;
 use super::Command;
 use super::clone::clone;
+use super::command_start::ParentContinuation;
 use super::container::ChildContext;
 use super::error::Context;
 use super::error::Error;
 use super::fd::Fd;
 use super::fd::pipe;
 use super::id_map::make_id_map;
-use super::seccomp::SeccompNotif;
-use super::stdio::ChildStderr;
-use super::stdio::ChildStdin;
-use super::stdio::ChildStdout;
 use super::util::CStringArray;
 use super::util::SharedValue;
 
@@ -56,6 +53,24 @@ impl Command {
     where
         F: FnMut(Error) -> i32,
     {
+        let mut parent = None;
+        self.spawn_parent_into(&mut parent, &mut onfail)?;
+        parent
+            .expect("successful clone filled the parent slot")
+            .finish_legacy()
+    }
+
+    // The caller owns this slot before birth. There is no user callback,
+    // allocation, fallible conversion or await between clone and filling it.
+    pub(super) fn spawn_parent_into<F>(
+        &mut self,
+        parent: &mut Option<ParentContinuation>,
+        onfail: &mut F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(Error) -> i32,
+    {
+        assert!(parent.is_none());
         let env = self.container.env.array();
 
         // Set up IO pipes
@@ -91,47 +106,25 @@ impl Command {
             clone_flags,
         )?;
 
-        drop(child_stdin);
-        drop(child_stdout);
-        drop(child_stderr);
-        drop(self.container.pty.take());
-
-        let seccomp_notif = match seccomp_fd {
-            Some(shared_fd) => {
-                use core::sync::atomic::Ordering;
-
-                // Spin until the value changes in the child.
-                let mut targetfd = 0;
-                while targetfd == 0 {
-                    targetfd = shared_fd.as_ref().load(Ordering::Relaxed);
-                    std::thread::yield_now();
-                }
-
-                // Use pidfd_getfd to copy the file descriptor
-                let pidfd = Fd::pidfd_open(pid.into(), 0)?;
-                let fd = pidfd.pidfd_getfd(targetfd, 0)?;
-
-                // We've successfully duplicated the file descriptor. Let the
-                // child continue on to execve.
-                shared_fd.as_ref().store(0, Ordering::Relaxed);
-
-                Some(SeccompNotif::new(fd)?)
-            }
-            None => None,
-        };
-
-        let stdin = stdin.map(ChildStdin::new).transpose()?;
-        let stdout = stdout.map(ChildStdout::new).transpose()?;
-        let stderr = stderr.map(ChildStderr::new).transpose()?;
-
-        Ok(Child {
-            pid,
-            exit_status: None,
-            seccomp_notif,
+        *parent = Some(ParentContinuation {
+            child: Some(Child {
+                pid,
+                exit_status: None,
+                seccomp_notif: None,
+                stdin: None,
+                stdout: None,
+                stderr: None,
+            }),
             stdin,
             stdout,
             stderr,
-        })
+            child_ends: [child_stdin, child_stdout, child_stderr],
+            pty: self.container.pty.take(),
+            seccomp_fd,
+            seccomp_pidfd: None,
+            seccomp_copy: None,
+        });
+        Ok(())
     }
 
     /// Note: This function MUST NOT allocate or deallocate any memory. Doing so

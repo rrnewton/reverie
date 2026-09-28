@@ -18,6 +18,7 @@ use std::os::unix::io::IntoRawFd;
 use syscalls::Errno;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::io::Interest;
 use tokio::io::ReadBuf;
 
 use super::fd::AsyncFd;
@@ -147,18 +148,30 @@ impl From<Stdio> for std::process::Stdio {
 }
 
 impl ChildStdin {
+    pub(super) fn try_new(fd: Fd) -> Result<Self, (Fd, io::Error)> {
+        AsyncFd::try_with_interest(fd, Interest::WRITABLE).map(Self)
+    }
+
     pub(super) fn new(fd: Fd) -> Result<Self, Errno> {
         AsyncFd::writable(fd).map(Self)
     }
 }
 
 impl ChildStdout {
+    pub(super) fn try_new(fd: Fd) -> Result<Self, (Fd, io::Error)> {
+        AsyncFd::try_with_interest(fd, Interest::READABLE).map(Self)
+    }
+
     pub(super) fn new(fd: Fd) -> Result<Self, Errno> {
         AsyncFd::readable(fd).map(Self)
     }
 }
 
 impl ChildStderr {
+    pub(super) fn try_new(fd: Fd) -> Result<Self, (Fd, io::Error)> {
+        AsyncFd::try_with_interest(fd, Interest::READABLE).map(Self)
+    }
+
     pub(super) fn new(fd: Fd) -> Result<Self, Errno> {
         AsyncFd::readable(fd).map(Self)
     }

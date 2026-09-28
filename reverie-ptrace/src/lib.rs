@@ -46,6 +46,7 @@ mod liteinst_stats;
 mod perf;
 pub mod regs;
 mod stack;
+mod startup_owner;
 mod stats;
 mod task;
 pub mod testing;
@@ -60,6 +61,14 @@ pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
 pub use perf::is_perf_supported;
+#[doc(hidden)]
+pub use startup_owner::InitialStopClient;
+#[doc(hidden)]
+pub use startup_owner::InitialStopOwner;
+#[doc(hidden)]
+pub use startup_owner::InitialStopPhase;
+#[doc(hidden)]
+pub use startup_owner::InitialStopRefusal;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
 pub use timer::PmuConfig;

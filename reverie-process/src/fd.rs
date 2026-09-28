@@ -239,6 +239,18 @@ impl From<OwnedFd> for Fd {
 }
 
 impl AsyncFd {
+    // The scoped startup route has already established its I/O reactor before
+    // birth. Unlike the compatibility constructors, an ordinary registration
+    // error returns the still-owned descriptor to that route.
+    pub(super) fn try_with_interest(fd: Fd, interest: Interest) -> Result<Self, (Fd, io::Error)> {
+        if let Err(error) = fd.set_nonblocking() {
+            return Err((fd, error.into()));
+        }
+        TokioAsyncFd::try_with_interest(fd, interest)
+            .map(Self)
+            .map_err(|error| error.into_parts())
+    }
+
     pub fn new(fd: Fd) -> Result<Self, Errno> {
         fd.set_nonblocking()?;
         Ok(Self(

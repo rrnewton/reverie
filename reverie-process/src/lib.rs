@@ -17,6 +17,8 @@
 mod builder;
 mod child;
 mod clone;
+mod command_start;
+mod command_start_owner;
 mod container;
 mod env;
 mod error;
@@ -38,6 +40,16 @@ use std::io;
 
 pub use child::Child;
 pub use child::Output;
+#[doc(hidden)]
+pub use command_start::CommandStart;
+#[doc(hidden)]
+pub use command_start::CommandStartError;
+#[doc(hidden)]
+pub use command_start_owner::CommandStartupClient;
+#[doc(hidden)]
+pub use command_start_owner::CommandStartupOwner;
+#[doc(hidden)]
+pub use command_start_owner::CommandStartupPhase;
 pub use container::ChildCleanupObservation;
 pub use container::ChildStartContext;
 pub use container::Container;

@@ -106,6 +106,57 @@ impl From<nix::errno::Errno> for Error {
     }
 }
 
+/// A completed failed wait retaining its original generation association.
+///
+/// This is not a still-pending wait or proof the child is running. The caller
+/// must retain the whole value before reporting its error; retry policy belongs
+/// to that owner. Creating a new Running from a numeric PID is not equivalent.
+#[cfg(feature = "notifier")]
+#[derive(Error, Debug)]
+#[error("{error}")]
+pub struct RunningWaitError {
+    /// The actual association moved from the completed notifier wait.
+    pub running: Running,
+    /// The unchanged native error, including any exact-token Zombie it owns.
+    #[source]
+    pub error: Error,
+}
+
+/// An unsuccessful consuming transition out of a stopped state.
+///
+/// Unlike [`Error`], an ordinary errno retains the original [`Stopped`]
+/// capability. A caller keeping an operation alive must retain this value in
+/// its owner before publishing a diagnostic. Dropping this error drops that
+/// capability; it does not create an independent cleanup owner.
+#[derive(Error, Debug, Eq, PartialEq)]
+pub enum StoppedTransitionError {
+    /// The ptrace request failed without an acknowledged state transition.
+    #[error("{error}")]
+    Stopped {
+        /// The original stopped capability, with its original generation token.
+        stopped: Stopped,
+        /// The actual errno returned by the request.
+        #[source]
+        error: Errno,
+    },
+
+    /// ESRCH under the existing stopped-state contract. The exact generation
+    /// must still be reaped; this is not an observed terminal status.
+    #[error("tracee {0} is a zombie")]
+    Died(Zombie),
+}
+
+impl StoppedTransitionError {
+    // Only the legacy consuming API deliberately discards a refused stop.
+    // There is no public From conversion encouraging an owning caller to do so.
+    fn into_error(self) -> Error {
+        match self {
+            Self::Stopped { error, .. } => Error::Errno(error),
+            Self::Died(zombie) => Error::Died(zombie),
+        }
+    }
+}
+
 /// Represents an invalid state. Useful for errors.
 #[derive(Debug, Eq, PartialEq)]
 struct InvalidState(pub TryWait);
@@ -557,6 +608,24 @@ impl Stopped {
         self.map_err(Errno::new(err as i32))
     }
 
+    // All consuming ptrace transitions move the existing token. In particular,
+    // neither an errno nor ESRCH captures a new generation from a numeric PID.
+    fn transition(
+        self,
+        request: impl FnOnce(Pid) -> Result<(), Errno>,
+    ) -> Result<Running, StoppedTransitionError> {
+        match request(self.0) {
+            Ok(()) => Ok(Running::from_token(self.0, self.1)),
+            Err(Errno::ESRCH) => Err(StoppedTransitionError::Died(Zombie::from_token(
+                self.0, self.1,
+            ))),
+            Err(error) => Err(StoppedTransitionError::Stopped {
+                stopped: self,
+                error,
+            }),
+        }
+    }
+
     /// Returns a future that is notified when the next exit stop occurs. This
     /// is received asynchronously regardless of what the process was doing at
     /// the time. This is useful for canceling futures when a process enters a
@@ -750,23 +819,68 @@ impl Stopped {
     }
 
     /// Resumes the process and transitions it back to a running state.
+    ///
+    /// Use [`Self::resume_owned`] when a refused transition must retain the
+    /// original stopped capability.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        self.resume_owned(sig)
+            .map_err(StoppedTransitionError::into_error)
+    }
+
+    /// Like [`Self::resume`], but returns the original [`Stopped`] on an
+    /// ordinary errno. ESRCH retains the exact generation as a [`Zombie`]
+    /// requiring a real terminal wait; it is never a successful transition.
+    pub fn resume_owned<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<Running, StoppedTransitionError> {
+        self.transition(|pid| {
+            ptrace::cont(pid.into(), sig).map_err(|error| Errno::new(error as i32))
+        })
     }
 
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
+    ///
+    /// Use [`Self::step_owned`] when a refused transition must retain the
+    /// original stopped capability.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        self.step_owned(sig)
+            .map_err(StoppedTransitionError::into_error)
+    }
+
+    /// Like [`Self::step`], but returns the original [`Stopped`] on an
+    /// ordinary errno. ESRCH retains the exact generation as a [`Zombie`]
+    /// requiring a real terminal wait; it is never a successful transition.
+    pub fn step_owned<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<Running, StoppedTransitionError> {
+        self.transition(|pid| {
+            ptrace::step(pid.into(), sig).map_err(|error| Errno::new(error as i32))
+        })
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
+    ///
+    /// Use [`Self::syscall_owned`] when a refused transition must retain the
+    /// original stopped capability.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        self.syscall_owned(sig)
+            .map_err(StoppedTransitionError::into_error)
+    }
+
+    /// Like [`Self::syscall`], but returns the original [`Stopped`] on an
+    /// ordinary errno. ESRCH retains the exact generation as a [`Zombie`]
+    /// requiring a real terminal wait; it is never a successful transition.
+    pub fn syscall_owned<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<Running, StoppedTransitionError> {
+        self.transition(|pid| {
+            ptrace::syscall(pid.into(), sig).map_err(|error| Errno::new(error as i32))
+        })
     }
 
     /// Sets the syscall to be executed. Only available on `aarch64`.
@@ -830,9 +944,24 @@ impl Stopped {
     }
 
     /// Detaches from and then resumes the stopped tracee.
+    ///
+    /// Use [`Self::detach_owned`] when a refused transition must retain the
+    /// original stopped capability.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        self.detach_owned(sig)
+            .map_err(StoppedTransitionError::into_error)
+    }
+
+    /// Like [`Self::detach`], but returns the original [`Stopped`] on an
+    /// ordinary errno. ESRCH retains the exact generation as a [`Zombie`]
+    /// requiring a real terminal wait; it is never a successful transition.
+    pub fn detach_owned<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<Running, StoppedTransitionError> {
+        self.transition(|pid| {
+            ptrace::detach(pid.into(), sig).map_err(|error| Errno::new(error as i32))
+        })
     }
 }
 
@@ -1101,6 +1230,19 @@ impl Running {
         TerminalCleanup::new(self.0, &self.1)
     }
 
+    /// Waits once, returning the original association alongside any error.
+    ///
+    /// This does not retry registration, recreate a notifier, or turn an errno
+    /// into terminal evidence. A pending future owns its actual wait; a failed
+    /// result owns a completed association and must not be called pending.
+    /// Legacy next_state behavior is unchanged.
+    #[cfg(feature = "notifier")]
+    pub fn next_state_owned(
+        self,
+    ) -> impl core::future::Future<Output = Result<Wait, RunningWaitError>> {
+        notifier::OwnedWaitFuture::new(self)
+    }
+
     /// Like `wait`, but wait asynchronously for the next state change.
     ///
     /// NOTE: This call should not be mixed with [`Running::wait`]!! Once
@@ -1242,6 +1384,140 @@ mod test {
                 unsafe { ::libc::_exit(exit_code) };
             }
         }
+    }
+
+    type OwnedTransition = fn(Stopped, Option<Signal>) -> Result<Running, StoppedTransitionError>;
+
+    const OWNING_TRANSITIONS: [(&str, libc::c_uint, OwnedTransition); 4] = [
+        ("resume", libc::PTRACE_CONT, Stopped::resume_owned),
+        ("step", libc::PTRACE_SINGLESTEP, Stopped::step_owned),
+        ("syscall", libc::PTRACE_SYSCALL, Stopped::syscall_owned),
+        ("detach", libc::PTRACE_DETACH, Stopped::detach_owned),
+    ];
+
+    #[test]
+    fn owning_transition_errno_preserves_the_observed_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (name, request, _) in OWNING_TRANSITIONS {
+            let (pid, stopped) = trace(|| 42, Options::PTRACE_O_EXITKILL)?;
+            let token = stopped.1.clone();
+            // Signal is a validated enum in the public methods. Exercise the
+            // same private transition with an actual invalid-signal request,
+            // rather than replacing a kernel result with an injected errno.
+            let refused = stopped.transition(|pid| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        request,
+                        pid.as_raw(),
+                        std::ptr::null_mut::<libc::c_void>(),
+                        i32::MAX as usize as *mut libc::c_void,
+                    )
+                })
+                .map(drop)
+            });
+            let StoppedTransitionError::Stopped { stopped, error } =
+                refused.expect_err("invalid signal must not resume or detach")
+            else {
+                panic!("{name}: invalid signal was misclassified as death");
+            };
+            assert_eq!(error, Errno::EIO, "{name}");
+            assert_eq!(stopped.pid(), pid, "{name}");
+            assert_eq!(stopped.1, token, "{name}: stopped generation changed");
+            stopped.getregs()?; // Actual ptrace access still works after refusal.
+            assert_eq!(
+                stopped.resume_owned(None)?.wait()?,
+                Wait::Exited(pid, ExitStatus::Exited(42)),
+                "{name}: refused stop was not usable for real continuation",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn owning_transitions_preserve_running_generation() -> Result<(), Box<dyn std::error::Error>> {
+        for (name, request, transition) in OWNING_TRANSITIONS {
+            let (pid, stopped) = trace(
+                || 42,
+                Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACESYSGOOD,
+            )?;
+            let token = stopped.1.clone();
+            let running = transition(stopped, None)?;
+            assert_eq!(running.pid(), pid, "{name}");
+            assert_eq!(running.1, token, "{name}: running generation changed");
+            let terminal = match running.wait()? {
+                Wait::Stopped(stopped, event) => {
+                    let expected = match request {
+                        libc::PTRACE_SINGLESTEP => Event::Signal(Signal::SIGTRAP),
+                        libc::PTRACE_SYSCALL => Event::Syscall,
+                        _ => panic!("{name}: unexpected intermediate stop"),
+                    };
+                    assert_eq!(event, expected, "{name}");
+                    assert_eq!(stopped.1, token, "{name}: observed stop changed generation");
+                    stopped.resume_owned(None)?.wait()?
+                }
+                exited => {
+                    assert!(matches!(request, libc::PTRACE_CONT | libc::PTRACE_DETACH));
+                    exited
+                }
+            };
+            assert_eq!(
+                terminal,
+                Wait::Exited(pid, ExitStatus::Exited(42)),
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "notifier")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn owning_transition_esrch_keeps_exact_terminal_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        // One deadline for all four real children, not a fresh grace per mode.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        for (name, _, transition) in OWNING_TRANSITIONS {
+            let (pid, stopped) = trace(|| 42, Options::PTRACE_O_EXITKILL)?;
+            let token = stopped.1.clone();
+            let cleanup = stopped.terminal_cleanup();
+            cleanup.ensure_registered()?;
+            cleanup.request_sigkill()?; // Held generation only; no numeric rescue.
+            loop {
+                match stopped.getregs() {
+                    Err(Error::Died(_)) => break,
+                    Ok(_) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{name}: death not observed"
+                );
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let StoppedTransitionError::Died(zombie) =
+                transition(stopped, None).expect_err("dead generation cannot resume")
+            else {
+                panic!("{name}: ESRCH lost its terminal generation");
+            };
+            assert_eq!(zombie.pid(), pid, "{name}");
+            assert_eq!(zombie.0.1, token, "{name}: zombie generation changed");
+            let status = tokio::time::timeout_at(deadline, zombie.reap()).await??;
+            assert_eq!(
+                status,
+                ExitStatus::Signaled(Signal::SIGKILL, false),
+                "{name}"
+            );
+            assert!(
+                matches!(
+                    std::fs::symlink_metadata(format!("/proc/{pid}")),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound
+                ),
+                "{name}: terminal wait did not establish absolute absence"
+            );
+            assert!(tokio::time::Instant::now() <= deadline);
+        }
+        Ok(())
     }
 
     #[test]

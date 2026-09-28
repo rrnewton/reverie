@@ -160,6 +160,15 @@ pub const SECCOMP_IOCTL_NOTIF_ADDFD: u64 = 0x40182103;
 pub struct SeccompNotif(AsyncFd<Fd>);
 
 impl SeccompNotif {
+    pub(crate) fn try_new(fd: Fd) -> Result<Self, (Fd, io::Error)> {
+        if let Err(error) = fd.set_nonblocking() {
+            return Err((fd, error.into()));
+        }
+        AsyncFd::try_with_interest(fd, Interest::READABLE)
+            .map(Self)
+            .map_err(|error| error.into_parts())
+    }
+
     pub(crate) fn new(fd: Fd) -> Result<Self, Errno> {
         fd.set_nonblocking()?;
 
