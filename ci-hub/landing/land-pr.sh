@@ -40,6 +40,9 @@
 #                    merge the already-authorized head as it stands. Mutually
 #                    exclusive with --union. Rationale + how to re-verify it:
 #                    see the step-2 comment. Default behaviour is UNCHANGED.
+#                    REFUSES a head that does not contain current main (read
+#                    from https://github.com/OWNER/REPO), both before the merge
+#                    sequence and again at the final receipt boundary.
 #   --agent NAME     reviewer + lock-holder identity (default: DG_AGENT_NAME).
 #   --team TEAM      reviewer disclosure team (default: hermit2).
 #   --checkout PATH  reviewer's slot for --repo. When omitted, use the current
@@ -144,6 +147,13 @@ ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 # This shared boundary clears ambient Git repository selectors before the first
 # checkout query below and before every detached/inner child is spawned.
 source "$SCRIPT_DIR/worktree-mutation-fence.sh"
+# The --no-rebase "head contains current main" predicate. Refuse to start
+# rather than continue without it: the call sites below fail closed on a
+# missing function too, but a lander that cannot load its gate should say so.
+source "$SCRIPT_DIR/head-contains-main.sh" || {
+  echo "land-pr: cannot load $SCRIPT_DIR/head-contains-main.sh" >&2
+  exit 2
+}
 if [ -n "$CHECKOUT" ]; then
   WT=$(cd -- "$CHECKOUT" 2>/dev/null && pwd) || {
     echo "land-pr: --checkout is not a readable directory: $CHECKOUT" >&2
@@ -451,6 +461,42 @@ abandon(){
   exit "$code"
 }
 
+# ⚠️ A --no-rebase HEAD MUST CONTAIN CURRENT MAIN.
+#
+# --no-rebase exists so that an exact-head validation and exact-head approvals
+# survive to the merge. That is only sound when the head IS what lands. When the
+# head is behind main, `gh pr merge --rebase` replays it server-side onto a main
+# the validation never saw, and the tree that lands was neither validated nor
+# reviewed. Measured: https://github.com/rrnewton/reverie/pull/679 was queued
+# with --no-rebase at 169f1d0b9f9cf9abb3d78c13c1e61811ae43c1ac, one landing
+# behind main, and landed as 547278b9 because nothing on this path compared the
+# head with main: for rrnewton/reverie the authority consumer is called with no
+# merge-boundary base at all (rebase_wrapper.exact_head_status forwards one only
+# when a Reverie base and checkout are also supplied, which only the Hermit path
+# does), and review_rebase.py accepts a BOUND_CURRENT approval with no base
+# comparison. This predicate is the only ancestry check on this path.
+#
+# Main is read from the canonical URL into a private ref, never from the shared
+# origin/main, which sibling worktrees can rewind to a stale mirror; see
+# head-contains-main.sh. Authorization is a verdict line AND a zero status:
+# a helper that did not run emits no verdict and refuses here. No bypass.
+require_no_rebase_head_contains_main(){
+  local head=$1 code=$2 out rc main_sha
+  out=$(lander_head_contains_canonical_main "$WT" "https://github.com/$R" "$head" 2>&1); rc=$?
+  if [ "$rc" -eq 0 ] && [[ $out =~ ^CONTAINS\ ([0-9a-f]+)$ ]]; then
+    say "no-rebase: head $head contains current $R main ${BASH_REMATCH[1]} (read from https://github.com/$R)"
+    return 0
+  fi
+  if [ "$rc" -eq 1 ] && [[ $out =~ ^BEHIND\ ([0-9a-f]+)$ ]]; then
+    main_sha=${BASH_REMATCH[1]}
+    abandon "REFUSING TO LAND with --no-rebase: head $head does not contain current $R main $main_sha. \
+Its validation and approvals describe a tree that is not what would land. \
+Rebase $BR onto main $main_sha, re-validate the new head, and re-queue it." "$code"
+  fi
+  abandon "REFUSING TO LAND with --no-rebase: could not determine whether head $head contains current $R main (rc=$rc). \
+Nothing was compared, so this is not a statement that the head needs rebasing. Output was: ${out:-<empty>}" "$code"
+}
+
 # 1. fresh main
 with-proxy git -C "$WT" fetch -q origin main || abandon "fetch origin/main failed" 2
 with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
@@ -605,6 +651,12 @@ fi
 # rebase-and-force-push in the union driver amended main's tip onto two PR
 # branches and landed #1188/#1209 as semantic no-ops.
 #
+# ⚠️ "Behind main is not a merge blocker" is true of GitHub and was never true of
+# the evidence: an exact-head validation and approval describe the head's own
+# tree, and a behind head lands as a different tree. So this path ADDS one check
+# the default path gets from its rebase: the head must contain current main
+# (require_no_rebase_head_contains_main, here and again at step 5b).
+#
 # This flag removes a MUTATION, never a CHECK. Still executed on this path: the
 # land-lock (outer `land-lock run`), the step-1b exact-head authority, the step-4
 # recheck at the head actually being merged, the merge-gate diagnostic observation, the step-5b
@@ -615,6 +667,9 @@ rebase_base=$(git -C "$WT" rev-parse --verify origin/main) \
   || abandon "cannot resolve current main before rebase" 3
 if [ "$NO_REBASE" -eq 1 ]; then
   say "no-rebase: skipping the local rebase + force-push; merging the authorized head as it stands"
+  # Fail fast here; the final receipt boundary (5b) re-checks the head that is
+  # actually merged against main as it is then.
+  require_no_rebase_head_contains_main "$ORIG" 3
 elif [ "$UNION" -eq 1 ]; then
   ulog="/tmp/land-$PR-union.log"
   uresult=$(mktemp)
@@ -825,6 +880,9 @@ live_head=$(with-proxy gh pr view "$PR" -R "$R" --json headRefOid -q .headRefOid
   || abandon "could not resolve the live PR head before receipt authorization" 5
 [ "$live_head" = "$HEAD" ] \
   || abandon "PR head moved before receipt authorization (expected $HEAD, observed ${live_head:-missing})" 5
+if [ "$NO_REBASE" -eq 1 ]; then
+  require_no_rebase_head_contains_main "$HEAD" 5
+fi
 
 # Review labels are caches, never authority. Re-read their APPROVED-AT sources
 # at the final mutation boundary. An exact current-head binding passes directly.

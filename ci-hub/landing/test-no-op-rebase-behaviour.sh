@@ -38,6 +38,8 @@ root=$tmp/root
 mkdir -p "$root/ci-hub/landing" "$root/ci-hub/bin" "$tmp/bin" "$tmp/wt"
 cp "$lander" "$root/ci-hub/landing/land-pr.sh"
 cp "$script_dir/worktree-mutation-fence.sh" "$root/ci-hub/landing/" 2>/dev/null || true
+# Required: the lander refuses to start without its --no-rebase predicate.
+cp "$script_dir/head-contains-main.sh" "$root/ci-hub/landing/"
 cp "$script_dir/merge-gate-status.jq" "$root/ci-hub/landing/" 2>/dev/null || true
 cp "$stubs"/git "$stubs"/gh "$stubs"/python3 "$stubs"/jq \
    "$stubs"/with-proxy "$stubs"/flock "$stubs"/timeout "$tmp/bin/"

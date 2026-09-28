@@ -7,11 +7,19 @@ case "$sub" in
   remote)
     case "${rest[*]}" in *get-url*) echo "https://github.com/rrnewton/hermit.git"; exit 0 ;; esac
     exit 0 ;;
-  fetch|checkout|reset|clean|branch|push|config|update-ref|stash|worktree) exit 0 ;;
+  fetch)
+    # SCEN_CANONICAL_FETCH_RC fails only the contains-main predicate's fetch.
+    case " ${rest[*]} " in
+      *refs/land-pr/contains-main/*) exit "${SCEN_CANONICAL_FETCH_RC:-0}" ;;
+    esac
+    exit 0 ;;
+  checkout|reset|clean|branch|push|config|update-ref|stash|worktree) exit 0 ;;
   rev-parse)
     for a in "${rest[@]}"; do
       case "$a" in
         origin/main) echo "${SCEN_MAIN:-aaaa111}"; exit 0 ;;
+        # The --no-rebase contains-main predicate's private canonical-main ref.
+        refs/land-pr/contains-main/*) echo "${SCEN_MAIN:-aaaa111}"; exit 0 ;;
         origin/*)
           n=$(cat "$SCEN_DIR/revcount" 2>/dev/null || echo 0); echo $((n+1)) > "$SCEN_DIR/revcount"
           if [ "$n" -eq 0 ]; then echo "${SCEN_ORIG:-bbbb222}"; else echo "${SCEN_HEAD:-bbbb222}"; fi
@@ -20,7 +28,20 @@ case "$sub" in
       esac
     done
     echo "${SCEN_ORIG:-bbbb222}"; exit 0 ;;
-  merge-base) [ "${SCEN_ANCESTOR:-1}" -eq 1 ] && exit 0 || exit 1 ;;
-  cat-file|show|log|diff|status|ls-remote) exit 0 ;;
+  merge-base)
+    # SCEN_ANCESTOR_SEQ="1 0 ..." answers successive calls in order (the last
+    # answer repeats); otherwise every call answers SCEN_ANCESTOR.
+    if [ -n "${SCEN_ANCESTOR_SEQ:-}" ]; then
+      read -r -a seq <<<"$SCEN_ANCESTOR_SEQ"
+      n=$(cat "$SCEN_DIR/mbcount" 2>/dev/null || echo 0); echo $((n+1)) > "$SCEN_DIR/mbcount"
+      [ "$n" -lt "${#seq[@]}" ] || n=$(( ${#seq[@]} - 1 ))
+      [ "${seq[$n]}" -eq 1 ] && exit 0 || exit 1
+    fi
+    [ "${SCEN_ANCESTOR:-1}" -eq 1 ] && exit 0 || exit 1 ;;
+  ls-remote)
+    # `ls-remote --get-url URL` applies url.insteadOf; model "no rewrite".
+    case " ${rest[*]} " in *" --get-url "*) echo "${rest[${#rest[@]}-1]}" ;; esac
+    exit 0 ;;
+  cat-file|show|log|diff|status) exit 0 ;;
   *) exit 0 ;;
 esac
