@@ -72,6 +72,22 @@ pub(super) enum HopOutcome {
     Other(Wait),
 }
 
+/// x86_64 syscall numbers that seccomp passes through without running the
+/// filter (upstream `__secure_computing` design): 335 is `uretprobe` and
+/// 336 is `uprobe` (measured on this host's 7.1 kernel). Plain ptrace runs them at the
+/// original site with no stop and no Tool event, while the slot's own
+/// `syscall` would also bypass the filter and produce no TAG_SLOT stop, so
+/// the hop cannot run them. They are matched by number, independently of
+/// whether the `syscalls` crate knows them (0.6.18 stops at `rseq`, 334),
+/// so that a crate bump can never dispatch them to the Tool.
+const SECCOMP_BYPASSING_NUMBERS: [i32; 2] = [335, 336];
+
+/// Whether a normalized patched-site number is one of
+/// [`SECCOMP_BYPASSING_NUMBERS`].
+fn bypasses_seccomp(orig_rax: u64) -> bool {
+    SECCOMP_BYPASSING_NUMBERS.contains(&(orig_rax as i64 as i32))
+}
+
 fn nix_pid(pid: reverie::Pid) -> nix::unistd::Pid {
     nix::unistd::Pid::from_raw(pid.as_raw())
 }
@@ -374,7 +390,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         let trap_only = self.trap_only.as_ref().expect("trap-only routing");
         let live = !is_reserved_site(site) && trap_only.lock().is_live(site);
         if !live {
-            // A stop plain ptrace also reports: it advances the timer.
+            // Plain ptrace reports no stop here: its filter kills the process
+            // (SECCOMP_RET_KILL_PROCESS), which `trap_only_foreign_i386`
+            // reproduces. The tick is not Tool-observable, because the
+            // process dies of SIGSYS before any Tool event.
             self.timer.observe_event(&Event::Seccomp);
             return self
                 .trap_only_foreign_i386(task, regs)
@@ -390,6 +409,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         regs.r11 = regs.eflags;
         regs.orig_rax = regs.orig_rax as u32 as i32 as i64 as u64;
         task.setregs(&regs)?;
+        if bypasses_seccomp(regs.orig_rax) {
+            return Err(self.trap_only_failure(
+                "trap-only seccomp routing",
+                TrapOnlyFailure::SeccompBypassingNumber {
+                    site,
+                    nr: regs.orig_rax as i64,
+                },
+            ));
+        }
         match self.trap_only_decode(regs.orig_rax) {
             Some(_) => self.timer.observe_event(&Event::Seccomp),
             None if stepped => {
@@ -514,6 +542,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(());
         }
         let nr = regs.orig_rax as u32 as i32 as i64 as u64;
+        if bypasses_seccomp(nr) {
+            return Err(self.trap_only_failure(
+                "trap-only timer step",
+                TrapOnlyFailure::SeccompBypassingNumber {
+                    site,
+                    nr: nr as i64,
+                },
+            ));
+        }
         if self.trap_only_decode(nr).is_none() {
             return Err(self.trap_only_failure(
                 "trap-only timer step",
@@ -652,8 +689,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // signal frame's saved rip, which H4 must then leave alone (the frame's
         // registers win, as under ptrace). The kernel reads the frame at the
         // same rsp the hop runs with.
-        let sigreturn_rip = if nr == Sysno::rt_sigreturn as u64 {
-            sigreturn_frame_rip(nix_pid(self.tid), view.rsp)
+        let sigreturn = if nr == Sysno::rt_sigreturn as u64 {
+            sigreturn_frame(nix_pid(self.tid), view.rsp)
         } else {
             None
         };
@@ -725,7 +762,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }) {
                     regs.rip = regs.rip.wrapping_add(1);
                 }
-                if sigreturn_rip == Some(regs.rip) {
+                if sigreturn.is_some_and(|frame| frame.rip == regs.rip && frame.rsp == regs.rsp) {
                     // rt_sigreturn loaded the frame's registers, which win
                     // even when the frame's own rip is the slot's return.
                 } else if regs.rip == expected_rip {
@@ -743,10 +780,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                             site,
                             nr: nr as i64,
                             rip: regs.rip,
-                            expected: match sigreturn_rip {
-                                Some(frame) => {
-                                    format!("{expected_rip:#x} or frame rip {frame:#x}")
-                                }
+                            expected: match sigreturn {
+                                Some(frame) => format!(
+                                    "{expected_rip:#x} or frame rip {:#x} (rsp {:#x})",
+                                    frame.rip, frame.rsp
+                                ),
                                 None => format!("{expected_rip:#x}"),
                             },
                         },
@@ -1137,21 +1175,72 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 }
 
-/// The saved instruction pointer of the `rt_sigframe` an `rt_sigreturn` at
-/// stack pointer `rsp` restores, if readable. The kernel's frame starts one
-/// word below rsp (the handler's `ret` popped `pretcode`), so its
-/// `ucontext` is at rsp: `uc_flags` (8), `uc_link` (8) and `uc_stack` (24)
-/// precede `uc_mcontext`, whose rip is general register 16.
-fn sigreturn_frame_rip(tid: nix::unistd::Pid, rsp: u64) -> Option<u64> {
-    use std::os::unix::fs::FileExt;
+/// The registers an `rt_sigreturn` at stack pointer `rsp` loads from its
+/// `rt_sigframe`, if the kernel's loads before `restore_sigcontext` sets the
+/// registers can succeed. The frame starts one word below rsp (the
+/// handler's `ret` popped `pretcode`), so its `ucontext` is at rsp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SigreturnFrame {
+    rip: u64,
+    rsp: u64,
+}
+
+/// Reads [`SigreturnFrame`] the way x86_64 `sys_rt_sigreturn` does before
+/// any register changes: `access_ok` over the whole frame, then
+/// `uc_sigmask`, `uc_flags` and the `uc_mcontext` sigcontext, each through
+/// the guest's own page protections. `process_vm_readv`, like the kernel's
+/// user copies and unlike `/proc/<tid>/mem` (FOLL_FORCE), fails on a
+/// PROT_NONE page. `None` means the kernel fails (`badframe`) before loading
+/// any register, leaving rip at the hop's return address. A later failure
+/// (the FPU state or `uc_stack`) happens after the registers are loaded, and
+/// then the frame's registers are what ptrace shows too.
+fn sigreturn_frame(tid: nix::unistd::Pid, rsp: u64) -> Option<SigreturnFrame> {
+    // struct ucontext: uc_flags (8), uc_link (8), uc_stack (24),
+    // uc_mcontext (struct sigcontext, 256), uc_sigmask (8).
+    const UC_FLAGS: u64 = 0;
     const UC_MCONTEXT: u64 = 8 + 8 + 24;
-    const MCONTEXT_RIP: u64 = 16 * 8;
-    let address = rsp.checked_add(UC_MCONTEXT + MCONTEXT_RIP)?;
-    let mut bytes = [0u8; 8];
-    std::fs::File::open(format!("/proc/{tid}/mem"))
-        .and_then(|mem| mem.read_exact_at(&mut bytes, address))
-        .ok()?;
-    Some(u64::from_ne_bytes(bytes))
+    const SIGCONTEXT_SIZE: usize = 256;
+    const UC_SIGMASK: u64 = UC_MCONTEXT + SIGCONTEXT_SIZE as u64;
+    // struct rt_sigframe: pretcode (8), ucontext (304), siginfo (128).
+    const RT_SIGFRAME_SIZE: u64 = 8 + UC_SIGMASK + 8 + 128;
+    // x86_64 TASK_SIZE_MAX with 4-level paging; a frame above it fails
+    // `access_ok`. (With 5-level paging a frame above 2^47 is judged
+    // unreadable here, which fails closed at H4 unless its rip is SLOT_RET.)
+    const TASK_SIZE_MAX: u64 = (1 << 47) - 4096;
+    let frame = rsp.checked_sub(8)?;
+    if frame.checked_add(RT_SIGFRAME_SIZE)? > TASK_SIZE_MAX {
+        return None;
+    }
+    let read = |offset: u64, bytes: &mut [u8]| -> Option<()> {
+        let local = libc::iovec {
+            iov_base: bytes.as_mut_ptr().cast(),
+            iov_len: bytes.len(),
+        };
+        let remote = libc::iovec {
+            iov_base: rsp.checked_add(offset)? as *mut libc::c_void,
+            iov_len: bytes.len(),
+        };
+        // SAFETY: `local` describes `bytes`, which outlives the call.
+        let copied = unsafe { libc::process_vm_readv(tid.as_raw(), &local, 1, &remote, 1, 0) };
+        (copied == bytes.len() as isize).then_some(())
+    };
+    read(UC_SIGMASK, &mut [0u8; 8])?;
+    read(UC_FLAGS, &mut [0u8; 8])?;
+    let mut sigcontext = [0u8; SIGCONTEXT_SIZE];
+    read(UC_MCONTEXT, &mut sigcontext)?;
+    // struct sigcontext_64 general registers: r8..r15, rdi, rsi, rbp, rbx,
+    // rdx, rax, rcx, rsp (15), rip (16).
+    let register = |index: usize| {
+        u64::from_ne_bytes(
+            sigcontext[index * 8..index * 8 + 8]
+                .try_into()
+                .expect("an 8-byte slice"),
+        )
+    };
+    Some(SigreturnFrame {
+        rip: register(16),
+        rsp: register(15),
+    })
 }
 
 /// The site retirement reason for a guest install.
