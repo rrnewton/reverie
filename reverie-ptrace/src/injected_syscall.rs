@@ -8,6 +8,7 @@
 
 //! Register-frame support for syscall events injected by a binary rewriter.
 
+#[cfg(target_arch = "x86_64")]
 use reverie::Errno;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
@@ -115,6 +116,7 @@ impl InjectedSyscallFrame {
         self.rax = result as u64;
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn copy_to_user_regs(&self, regs: &mut libc::user_regs_struct) {
         regs.r15 = self.r15;
         regs.r14 = self.r14;
@@ -143,6 +145,7 @@ impl InjectedSyscallFrame {
     ///
     /// `trap_rflags` is the native flags value captured by the AOT call bridge
     /// before its provenance checks modify flags.
+    #[cfg(target_arch = "x86_64")]
     pub fn user_regs(&self, trap_rflags: u64) -> libc::user_regs_struct {
         let mut regs = unsafe { core::mem::zeroed::<libc::user_regs_struct>() };
         regs.eflags = trap_rflags;
@@ -150,6 +153,7 @@ impl InjectedSyscallFrame {
         regs
     }
     // TODO-HUMAN-REVIEW(PR-103): Review representable rewritten-register updates.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn validate_user_regs_update(
         current: &libc::user_regs_struct,
         requested: &libc::user_regs_struct,
@@ -172,6 +176,7 @@ impl InjectedSyscallFrame {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn copy_from_user_regs(&mut self, regs: &libc::user_regs_struct) {
         self.r15 = regs.r15;
         self.r14 = regs.r14;
@@ -198,6 +203,7 @@ impl InjectedSyscallFrame {
     // register updates from the in-process generic Guest implementation.
     /// Applies a Tool-requested register update when the e9tool frame can
     /// represent it, rejecting control-flow and segment changes.
+    #[cfg(target_arch = "x86_64")]
     pub fn update_user_regs(
         &mut self,
         requested: &libc::user_regs_struct,
@@ -226,6 +232,7 @@ impl InjectedSyscallFrame {
         flags
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn e9_flags(flags: u64) -> u64 {
         let mut e9 = 0;
         for (native, encoded) in [
@@ -287,6 +294,7 @@ mod tests {
         assert_eq!(frame.r11, 0x246);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn user_register_round_trip_preserves_writable_fields() {
         let mut frame = frame();
@@ -306,6 +314,7 @@ mod tests {
         assert_eq!(frame.flags, InjectedSyscallFrame::FLAGS_CF);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn rejects_register_updates_the_e9_frame_cannot_represent() {
         let frame = frame();
@@ -320,6 +329,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn shared_frame_accepts_stack_pointer_updates_for_e9patch() {
         let mut updated = frame();

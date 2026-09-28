@@ -112,6 +112,7 @@ use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
 
+#[cfg(target_arch = "x86_64")]
 fn validate_liteinst_user_regs_update(
     current: &libc::user_regs_struct,
     requested: &libc::user_regs_struct,
@@ -545,6 +546,7 @@ fn guest_auxv_entry(pid: Pid, key: u64) -> Option<u64> {
 impl InjectedSyscallTrap {
     // TODO-HUMAN-REVIEW(PR-271): Review rewritten-image load-bias and patched-site
     // collision filtering before Tool dispatch.
+    #[cfg(target_arch = "x86_64")]
     fn validates_site_provenance(
         &self,
         pid: Pid,
@@ -783,10 +785,12 @@ fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
 /// The kernel starts the new task at the instruction following the `syscall`,
 /// so the site must still decode as the original instruction stream there.
 fn is_task_creating_syscall(nr: Sysno) -> bool {
-    matches!(
-        nr,
-        Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
-    )
+    match nr {
+        Sysno::clone | Sysno::clone3 => true,
+        #[cfg(target_arch = "x86_64")]
+        Sysno::fork | Sysno::vfork => true,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1011,6 +1015,7 @@ fn callback_observation_decision(
 enum LiteinstTrap {
     HandshakeBegin,
     HandshakeReady,
+    #[cfg(target_arch = "x86_64")]
     Syscall(usize),
     Invalid,
 }
@@ -2199,6 +2204,7 @@ impl<L: Tool> TracedTask<L> {
         self.write_injected_syscall_frame(task, address, &frame)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn read_guest_registers(&self, task: &Stopped) -> Result<libc::user_regs_struct, TraceError> {
         let mut regs = task.getregs()?;
         if let Some(address) = self.injected_syscall_frame {
@@ -2208,6 +2214,7 @@ impl<L: Tool> TracedTask<L> {
         Ok(regs)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn write_guest_registers(
         &self,
         task: &Stopped,
@@ -2225,6 +2232,21 @@ impl<L: Tool> TracedTask<L> {
         } else {
             task.setregs(regs)
         }
+    }
+
+    // Only the x86_64 rewritten-trap path sets `injected_syscall_frame`.
+    #[cfg(not(target_arch = "x86_64"))]
+    fn read_guest_registers(&self, task: &Stopped) -> Result<libc::user_regs_struct, TraceError> {
+        task.getregs()
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn write_guest_registers(
+        &self,
+        task: &Stopped,
+        regs: &libc::user_regs_struct,
+    ) -> Result<(), TraceError> {
+        task.setregs(regs)
     }
 
     fn get_syscall(&self, task: &Stopped) -> Result<Syscall, TraceError> {
@@ -3049,6 +3071,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     // TODO-HUMAN-REVIEW(PR-103): Review rewritten rt_sigreturn tail execution.
+    #[cfg(target_arch = "x86_64")]
     async fn resume_injected_rt_sigreturn(
         &mut self,
         task: Stopped,
@@ -3068,6 +3091,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
+    #[cfg(target_arch = "x86_64")]
     async fn handle_injected_syscall(
         &mut self,
         task: Stopped,
@@ -3167,6 +3191,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn validate_liteinst_handshake(
         &self,
         task: &Stopped,
@@ -3286,6 +3311,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn classify_liteinst_trap(
         &mut self,
         task: &Stopped,
@@ -3361,6 +3387,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         Some(LiteinstTrap::Syscall(frame_address))
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    fn classify_liteinst_trap(
+        &mut self,
+        _task: &Stopped,
+        _regs: &libc::user_regs_struct,
+    ) -> Option<LiteinstTrap> {
+        None
+    }
+
     async fn handle_sigtrap(
         &mut self,
         mut task: Stopped,
@@ -3421,6 +3456,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.resume_stopped(task, None)?.next_state().await?,
                 ));
             }
+            #[cfg(target_arch = "x86_64")]
             Some(LiteinstTrap::Syscall(frame_address)) => {
                 if let Some(stats) = self
                     .global_state
@@ -3447,13 +3483,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     "reject unexpected LiteInst activation trap",
                     format!(
                         "received SIGTRAP at RIP {:#x} with RAX {:#x} that matched neither the entry guard nor a validated runtime handshake (phase {phase:?})",
-                        regs.ip(), regs.rax
+                        regs.ip(), regs.ret()
                     ),
                 ),
             );
             return Err(Errno::EPROTO.into());
         }
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
+        #[cfg(target_arch = "x86_64")]
         if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
             && regs.rax == trap.marker
         {
@@ -8420,6 +8457,7 @@ mod tests {
         assert_eq!(state.active_hooks.len(), 1);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame() {
         let current = libc::user_regs_struct {
