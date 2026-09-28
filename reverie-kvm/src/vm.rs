@@ -10867,19 +10867,29 @@ mod tests {
                     .user()
                     .retain_translated_range(PARK, 4)
                     .unwrap();
+                let case_started = Instant::now();
                 let waiter = std::thread::spawn(move || {
                     let timeout = libc::timespec {
                         tv_sec: 5,
                         tv_nsec: 0,
                     };
-                    host_futex(
+                    let wait_started = case_started.elapsed();
+                    let result = host_futex(
                         waiting.address(),
                         libc::FUTEX_WAIT,
                         0,
                         std::ptr::from_ref(&timeout) as usize,
                         0,
                         0,
-                    )
+                    );
+                    // errno belongs to this host thread. Capture it before
+                    // timing, formatting, or any other operation can replace it.
+                    let errno = if result == -1 {
+                        std::io::Error::last_os_error().raw_os_error()
+                    } else {
+                        None
+                    };
+                    (result, errno, wait_started, case_started.elapsed())
                 });
                 let deadline = Instant::now() + Duration::from_secs(2);
                 loop {
@@ -10898,8 +10908,10 @@ mod tests {
                     assert!(Instant::now() < deadline, "clear-TID waiter was not queued");
                     std::thread::yield_now();
                 }
+                let requeued_at = case_started.elapsed();
                 // Requeue's return of one establishes the actual kernel waiter
                 // on WORD before either production clear function is invoked.
+                let clear_started = case_started.elapsed();
                 if registered_worker {
                     executor.set_clear_child_tid(Some(WORD));
                     backend.clear_registered_worker_tid_before_exit(&mut executor);
@@ -10907,6 +10919,7 @@ mod tests {
                 } else {
                     clear_tid_and_wake(&mut backend.memory, Some(WORD));
                 }
+                let clear_finished = case_started.elapsed();
                 let mut bytes = [0; 4];
                 backend.memory.read_raw(WORD, &mut bytes).unwrap();
                 let stored = policy != 2 && (!registered_worker || policy == 0);
@@ -10930,10 +10943,26 @@ mod tests {
                         1
                     );
                 }
+                let wait_result = waiter.join().unwrap();
+                let joined_at = case_started.elapsed();
+                eprintln!(
+                    "clear-TID registered_worker={registered_worker} policy={policy} \
+                     parking={:#x} word={:#x} result={} errno={:?} \
+                     wait_started={:?} requeued_at={requeued_at:?} \
+                     clear_started={clear_started:?} clear_finished={clear_finished:?} \
+                     wait_finished={:?} joined_at={joined_at:?}",
+                    parking.address(),
+                    word.address(),
+                    wait_result.0,
+                    wait_result.1,
+                    wait_result.2,
+                    wait_result.3,
+                );
                 assert_eq!(
-                    waiter.join().unwrap(),
-                    0,
-                    "expected an actual wake, never a timeout"
+                    wait_result.0, 0,
+                    "expected an actual wake, never a timeout; \
+                     registered_worker={registered_worker} policy={policy} errno={:?}",
+                    wait_result.1,
                 );
             }
             // An unaligned word crosses writable and readonly pages. Futex
