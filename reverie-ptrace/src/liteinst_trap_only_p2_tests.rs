@@ -210,7 +210,16 @@ fn notify_parent(pid: Pid) {
 }
 
 /// Whether `signal` has arrived at thread `tid`: pending, or, for SIGKILL,
-/// already acted on (the thread is a zombie or gone).
+/// already acted on.
+///
+/// A pending SIGKILL is not enough: the killed thread leaves its ptrace stop
+/// and, with PTRACE_O_TRACEEXIT, stops again at PTRACE_EVENT_EXIT (measured
+/// on this host's kernel), with the entry registers. A ptrace request the
+/// tracer makes in between fails with ESRCH, one made after it succeeds, so
+/// the parked call would race the thread's exit under either backend. The
+/// kill has taken effect once the thread is a zombie or gone, or is in a
+/// tracing stop again with its private SIGKILL dequeued (the process-wide
+/// bit stays set until the process is reaped).
 fn signal_arrived(tid: Pid, signal: i32) -> bool {
     let state = proc_status_field(tid, "State:");
     if state
@@ -220,11 +229,17 @@ fn signal_arrived(tid: Pid, signal: i32) -> bool {
         return signal == libc::SIGKILL;
     }
     let bit = 1u64 << (signal - 1);
-    ["SigPnd:", "ShdPnd:"].iter().any(|field| {
+    let pending = |field: &str| {
         proc_status_field(tid, field)
             .and_then(|mask| u64::from_str_radix(&mask, 16).ok())
             .is_some_and(|mask| mask & bit != 0)
-    })
+    };
+    if signal == libc::SIGKILL {
+        return state.is_some_and(|state| state.starts_with('t'))
+            && pending("ShdPnd:")
+            && !pending("SigPnd:");
+    }
+    pending("SigPnd:") || pending("ShdPnd:")
 }
 
 /// Notifies the parent of the parked `tid` (of process `pid`), then waits,
