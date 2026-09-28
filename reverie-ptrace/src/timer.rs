@@ -21,15 +21,19 @@
 //! counter because single stepping cannot move the guest backward. If another
 //! Tool-observable stop arrives first with the delivery point already reached,
 //! that stop cancels the event and the overshoot is recorded there. A stop
-//! that `Timer::disregard_stop()` hands back to the event does not cancel it;
-//! if it found the delivery point reached, the overshoot is recorded only if
-//! the thread exits before anything else decides the event. A disregarded
+//! that `Timer::disregard_stop()` hands back to the event does not cancel it
+//! and records nothing; whatever decides the event later finds the delivery
+//! point reached too, and the disregarded stop's own finding is recorded
+//! only if the thread exits before anything decides the event. A disregarded
 //! stop that cannot hand the event back (one within
 //! `PmuConfig::keep_margin()` of the target without overflow records, or one
 //! that finds the steps' notification lost) cancels it and records the
-//! overshoot as a Tool-observable stop does, and `Timer::retire()` records
-//! one if the guest has reached the delivery point; either way an event is
-//! recorded at most once. An event still undecided when its thread exits
+//! overshoot as a Tool-observable stop does. `Timer::retire()` records one
+//! only for an event that no stop has decided (still Scheduled) whose
+//! delivery point the guest has reached; an event already delivered, or
+//! cancelled by a stop, is not recorded by it. Each of these records only
+//! an undecided event and leaves it decided, so a single event is recorded
+//! at most once. An event still undecided when its thread exits
 //! (`Timer::settle_at_exit()`) is recorded if the guest reached its delivery
 //! point. An event that ends with a non-leader exec without a stop having
 //! found its delivery point reached, or that is overtaken by a stop of the
@@ -697,8 +701,11 @@ impl Timer {
 
     /// Cancels the active event, and ends the programming, where what
     /// [`Timer::disregard_stop`] or [`Timer::take_notification`] handed on
-    /// cannot be finished. A precise event whose delivery point the guest has
-    /// reached is recorded as a skid overshoot, as a stop that cancels it is.
+    /// cannot be finished. A precise event that no stop has decided yet, and
+    /// whose delivery point the guest has reached, is recorded as a skid
+    /// overshoot, as a stop that cancels it is. An event already delivered,
+    /// or already decided by a stop, is not recorded again, whatever the
+    /// guest's clock.
     pub(crate) fn retire(&mut self) -> Result<(), Errno> {
         match self.inner_mut_noinit() {
             Some(timer) => timer.retire(),
@@ -1866,8 +1873,9 @@ impl TimerImpl {
     /// a stop the Tool observes cancels it, and records its delivery point as
     /// a skid overshoot if the stop found it reached. The status is set to
     /// `Cancelled` outright rather than left at the stop's tick, which leaves
-    /// an event that was Scheduled Armed, so that a later
-    /// [`TimerImpl::retire`] of the same event does not record it again.
+    /// an event that was Scheduled Armed, as a stop that decided it; a later
+    /// [`TimerImpl::retire`], which records only a Scheduled event, does not
+    /// record it again either way.
     fn cancel_at_disregarded_stop(&mut self, missed: Option<MissedTarget>) {
         Self::commit_missed(missed);
         self.timer_status = EventStatus::Cancelled;
@@ -1939,7 +1947,13 @@ impl TimerImpl {
     }
 
     fn retire(&mut self) -> Result<(), Errno> {
-        if self.timer_status != EventStatus::Cancelled
+        // Only an event that no stop has decided is recorded here, as at the
+        // thread's exit. An Armed one was decided: delivered (its stale
+        // target stays in `event` until the next request), or cancelled by
+        // a stop that recorded any overshoot itself, or being stepped to its
+        // target, which the steps have not passed. A Cancelled one was
+        // decided too.
+        if self.timer_status == EventStatus::Scheduled
             && self.initial_command == InitialCommand::Ordinary
             && let ActiveEvent::Precise {
                 clock_target,
