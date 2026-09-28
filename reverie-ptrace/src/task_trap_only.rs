@@ -718,8 +718,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             HopOutcome::Other(Wait::Stopped(parent, Event::NewChild(op, child))) => {
                 let ret = child.pid().as_raw() as i64;
+                // Restore the site's view in the parent as ptrace's exact
+                // inject leaves it (rip S+2, the arguments, orig_rax, rcx and
+                // r11) except rax, which the kernel writes when the call
+                // returns. Passing the view as the parent context would also
+                // write the child's id into rax, and a vfork parent, still in
+                // the call at its vfork-done stop after `handle_new_task`'s
+                // step, would show that id where ptrace shows the entry's
+                // -ENOSYS. The child still gets the view as its context.
+                super::restore_context(&parent, view, None, false)?;
                 let _ = self
-                    .dispatch_new_task(op, parent, child, Some(view), None)
+                    .dispatch_new_task(op, parent, child, None, Some(view))
                     .await?;
                 Ok(Ok(ret))
             }

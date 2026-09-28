@@ -1167,7 +1167,7 @@ static void mode_unknown(void) {
   } cases[] = {
       {"nr500", 500, 0},
       {"nr-1", -1, 0},
-      {"gap335", 335, 0},
+      {"gap337", 337, 0},
       {"high-getpid", 0x100000027L, 1},
       {"high500", 0x1000001f4L, 0},
   };
