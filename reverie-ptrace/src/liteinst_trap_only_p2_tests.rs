@@ -391,8 +391,18 @@ fn p2_guest() -> &'static std::path::Path {
             .parent()
             .expect("the test binary has a directory")
             .to_path_buf();
-        let output = directory.join("reverie-trap-only-p2");
-        let staging = directory.join(format!("reverie-trap-only-p2.{}.tmp", std::process::id()));
+        // Every test binary in this directory shares it, and another checkout
+        // or commit may build into the same target: key the published name
+        // by the source (FNV-1a, fixed width, so argv length never changes).
+        let text = std::fs::read(&source).expect("read the trap-only P2 fixture source");
+        let hash = text.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        let output = directory.join(format!("reverie-trap-only-p2-{hash:016x}"));
+        let staging = directory.join(format!(
+            "reverie-trap-only-p2-{hash:016x}.{}.tmp",
+            std::process::id()
+        ));
         // -no-pie: the fixture's text addresses are the same in every run, so
         // the two backends' reports and register observations compare.
         let status = std::process::Command::new("cc")
@@ -403,6 +413,14 @@ fn p2_guest() -> &'static std::path::Path {
             .status()
             .expect("invoke cc for the trap-only P2 fixture");
         assert!(status.success(), "compile {}", source.display());
+        // Write the text back before any guest maps it: T5 reads the site
+        // page's smaps, where a page-cache page not yet written back counts
+        // as dirty. btrfs flushes a file renamed over an existing one, but not
+        // one published under a new name, so without this the first run after
+        // a source change saw Shared_Dirty where the others see clean pages.
+        std::fs::File::open(&staging)
+            .and_then(|file| file.sync_all())
+            .expect("write back the trap-only P2 fixture");
         std::fs::rename(&staging, &output).expect("publish the trap-only P2 fixture");
         output
     });
@@ -1172,6 +1190,20 @@ async fn trap_only_p2_t6a_fork_family_through_a_patched_site() {
     );
     assert_eq!(ptrace_tail.counts.vfork_stops(), 1);
     assert_eq!(ptrace_tail.counts.clone_stops(), 1);
+    // The tail vfork parent is still inside the call at its vfork-done stop,
+    // where the run loop records its rax: the entry's -ENOSYS under ptrace.
+    // The trap-only tail hop's new-child restore must leave it there, not
+    // the child's id (the stop comparison above checks equality; this checks
+    // that the compared stop exists and carries the value).
+    for run in [&ptrace_tail, &trap_only_tail] {
+        let vfork_done: Vec<&String> = run
+            .stops
+            .values()
+            .flatten()
+            .filter(|stop| stop.starts_with("VforkDone"))
+            .collect();
+        assert_eq!(vfork_done, ["VforkDone rax=-38"], "{:#?}", run.stops);
+    }
 }
 
 fn clone_run(run: &P2Run) -> P2Run {
@@ -2136,12 +2168,43 @@ async fn trap_only_p2_rt_sigreturn_with_an_unreadable_frame() {
     );
 }
 
+/// rt_sigreturn through a warmed generic site at a frame on a PROT_NONE page
+/// whose saved rip is SLOT_RET and whose saved rsp is the frame's own rsp.
+/// The kernel's user copies fail, so it loads no register, returns 0 at the
+/// slot's return and forces SIGSEGV; H4 must rewrite rip to S+2, as under
+/// ptrace. A frame read through `/proc/<tid>/mem` (FOLL_FORCE) sees rip and
+/// rsp both matching and keeps rip at SLOT_RET, where the guest takes the
+/// SIGSEGV instead.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_rt_sigreturn_from_a_prot_none_frame_naming_the_slot_return() {
+    let [ptrace, trap_only, _, trap_only_tail] =
+        compare_mode_with_internal("sigreturn_prot_none_frame", &["seccomp 15"]).await;
+    for run in [&trap_only, &trap_only_tail] {
+        assert!(
+            run.lifecycle
+                .iter()
+                .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(" nr=15")),
+            "{:#?}",
+            run.lifecycle
+        );
+    }
+    eprintln!("prot-none-frame ptrace report:\n{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "prot-none-frame SIGSEGV code=128 rip-next=1 rip-is-slot-ret=0 rax=0 bytes after 0f 05",
+            "prot-none-frame getpid after=1",
+        ],
+    );
+}
+
 /// x86_64 335 (uretprobe) and 336 (uprobe) through a warmed generic site.
 /// Seccomp passes both through without running the filter (upstream design),
-/// so the slot's syscall produces no TAG_SLOT stop and the hop fails closed
-/// with `TrapOnlyHopUnexpectedStop` where plain ptrace runs them (SIGILL for
-/// 335, -ENXIO for 336). On a kernel without them both backends return
-/// -ENOSYS and must be equal.
+/// so the slot's syscall would produce no TAG_SLOT stop. Plain ptrace runs
+/// them (SIGILL for 335, -ENXIO for 336); trap-only fails closed at H0 with
+/// `TrapOnlySeccompBypassingNumber`, by number, before any hop or Tool
+/// dispatch, whether or not the syscalls crate knows the number. On a kernel
+/// without them both backends return -ENOSYS, but trap-only still refuses.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_seccomp_bypassing_probe_numbers_fail_closed() {
     for (mode, nr, probe_line) in [
@@ -2152,17 +2215,24 @@ async fn trap_only_p2_seccomp_bypassing_probe_numbers_fail_closed() {
         eprintln!("{mode} ptrace report:\n{}", ptrace.report);
         let enosys = format!("probe nr={nr} ret=-38");
         if ptrace.report.lines().any(|line| line == enosys) {
-            eprintln!("{mode}: this kernel lacks syscall {nr}; comparing as an unknown number");
-            let trap_only = run_p2(mode, Some(SitePatching::On), false).await;
-            assert_equal_runs_with_internal(&trap_only, &ptrace, &[&format!("seccomp {nr}")]);
-            continue;
+            eprintln!("{mode}: this kernel lacks syscall {nr}; trap-only refuses it anyway");
+        } else {
+            assert_report_has(&ptrace, &[probe_line]);
         }
-        assert_report_has(&ptrace, &[probe_line]);
         let error = run_p2_with(mode, Some(SitePatching::On), false, false)
             .await
-            .expect_err("a seccomp-bypassing number through the hop must end the run");
+            .expect_err("a seccomp-bypassing number at a patched site must end the run");
         let text = format!("{error:#} {error:?}");
-        assert!(text.contains("TrapOnlyHopUnexpectedStop"), "{mode}: {text}");
+        assert!(
+            text.contains("TrapOnlySeccompBypassingNumber: site 0x"),
+            "{mode}: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                " carries syscall {nr}, which seccomp does not filter"
+            )),
+            "{mode}: {text}"
+        );
     }
 }
 

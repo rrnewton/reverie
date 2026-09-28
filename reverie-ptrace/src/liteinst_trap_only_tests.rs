@@ -303,7 +303,9 @@ fn assert_baseline_is_not_vacuous(
             "exec".to_owned(),
             format!("new-child Fork {fork}"),
             format!("new-child Vfork {vfork}"),
-            "VforkDone".to_owned(),
+            // The parent is still inside the tail-injected vfork, with the
+            // entry's -ENOSYS in rax.
+            "VforkDone rax=-38".to_owned(),
             "Signal(SIGUSR1)".to_owned(),
         ]
     };
