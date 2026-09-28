@@ -101,12 +101,25 @@ fn signal_dequeue_readiness_error_retains_complete_removal() {
         executor.queue_process_alarm_signal(event),
         reverie::ProcessAlarmSignalOutcome::Accepted(_)
     ));
-    executor.state.files.insert(
-        fd,
-        std::fs::OpenOptions::new()
+    // Delivery refreshes process-owned carriers independently of the guest
+    // descriptor table. Fail the actual readiness read after removal commits.
+    let broken_carrier = crate::signal::SignalFdCarrier::pin_eventfd(
+        &std::fs::OpenOptions::new()
             .write(true)
             .open("/dev/null")
             .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        executor
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .insert(fd, broken_carrier)
+            .is_some(),
+        "the negative control must replace the installed readiness carrier"
     );
     assert_eq!(
         executor.take_pending_signal_for_delivery(),
