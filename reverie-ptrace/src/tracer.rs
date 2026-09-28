@@ -4622,6 +4622,24 @@ where
     spawn_fn_with_config::<L, F>(fun, Default::default(), true).await
 }
 
+/// Ends a guest forked by `spawn_fn_with_config` once its function returns.
+///
+/// `std::process::exit` is unusable here: its runtime cleanup unregisters the
+/// main thread's stack-overflow guard under std's thread-registry lock
+/// (`stack_overflow::thread_info::LOCK`), which every thread start and exit
+/// also takes. The child inherits that lock held whenever another thread of
+/// the multi-threaded parent was starting or exiting at the `fork`, and then
+/// sleeps on it forever at exit. Buffered output is flushed first instead.
+fn exit_forked_guest(code: i32) -> ! {
+    let _ = std::io::stdout().flush();
+    // SAFETY: flushes every C stdio stream (glibc resets their locks in a fork
+    // child) and exits without running the parent's runtime cleanup.
+    unsafe {
+        libc::fflush(std::ptr::null_mut());
+        libc::_exit(code)
+    }
+}
+
 /// Spawn a function with instrumentation rather than a subprocess indicated with
 /// a Command. This still creates a fresh child process and runs it under ptrace.
 /// However, the child process is a fork of the current process, and is used to
@@ -4673,17 +4691,14 @@ where
             seccomp_filter.load().expect("Failed to set seccomp filter");
 
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fun)) {
-                Ok(()) => {
-                    std::io::stdout().flush()?;
-                    std::process::exit(0);
-                }
+                Ok(()) => exit_forked_guest(0),
                 Err(e) => {
-                    std::io::stdout().flush()?;
+                    let _ = std::io::stdout().flush();
                     let _ = nix::unistd::write(
                         unsafe { BorrowedFd::borrow_raw(2) },
                         format!("Forked Rust process panicked, cause: {:?}", e).as_ref(),
                     );
-                    std::process::exit(1);
+                    exit_forked_guest(1)
                 }
             };
         }
