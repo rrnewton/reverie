@@ -239,14 +239,34 @@ fn guest() {
         fds[0]
     };
 
-    let stopper = std::thread::spawn(|| {
+    extern "C" fn stop_repeatedly(_: *mut libc::c_void) -> *mut libc::c_void {
         while !STOP.load(Ordering::Relaxed) {
             // SAFETY: raise has no memory-safety preconditions. SIGTSTP keeps
             // its default (stop) disposition, so delivering it initiates a
             // group stop that reaches the marker thread.
             unsafe { libc::raise(libc::SIGTSTP) };
         }
-    });
+        std::ptr::null_mut()
+    }
+    // The guest is a fork of the multithreaded test process, so a lock another
+    // test thread held at the fork stays held here forever. `std::thread`
+    // takes std's stack-overflow `thread_info` lock when the thread starts and
+    // again when it exits, and a guest that inherited it held hangs in
+    // `join`. A raw pthread takes no std lock.
+    let mut stopper: libc::pthread_t = 0;
+    // SAFETY: stop_repeatedly has the pthread start-routine signature and
+    // captures nothing; stopper is written before it is joined below.
+    assert_eq!(
+        unsafe {
+            libc::pthread_create(
+                &mut stopper,
+                std::ptr::null(),
+                stop_repeatedly,
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
 
     let mut outcome = Outcome {
         markers: MARKERS,
@@ -264,7 +284,11 @@ fn guest() {
         outcome.bytes += drain(read_fd);
     }
     STOP.store(true, Ordering::Relaxed);
-    stopper.join().unwrap();
+    // SAFETY: stopper is a joinable thread created above and joined once.
+    assert_eq!(
+        unsafe { libc::pthread_join(stopper, std::ptr::null_mut()) },
+        0
+    );
     outcome.bytes += drain(read_fd);
     let others: Vec<String> = outcome.other_returns.iter().map(i64::to_string).collect();
     println!(
