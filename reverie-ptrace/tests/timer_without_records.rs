@@ -1,0 +1,244 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! A precise timer's overflow records tell a stop whether the kernel has lost
+//! the notification of a counter past its period. Without them, on a kernel
+//! that is or may be `PREEMPT_RT` or where they cannot be mapped, a stop that
+//! Reverie consumes without a Tool callback cannot tell a lost notification
+//! from a pending one, nor a pending one that will arrive before the target
+//! from one that will arrive after it. Such a stop past the period therefore
+//! cancels the event, as a stop the Tool observes does, so that the event
+//! never fires at a clock that depends on when the host handled the
+//! interrupt. A stop before the period still leaves the event as it was.
+//!
+//! This binary maps no overflow records for any timer.
+
+#![cfg(target_arch = "x86_64")]
+
+use std::sync::Mutex;
+
+use reverie::Error;
+use reverie::GlobalTool;
+use reverie::Guest;
+use reverie::Pid;
+use reverie::Subscription;
+use reverie::TimerSchedule;
+use reverie::Tool;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallInfo;
+use reverie::syscalls::Sysno;
+use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::check_fn_with_config;
+use reverie_ptrace::testing::disable_timer_overflow_records;
+use reverie_ptrace::testing::do_branches;
+
+/// Above the largest skid margin in Reverie's PMU table, so the request
+/// programs a real PMU notification on every host in the table.
+const PERF_RCBS: u64 = 30_000;
+
+/// The clock from the request to each timer event.
+#[derive(Debug, Default)]
+struct TimerEvents(Mutex<Vec<u64>>);
+
+#[reverie::global_tool]
+impl GlobalTool for TimerEvents {
+    type Request = u64;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, clock: u64) {
+        self.0.lock().unwrap().push(clock);
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct PreciseTimerTool;
+
+#[reverie::tool]
+impl Tool for PreciseTimerTool {
+    type GlobalState = TimerEvents;
+    /// The clock at the request.
+    type ThreadState = u64;
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        let mut s = Subscription::none();
+        s.syscalls([Sysno::clock_getres]);
+        s
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::clock_getres => {
+                *guest.thread_state_mut() = guest.read_clock().unwrap();
+                guest
+                    .set_timer_precise(TimerSchedule::Rcbs(PERF_RCBS))
+                    .unwrap();
+                Ok(0)
+            }
+            _ => guest.tail_inject(syscall).await,
+        }
+    }
+
+    async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
+        let clock = guest.read_clock().unwrap() - *guest.thread_state();
+        guest.send_rpc(clock).await;
+    }
+}
+
+/// The skid witness counter is process global; each case that reads it owns
+/// it while it runs.
+static WITNESS: Mutex<()> = Mutex::new(());
+
+/// Runs `guest` under the Tool, with no overflow records, and returns the
+/// clock from the request to each timer event and the skid witnesses.
+fn run(guest: impl FnOnce() + Send + 'static) -> (Vec<u64>, u64) {
+    disable_timer_overflow_records();
+    let _owner = WITNESS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = reverie::take_skid_overshoot_count();
+    let events = check_fn_with_config::<PreciseTimerTool, _>(guest, (), true);
+    (
+        events.0.into_inner().unwrap(),
+        reverie::take_skid_overshoot_count(),
+    )
+}
+
+/// The `clock_getres` at which the Tool requests the timer, with no
+/// conditional branch between it and the caller.
+fn request() {
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") Sysno::clock_getres as usize => _,
+            in("rdi") 0usize,
+            in("rsi") 0usize,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+}
+
+/// Blocks or unblocks the timer's signal with a raw `rt_sigprocmask`, which
+/// the Tool does not observe.
+fn mask_timer_signal(how: libc::c_int) {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGSTKFLT);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                how,
+                &set as *const libc::sigset_t,
+                std::ptr::null_mut::<libc::sigset_t>(),
+                std::mem::size_of::<libc::c_ulong>(),
+            ),
+            0
+        );
+    }
+}
+
+/// Makes the request, then runs `rounds` rounds of a loop with an `int3` and
+/// one conditional branch each.
+fn int3_loop(rounds: u64) {
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "2:",
+            "int3",
+            "dec {rounds}",
+            "jnz 2b",
+            rounds = inout(reg) rounds => _,
+            inlateout("rax") Sysno::clock_getres as usize => _,
+            inlateout("rdi") 0usize => _,
+            inlateout("rsi") 0usize => _,
+            out("rcx") _,
+            out("r11") _,
+        )
+    }
+}
+
+// A guest `int3` that Reverie consumes one branch after the request, far
+// before the period, leaves the event as it was, and it fires at its target.
+#[test]
+fn a_trap_before_the_period_does_not_cancel_the_timer() {
+    ret_without_perf!();
+    let (events, _) = run(|| {
+        request();
+        unsafe { core::arch::asm!("int3") };
+        do_branches(2 * PERF_RCBS);
+    });
+    assert_eq!(events, [PERF_RCBS], "the timer must fire at its target");
+}
+
+// The guest holds the notification back until after a trap past the target,
+// the limiting case of an interrupt so late that the trap comes first and the
+// notification only after the target. With records the notification is known
+// to be pending and fires the event late, with a skid witness. Without them
+// the trap cancels the event, which is witnessed as overtaken, and the
+// notification finds it cancelled.
+#[test]
+fn a_trap_past_the_target_cancels_the_timer() {
+    ret_without_perf!();
+    let (events, witnesses) = run(|| {
+        mask_timer_signal(libc::SIG_BLOCK);
+        request();
+        do_branches(2 * PERF_RCBS);
+        unsafe { core::arch::asm!("int3") };
+        mask_timer_signal(libc::SIG_UNBLOCK);
+        do_branches(PERF_RCBS);
+    });
+    assert_eq!(
+        events,
+        Vec::<u64>::new(),
+        "the cancelled timer must not fire"
+    );
+    assert_eq!(witnesses, 1, "the trap overtook the due event");
+}
+
+// The same with the trap past the period but before the target. The
+// notification would still be in time, but without records the trap cannot
+// tell, so it cancels the event, which was not yet due.
+#[test]
+fn a_trap_past_the_period_cancels_the_timer() {
+    ret_without_perf!();
+    let (events, witnesses) = run(|| {
+        mask_timer_signal(libc::SIG_BLOCK);
+        request();
+        do_branches(PERF_RCBS - 2);
+        unsafe { core::arch::asm!("int3") };
+        mask_timer_signal(libc::SIG_UNBLOCK);
+        do_branches(PERF_RCBS);
+    });
+    assert_eq!(
+        events,
+        Vec::<u64>::new(),
+        "the cancelled timer must not fire"
+    );
+    assert_eq!(witnesses, 0, "the event was not due at the trap");
+}
+
+// The guest traps in every round of a loop that runs across the target, where
+// Linux can lose the notification (see `TimerImpl::notification_lost`). The
+// event fires at its target if its notification comes before the first trap
+// past the period, and not at all otherwise; never at another clock.
+#[test]
+fn the_timer_fires_at_its_target_or_not_in_a_loop_that_traps_in_every_round() {
+    ret_without_perf!();
+    let (events, _) = run(|| int3_loop(2 * PERF_RCBS));
+    assert!(
+        events.is_empty() || events == [PERF_RCBS],
+        "the timer must fire at its target or not at all: {events:?}"
+    );
+}
