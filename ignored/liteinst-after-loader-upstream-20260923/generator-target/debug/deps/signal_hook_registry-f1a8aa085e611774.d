@@ -1,0 +1,9 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/signal_hook_registry-f1a8aa085e611774.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/half_lock.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/vec_map.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libsignal_hook_registry-f1a8aa085e611774.rlib: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/half_lock.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/vec_map.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libsignal_hook_registry-f1a8aa085e611774.rmeta: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/half_lock.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/vec_map.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/half_lock.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/src/vec_map.rs:

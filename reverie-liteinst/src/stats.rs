@@ -51,6 +51,7 @@ pub struct LiteinstBackendStatsSnapshot {
     patch_shapes: PatchShapeStats,
     patch_decisions: CounterSnapshot<LiteinstPatchDecision>,
     dispatch_paths: CounterSnapshot<LiteinstDispatchPath>,
+    deoptimized_fallback_hits: u64,
 }
 
 impl LiteinstBackendStatsSnapshot {
@@ -75,6 +76,14 @@ impl LiteinstBackendStatsSnapshot {
     /// Dispatch-path counts in deterministic enum order.
     pub const fn dispatch_paths(&self) -> &CounterSnapshot<LiteinstDispatchPath> {
         &self.dispatch_paths
+    }
+
+    /// Formerly patched sites serviced by retained ptrace dispatch.
+    ///
+    /// This is also included in `UnpatchableOrOtherFallback` to preserve the
+    /// existing exhaustive dispatch-path enum and serialized wire names.
+    pub const fn deoptimized_fallback_hits(&self) -> u64 {
+        self.deoptimized_fallback_hits
     }
 
     fn decision_count(&self, decision: LiteinstPatchDecision) -> u64 {
@@ -146,6 +155,7 @@ impl LiteinstBackendStatsSource {
                     (LiteinstPatchDecision::OtherFallback, decisions[3]),
                 ]),
                 dispatch_paths,
+                deoptimized_fallback_hits: stats.deoptimized_fallback_hits(),
             },
         }
     }
@@ -182,6 +192,11 @@ impl LiteinstBackendStatsSource {
     /// Returns dispatch-path counts keyed by the shared exhaustive value.
     pub const fn dispatch_path_counts(&self) -> &CounterSnapshot<LiteinstDispatchPath> {
         self.snapshot.dispatch_paths()
+    }
+
+    /// Returns formerly patched sites serviced by retained ptrace dispatch.
+    pub const fn deoptimized_fallback_hits(&self) -> u64 {
+        self.snapshot.deoptimized_fallback_hits()
     }
 
     /// Returns candidates with a decoded instruction shape.
@@ -498,6 +513,7 @@ impl LiteinstStatsGlobal {
                     (LiteinstPatchDecision::OtherFallback, decisions[3]),
                 ]),
                 dispatch_paths: CounterSnapshot::new(paths),
+                deoptimized_fallback_hits: 0,
             },
         }
     }
@@ -552,6 +568,7 @@ mod tests {
                     (LiteinstDispatchPath::PtraceInstallation, 1),
                     (LiteinstDispatchPath::DirectHook, 9),
                 ]),
+                deoptimized_fallback_hits: 0,
             },
         };
 
@@ -560,6 +577,8 @@ mod tests {
         assert!(rendered.contains("distinct_rips_patched=1"));
         assert!(rendered.contains("paths[first_site_seccomp=1"));
         assert!(rendered.contains("direct_hook=9"));
+        assert!(!rendered.contains("deoptimized_fallback="));
+        assert_eq!(source.deoptimized_fallback_hits(), 0);
         assert!(!rendered.contains("0x7fff"));
         assert!(!rendered.contains("pid="));
         assert!(!rendered.contains("time="));
@@ -630,6 +649,156 @@ mod tests {
                 bincode::serde::encode_to_vec(path.as_str(), bincode::config::legacy()).unwrap();
             assert_eq!(encoded_path, encoded_name, "{path}");
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    enum LegacyDispatchPath {
+        FirstSiteSeccomp,
+        PtraceInstallation,
+        InGuestSigsys,
+        InGuestNestedSigsys,
+        InGuestPhysicalSigsys,
+        FallbackCompletionSigsys,
+        CachelineStraddlerFallback,
+        UnpatchableOrOtherFallback,
+        DirectHook,
+        FallbackRefusal,
+    }
+
+    impl LegacyDispatchPath {
+        const ALL: [Self; 10] = [
+            Self::FirstSiteSeccomp,
+            Self::PtraceInstallation,
+            Self::InGuestSigsys,
+            Self::InGuestNestedSigsys,
+            Self::InGuestPhysicalSigsys,
+            Self::FallbackCompletionSigsys,
+            Self::CachelineStraddlerFallback,
+            Self::UnpatchableOrOtherFallback,
+            Self::DirectHook,
+            Self::FallbackRefusal,
+        ];
+
+        const fn as_str(self) -> &'static str {
+            match self {
+                Self::FirstSiteSeccomp => "first_site_seccomp",
+                Self::PtraceInstallation => "ptrace_installation",
+                Self::InGuestSigsys => "in_guest_sigsys",
+                Self::InGuestNestedSigsys => "in_guest_nested_sigsys",
+                Self::InGuestPhysicalSigsys => "in_guest_physical_sigsys",
+                Self::FallbackCompletionSigsys => "fallback_completion_sigsys",
+                Self::CachelineStraddlerFallback => "cacheline_straddler",
+                Self::UnpatchableOrOtherFallback => "unpatchable_or_other",
+                Self::DirectHook => "direct_hook",
+                Self::FallbackRefusal => "fallback_refusal",
+            }
+        }
+    }
+
+    impl Serialize for LegacyDispatchPath {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_str())
+        }
+    }
+
+    impl<'de> Deserialize<'de> for LegacyDispatchPath {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let name = String::deserialize(deserializer)?;
+            match name.as_str() {
+                "first_site_seccomp" => Ok(Self::FirstSiteSeccomp),
+                "ptrace_installation" => Ok(Self::PtraceInstallation),
+                "in_guest_sigsys" => Ok(Self::InGuestSigsys),
+                "in_guest_nested_sigsys" => Ok(Self::InGuestNestedSigsys),
+                "in_guest_physical_sigsys" => Ok(Self::InGuestPhysicalSigsys),
+                "fallback_completion_sigsys" => Ok(Self::FallbackCompletionSigsys),
+                "cacheline_straddler" => Ok(Self::CachelineStraddlerFallback),
+                "unpatchable_or_other" => Ok(Self::UnpatchableOrOtherFallback),
+                "direct_hook" => Ok(Self::DirectHook),
+                "fallback_refusal" => Ok(Self::FallbackRefusal),
+                _ => Err(serde::de::Error::unknown_variant(
+                    &name,
+                    &[
+                        "first_site_seccomp",
+                        "ptrace_installation",
+                        "in_guest_sigsys",
+                        "in_guest_nested_sigsys",
+                        "in_guest_physical_sigsys",
+                        "fallback_completion_sigsys",
+                        "cacheline_straddler",
+                        "unpatchable_or_other",
+                        "direct_hook",
+                        "fallback_refusal",
+                    ],
+                )),
+            }
+        }
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct LegacyCounterSnapshot {
+        counts: Vec<(LegacyDispatchPath, u64)>,
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct LegacyProcessStats {
+        paths: LegacyCounterSnapshot,
+        sites: Vec<LiteinstProcessSiteStats>,
+    }
+
+    #[test]
+    fn process_report_wire_is_bidirectionally_compatible_with_legacy_reader() {
+        let current = LiteinstProcessStats {
+            paths: CounterSnapshot::new(
+                LiteinstDispatchPath::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, path)| (path, index as u64 + 1)),
+            ),
+            sites: vec![LiteinstProcessSiteStats {
+                rip: 0x401000,
+                patched: true,
+                instruction_length: 2,
+                straddle_after: 0,
+            }],
+        };
+        let current_bytes =
+            bincode::serde::encode_to_vec(&current, bincode::config::legacy()).unwrap();
+        let (legacy_read, consumed): (LegacyProcessStats, usize) =
+            bincode::serde::decode_from_slice(&current_bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(consumed, current_bytes.len());
+        assert_eq!(
+            legacy_read.paths.counts.len(),
+            LegacyDispatchPath::ALL.len()
+        );
+        for (index, path) in LegacyDispatchPath::ALL.iter().enumerate() {
+            assert_eq!(legacy_read.paths.counts[index], (*path, index as u64 + 1));
+        }
+
+        let legacy = LegacyProcessStats {
+            paths: LegacyCounterSnapshot {
+                counts: LegacyDispatchPath::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, path)| (path, index as u64 + 1))
+                    .collect(),
+            },
+            sites: legacy_read.sites,
+        };
+        let legacy_bytes =
+            bincode::serde::encode_to_vec(&legacy, bincode::config::legacy()).unwrap();
+        let (current_read, consumed): (LiteinstProcessStats, usize) =
+            bincode::serde::decode_from_slice(&legacy_bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(consumed, legacy_bytes.len());
+        assert_eq!(current_read.paths, current.paths);
+        assert_eq!(current_read.sites, current.sites);
     }
 
     #[test]

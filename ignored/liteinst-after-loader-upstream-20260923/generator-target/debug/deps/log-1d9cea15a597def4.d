@@ -1,0 +1,10 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/log-1d9cea15a597def4.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/liblog-1d9cea15a597def4.rlib: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/liblog-1d9cea15a597def4.rmeta: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs:

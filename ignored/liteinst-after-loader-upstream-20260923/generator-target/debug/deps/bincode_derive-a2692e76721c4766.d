@@ -1,0 +1,8 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/bincode_derive-a2692e76721c4766.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libbincode_derive-a2692e76721c4766.so: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/attribute.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_enum.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-2.0.1/src/derive_struct.rs:

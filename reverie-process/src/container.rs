@@ -646,7 +646,22 @@ impl Container {
         context: &ChildContext,
         pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
     ) -> Result<(), Error> {
+        self.setup_with_final_pre_seccomp(context, pre_exec, || Ok(()))
+    }
+
+    /// Runs ordinary child setup with one controller-only hook after every
+    /// existing pre-exec callback and immediately before seccomp installation.
+    pub(super) fn setup_with_final_pre_seccomp<F>(
+        &mut self,
+        context: &ChildContext,
+        pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
+        mut final_pre_seccomp: F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut() -> Result<(), Errno>,
+    {
         self.setup_before_filter(context, pre_exec)?;
+        final_pre_seccomp().context(Context::PreExec)?;
         self.setup_filter(context)
     }
 

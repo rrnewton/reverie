@@ -1,0 +1,9 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/reverie_memory-5b356b54e6fc5212.d: /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/lib.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/addr.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/local.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libreverie_memory-5b356b54e6fc5212.rlib: /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/lib.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/addr.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/local.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libreverie_memory-5b356b54e6fc5212.rmeta: /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/lib.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/addr.rs /home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/local.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/lib.rs:
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/addr.rs:
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-memory/src/local.rs:

@@ -1,0 +1,9 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/perf_event_open_sys-4d11632a866a7b32.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/bindings_x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/functions.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libperf_event_open_sys-4d11632a866a7b32.rlib: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/bindings_x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/functions.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libperf_event_open_sys-4d11632a866a7b32.rmeta: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/bindings_x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/functions.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/bindings_x86_64.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/perf-event-open-sys-5.0.0/src/functions.rs:

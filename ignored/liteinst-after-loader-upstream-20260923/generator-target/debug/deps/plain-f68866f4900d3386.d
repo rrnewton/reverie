@@ -1,0 +1,10 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/plain-f68866f4900d3386.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/error.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/plain.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/methods.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libplain-f68866f4900d3386.rlib: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/error.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/plain.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/methods.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libplain-f68866f4900d3386.rmeta: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/error.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/plain.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/methods.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/error.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/plain.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plain-0.2.3/src/methods.rs:

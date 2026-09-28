@@ -148,8 +148,9 @@ liteinst_dispatch_paths! {
     are counted by `FallbackRefusal` instead. */
     CachelineStraddlerFallback => "cacheline_straddler",
     /** Another unpatchable site serviced by fallback: retained ptrace dispatch,
-    or successful in-guest Tool dispatch. Refused in-guest attempts are counted
-    by `FallbackRefusal` instead. */
+    a deliberately deoptimized former patch, or successful in-guest Tool
+    dispatch. Refused in-guest attempts are counted by `FallbackRefusal`
+    instead. */
     UnpatchableOrOtherFallback => "unpatchable_or_other",
     /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
     DirectHook => "direct_hook",
@@ -390,6 +391,49 @@ mod tests {
         assert_eq!(source.snapshots.get(), 0);
         assert!(BackendStatsRequest::ENABLED.collect(&source).is_some());
         assert_eq!(source.snapshots.get(), 1);
+    }
+
+    #[test]
+    fn liteinst_dispatch_path_legacy_exhaustiveness_and_order_are_frozen() {
+        fn legacy_index(path: LiteinstDispatchPath) -> usize {
+            match path {
+                LiteinstDispatchPath::FirstSiteSeccomp => 0,
+                LiteinstDispatchPath::PtraceInstallation => 1,
+                LiteinstDispatchPath::InGuestSigsys => 2,
+                LiteinstDispatchPath::InGuestNestedSigsys => 3,
+                LiteinstDispatchPath::InGuestPhysicalSigsys => 4,
+                LiteinstDispatchPath::FallbackCompletionSigsys => 5,
+                LiteinstDispatchPath::CachelineStraddlerFallback => 6,
+                LiteinstDispatchPath::UnpatchableOrOtherFallback => 7,
+                LiteinstDispatchPath::DirectHook => 8,
+                LiteinstDispatchPath::FallbackRefusal => 9,
+            }
+        }
+
+        let names = LiteinstDispatchPath::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, path)| {
+                assert_eq!(legacy_index(path), index);
+                path.as_str()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "first_site_seccomp",
+                "ptrace_installation",
+                "in_guest_sigsys",
+                "in_guest_nested_sigsys",
+                "in_guest_physical_sigsys",
+                "fallback_completion_sigsys",
+                "cacheline_straddler",
+                "unpatchable_or_other",
+                "direct_hook",
+                "fallback_refusal",
+            ]
+        );
     }
 
     #[test]

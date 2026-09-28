@@ -1,0 +1,10 @@
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/unwind_sys-6ef280254e8f8fbe.d: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/ptrace.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libunwind_sys-6ef280254e8f8fbe.rlib: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/ptrace.rs
+
+/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/ignored/liteinst-after-loader-upstream-20260923/generator-target/debug/deps/libunwind_sys-6ef280254e8f8fbe.rmeta: /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/lib.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/macros.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/x86_64.rs /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/ptrace.rs
+
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/lib.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/macros.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/x86_64.rs:
+/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unwind-sys-0.1.4/src/ptrace.rs:

@@ -36,6 +36,29 @@ mod memory_access_guest;
 #[path = "rpc_tool_guest/owned_frame.rs"]
 mod owned_frame_guest;
 
+#[path = "rpc_tool_guest/guard_restorer.rs"]
+mod guard_restorer_guest;
+
+global_asm!(
+    r#"
+    .text
+    .p2align 4
+    .global reverie_liteinst_guest_rt_sigreturn
+    .hidden reverie_liteinst_guest_rt_sigreturn
+    .type reverie_liteinst_guest_rt_sigreturn,@function
+reverie_liteinst_guest_rt_sigreturn:
+    mov eax, {rt_sigreturn}
+    syscall
+    ret
+    .size reverie_liteinst_guest_rt_sigreturn, .-reverie_liteinst_guest_rt_sigreturn
+"#,
+    rt_sigreturn = const libc::SYS_rt_sigreturn,
+);
+
+unsafe extern "C" {
+    fn reverie_liteinst_guest_rt_sigreturn() -> i64;
+}
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -893,6 +916,28 @@ fn spoof_sigsys_guest(path: &Path) -> ! {
     panic!("guest-generated SIGSYS returned");
 }
 
+fn unknown_int3_default_guest(path: &Path) -> ! {
+    let no_core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &no_core) }, 0);
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }
+        .expect("install unknown-INT3 runtime");
+    unsafe { core::arch::asm!("int3", options(nomem, nostack)) };
+    unsafe { libc::_exit(84) }
+}
+
+fn guest_rt_sigreturn_refusal(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }
+        .expect("install guest rt_sigreturn refusal runtime");
+    assert_eq!(
+        unsafe { reverie_liteinst_guest_rt_sigreturn() },
+        -i64::from(libc::EPERM),
+    );
+    println!("guest-rt-sigreturn=refused");
+}
+
 #[derive(Clone, Copy)]
 enum InstructionPublication {
     Concurrent,
@@ -1329,6 +1374,9 @@ fn main() {
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
+        Some("filtered-guard-restorer") => guard_restorer_guest::run(Path::new(&path)),
+        Some("unknown-int3-default") => unknown_int3_default_guest(Path::new(&path)),
+        Some("guest-rt-sigreturn") => guest_rt_sigreturn_refusal(Path::new(&path)),
         Some("instruction-guest") => {
             instruction_guest(Path::new(&path), InstructionPublication::Concurrent)
         }

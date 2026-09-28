@@ -31,6 +31,7 @@ pub struct LiteinstInstrumentationStats {
     patch_shapes: PatchShapeCollector,
     patch_decisions: [u64; 4],
     dispatch_paths: BTreeMap<LiteinstDispatchPath, u64>,
+    deoptimized_fallback_hits: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +130,11 @@ impl LiteinstInstrumentationStats {
         self.record_dispatch_path(LiteinstDispatchPath::UnpatchableOrOtherFallback);
     }
 
+    pub(crate) fn record_deoptimized_fallback(&mut self) {
+        self.deoptimized_fallback_hits += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::UnpatchableOrOtherFallback);
+    }
+
     pub(crate) fn record_direct_hook(&mut self) {
         self.record_dispatch_path(LiteinstDispatchPath::DirectHook);
     }
@@ -159,6 +165,15 @@ impl LiteinstInstrumentationStats {
                 .iter()
                 .map(|(path, count)| (*path, *count)),
         )
+    }
+
+    /// Returns formerly patched sites serviced by retained ptrace dispatch.
+    ///
+    /// These hits remain included in `UnpatchableOrOtherFallback` so the
+    /// exhaustive public dispatch-path enum and its serialized names stay
+    /// backward compatible.
+    pub const fn deoptimized_fallback_hits(&self) -> u64 {
+        self.deoptimized_fallback_hits
     }
 
     /// Returns the exact aggregate patch-site shape distribution.
@@ -316,6 +331,7 @@ mod tests {
         stats.record_ptrace_installation();
         stats.record_cacheline_straddler_fallback();
         stats.record_unpatchable_or_other_fallback();
+        stats.record_deoptimized_fallback();
         stats.record_direct_hook();
         stats.record_direct_hook();
 
@@ -337,8 +353,9 @@ mod tests {
         );
         assert_eq!(
             paths.count(&reverie::LiteinstDispatchPath::UnpatchableOrOtherFallback),
-            1
+            2
         );
+        assert_eq!(stats.deoptimized_fallback_hits(), 1);
         assert_eq!(paths.count(&reverie::LiteinstDispatchPath::DirectHook), 2);
         assert_eq!(stats.classified_candidates(), 6);
         assert_eq!(stats.cacheline_straddlers(), 4);
@@ -347,7 +364,7 @@ mod tests {
         assert_eq!(stats.straddle_prefix_counts(), [1, 1, 1, 1]);
         assert_eq!(
             stats.to_string(),
-            "LiteInst instrumentation stats: distinct_rips_patched=2 patch_candidates=7 decisions[direct_pun=1,relocated=1,ptrace_straddler=4,ptrace_other=1] paths[first_site_seccomp=1,ptrace_installation=1,cacheline_straddler=1,unpatchable_or_other=1,direct_hook=2] classified_candidates=6 cacheline_straddlers=4 non_straddling=2 instruction_lengths[5+=2,4=1,3=1,2=1,1=1] straddle_prefix[1=1,2=1,3=1,4=1]"
+            "LiteInst instrumentation stats: distinct_rips_patched=2 patch_candidates=7 decisions[direct_pun=1,relocated=1,ptrace_straddler=4,ptrace_other=1] paths[first_site_seccomp=1,ptrace_installation=1,cacheline_straddler=1,unpatchable_or_other=2,direct_hook=2] classified_candidates=6 cacheline_straddlers=4 non_straddling=2 instruction_lengths[5+=2,4=1,3=1,2=1,1=1] straddle_prefix[1=1,2=1,3=1,4=1]"
         );
     }
 

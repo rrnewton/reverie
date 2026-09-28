@@ -17,7 +17,11 @@
 //! 4. The dispatcher may forward through [`SyscallEvent::forward`], using an
 //!    exact trusted syscall site and the interrupted protection-key rights.
 //!    Runtime-private calls use [`raw_syscall6`]. Neither site re-traps.
-//! 5. The handler writes the result into `RAX` and returns, resuming the guest.
+//! 5. The handler writes the result into `RAX`; the kernel returns through the
+//!    runtime-owned restorer whose exact `rt_sigreturn` gate is separately
+//!    authorized by seccomp, then resumes the guest. Ordinary libc-installed
+//!    guest handlers return through the process libc's separately validated
+//!    exact restorer gate.
 
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
@@ -57,6 +61,24 @@ reverie_preload_trusted_syscall_ip:
 reverie_preload_trusted_syscall_return_ip:
     ret
     .size reverie_preload_trusted_syscall, .-reverie_preload_trusted_syscall
+
+    .p2align 4
+    .global reverie_preload_rt_sigreturn
+    .hidden reverie_preload_rt_sigreturn
+    .type reverie_preload_rt_sigreturn,@function
+reverie_preload_rt_sigreturn:
+    mov eax, {rt_sigreturn}
+    .global reverie_preload_rt_sigreturn_ip
+    .hidden reverie_preload_rt_sigreturn_ip
+reverie_preload_rt_sigreturn_ip:
+    syscall
+    .global reverie_preload_rt_sigreturn_return_ip
+    .hidden reverie_preload_rt_sigreturn_return_ip
+reverie_preload_rt_sigreturn_return_ip:
+    // A valid signal frame never returns here: rt_sigreturn restores the
+    // interrupted context directly. Fail closed if the kernel rejects it.
+    ud2
+    .size reverie_preload_rt_sigreturn, .-reverie_preload_rt_sigreturn
 
     .p2align 4
     .global reverie_preload_guest_syscall
@@ -116,6 +138,8 @@ reverie_preload_guest_syscall_return_ip:
     ret
     .size reverie_preload_guest_syscall, .-reverie_preload_guest_syscall
 "#
+    ,
+    rt_sigreturn = const libc::SYS_rt_sigreturn,
 );
 
 // SysV classifies this concrete 16-byte integer pair into RAX and RDX. Rust's
@@ -145,6 +169,9 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_preload_trusted_syscall_ip: u8;
     static reverie_preload_trusted_syscall_return_ip: u8;
+    fn reverie_preload_rt_sigreturn();
+    static reverie_preload_rt_sigreturn_ip: u8;
+    static reverie_preload_rt_sigreturn_return_ip: u8;
     fn reverie_preload_guest_syscall(
         number: i64,
         args: *const u64,
@@ -172,6 +199,7 @@ thread_local! {
 /// # Safety
 ///
 /// Issues a raw syscall with caller-supplied arguments.
+#[inline(never)]
 pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
     unsafe {
         reverie_preload_trusted_syscall(
@@ -274,6 +302,78 @@ pub fn guest_syscall_gate() -> TrustedGate {
     }
 }
 
+/// The exact runtime-owned `rt_sigreturn` syscall gate.
+///
+/// The seccomp filter authorizes `rt_sigreturn` only at these instruction
+/// addresses. [`crate::signal::install_runtime_siginfo_handler`] installs the
+/// matching assembly entry as `SA_RESTORER` for every runtime signal handler.
+/// This address test is not control-flow authentication: the supported trusted
+/// dynamically-linked guest model excludes crafted jumps into hidden runtime
+/// gates. An ordinary custom restorer at a guest address remains trapped.
+pub fn rt_sigreturn_gate() -> TrustedGate {
+    TrustedGate {
+        syscall_ip: ptr::addr_of!(reverie_preload_rt_sigreturn_ip) as usize as u64,
+        return_ip: ptr::addr_of!(reverie_preload_rt_sigreturn_return_ip) as usize as u64,
+    }
+}
+
+/// Address of the runtime-owned restorer entry installed with `SA_RESTORER`.
+/// It loads `SYS_rt_sigreturn` before reaching [`rt_sigreturn_gate`].
+pub fn rt_sigreturn_restorer_address() -> usize {
+    reverie_preload_rt_sigreturn as *const () as usize
+}
+
+const LIBC_RESTORER_PROBE_BYTES: usize = 9;
+const MOV_RAX_RT_SIGRETURN: &[u8] = &[0x48, 0xc7, 0xc0, 0x0f, 0x00, 0x00, 0x00];
+const SYSCALL: &[u8] = &[0x0f, 0x05];
+
+const _: () = assert!(libc::SYS_rt_sigreturn == 15);
+
+/// Validate the bounded canonical x86-64 glibc restorer and derive only the
+/// exact `syscall`/return pair. Unknown libc encodings fail closed before the
+/// runtime changes SIGSYS disposition or installs seccomp.
+fn libc_rt_sigreturn_gate_from_bytes(entry: u64, bytes: &[u8]) -> io::Result<TrustedGate> {
+    let mut expected = [0_u8; LIBC_RESTORER_PROBE_BYTES];
+    expected[..MOV_RAX_RT_SIGRETURN.len()].copy_from_slice(MOV_RAX_RT_SIGRETURN);
+    expected[MOV_RAX_RT_SIGRETURN.len()..].copy_from_slice(SYSCALL);
+    if bytes != expected {
+        return Err(io::Error::other(
+            "libc signal restorer does not match the canonical x86-64 stub",
+        ));
+    }
+    let syscall_ip = entry
+        .checked_add(MOV_RAX_RT_SIGRETURN.len() as u64)
+        .ok_or_else(|| io::Error::other("libc signal restorer address overflow"))?;
+    let return_ip = syscall_ip
+        .checked_add(SYSCALL.len() as u64)
+        .ok_or_else(|| io::Error::other("libc signal restorer return address overflow"))?;
+    Ok(TrustedGate {
+        syscall_ip,
+        return_ip,
+    })
+}
+
+fn validated_libc_rt_sigreturn_gate(restorer: usize) -> io::Result<TrustedGate> {
+    let mut bytes = [0_u8; LIBC_RESTORER_PROBE_BYTES];
+    let local = libc::iovec {
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: bytes.len(),
+    };
+    let remote = libc::iovec {
+        iov_base: restorer as *mut libc::c_void,
+        iov_len: bytes.len(),
+    };
+    let read = unsafe { libc::process_vm_readv(libc::getpid(), &local, 1, &remote, 1, 0) };
+    if read != bytes.len() as isize {
+        return Err(if read == -1 {
+            io::Error::last_os_error()
+        } else {
+            io::Error::other("short read from libc signal restorer")
+        });
+    }
+    libc_rt_sigreturn_gate_from_bytes(restorer as u64, &bytes)
+}
+
 /// Register the process-wide syscall dispatcher.
 ///
 /// Must be called before [`crate::seccomp::SeccompFilter::install`]. The boxed
@@ -302,15 +402,34 @@ fn dispatcher() -> Option<&'static (dyn SyscallDispatcher + 'static)> {
     }
 }
 
-fn dispatch_event(event: &mut SyscallEvent) {
-    match dispatcher() {
-        Some(dispatcher) => dispatcher.dispatch(event),
+fn dispatch_event_with<F>(
+    event: &mut SyscallEvent,
+    registered: Option<&(dyn SyscallDispatcher + 'static)>,
+    dispatch: F,
+) where
+    F: FnOnce(&(dyn SyscallDispatcher + 'static), &mut SyscallEvent),
+{
+    // Linux x86-64 consumes a signed low-32-bit syscall number. Reject
+    // noncanonical register contents and the unsupported x32 ABI before any
+    // backend can truncate, reinterpret, or forward them.
+    if crate::dispatch::syscall_number_requires_enosys(event.number()) {
+        event.set_result(-i64::from(libc::ENOSYS));
+        return;
+    }
+    match registered {
+        Some(registered) => dispatch(registered, event),
         None => {
             // No dispatcher registered: fail closed with ENOSYS rather than
             // silently allowing the call.
             event.set_result(-i64::from(libc::ENOSYS));
         }
     }
+}
+
+fn dispatch_event(event: &mut SyscallEvent) {
+    dispatch_event_with(event, dispatcher(), |registered, event| {
+        registered.dispatch(event);
+    });
 }
 
 // TODO-HUMAN-REVIEW(PR-264): Review direct invocation of the registered
@@ -372,7 +491,10 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         Ok(frame) => frame,
         Err(_) => unsafe { exit_now(126) },
     };
-    if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
+    let number = frame.register(libc::REG_RAX as usize);
+    if !crate::dispatch::syscall_number_requires_enosys(number)
+        && dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame))
+    {
         IN_HANDLER.set(false);
         return;
     }
@@ -381,7 +503,7 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         Err(_) => unsafe { exit_now(126) },
     };
     let mut event = SyscallEvent::new(
-        frame.register(libc::REG_RAX as usize),
+        number,
         [
             frame.register(libc::REG_RDI as usize) as u64,
             frame.register(libc::REG_RSI as usize) as u64,
@@ -394,11 +516,9 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     );
     event.set_guest_pkru(guest_pkru);
 
-    if let Some(dispatcher) = dispatcher() {
-        dispatcher.dispatch_signal(&mut event, &mut frame);
-    } else {
-        event.fail(libc::ENOSYS);
-    }
+    dispatch_event_with(&mut event, dispatcher(), |registered, event| {
+        registered.dispatch_signal(event, &mut frame);
+    });
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     if let Some(resume_address) = event.resume_address() {
@@ -446,6 +566,41 @@ unsafe extern "C" {
     );
 }
 
+type RuntimeSignalHandler =
+    unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+
+fn initialize_handler() -> io::Result<RuntimeSignalHandler> {
+    frame::initialize()?;
+    let ospke = pkru::initialize()?;
+    Ok(if ospke {
+        reverie_preload_sigsys_pkru
+    } else {
+        sigsys_handler
+    })
+}
+
+unsafe fn install_handler_with_libc_restorer(use_alt_stack: bool) -> io::Result<TrustedGate> {
+    let handler = initialize_handler()?;
+    let libc_restorer = signal::discover_libc_restorer(handler)?;
+    let libc_restorer_gate = validated_libc_rt_sigreturn_gate(libc_restorer)?;
+    if use_alt_stack {
+        unsafe { signal::install_alt_stack()? };
+    }
+    unsafe { signal::install_sigsys_handler(handler, use_alt_stack)? };
+    Ok(libc_restorer_gate)
+}
+
+/// Install the handler and return the process libc's validated restorer gate.
+///
+/// Unlike [`install_handler`], discovery briefly changes a probe signal's
+/// process-wide disposition. The caller must prove the process has exactly one
+/// thread until this function returns.
+pub(crate) unsafe fn install_handler_and_get_libc_restorer(
+    use_alt_stack: bool,
+) -> io::Result<TrustedGate> {
+    unsafe { install_handler_with_libc_restorer(use_alt_stack) }
+}
+
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
 ///
 /// Selects the PKRU entry only when CPUID reports OSPKE and installation has
@@ -465,13 +620,7 @@ unsafe extern "C" {
 /// Installs process-global signal disposition; call once during init while
 /// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
-    frame::initialize()?;
-    let ospke = pkru::initialize()?;
-    let handler = if ospke {
-        reverie_preload_sigsys_pkru
-    } else {
-        sigsys_handler
-    };
+    let handler = initialize_handler()?;
     if use_alt_stack {
         unsafe { signal::install_alt_stack()? };
     }
@@ -482,18 +631,84 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    struct PanickingDispatcher;
+
+    impl SyscallDispatcher for PanickingDispatcher {
+        fn dispatch(&self, _event: &mut SyscallEvent) {
+            panic!("malformed syscall number reached the registered dispatcher");
+        }
+    }
+
     #[test]
     fn trusted_gate_addresses_are_populated_and_ordered() {
-        let gate = trusted_gate();
-        assert_ne!(gate.syscall_ip, 0);
-        assert_ne!(gate.return_ip, 0);
-        // The return site is a few bytes after the syscall instruction.
-        assert!(gate.return_ip > gate.syscall_ip);
+        for gate in [trusted_gate(), guest_syscall_gate(), rt_sigreturn_gate()] {
+            assert_ne!(gate.syscall_ip, 0);
+            assert_eq!(gate.return_ip, gate.syscall_ip + 2);
+        }
+        assert_ne!(
+            rt_sigreturn_restorer_address(),
+            rt_sigreturn_gate().syscall_ip as usize
+        );
+    }
+
+    #[test]
+    fn libc_restorer_validation_accepts_only_bounded_canonical_stubs() {
+        let mut canonical = [0_u8; LIBC_RESTORER_PROBE_BYTES];
+        canonical[..MOV_RAX_RT_SIGRETURN.len()].copy_from_slice(MOV_RAX_RT_SIGRETURN);
+        canonical[MOV_RAX_RT_SIGRETURN.len()..].copy_from_slice(SYSCALL);
+        assert_eq!(
+            libc_rt_sigreturn_gate_from_bytes(0x1000, &canonical).unwrap(),
+            TrustedGate {
+                syscall_ip: 0x1007,
+                return_ip: 0x1009,
+            }
+        );
+
+        for malformed in [
+            [0_u8; LIBC_RESTORER_PROBE_BYTES],
+            {
+                let mut bytes = canonical;
+                bytes[3] = libc::SYS_rt_sigreturn as u8 + 1;
+                bytes
+            },
+            {
+                let mut bytes = canonical;
+                bytes[MOV_RAX_RT_SIGRETURN.len()] = 0x90;
+                bytes
+            },
+        ] {
+            assert!(libc_rt_sigreturn_gate_from_bytes(0x3000, &malformed).is_err());
+        }
+        assert!(libc_rt_sigreturn_gate_from_bytes(u64::MAX - 1, &canonical).is_err());
     }
 
     #[test]
     fn no_dispatcher_registered_by_default() {
         assert!(dispatcher().is_none());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn malformed_and_x32_numbers_fail_before_registered_dispatch() {
+        for number in [
+            (1_i64 << 32) | libc::SYS_rt_sigreturn,
+            (1_i64 << 32) | libc::SYS_execve,
+            (1_i64 << 32) | libc::SYS_rt_sigaction,
+            (1_i64 << 32) | libc::SYS_mmap,
+            512_i64 | 0x4000_0000,
+            513_i64 | 0x4000_0000,
+            libc::SYS_getpid | 0x4000_0000,
+        ] {
+            let mut event = SyscallEvent::new(number, [0; 6], 0);
+            dispatch_event_with(
+                &mut event,
+                Some(&PanickingDispatcher),
+                |registered, event| {
+                    registered.dispatch(event);
+                },
+            );
+            assert_eq!(event.result(), Some(-i64::from(libc::ENOSYS)));
+        }
     }
 
     #[test]
