@@ -1,0 +1,17 @@
+{
+  "delivery": "pending",
+  "goal": "Finish the Google Chat bridge and test it end to end with live round-trip messages. Complete, land, and install the missing Rust agentctl chat runtime; launch the durable bridge/plugin host bound to the dev-hermit-014 coordinator; send Ryan a fresh Google Chat message; receive and process a live reply; send a confirming response; and preserve exact inbound ACK, pane-delivery, outbound receipt, process/socket, and restart-survival evidence. Do not declare the goal complete until that real round trip passes. Keep KVM, LiteInst, and mega-lander work isolated and do not take over their lanes.",
+  "name": "hermit-coordinator",
+  "native": {
+    "createdAt": 1790042203,
+    "objective": "Finish the Google Chat bridge and test it end to end with live round-trip messages. Complete, land, and install the missing Rust agentctl chat runtime; launch the durable bridge/plugin host bound to the dev-hermit-014 coordinator; send Ryan a fresh Google Chat message; receive and process a live reply; send a confirming response; and preserve exact inbound ACK, pane-delivery, outbound receipt, process/socket, and restart-survival evidence. Do not declare the goal complete until that real round trip passes. Keep KVM, LiteInst, and mega-lander work isolated and do not take over their lanes.",
+    "status": "paused",
+    "threadId": "01a0bd03-b764-7811-95c4-0a5c3d08e4c2",
+    "timeUsedSeconds": 73416,
+    "tokenBudget": null,
+    "tokensUsed": 45954888,
+    "updatedAt": 1790140004
+  },
+  "native_status": "paused",
+  "source": "native"
+}

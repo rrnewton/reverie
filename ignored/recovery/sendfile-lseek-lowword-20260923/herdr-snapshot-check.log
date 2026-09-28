@@ -1,0 +1,2 @@
+state=unknown
+summary=Herdr agent snapshot unavailable: agentctl registry names are ['hermit-coordinator', 'kvm', 'liteinst', 'mega-lander', 'mega-lander-recovery'], expected ['hermit-coordinator', 'kvm', 'liteinst', 'mega-lander']

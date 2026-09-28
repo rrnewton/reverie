@@ -1,0 +1,9 @@
+Validate sendfile output before fallback
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Validate the decoded sendfile output descriptor for existence and
+writability before classifying unsupported inputs. Add unit and real-KVM
+coverage for high-word aliases of closed, read-only, and pipe-read outputs,
+including input non-consumption checks.
+

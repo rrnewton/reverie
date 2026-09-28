@@ -1,0 +1,121 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling autocfg v1.5.1
+   Compiling serde v1.0.229
+   Compiling crc32fast v1.5.2
+   Compiling memchr v2.8.3
+   Compiling simd-adler32 v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling cfg_aliases v0.2.2
+   Compiling syscalls v0.6.18
+   Compiling smallvec v1.16.1
+   Compiling parking_lot_core v0.9.12
+   Compiling pin-project-lite v0.2.17
+   Compiling futures v0.1.31
+   Compiling bitflags v1.3.2
+   Compiling scopeguard v1.2.0
+   Compiling slab v0.4.12
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling unicode-segmentation v1.13.3
+   Compiling rustix v1.1.5
+   Compiling virtue v0.0.18
+   Compiling twox-hash v2.1.4
+   Compiling object v0.39.1
+   Compiling unicode-xid v0.2.6
+   Compiling static_assertions v1.1.0
+   Compiling thiserror v2.0.20
+   Compiling iana-time-zone v0.1.65
+   Compiling cpp_demangle v0.5.1
+   Compiling paste v1.0.15
+   Compiling foldhash v0.1.5
+   Compiling unty v0.0.4
+   Compiling object v0.36.7
+   Compiling bytes v1.12.1
+   Compiling anyhow v1.0.104
+   Compiling lazy_static v1.5.0
+   Compiling hashbrown v0.17.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling equivalent v1.0.2
+   Compiling procfs v0.18.0
+   Compiling hex v0.4.3
+   Compiling fallible-iterator v0.3.0
+   Compiling rustc-demangle v0.1.28
+   Compiling typed-arena v2.0.2
+   Compiling kvm-ioctls v0.25.0
+   Compiling gimli v0.33.0
+   Compiling log v0.4.34
+   Compiling never-say-never v6.6.666
+   Compiling byteorder v1.5.0
+   Compiling plain v0.2.3
+   Compiling lock_api v0.4.14
+   Compiling colored v2.2.0
+   Compiling miniz_oxide v0.9.1
+   Compiling futures-channel v0.3.34
+   Compiling nix v0.30.1
+   Compiling raw-cpuid v10.7.0
+   Compiling twox-hash v1.6.3
+   Compiling ruzstd v0.8.3
+   Compiling hashbrown v0.15.5
+   Compiling num-traits v0.2.19
+   Compiling memoffset v0.9.1
+   Compiling ruzstd v0.7.3
+   Compiling convert_case v0.6.0
+   Compiling flate2 v1.1.10
+   Compiling bincode_derive v2.0.1
+   Compiling indexmap v2.14.2
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling chrono v0.4.45
+   Compiling errno v0.3.14
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling vmm-sys-util v0.15.0
+   Compiling memmap2 v0.9.11
+   Compiling perf-event-open-sys v5.0.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling kvm-bindings v0.14.1
+   Compiling bitflags v2.13.2
+   Compiling procfs-core v0.18.0
+   Compiling derive_more-impl v1.0.0
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling serde_repr v0.1.21
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.20
+   Compiling scroll_derive v0.13.2
+   Compiling async-trait v0.1.92
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling scroll v0.13.0
+   Compiling goblin v0.10.7
+   Compiling addr2line v0.26.1
+   Compiling derive_more v1.0.0
+   Compiling bincode v2.0.1
+   Compiling linked-hash-map v0.5.6
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-memory)
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-syscalls)
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-process)
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.51s
+     Running unittests src/lib.rs (ignored/review-claude-628/target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test executor::tests::sendfile_and_lseek_consume_low_descriptor_words ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 816 filtered out; finished in 0.00s
+
+
+real	0m43.561s
+user	1m47.791s
+sys	0m14.246s

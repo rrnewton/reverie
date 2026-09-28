@@ -1,0 +1,16 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm/src/executor.rs:21344:
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_sendfile,
+-                [
+-                    HIGH_WORD | u64::from(output_pipe[1] as u32),
+-                    20,
+-                    0,
+-                    1,
+-                    0,
+-                    0,
+-                ]
++                [HIGH_WORD | u64::from(output_pipe[1] as u32), 20, 0, 1, 0, 0,]
+             ),
+             negative_errno(libc::ENOSYS),
+             "a valid writable pipe output retains the mediated fallback"

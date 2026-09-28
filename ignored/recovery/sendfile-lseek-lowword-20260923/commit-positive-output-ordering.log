@@ -1,0 +1,2 @@
+[codex/kvm-sendfile-lseek-lowword-20260923 79f139bd] Validate sendfile output before fallback
+ 2 files changed, 257 insertions(+), 17 deletions(-)
