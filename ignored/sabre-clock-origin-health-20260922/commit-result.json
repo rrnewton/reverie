@@ -1,0 +1,5 @@
+{
+  "native_exit": 0,
+  "stdout": "[codex/sabre-clock-origin-health-20260922 f3be94e2] Guard SaBRe plugin finalizers in the tool domain\n 7 files changed, 281 insertions(+), 1 deletion(-)\n create mode 100644 experimental/reverie-sabre/tests/loader_plugin_finalizers.c\n create mode 100644 experimental/reverie-sabre/tests/loader_plugin_finalizers.rs\n",
+  "stderr": ""
+}

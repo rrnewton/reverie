@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "impl"
+  ],
+  "native_exit": 0,
+  "stdout": "[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]",
+  "stderr": "who-am-i: fields: team, agent_name, model, machine, role\nwho-am-i: DEGRADED: identity resolver returned UNRESOLVED\nwho-am-i: NEXT: run with --diagnostics to see the missing or conflicting signals. If --pid was supplied, pass a live agent PID or omit --pid to inspect the caller.\n"
+}

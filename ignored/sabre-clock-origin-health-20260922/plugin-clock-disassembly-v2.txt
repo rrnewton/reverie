@@ -1,0 +1,46 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/install/rsrcs/libdetcore_sabre.so:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000003491d0 <_mi_prim_numa_node_count+0x60>:
+  3491d0:	5c                   	pop    %rsp
+  3491d1:	c3                   	ret    
+  3491d2:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+  3491d8:	48 83 ec 80          	sub    $0xffffffffffffff80,%rsp
+  3491dc:	b8 01 01 00 00       	mov    $0x101,%eax
+  3491e1:	5b                   	pop    %rbx
+  3491e2:	5d                   	pop    %rbp
+  3491e3:	41 5c                	pop    %r12
+  3491e5:	c3                   	ret    
+  3491e6:	cc                   	int3   
+  3491e7:	cc                   	int3   
+  3491e8:	cc                   	int3   
+  3491e9:	cc                   	int3   
+  3491ea:	cc                   	int3   
+  3491eb:	cc                   	int3   
+  3491ec:	cc                   	int3   
+  3491ed:	cc                   	int3   
+  3491ee:	cc                   	int3   
+  3491ef:	cc                   	int3   
+
+00000000003491f0 <_mi_prim_clock_now>:
+  3491f0:	48 83 ec 18          	sub    $0x18,%rsp
+  3491f4:	bf 01 00 00 00       	mov    $0x1,%edi
+  3491f9:	48 89 e6             	mov    %rsp,%rsi
+  3491fc:	e8 6f 39 25 00       	call   59cb70 <clock_gettime@plt>
+  349201:	48 8b 4c 24 08       	mov    0x8(%rsp),%rcx
+  349206:	48 ba db 34 b6 d7 82 	movabs $0x431bde82d7b634db,%rdx
+  34920d:	de 1b 43 
+  349210:	48 69 34 24 e8 03 00 	imul   $0x3e8,(%rsp),%rsi
+  349217:	00 
+  349218:	48 83 c4 18          	add    $0x18,%rsp
+  34921c:	48 89 c8             	mov    %rcx,%rax
+  34921f:	48 c1 f9 3f          	sar    $0x3f,%rcx
+  349223:	48 f7 ea             	imul   %rdx
+  349226:	48 c1 fa 12          	sar    $0x12,%rdx
+  34922a:	48 29 ca             	sub    %rcx,%rdx
+  34922d:	48                   	rex.W
+  34922e:	8d                   	.byte 0x8d
+  34922f:	04                   	.byte 0x4

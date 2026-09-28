@@ -1,0 +1,30 @@
+{
+  "command": [
+    "timeout",
+    "--kill-after=2s",
+    "20s",
+    "/usr/bin/gdb",
+    "-nx",
+    "-q",
+    "-batch",
+    "-ex",
+    "set pagination off",
+    "-ex",
+    "handle SIGILL nostop noprint pass",
+    "-ex",
+    "run",
+    "-ex",
+    "bt",
+    "-ex",
+    "info registers rip rsp rbp fs_base",
+    "--args",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922/sabre",
+    "/tmp/reverie-late-detours-295258/plugin.so",
+    "static-alias",
+    "--",
+    "/tmp/reverie-late-detours-295258/client-static"
+  ],
+  "native_exit": 0,
+  "stdout": "\nThis GDB supports auto-downloading debuginfo from the following URLs:\n  <https://debuginfod.centos.org/>\nEnable debuginfod for this session? (y or [n]) [answered N; input not from terminal]\nDebuginfod has been disabled.\nTo make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.\n[Thread debugging using libthread_db enabled]\nUsing host libthread_db library \"/lib64/libthread_db.so.1\".\nprocess 565978 is executing new program: /usr/lib64/ld-linux-x86-64.so.2\n[Thread debugging using libthread_db enabled]\nUsing host libthread_db library \"/lib64/libthread_db.so.1\".\n\nProgram received signal SIGSEGV, Segmentation fault.\n0x00007ffff7fb33d8 in ?? ()\n#0  0x00007ffff7fb33d8 in ?? ()\n#1  0x00007ffff7f371e0 in guest_finalizer () from /tmp/reverie-late-detours-295258/liblate_probe.so\n#2  0x00007ffff7fca2e3 in _dl_fini () at dl-fini.c:148\n#3  0x00007ffff7c41d7d in __run_exit_handlers () from /lib64/libc.so.6\n#4  0x00007ffff7c41ed0 in exit () from /lib64/libc.so.6\n#5  0x00007ffff7f9bfc9 in ?? ()\n#6  0x00007fffffffab30 in ?? ()\n#7  0x0000000600000000 in ?? ()\n#8  0x00007fffffffab10 in ?? ()\n#9  0x0000000000000000 in ?? ()\nrip            0x7ffff7fb33d8      0x7ffff7fb33d8\nrsp            0x7fffffffa9a8      0x7fffffffa9a8\nrbp            0x7fffffffaa60      0x7fffffffaa60\nfs_base        0x7ffff7f33740      140737353299776\n",
+  "stderr": "Fatal error in /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c:625\noverlapping function intercept target\n"
+}

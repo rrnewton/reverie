@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-v4/safehermit/brs-safehermit-20260922T173714Z-3516946-3517071-1790098635378614085
+device_inode=2097202:256
+subvolume_id=3758
+limit_bytes=256000000

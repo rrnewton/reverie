@@ -1,0 +1,45 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/glibc-clock-code.bin:     file format binary
+
+
+Disassembly of section .data:
+
+00000000000eb550 <.data>:
+   eb550:	ff                   	(bad)  
+   eb551:	ff                   	(bad)  
+   eb552:	ff                   	(bad)  
+   eb553:	ff c9                	dec    %ecx
+   eb555:	31 d2                	xor    %edx,%edx
+   eb557:	31 c9                	xor    %ecx,%ecx
+   eb559:	31 f6                	xor    %esi,%esi
+   eb55b:	31 ff                	xor    %edi,%edi
+   eb55d:	45 31 db             	xor    %r11d,%r11d
+   eb560:	c3                   	ret    
+   eb561:	66 2e 0f 1f 84 00 00 	cs nopw 0x0(%rax,%rax,1)
+   eb568:	00 00 00 
+   eb56b:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   eb570:	f3 0f 1e fa          	endbr64 
+   eb574:	48 8b 05 35 e9 10 00 	mov    0x10e935(%rip),%rax        # 0x1f9eb0
+   eb57b:	48 8b 80 e0 02 00 00 	mov    0x2e0(%rax),%rax
+   eb582:	48 85 c0             	test   %rax,%rax
+   eb585:	74 19                	je     0xeb5a0
+   eb587:	55                   	push   %rbp
+   eb588:	48 89 e5             	mov    %rsp,%rbp
+   eb58b:	ff d0                	call   *%rax
+   eb58d:	85 c0                	test   %eax,%eax
+   eb58f:	75 2f                	jne    0xeb5c0
+   eb591:	31 c0                	xor    %eax,%eax
+   eb593:	5d                   	pop    %rbp
+   eb594:	31 d2                	xor    %edx,%edx
+   eb596:	31 c9                	xor    %ecx,%ecx
+   eb598:	31 f6                	xor    %esi,%esi
+   eb59a:	31 ff                	xor    %edi,%edi
+   eb59c:	45 31 db             	xor    %r11d,%r11d
+   eb59f:	c3                   	ret    
+   eb5a0:	b8 e4 00 00 00       	mov    $0xe4,%eax
+   eb5a5:	0f 05                	syscall 
+   eb5a7:	85 c0                	test   %eax,%eax
+   eb5a9:	75 35                	jne    0xeb5e0
+   eb5ab:	31 c0                	xor    %eax,%eax
+   eb5ad:	31 d2                	xor    %edx,%edx
+   eb5af:	31                   	.byte 0x31

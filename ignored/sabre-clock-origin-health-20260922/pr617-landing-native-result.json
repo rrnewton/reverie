@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "with-proxy",
+    "python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/ci-hub/bin/gh-merge-verified",
+    "617",
+    "--repo",
+    "rrnewton/reverie",
+    "--expect-head",
+    "f3be94e21627667b58ea1f1b52af8db01483c28b",
+    "--local-review",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr617-local-review-packet.json",
+    "--receipt",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr617-landing-receipt.json",
+    "--",
+    "--rebase"
+  ],
+  "elapsed_s": 11.315894044935703,
+  "finished_at": "2026-09-22T20:59:27.511881+00:00",
+  "helper_sha256": "1748d91426dcd55bef192f866f729055b88cb963277538d1fb08bd004761984b",
+  "helper_unchanged": true,
+  "native_exit": 0,
+  "stderr": "  \u26a0\ufe0f over 7 file(s), derived from refs/pull/617/head. If this PR was\n  pushed seconds ago that ref can be STALE, making the file set too small and\n  this success true only of a subset. Confirm the count against the PR's real\n  file list, or re-run once the ref has converged.\n",
+  "stdout": "gh-merge-verified: pr head f3be94e21627 CORROBORATED against --expect-head f3be94e21627\ngh-merge-verified: local landing receipt written to /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr617-landing-receipt.json\ngh-merge-verified: PR 617 (rrnewton/reverie)\n  pr head    f3be94e21627667b58ea1f1b52af8db01483c28b  (corroborated against f3be94e21627)\n  origin/main ae1d1da78d2d89a1fa0454ee2282cf135e2286ed\n  files changed by the branch: 7\n    arrived  (main == pr head): 7\n    absent   (main == merge base, change definitely not landed): 0\n    moved on (main matches neither, undecidable from blobs): 0\n  VERIFIED: every file the branch touches is byte-identical on origin/main.\n"
+}

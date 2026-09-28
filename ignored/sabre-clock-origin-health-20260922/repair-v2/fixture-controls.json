@@ -1,0 +1,62 @@
+[
+  {
+    "case": "array-fini",
+    "native_exit": 0,
+    "stdout": "PASS array-fini\n",
+    "stderr": ""
+  },
+  {
+    "case": "prior-plugin",
+    "native_exit": 0,
+    "stdout": "PASS prior-plugin\n",
+    "stderr": ""
+  },
+  {
+    "case": "array-only",
+    "native_exit": 0,
+    "stdout": "PASS array-only\n",
+    "stderr": ""
+  },
+  {
+    "case": "fini-only",
+    "native_exit": 0,
+    "stdout": "PASS fini-only\n",
+    "stderr": ""
+  },
+  {
+    "case": "empty",
+    "native_exit": 0,
+    "stdout": "PASS empty\n",
+    "stderr": ""
+  },
+  {
+    "case": "zero-array",
+    "native_exit": 0,
+    "stdout": "PASS zero-array\n",
+    "stderr": ""
+  },
+  {
+    "case": "bad-size",
+    "native_exit": 1,
+    "stdout": "",
+    "stderr": "plugin-finalizers: invalid plugin finalizer array\n"
+  },
+  {
+    "case": "missing-size",
+    "native_exit": 1,
+    "stdout": "",
+    "stderr": "plugin-finalizers: invalid plugin finalizer array\n"
+  },
+  {
+    "case": "missing-map",
+    "native_exit": 1,
+    "stdout": "",
+    "stderr": "plugin-finalizers: missing plugin finalizer map\n"
+  },
+  {
+    "case": "duplicate-map",
+    "native_exit": 1,
+    "stdout": "",
+    "stderr": "plugin-finalizers: ambiguous plugin finalizer map\n"
+  }
+]

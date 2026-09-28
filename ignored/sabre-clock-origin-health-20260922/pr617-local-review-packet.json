@@ -1,0 +1,46 @@
+{
+  "base": "52609b1f21235b12ef51554ae3b24cc024730c4d",
+  "completion": {
+    "bytes": 612,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr-drain-review-completion-f3be94e2.json",
+    "sha256": "bd99cd8316834260e84d6862330c1964efd093992618cf962fbad4072f6c7241"
+  },
+  "diff_sha256": "d568629d36d8cb88c94903bd6f9d2c269e146d7331dbb7c1f299cda89fb65053",
+  "family": "codex",
+  "head": "f3be94e21627667b58ea1f1b52af8db01483c28b",
+  "pr": 617,
+  "provenance": {
+    "evidence": {
+      "bytes": 854,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr617-observed-collaboration.json",
+      "sha256": "9fb626d2b64ab0ae54819b668b63fbfc9562bd4bb77f9a1ae92ace47e35083ad"
+    },
+    "kind": "attestor-observed-collaboration"
+  },
+  "report": {
+    "bytes": 5412,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/CODEX-LOCAL-APPROVAL-f3be94e2.md",
+    "sha256": "d3e24e3e2528d921c20737611c700fb097f27775f482f134cf1d26988a3a452f"
+  },
+  "repository": "rrnewton/reverie",
+  "schema": 1,
+  "tree": "99c42f84e4e0c14f208139410bdfb091fde67779",
+  "triggers": {
+    "detcore-scheduling": {
+      "applies": false,
+      "reason": "No DetCore scheduler, race-search, scheduling policy or continuous virtual-time source is modified."
+    },
+    "new-determinization": {
+      "applies": false,
+      "reason": "No new guest determinization strategy or virtual-time behavior. Proven tool allocator finalization remains native tool work under the existing domain model."
+    },
+    "new-syscall": {
+      "applies": false,
+      "reason": "No new syscall support, dispatch/classification entry, or syscall implementation is added."
+    },
+    "reverie-core-api": {
+      "applies": false,
+      "reason": "Tool, Guest, Backend and the syscall-interception model/ABI are unchanged. This routine SaBRe parity repair applies the existing plugin-domain guard to the selected plugin ELF finalization lifecycle, preserving the existing routers and all callbacks."
+    }
+  }
+}

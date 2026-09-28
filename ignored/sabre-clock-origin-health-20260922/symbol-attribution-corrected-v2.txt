@@ -1,0 +1,14 @@
+_mi_prim_clock_now
+static.c:?
+_mi_arenas_free
+static.c:?
+_mi_arenas_collect
+static.c:?
+_mi_arenas_page_free
+static.c:?
+_mi_arenas_page_free
+static.c:?
+_mi_page_free
+static.c:?
+_mi_strnicmp
+static.c:?

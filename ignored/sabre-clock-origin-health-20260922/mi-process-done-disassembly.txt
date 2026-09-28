@@ -1,0 +1,93 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/install/rsrcs/libdetcore_sabre.so:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+Disassembly of section .fini:
+
+Disassembly of section .text:
+
+0000000000355cb0 <mi_process_done>:
+  355cb0:	80 3d 51 47 28 00 00 	cmpb   $0x0,0x284751(%rip)        # 5da408 <_mi_process_is_initialized>
+  355cb7:	74 09                	je     355cc2 <mi_process_done+0x12>
+  355cb9:	80 3d 48 04 28 00 00 	cmpb   $0x0,0x280448(%rip)        # 5d6108 <process_done.5>
+  355cc0:	74 06                	je     355cc8 <mi_process_done+0x18>
+  355cc2:	c3                   	ret    
+  355cc3:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+  355cc8:	41 54                	push   %r12
+  355cca:	55                   	push   %rbp
+  355ccb:	53                   	push   %rbx
+  355ccc:	c6 05 35 04 28 00 01 	movb   $0x1,0x280435(%rip)        # 5d6108 <process_done.5>
+  355cd3:	e8 e8 d0 ff ff       	call   352dc0 <_mi_thread_locals_done>
+  355cd8:	e8 63 c0 ff ff       	call   351d40 <_mi_prim_thread_done_auto_done>
+  355cdd:	48 8b 05 24 87 27 00 	mov    0x278724(%rip),%rax        # 5ce408 <_DYNAMIC+0x1f38>
+  355ce4:	be 01 00 00 00       	mov    $0x1,%esi
+  355ce9:	64 48 8b 38          	mov    %fs:(%rax),%rdi
+  355ced:	e8 de cd ff ff       	call   352ad0 <mi_theap_collect>
+  355cf2:	bf 16 00 00 00       	mov    $0x16,%edi
+  355cf7:	e8 e4 40 ff ff       	call   349de0 <mi_option_is_enabled>
+  355cfc:	84 c0                	test   %al,%al
+  355cfe:	74 60                	je     355d60 <mi_process_done+0xb0>
+  355d00:	4c 8d 25 79 60 28 00 	lea    0x286079(%rip),%r12        # 5dbd80 <subprocs_lock>
+  355d07:	4c 89 e7             	mov    %r12,%rdi
+  355d0a:	e8 b1 6e 24 00       	call   59cbc0 <pthread_mutex_lock@plt>
+  355d0f:	89 c7                	mov    %eax,%edi
+  355d11:	85 c0                	test   %eax,%eax
+  355d13:	0f 85 b7 00 00 00    	jne    355dd0 <mi_process_done+0x120>
+  355d19:	48 8b 1d 10 df 27 00 	mov    0x27df10(%rip),%rbx        # 5d3c30 <subprocs>
+  355d20:	48 8d 2d 99 60 28 00 	lea    0x286099(%rip),%rbp        # 5dbdc0 <subproc_main>
+  355d27:	48 85 db             	test   %rbx,%rbx
+  355d2a:	74 18                	je     355d44 <mi_process_done+0x94>
+  355d2c:	48 89 df             	mov    %rbx,%rdi
+  355d2f:	48 8b 5b 08          	mov    0x8(%rbx),%rbx
+  355d33:	48 39 ef             	cmp    %rbp,%rdi
+  355d36:	74 ef                	je     355d27 <mi_process_done+0x77>
+  355d38:	31 f6                	xor    %esi,%esi
+  355d3a:	e8 71 fc ff ff       	call   3559b0 <mi_subproc_unsafe_destroy>
+  355d3f:	48 85 db             	test   %rbx,%rbx
+  355d42:	75 e8                	jne    355d2c <mi_process_done+0x7c>
+  355d44:	4c 89 e7             	mov    %r12,%rdi
+  355d47:	e8 e4 6d 24 00       	call   59cb30 <pthread_mutex_unlock@plt>
+  355d4c:	be 01 00 00 00       	mov    $0x1,%esi
+  355d51:	48 89 ef             	mov    %rbp,%rdi
+  355d54:	e8 57 fc ff ff       	call   3559b0 <mi_subproc_unsafe_destroy>
+  355d59:	eb 19                	jmp    355d74 <mi_process_done+0xc4>
+  355d5b:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+  355d60:	e8 1b ab ff ff       	call   350880 <mi_heap_main>
+  355d65:	4c 8d 25 14 60 28 00 	lea    0x286014(%rip),%r12        # 5dbd80 <subprocs_lock>
+  355d6c:	48 89 c7             	mov    %rax,%rdi
+  355d6f:	e8 2c b5 ff ff       	call   3512a0 <mi_heap_stats_merge_to_subproc>
+  355d74:	bf 01 00 00 00       	mov    $0x1,%edi
+  355d79:	e8 62 40 ff ff       	call   349de0 <mi_option_is_enabled>
+  355d7e:	84 c0                	test   %al,%al
+  355d80:	75 0e                	jne    355d90 <mi_process_done+0xe0>
+  355d82:	bf 02 00 00 00       	mov    $0x2,%edi
+  355d87:	e8 54 40 ff ff       	call   349de0 <mi_option_is_enabled>
+  355d8c:	84 c0                	test   %al,%al
+  355d8e:	74 11                	je     355da1 <mi_process_done+0xf1>
+  355d90:	e8 5b fe fe ff       	call   345bf0 <mi_subproc_main>
+  355d95:	31 d2                	xor    %edx,%edx
+  355d97:	31 f6                	xor    %esi,%esi
+  355d99:	48 89 c7             	mov    %rax,%rdi
+  355d9c:	e8 8f 94 ff ff       	call   34f230 <mi_subproc_stats_print_out>
+  355da1:	4c 89 e7             	mov    %r12,%rdi
+  355da4:	e8 07 6e 24 00       	call   59cbb0 <pthread_mutex_destroy@plt>
+  355da9:	e8 f2 fe ff ff       	call   355ca0 <_mi_allocator_done>
+  355dae:	48 8b 35 8b dd 27 00 	mov    0x27dd8b(%rip),%rsi        # 5d3b40 <tld_main>
+  355db5:	48 8d 3d dd 7b d5 ff 	lea    -0x2a8423(%rip),%rdi        # ad999 <anon.6aaf5aad040b62b587ff8776caa0a61a.132.llvm.4745795083304582481+0x8e>
+  355dbc:	31 c0                	xor    %eax,%eax
+  355dbe:	e8 3d 40 ff ff       	call   349e00 <_mi_verbose_message>
+  355dc3:	5b                   	pop    %rbx
+  355dc4:	5d                   	pop    %rbp
+  355dc5:	c6 05 a4 bd 27 00 01 	movb   $0x1,0x27bda4(%rip)        # 5d1b70 <os_preloading>
+  355dcc:	41 5c                	pop    %r12
+  355dce:	c3                   	ret    
+  355dcf:	90                   	nop
+  355dd0:	89 c2                	mov    %eax,%edx
+  355dd2:	48 8d 35 a7 69 d6 ff 	lea    -0x299659(%rip),%rsi        # bc780 <anon.314f174d225347f4dddfbbb5afd9fa68.11.llvm.3426892746252126337+0x102>
+  355dd9:	31 c0                	xor    %eax,%eax
+  355ddb:	e8 b0 53 ff ff       	call   34b190 <_mi_error_message>
+  355de0:	e9 34 ff ff ff       	jmp    355d19 <mi_process_done+0x69>
+
+Disassembly of section .plt:

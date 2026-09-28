@@ -1,0 +1,40 @@
+{
+  "build_target_root": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "-DCMAKE_C_FLAGS=-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf -DSBR_ORIGIN_DIAGNOSTIC_PATH=\\\"/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/origin.log\\\"",
+      "-DCMAKE_EXE_LINKER_FLAGS=-L/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/build/reverie-sabre-6ce139021f9a6331/out/libelf-build-v2"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+      "--target",
+      "sabre",
+      "--parallel",
+      "2"
+    ]
+  ],
+  "component_output": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+  "diagnostic_only": true,
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "4G",
+    "runtime_max_sec": 600,
+    "swap_max": 0,
+    "tasks_max": 256
+  },
+  "reused_libelf": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/build/reverie-sabre-6ce139021f9a6331/out/libelf-build-v2",
+  "schema": 1,
+  "source_base": "52609b1f21235b12ef51554ae3b24cc024730c4d",
+  "source_branch": "codex/sabre-clock-origin-health-20260922",
+  "source_file": "experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c",
+  "source_sha256": "aa64f17245a5c2abe56d704490d4727b2dbabeb980d4201b28a758cdff9f313b"
+}

@@ -1,0 +1,23 @@
+[ 23%] Built target plugin_api
+[ 26%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall.S.o
+[ 30%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall_loader.s.o
+[ 34%] Building ASM object arch/CMakeFiles/backend.dir/handle_vdso.s.o
+[ 38%] Building C object arch/CMakeFiles/backend.dir/rewriter.c.o
+[ 42%] Building C object arch/CMakeFiles/backend.dir/syscall_stackframe.c.o
+[ 46%] Building C object arch/CMakeFiles/backend.dir/x86_decoder.c.o
+[ 50%] Building ASM object arch/CMakeFiles/backend.dir/handle_rdtsc.s.o
+[ 53%] Linking C static library libbackend.a
+[ 53%] Built target backend
+[ 61%] Building C object loader/CMakeFiles/loader.dir/backend_stats.c.o
+[ 61%] Building C object loader/CMakeFiles/loader.dir/bootstrap.c.o
+[ 65%] Building C object loader/CMakeFiles/loader.dir/elf_loading.c.o
+[ 69%] Building C object loader/CMakeFiles/loader.dir/ld_sc_handler.c.o
+[ 73%] Building C object loader/CMakeFiles/loader.dir/loader.c.o
+[ 76%] Building C object loader/CMakeFiles/loader.dir/maps.c.o
+[ 80%] Building C object loader/CMakeFiles/loader.dir/premain.c.o
+[ 84%] Building C object loader/CMakeFiles/loader.dir/rewriter.c.o
+[ 88%] Building C object loader/CMakeFiles/loader.dir/debuginfo.c.o
+[ 92%] Linking C static library libloader.a
+[ 92%] Built target loader
+[ 96%] Linking ASM executable ../sabre
+[100%] Built target sabre

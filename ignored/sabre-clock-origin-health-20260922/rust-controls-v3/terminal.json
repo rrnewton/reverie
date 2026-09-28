@@ -1,0 +1,36 @@
+{
+  "results": [
+    {
+      "phase": 0,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "native_exit": 0,
+      "wall_seconds": 2.1592647740617394
+    },
+    {
+      "phase": 1,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "test",
+        "--offline",
+        "-p",
+        "reverie-sabre",
+        "--test",
+        "loader_plugin_finalizers",
+        "--test",
+        "late_function_registration",
+        "--",
+        "--nocapture"
+      ],
+      "native_exit": 101,
+      "wall_seconds": 44.37085260404274
+    }
+  ],
+  "wall_seconds": 46.531325469724834,
+  "finished_at": "2026-09-22T17:48:50.481567+00:00"
+}

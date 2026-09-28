@@ -1,0 +1,24 @@
+safehermit: run_id=20260922T174944Z-391638
+safehermit: binary=/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/hermit
+safehermit: binary_source=flag:--sh-bin
+safehermit: binary_sha256=45fb6b9321f581fb56dc8c6338c46d6cf2402828ff75fcbc45d2ba06e5b5edf7
+safehermit: log_dir=/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/fixed-cross-parity-v1/safehermit/brs-safehermit-20260922T174944Z-391638-392677-1790099384740753863
+safehermit: log_file=/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/fixed-cross-parity-v1/safehermit/brs-safehermit-20260922T174944Z-391638-392677-1790099384740753863/hermit.log
+safehermit: unit=safehermit-20260922T174944Z-391638
+safehermit: bound.wall=APPLIED:30s
+safehermit: bound.cgroup=APPLIED:MemoryMax=16G MemorySwapMax=0
+safehermit: bound.disk=APPLIED:256M for log_dir only; guest paths and explicit log files elsewhere are outside this bound
+safehermit: bound.bytes=APPLIED:8388608 (LETHAL: the run is cgroup-killed at the cap)
+safehermit: bound.logfilter=NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires
+safehermit: env.forwarded=APPLIED:178 variables forwarded; 5 SKIPPED (name not a plain shell identifier, e.g. an exported function)
+safehermit: note.run_record=/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/fixed-cross-parity-v1/safehermit/registry/20260922T174944Z-391638.json (best-effort; nothing depends on it)
+safehermit: elapsed_secs=0
+safehermit: bytes_written=57927
+safehermit: truncated=false
+safehermit: runner_exit_code=1
+safehermit: unit_result=exit-code
+safehermit: exec_main_pid=394244
+safehermit: exec_main_code=1
+safehermit: exec_main_status=1
+safehermit: exec_main_start_monotonic_usec=2258314205306
+safehermit: exit_code=1

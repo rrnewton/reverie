@@ -1,0 +1,41 @@
+{
+  "base": "52609b1f21235b12ef51554ae3b24cc024730c4d",
+  "branch": "codex/sabre-clock-origin-health-20260922",
+  "checkout": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie",
+  "controls": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/rust-controls-v3",
+  "created_at": "2026-09-22T17:50:02.837803+00:00",
+  "files": {
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c": {
+      "bytes": 804,
+      "sha256": "b831f856941cdaafcb81926a04f4ad27121ee11adfbbec07122be1ba92097861"
+    },
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c": {
+      "bytes": 1122,
+      "sha256": "1df2378bb1447353949d814b6c89fb0ff0a72ef68308071922cc639645e0026d"
+    },
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c": {
+      "bytes": 7454,
+      "sha256": "38afd143c4e7e5861d17ee93eb80c5f00eb0c43a561399decf8ada6fcf85584b"
+    },
+    "experimental/reverie-sabre/tests/late_function_registration.rs": {
+      "bytes": 8596,
+      "sha256": "9d9802efe2211b050e7e2a26f73c12cb7a4d49fa48278e30b1e498cb5a1bcf80"
+    },
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.c": {
+      "bytes": 3452,
+      "sha256": "f59adf8eb856ff14a36049e42360e0521aafc0fe378ab1ac58135fa3ac6ead99"
+    },
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.rs": {
+      "bytes": 2178,
+      "sha256": "ca00cf68461b1c3dc1d7dc27c7b89405cbe19ef528fba8356e6ea7ca85a4a554"
+    },
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c": {
+      "bytes": 19421,
+      "sha256": "1de35c9b45c46c9a7e764638b75941358e279c51b2257446567f727ccb5e8a73"
+    }
+  },
+  "repo": "rrnewton/reverie",
+  "schema": 1,
+  "scoped_run": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-fixed-v1",
+  "static_runtime": "pending existing real static loader fixture; map installation/detours, not static ELF-finalizer execution"
+}

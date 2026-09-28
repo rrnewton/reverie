@@ -1,0 +1,9 @@
+[ 23%] Built target plugin_api
+[ 53%] Built target backend
+[ 57%] Building C object loader/CMakeFiles/loader.dir/rewriter.c.o
+[ 61%] Building C object loader/CMakeFiles/loader.dir/premain.c.o
+[ 65%] Building C object loader/CMakeFiles/loader.dir/debuginfo.c.o
+[ 69%] Linking C static library libloader.a
+[ 92%] Built target loader
+[ 96%] Linking ASM executable ../sabre
+[100%] Built target sabre

@@ -1,0 +1,338 @@
+{
+  "bounded_lifecycle_feasibility": {
+    "conclusion": "The reviewed selected-plugin finalizer repair is independently useful product correctness. The retained startup evidence establishes no second random-value or guest-clock-value defect. Do not begin a broad bootstrap rewrite solely to change the red comparator result.",
+    "earliest_constraints": [
+      "R loader premain.c:139-144 deliberately initializes the plugin in preinit after relocation/GOT availability. ld_sc_handler.c:250-277 requires loader TLS and explains why forwarding ARCH_SET_FS into allocator/pthread-using plugin code before client TLS initialization is unsafe. Moving the existing Rust connection earlier is not a supported fix.",
+      "R reverie_adapter.rs:438-462 connects RPC, constructs T, resolves inherited fork state, then constructs the normal root and applies its initializer. H ThreadState::new at tool_local.rs:2145 also discovers fd0..2 using current-process fcntl/fstat (688-724). Running that same constructor in the out-of-process supervisor would discover supervisor descriptors.",
+      "H handle_thread_start at detcore/src/lib.rs:1643-1716 performs real global registration, scheduling and clock hooks; handle_post_exec at1719 consumes the authenticated auxv fact. These callbacks cannot be synthesized at handoff or repeated without changing state. R Tool::init_thread_state documents creation before the first guest instruction (reverie/src/tool.rs:429-454)."
+    ],
+    "minimal_dependency_sequence": [
+      "For a genuine pre-interpreter shared-Tool path: R first needs a backward-compatible, explicitly negotiated early guest-interception/continuation boundary, preserving native loader-private operations and static/exec/fork legacy paths. A stopped external Guest or equivalent actual Tool execution provider must act on guest memory/injections and guest metadata; no backend-local reproduction of Detcore semantics. This is a core interception/lifecycle change, not a small loader guard.",
+      "After reviewed R delivery, H may advance its R pin monotonically and consume that boundary in sabre_bootstrap/sabre_ptrace plus detcore-sabre. Keep one live root Tool state through real bootstrap operations and authenticated transition. Existing global state/RPC must remain authoritative across both phases; merely serializing the current random capsule cannot close the routing gap.",
+      "The bounded RNG-only alternative is an additive R root-state factory after the existing fork decision, with current connect/initializer APIs unchanged, then H shared construction that adopts the authenticated already-advanced RNG exactly once while constructing unrelated state normally. Preserve static/exec continuation behavior, all identity checks and real event emission. It does not change the 25 native startup routes or establish parity, and current evidence supports lifecycle/evidence hardening rather than a guest-value correction."
+    ],
+    "narrow_product_candidates": "No additional independently proven guest-correctness repair follows from the first auxv/USER RAND mismatch. The reference rseq returns ENOSYS while source routes pre-plugin SaBRe rseq natively; robust-list/clear-child-tid registrations likewise bypass shared handlers. These are specific coverage risks, not observed candidate return values or permission to emulate them in a backend helper. They would require separately dispatched evidence before choosing a narrow fix.",
+    "prior_report_sha256": "adc8ee1220339a4c22c5b19bc949448be1635687e600477550b9f88a2c07e55f",
+    "recommendation": "Keep the finalizer fix ready for normal R-first delivery once account state changes. Park startup implementation until a separately scoped genuine guest correctness target is established; do not present RNG-constructor or collector cleanup as resolving the full startup parity failure.",
+    "recorded_at": "2026-09-22T18:11:56.625842+00:00",
+    "reusable_state_and_limit": "Reuse shared Detcore handlers, the existing authenticated IMAGE/GETRANDOM/TAKE owner/config/image checks, and the real advanced Pcg64Mcg. Tool::ThreadState is already serializable and SaBRe has a same-tool process-fork codec, but that codec creates a child from parent state; it is not authority to resume the same root across execution providers. Full continuation must preserve clocks/counters, metadata/open-file identities, memory identity, scheduler registration, robust-list state, RNGs and record/replay state, with one owner and no reset/reseed/re-registration. Existing random handoff intentionally carries none of those non-random fields.",
+    "scope": "Read-only source/retained-evidence assessment; only this section appended. No source, ref, index, target, runtime or public action.",
+    "separate_event_transport": "Appending plugin records after process exit loses producer order independently of state handoff. A faithful shared emission-time transport could improve evidence, but cannot repair guest routing and must not sort, drop, retimestamp, synthesize events or relax comparison.",
+    "trigger_assessment": "A genuine early shared-Tool provider and same-root transition changes the syscall-interception/lifecycle model: post-facto trigger2 applies even if Tool trait signatures stay unchanged. Trigger4 additionally applies if core scheduling behavior changes. The narrower factory must be assessed against its final callback/construction contract; replacing the documented root initialization model also triggers2. Pure faithful event transport has no automatic core trigger. No new determinization algorithm is justified."
+  },
+  "current_heads": {
+    "H": "6988c184d8ff245907ddfaf53744eb27b03669e5",
+    "R": "f3be94e21627667b58ea1f1b52af8db01483c28b"
+  },
+  "early_reference_calls": [
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 1,
+      "route_class": "native_loader_default_forward",
+      "syscall": "brk(NULL)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 2,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 3,
+      "route_class": "native_loader_default_forward",
+      "syscall": "access(0x7ffff7ff3580 -> \"/etc/ld-nix.so.preload\", Mode(S_IROTH))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 4,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "openat(-100, 0x7fffffffda70 -> \"/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/libc.so.6\", OFlag(O_CLOEXEC))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 5,
+      "route_class": "native_loader_default_forward",
+      "syscall": "newfstatat(-100, 0x7fffffffda70 -> \"/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/\", 0x7fffffffdb40, AtFlags(0x0))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 6,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "openat(-100, 0x7fffffffda70 -> \"/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libc.so.6\", OFlag(O_CLOEXEC))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 7,
+      "route_class": "native_loader_default_forward",
+      "syscall": "read(3, 0x7fffffffdcb8, 832)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 8,
+      "route_class": "native_loader_default_forward",
+      "syscall": "pread64(3, 0x7fffffffd6b0, 840, 64)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 9,
+      "route_class": "native_loader_default_forward",
+      "syscall": "fstat(3, 0x7fffffffdb40)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 10,
+      "route_class": "native_loader_default_forward",
+      "syscall": "pread64(3, 0x7fffffffd740, 840, 64)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 11,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(NULL, 2133584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 12,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(0x7ffff7c28000, 1568768, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 163840)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 13,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(0x7ffff7da7000, 323584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1732608)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 14,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(0x7ffff7df6000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2052096)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 15,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(0x7ffff7dfc000, 52816, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 16,
+      "route_class": "native_loader_default_forward",
+      "syscall": "close(3)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 17,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 18,
+      "route_class": "native_loader_substrate_wrapper",
+      "syscall": "arch_prctl(ARCH_SET_FS, 140737353840512)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 19,
+      "route_class": "native_loader_default_forward",
+      "syscall": "set_tid_address(0x7ffff7fb7a50)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 20,
+      "route_class": "native_loader_default_forward",
+      "syscall": "set_robust_list(0x7ffff7fb7a60, 24)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 21,
+      "route_class": "native_loader_default_forward",
+      "syscall": "rseq(140737353840256, 33, 0, 1392848979, 18446744073709551360, 0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 22,
+      "route_class": "native_loader_default_forward",
+      "syscall": "mprotect(0x7ffff7df6000, 16384, ProtFlags(PROT_READ))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 23,
+      "route_class": "native_loader_default_forward",
+      "syscall": "mprotect(0x555555557000, 4096, ProtFlags(PROT_READ))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 24,
+      "route_class": "native_loader_default_forward",
+      "syscall": "mprotect(0x7ffff7ffb000, 8192, ProtFlags(PROT_READ))"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 25,
+      "route_class": "native_loader_default_forward",
+      "syscall": "prlimit64(0, 3, NULL, 0x7fffffffe6b0)"
+    },
+    {
+      "authority": "observed ptrace reference operand; SaBRe route classified from exact pre-plugin source, not a retained native SaBRe syscall trace",
+      "reference_ordinal": 26,
+      "route_class": "shared_random_helper_only",
+      "syscall": "getrandom(0x7ffff7e01200, 8, 1)"
+    }
+  ],
+  "evidence": {
+    "ptrace_log": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/ignored/sabre-pid-parity-health-20260922/host-replay-v2/ptrace/verify-logs/run1_log_iMCpf",
+      "sha256": "3aabbabb36f85ece3d4d4d3183b5d6cc0d8c49b45eeaaeb95fefdfba0e6532e7"
+    },
+    "sabre_fixed_log": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-fixed-v1/verify-logs/run1_log_L99wX",
+      "sha256": "503caab6be21bb1cb52433721673ec61f3669756b9a22c02634b27f64941b5f7"
+    },
+    "strict_cross_report": {
+      "comparison": {
+        "canonicalize_host_addresses": true,
+        "git_diff": false,
+        "ignored_line_substrings": [],
+        "included_detlog_kinds": [
+          "syscall",
+          "syscall_result",
+          "other"
+        ],
+        "record_envelope": "cross_backend_detcore_v1",
+        "require_structured_events": true,
+        "skip_commit": false,
+        "skip_detlog": false,
+        "stream": "info",
+        "unsafe_strip_lines": false
+      },
+      "first_divergent_left_message": "INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 0",
+      "first_divergent_record": 3,
+      "first_divergent_right_message": "INFO detcore::random: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]",
+      "first_divergent_scheduler_turn": null,
+      "first_divergent_syscall": null,
+      "first_divergent_virtual_nanoseconds": null,
+      "inputs": {
+        "left": {
+          "bytes": 24516,
+          "sha256": "3aabbabb36f85ece3d4d4d3183b5d6cc0d8c49b45eeaaeb95fefdfba0e6532e7"
+        },
+        "right": {
+          "bytes": 7084,
+          "sha256": "503caab6be21bb1cb52433721673ec61f3669756b9a22c02634b27f64941b5f7"
+        }
+      },
+      "records": {
+        "available_left": 101,
+        "available_right": 32,
+        "compared": 32,
+        "withheld_incomplete_tail": false
+      },
+      "schema": 1,
+      "selected_messages": {
+        "left": 100,
+        "right": 29
+      },
+      "verdict": "diverged"
+    }
+  },
+  "findings": [
+    "The exact first divergence is a different initialization event, not a differing time field or random payload. Both retained streams have identical sixteen AT_RANDOM bytes and identical first eight-byte getrandom hash 9401673912765844831.",
+    "SaBRe supervisor constructs the actual seeded PRNG before IMAGE, performs shared initialize_auxv and getrandom before plugin readiness, then hands its advanced state to a normally constructed root. The later normal constructor emits USER/CHAOS seed records for fresh initial state before the authenticated PRNG replacement; completed auxv identity prevents a second draw/write/event.",
+    "This establishes split initialization ownership and a misleading global event sequence, not an observed initial random-byte corruption. The collector separately appends plugin records only after child completion, losing global producer order; sorting those records would not establish shared lifecycle parity.",
+    "The retained ptrace trace has26 loader/bootstrap inbound syscall records before getpid; fixed SaBRe has only the six main-program inbound syscall records. This is a separate shared-tool startup coverage gap. Source classifies one getrandom through the shared random helper, ten calls through native loader substrate wrappers, and fifteen through native default forwarding; it does not prove exact one-for-one native SaBRe operands for the missing reference operations.",
+    "No common guest-visible clock_gettime return is recorded in pid-probe. Runtime logical-time totals differ, but that is not an observed mismatch in a guest clock read. Normal shared Detcore clock/scheduler/syscall accounting is absent from the early helper route."
+  ],
+  "mode": "read-only diagnosis; no source/ref changes or runtime",
+  "ranked_candidates": [
+    {
+      "boundedness": "Not a safe one-line patch. Requires a separately dispatched bounded design for the existing supervisor/initial-image seam, explicit earliest supported interception point and state ownership; preserve arbitrary-program/exec/static contracts.",
+      "likely_paths": [
+        "H/hermit-cli/src/sabre_bootstrap.rs",
+        "H/detcore-sabre/src/lib.rs",
+        "R/experimental/reverie-sabre/src/reverie_adapter.rs",
+        "R/experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c"
+      ],
+      "product_value": "Highest: route real guest interpreter/bootstrap operations through the existing shared Detcore Tool and preserve complete live root state across transition, rather than reproducing syscall semantics in bootstrap helpers. Plugin/loader-private operations must remain outside the guest domain.",
+      "rank": 1,
+      "review_triggers": "Trigger2 if the Tool/Guest/Backend or syscall-interception model is changed; trigger4 additionally if core Detcore scheduling changes. Shared existing Detcore semantics alone are not a new determinization strategy.",
+      "scope": "shared-tool initial guest lifecycle before PT_INTERP, with authenticated ownership handoff into the in-process SaBRe plugin"
+    },
+    {
+      "boundedness": "H shared random/root-state constructor plus explicit R pre-construction state adoption contract if needed. No duplicate seed events, suppressed genuine draws, synthetic callbacks, or fake scheduling readiness. Equal observed random output currently supplies no urgent value-correction claim.",
+      "product_value": "Narrower lifecycle correctness: avoid constructing/logging an immediately discarded fresh root PRNG after genuine bootstrap draws. Preserve authenticated config/image/stream and exact draw sequence. Does not close25 native startup operations or establish cross-backend parity.",
+      "rank": 2,
+      "review_triggers": "Trigger2 if constructor/adoption alters core initialization/interception contract; existing fields/config/auxv guards must remain.",
+      "scope": "single authoritative initial random-state creation/adoption in shared Detcore"
+    },
+    {
+      "boundedness": "Investigate reuse of existing forwarder and owned output channel with explicit framing/order/cleanup. Do not sort logs, move timestamps, drop coordinator/guest events or relax comparator.",
+      "product_value": "Evidence integrity only: preserve real producer causality rather than append after exit. It cannot repair guest startup coverage or justify green parity.",
+      "rank": 3,
+      "review_triggers": "No automatic core trigger for pure transport; reassess if shared Tool or scheduling semantics are changed.",
+      "scope": "one authenticated emission-time Detcore event transport for coordinator and plugin"
+    }
+  ],
+  "recorded_at": "2026-09-22T18:05:45.382918+00:00",
+  "route_counts": {
+    "native_loader_default_forward": 15,
+    "native_loader_substrate_wrapper": 10,
+    "shared_random_helper_only": 1
+  },
+  "route_details": {
+    "native_loader_default_forward": "brk1, access1, newfstatat1, read1, pread64(2), fstat1, close1, set_tid_address1, set_robust_list1, rseq1, mprotect(3), prlimit64(1): real_syscall through ld_sc_handler default or runtime null-plugin branch.",
+    "native_loader_substrate_wrapper": "openat(2) calls real_syscall then tracks library FDs; mmap(7) calls real_syscall with loader-map preservation and rewrite bookkeeping; ARCH_SET_FS(1) uses special native TLS handler. None executes shared Detcore plugin_sc_handler during initial loader phase.",
+    "shared_random_helper_only": "getrandom: runtime_syscall_router NULL-plugin bootstrap special case; authenticated private request to H sabre_bootstrap; detcore::random::getrandom preserves shared flags/PRNG/memory semantics. It does not execute normal Detcore syscall hooks/counters/scheduler lifecycle. AT_RANDOM is likewise shared initialize_auxv but is not one of the26 syscalls."
+  },
+  "schema": 1,
+  "source": {
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/src/reverie_adapter.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+      "sha256": "6c225afea15d16f2284bb1de9078f6209e82913ea86bc1ad0498bd75cafb7278"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c": {
+      "identical_to_measured_source": true,
+      "measured_source": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+      "sha256": "9d777e2e1812441d9608330489c22fef3563501c23e9185ab73e2536b439a2b5"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c": {
+      "identical_to_measured_source": true,
+      "measured_source": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+      "sha256": "722c7cae1b607f9b8800de2601f73bf5a33fd428db4d65a9caa56d4dd36cda88"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/detcore-sabre/src/lib.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "aa48642fce3c5e4a6c5623f206b8aec3b3a8389267e68f59e28d679192942848"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/detcore/src/lib.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "24afad331fa5c938758a45e55c77cacba09fe708c27f4a90f942198eb3aef77e"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/detcore/src/random.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "9686f1fa4cb46fddb21066f82356f9d97994c188f62472fd48a00496f7d127da"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/detcore/src/tool_local.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "61426d21ff199450d842dd55acef79e0366f1ccb8e004df904ad06b1065b7d5b"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/hermit-cli/src/bin/hermit/run.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "aee3f8271bf4f68f2733f560aa5f45a02845521ab6794a3fba4341fc13d71d6a"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/hermit-cli/src/sabre_bootstrap.rs": {
+      "identical_to_measured_source": true,
+      "measured_source": "83928eb75c9aae899bdf6d80046688534562b761",
+      "sha256": "64905ba956ec8212f67a6d9acd7d46b71b3a879a0ebc5626393b4e4f491837d0"
+    }
+  },
+  "unchanged": "Original failed full run, strict comparator, source branches and parked R commit remain intact; no implementation authorized by this report."
+}

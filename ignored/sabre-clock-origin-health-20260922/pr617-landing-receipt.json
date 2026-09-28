@@ -1,0 +1,33 @@
+{
+  "absent": [],
+  "arrived": [
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c",
+    "experimental/reverie-sabre/tests/late_function_registration.rs",
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.c",
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.rs",
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c"
+  ],
+  "corroborated": true,
+  "corroborated_against": "f3be94e21627667b58ea1f1b52af8db01483c28b",
+  "files": [
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c",
+    "experimental/reverie-sabre/tests/late_function_registration.rs",
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.c",
+    "experimental/reverie-sabre/tests/loader_plugin_finalizers.rs",
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c"
+  ],
+  "local_review_admission": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/pr617-landing-receipt.json.admission.json",
+    "sha256": "3f5a6476668767d13242655afe5602eb60f4587c8e6adc21da67ac50aba8cc23"
+  },
+  "main_sha": "ae1d1da78d2d89a1fa0454ee2282cf135e2286ed",
+  "moved_on": [],
+  "pr": "617",
+  "repo": "rrnewton/reverie",
+  "resolved_from": "refs/pull/617/head",
+  "resolved_head": "f3be94e21627667b58ea1f1b52af8db01483c28b"
+}

@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-bin",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/hermit",
+    "--sh-deadline",
+    "30",
+    "--sh-max-log-bytes",
+    "8388608",
+    "--sh-disk-limit",
+    "256M",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/fixed-cross-parity-v1/safehermit-report.log",
+    "log-diff",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/ignored/sabre-pid-parity-health-20260922/host-replay-v2/ptrace/verify-logs/run1_log_iMCpf",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-fixed-v1/verify-logs/run1_log_L99wX",
+    "--canonical-info",
+    "--record-envelope",
+    "cross-backend-detcore-v1",
+    "--json",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/fixed-cross-parity-v1/report.json"
+  ],
+  "candidate_plan": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-fixed-v1/plan.json",
+  "source_plan": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/ignored/sabre-pid-parity-health-20260922/host-replay-v2/plan.json"
+}

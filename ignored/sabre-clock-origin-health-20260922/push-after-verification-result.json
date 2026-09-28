@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "push",
+    "-u",
+    "origin",
+    "HEAD:refs/heads/codex/sabre-clock-origin-health-20260922"
+  ],
+  "finished_at": "2026-09-22T20:56:28.460942+00:00",
+  "native_exit": 0,
+  "stderr": "remote: \nremote: Create a pull request for 'codex/sabre-clock-origin-health-20260922' on GitHub by visiting:        \nremote:      https://github.com/rrnewton/reverie/pull/new/codex/sabre-clock-origin-health-20260922        \nremote: \nTo https://github.com/rrnewton/reverie.git\n * [new branch]        HEAD -> codex/sabre-clock-origin-health-20260922\n",
+  "stdout": "branch 'codex/sabre-clock-origin-health-20260922' set up to track 'origin/codex/sabre-clock-origin-health-20260922'.\n",
+  "wall_seconds": 2.038502560928464
+}

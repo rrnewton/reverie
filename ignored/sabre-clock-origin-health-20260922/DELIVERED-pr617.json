@@ -1,0 +1,75 @@
+{
+  "all_seven_blobs_equal": [
+    {
+      "blob": "73736d1198745a0bd95ef66927a6b2d3f0b6328d",
+      "path": "experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c"
+    },
+    {
+      "blob": "974cc54c3e4342a155b63be81ff1a75ddcb75665",
+      "path": "experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c"
+    },
+    {
+      "blob": "0b36125eee62251579d62aa0e58a496a66d21399",
+      "path": "experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c"
+    },
+    {
+      "blob": "f1105a8bc3c05902648f02214bb6a865a9336368",
+      "path": "experimental/reverie-sabre/tests/late_function_registration.rs"
+    },
+    {
+      "blob": "3c2d5bfa2297cd20fa0c176f393adbcc53270262",
+      "path": "experimental/reverie-sabre/tests/loader_plugin_finalizers.c"
+    },
+    {
+      "blob": "037b727da4433411e666674c83745a80798de491",
+      "path": "experimental/reverie-sabre/tests/loader_plugin_finalizers.rs"
+    },
+    {
+      "blob": "dbfbba2bd0cf388875a81c676c790c8723799e49",
+      "path": "experimental/reverie-sabre/vendor/sabre/loader/premain.c"
+    }
+  ],
+  "at": "2026-09-22T20:59:57.767924+00:00",
+  "base": "52609b1f21235b12ef51554ae3b24cc024730c4d",
+  "fresh_git_api_main_equal": true,
+  "fresh_main": "ae1d1da78d2d89a1fa0454ee2282cf135e2286ed",
+  "h_source_pin_or_main_changed_by_this_delivery": false,
+  "head": "f3be94e21627667b58ea1f1b52af8db01483c28b",
+  "landed": "ae1d1da78d2d89a1fa0454ee2282cf135e2286ed",
+  "landed_ancestor_of_fresh_main": true,
+  "limitations": "Focused repaired-loader evidence with retained H839 binary; SaBRe strict repeat31/31INFO only; broader startup cross-parity remains red; no new runtime",
+  "local_source_branch_head_preserved_clean": true,
+  "receipts": {
+    "pr-create-result.json": {
+      "bytes": 481,
+      "sha256": "6f508fcfff3e2aa19e72a7773769646ad45942ad5517f2b17123bfffc06b9717"
+    },
+    "pr617-landing-native-result.json": {
+      "bytes": 2010,
+      "sha256": "b5525ecb5bfd65fe02cd4d26648fd5896773b6185203406a5c1dca3c57f07ad5"
+    },
+    "pr617-landing-receipt.json": {
+      "bytes": 1724,
+      "sha256": "ec40dfbd628418ffa8f377ce86bc8cf74ba96af90472eabeff90d30eb4e6dfd8"
+    },
+    "pr617-landing-receipt.json.admission.json": {
+      "bytes": 3521,
+      "sha256": "3f5a6476668767d13242655afe5602eb60f4587c8e6adc21da67ac50aba8cc23"
+    },
+    "pr617-postmerge-api.json": {
+      "bytes": 22519,
+      "sha256": "0c65a37263795fbaf6fbedfccc94e7df1194f723c1e0e2538b8b5dfc268e98c2"
+    },
+    "public-feature-readback.json": {
+      "bytes": 729,
+      "sha256": "9c87ebd44f46275931ee7d62dd072b1fb14b5cd1d0198101a97a4c772a167b1e"
+    },
+    "push-after-verification-result.json": {
+      "bytes": 762,
+      "sha256": "502860e27674bb411d0f8e8897292b81ee27ff507b12dfe415bfa2c4a37b3cd2"
+    }
+  },
+  "repository": "rrnewton/reverie",
+  "tree": "99c42f84e4e0c14f208139410bdfb091fde67779",
+  "url": "https://github.com/rrnewton/reverie/pull/617"
+}

@@ -1,0 +1,19 @@
+{
+  "command": [
+    "timeout",
+    "--kill-after=2s",
+    "20s",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/install/rsrcs/sabre",
+    "/tmp/reverie-late-detours-627554/plugin.so",
+    "dynamic",
+    "--",
+    "/tmp/reverie-late-detours-627554/client"
+  ],
+  "native_exit": -6,
+  "stdout": "CLIENT_OK\n",
+  "stderr": "client: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c:33: finalize_second: Assertion `calling_from_plugin()' failed.\ntimeout: the monitored command dumped core\n",
+  "wall_seconds": 0.5770299746654928,
+  "loader_sha256": "fa80eb969f749c31d7cf47c441f6ef80da4b51d5045b1c31fac1ec0f375956a0",
+  "fixture_plugin_sha256": "c2ab946d76016c3bf2136da26e729624bcca946ea3f80cb423d62f7f6ec67b70",
+  "authority": "old loader negative control using exact corrected real lifecycle fixture"
+}

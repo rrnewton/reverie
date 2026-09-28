@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "push",
+    "-u",
+    "origin",
+    "HEAD"
+  ],
+  "native_exit": 128,
+  "wall_seconds": 0.30936674727126956,
+  "stdout": "",
+  "stderr": "remote: You must verify your email address.\nremote: See https://github.com/settings/emails.\nfatal: unable to access 'https://github.com/rrnewton/reverie.git/': The requested URL returned error: 403\n",
+  "finished_at": "2026-09-22T17:54:25.806176+00:00"
+}

@@ -1,0 +1,44 @@
+{
+  "recorded_at": "2026-09-22T17:55:18.565809+00:00",
+  "checks": [
+    {
+      "argv": [
+        "with-proxy",
+        "gh",
+        "api",
+        "user",
+        "--jq",
+        ".login"
+      ],
+      "native_exit": 0,
+      "stdout": "rrnewton-bots\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "with-proxy",
+        "gh",
+        "api",
+        "user/emails",
+        "--jq",
+        "map({primary,verified,visibility})"
+      ],
+      "native_exit": 0,
+      "stdout": "[{\"primary\":true,\"verified\":false,\"visibility\":\"public\"}]\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "with-proxy",
+        "git",
+        "ls-remote",
+        "origin",
+        "refs/heads/codex/sabre-clock-origin-health-20260922",
+        "refs/heads/main"
+      ],
+      "native_exit": 0,
+      "stdout": "52609b1f21235b12ef51554ae3b24cc024730c4d\trefs/heads/main\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "message": "Genuine completed LOCAL approval relayed unchanged: APPROVE R f3be94e21627667b58ea1f1b52af8db01483c28b, base52609b1f21235b12ef51554ae3b24cc024730c4d, tree99c42f84e4e0c14f208139410bdfb091fde67779, diffd568629d36d8cb88c94903bd6f9d2c269e146d7331dbb7c1f299cda89fb65053. RS/ignored/sabre-clock-origin-health-20260922/CODEX-LOCAL-APPROVAL-f3be94e2.md SHA d3e24e3e2528d921c20737611c700fb097f27775f482f134cf1d26988a3a452f; pr-drain-review-completion-f3be94e2.json SHA bd99cd8316834260e84d6862330c1964efd093992618cf962fbad4072f6c7241. Canonical triggers d42157cf328db0d9a8de95c74e82914bc68cf9a0778ac5d46ea635ef6ae3125c, all four false/no findings. This relays the original genuine review, completed17:56:58Z; files rehashed unchanged. Public617 binding next.",
+  "observed_at": "2026-09-22T20:58:44.806829+00:00",
+  "reviewer": "/root/pr_drain"
+}

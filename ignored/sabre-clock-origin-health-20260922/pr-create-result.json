@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "create",
+    "--repo",
+    "rrnewton/reverie",
+    "--base",
+    "main",
+    "--head",
+    "codex/sabre-clock-origin-health-20260922",
+    "--title",
+    "Guard SaBRe plugin finalizers in the tool domain",
+    "--body-file",
+    "ignored/sabre-clock-origin-health-20260922/pr-body.md"
+  ],
+  "elapsed_s": 1.7317116986960173,
+  "native_exit": 0,
+  "stderr": "",
+  "stdout": "https://github.com/rrnewton/reverie/pull/617\n"
+}

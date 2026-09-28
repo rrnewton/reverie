@@ -1,0 +1,6 @@
+{
+  "actual_loader": "original packaged loader; SABRE_BINARY is not the supported override",
+  "no_origin_output": true,
+  "diagnostic_loader_execution_established": false,
+  "evidence": "hermit-cli/src/lib.rs:1285 defines HERMIT_SABRE_BINARY"
+}

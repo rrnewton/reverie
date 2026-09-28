@@ -1,0 +1,54 @@
+{
+  "build_target_root": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "-DCMAKE_C_FLAGS=-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf",
+      "-DCMAKE_EXE_LINKER_FLAGS=-L/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/build/reverie-sabre-6ce139021f9a6331/out/libelf-build-v2"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+      "--target",
+      "sabre",
+      "--parallel",
+      "2"
+    ],
+    [
+      "cc",
+      "-O2",
+      "-std=gnu99",
+      "-UNDEBUG",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-Wl,--gc-sections",
+      "-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes",
+      "-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf",
+      "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/tests/loader_plugin_finalizers.c",
+      "-o",
+      "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/repair-v2/plugin-finalizers"
+    ]
+  ],
+  "component_output": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922",
+  "diagnostic_only": false,
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "4G",
+    "runtime_max_sec": 600,
+    "swap_max": 0,
+    "tasks_max": 256
+  },
+  "reused_libelf": "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/build/reverie-sabre-6ce139021f9a6331/out/libelf-build-v2",
+  "schema": 1,
+  "source_base": "52609b1f21235b12ef51554ae3b24cc024730c4d",
+  "source_branch": "codex/sabre-clock-origin-health-20260922",
+  "source_file": "experimental/reverie-sabre/vendor/sabre/loader/premain.c",
+  "source_sha256": "1de35c9b45c46c9a7e764638b75941358e279c51b2257446567f727ccb5e8a73"
+}
