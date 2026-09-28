@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path;
@@ -61,6 +64,7 @@ impl Command {
 
         Self {
             program,
+            executable: None,
             args,
             pre_exec: Vec::new(),
             container: Container::new(),
@@ -71,11 +75,45 @@ impl Command {
     /// already set in [`Command::new`].
     ///
     /// NOTE: This also changes argument 0 to match `program`.
+    /// If [`Command::executable`] has selected descriptor execution, the
+    /// retained descriptor remains authoritative and this string is only its
+    /// diagnostic name. Pathname-only consumers must call
+    /// [`Command::require_pathname_execution`] before inspecting it.
     pub fn program<S: AsRef<OsStr>>(&mut self, program: S) -> &mut Self {
         let cstring = to_cstring(program);
         self.program = cstring.clone();
         self.args.set(0, cstring);
         self
+    }
+
+    /// Executes one retained open file description instead of resolving the
+    /// program pathname at `exec` time.
+    ///
+    /// The program string remains argument zero and diagnostic context. The
+    /// descriptor is consumed by this command and passed to
+    /// `execveat(AT_EMPTY_PATH)` by [`Command::spawn`]. Spawn clears
+    /// `FD_CLOEXEC` in the child before setup, so the new program can validate
+    /// the exact descriptor while the parent copy retains its original flags.
+    /// Descriptors in the standard-I/O range are first duplicated above that
+    /// range so later standard-I/O setup cannot replace the executable.
+    pub fn executable(&mut self, executable: OwnedFd) -> io::Result<&mut Self> {
+        let executable = if executable.as_raw_fd() <= libc::STDERR_FILENO {
+            let descriptor = unsafe {
+                libc::fcntl(
+                    executable.as_raw_fd(),
+                    libc::F_DUPFD_CLOEXEC,
+                    libc::STDERR_FILENO + 1,
+                )
+            };
+            if descriptor == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            unsafe { OwnedFd::from_raw_fd(descriptor) }
+        } else {
+            executable
+        };
+        self.executable = Some(executable);
+        Ok(self)
     }
 
     /// Explicitly sets the first argument. By default, this is the same as the
@@ -685,8 +723,54 @@ impl Command {
         self
     }
 
-    /// Finds the path to the program.
+    /// Requires this command to use pathname execution for `consumer`.
+    ///
+    /// A consumer that resolves, inspects, rewrites, or wraps the program path
+    /// must call this before doing any such work. Descriptor execution makes
+    /// the program string diagnostic-only, so silently using it as executable
+    /// provenance would inspect one object and execute another.
+    pub fn require_pathname_execution(&self, consumer: &'static str) -> io::Result<()> {
+        if self.get_executable().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                super::DescriptorExecutionUnsupported::new(consumer),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validates the retained descriptor selected for descriptor execution.
+    ///
+    /// This is the explicit admission path for consumers, such as ptrace, that
+    /// preserve and execute the retained open file description. It refuses a
+    /// missing descriptor and any descriptor that is not a regular executable
+    /// file.
+    pub fn validate_executable_descriptor(&self) -> io::Result<()> {
+        let executable = self.get_executable().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "descriptor execution was not selected",
+            )
+        })?;
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(executable.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let status = unsafe { status.assume_init() };
+        if status.st_mode & libc::S_IFMT == libc::S_IFREG && status.st_mode & 0o111 != 0 {
+            Ok(())
+        } else {
+            Err(Errno::EPERM.into())
+        }
+    }
+
+    /// Finds the path to a pathname-executed program.
+    ///
+    /// Descriptor-backed commands fail with [`io::ErrorKind::Unsupported`]
+    /// rather than returning their diagnostic program string as executable
+    /// provenance.
     pub fn find_program(&self) -> io::Result<PathBuf> {
+        self.require_pathname_execution("Command::find_program")?;
         let program = Path::new(self.get_program());
 
         if program.is_absolute() {
@@ -749,11 +833,59 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     #[test]
     fn find_program() {
         assert!(Command::new("cat").find_program().unwrap().is_absolute(),);
+    }
+
+    #[test]
+    fn find_program_refuses_diagnostic_path_for_descriptor_execution() {
+        let mut command = Command::new("/diagnostic/path/must-not-be-resolved");
+        command
+            .executable(File::open("/bin/true").unwrap().into())
+            .unwrap();
+
+        let error = command.find_program().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let typed = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<super::super::DescriptorExecutionUnsupported>())
+            .expect("descriptor refusal must retain its public typed reason");
+        assert_eq!(typed.consumer(), "Command::find_program");
+        assert_eq!(
+            error.to_string(),
+            "Command::find_program does not support descriptor-based execution"
+        );
+        command.validate_executable_descriptor().unwrap();
+    }
+
+    #[test]
+    fn program_change_cannot_silently_replace_descriptor_authority() {
+        let executable = File::open("/bin/true").unwrap();
+        let expected = executable.metadata().unwrap();
+        let mut command = Command::new("/first/diagnostic/name");
+        command.executable(executable.into()).unwrap();
+        command.program("/second/diagnostic/name");
+
+        assert_eq!(command.get_program(), "/second/diagnostic/name");
+        let actual = command
+            .get_executable()
+            .map(|descriptor| {
+                std::fs::metadata(format!("/proc/self/fd/{}", descriptor.as_raw_fd()))
+            })
+            .unwrap()
+            .unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            (actual.dev(), actual.ino()),
+            (expected.dev(), expected.ino())
+        );
+        let error = command.find_program().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]

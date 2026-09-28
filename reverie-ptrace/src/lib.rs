@@ -70,5 +70,7 @@ pub use tracer::Tracer;
 pub use tracer::TracerBuilder;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
+pub use vdso::VdsoEntryPatch;
+pub use vdso::VdsoMappingIdentity;
 pub use vdso::VdsoSyscallSite;
 pub use vdso::patch_current_vdso;

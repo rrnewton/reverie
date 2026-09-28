@@ -598,6 +598,7 @@ impl Backend for LiteinstBackend {
     where
         T: Tool + 'static,
     {
+        command.require_pathname_execution("in-guest LiteInst")?;
         let preload = tool_preload_path()?;
         Self::run_with_preload::<T>(command, config, preload).await
     }
@@ -609,6 +610,7 @@ impl Backend for LiteinstBackend {
     where
         T: Tool + 'static,
     {
+        command.require_pathname_execution("in-guest LiteInst")?;
         let preload = tool_preload_path()?;
         let (status, global, stats) =
             Self::run_with_preload_and_stats::<T>(command, config, preload).await?;
@@ -622,6 +624,7 @@ impl Backend for LiteinstBackend {
     where
         T: Tool + 'static,
     {
+        command.require_pathname_execution("in-guest LiteInst")?;
         // The preload path is resolved here rather than taken as a parameter:
         // it is a LiteInst mechanism, not part of the backend-agnostic
         // contract. See the `Backend` trait docs, "Why `preload` is
@@ -805,6 +808,7 @@ async fn launch<T>(
 where
     T: Tool + 'static,
 {
+    command.require_pathname_execution("in-guest LiteInst")?;
     if !preload.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -939,6 +943,43 @@ mod tests {
     use reverie_preload::rpc::CoordinatorClient;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_guest_refuses_mismatched_diagnostic_path_and_descriptor_before_setup() {
+        let mut command = Command::new("/diagnostic/path/must-not-be-resolved");
+        command
+            .executable(File::open("/bin/true").unwrap().into())
+            .unwrap();
+
+        let error = match launch::<()>(
+            command,
+            (),
+            PathBuf::from("/preload/path/must-not-be-resolved"),
+            false,
+            None,
+            BackendStatsRequest::DISABLED,
+        )
+        .await
+        {
+            Ok(_) => panic!("in-guest LiteInst accepted descriptor execution"),
+            Err(error) => error,
+        };
+        let Error::Io(error) = error else {
+            panic!("in-guest descriptor refusal had the wrong error type: {error}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let typed = error
+            .get_ref()
+            .and_then(|error| {
+                error.downcast_ref::<reverie::process::DescriptorExecutionUnsupported>()
+            })
+            .expect("in-guest descriptor refusal lost its typed reason");
+        assert_eq!(typed.consumer(), "in-guest LiteInst");
+        assert_eq!(
+            error.to_string(),
+            "in-guest LiteInst does not support descriptor-based execution"
+        );
+    }
 
     fn short_socket_tempdir() -> tempfile::TempDir {
         tempfile::Builder::new()

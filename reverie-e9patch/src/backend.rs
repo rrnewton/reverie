@@ -420,6 +420,7 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
+        command.require_pathname_execution("e9patch direct")?;
         let preload = tool_preload_path()?;
         Self::run_direct_with_preload::<T>(command, config, preload).await
     }
@@ -566,6 +567,7 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
+        command.require_pathname_execution("e9patch hybrid")?;
         let source = command.find_program()?;
         let arg0 = command.get_arg0().to_owned();
 
@@ -828,6 +830,7 @@ async fn launch_direct<T>(
 where
     T: Tool + 'static,
 {
+    command.require_pathname_execution("e9patch direct")?;
     if !preload.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1111,6 +1114,59 @@ mod tests {
     use std::os::fd::FromRawFd;
 
     use super::*;
+
+    fn mismatched_descriptor_command() -> Command {
+        let mut command = Command::new("/diagnostic/path/must-not-be-inspected");
+        command
+            .executable(File::open("/bin/true").unwrap().into())
+            .unwrap();
+        command
+    }
+
+    fn assert_descriptor_refusal(error: Error, consumer: &'static str) {
+        let Error::Io(error) = error else {
+            panic!("{consumer} descriptor refusal had the wrong error type: {error}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let typed = error
+            .get_ref()
+            .and_then(|error| {
+                error.downcast_ref::<reverie::process::DescriptorExecutionUnsupported>()
+            })
+            .expect("e9patch descriptor refusal lost its typed reason");
+        assert_eq!(typed.consumer(), consumer);
+        assert_eq!(
+            error.to_string(),
+            format!("{consumer} does not support descriptor-based execution")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hybrid_refuses_mismatched_diagnostic_path_and_descriptor_before_analysis() {
+        let error =
+            match E9patchBackend::spawn::<()>(mismatched_descriptor_command(), (), false).await {
+                Ok(_) => panic!("e9patch hybrid accepted descriptor execution"),
+                Err(error) => error,
+            };
+        assert_descriptor_refusal(error, "e9patch hybrid");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_refuses_mismatched_diagnostic_path_and_descriptor_before_analysis() {
+        let error = match launch_direct::<()>(
+            mismatched_descriptor_command(),
+            (),
+            PathBuf::from("/preload/path/must-not-be-inspected"),
+            false,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("e9patch direct accepted descriptor execution"),
+            Err(error) => error,
+        };
+        assert_descriptor_refusal(error, "e9patch direct");
+    }
 
     fn captured_ld_preload(command: &Command) -> OsString {
         command

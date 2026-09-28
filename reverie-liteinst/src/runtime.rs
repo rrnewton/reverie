@@ -11,14 +11,18 @@ use std::io;
 use std::ptr;
 use std::sync::OnceLock;
 
+use liteinst2::patcher::JumpPatchPlan;
+use liteinst2::patcher::LiveJumpPatch;
 use liteinst2::patcher::PatchError;
 use liteinst2::patcher::prepare_live_patching;
 use liteinst2::scanner::InstructionScanner;
+use liteinst2::trampoline::ExecutableTrampoline;
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::HookSite;
 use liteinst2::trampoline::InstalledHook;
 use liteinst2::trampoline::TrampolineArena;
 use liteinst2::trampoline::TrampolineError;
+use liteinst2::trampoline::TrampolinePlan;
 use reverie_preload::BuiltinTool;
 use reverie_preload::dispatch::SyscallDispatcher;
 use reverie_preload::dispatch::SyscallEvent as PreloadSyscallEvent;
@@ -237,6 +241,7 @@ pub const TOOL_SPOOF_GETPID: &str = "spoof-getpid";
 const EVENT_CHANNEL_IDENTITY_FAILURE_STATUS: i32 = 120;
 const EVENT_CHANNEL_WRITE_FAILURE_STATUS: i32 = 121;
 const IN_GUEST_STAGE_WRITE_FAILURE_STATUS: i32 = 123;
+pub(crate) const VDSO_PUBLICATION_FAILURE_STATUS: i32 = 124;
 /// Enables fail-closed, allocation-free in-guest lifecycle stage markers on stderr.
 pub const IN_GUEST_STAGE_STREAM_ENV: &str = "REVERIE_LITEINST_IN_GUEST_STAGE_STREAM";
 const MAX_PATCH_SITES: usize = 4096;
@@ -256,6 +261,54 @@ static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
 static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
+static VDSO_INDIRECT_GUARD_READY: AtomicBool = AtomicBool::new(false);
+static VDSO_NORMAL_REWRITE_START: AtomicU64 = AtomicU64::new(0);
+static VDSO_FALLBACK_REWRITE_START: AtomicU64 = AtomicU64::new(0);
+static VDSO_INDIRECT_GUARD_START: AtomicU64 = AtomicU64::new(0);
+static VDSO_INDIRECT_GUARD_END: AtomicU64 = AtomicU64::new(0);
+static VDSO_PKRU_SUPPORT: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(test)]
+static VDSO_PROTECTION_FAILURE_CALL: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+static VDSO_PROTECTION_SECOND_FAILURE_CALL: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+static VDSO_PROTECTION_CALLS: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+static VDSO_POST_TARGET_ENTRY_MUTATION: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static VDSO_AFTER_GUARD_FAILURE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static VDSO_AFTER_FALLBACK_FAILURE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static VDSO_PKRU_TEST_OVERRIDE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+#[cfg(test)]
+const VDSO_ROLLBACK_INITIAL_FAILURE_MARKER: &[u8] = b"vdso-terminal-rollback-initial-rx-failure\n";
+#[cfg(test)]
+const VDSO_ROLLBACK_ATTEMPT_MARKER: &[u8] = b"vdso-terminal-rollback-attempt\n";
+#[cfg(test)]
+const VDSO_ROLLBACK_TERMINAL_MARKER: &[u8] = b"vdso-terminal-rollback-rx-failure\n";
+#[cfg(test)]
+const VDSO_REDIRECT_OWNERSHIP_TERMINAL_MARKER: &[u8] = b"vdso-terminal-redirect-ownership\n";
+#[cfg(test)]
+const VDSO_PRELOAD_TERMINAL_MARKER: &[u8] = b"vdso-terminal-preload-error\n";
+#[cfg(test)]
+const VDSO_FAULTING_TERMINAL_MARKER: &[u8] = b"vdso-terminal-faulting-error\n";
+#[cfg(test)]
+const VDSO_GUARD_LOAD_TERMINAL_MARKER: &[u8] = b"vdso-terminal-sgx-guard-load\n";
+#[cfg(test)]
+const VDSO_GUARD_RANGES_UNPUBLISHED_TERMINAL_MARKER: &[u8] =
+    b"vdso-terminal-sgx-guard-ranges-unpublished\n";
+#[cfg(test)]
+const VDSO_GUARD_PKRU_SUPPORT_UNPUBLISHED_TERMINAL_MARKER: &[u8] =
+    b"vdso-terminal-sgx-guard-pkru-support-unpublished\n";
+#[cfg(test)]
+const VDSO_GUARD_TARGET_TERMINAL_MARKER: &[u8] = b"vdso-terminal-sgx-guard-target\n";
+#[cfg(test)]
+const VDSO_GUARD_PKRU_TERMINAL_MARKER: &[u8] = b"vdso-terminal-sgx-guard-pkru\n";
+#[cfg(test)]
+const VDSO_BATCH_COMPLETE_MARKER: &[u8] = b"vdso-terminal-batch-complete\n";
 
 thread_local! {
     static CURRENT_EVENT: Cell<*mut SyscallEvent> = const { Cell::new(ptr::null_mut()) };
@@ -523,8 +576,9 @@ struct RuntimeMap {
     start: u64,
     end: u64,
     offset: u64,
-    device: String,
+    device: (u64, u64),
     inode: u64,
+    pathname: String,
     readable: bool,
     writable: bool,
     executable: bool,
@@ -560,7 +614,7 @@ impl SiteSlot {
 #[derive(Clone, Copy)]
 pub(crate) enum SyscallDispatch {
     Trap,
-    InstalledHook,
+    InstalledHook(DirectHookSource),
     Fallback,
 }
 
@@ -1006,6 +1060,41 @@ pub(crate) fn initialize_reverie_tool(
     install_runtime(stats, publication, instructions, vdso_sites)
 }
 
+fn finish_after_vdso_install(result: io::Result<()>, vdso_was_installed: bool) -> io::Result<()> {
+    if result.is_err() && vdso_was_installed {
+        // The public Tool installer has already published HANDLER and this
+        // function has published the complete vDSO batch. Returning would
+        // expose an installation that a caller cannot safely retry.
+        terminal_vdso_publication_failure();
+    }
+    result
+}
+
+fn complete_runtime_after_vdso(
+    vdso_was_installed: bool,
+    install_preload: impl FnOnce() -> io::Result<()>,
+    enable_faulting: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    finish_after_vdso_install(install_preload(), vdso_was_installed)?;
+    finish_after_vdso_install(enable_faulting(), vdso_was_installed)
+}
+
+/// No initialization error may return after public process activation starts.
+/// Signal actions, fallback storage, descriptor ownership, the Tool handler,
+/// instrumentation registries, and seccomp are not jointly reversible.
+pub(crate) fn finish_after_activation_started(result: io::Result<()>) -> io::Result<()> {
+    if result.is_err() {
+        terminal_vdso_publication_failure();
+    }
+    result
+}
+
+/// A panic after the public activation boundary is no more recoverable than an
+/// `io::Error`: process-global Tool and runtime state may already be visible.
+pub(crate) fn terminal_after_activation_started() -> ! {
+    terminal_vdso_publication_failure()
+}
+
 fn install_runtime(
     stats: crate::stats::GuestStatsHooks,
     publication: PatchPublication,
@@ -1014,19 +1103,22 @@ fn install_runtime(
 ) -> io::Result<()> {
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
     prepare_instrumentation()?;
-    install_vdso_sites(vdso_sites)?;
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
     install_instruction_signal_handler(instructions, config.use_alt_stack)?;
-    unsafe {
-        reverie_preload::install(
-            Box::new(LiteinstDispatcher::new(stats, publication)),
-            &InProcessSeccomp,
-            &config,
-        )
-    }?;
-    enable_instruction_faulting(instructions)
+    install_vdso_sites(vdso_sites)?;
+    complete_runtime_after_vdso(
+        !vdso_sites.is_empty(),
+        || unsafe {
+            reverie_preload::install(
+                Box::new(LiteinstDispatcher::new(stats, publication)),
+                &InProcessSeccomp,
+                &config,
+            )
+        },
+        || enable_instruction_faulting(instructions),
+    )
 }
 
 struct CompatibilityEventChannel {
@@ -1138,13 +1230,18 @@ fn read_runtime_maps() -> io::Result<Vec<RuntimeMap>> {
                 fields.next()?,
             );
             let (start, end) = range.split_once('-')?;
+            let (device_major, device_minor) = device.split_once(':')?;
             let permissions = permissions.as_bytes();
             Some(RuntimeMap {
                 start: u64::from_str_radix(start, 16).ok()?,
                 end: u64::from_str_radix(end, 16).ok()?,
                 offset: u64::from_str_radix(offset, 16).ok()?,
-                device: device.to_owned(),
+                device: (
+                    u64::from_str_radix(device_major, 16).ok()?,
+                    u64::from_str_radix(device_minor, 16).ok()?,
+                ),
                 inode: inode.parse().ok()?,
+                pathname: fields.next().unwrap_or("").to_owned(),
                 readable: permissions.first() == Some(&b'r'),
                 writable: permissions.get(1) == Some(&b'w'),
                 executable: permissions.get(2) == Some(&b'x'),
@@ -1414,6 +1511,64 @@ struct FallbackCounters {
     by_number: [AtomicU64; TRACKED_SYSCALLS],
 }
 
+/// Direct callback counts that do not have an installed source-site hook.
+///
+/// Ordinary hooks retain their per-`SiteSlot` counters. The getrandom adapter
+/// branches from a different instruction and deliberately owns no source slot,
+/// so its Tool callbacks require separate process-local accounting.
+struct DirectHookCounters {
+    adapters: AtomicU64,
+}
+
+impl DirectHookCounters {
+    const fn new() -> Self {
+        Self {
+            adapters: AtomicU64::new(0),
+        }
+    }
+
+    fn record_adapter(&self) {
+        self.adapters.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn adapter_count(&self) -> u64 {
+        self.adapters.load(Ordering::Relaxed)
+    }
+
+    fn reset(&self) {
+        self.adapters.store(0, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DirectHookSource {
+    InstalledSite,
+    VdsoAdapter,
+}
+
+static DIRECT_HOOK_COUNTERS: DirectHookCounters = DirectHookCounters::new();
+
+fn record_direct_hook(
+    counters: &DirectHookCounters,
+    source: DirectHookSource,
+    site: Option<&SiteSlot>,
+) {
+    match source {
+        DirectHookSource::InstalledSite => {
+            if let Some(site) = site {
+                site.hook_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        DirectHookSource::VdsoAdapter => counters.record_adapter(),
+    }
+}
+
+fn direct_hook_count(counters: &DirectHookCounters, sites: &[SiteSlot]) -> u64 {
+    sites.iter().fold(counters.adapter_count(), |total, site| {
+        total.wrapping_add(site.hook_count.load(Ordering::Relaxed))
+    })
+}
+
 impl FallbackCounters {
     const fn new() -> Self {
         Self {
@@ -1499,9 +1654,9 @@ pub(crate) fn fallback_syscall_refusal_count(number: i64) -> u64 {
 // TODO-HUMAN-REVIEW(PR-260): Review the fork-child per-process observability reset.
 /// Reset every fallback-surface counter to zero for the current process.
 ///
-/// LiteInst's process-wide [`FALLBACK_COUNTERS`] and each patch site's per-site
-/// `trap`/`hook` counts ([`site_counts`]) are inherited by a `fork`/`clone`
-/// child copy-on-write, so without a
+/// LiteInst's process-wide [`FALLBACK_COUNTERS`], adapter direct-hook counter,
+/// and each patch site's per-site `trap`/`hook` counts ([`site_counts`]) are
+/// inherited by a `fork`/`clone` child copy-on-write, so without a
 /// reset the child would report the parent's residual surface and hook activity
 /// as its own. This is the same per-process runtime state the shared
 /// [`ForkHook`] seam ([`reverie_preload::fork`]) exists to re-establish in the
@@ -1526,6 +1681,7 @@ pub(crate) fn reset_fallback_observability() {
     // AUTONOMOUS-BOT-IMPLEMENTED
     FALLBACK_COUNTERS.reset();
     FALLBACK_REFUSALS.reset();
+    DIRECT_HOOK_COUNTERS.reset();
     if let Some(sites) = SITES.get() {
         reset_site_observability(sites);
     }
@@ -1535,15 +1691,13 @@ pub(crate) fn submit_process_stats(
     tid: reverie::Tid,
     stats: crate::stats::GuestStatsHooks,
 ) -> io::Result<()> {
-    let mut direct_hooks = 0_u64;
-    let sites = SITES
-        .get()
-        .into_iter()
-        .flatten()
+    let site_registry = SITES.get().map_or(&[][..], |sites| sites.as_ref());
+    let direct_hooks = direct_hook_count(&DIRECT_HOOK_COUNTERS, site_registry);
+    let sites = site_registry
+        .iter()
         .filter_map(|site| {
             let trap_hits = site.trap_count.load(Ordering::Relaxed);
             let hook_hits = site.hook_count.load(Ordering::Relaxed);
-            direct_hooks += hook_hits;
             (trap_hits != 0 || hook_hits != 0).then(|| crate::stats::LiteinstProcessSiteStats {
                 rip: site.address.load(Ordering::Relaxed),
                 patched: site.state.load(Ordering::Relaxed) == SITE_ACTIVE,
@@ -1560,10 +1714,12 @@ pub(crate) fn record_fork_child_dispatch(
     stats: crate::stats::GuestStatsHooks,
 ) {
     match event.dispatch {
-        SyscallDispatch::InstalledHook => {
-            if let Some(site) = find_site(event.instruction_pointer) {
-                site.hook_count.fetch_add(1, Ordering::Relaxed);
-            }
+        SyscallDispatch::InstalledHook(source) => {
+            let site = match source {
+                DirectHookSource::InstalledSite => find_site(event.instruction_pointer),
+                DirectHookSource::VdsoAdapter => None,
+            };
+            record_direct_hook(&DIRECT_HOOK_COUNTERS, source, site);
         }
         SyscallDispatch::Fallback => {
             if let Some(site) = find_site(event.instruction_pointer) {
@@ -1577,6 +1733,19 @@ pub(crate) fn record_fork_child_dispatch(
         }
         SyscallDispatch::Trap => {}
     }
+}
+
+/// Start a fork child's process-local counters from zero, then reattribute the
+/// callback that produced the fork result. The event retains whether an
+/// installed callback came from a source `SiteSlot` or the slotless getrandom
+/// adapter, so the reset cannot lose or duplicate that current callback.
+pub(crate) fn reset_and_record_fork_child_dispatch(
+    event: &SyscallEvent,
+    stats: crate::stats::GuestStatsHooks,
+) {
+    reset_fallback_observability();
+    stats.reset_after_fork();
+    record_fork_child_dispatch(event, stats);
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1640,6 +1809,31 @@ unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::R
         return Err(io::Error::from_raw_os_error((-result) as i32));
     }
     Ok(())
+}
+
+fn set_vdso_mapping_protection(start: u64, len: u64, protection: i32) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let call = VDSO_PROTECTION_CALLS.fetch_add(1, Ordering::AcqRel) + 1;
+        let first_failure = VDSO_PROTECTION_FAILURE_CALL.load(Ordering::Acquire);
+        let second_failure = VDSO_PROTECTION_SECOND_FAILURE_CALL.load(Ordering::Acquire);
+        if first_failure == call || second_failure == call {
+            if second_failure != 0 {
+                assert_eq!(protection, libc::PROT_READ | libc::PROT_EXEC);
+            }
+            if second_failure != 0 && first_failure == call {
+                emit_vdso_terminal_test_marker(VDSO_ROLLBACK_INITIAL_FAILURE_MARKER);
+            }
+            if second_failure == call {
+                emit_vdso_terminal_test_marker(VDSO_ROLLBACK_TERMINAL_MARKER);
+            }
+            return Err(io::Error::other(format!(
+                "injected LiteInst vDSO protection failure at call {call}"
+            )));
+        }
+    }
+    // SAFETY: callers bind this operation to the complete vDSO mapping range.
+    unsafe { set_mapping_protection(start, len, protection) }
 }
 
 struct InstallGuard;
@@ -1857,56 +2051,1354 @@ unsafe fn install_site_hook(
     Ok(result)
 }
 
-fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<()> {
-    for site_info in sites {
-        let address = site_info.address;
-        let (site, claimed) = claim_site(address)
-            .ok_or_else(|| io::Error::other("LiteInst vDSO site table is full"))?;
-        if !claimed {
-            return Err(io::Error::other("LiteInst vDSO site was claimed twice"));
+fn reset_vdso_site_for_retry(site: &SiteSlot) {
+    debug_assert!(site.hook.load(Ordering::Acquire).is_null());
+    site.mapping_end.store(0, Ordering::Release);
+    site.instruction_len.store(0, Ordering::Release);
+    site.straddle_prefix.store(0, Ordering::Release);
+    // Publish the reclaimable state last. `claim_existing_site` may claim the
+    // slot as soon as this store becomes visible.
+    site.state.store(SITE_STALE, Ordering::Release);
+}
+
+struct InstalledVdsoHook<'a> {
+    info: &'a reverie_ptrace::VdsoSyscallSite,
+    site: &'static SiteSlot,
+    original_hook_bytes: [u8; liteinst2::patcher::WORD_PATCH_BYTES],
+    bound_hook_bytes: [u8; liteinst2::patcher::WORD_PATCH_BYTES],
+}
+
+struct PreparedVdsoIndirectGuard {
+    trampoline: ExecutableTrampoline,
+    patch_plan: JumpPatchPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VdsoAdapterRedirects {
+    None,
+    FallbackOnly,
+    Complete,
+}
+
+impl VdsoAdapterRedirects {
+    fn normal_is_published(self) -> bool {
+        self == Self::Complete
+    }
+
+    fn fallback_is_published(self) -> bool {
+        matches!(self, Self::FallbackOnly | Self::Complete)
+    }
+}
+
+struct InstalledVdsoAdapter<'a> {
+    info: &'a reverie_ptrace::VdsoSyscallSite,
+    adapter_trampoline: ExecutableTrampoline,
+    guard_trampoline: ExecutableTrampoline,
+    guard_patch: LiveJumpPatch,
+    guard_original: [u8; liteinst2::patcher::WORD_PATCH_BYTES],
+    guard_replacement: [u8; liteinst2::patcher::WORD_PATCH_BYTES],
+    fallback_replacement: [u8; 5],
+}
+
+enum InstalledVdsoSite<'a> {
+    Hook(InstalledVdsoHook<'a>),
+    Adapter(Box<InstalledVdsoAdapter<'a>>),
+}
+
+unsafe fn read_vdso_hook_window(address: u64) -> [u8; liteinst2::patcher::WORD_PATCH_BYTES] {
+    let mut bytes = [0; liteinst2::patcher::WORD_PATCH_BYTES];
+    // SAFETY: the caller binds `address` to a readable executable vDSO range.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            address as usize as *const u8,
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        );
+    }
+    bytes
+}
+
+fn terminal_vdso_publication_failure() -> ! {
+    // A caller reaches this only when rollback cannot prove the original
+    // executable bytes, mapping protection, and registry ownership.
+    unsafe { exit_now(VDSO_PUBLICATION_FAILURE_STATUS) }
+}
+
+fn terminal_vdso_rollback_failure() -> ! {
+    terminal_vdso_publication_failure()
+}
+
+fn terminal_vdso_redirect_ownership_failure() -> ! {
+    #[cfg(test)]
+    emit_vdso_terminal_test_marker(VDSO_REDIRECT_OWNERSHIP_TERMINAL_MARKER);
+    terminal_vdso_publication_failure()
+}
+
+#[cfg(test)]
+fn emit_vdso_terminal_test_marker(marker: &[u8]) {
+    let written = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                marker.as_ptr() as u64,
+                marker.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if written != marker.len() as i64 {
+        unsafe { exit_now(127) };
+    }
+}
+
+fn validate_vdso_site(site_info: &reverie_ptrace::VdsoSyscallSite) -> io::Result<()> {
+    let mapping_end = site_info
+        .mapping_start
+        .checked_add(site_info.mapping_len)
+        .ok_or_else(|| io::Error::other("LiteInst vDSO mapping range overflows"))?;
+    let range_is_mapped = |address: u64, len: usize| {
+        address >= site_info.mapping_start
+            && address
+                .checked_add(len as u64)
+                .is_some_and(|end| end <= mapping_end)
+    };
+    let live_mapping = read_runtime_maps()?.into_iter().any(|mapping| {
+        mapping.start == site_info.mapping_start
+            && mapping.end == mapping_end
+            && mapping.offset == site_info.mapping_identity.offset
+            && mapping.device == site_info.mapping_identity.device
+            && mapping.inode == site_info.mapping_identity.inode
+            && mapping.pathname == site_info.mapping_identity.pathname.as_ref()
+            && mapping.shared == site_info.mapping_identity.shared
+            && mapping.readable
+            && !mapping.writable
+            && mapping.executable
+    });
+    if !live_mapping {
+        return Err(io::Error::other(
+            "LiteInst vDSO mapping identity or protection changed",
+        ));
+    }
+    if !range_is_mapped(site_info.address, liteinst2::patcher::WORD_PATCH_BYTES) {
+        return Err(io::Error::other(
+            "LiteInst vDSO hook window lies outside its mapping",
+        ));
+    }
+    match &site_info.entry_patch {
+        reverie_ptrace::VdsoEntryPatch::BeforeHook {
+            address,
+            expected,
+            replacement,
+        } => {
+            if *address != site_info.address
+                || expected.len() != replacement.len()
+                || expected.len() < liteinst2::patcher::WORD_PATCH_BYTES
+                || replacement.get(..2) != Some(&[0x0f, 0x05])
+                || !range_is_mapped(*address, expected.len())
+            {
+                return Err(io::Error::other(
+                    "LiteInst ordinary vDSO rewrite has invalid bound geometry",
+                ));
+            }
         }
-        unsafe {
-            set_mapping_protection(
-                site_info.mapping_start,
-                site_info.mapping_len,
-                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )?;
-            install_site_hook(
-                address,
-                site,
-                vdso_callback(site_info.number)?,
-                PatchPublication::Quiescent,
-                &[0x0f, 0x05],
-                false,
-            )
-        }
-        .map_err(|error| {
-            site.state.store(SITE_FALLBACK, Ordering::Release);
-            io::Error::other(format!("failed to install LiteInst vDSO hook: {error}"))
-        })?;
-        unsafe {
-            set_mapping_protection(
-                site_info.mapping_start,
-                site_info.mapping_len,
-                libc::PROT_READ | libc::PROT_EXEC,
-            )?;
+        reverie_ptrace::VdsoEntryPatch::AfterTarget {
+            mapping_expected,
+            function_address,
+            function_expected,
+            normal_address,
+            normal_expected,
+            normal_replacement,
+            fallback_address,
+            fallback_expected,
+            adapter_source_address,
+            adapter_source_expected,
+            indirect_guard_address,
+            indirect_guard_expected,
+            indirect_guard_displaced_len,
+        } => {
+            if site_info.address != *adapter_source_address
+                || usize::try_from(site_info.mapping_len).ok() != Some(mapping_expected.len())
+                || function_expected.is_empty()
+                || normal_replacement.first() != Some(&0xe9)
+                || normal_expected.len() != normal_replacement.len()
+                || fallback_expected.first() != Some(&0xb8)
+                || adapter_source_expected.get(..2) != Some(&[0x0f, 0x05])
+                || adapter_source_expected.get(2) != Some(&0xe9)
+                || indirect_guard_expected
+                    != &[0x48, 0x8b, 0x40, 0x18, 0x0f, 0xae, 0xe8, 0xff, 0xd0]
+                || usize::from(*indirect_guard_displaced_len) != 7
+                || indirect_guard_address.checked_add(u64::from(*indirect_guard_displaced_len))
+                    != indirect_guard_address.checked_add(7)
+                || !range_is_mapped(*function_address, function_expected.len())
+                || !range_is_mapped(*normal_address, normal_expected.len())
+                || !range_is_mapped(*fallback_address, fallback_expected.len())
+                || !range_is_mapped(*adapter_source_address, adapter_source_expected.len())
+                || !range_is_mapped(*indirect_guard_address, indirect_guard_expected.len())
+            {
+                return Err(io::Error::other(
+                    "LiteInst getrandom vDSO adapter has invalid bound geometry",
+                ));
+            }
         }
     }
     Ok(())
 }
 
-fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback> {
-    match number {
-        libc::SYS_time => Ok(installed_vdso_time_hook),
-        libc::SYS_clock_gettime => Ok(installed_vdso_clock_gettime_hook),
-        libc::SYS_getcpu => Ok(installed_vdso_getcpu_hook),
-        libc::SYS_gettimeofday => Ok(installed_vdso_gettimeofday_hook),
-        libc::SYS_clock_getres => Ok(installed_vdso_clock_getres_hook),
+unsafe fn vdso_entry_matches_original(site_info: &reverie_ptrace::VdsoSyscallSite) -> bool {
+    match &site_info.entry_patch {
+        reverie_ptrace::VdsoEntryPatch::BeforeHook {
+            address, expected, ..
+        } => {
+            let current = unsafe {
+                core::slice::from_raw_parts(*address as usize as *const u8, expected.len())
+            };
+            current == expected.as_ref()
+        }
+        reverie_ptrace::VdsoEntryPatch::AfterTarget {
+            mapping_expected,
+            function_address,
+            function_expected,
+            adapter_source_address,
+            adapter_source_expected,
+            ..
+        } => {
+            let mapping = unsafe {
+                core::slice::from_raw_parts(
+                    site_info.mapping_start as usize as *const u8,
+                    mapping_expected.len(),
+                )
+            };
+            let function = unsafe {
+                core::slice::from_raw_parts(
+                    *function_address as usize as *const u8,
+                    function_expected.len(),
+                )
+            };
+            let adapter_source = unsafe {
+                core::slice::from_raw_parts(
+                    *adapter_source_address as usize as *const u8,
+                    adapter_source_expected.len(),
+                )
+            };
+            mapping == mapping_expected.as_ref()
+                && function == function_expected.as_ref()
+                && adapter_source == adapter_source_expected.as_slice()
+        }
+    }
+}
+
+unsafe fn publish_vdso_before_hook(site_info: &reverie_ptrace::VdsoSyscallSite) -> io::Result<()> {
+    let reverie_ptrace::VdsoEntryPatch::BeforeHook {
+        address,
+        replacement,
+        ..
+    } = &site_info.entry_patch
+    else {
+        return Ok(());
+    };
+    // SAFETY: initialization owns this writable vDSO mapping exclusively.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            replacement.as_ptr(),
+            *address as usize as *mut u8,
+            replacement.len(),
+        );
+    }
+    let current =
+        unsafe { core::slice::from_raw_parts(*address as usize as *const u8, replacement.len()) };
+    if current != replacement.as_ref() {
+        return Err(io::Error::other(
+            "LiteInst ordinary vDSO rewrite did not publish the bound bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn rel32_jump(address: u64, target: u64) -> io::Result<[u8; 5]> {
+    let next = address
+        .checked_add(5)
+        .ok_or_else(|| io::Error::other("LiteInst vDSO branch address overflows"))?;
+    let displacement = i128::from(target) - i128::from(next);
+    let displacement = i32::try_from(displacement)
+        .map_err(|_| io::Error::other("LiteInst vDSO callback target is outside rel32 reach"))?;
+    let mut branch = [0; 5];
+    branch[0] = 0xe9;
+    branch[1..].copy_from_slice(&displacement.to_le_bytes());
+    Ok(branch)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VdsoRewrittenRange {
+    start: u64,
+    end: u64,
+}
+
+impl VdsoRewrittenRange {
+    fn new(start: u64, len: usize) -> io::Result<Self> {
+        let end = start
+            .checked_add(len as u64)
+            .ok_or_else(|| io::Error::other("LiteInst vDSO rewritten range overflows"))?;
+        Ok(Self { start, end })
+    }
+
+    fn contains_strict_interior(self, target: u64) -> bool {
+        self.start < target && target < self.end
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VdsoIndirectGuardRanges {
+    normal: VdsoRewrittenRange,
+    fallback: VdsoRewrittenRange,
+    guard: VdsoRewrittenRange,
+}
+
+impl VdsoIndirectGuardRanges {
+    fn rejects(self, target: u64) -> bool {
+        [self.normal, self.fallback, self.guard]
+            .into_iter()
+            .any(|range| range.contains_strict_interior(target))
+    }
+}
+
+fn vdso_indirect_guard_ranges(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+) -> io::Result<VdsoIndirectGuardRanges> {
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        normal_address,
+        normal_expected,
+        fallback_address,
+        fallback_expected,
+        indirect_guard_address,
+        indirect_guard_displaced_len,
+        ..
+    } = &site_info.entry_patch
+    else {
+        return Err(io::Error::other(
+            "LiteInst indirect guard received an ordinary vDSO site",
+        ));
+    };
+    Ok(VdsoIndirectGuardRanges {
+        normal: VdsoRewrittenRange::new(*normal_address, normal_expected.len())?,
+        fallback: VdsoRewrittenRange::new(*fallback_address, fallback_expected.len())?,
+        guard: VdsoRewrittenRange::new(
+            *indirect_guard_address,
+            usize::from(*indirect_guard_displaced_len),
+        )?,
+    })
+}
+
+fn publish_vdso_indirect_guard_ranges(ranges: VdsoIndirectGuardRanges) -> io::Result<()> {
+    if VDSO_INDIRECT_GUARD_READY.load(Ordering::Acquire) {
+        return Err(io::Error::other(
+            "LiteInst vDSO indirect guard was published twice",
+        ));
+    }
+    VDSO_NORMAL_REWRITE_START.store(ranges.normal.start, Ordering::Relaxed);
+    VDSO_FALLBACK_REWRITE_START.store(ranges.fallback.start, Ordering::Relaxed);
+    VDSO_INDIRECT_GUARD_START.store(ranges.guard.start, Ordering::Relaxed);
+    VDSO_INDIRECT_GUARD_END.store(ranges.guard.end, Ordering::Relaxed);
+    VDSO_INDIRECT_GUARD_READY.store(true, Ordering::Release);
+    Ok(())
+}
+
+fn unpublish_vdso_indirect_guard_ranges() {
+    // Installation and rollback are quiescent. Leaving the last addresses in
+    // place means a callback that had already acquired `true` would still see
+    // one coherent range set; no later callback can acquire readiness.
+    VDSO_INDIRECT_GUARD_READY.store(false, Ordering::Release);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VdsoIndirectGuardError {
+    GuardRangesUnpublished,
+    PkruSupportUnpublished,
+    UnreadableTarget,
+    ProtectionKeyDenied,
+    RewrittenInterior,
+}
+
+fn detect_vdso_sgx_pkru_support() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::__cpuid;
+        use core::arch::x86_64::__cpuid_count;
+
+        // Installation invokes this before CPUID faulting can be enabled.
+        // CPUID is architectural in x86-64 mode.
+        let maximum_leaf = __cpuid(0).eax;
+        if maximum_leaf < 7 {
+            return false;
+        }
+        let features = __cpuid_count(7, 0).ecx;
+        const PKU_AND_OSPKE: u32 = (1 << 3) | (1 << 4);
+        features & PKU_AND_OSPKE == PKU_AND_OSPKE
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+fn current_vdso_sgx_pkru() -> Result<Option<u32>, VdsoIndirectGuardError> {
+    #[cfg(test)]
+    {
+        let injected = VDSO_PKRU_TEST_OVERRIDE.load(Ordering::Acquire);
+        if injected != u64::MAX {
+            return Ok(Some(injected as u32));
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        match VDSO_PKRU_SUPPORT.load(Ordering::Acquire) {
+            1 => return Ok(None),
+            2 => {}
+            _ => return Err(VdsoIndirectGuardError::PkruSupportUnpublished),
+        }
+        let pkru: u32;
+        // SAFETY: installation stored state 2 only after CPUID advertised PKU
+        // and OSPKE. Reviewed LiteInst2 4dab7f0 saves PKRU with XSAVE, does not
+        // alter it before this callback, and restores it with XRSTOR afterward;
+        // RDPKRU therefore observes the interrupted application's guest value.
+        unsafe {
+            core::arch::asm!(
+                "rdpkru",
+                in("ecx") 0_u32,
+                out("eax") pkru,
+                out("edx") _,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        Ok(Some(pkru))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        match VDSO_PKRU_SUPPORT.load(Ordering::Acquire) {
+            1 => Ok(None),
+            _ => Err(VdsoIndirectGuardError::PkruSupportUnpublished),
+        }
+    }
+}
+
+fn active_vdso_indirect_guard_ranges() -> Result<VdsoIndirectGuardRanges, VdsoIndirectGuardError> {
+    if !VDSO_INDIRECT_GUARD_READY.load(Ordering::Acquire) {
+        return Err(VdsoIndirectGuardError::GuardRangesUnpublished);
+    }
+    let normal = VDSO_NORMAL_REWRITE_START.load(Ordering::Relaxed);
+    let fallback = VDSO_FALLBACK_REWRITE_START.load(Ordering::Relaxed);
+    let guard = VDSO_INDIRECT_GUARD_START.load(Ordering::Relaxed);
+    let guard_end = VDSO_INDIRECT_GUARD_END.load(Ordering::Relaxed);
+    let normal_end = normal
+        .checked_add(5)
+        .ok_or(VdsoIndirectGuardError::GuardRangesUnpublished)?;
+    let fallback_end = fallback
+        .checked_add(5)
+        .ok_or(VdsoIndirectGuardError::GuardRangesUnpublished)?;
+    Ok(VdsoIndirectGuardRanges {
+        normal: VdsoRewrittenRange {
+            start: normal,
+            end: normal_end,
+        },
+        fallback: VdsoRewrittenRange {
+            start: fallback,
+            end: fallback_end,
+        },
+        guard: VdsoRewrittenRange {
+            start: guard,
+            end: guard_end,
+        },
+    })
+}
+
+fn read_vdso_sgx_user_handler(run: u64) -> Result<u64, VdsoIndirectGuardError> {
+    // process_vm_readv does not honor the caller's PKRU. Without a supported
+    // page-to-pkey query, conservatively refuse whenever any protection-key
+    // restriction is active. This rejects write-only restrictions and keys
+    // unrelated to `run`, but it prevents a kernel copy from turning a
+    // PKRU-faulting MOV into a call.
+    if current_vdso_sgx_pkru()?.is_some_and(|pkru| pkru != 0) {
+        return Err(VdsoIndirectGuardError::ProtectionKeyDenied);
+    }
+    let mut target = 0_u64;
+    let local = libc::iovec {
+        iov_base: (&raw mut target).cast(),
+        iov_len: core::mem::size_of::<u64>(),
+    };
+    let remote = libc::iovec {
+        iov_base: run.wrapping_add(0x18) as usize as *mut libc::c_void,
+        iov_len: core::mem::size_of::<u64>(),
+    };
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    // This is the one target-field read. `raw_syscall6` is the reviewed
+    // reverie_preload_trusted_syscall gate, whose instruction is excluded from
+    // recursive interception. A short read or EFAULT is fail-closed below;
+    // it is deliberately not claimed to reproduce the original load's SIGSEGV.
+    // Equivalence is likewise limited to a readable handler field that remains
+    // stable from the PKRU observation through this read.
+    // Concurrent mutation or signal interruption can choose a different
+    // observation point than the original single MOV. A concurrent PKRU change
+    // is likewise outside the qualified semantic domain.
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_process_vm_readv,
+            [
+                pid as u64,
+                (&raw const local) as u64,
+                1,
+                (&raw const remote) as u64,
+                1,
+                0,
+            ],
+        )
+    };
+    if read != core::mem::size_of::<u64>() as i64 {
+        return Err(VdsoIndirectGuardError::UnreadableTarget);
+    }
+    Ok(target)
+}
+
+fn prepare_vdso_sgx_guard_context_with_ranges(
+    context: &mut HookContext,
+    ranges: VdsoIndirectGuardRanges,
+    read_target: impl FnOnce(u64) -> Result<u64, VdsoIndirectGuardError>,
+) -> Result<(), VdsoIndirectGuardError> {
+    let target = read_target(context.rax)?;
+    if ranges.rejects(target) {
+        return Err(VdsoIndirectGuardError::RewrittenInterior);
+    }
+    // The replace-first trampoline omits only `mov rax,[rax+0x18]`, restores
+    // this admitted value, executes the relocated LFENCE, and resumes at the
+    // untouched original `call *rax`. No other application field is changed.
+    context.rax = target;
+    Ok(())
+}
+
+unsafe extern "C" fn vdso_sgx_indirect_guard(context: *mut HookContext) {
+    let Some(context) = (unsafe { context.as_mut() }) else {
+        terminal_vdso_publication_failure();
+    };
+    let result = active_vdso_indirect_guard_ranges().and_then(|ranges| {
+        prepare_vdso_sgx_guard_context_with_ranges(context, ranges, read_vdso_sgx_user_handler)
+    });
+    if let Err(error) = result {
+        #[cfg(test)]
+        emit_vdso_terminal_test_marker(match error {
+            VdsoIndirectGuardError::UnreadableTarget => VDSO_GUARD_LOAD_TERMINAL_MARKER,
+            VdsoIndirectGuardError::ProtectionKeyDenied => VDSO_GUARD_PKRU_TERMINAL_MARKER,
+            VdsoIndirectGuardError::GuardRangesUnpublished => {
+                VDSO_GUARD_RANGES_UNPUBLISHED_TERMINAL_MARKER
+            }
+            VdsoIndirectGuardError::PkruSupportUnpublished => {
+                VDSO_GUARD_PKRU_SUPPORT_UNPUBLISHED_TERMINAL_MARKER
+            }
+            VdsoIndirectGuardError::RewrittenInterior => VDSO_GUARD_TARGET_TERMINAL_MARKER,
+        });
+        #[cfg(not(test))]
+        let _ = error;
+        terminal_vdso_publication_failure();
+    }
+}
+
+unsafe fn publish_exact_vdso_instruction(
+    address: u64,
+    expected: &[u8; 5],
+    replacement: &[u8; 5],
+    description: &str,
+) -> io::Result<()> {
+    let current = unsafe { core::slice::from_raw_parts(address as usize as *const u8, 5) };
+    if current != expected {
+        return Err(io::Error::other(format!(
+            "LiteInst vDSO {description} changed before publication"
+        )));
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(replacement.as_ptr(), address as usize as *mut u8, 5);
+    }
+    let current = unsafe { core::slice::from_raw_parts(address as usize as *const u8, 5) };
+    if current != replacement {
+        // The pre-write ownership check succeeded and this transaction issued
+        // the only write. A different post-write value cannot be rolled back
+        // without overwriting an unowned mutation.
+        terminal_vdso_publication_failure();
+    }
+    Ok(())
+}
+
+unsafe fn restore_vdso_original_bytes(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+    original_hook_bytes: &[u8; liteinst2::patcher::WORD_PATCH_BYTES],
+) -> io::Result<()> {
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            original_hook_bytes.as_ptr(),
+            site_info.address as usize as *mut u8,
+            original_hook_bytes.len(),
+        );
+    }
+    let (address, expected): (u64, &[u8]) = match &site_info.entry_patch {
+        reverie_ptrace::VdsoEntryPatch::BeforeHook {
+            address, expected, ..
+        } => (*address, expected),
+        reverie_ptrace::VdsoEntryPatch::AfterTarget { .. } => {
+            return Err(io::Error::other(
+                "LiteInst callback adapter cannot use hook-byte rollback",
+            ));
+        }
+    };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            expected.as_ptr(),
+            address as usize as *mut u8,
+            expected.len(),
+        );
+    }
+    if unsafe { read_vdso_hook_window(site_info.address) } != *original_hook_bytes {
+        return Err(io::Error::other(
+            "LiteInst vDSO rollback did not restore the original hook bytes",
+        ));
+    }
+    let restored =
+        unsafe { core::slice::from_raw_parts(address as usize as *const u8, expected.len()) };
+    if restored != expected {
+        return Err(io::Error::other(
+            "LiteInst vDSO rollback did not restore the original entry bytes",
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn rollback_active_vdso_hook(installed: &InstalledVdsoHook<'_>) -> io::Result<()> {
+    set_vdso_mapping_protection(
+        installed.info.mapping_start,
+        installed.info.mapping_len,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    )?;
+    let hook = installed.site.hook.load(Ordering::Acquire);
+    if hook.is_null() {
+        return Err(io::Error::other(
+            "LiteInst vDSO rollback lost the installed hook",
+        ));
+    }
+    // SAFETY: `install_site_hook` used quiescent publication, initialization
+    // remains quiescent, and this transaction still owns the installed hook.
+    let changed = unsafe { (&*hook).deactivate_quiescent() }
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if !changed {
+        return Err(io::Error::other(
+            "LiteInst vDSO rollback found an inactive hook",
+        ));
+    }
+    let restored_hook = unsafe { read_vdso_hook_window(installed.info.address) };
+    if restored_hook != installed.bound_hook_bytes {
+        return Err(io::Error::other(
+            "LiteInst vDSO hook rollback did not restore the bound bytes",
+        ));
+    }
+    unsafe {
+        restore_vdso_original_bytes(installed.info, &installed.original_hook_bytes)?;
+    }
+    set_vdso_mapping_protection(
+        installed.info.mapping_start,
+        installed.info.mapping_len,
+        libc::PROT_READ | libc::PROT_EXEC,
+    )?;
+    installed
+        .site
+        .hook
+        .compare_exchange(hook, ptr::null_mut(), Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| io::Error::other("LiteInst vDSO rollback lost hook ownership"))?;
+    // SAFETY: the successful compare-exchange removed the sole published raw
+    // pointer while initialization is quiescent.
+    unsafe { drop(Box::from_raw(hook)) };
+    reset_vdso_site_for_retry(installed.site);
+    Ok(())
+}
+
+unsafe fn restore_vdso_adapter_original_bytes(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+    redirects: VdsoAdapterRedirects,
+) -> io::Result<()> {
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        function_address,
+        function_expected,
+        normal_address,
+        normal_expected,
+        fallback_address,
+        fallback_expected,
+        adapter_source_address,
+        adapter_source_expected,
+        ..
+    } = &site_info.entry_patch
+    else {
+        return Err(io::Error::other(
+            "LiteInst callback adapter rollback received an ordinary vDSO site",
+        ));
+    };
+    // Remove reachability in normal, fallback, guard order. Only bytes whose
+    // successful publication is recorded below are owned by this transaction.
+    if redirects.normal_is_published() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                normal_expected.as_ptr(),
+                *normal_address as usize as *mut u8,
+                normal_expected.len(),
+            );
+        }
+    }
+    if redirects.fallback_is_published() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                fallback_expected.as_ptr(),
+                *fallback_address as usize as *mut u8,
+                fallback_expected.len(),
+            );
+        }
+    }
+    let function = unsafe {
+        core::slice::from_raw_parts(
+            *function_address as usize as *const u8,
+            function_expected.len(),
+        )
+    };
+    let source = unsafe {
+        core::slice::from_raw_parts(
+            *adapter_source_address as usize as *const u8,
+            adapter_source_expected.len(),
+        )
+    };
+    if function != function_expected.as_ref() || source != adapter_source_expected.as_slice() {
+        return Err(io::Error::other(
+            "LiteInst callback adapter rollback did not restore the complete function",
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn rollback_vdso_adapter(
+    installed: &InstalledVdsoAdapter<'_>,
+    redirects: VdsoAdapterRedirects,
+) -> io::Result<()> {
+    #[cfg(test)]
+    if VDSO_PROTECTION_SECOND_FAILURE_CALL.load(Ordering::Acquire) != 0 {
+        emit_vdso_terminal_test_marker(VDSO_ROLLBACK_ATTEMPT_MARKER);
+    }
+    set_vdso_mapping_protection(
+        installed.info.mapping_start,
+        installed.info.mapping_len,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    )?;
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        normal_address,
+        normal_expected,
+        normal_replacement,
+        fallback_address,
+        fallback_expected,
+        indirect_guard_address,
+        ..
+    } = &installed.info.entry_patch
+    else {
+        return Err(io::Error::other(
+            "LiteInst callback adapter rollback lost its patch description",
+        ));
+    };
+    let current_normal =
+        unsafe { core::slice::from_raw_parts(*normal_address as usize as *const u8, 5) };
+    let current_fallback =
+        unsafe { core::slice::from_raw_parts(*fallback_address as usize as *const u8, 5) };
+    let current_guard = unsafe {
+        core::slice::from_raw_parts(
+            *indirect_guard_address as usize as *const u8,
+            liteinst2::patcher::WORD_PATCH_BYTES,
+        )
+    };
+    let owned_normal: &[u8] = if redirects.normal_is_published() {
+        normal_replacement
+    } else {
+        normal_expected
+    };
+    let owned_fallback: &[u8] = if redirects.fallback_is_published() {
+        &installed.fallback_replacement
+    } else {
+        fallback_expected
+    };
+    if current_normal != owned_normal
+        || current_fallback != owned_fallback
+        || current_guard != installed.guard_replacement
+        || rel32_jump(
+            *indirect_guard_address,
+            installed.guard_trampoline.address(),
+        )? != installed.guard_replacement[..5]
+        || rel32_jump(*fallback_address, installed.adapter_trampoline.address())?
+            != installed.fallback_replacement
+    {
+        return Err(io::Error::other(
+            "LiteInst callback adapter rollback lost branch or guard ownership",
+        ));
+    }
+    unsafe { restore_vdso_adapter_original_bytes(installed.info, redirects)? };
+    // SAFETY: initialization is quiescent, the vDSO mapping is writable, and
+    // the exact replacement word above proves ownership of this guard patch.
+    unsafe { installed.guard_patch.revert_quiescent() }
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if unsafe { read_vdso_hook_window(*indirect_guard_address) } != installed.guard_original {
+        return Err(io::Error::other(
+            "LiteInst SGX guard rollback did not restore its original word",
+        ));
+    }
+    unpublish_vdso_indirect_guard_ranges();
+    if !unsafe { vdso_entry_matches_original(installed.info) } {
+        return Err(io::Error::other(
+            "LiteInst callback adapter rollback did not restore the complete mapping",
+        ));
+    }
+    set_vdso_mapping_protection(
+        installed.info.mapping_start,
+        installed.info.mapping_len,
+        libc::PROT_READ | libc::PROT_EXEC,
+    )
+}
+
+unsafe fn rollback_active_vdso_adapter(installed: &InstalledVdsoAdapter<'_>) -> io::Result<()> {
+    unsafe { rollback_vdso_adapter(installed, VdsoAdapterRedirects::Complete) }
+}
+
+unsafe fn rollback_active_vdso_site(installed: &InstalledVdsoSite<'_>) -> io::Result<()> {
+    match installed {
+        InstalledVdsoSite::Hook(installed) => unsafe { rollback_active_vdso_hook(installed) },
+        InstalledVdsoSite::Adapter(installed) => unsafe {
+            rollback_active_vdso_adapter(installed.as_ref())
+        },
+    }
+}
+
+unsafe fn rollback_inactive_vdso_site(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+    site: &'static SiteSlot,
+    original_hook_bytes: &[u8; liteinst2::patcher::WORD_PATCH_BYTES],
+) -> io::Result<()> {
+    if !site.hook.load(Ordering::Acquire).is_null() {
+        return Err(io::Error::other(
+            "LiteInst vDSO failed installation published a hook",
+        ));
+    }
+    unsafe { restore_vdso_original_bytes(site_info, original_hook_bytes)? };
+    set_vdso_mapping_protection(
+        site_info.mapping_start,
+        site_info.mapping_len,
+        libc::PROT_READ | libc::PROT_EXEC,
+    )?;
+    reset_vdso_site_for_retry(site);
+    Ok(())
+}
+
+fn install_one_vdso_hook<'a>(
+    site_info: &'a reverie_ptrace::VdsoSyscallSite,
+    callback: liteinst2::trampoline::HookCallback,
+) -> io::Result<InstalledVdsoSite<'a>> {
+    if !matches!(
+        &site_info.entry_patch,
+        reverie_ptrace::VdsoEntryPatch::BeforeHook { .. }
+    ) {
+        return Err(io::Error::other(
+            "LiteInst ordinary vDSO hook received a callback-adapter site",
+        ));
+    }
+    let address = site_info.address;
+    let (site, claimed) =
+        claim_site(address).ok_or_else(|| io::Error::other("LiteInst vDSO site table is full"))?;
+    if !claimed {
+        return Err(io::Error::other("LiteInst vDSO site was claimed twice"));
+    }
+    if !site.hook.load(Ordering::Acquire).is_null() {
+        terminal_vdso_publication_failure();
+    }
+    let original_hook_bytes = unsafe { read_vdso_hook_window(address) };
+
+    if let Err(error) = set_vdso_mapping_protection(
+        site_info.mapping_start,
+        site_info.mapping_len,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    ) {
+        // Linux mprotect failure is atomic for this single mapped range; no
+        // executable byte or mapping permission changed.
+        reset_vdso_site_for_retry(site);
+        return Err(error);
+    }
+    if !unsafe { vdso_entry_matches_original(site_info) } {
+        if set_vdso_mapping_protection(
+            site_info.mapping_start,
+            site_info.mapping_len,
+            libc::PROT_READ | libc::PROT_EXEC,
+        )
+        .is_err()
+        {
+            terminal_vdso_rollback_failure();
+        }
+        reset_vdso_site_for_retry(site);
+        return Err(io::Error::other(
+            "LiteInst vDSO entry does not contain the bound bytes",
+        ));
+    }
+    if let Err(error) = unsafe { publish_vdso_before_hook(site_info) } {
+        if unsafe { rollback_inactive_vdso_site(site_info, site, &original_hook_bytes) }.is_err() {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(error);
+    }
+    let bound_hook_bytes = unsafe { read_vdso_hook_window(address) };
+
+    if let Err(error) = unsafe {
+        install_site_hook(
+            address,
+            site,
+            callback,
+            PatchPublication::Quiescent,
+            &[0x0f, 0x05],
+            false,
+        )
+    } {
+        if unsafe { rollback_inactive_vdso_site(site_info, site, &original_hook_bytes) }.is_err() {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(io::Error::other(format!(
+            "failed to install LiteInst vDSO hook: {error}"
+        )));
+    }
+
+    let installed = InstalledVdsoSite::Hook(InstalledVdsoHook {
+        info: site_info,
+        site,
+        original_hook_bytes,
+        bound_hook_bytes,
+    });
+    if let Err(error) = set_vdso_mapping_protection(
+        site_info.mapping_start,
+        site_info.mapping_len,
+        libc::PROT_READ | libc::PROT_EXEC,
+    ) {
+        if unsafe { rollback_active_vdso_site(&installed) }.is_err() {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(error);
+    }
+    Ok(installed)
+}
+
+fn prepare_vdso_getrandom_adapter(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+    callback: liteinst2::trampoline::HookCallback,
+) -> io::Result<ExecutableTrampoline> {
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        normal_address,
+        normal_replacement,
+        fallback_address,
+        adapter_source_address,
+        adapter_source_expected,
+        ..
+    } = &site_info.entry_patch
+    else {
+        return Err(io::Error::other(
+            "LiteInst getrandom adapter received an ordinary vDSO site",
+        ));
+    };
+    if rel32_jump(*normal_address, *fallback_address)? != *normal_replacement {
+        return Err(io::Error::other(
+            "LiteInst getrandom normal redirect has the wrong bound target",
+        ));
+    }
+    let scanner = InstructionScanner::default();
+    let source = &adapter_source_expected[..7];
+    let scan = scanner
+        .scan_prefix(source, *adapter_source_address, source.len())
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let plan = TrampolinePlan::from_scan_replacing_first(&scan, *adapter_source_address, callback)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if !plan.replaces_first()
+        || plan.displaced_len() != 7
+        || plan.return_address()
+            != adapter_source_address
+                .checked_add(7)
+                .ok_or_else(|| io::Error::other("LiteInst getrandom adapter return overflows"))?
+    {
+        return Err(io::Error::other(
+            "LiteInst getrandom callback adapter did not bind syscall plus tail jump",
+        ));
+    }
+    let arena = arena_for(*fallback_address)
+        .filter(|arena| arena.arena.can_reach(*normal_address))
+        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for getrandom adapter"))?;
+    let trampoline = arena
+        .arena
+        .allocate(&plan)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    rel32_jump(*fallback_address, trampoline.address())?;
+    Ok(trampoline)
+}
+
+fn prepare_vdso_sgx_indirect_guard(
+    site_info: &reverie_ptrace::VdsoSyscallSite,
+) -> io::Result<PreparedVdsoIndirectGuard> {
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        indirect_guard_address,
+        indirect_guard_expected,
+        indirect_guard_displaced_len,
+        ..
+    } = &site_info.entry_patch
+    else {
+        return Err(io::Error::other(
+            "LiteInst SGX guard received an ordinary vDSO site",
+        ));
+    };
+    let scanner = InstructionScanner::default();
+    let scan = scanner
+        .scan_prefix(
+            indirect_guard_expected,
+            *indirect_guard_address,
+            liteinst2::patcher::WORD_PATCH_BYTES,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let trampoline_plan = TrampolinePlan::from_scan_replacing_first(
+        &scan,
+        *indirect_guard_address,
+        vdso_sgx_indirect_guard,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    let displaced_len = usize::from(*indirect_guard_displaced_len);
+    if !trampoline_plan.replaces_first()
+        || trampoline_plan.displaced_len() != displaced_len
+        || trampoline_plan.return_address()
+            != indirect_guard_address
+                .checked_add(displaced_len as u64)
+                .ok_or_else(|| io::Error::other("LiteInst SGX guard return overflows"))?
+    {
+        return Err(io::Error::other(
+            "LiteInst SGX guard did not replace only the target load and relocate LFENCE",
+        ));
+    }
+    let arena = arena_for(*indirect_guard_address)
+        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for SGX guard"))?;
+    let trampoline = arena
+        .arena
+        .allocate(&trampoline_plan)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let patch_plan = JumpPatchPlan::from_scan(
+        &scanner,
+        &scan,
+        scan.snapshot(),
+        *indirect_guard_address,
+        *indirect_guard_address,
+        trampoline.address(),
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    if patch_plan.displaced_len() != displaced_len
+        || patch_plan.original_bytes() != indirect_guard_expected[..8]
+        || patch_plan.replacement_bytes()[0] != 0xe9
+        || patch_plan.replacement_bytes()[7] != indirect_guard_expected[7]
+    {
+        return Err(io::Error::other(
+            "LiteInst SGX guard patch did not preserve the untouched call head",
+        ));
+    }
+    Ok(PreparedVdsoIndirectGuard {
+        trampoline,
+        patch_plan,
+    })
+}
+
+fn install_one_vdso_adapter<'a>(
+    site_info: &'a reverie_ptrace::VdsoSyscallSite,
+    callback: liteinst2::trampoline::HookCallback,
+) -> io::Result<InstalledVdsoSite<'a>> {
+    let _install_guard = lock_installation()?;
+    let _allocation_scope = crate::patch_alloc::enter();
+    if !unsafe { vdso_entry_matches_original(site_info) } {
+        return Err(io::Error::other(
+            "LiteInst getrandom vDSO mapping changed after guarded planning",
+        ));
+    }
+    let adapter_trampoline = prepare_vdso_getrandom_adapter(site_info, callback)?;
+    let guard = prepare_vdso_sgx_indirect_guard(site_info)?;
+    let guard_original = guard.patch_plan.original_bytes();
+    let guard_replacement = guard.patch_plan.replacement_bytes();
+    let guard_address = guard.patch_plan.execute_address();
+    let fallback_replacement = match &site_info.entry_patch {
+        reverie_ptrace::VdsoEntryPatch::AfterTarget {
+            fallback_address, ..
+        } => rel32_jump(*fallback_address, adapter_trampoline.address())?,
+        reverie_ptrace::VdsoEntryPatch::BeforeHook { .. } => unreachable!(),
+    };
+    let guard_ranges = vdso_indirect_guard_ranges(site_info)?;
+    // Allocate the final owner before any guard-range publication, vDSO
+    // permission change, or executable-byte write. Initializing this same box
+    // after the guard binds cannot invoke an allocator while a live branch
+    // needs rollback ownership.
+    let mut installed_adapter_storage = Box::<InstalledVdsoAdapter<'a>>::new_uninit();
+    VDSO_PKRU_SUPPORT.store(
+        if detect_vdso_sgx_pkru_support() { 2 } else { 1 },
+        Ordering::Release,
+    );
+    // Executable targets and reverse-PC descriptions now exist, but no vDSO
+    // byte or permission has changed. Revalidate both the exact VMA identity
+    // and all 8,192 bound bytes immediately before making the mapping writable.
+    validate_vdso_site(site_info)?;
+    if !unsafe { vdso_entry_matches_original(site_info) } {
+        return Err(io::Error::other(
+            "LiteInst getrandom vDSO mapping changed before publication",
+        ));
+    }
+    set_vdso_mapping_protection(
+        site_info.mapping_start,
+        site_info.mapping_len,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    )?;
+    if !unsafe { vdso_entry_matches_original(site_info) } {
+        if set_vdso_mapping_protection(
+            site_info.mapping_start,
+            site_info.mapping_len,
+            libc::PROT_READ | libc::PROT_EXEC,
+        )
+        .is_err()
+        {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(io::Error::other(
+            "LiteInst getrandom vDSO mapping changed before target publication",
+        ));
+    }
+    adapter_trampoline.publish_program_counter_mappings();
+    guard.trampoline.publish_program_counter_mappings();
+    let guard_patch = match unsafe {
+        LiveJumpPatch::bind_quiescent(guard.patch_plan, guard_address as usize as *mut u8)
+    } {
+        Ok(patch) => patch,
+        Err(error) => {
+            if set_vdso_mapping_protection(
+                site_info.mapping_start,
+                site_info.mapping_len,
+                libc::PROT_READ | libc::PROT_EXEC,
+            )
+            .is_err()
+            {
+                terminal_vdso_publication_failure();
+            }
+            return Err(io::Error::other(error.to_string()));
+        }
+    };
+    // SAFETY: the allocation above is still uniquely owned and uninitialized.
+    // A plain in-place write followed by `assume_init` neither allocates nor
+    // exposes a partially initialized owner. The completed box owns every
+    // rollback resource before guard metadata or executable bytes go live.
+    unsafe {
+        installed_adapter_storage
+            .as_mut_ptr()
+            .write(InstalledVdsoAdapter {
+                info: site_info,
+                adapter_trampoline,
+                guard_trampoline: guard.trampoline,
+                guard_patch,
+                guard_original,
+                guard_replacement,
+                fallback_replacement,
+            });
+    }
+    let installed_adapter = unsafe { installed_adapter_storage.assume_init() };
+    if let Err(error) = publish_vdso_indirect_guard_ranges(guard_ranges) {
+        if set_vdso_mapping_protection(
+            site_info.mapping_start,
+            site_info.mapping_len,
+            libc::PROT_READ | libc::PROT_EXEC,
+        )
+        .is_err()
+        {
+            terminal_vdso_publication_failure();
+        }
+        return Err(error);
+    }
+    // SAFETY: all signals remain blocked, initialization is single-threaded,
+    // and the full mapping was revalidated after the final permission change.
+    if let Err(error) = unsafe { installed_adapter.guard_patch.apply_quiescent() } {
+        unpublish_vdso_indirect_guard_ranges();
+        if unsafe { read_vdso_hook_window(guard_address) } != guard_original
+            || !unsafe { vdso_entry_matches_original(site_info) }
+            || set_vdso_mapping_protection(
+                site_info.mapping_start,
+                site_info.mapping_len,
+                libc::PROT_READ | libc::PROT_EXEC,
+            )
+            .is_err()
+        {
+            terminal_vdso_publication_failure();
+        }
+        return Err(io::Error::other(error.to_string()));
+    }
+    #[cfg(test)]
+    if VDSO_AFTER_GUARD_FAILURE.swap(false, Ordering::AcqRel) {
+        if unsafe { rollback_vdso_adapter(&installed_adapter, VdsoAdapterRedirects::None) }.is_err()
+        {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(io::Error::other(
+            "injected failure after SGX guard publication",
+        ));
+    }
+    #[cfg(test)]
+    if VDSO_POST_TARGET_ENTRY_MUTATION.swap(false, Ordering::AcqRel) {
+        let reverie_ptrace::VdsoEntryPatch::AfterTarget { normal_address, .. } =
+            &site_info.entry_patch
+        else {
+            unreachable!();
+        };
+        unsafe { (*normal_address as usize as *mut u8).write(0xcc) };
+    }
+    let reverie_ptrace::VdsoEntryPatch::AfterTarget {
+        normal_address,
+        normal_expected,
+        normal_replacement,
+        fallback_address,
+        fallback_expected,
+        ..
+    } = &site_info.entry_patch
+    else {
+        unreachable!();
+    };
+    // Publish the private fallback first. Until the normal head is redirected,
+    // no getrandom path can reach it. Each successful step is recorded in the
+    // rollback state; a pre-write mismatch leaves that step unowned.
+    if let Err(error) = unsafe {
+        publish_exact_vdso_instruction(
+            *fallback_address,
+            fallback_expected,
+            &installed_adapter.fallback_replacement,
+            "getrandom fallback",
+        )
+    } {
+        if unsafe { rollback_vdso_adapter(&installed_adapter, VdsoAdapterRedirects::None) }.is_err()
+        {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(error);
+    }
+    #[cfg(test)]
+    if VDSO_AFTER_FALLBACK_FAILURE.swap(false, Ordering::AcqRel) {
+        if unsafe { rollback_vdso_adapter(&installed_adapter, VdsoAdapterRedirects::FallbackOnly) }
+            .is_err()
+        {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(io::Error::other(
+            "injected failure after getrandom fallback publication",
+        ));
+    }
+    if let Err(error) = unsafe {
+        publish_exact_vdso_instruction(
+            *normal_address,
+            normal_expected,
+            normal_replacement,
+            "getrandom normal redirect",
+        )
+    } {
+        if unsafe { rollback_vdso_adapter(&installed_adapter, VdsoAdapterRedirects::FallbackOnly) }
+            .is_err()
+        {
+            terminal_vdso_redirect_ownership_failure();
+        }
+        return Err(error);
+    }
+    let installed = InstalledVdsoSite::Adapter(installed_adapter);
+    if let Err(error) = set_vdso_mapping_protection(
+        site_info.mapping_start,
+        site_info.mapping_len,
+        libc::PROT_READ | libc::PROT_EXEC,
+    ) {
+        if unsafe { rollback_active_vdso_site(&installed) }.is_err() {
+            terminal_vdso_rollback_failure();
+        }
+        return Err(error);
+    }
+    Ok(installed)
+}
+
+fn install_one_vdso_site<'a>(
+    site_info: &'a reverie_ptrace::VdsoSyscallSite,
+    callback: liteinst2::trampoline::HookCallback,
+) -> io::Result<InstalledVdsoSite<'a>> {
+    match &site_info.entry_patch {
+        reverie_ptrace::VdsoEntryPatch::BeforeHook { .. } => {
+            install_one_vdso_hook(site_info, callback)
+        }
+        reverie_ptrace::VdsoEntryPatch::AfterTarget { .. } => {
+            install_one_vdso_adapter(site_info, callback)
+        }
+    }
+}
+
+/// Install each vDSO hook or private callback adapter while initialization
+/// is quiescent.
+///
+/// A getrandom adapter is executable before its fallback and normal branches
+/// are published; the original internal syscall is never patched. Ordinary
+/// functions are rewritten only immediately before their hook is installed.
+/// Every returned error rolls the complete batch back in reverse order, leaving
+/// original entry and syscall bytes, RX mapping protection, null hook pointers,
+/// and reclaimable `SITE_STALE` slots. Failure to prove any part of rollback
+/// terminates the process instead of exposing a partial installation.
+fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<()> {
+    let callbacks = sites
+        .iter()
+        .map(|site| {
+            validate_vdso_site(site)?;
+            vdso_callback(site.number)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut installed = Vec::with_capacity(sites.len());
+    for (site_info, callback) in sites.iter().zip(callbacks) {
+        match install_one_vdso_site(site_info, callback.callback) {
+            Ok(site) => installed.push(site),
+            Err(error) => {
+                for prior in installed.iter().rev() {
+                    if unsafe { rollback_active_vdso_site(prior) }.is_err() {
+                        terminal_vdso_rollback_failure();
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct VdsoCallback {
+    callback: liteinst2::trampoline::HookCallback,
+    source: DirectHookSource,
+}
+
+fn vdso_callback(number: i64) -> io::Result<VdsoCallback> {
+    let (callback, source): (liteinst2::trampoline::HookCallback, DirectHookSource) = match number {
+        libc::SYS_time => (installed_vdso_time_hook, DirectHookSource::InstalledSite),
+        libc::SYS_clock_gettime => (
+            installed_vdso_clock_gettime_hook,
+            DirectHookSource::InstalledSite,
+        ),
+        libc::SYS_getcpu => (installed_vdso_getcpu_hook, DirectHookSource::InstalledSite),
+        libc::SYS_getrandom => (installed_vdso_getrandom_hook, DirectHookSource::VdsoAdapter),
+        libc::SYS_gettimeofday => (
+            installed_vdso_gettimeofday_hook,
+            DirectHookSource::InstalledSite,
+        ),
+        libc::SYS_clock_getres => (
+            installed_vdso_clock_getres_hook,
+            DirectHookSource::InstalledSite,
+        ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported LiteInst vDSO syscall number {number}"),
-        )),
-    }
+        ))?,
+    };
+    Ok(VdsoCallback { callback, source })
 }
 
 // TODO-HUMAN-REVIEW(PR-270): Review stopped-tracee patch helper ABI.
@@ -2036,15 +3528,9 @@ impl Drop for SignalInstallGuard {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review atomic signal-state preparation.
-pub(crate) fn prepare_guest_signal_state(
-    instructions: InstructionSubscriptions,
-) -> io::Result<SignalInstallGuard> {
-    let sigsys = 1_u64 << (libc::SIGSYS - 1);
-    let sigsegv = if instructions.cpuid || instructions.rdtsc {
-        1_u64 << (libc::SIGSEGV - 1)
-    } else {
-        0
-    };
+/// Block every signal while retaining the caller's exact mask for a clean
+/// pre-activation planning return.
+pub(crate) fn block_all_signals_for_install() -> io::Result<SignalInstallGuard> {
     let install_mask = u64::MAX;
     let mut previous_mask = 0_u64;
     let result = unsafe {
@@ -2063,9 +3549,25 @@ pub(crate) fn prepare_guest_signal_state(
     if result < 0 {
         return Err(io::Error::from_raw_os_error((-result) as i32));
     }
-    let guard = SignalInstallGuard {
-        restore_mask: previous_mask & !(sigsys | sigsegv),
+    Ok(SignalInstallGuard {
+        restore_mask: previous_mask,
+    })
+}
+
+/// Reset inherited handlers only after the public installer has crossed its
+/// fail-closed activation boundary. The guard then leaves the installed
+/// SIGSYS/SIGSEGV routes unblocked when installation returns.
+pub(crate) fn prepare_guest_signal_actions(
+    guard: &mut SignalInstallGuard,
+    instructions: InstructionSubscriptions,
+) -> io::Result<()> {
+    let sigsys = 1_u64 << (libc::SIGSYS - 1);
+    let sigsegv = if instructions.cpuid || instructions.rdtsc {
+        1_u64 << (libc::SIGSEGV - 1)
+    } else {
+        0
     };
+    guard.restore_mask &= !(sigsys | sigsegv);
 
     for signal in 1..=64 {
         if matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
@@ -2108,7 +3610,7 @@ pub(crate) fn prepare_guest_signal_state(
             }
         }
     }
-    Ok(guard)
+    Ok(())
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2647,13 +4149,33 @@ unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtscp) }
 }
 
-unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i64>) {
-    if let Some(context) = unsafe { context.as_ref() }
-        && let Some(site) = find_site(context.instruction_pointer)
-    {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
+unsafe fn installed_syscall_hook_for(
+    context: *mut HookContext,
+    number: Option<i64>,
+    source: DirectHookSource,
+) {
+    if let Some(context) = unsafe { context.as_ref() } {
+        let site = match source {
+            DirectHookSource::InstalledSite => find_site(context.instruction_pointer),
+            DirectHookSource::VdsoAdapter => None,
+        };
+        record_direct_hook(&DIRECT_HOOK_COUNTERS, source, site);
     }
-    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook, None) };
+    unsafe {
+        dispatch_syscall_context(
+            context,
+            number,
+            SyscallDispatch::InstalledHook(source),
+            None,
+        )
+    };
+}
+
+unsafe fn installed_vdso_syscall_hook_for(context: *mut HookContext, number: i64) {
+    let source = vdso_callback(number)
+        .map(|callback| callback.source)
+        .unwrap_or_else(|_| unsafe { exit_now(122) });
+    unsafe { installed_syscall_hook_for(context, Some(number), source) }
 }
 
 pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext, pkru: &mut Option<u32>) {
@@ -2730,27 +4252,31 @@ unsafe fn dispatch_syscall_context(
 }
 
 unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, None) }
+    unsafe { installed_syscall_hook_for(context, None, DirectHookSource::InstalledSite) }
 }
 
 unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_time)) }
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_time) }
 }
 
 unsafe extern "C" fn installed_vdso_clock_gettime_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_gettime)) }
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_clock_gettime) }
 }
 
 unsafe extern "C" fn installed_vdso_getcpu_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getcpu)) }
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_getcpu) }
+}
+
+unsafe extern "C" fn installed_vdso_getrandom_hook(context: *mut HookContext) {
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_getrandom) }
 }
 
 unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_gettimeofday)) }
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_gettimeofday) }
 }
 
 unsafe extern "C" fn installed_vdso_clock_getres_hook(context: *mut HookContext) {
-    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_getres)) }
+    unsafe { installed_vdso_syscall_hook_for(context, libc::SYS_clock_getres) }
 }
 
 unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
@@ -3502,9 +5028,13 @@ mod tests {
     use reverie_preload::BuiltinTool;
 
     use super::ALT_STACK_ENV;
+    use super::DIRECT_HOOK_COUNTERS;
+    use super::DirectHookCounters;
+    use super::DirectHookSource;
     use super::ENABLED_FALLBACK_CLASSIFICATIONS;
     use super::FORK_HOOK;
     use super::FallbackCounters;
+    use super::HookContext;
     use super::LiteinstDispatcher;
     use super::MAX_PATCH_SITES;
     use super::RCB_CLOCK;
@@ -3517,19 +5047,861 @@ mod tests {
     use super::SITES;
     use super::SiteSlot;
     use super::StackLine;
+    use super::SyscallDispatch;
+    use super::SyscallEvent;
     use super::TOOL_PASSTHROUGH;
     use super::TOOL_SPOOF_GETPID;
     use super::alt_stack_from_env_value;
     use super::builtin_tool_from_env_value;
     use super::claim_site;
     use super::clone_is_fork_like;
+    use super::direct_hook_count;
     use super::fallback_dispatch_count;
     use super::fallback_syscall_count;
     use super::initialize_rcb_clock_with;
     use super::mark_site_range_stale;
     use super::raw_syscall6;
+    use super::record_direct_hook;
     use super::record_fallback_dispatch;
+    use super::reset_and_record_fork_child_dispatch;
+    use super::reset_fallback_observability;
     use super::reset_site_observability;
+    use super::vdso_callback;
+
+    const VDSO_TRANSACTION_CHILD_ENV: &str = "REVERIE_LITEINST_VDSO_TRANSACTION_TEST_CHILD";
+    const VDSO_TERMINAL_CHILD_ENV: &str = "REVERIE_LITEINST_VDSO_TERMINAL_TEST_CHILD";
+    const FORK_ACCOUNTING_CHILD_ENV: &str = "REVERIE_LITEINST_FORK_ACCOUNTING_TEST_CHILD";
+    const VDSO_TEST_ENTRY: [u8; 5] = [0x90; 5];
+    const VDSO_TEST_REDIRECT: [u8; 5] = [0xe9, 0x06, 0x00, 0x00, 0x00];
+    const VDSO_TEST_SYSCALL_OFFSET: usize = 16;
+    const VDSO_TEST_FUNCTION_LEN: usize = 32;
+    const VDSO_TEST_GUARD_OFFSET: usize = 40;
+    const _: () = assert!(
+        VDSO_TEST_FUNCTION_LEN <= VDSO_TEST_GUARD_OFFSET,
+        "synthetic getrandom function and SGX guard must be disjoint"
+    );
+    const VDSO_TEST_GUARD_SOURCE: [u8; 9] = [0x48, 0x8b, 0x40, 0x18, 0x0f, 0xae, 0xe8, 0xff, 0xd0];
+    const VDSO_TEST_ORDINARY_OFFSET: usize = 64;
+    const VDSO_TEST_ORDINARY_LEN: usize = 32;
+    const ALL_VDSO_TERMINAL_MARKERS: [&[u8]; 12] = [
+        super::VDSO_ROLLBACK_INITIAL_FAILURE_MARKER,
+        super::VDSO_ROLLBACK_ATTEMPT_MARKER,
+        super::VDSO_ROLLBACK_TERMINAL_MARKER,
+        super::VDSO_REDIRECT_OWNERSHIP_TERMINAL_MARKER,
+        super::VDSO_PRELOAD_TERMINAL_MARKER,
+        super::VDSO_FAULTING_TERMINAL_MARKER,
+        super::VDSO_GUARD_LOAD_TERMINAL_MARKER,
+        super::VDSO_GUARD_RANGES_UNPUBLISHED_TERMINAL_MARKER,
+        super::VDSO_GUARD_PKRU_SUPPORT_UNPUBLISHED_TERMINAL_MARKER,
+        super::VDSO_GUARD_TARGET_TERMINAL_MARKER,
+        super::VDSO_GUARD_PKRU_TERMINAL_MARKER,
+        super::VDSO_BATCH_COMPLETE_MARKER,
+    ];
+
+    fn assert_vdso_terminal_markers(stderr: &[u8], expected: &[&[u8]], scenario: &str) {
+        for marker in ALL_VDSO_TERMINAL_MARKERS {
+            let count = stderr
+                .windows(marker.len())
+                .filter(|candidate| *candidate == marker)
+                .count();
+            assert_eq!(
+                count,
+                usize::from(expected.contains(&marker)),
+                "vDSO terminal scenario {scenario} emitted marker {:?} {count} times; stderr:\n{}",
+                String::from_utf8_lossy(marker),
+                String::from_utf8_lossy(stderr),
+            );
+        }
+    }
+
+    fn protect_vdso_test_mapping(start: u64, len: usize, protection: i32) {
+        let result =
+            unsafe { libc::mprotect(start as usize as *mut libc::c_void, len, protection) };
+        assert_eq!(
+            result,
+            0,
+            "test mapping mprotect failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    fn vdso_test_image(start: u64) -> Vec<u8> {
+        unsafe { core::slice::from_raw_parts(start as usize as *const u8, 128) }.to_vec()
+    }
+
+    fn assert_vdso_test_mapping_is_rx(address: u64) {
+        let mapping = super::read_runtime_maps()
+            .unwrap()
+            .into_iter()
+            .find(|mapping| mapping.start <= address && address < mapping.end)
+            .expect("synthetic vDSO mapping must remain mapped");
+        assert!(mapping.readable);
+        assert!(!mapping.writable);
+        assert!(mapping.executable);
+    }
+
+    fn assert_vdso_test_guard_is_active(start: u64, original: &[u8; 128]) {
+        let image = vdso_test_image(start);
+        assert_ne!(
+            &image[VDSO_TEST_GUARD_OFFSET..VDSO_TEST_GUARD_OFFSET + 7],
+            &original[VDSO_TEST_GUARD_OFFSET..VDSO_TEST_GUARD_OFFSET + 7],
+        );
+        assert_eq!(
+            &image[VDSO_TEST_GUARD_OFFSET + 7..VDSO_TEST_GUARD_OFFSET + 9],
+            &[0xff, 0xd0],
+            "the SGX indirect call must remain at its original address",
+        );
+    }
+
+    fn vdso_test_original() -> [u8; 128] {
+        let mut original = [0x90_u8; 128];
+        // The normal redirect lands at +11. The callback adapter is built from
+        // the untouched syscall at +16 and its jump to the return at +32.
+        original[11..16].copy_from_slice(&[0xb8, 0x3e, 0x01, 0x00, 0x00]);
+        original[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 2]
+            .copy_from_slice(&[0x0f, 0x05]);
+        original[VDSO_TEST_SYSCALL_OFFSET + 2..VDSO_TEST_SYSCALL_OFFSET + 7]
+            .copy_from_slice(&[0xe9, 0x09, 0x00, 0x00, 0x00]);
+        original[32] = 0xc3;
+        original[VDSO_TEST_GUARD_OFFSET..VDSO_TEST_GUARD_OFFSET + VDSO_TEST_GUARD_SOURCE.len()]
+            .copy_from_slice(&VDSO_TEST_GUARD_SOURCE);
+        for (index, byte) in original
+            [VDSO_TEST_ORDINARY_OFFSET..VDSO_TEST_ORDINARY_OFFSET + VDSO_TEST_ORDINARY_LEN]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = 0x40 + index as u8;
+        }
+        original
+    }
+
+    fn vdso_test_mapping_identity(
+        start: u64,
+        page_len: usize,
+    ) -> reverie_ptrace::VdsoMappingIdentity {
+        let mapping = super::read_runtime_maps()
+            .unwrap()
+            .into_iter()
+            .find(|mapping| mapping.start == start && mapping.end == start + page_len as u64)
+            .expect("synthetic vDSO must have one exact mapping");
+        reverie_ptrace::VdsoMappingIdentity {
+            offset: mapping.offset,
+            device: mapping.device,
+            inode: mapping.inode,
+            pathname: mapping.pathname.into_boxed_str(),
+            shared: mapping.shared,
+        }
+    }
+
+    fn vdso_test_getrandom_site(
+        start: u64,
+        page_len: usize,
+        original: &[u8; 128],
+    ) -> reverie_ptrace::VdsoSyscallSite {
+        let mut mapping_expected = vec![0; page_len];
+        mapping_expected[..original.len()].copy_from_slice(original);
+        reverie_ptrace::VdsoSyscallSite {
+            address: start + VDSO_TEST_SYSCALL_OFFSET as u64,
+            number: libc::SYS_getrandom,
+            mapping_start: start,
+            mapping_len: page_len as u64,
+            mapping_identity: vdso_test_mapping_identity(start, page_len),
+            entry_patch: reverie_ptrace::VdsoEntryPatch::AfterTarget {
+                mapping_expected: mapping_expected.into_boxed_slice(),
+                function_address: start,
+                function_expected: original[..VDSO_TEST_FUNCTION_LEN]
+                    .to_vec()
+                    .into_boxed_slice(),
+                normal_address: start,
+                normal_expected: VDSO_TEST_ENTRY,
+                normal_replacement: VDSO_TEST_REDIRECT,
+                fallback_address: start + 11,
+                fallback_expected: original[11..16].try_into().unwrap(),
+                adapter_source_address: start + VDSO_TEST_SYSCALL_OFFSET as u64,
+                adapter_source_expected: original
+                    [VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8]
+                    .try_into()
+                    .unwrap(),
+                indirect_guard_address: start + VDSO_TEST_GUARD_OFFSET as u64,
+                indirect_guard_expected: VDSO_TEST_GUARD_SOURCE,
+                indirect_guard_displaced_len: 7,
+            },
+        }
+    }
+
+    fn vdso_test_ordinary_site(
+        start: u64,
+        page_len: usize,
+        original: &[u8; 128],
+    ) -> reverie_ptrace::VdsoSyscallSite {
+        let mut replacement = vec![0x90; VDSO_TEST_ORDINARY_LEN];
+        replacement[..3].copy_from_slice(&[0x0f, 0x05, 0xc3]);
+        reverie_ptrace::VdsoSyscallSite {
+            address: start + VDSO_TEST_ORDINARY_OFFSET as u64,
+            number: libc::SYS_time,
+            mapping_start: start,
+            mapping_len: page_len as u64,
+            mapping_identity: vdso_test_mapping_identity(start, page_len),
+            entry_patch: reverie_ptrace::VdsoEntryPatch::BeforeHook {
+                address: start + VDSO_TEST_ORDINARY_OFFSET as u64,
+                expected: original
+                    [VDSO_TEST_ORDINARY_OFFSET..VDSO_TEST_ORDINARY_OFFSET + VDSO_TEST_ORDINARY_LEN]
+                    .to_vec()
+                    .into_boxed_slice(),
+                replacement: replacement.into_boxed_slice(),
+            },
+        }
+    }
+
+    fn run_vdso_transaction_child(scenario: &str) {
+        let page_len = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let start = mapping as usize as u64;
+        let original = vdso_test_original();
+        unsafe {
+            core::ptr::copy_nonoverlapping(original.as_ptr(), mapping.cast::<u8>(), original.len());
+        }
+
+        let getrandom_site = vdso_test_getrandom_site(start, page_len, &original);
+        let ordinary_site = vdso_test_ordinary_site(start, page_len, &original);
+
+        match scenario {
+            "entry-mismatch" => unsafe {
+                mapping.cast::<u8>().write(0xcc);
+            },
+            "adapter-source-mismatch" => unsafe {
+                mapping
+                    .cast::<u8>()
+                    .add(VDSO_TEST_SYSCALL_OFFSET)
+                    .write(0xcc);
+            },
+            "outside-prefix-mismatch" => unsafe {
+                mapping.cast::<u8>().add(56).write(0xcc);
+            },
+            "mapping-replacement" => unsafe {
+                let fd = libc::memfd_create(c"reverie-vdso-identity".as_ptr(), libc::MFD_CLOEXEC);
+                assert!(
+                    fd >= 0,
+                    "memfd_create failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                assert_eq!(libc::ftruncate(fd, page_len as libc::off_t), 0);
+                assert_eq!(
+                    libc::pwrite(fd, original.as_ptr().cast(), original.len(), 0),
+                    original.len() as isize
+                );
+                assert_eq!(libc::munmap(mapping, page_len), 0);
+                let replacement = libc::mmap(
+                    mapping,
+                    page_len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED,
+                    fd,
+                    0,
+                );
+                assert_eq!(libc::close(fd), 0);
+                assert_eq!(replacement, mapping);
+                assert_eq!(vdso_test_image(start), original);
+            },
+            "initial-protection"
+            | "identity-unchanged-control"
+            | "after-guard-error"
+            | "after-fallback-error"
+            | "post-target-entry-mismatch"
+            | "final-protection"
+            | "batch-final-protection"
+            | "rollback-protection-terminal"
+            | "malformed-geometry"
+            | "callback-refusal" => {}
+            other => panic!("unknown vDSO transaction scenario {other}"),
+        }
+        let before_attempt = vdso_test_image(start);
+        protect_vdso_test_mapping(start, page_len, libc::PROT_READ | libc::PROT_EXEC);
+
+        super::prepare_instrumentation_state().unwrap();
+        super::VDSO_PROTECTION_CALLS.store(0, Ordering::Release);
+        super::VDSO_PROTECTION_FAILURE_CALL.store(
+            match scenario {
+                "initial-protection" => 1,
+                "final-protection" | "rollback-protection-terminal" => 2,
+                // First site uses calls 1 and 2. The ordinary second site
+                // publishes its complete rewrite, activates its hook, and
+                // then encounters this final RX failure at call 4.
+                "batch-final-protection" => 4,
+                _ => 0,
+            },
+            Ordering::Release,
+        );
+        super::VDSO_PROTECTION_SECOND_FAILURE_CALL.store(
+            if scenario == "rollback-protection-terminal" {
+                4
+            } else {
+                0
+            },
+            Ordering::Release,
+        );
+        let mut sites = if matches!(scenario, "batch-final-protection" | "callback-refusal") {
+            let mut sites = vec![getrandom_site, ordinary_site];
+            if scenario == "callback-refusal" {
+                sites[1].number = -1;
+            }
+            sites
+        } else {
+            vec![getrandom_site]
+        };
+        if scenario == "malformed-geometry" {
+            sites[0].mapping_len = (VDSO_TEST_SYSCALL_OFFSET + 7) as u64;
+        }
+        if scenario == "post-target-entry-mismatch" {
+            super::VDSO_POST_TARGET_ENTRY_MUTATION.store(true, Ordering::Release);
+        }
+        if scenario == "after-guard-error" {
+            super::VDSO_AFTER_GUARD_FAILURE.store(true, Ordering::Release);
+        }
+        if scenario == "after-fallback-error" {
+            super::VDSO_AFTER_FALLBACK_FAILURE.store(true, Ordering::Release);
+        }
+
+        if scenario == "identity-unchanged-control" {
+            super::install_vdso_sites(&sites).unwrap();
+            assert_eq!(vdso_test_image(start)[0], 0xe9);
+            assert_eq!(vdso_test_image(start)[11], 0xe9);
+            assert_vdso_test_guard_is_active(start, &original);
+            assert_eq!(
+                &vdso_test_image(start)[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8],
+                &original[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8]
+            );
+            assert_vdso_test_mapping_is_rx(start);
+            return;
+        }
+
+        assert!(super::install_vdso_sites(&sites).is_err());
+        assert_eq!(vdso_test_image(start), before_attempt);
+        assert_vdso_test_mapping_is_rx(start);
+        assert!(super::find_site(sites[0].address).is_none());
+        if scenario == "callback-refusal" {
+            assert!(super::find_site(sites[1].address).is_none());
+            sites[1].number = libc::SYS_time;
+        }
+        if scenario == "batch-final-protection" {
+            let ordinary = super::find_site(sites[1].address).unwrap();
+            assert_eq!(ordinary.state.load(Ordering::Acquire), SITE_STALE);
+            assert!(ordinary.hook.load(Ordering::Acquire).is_null());
+            assert_eq!(ordinary.mapping_end.load(Ordering::Acquire), 0);
+            assert_eq!(ordinary.instruction_len.load(Ordering::Acquire), 0);
+            assert_eq!(ordinary.straddle_prefix.load(Ordering::Acquire), 0);
+        }
+
+        if scenario == "mapping-replacement" {
+            unsafe {
+                assert_eq!(libc::munmap(mapping, page_len), 0);
+                let replacement = libc::mmap(
+                    mapping,
+                    page_len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+                    -1,
+                    0,
+                );
+                assert_eq!(replacement, mapping);
+                core::ptr::copy_nonoverlapping(
+                    original.as_ptr(),
+                    replacement.cast::<u8>(),
+                    original.len(),
+                );
+            }
+            protect_vdso_test_mapping(start, page_len, libc::PROT_READ | libc::PROT_EXEC);
+            sites[0] = vdso_test_getrandom_site(start, page_len, &original);
+        } else if matches!(
+            scenario,
+            "entry-mismatch" | "adapter-source-mismatch" | "outside-prefix-mismatch"
+        ) {
+            protect_vdso_test_mapping(
+                start,
+                page_len,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            );
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    original.as_ptr(),
+                    mapping.cast::<u8>(),
+                    original.len(),
+                );
+            }
+            protect_vdso_test_mapping(start, page_len, libc::PROT_READ | libc::PROT_EXEC);
+        }
+        if scenario == "malformed-geometry" {
+            sites[0].mapping_len = page_len as u64;
+        }
+        super::VDSO_PROTECTION_CALLS.store(0, Ordering::Release);
+        super::VDSO_PROTECTION_FAILURE_CALL.store(0, Ordering::Release);
+        super::VDSO_PROTECTION_SECOND_FAILURE_CALL.store(0, Ordering::Release);
+
+        super::install_vdso_sites(&sites).unwrap();
+        assert!(super::find_site(sites[0].address).is_none());
+        assert_eq!(
+            &vdso_test_image(start)[..VDSO_TEST_ENTRY.len()],
+            VDSO_TEST_REDIRECT.as_slice()
+        );
+        assert_eq!(
+            &vdso_test_image(start)[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8],
+            &original[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8]
+        );
+        assert_eq!(vdso_test_image(start)[11], 0xe9);
+        assert_vdso_test_guard_is_active(start, &original);
+        assert_vdso_test_mapping_is_rx(start);
+        if matches!(scenario, "batch-final-protection" | "callback-refusal") {
+            let ordinary = super::find_site(sites[1].address).unwrap();
+            assert_eq!(ordinary.state.load(Ordering::Acquire), SITE_ACTIVE);
+            assert!(!ordinary.hook.load(Ordering::Acquire).is_null());
+            assert_ne!(
+                &vdso_test_image(start)[VDSO_TEST_ORDINARY_OFFSET..VDSO_TEST_ORDINARY_OFFSET + 2],
+                &original[VDSO_TEST_ORDINARY_OFFSET..VDSO_TEST_ORDINARY_OFFSET + 2]
+            );
+        }
+    }
+
+    #[test]
+    fn vdso_install_transaction_restores_and_retries() {
+        if let Some(scenario) = std::env::var_os(VDSO_TRANSACTION_CHILD_ENV) {
+            run_vdso_transaction_child(scenario.to_str().unwrap());
+            return;
+        }
+
+        for scenario in [
+            "initial-protection",
+            "identity-unchanged-control",
+            "entry-mismatch",
+            "adapter-source-mismatch",
+            "outside-prefix-mismatch",
+            "mapping-replacement",
+            "after-guard-error",
+            "after-fallback-error",
+            "post-target-entry-mismatch",
+            "final-protection",
+            "batch-final-protection",
+            "malformed-geometry",
+            "callback-refusal",
+            "rollback-protection-terminal",
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::vdso_install_transaction_restores_and_retries",
+                    "--test-threads=1",
+                ])
+                .env(VDSO_TRANSACTION_CHILD_ENV, scenario)
+                .output()
+                .unwrap();
+            if matches!(
+                scenario,
+                "post-target-entry-mismatch" | "rollback-protection-terminal"
+            ) {
+                assert_eq!(
+                    output.status.code(),
+                    Some(super::VDSO_PUBLICATION_FAILURE_STATUS)
+                );
+            } else {
+                assert!(
+                    output.status.success(),
+                    "vDSO transaction child {scenario} failed:\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert_vdso_terminal_markers(
+                &output.stderr,
+                match scenario {
+                    "post-target-entry-mismatch" => {
+                        &[super::VDSO_REDIRECT_OWNERSHIP_TERMINAL_MARKER]
+                    }
+                    "rollback-protection-terminal" => &[
+                        super::VDSO_ROLLBACK_INITIAL_FAILURE_MARKER,
+                        super::VDSO_ROLLBACK_ATTEMPT_MARKER,
+                        super::VDSO_ROLLBACK_TERMINAL_MARKER,
+                    ],
+                    _ => &[],
+                },
+                scenario,
+            );
+        }
+    }
+
+    fn install_real_synthetic_vdso_batch() {
+        let page_len = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let start = mapping as usize as u64;
+        let original = vdso_test_original();
+        unsafe {
+            core::ptr::copy_nonoverlapping(original.as_ptr(), mapping.cast::<u8>(), original.len());
+        }
+        protect_vdso_test_mapping(start, page_len, libc::PROT_READ | libc::PROT_EXEC);
+        super::prepare_instrumentation_state().unwrap();
+        let site = vdso_test_getrandom_site(start, page_len, &original);
+        super::install_vdso_sites(&[site]).unwrap();
+        assert_eq!(vdso_test_image(start)[0], 0xe9);
+        assert_eq!(vdso_test_image(start)[11], 0xe9);
+        assert_vdso_test_guard_is_active(start, &original);
+        assert_eq!(
+            &vdso_test_image(start)[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8],
+            &original[VDSO_TEST_SYSCALL_OFFSET..VDSO_TEST_SYSCALL_OFFSET + 8]
+        );
+        assert_vdso_test_mapping_is_rx(start);
+        super::emit_vdso_terminal_test_marker(super::VDSO_BATCH_COMPLETE_MARKER);
+    }
+
+    fn terminal_test_guard_ranges() -> super::VdsoIndirectGuardRanges {
+        super::VdsoIndirectGuardRanges {
+            normal: super::VdsoRewrittenRange {
+                start: 0x1000,
+                end: 0x1005,
+            },
+            fallback: super::VdsoRewrittenRange {
+                start: 0x2000,
+                end: 0x2005,
+            },
+            guard: super::VdsoRewrittenRange {
+                start: 0x3000,
+                end: 0x3007,
+            },
+        }
+    }
+
+    fn hook_context_with_rax(rax: u64) -> HookContext {
+        HookContext {
+            instruction_pointer: 0x01,
+            stack_pointer: 0x02,
+            r15: 0x03,
+            r14: 0x04,
+            r13: 0x05,
+            r12: 0x06,
+            r11: 0x07,
+            r10: 0x08,
+            r9: 0x09,
+            r8: 0x0a,
+            rdi: 0x0b,
+            rsi: 0x0c,
+            rbp: 0x0d,
+            rbx: 0x0e,
+            rdx: 0x0f,
+            rcx: 0x10,
+            rax,
+            rflags: 0x12,
+        }
+    }
+
+    fn run_vdso_terminal_child(scenario: &str) {
+        match scenario {
+            "preload" => {
+                install_real_synthetic_vdso_batch();
+                let _ = super::complete_runtime_after_vdso(
+                    true,
+                    || {
+                        super::emit_vdso_terminal_test_marker(super::VDSO_PRELOAD_TERMINAL_MARKER);
+                        Err(std::io::Error::other("injected preload failure"))
+                    },
+                    || unreachable!("fault enabling must not follow preload failure"),
+                );
+                unreachable!("a preload error after a real vDSO batch must terminate");
+            }
+            "faulting" => {
+                install_real_synthetic_vdso_batch();
+                let _ = super::complete_runtime_after_vdso(
+                    true,
+                    || Ok(()),
+                    || {
+                        super::emit_vdso_terminal_test_marker(super::VDSO_FAULTING_TERMINAL_MARKER);
+                        Err(std::io::Error::other("injected fault-enabling failure"))
+                    },
+                );
+                unreachable!("a fault-enabling error after a real vDSO batch must terminate");
+            }
+            "no-sites" => {
+                assert!(
+                    super::complete_runtime_after_vdso(
+                        false,
+                        || Err(std::io::Error::other("injected no-site preload failure")),
+                        || unreachable!("fault enabling must not follow preload failure"),
+                    )
+                    .is_err()
+                );
+            }
+            "sgx-load-fault" => {
+                super::publish_vdso_indirect_guard_ranges(terminal_test_guard_ranges()).unwrap();
+                super::VDSO_PKRU_TEST_OVERRIDE.store(0, Ordering::Release);
+                let page_len =
+                    usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+                let mapping = unsafe {
+                    libc::mmap(
+                        core::ptr::null_mut(),
+                        page_len,
+                        libc::PROT_NONE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    )
+                };
+                assert_ne!(mapping, libc::MAP_FAILED);
+                let run = (mapping as usize).wrapping_sub(0x18) as u64;
+                let mut context = hook_context_with_rax(run);
+                unsafe { super::vdso_sgx_indirect_guard(&mut context) };
+                unreachable!("an unreadable SGX target field must terminate");
+            }
+            "sgx-readable-control" => {
+                super::VDSO_PKRU_TEST_OVERRIDE.store(0, Ordering::Release);
+                let expected = 0x7777_u64;
+                let mut run = [0_u64; 4];
+                run[3] = expected;
+                assert_eq!(
+                    super::read_vdso_sgx_user_handler(run.as_mut_ptr() as usize as u64).unwrap(),
+                    expected,
+                );
+            }
+            "sgx-pkru-denied" => {
+                super::publish_vdso_indirect_guard_ranges(terminal_test_guard_ranges()).unwrap();
+                super::VDSO_PKRU_TEST_OVERRIDE.store(1, Ordering::Release);
+                let mut run = [0_u64; 4];
+                run[3] = 0x7777;
+                let mut context = hook_context_with_rax(run.as_mut_ptr() as usize as u64);
+                unsafe { super::vdso_sgx_indirect_guard(&mut context) };
+                unreachable!("a read-disabled PKRU state must terminate before the kernel copy");
+            }
+            "sgx-ranges-unpublished" => {
+                assert!(!super::VDSO_INDIRECT_GUARD_READY.load(Ordering::Acquire));
+                super::VDSO_PKRU_TEST_OVERRIDE.store(0, Ordering::Release);
+                let mut run = [0_u64; 4];
+                run[3] = 0x7777;
+                let mut context = hook_context_with_rax(run.as_mut_ptr() as usize as u64);
+                unsafe { super::vdso_sgx_indirect_guard(&mut context) };
+                unreachable!("unpublished guard ranges must terminate at their own source");
+            }
+            "sgx-pkru-support-unpublished" => {
+                super::publish_vdso_indirect_guard_ranges(terminal_test_guard_ranges()).unwrap();
+                assert_eq!(super::VDSO_PKRU_SUPPORT.load(Ordering::Acquire), 0);
+                assert_eq!(
+                    super::VDSO_PKRU_TEST_OVERRIDE.load(Ordering::Acquire),
+                    u64::MAX,
+                );
+                let mut run = [0_u64; 4];
+                run[3] = 0x7777;
+                let mut context = hook_context_with_rax(run.as_mut_ptr() as usize as u64);
+                unsafe { super::vdso_sgx_indirect_guard(&mut context) };
+                unreachable!("unpublished PKRU support must terminate at its own source");
+            }
+            "sgx-target-interior" => {
+                let ranges = terminal_test_guard_ranges();
+                super::publish_vdso_indirect_guard_ranges(ranges).unwrap();
+                super::VDSO_PKRU_TEST_OVERRIDE.store(0, Ordering::Release);
+                let mut run = [0_u8; 32];
+                run[24..].copy_from_slice(&(ranges.normal.start + 1).to_ne_bytes());
+                let mut context = hook_context_with_rax(run.as_mut_ptr() as usize as u64);
+                unsafe { super::vdso_sgx_indirect_guard(&mut context) };
+                unreachable!("an SGX target inside a rewritten instruction must terminate");
+            }
+            "sgx-baseline-fault" => {
+                let page_len =
+                    usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+                let mapping = unsafe {
+                    libc::mmap(
+                        core::ptr::null_mut(),
+                        page_len,
+                        libc::PROT_NONE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    )
+                };
+                assert_ne!(mapping, libc::MAP_FAILED);
+                let run = (mapping as usize).wrapping_sub(0x18);
+                // Baseline the original `mov rax,[rax+0x18]` fault class. The
+                // guarded path intentionally changes this SIGSEGV into the
+                // uniquely marked status-124 fail-closed result above. This
+                // PROT_NONE case does not qualify protection-key denial, which
+                // process_vm_readv may bypass and remains an explicit gap.
+                let _ = unsafe { core::ptr::read_volatile(run.wrapping_add(0x18) as *const u64) };
+                unreachable!("the baseline unreadable load must fault");
+            }
+            other => panic!("unknown vDSO terminal scenario {other}"),
+        }
+    }
+
+    #[test]
+    fn real_vdso_batch_and_publication_boundaries_fail_closed() {
+        use std::os::unix::process::ExitStatusExt;
+
+        if let Some(scenario) = std::env::var_os(VDSO_TERMINAL_CHILD_ENV) {
+            run_vdso_terminal_child(scenario.to_str().unwrap());
+            return;
+        }
+        for scenario in [
+            "preload",
+            "faulting",
+            "no-sites",
+            "sgx-load-fault",
+            "sgx-readable-control",
+            "sgx-pkru-denied",
+            "sgx-ranges-unpublished",
+            "sgx-pkru-support-unpublished",
+            "sgx-target-interior",
+            "sgx-baseline-fault",
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::real_vdso_batch_and_publication_boundaries_fail_closed",
+                    "--test-threads=1",
+                ])
+                .env(VDSO_TERMINAL_CHILD_ENV, scenario)
+                .output()
+                .unwrap();
+            if matches!(scenario, "no-sites" | "sgx-readable-control") {
+                assert!(output.status.success());
+            } else if scenario == "sgx-baseline-fault" {
+                assert_eq!(output.status.signal(), Some(libc::SIGSEGV));
+            } else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(super::VDSO_PUBLICATION_FAILURE_STATUS),
+                    "terminal scenario {scenario} produced stderr:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            let expected_markers: &[&[u8]] = match scenario {
+                "preload" => &[
+                    super::VDSO_BATCH_COMPLETE_MARKER,
+                    super::VDSO_PRELOAD_TERMINAL_MARKER,
+                ],
+                "faulting" => &[
+                    super::VDSO_BATCH_COMPLETE_MARKER,
+                    super::VDSO_FAULTING_TERMINAL_MARKER,
+                ],
+                "sgx-load-fault" => &[super::VDSO_GUARD_LOAD_TERMINAL_MARKER],
+                "sgx-pkru-denied" => &[super::VDSO_GUARD_PKRU_TERMINAL_MARKER],
+                "sgx-ranges-unpublished" => &[super::VDSO_GUARD_RANGES_UNPUBLISHED_TERMINAL_MARKER],
+                "sgx-pkru-support-unpublished" => {
+                    &[super::VDSO_GUARD_PKRU_SUPPORT_UNPUBLISHED_TERMINAL_MARKER]
+                }
+                "sgx-target-interior" => &[super::VDSO_GUARD_TARGET_TERMINAL_MARKER],
+                "no-sites" | "sgx-readable-control" | "sgx-baseline-fault" => &[],
+                _ => unreachable!(),
+            };
+            assert_vdso_terminal_markers(&output.stderr, expected_markers, scenario);
+        }
+    }
+
+    #[test]
+    fn sgx_guard_rejects_every_rewritten_interior_and_changes_only_rax() {
+        let ranges = terminal_test_guard_ranges();
+        for range in [ranges.normal, ranges.fallback, ranges.guard] {
+            assert!(!ranges.rejects(range.start));
+            assert!(!ranges.rejects(range.end));
+            for target in range.start + 1..range.end {
+                assert!(
+                    ranges.rejects(target),
+                    "admitted interior target {target:#x}"
+                );
+            }
+        }
+        assert!(!ranges.rejects(ranges.normal.start - 1));
+        assert!(!ranges.rejects(ranges.guard.end + 1));
+
+        fn except_rax(context: &HookContext) -> [u64; 17] {
+            [
+                context.instruction_pointer,
+                context.stack_pointer,
+                context.r15,
+                context.r14,
+                context.r13,
+                context.r12,
+                context.r11,
+                context.r10,
+                context.r9,
+                context.r8,
+                context.rdi,
+                context.rsi,
+                context.rbp,
+                context.rbx,
+                context.rdx,
+                context.rcx,
+                context.rflags,
+            ]
+        }
+
+        let original_run = 0x5555_u64;
+        let admitted_target = 0x7777_u64;
+        let mut context = hook_context_with_rax(original_run);
+        let before = context;
+        let reads = std::cell::Cell::new(0);
+        super::prepare_vdso_sgx_guard_context_with_ranges(&mut context, ranges, |run| {
+            reads.set(reads.get() + 1);
+            assert_eq!(run, original_run);
+            Ok(admitted_target)
+        })
+        .unwrap();
+        assert_eq!(reads.get(), 1);
+        assert_eq!(context.rax, admitted_target);
+        assert_eq!(except_rax(&context), except_rax(&before));
+
+        // The admitted semantic domain requires a stable readable field. This
+        // causal control mutates the modeled field after its sole observation:
+        // the guard forwards the captured value and never performs a second
+        // read. It does not claim parity for a genuinely concurrent mutation.
+        let first_snapshot = 0x8888_u64;
+        let later_value = 0x9999_u64;
+        let modeled_field = std::cell::Cell::new(first_snapshot);
+        let snapshot_reads = std::cell::Cell::new(0);
+        let mut snapshot_context = before;
+        super::prepare_vdso_sgx_guard_context_with_ranges(&mut snapshot_context, ranges, |_| {
+            snapshot_reads.set(snapshot_reads.get() + 1);
+            let observed = modeled_field.get();
+            modeled_field.set(later_value);
+            Ok(observed)
+        })
+        .unwrap();
+        assert_eq!(snapshot_reads.get(), 1);
+        assert_eq!(modeled_field.get(), later_value);
+        assert_eq!(snapshot_context.rax, first_snapshot);
+        assert_eq!(except_rax(&snapshot_context), except_rax(&before));
+
+        let mut faulting = before;
+        let fault_reads = std::cell::Cell::new(0);
+        assert_eq!(
+            super::prepare_vdso_sgx_guard_context_with_ranges(&mut faulting, ranges, |_| {
+                fault_reads.set(fault_reads.get() + 1);
+                Err(super::VdsoIndirectGuardError::UnreadableTarget)
+            }),
+            Err(super::VdsoIndirectGuardError::UnreadableTarget),
+        );
+        assert_eq!(fault_reads.get(), 1);
+        assert_eq!(faulting.rax, before.rax);
+        assert_eq!(except_rax(&faulting), except_rax(&before));
+    }
+
+    #[test]
+    fn vdso_callback_routes_getrandom_and_refuses_unknown_numbers() {
+        assert!(vdso_callback(libc::SYS_getrandom).is_ok());
+        assert!(vdso_callback(-1).is_err());
+    }
 
     #[test]
     fn every_optional_rcb_setup_error_takes_the_real_unavailable_path() {
@@ -3671,6 +6043,147 @@ mod tests {
     }
 
     #[test]
+    fn adapter_hook_accounting_is_exact_disjoint_and_resettable() {
+        let counters = DirectHookCounters::new();
+        let site = SiteSlot::new();
+        let adapter = vdso_callback(libc::SYS_getrandom).unwrap();
+        let ordinary = vdso_callback(libc::SYS_time).unwrap();
+        assert_eq!(adapter.source, DirectHookSource::VdsoAdapter);
+        assert_eq!(ordinary.source, DirectHookSource::InstalledSite);
+
+        record_direct_hook(&counters, adapter.source, None);
+        assert_eq!(counters.adapter_count(), 1);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
+        assert_eq!(direct_hook_count(&counters, std::slice::from_ref(&site)), 1);
+
+        // A missing ordinary source site must not alias the adapter counter.
+        record_direct_hook(&counters, ordinary.source, None);
+        assert_eq!(counters.adapter_count(), 1);
+        assert_eq!(direct_hook_count(&counters, std::slice::from_ref(&site)), 1);
+
+        record_direct_hook(&counters, ordinary.source, Some(&site));
+        assert_eq!(counters.adapter_count(), 1);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 1);
+        assert_eq!(direct_hook_count(&counters, std::slice::from_ref(&site)), 2);
+
+        counters.reset();
+        reset_site_observability(std::slice::from_ref(&site));
+        assert_eq!(direct_hook_count(&counters, std::slice::from_ref(&site)), 0);
+    }
+
+    #[test]
+    fn fork_child_reset_reattributes_each_real_dispatch_source_exactly_once() {
+        if std::env::var_os(FORK_ACCOUNTING_CHILD_ENV).as_deref() != Some(OsStr::new("1")) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::fork_child_reset_reattributes_each_real_dispatch_source_exactly_once",
+                    "--test-threads=1",
+                ])
+                .env(FORK_ACCOUNTING_CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "fork accounting child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        SITES.get_or_init(|| {
+            (0..MAX_PATCH_SITES)
+                .map(|_| SiteSlot::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        });
+        let ordinary_address = 0x5a17_4000;
+        let missing_address = ordinary_address + 2;
+        let (site, claimed) = claim_site(ordinary_address).unwrap();
+        assert!(claimed);
+        site.state.store(SITE_ACTIVE, Ordering::Release);
+
+        let adapter_source = vdso_callback(libc::SYS_getrandom).unwrap().source;
+        let ordinary_source = vdso_callback(libc::SYS_time).unwrap().source;
+        assert_eq!(adapter_source, DirectHookSource::VdsoAdapter);
+        assert_eq!(ordinary_source, DirectHookSource::InstalledSite);
+        let event = |number, instruction_pointer, dispatch| SyscallEvent {
+            number,
+            args: [0; 6],
+            instruction_pointer,
+            result: 0,
+            context: 0,
+            dispatch,
+            guest_pkru: None,
+        };
+        let stats = crate::stats::GuestStatsHooks::DISABLED;
+
+        // Model the real callback-entry increment inherited across fork. The
+        // production child seam must clear it and then restore this slotless
+        // adapter event once, without manufacturing a source SiteSlot.
+        reset_fallback_observability();
+        record_direct_hook(&DIRECT_HOOK_COUNTERS, adapter_source, None);
+        let adapter = event(
+            libc::SYS_getrandom,
+            ordinary_address,
+            SyscallDispatch::InstalledHook(adapter_source),
+        );
+        reset_and_record_fork_child_dispatch(&adapter, stats);
+        assert_eq!(DIRECT_HOOK_COUNTERS.adapter_count(), 1);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
+        assert_eq!(
+            direct_hook_count(&DIRECT_HOOK_COUNTERS, std::slice::from_ref(site)),
+            1,
+        );
+
+        // An ordinary installed callback is restored only through its actual
+        // source slot. A missing slot remains a negative control and must not
+        // alias the adapter counter.
+        record_direct_hook(&DIRECT_HOOK_COUNTERS, ordinary_source, Some(site));
+        let ordinary = event(
+            libc::SYS_time,
+            ordinary_address,
+            SyscallDispatch::InstalledHook(ordinary_source),
+        );
+        reset_and_record_fork_child_dispatch(&ordinary, stats);
+        assert_eq!(DIRECT_HOOK_COUNTERS.adapter_count(), 0);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 1);
+        assert_eq!(
+            direct_hook_count(&DIRECT_HOOK_COUNTERS, std::slice::from_ref(site)),
+            1,
+        );
+
+        let ordinary_missing = event(
+            libc::SYS_time,
+            missing_address,
+            SyscallDispatch::InstalledHook(ordinary_source),
+        );
+        reset_and_record_fork_child_dispatch(&ordinary_missing, stats);
+        assert_eq!(DIRECT_HOOK_COUNTERS.adapter_count(), 0);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
+        assert_eq!(
+            direct_hook_count(&DIRECT_HOOK_COUNTERS, std::slice::from_ref(site)),
+            0,
+        );
+
+        // Deferred fallback owns both its per-site trap attribution and the
+        // process-wide fallback count. Both survive reset as exactly one
+        // current child event, while direct-hook accounting stays empty.
+        site.trap_count.store(1, Ordering::Release);
+        record_fallback_dispatch(libc::SYS_fork);
+        let fallback = event(libc::SYS_fork, ordinary_address, SyscallDispatch::Fallback);
+        reset_and_record_fork_child_dispatch(&fallback, stats);
+        assert_eq!(site.trap_count.load(Ordering::Acquire), 1);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
+        assert_eq!(fallback_dispatch_count(), 1);
+        assert_eq!(fallback_syscall_count(libc::SYS_fork), 1);
+        assert_eq!(DIRECT_HOOK_COUNTERS.adapter_count(), 0);
+
+        reset_fallback_observability();
+    }
+
+    #[test]
     fn fork_child_reset_zeroes_per_site_counts_but_preserves_patch_state() {
         // The per-site trap/hook counts are observability; the site's address and
         // state are functional patch metadata the COW-inherited child must keep.
@@ -3715,14 +6228,17 @@ mod tests {
         site.hook_count.store(11, Ordering::Release);
         record_fallback_dispatch(405);
         super::FALLBACK_REFUSALS.record(405);
+        record_direct_hook(&DIRECT_HOOK_COUNTERS, DirectHookSource::VdsoAdapter, None);
         assert!(fallback_dispatch_count() > 0);
         assert!(super::fallback_refusal_count() > 0);
+        assert!(DIRECT_HOOK_COUNTERS.adapter_count() > 0);
 
         FORK_HOOK.run_in_child();
 
         assert_eq!(fallback_dispatch_count(), 0);
         assert_eq!(super::fallback_refusal_count(), 0);
         assert_eq!(super::fallback_syscall_refusal_count(405), 0);
+        assert_eq!(DIRECT_HOOK_COUNTERS.adapter_count(), 0);
         assert_eq!(site.trap_count.load(Ordering::Acquire), 0);
         assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
         assert_eq!(site.address.load(Ordering::Acquire), address);

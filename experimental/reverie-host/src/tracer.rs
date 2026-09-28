@@ -69,6 +69,7 @@ impl<S> TracerBuilder<S> {
     where
         S: Service + Clone + Send + Sync + 'static,
     {
+        self.command.require_pathname_execution("SaBRe")?;
         let sabre = self
             .sabre
             .or_else(|| std::env::var_os("SABRE_BINARY").map(PathBuf::from))
@@ -100,6 +101,7 @@ impl<S> TracerBuilder<S> {
 }
 
 fn into_sabre(mut command: Command, sabre: &OsStr, plugin: &OsStr) -> Result<Command> {
+    command.require_pathname_execution("SaBRe")?;
     let program = command
         .find_program()
         .with_context(|| format!("Could not find program: {:?}", command.get_program()))?;
@@ -150,4 +152,69 @@ fn find_plugin() -> Result<Option<PathBuf>, io::Error> {
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+
+    use reverie_process::DescriptorExecutionUnsupported;
+
+    use super::*;
+
+    #[test]
+    fn sabre_refuses_mismatched_diagnostic_path_and_descriptor_before_wrapping() {
+        let mut command = Command::new("/diagnostic/path/must-not-be-resolved");
+        command
+            .executable(File::open("/bin/true").unwrap().into())
+            .unwrap();
+
+        let error = match into_sabre(
+            command,
+            OsStr::new("/unused/sabre"),
+            OsStr::new("/unused/plugin"),
+        ) {
+            Ok(_) => panic!("SaBRe accepted descriptor execution"),
+            Err(error) => error,
+        };
+        let io_error = error
+            .downcast_ref::<io::Error>()
+            .expect("SaBRe refusal must remain an I/O error");
+        assert_eq!(io_error.kind(), io::ErrorKind::Unsupported);
+        let typed = io_error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<DescriptorExecutionUnsupported>())
+            .expect("SaBRe refusal lost its typed descriptor reason");
+        assert_eq!(typed.consumer(), "SaBRe");
+        assert_eq!(
+            io_error.to_string(),
+            "SaBRe does not support descriptor-based execution"
+        );
+    }
+
+    #[test]
+    fn sabre_spawn_refuses_descriptor_before_binary_plugin_and_server_setup() {
+        let mut command = Command::new("/diagnostic/path/must-not-be-resolved");
+        command
+            .executable(File::open("/bin/true").unwrap().into())
+            .unwrap();
+
+        let error = match TracerBuilder::new(command)
+            .sabre(PathBuf::from("/sabre/path/must-not-be-resolved"))
+            .plugin(PathBuf::from("/plugin/path/must-not-be-resolved"))
+            .spawn()
+        {
+            Ok(_) => panic!("SaBRe spawn accepted descriptor execution"),
+            Err(error) => error,
+        };
+        let io_error = error
+            .downcast_ref::<io::Error>()
+            .expect("SaBRe spawn refusal must remain an I/O error");
+        assert_eq!(io_error.kind(), io::ErrorKind::Unsupported);
+        let typed = io_error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<DescriptorExecutionUnsupported>())
+            .expect("SaBRe spawn refusal lost its typed descriptor reason");
+        assert_eq!(typed.consumer(), "SaBRe");
+    }
 }
