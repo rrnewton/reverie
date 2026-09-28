@@ -88,30 +88,186 @@ fn bypasses_seccomp(orig_rax: u64) -> bool {
     SECCOMP_BYPASSING_NUMBERS.contains(&(orig_rax as i64 as i32))
 }
 
-/// The signals pending for thread `tid`, private and shared, as a mask with
-/// bit `n - 1` for signal `n` (`/proc/<tid>/status` `SigPnd` and `ShdPnd`).
-fn pending_signals(tid: i32) -> std::io::Result<u64> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))?;
-    let mut pending = None::<u64>;
-    let mut shared = None::<u64>;
-    for line in status.lines() {
-        let field = |prefix: &str| {
-            line.strip_prefix(prefix)
-                .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
-        };
-        if let Some(mask) = field("SigPnd:") {
-            pending = Some(mask);
-        } else if let Some(mask) = field("ShdPnd:") {
-            shared = Some(mask);
+/// What the masked hop reads from `/proc/<tid>/status` to settle the
+/// SIGSTOPs it deferred (one read, so the fields are consistent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HopThreadStatus {
+    /// `SigPnd`: the thread's private pending signals, bit `n - 1` for `n`.
+    private: u64,
+    /// `ShdPnd`: the thread group's shared pending signals.
+    shared: u64,
+    /// `Threads`: the number of threads in the thread group.
+    threads: u64,
+    /// `State` is `Z` (zombie) or `X` (dead).
+    exiting: bool,
+}
+
+impl HopThreadStatus {
+    fn parse(status: &str) -> Result<Self, String> {
+        let (mut private, mut shared, mut threads, mut exiting) = (None, None, None, None);
+        for line in status.lines() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            match name {
+                "SigPnd" => private = u64::from_str_radix(value, 16).ok(),
+                "ShdPnd" => shared = u64::from_str_radix(value, 16).ok(),
+                "Threads" => threads = value.parse::<u64>().ok(),
+                "State" => exiting = Some(value.starts_with('Z') || value.starts_with('X')),
+                _ => {}
+            }
+        }
+        match (private, shared, threads, exiting) {
+            (Some(private), Some(shared), Some(threads), Some(exiting)) => Ok(Self {
+                private,
+                shared,
+                threads,
+                exiting,
+            }),
+            _ => Err(format!(
+                "no parseable State/SigPnd/ShdPnd/Threads lines in {status:?}"
+            )),
         }
     }
-    match (pending, shared) {
-        (Some(pending), Some(shared)) => Ok(pending | shared),
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "no SigPnd/ShdPnd lines",
-        )),
+
+    fn pending(&self, signal: i32) -> bool {
+        (self.private | self.shared) & signal_bit(signal) != 0
     }
+}
+
+/// Reads [`HopThreadStatus`] for thread `tid`; `Ok(None)` when the thread is
+/// gone (killed and reaped, or being reaped).
+fn read_hop_thread_status(tid: i32) -> Result<Option<HopThreadStatus>, String> {
+    match std::fs::read_to_string(format!("/proc/{tid}/status")) {
+        Ok(status) => HopThreadStatus::parse(&status).map(Some),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
+        Err(error) => Err(format!("read /proc/{tid}/status: {error}")),
+    }
+}
+
+/// What the masked hop does with the SIGSTOPs it deferred, once the slot's
+/// seccomp stop arrived, from one read of the thread's status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeferredStopsNext {
+    /// The thread is being killed: under plain ptrace a pending SIGSTOP dies
+    /// with it, so there is nothing to raise again.
+    Dying,
+    /// The group has more than one thread (see
+    /// [`TrapOnlyFailure::HopDeferredStopMultiThread`]).
+    MultiThread(u64),
+    /// Another SIGSTOP is pending: run the slot again, so that it is
+    /// dequeued (and deferred) too, before its queue receives the re-raise.
+    Rerun,
+    /// Raise the deferred SIGSTOPs again, unless a SIGCONT is pending: it
+    /// arrived after every deferred SIGSTOP (sending a stop signal discards
+    /// a pending SIGCONT), so under plain ptrace it would have discarded
+    /// them all (sending SIGCONT discards stop signals from every queue).
+    Reraise { discarded_by_sigcont: bool },
+}
+
+fn deferred_stops_next(status: Option<&HopThreadStatus>) -> DeferredStopsNext {
+    let Some(status) = status else {
+        return DeferredStopsNext::Dying;
+    };
+    // A SIGKILL marks the group's shared queue until the group is reaped.
+    if status.exiting || status.pending(libc::SIGKILL) {
+        DeferredStopsNext::Dying
+    } else if status.threads != 1 {
+        DeferredStopsNext::MultiThread(status.threads)
+    } else if status.pending(libc::SIGSTOP) {
+        DeferredStopsNext::Rerun
+    } else {
+        DeferredStopsNext::Reraise {
+            discarded_by_sigcont: status.pending(libc::SIGCONT),
+        }
+    }
+}
+
+/// The SIGSTOPs the masked hop deferred, at most one per signal queue: a
+/// legacy signal pending in a queue coalesces with another of its number, so
+/// under plain ptrace each queue delivers one SIGSTOP, with the siginfo of
+/// the first sent to it.
+///
+/// The queue is judged from the siginfo alone: `SI_TKILL` (tgkill, tkill)
+/// is thread-directed and queued privately; anything else is taken as the
+/// group's shared queue. That is exact for kill, tgkill and tkill; a SIGSTOP
+/// queued privately with another code (rt_tgsigqueueinfo, or one the kernel
+/// generates for a thread) is raised again to the shared queue. Either queue
+/// reaches the same thread only because the group is single-threaded, which
+/// the hop checks before raising anything (`DeferredStopsNext::MultiThread`),
+/// and which the site-table lifecycle guarantees by retiring every site
+/// before a second task can share the address space.
+#[derive(Clone, Copy, Default)]
+struct DeferredStops {
+    private: Option<libc::siginfo_t>,
+    shared: Option<libc::siginfo_t>,
+    count: usize,
+}
+
+impl DeferredStops {
+    /// Defers one SIGSTOP; returns its queue and whether its siginfo was
+    /// kept (the queue's first).
+    fn defer(&mut self, info: libc::siginfo_t) -> (&'static str, bool) {
+        self.count += 1;
+        let (queue, slot) = if info.si_code == libc::SI_TKILL {
+            ("private", &mut self.private)
+        } else {
+            ("shared", &mut self.shared)
+        };
+        let kept = slot.is_none();
+        if kept {
+            *slot = Some(info);
+        }
+        (queue, kept)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+/// A fresh tag for a SIGSTOP the masked hop raises again (its `si_value`):
+/// a per-process random base plus a counter, so that neither an earlier
+/// re-raise nor a guest's own `sigqueue` of SIGSTOP is mistaken for it.
+fn next_reraise_tag() -> u64 {
+    use std::hash::BuildHasher;
+    use std::hash::Hasher;
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let base = *BASE.get_or_init(|| {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    });
+    base.wrapping_add(COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The siginfo of a re-raised SIGSTOP: `SI_QUEUE` from the tracer, with
+/// `tag` as its value. Byte offsets are the kernel's x86_64 layout: signo 0,
+/// code 8, pid 16, uid 20, value 24.
+fn reraise_info(tag: u64) -> libc::siginfo_t {
+    let mut raw = [0u8; std::mem::size_of::<libc::siginfo_t>()];
+    raw[0..4].copy_from_slice(&libc::SIGSTOP.to_ne_bytes());
+    raw[8..12].copy_from_slice(&libc::SI_QUEUE.to_ne_bytes());
+    raw[16..20].copy_from_slice(&std::process::id().to_ne_bytes());
+    // SAFETY: getuid cannot fail.
+    raw[20..24].copy_from_slice(&unsafe { libc::getuid() }.to_ne_bytes());
+    raw[24..32].copy_from_slice(&tag.to_ne_bytes());
+    // SAFETY: siginfo_t is plain data of exactly this size.
+    unsafe { std::mem::transmute(raw) }
+}
+
+/// The value of a SIGSTOP delivery stop's siginfo if it is shaped like one
+/// the masked hop raised again (see [`reraise_info`]); the caller matches it
+/// against the tags it raised. The sender's pid is not compared: the kernel
+/// reports 0 for a sender in an ancestor pid namespace.
+fn reraise_tag(info: &libc::siginfo_t) -> Option<u64> {
+    // SAFETY: siginfo_t is plain data of this size.
+    let raw: [u8; std::mem::size_of::<libc::siginfo_t>()] = unsafe { std::mem::transmute(*info) };
+    let word = |at: usize| i32::from_ne_bytes(raw[at..at + 4].try_into().unwrap());
+    (word(0) == libc::SIGSTOP && word(8) == libc::SI_QUEUE)
+        .then(|| u64::from_ne_bytes(raw[24..32].try_into().unwrap()))
 }
 
 /// The bit of signal `signal` in a `/proc` signal mask.
@@ -730,11 +886,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         // (or at the restored site).
         let saved_mask = task.getsigmask()?;
         task.setsigmask(!0)?;
-        let mut regs = view;
-        regs.orig_rax = -1i64 as u64;
-        regs.rax = nr;
-        regs.rip = target;
-        task.setregs(&regs)?;
+        let mut hop_regs = view;
+        hop_regs.orig_rax = -1i64 as u64;
+        hop_regs.rax = nr;
+        hop_regs.rip = target;
+        task.setregs(&hop_regs)?;
         let wait = self.resume_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
 
@@ -743,14 +899,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         // The mask cannot hold SIGSTOP: one pending when H1 resumed the thread
         // is dequeued on the way back to user mode, at the target, before the
         // `syscall` there runs, whereas under plain ptrace it stays pending
-        // while the syscall runs and is delivered after it (P2-SPEC O1.4). Its
-        // delivery stop is suppressed here, with its siginfo kept, and H3
-        // raises it again. Each queue holds at most one SIGSTOP (legacy
-        // signals coalesce), and the kernel dequeues the thread's private
-        // queue before the shared one, so there are at most two, in that order.
+        // while the syscall runs and is delivered after it (P2-SPEC O1.4).
+        // Each such delivery stop is suppressed here, with its siginfo kept
+        // (the first per queue: `DeferredStops`), and H3 raises the SIGSTOPs
+        // again. There is no bound on how many arrive: another can be sent
+        // while the hop is at any of its stops. One that is pending when the
+        // slot's seccomp stop arrives runs the slot again, so that it is
+        // dequeued here as well rather than coalescing with (and replacing
+        // the siginfo of) the one H3 raises into its queue.
         let mut wait = wait;
-        let mut deferred = Vec::new();
-        let task = loop {
+        let mut deferred = DeferredStops::default();
+        #[cfg(test)]
+        let mut early_hook = true;
+        let (task, reraise) = loop {
             match wait {
                 Wait::Stopped(task, Event::Seccomp) => {
                     let tag = task.getevent()?;
@@ -768,14 +929,66 @@ impl<L: Tool + 'static> TracedTask<L> {
                             },
                         ));
                     }
-                    break task;
+                    #[cfg(test)]
+                    if std::mem::take(&mut early_hook) {
+                        self.pre_syscall_for_test(&view, crate::task::PreSyscallPoint::Early)
+                            .await;
+                    }
+                    if deferred.is_empty() {
+                        break (task, None);
+                    }
+                    let status = read_hop_thread_status(self.tid.as_raw()).map_err(|error| {
+                        self.trap_only_failure(
+                            "trap-only hop",
+                            TrapOnlyFailure::HopUnexpectedStop {
+                                phase: "H2 deferred SIGSTOP",
+                                site,
+                                stop: error,
+                            },
+                        )
+                    })?;
+                    match deferred_stops_next(status.as_ref()) {
+                        DeferredStopsNext::Dying => {
+                            // The next ptrace request reports the death.
+                            self.trap_only_record(format!(
+                                "deferred SIGSTOP x{} dropped: the thread is dying",
+                                deferred.count
+                            ));
+                            break (task, None);
+                        }
+                        DeferredStopsNext::MultiThread(threads) => {
+                            return Err(self.trap_only_failure(
+                                "trap-only hop",
+                                TrapOnlyFailure::HopDeferredStopMultiThread { site, threads },
+                            ));
+                        }
+                        DeferredStopsNext::Rerun => {
+                            self.trap_only_record(
+                                "slot SIGSTOP pending at the slot stop: run the slot again"
+                                    .to_owned(),
+                            );
+                            task.setregs(&hop_regs)?;
+                            wait = self.resume_stopped(task, None)?.next_state().await?;
+                            self.arm_liteinst_wait(&wait);
+                        }
+                        DeferredStopsNext::Reraise {
+                            discarded_by_sigcont,
+                        } => {
+                            if discarded_by_sigcont {
+                                self.trap_only_record(format!(
+                                    "deferred SIGSTOP x{} discarded by a SIGCONT",
+                                    deferred.count
+                                ));
+                                break (task, None);
+                            }
+                            break (task, Some(deferred));
+                        }
+                    }
                 }
                 wait @ (Wait::Exited(..) | Wait::Stopped(_, Event::Exit)) => {
                     return Ok(HopOutcome::Other(wait));
                 }
-                Wait::Stopped(task, Event::Signal(nix::sys::signal::Signal::SIGSTOP))
-                    if deferred.len() < 2 =>
-                {
+                Wait::Stopped(task, Event::Signal(nix::sys::signal::Signal::SIGSTOP)) => {
                     let regs = task.getregs()?;
                     if regs.rip != target || regs.orig_rax != -1i64 as u64 {
                         return Err(self.trap_only_failure(
@@ -790,15 +1003,31 @@ impl<L: Tool + 'static> TracedTask<L> {
                             },
                         ));
                     }
-                    let info = task.getsiginfo()?;
-                    #[cfg(test)]
-                    if let Some(trap_only) = self.trap_only.as_ref() {
-                        trap_only
-                            .shared
-                            .hooks
-                            .record(format!("slot SIGSTOP deferred code={}", info.si_code));
-                    }
-                    deferred.push(info);
+                    let info = match task.getsiginfo() {
+                        Ok(info) => info,
+                        // A non-seized tracee's group stop looks like a
+                        // signal-delivery stop, but has no siginfo.
+                        Err(TraceError::Errno(Errno::EINVAL)) => {
+                            return Err(self.trap_only_failure(
+                                "trap-only hop",
+                                TrapOnlyFailure::HopUnexpectedStop {
+                                    phase: "H2 slot stop",
+                                    site,
+                                    stop: format!(
+                                        "SIGSTOP group stop (PTRACE_GETSIGINFO EINVAL) at rip {:#x}",
+                                        regs.rip
+                                    ),
+                                },
+                            ));
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    let (queue, kept) = deferred.defer(info);
+                    self.trap_only_record(format!(
+                        "slot SIGSTOP deferred code={} queue={queue}{}",
+                        info.si_code,
+                        if kept { "" } else { " (coalesced)" }
+                    ));
                     wait = self.resume_stopped(task, None)?.next_state().await?;
                     self.arm_liteinst_wait(&wait);
                 }
@@ -816,16 +1045,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
 
-        // H3: the original mask, any SIGSTOP H2 deferred, then run the syscall
-        // to its exit stop. The SIGSTOP is pending again before the syscall
+        // H3: the original mask, the SIGSTOPs H2 deferred, then run the
+        // syscall to its exit stop. They are pending again before the syscall
         // starts, exactly as under plain ptrace: a blocking syscall is
-        // interrupted by it (and restarted after its suppressed delivery),
+        // interrupted by one (and restarted after its suppressed delivery),
         // and a syscall-exit stop precedes any signal delivery, so the
         // syscall still completes before the stop takes effect.
-        task.setsigmask(saved_mask)?;
         #[cfg(test)]
-        self.pre_syscall_for_test(&view).await;
-        if !deferred.is_empty() {
+        self.pre_syscall_for_test(&view, crate::task::PreSyscallPoint::Late)
+            .await;
+        task.setsigmask(saved_mask)?;
+        if let Some(deferred) = reraise {
             self.trap_only_reraise_stops(site, deferred)?;
         }
         let wait = self.syscall_stopped(task, None)?.next_state().await?;
@@ -893,82 +1123,83 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    /// Raises again each SIGSTOP that H2 suppressed (in dequeue order), unless
-    /// a SIGCONT arrived since: under plain ptrace the SIGSTOP would still
-    /// have been pending, and the kernel discards pending stop signals when
-    /// SIGCONT is sent. A SIGCONT pending now arrived after H2 dequeued the
-    /// SIGSTOP, since sending a stop signal discards a pending SIGCONT and a
-    /// SIGCONT sent earlier would have discarded the SIGSTOP before H2.
+    /// Raises again, into its own queue, each SIGSTOP that H2 suppressed and
+    /// kept (at most one per queue: `DeferredStops`). H2 already dropped
+    /// them if a SIGCONT arrived since, or if the thread is dying, and made
+    /// sure that no other SIGSTOP is pending (`DeferredStopsNext`).
     ///
-    /// The re-raised SIGSTOP goes to the queue the original came from: the
-    /// private one for a thread-directed signal (`SI_TKILL`) or for the first
-    /// of two, and the shared one otherwise. Its delivery stop gets the
-    /// original siginfo back (`trap_only_restore_reraised_stop`).
+    /// Each is sent with `rt_tgsigqueueinfo` (the private queue) or
+    /// `rt_sigqueueinfo` (the shared queue) as `SI_QUEUE` from the tracer,
+    /// with a fresh tag as its value. Its delivery stop is recognised by that
+    /// tag, and gets the original siginfo back
+    /// (`trap_only_restore_reraised_stop`).
     ///
-    /// Residual differences from plain ptrace, none of them visible to the
-    /// Tool (plain reverie suppresses every SIGSTOP before the Tool sees it):
-    /// a SIGCONT sent between the pending-signal read below and the re-raise
-    /// is discarded by the re-raised SIGSTOP, where under plain ptrace it
-    /// would have discarded the SIGSTOP; a privately queued SIGSTOP that is
-    /// not `SI_TKILL` (from `rt_tgsigqueueinfo`, or kernel-generated) is
-    /// re-raised to the shared queue; and a thread-directed SIGSTOP from
-    /// another sender that arrives while a re-raised one waits in the shared
-    /// queue is delivered first and takes the re-raised siginfo, so the two
-    /// delivery stops' `PTRACE_GETSIGINFO` differ.
+    /// Residual differences from plain ptrace, all from signals sent in the
+    /// window between H2's last read of the pending signals and the re-raise
+    /// below, or from what that read cannot see:
+    ///
+    /// - Visible to the Tool and the guest: a SIGCONT sent in the window is
+    ///   discarded by the re-raised SIGSTOP (sending a stop signal discards a
+    ///   pending SIGCONT), where under plain ptrace it would have discarded
+    ///   the still-pending SIGSTOP. The Tool then never gets that SIGCONT's
+    ///   `handle_signal_event`, the guest's SIGCONT handler does not run, the
+    ///   SIGSTOP's delivery stop happens (reverie suppresses it, as it does
+    ///   every SIGSTOP), and a blocking syscall it interrupts restarts, one
+    ///   more syscall event. A non-seized tracee's SIGCONT leaves no trace
+    ///   when nothing is stopped, so the hop cannot detect it; the window is
+    ///   the two system calls between the read and the send.
+    ///   `trap_only_p2_sigcont_after_the_pending_read_is_lost` pins it.
+    /// - Not visible to the Tool or the guest (reverie suppresses every
+    ///   SIGSTOP before either sees it), only in the siginfo and number of
+    ///   the SIGSTOP delivery stops: a SIGSTOP sent in the window into a
+    ///   queue H3 raises into coalesces with it, and its siginfo replaces the
+    ///   original; a SIGCONT sent between two deferred SIGSTOPs, which a
+    ///   later SIGSTOP discards again, leaves the first SIGSTOP's siginfo or
+    ///   an extra queue's SIGSTOP; a privately queued SIGSTOP that is not
+    ///   `SI_TKILL` is raised to the shared queue; and when the signal queue
+    ///   limit (`RLIMIT_SIGPENDING`) is exhausted the kernel queues the
+    ///   SIGSTOP without its siginfo, so its delivery stop keeps a blank
+    ///   `SI_USER` one.
     fn trap_only_reraise_stops(
         &mut self,
         site: u64,
-        deferred: Vec<libc::siginfo_t>,
+        deferred: DeferredStops,
     ) -> Result<(), TraceError> {
         let (tid, pid) = (self.tid.as_raw(), self.pid.as_raw());
-        let pending = match pending_signals(tid) {
-            // Gone (killed): the next ptrace request reports the death.
-            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
-                self.trap_only_record_gone_reraise(deferred.len());
-                return Ok(());
-            }
-            result => result,
-        };
-        let pending = pending.map_err(|error| {
-            self.trap_only_failure(
-                "trap-only hop",
-                TrapOnlyFailure::HopUnexpectedStop {
-                    phase: "H3 deferred SIGSTOP",
-                    site,
-                    stop: format!("read the pending signals of {tid}: {error}"),
-                },
-            )
-        })?;
-        if pending & signal_bit(libc::SIGCONT) != 0 {
-            #[cfg(test)]
-            if let Some(trap_only) = self.trap_only.as_ref() {
-                trap_only.shared.hooks.record(format!(
-                    "deferred SIGSTOP x{} discarded by a SIGCONT",
-                    deferred.len()
-                ));
-            }
-            return Ok(());
-        }
-        let both = deferred.len() == 2;
-        for (index, info) in deferred.into_iter().enumerate() {
-            let private = if both {
-                index == 0
-            } else {
-                info.si_code == libc::SI_TKILL
+        for (private, info) in [(true, deferred.private), (false, deferred.shared)] {
+            let Some(info) = info else {
+                continue;
             };
-            // SAFETY: tgkill and kill take no pointers.
+            let tag = next_reraise_tag();
+            let reraise = reraise_info(tag);
+            // SAFETY: `reraise` is a valid siginfo for the duration of the
+            // call.
             let result = unsafe {
                 if private {
-                    libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGSTOP)
+                    libc::syscall(
+                        libc::SYS_rt_tgsigqueueinfo,
+                        pid,
+                        tid,
+                        libc::SIGSTOP,
+                        &reraise as *const libc::siginfo_t,
+                    )
                 } else {
-                    libc::kill(pid, libc::SIGSTOP) as libc::c_long
+                    libc::syscall(
+                        libc::SYS_rt_sigqueueinfo,
+                        pid,
+                        libc::SIGSTOP,
+                        &reraise as *const libc::siginfo_t,
+                    )
                 }
             };
             if result != 0 {
                 let errno = Errno::last();
                 if errno == Errno::ESRCH {
-                    // Gone: the next ptrace request reports the death.
-                    self.trap_only_record_gone_reraise(if both { 2 - index } else { 1 });
+                    // Gone since H2's read: the next ptrace request reports
+                    // the death.
+                    self.trap_only_record(
+                        "deferred SIGSTOP dropped: the thread is gone".to_owned(),
+                    );
                     return Ok(());
                 }
                 return Err(self.trap_only_failure(
@@ -980,48 +1211,62 @@ impl<L: Tool + 'static> TracedTask<L> {
                     },
                 ));
             }
-            #[cfg(test)]
-            if let Some(trap_only) = self.trap_only.as_ref() {
-                trap_only.shared.hooks.record(format!(
-                    "deferred SIGSTOP re-raised private={private} code={}",
-                    info.si_code
-                ));
-            }
+            self.trap_only_record(format!(
+                "deferred SIGSTOP re-raised queue={} code={}",
+                if private { "private" } else { "shared" },
+                info.si_code
+            ));
             if let Some(trap_only) = self.trap_only.as_mut() {
                 trap_only
                     .reraised_stops
-                    .push_back(crate::liteinst_trap_only::ReraisedStop { info });
+                    .push(crate::liteinst_trap_only::ReraisedStop { tag, info });
             }
         }
         Ok(())
     }
 
-    /// Test-only: records that the thread died before H3 could re-raise the
-    /// deferred SIGSTOPs (a SIGKILL during the hop).
-    fn trap_only_record_gone_reraise(&self, count: usize) {
+    /// Test-only: records a trap-only lifecycle decision.
+    fn trap_only_record(&self, decision: String) {
         #[cfg(test)]
         if let Some(trap_only) = self.trap_only.as_ref() {
-            trap_only.shared.hooks.record(format!(
-                "deferred SIGSTOP x{count} dropped: the thread is gone"
-            ));
+            trap_only.shared.hooks.record(decision);
         }
         #[cfg(not(test))]
-        let _ = count;
+        let _ = decision;
     }
 
     /// At a SIGSTOP delivery stop, gives a SIGSTOP the hop re-raised its
-    /// original siginfo back (it now names the tracer as its sender).
+    /// original siginfo back. Only a stop carrying a re-raise's own tag is
+    /// rewritten; any other SIGSTOP keeps its siginfo.
     pub(super) fn trap_only_restore_reraised_stop(
         &mut self,
         task: &Stopped,
     ) -> Result<(), TraceError> {
-        let Some(reraised) = self
+        if self
             .trap_only
-            .as_mut()
-            .and_then(|trap_only| trap_only.reraised_stops.pop_front())
+            .as_ref()
+            .is_none_or(|trap_only| trap_only.reraised_stops.is_empty())
+        {
+            return Ok(());
+        }
+        let info = match task.getsiginfo() {
+            Ok(info) => info,
+            // A group stop has no siginfo, and is no re-raised SIGSTOP.
+            Err(TraceError::Errno(Errno::EINVAL)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let Some(tag) = reraise_tag(&info) else {
+            return Ok(());
+        };
+        let trap_only = self.trap_only.as_mut().expect("checked above");
+        let Some(index) = trap_only
+            .reraised_stops
+            .iter()
+            .position(|reraised| reraised.tag == tag)
         else {
             return Ok(());
         };
+        let reraised = trap_only.reraised_stops.remove(index);
         task.setsiginfo(&reraised.info)
     }
 
@@ -1597,5 +1842,116 @@ mod mapping_range_tests {
             ranges(Sysno::munmap, [!(page - 1), 2 * page, 0, 0, 0]),
             vec![(!(PAGE_SIZE - 1), u64::MAX)]
         );
+    }
+}
+
+#[cfg(test)]
+mod hop_stop_tests {
+    use super::*;
+
+    fn status(state: &str, private: u64, shared: u64, threads: u64) -> HopThreadStatus {
+        HopThreadStatus::parse(&format!(
+            "Name:\tguest\nState:\t{state}\nTgid:\t7\nThreads:\t{threads}\n\
+             SigQ:\t0/1000\nSigPnd:\t{private:016x}\nShdPnd:\t{shared:016x}\n\
+             SigBlk:\t0000000000000000\n"
+        ))
+        .unwrap()
+    }
+
+    /// A SIGSTOP siginfo with `code`, from a pid derived from it.
+    fn stop(code: i32) -> libc::siginfo_t {
+        const SIZE: usize = std::mem::size_of::<libc::siginfo_t>();
+        // SAFETY: siginfo_t is plain data of this size.
+        let mut raw =
+            unsafe { std::mem::transmute::<libc::siginfo_t, [u8; SIZE]>(reraise_info(0)) };
+        raw[8..12].copy_from_slice(&code.to_ne_bytes());
+        raw[16..20].copy_from_slice(&(code.unsigned_abs() + 100).to_ne_bytes());
+        // SAFETY: as above.
+        unsafe { std::mem::transmute::<[u8; SIZE], libc::siginfo_t>(raw) }
+    }
+
+    #[test]
+    fn parse_reads_every_field_and_refuses_a_partial_status() {
+        assert_eq!(
+            status("t (tracing stop)", 1 << 18, 1 << 8, 1),
+            HopThreadStatus {
+                private: 1 << 18,
+                shared: 1 << 8,
+                threads: 1,
+                exiting: false,
+            }
+        );
+        assert!(status("Z (zombie)", 0, 0, 1).exiting);
+        assert!(status("X (dead)", 0, 0, 1).exiting);
+        let error = HopThreadStatus::parse("State:\tt\nSigPnd:\t0\nShdPnd:\t0\n").unwrap_err();
+        assert!(error.contains("Threads"), "{error}");
+    }
+
+    #[test]
+    fn deferred_stops_next_decides_from_one_status() {
+        let bit = signal_bit;
+        assert_eq!(deferred_stops_next(None), DeferredStopsNext::Dying);
+        assert_eq!(
+            deferred_stops_next(Some(&status("Z", 0, 0, 1))),
+            DeferredStopsNext::Dying
+        );
+        // A dying group outranks a stop or a second thread.
+        let killed = status("t", bit(libc::SIGSTOP), bit(libc::SIGKILL), 2);
+        assert_eq!(deferred_stops_next(Some(&killed)), DeferredStopsNext::Dying);
+        // The thread count is checked before anything is re-raised or rerun.
+        for (private, shared) in [(0, 0), (bit(libc::SIGSTOP), 0), (0, bit(libc::SIGCONT))] {
+            assert_eq!(
+                deferred_stops_next(Some(&status("t", private, shared, 2))),
+                DeferredStopsNext::MultiThread(2)
+            );
+        }
+        for (private, shared) in [(bit(libc::SIGSTOP), 0), (0, bit(libc::SIGSTOP))] {
+            assert_eq!(
+                deferred_stops_next(Some(&status("t", private, shared, 1))),
+                DeferredStopsNext::Rerun
+            );
+        }
+        for (private, shared, discarded) in [
+            (0, 0, false),
+            (bit(libc::SIGUSR1), bit(libc::SIGUSR2), false),
+            (bit(libc::SIGCONT), 0, true),
+            (0, bit(libc::SIGCONT), true),
+        ] {
+            assert_eq!(
+                deferred_stops_next(Some(&status("t", private, shared, 1))),
+                DeferredStopsNext::Reraise {
+                    discarded_by_sigcont: discarded
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_stops_keep_each_queues_first_siginfo() {
+        let mut deferred = DeferredStops::default();
+        assert!(deferred.is_empty());
+        assert_eq!(deferred.defer(stop(libc::SI_USER)), ("shared", true));
+        assert_eq!(deferred.defer(stop(libc::SI_TKILL)), ("private", true));
+        assert_eq!(deferred.defer(stop(libc::SI_QUEUE)), ("shared", false));
+        assert_eq!(deferred.defer(stop(libc::SI_TKILL)), ("private", false));
+        assert_eq!(deferred.defer(stop(libc::SI_KERNEL)), ("shared", false));
+        assert!(!deferred.is_empty());
+        assert_eq!(deferred.count, 5);
+        assert_eq!(deferred.shared.unwrap().si_code, libc::SI_USER);
+        assert_eq!(deferred.private.unwrap().si_code, libc::SI_TKILL);
+    }
+
+    #[test]
+    fn reraise_tags_round_trip_and_are_fresh() {
+        let (first, second) = (next_reraise_tag(), next_reraise_tag());
+        assert_ne!(first, second);
+        let info = reraise_info(second);
+        assert_eq!(info.si_signo, libc::SIGSTOP);
+        assert_eq!(info.si_code, libc::SI_QUEUE);
+        assert_eq!(reraise_tag(&info), Some(second));
+        // A guest's SIGSTOP of another code is never taken for a re-raise.
+        for code in [libc::SI_USER, libc::SI_TKILL] {
+            assert_eq!(reraise_tag(&stop(code)), None);
+        }
     }
 }
