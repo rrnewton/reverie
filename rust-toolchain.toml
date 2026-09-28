@@ -1,5 +1,5 @@
 [toolchain]
-# @fb-only: path = "../../third-party-buck/platform010/build/rust/llvm-fb-15"
+# @fb-only: path = "../../../third-party/rust-toolchain/rustup/current/basic"
 # Pinned to the last known-good nightly. nightly-2026-07-30 (rustc 8ab9fdff5)
 # changed cargo's cdylib artifact uplift under `cargo test`, so
 # `target/debug/libreverie_examples.so` is no longer present when the
