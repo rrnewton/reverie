@@ -1,0 +1,9 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.27s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test executor::tests::sendfile_rejects_unusable_output_before_input_routing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.00s
+

@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.20s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+
+thread 'executor::tests::sendfile_rejects_unusable_output_before_input_routing' (534000) panicked at reverie-kvm/src/executor.rs:21300:21:
+assertion `left == right` failed: nonzero high word closed output must precede pipe input routing
+  left: -38
+ right: -9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::sendfile_rejects_unusable_output_before_input_routing ... FAILED
+
+failures:
+
+failures:
+    executor::tests::sendfile_rejects_unusable_output_before_input_routing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

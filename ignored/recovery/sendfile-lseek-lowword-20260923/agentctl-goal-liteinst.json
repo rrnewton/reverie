@@ -1,0 +1,8 @@
+{
+  "delivery": "delivered",
+  "goal": "Drive LiteInst upstream-first to small independently testable backward-compatible LiteInst2 and Reverie slices; preserve the 126k-line replay only as evidence, repair wrkslots ownership before writing, validate and adversarially review each slice, publish only exact-head bot-disclosed PRs, avoid TaskGraph and all other lanes, and continue until genuinely blocked.",
+  "name": "liteinst",
+  "native_error": "native session unknown; bind-session with the session id reported by this agent",
+  "native_status": "unverified",
+  "source": "requested"
+}

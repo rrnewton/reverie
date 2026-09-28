@@ -1,0 +1,1 @@
+{"artifact": "/home/newton/work/dev-hermit/.agentctl/hermit-coordinator/queue/inbox/01790163478345043093-2736116.json", "error": "message 01790163478345043093-2736116 remains pending without consuming a retry attempt: pane wK:p1 did not become idle/done within 0s; last status=working", "message_id": "01790163478345043093-2736116", "outcome": "pending", "safe_to_retry": true}

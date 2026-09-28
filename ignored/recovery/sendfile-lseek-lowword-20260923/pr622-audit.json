@@ -1,0 +1,1 @@
+{"baseRefOid":"ae1d1da78d2d89a1fa0454ee2282cf135e2286ed","headRefOid":"dadd0f6f1085a57366f247649dfa9a0d7a78f623","mergeCommit":{"oid":"cdcefc4b9020b6297dd5f746fae3ab2066791cb0"},"mergedAt":"2026-09-23T06:02:18Z","state":"MERGED","title":"Honor low-word close syscall arguments","url":"https://github.com/rrnewton/reverie/pull/622"}

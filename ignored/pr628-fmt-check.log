@@ -1,0 +1,13 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm/src/executor.rs:21146:
+             (SIGNED_LOW_WORD | 1, "low-word sign bit"),
+             (u64::MAX, "sign-extended -1"),
+         ] {
+-            for (in_fd, input_kind) in [
+-                (pipe_fds[0] as u64, "pipe"),
+-                (socket_fd as u64, "socket"),
+-            ] {
++            for (in_fd, input_kind) in [(pipe_fds[0] as u64, "pipe"), (socket_fd as u64, "socket")]
++            {
+                 assert_eq!(
+                     syscall_result(
+                         &mut memory,

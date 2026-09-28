@@ -1,0 +1,127 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 354d06b2..b5a6d88e 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -6532,6 +6532,11 @@ fn sendfile(
+ ) -> i64 {
+     // Linux syscall `int` arguments consume only the low descriptor word.
+     let out_fd = args[0] as libc::c_int;
++    // Linux rejects a negative output descriptor before sendfile's input
++    // classification can route an otherwise-live unsupported input to ENOSYS.
++    if out_fd < 0 {
++        return negative_errno(libc::EBADF);
++    }
+     let in_fd = args[1] as libc::c_int;
+     // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
+     // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
+@@ -21110,6 +21115,63 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn sendfile_rejects_negative_output_before_input_routing() {
++        const SIGNED_LOW_WORD: u64 = 0x5a5a_5a5a_8000_0000;
++        const PIPE_FDS: u64 = 0x100;
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pipe2,
++                [PIPE_FDS, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
++        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
++        let socket_fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_socket,
++            [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
++        );
++        assert!(socket_fd >= 0, "socket() returned {socket_fd}");
++        state
++            .files
++            .insert(20, std::fs::File::open(&root.0).unwrap());
++        state
++            .files
++            .insert(21, std::fs::File::open("/proc/self/status").unwrap());
++
++        for (raw_out, encoding) in [
++            (SIGNED_LOW_WORD | 1, "low-word sign bit"),
++            (u64::MAX, "sign-extended -1"),
++        ] {
++            for (in_fd, input_kind) in [
++                (pipe_fds[0] as u64, "pipe"),
++                (socket_fd as u64, "socket"),
++                (20, "directory"),
++                (libc::STDOUT_FILENO as u64, "standard stream"),
++                (21, "procfs"),
++            ] {
++                assert_eq!(
++                    syscall_result(
++                        &mut memory,
++                        &mut state,
++                        libc::SYS_sendfile,
++                        [raw_out, in_fd, 0, 1, 0, 0]
++                    ),
++                    negative_errno(libc::EBADF),
++                    "{encoding} output must precede {input_kind} routing"
++                );
++            }
++        }
++    }
++
+     #[test]
+     fn sendfile_rejects_socket_input_with_enosys_and_unknown_fd_with_ebadf() {
+         let root = TestDir::new();
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 0fa6bab6..68cf5251 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -16020,6 +16020,7 @@ fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <stdint.h>
++#include <sys/socket.h>
+ #include <sys/syscall.h>
+ #include <unistd.h>
+ 
+@@ -16036,6 +16037,25 @@ int main(int argc, char **argv) {
+   int fd = open(argv[1], O_RDONLY);
+   if (fd < 0) return 2;
+ 
++  int pipe_fds[2], sockets[2];
++  if (pipe(pipe_fds) != 0) return 20;
++  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) return 21;
++  const uint64_t invalid_outputs[] = {
++      SIGNED_LOW_WORD | UINT64_C(1), UINT64_MAX};
++  const int fallback_inputs[] = {pipe_fds[0], sockets[0]};
++  for (unsigned output = 0;
++       output < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]);
++       ++output) {
++    for (unsigned input = 0;
++         input < sizeof(fallback_inputs) / sizeof(fallback_inputs[0]);
++         ++input) {
++      errno = 0;
++      if (!failed_with(syscall(SYS_sendfile, invalid_outputs[output],
++                               (uint32_t)fallback_inputs[input], NULL, 1),
++                       EBADF)) return 22 + (int)(output * 2 + input);
++    }
++  }
++
+   off_t offset = 0;
+   errno = 0;
+   if (!failed_with(syscall(SYS_sendfile,
+@@ -16075,6 +16095,8 @@ int main(int argc, char **argv) {
+               length - split) != (long)(length - split) ||
+       offset != (off_t)length || lseek(fd, 0, SEEK_CUR) != 3) return 9;
+ 
++  if (close(pipe_fds[0]) != 0 || close(pipe_fds[1]) != 0 ||
++      close(sockets[0]) != 0 || close(sockets[1]) != 0) return 26;
+   if (close(fd) != 0) return 10;
+   return 0;
+ }

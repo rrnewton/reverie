@@ -1,0 +1,16 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm/src/executor.rs:21307:
+                             &mut memory,
+                             &mut state,
+                             libc::SYS_sendfile,
+-                            [
+-                                high_word | out_fd as u64,
+-                                in_fd as u64,
+-                                0,
+-                                1,
+-                                0,
+-                                0,
+-                            ]
++                            [high_word | out_fd as u64, in_fd as u64, 0, 1, 0, 0,]
+                         ),
+                         negative_errno(libc::EBADF),
+                         "{encoding} {output_kind} output must precede {input_kind} input routing"

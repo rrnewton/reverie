@@ -1,0 +1,8 @@
+{
+  "delivery": "pending",
+  "goal": "Drive Hermit product health: keep main green; finish and land the assigned fractional-clock and scorecard-ledger work with deterministic and adversarial review; preserve unresolved failures honestly; then drain substantive Hermit PRs. Never write shared checkouts; use safehermit for ad-hoc runs. Do not touch Chat, KVM, LiteInst, ops, TFA/Buck/import, or devbig030. Continue until genuinely blocked.",
+  "name": "mega-lander-recovery",
+  "native_error": "native session unknown; bind-session with the session id reported by this agent",
+  "native_status": "unverified",
+  "source": "requested"
+}

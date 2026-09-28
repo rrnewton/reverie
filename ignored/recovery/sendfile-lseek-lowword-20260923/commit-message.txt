@@ -1,0 +1,10 @@
+Honor low-word sendfile and lseek descriptors
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Linux decodes int syscall arguments from the low 32 bits of each register.
+Apply that rule to both sendfile descriptors and the lseek descriptor while
+leaving all downstream routing and validation ordering unchanged.
+
+Add focused unit and real-KVM native/direct/Tool coverage that independently
+detects regressions at all three decoder sites.

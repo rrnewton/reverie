@@ -1,0 +1,11 @@
+Reject negative sendfile outputs before fallback
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Reject a negative low-word output descriptor before inspecting sendfile's
+input endpoint. This preserves EBADF when otherwise-live pipe, socket,
+directory, standard-stream, or procfs inputs would select the ENOSYS fallback.
+
+Add unit and real-KVM native/direct/Tool coverage for both a high-word value
+whose low word is negative and a sign-extended -1, crossed with pipe and socket
+inputs.

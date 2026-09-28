@@ -1,0 +1,644 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index ea27626a..70ac74c4 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -6530,12 +6530,24 @@ fn sendfile(
+     args: &[u64; 6],
+     output: Option<&mut CapturedOutput>,
+ ) -> i64 {
+-    let Ok(out_fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
+-    let Ok(in_fd) = i32::try_from(args[1]) else {
++    // Linux syscall `int` arguments consume only the low descriptor word.
++    let out_fd = args[0] as libc::c_int;
++    // Linux rejects an unusable output descriptor before sendfile's input
++    // classification can route an otherwise-live unsupported input to ENOSYS.
++    if out_fd < 0 {
+         return negative_errno(libc::EBADF);
++    }
++    let out_file = match state.files.get(&out_fd) {
++        Some(file) => {
++            if let Err(error) = ensure_writable(file) {
++                return error;
++            }
++            Some(file)
++        }
++        None if is_open_standard(state, out_fd) => None,
++        None => return negative_errno(libc::EBADF),
+     };
++    let in_fd = args[1] as libc::c_int;
+     // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
+     // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
+     // fail with ENOSYS to route the caller onto glibc's mediated read()+write()
+@@ -6578,7 +6590,7 @@ fn sendfile(
+     // Fast path: a regular/memfd output that lives in the guest file table can be
+     // copied with the host's zero-copy sendfile directly, preserving kernel
+     // offset semantics.
+-    if let Some(out_file) = state.files.get(&out_fd) {
++    if let Some(out_file) = out_file {
+         match is_regular_host_file(out_file) {
+             Ok(true) => {}
+             // A known-but-non-regular output (pipe/socket the guest opened) takes
+@@ -6586,9 +6598,6 @@ fn sendfile(
+             Ok(false) => return negative_errno(libc::ENOSYS),
+             Err(error) => return error,
+         }
+-        if let Err(error) = ensure_writable(out_file) {
+-            return error;
+-        }
+         let out_host = out_file.as_raw_fd();
+         if offset_ptr == 0 {
+             // SAFETY: both are live host descriptors; a null offset advances
+@@ -6746,9 +6755,8 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64;
+ }
+ 
+ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux syscall `int` arguments consume only the low descriptor word.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd) {
+         return description.seek(args);
+     }
+@@ -20997,6 +21005,358 @@ mod tests {
+         assert_eq!(std::fs::read(&dst_pos_path).unwrap(), b"abcdefghij");
+     }
+ 
++    #[test]
++    fn sendfile_and_lseek_consume_low_descriptor_words() {
++        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
++        const SIGNED_LOW_WORD: u64 = HIGH_WORD | 0x8000_0000;
++        const OFFSET: u64 = 0x100;
++
++        let root = TestDir::new();
++        let src_path = root.0.join("src-low-word");
++        let dst_path = root.0.join("dst-low-word");
++        std::fs::write(&src_path, b"abcdefghij").unwrap();
++
++        let mut state = test_state(&root.0);
++        state.files.insert(
++            3,
++            std::fs::OpenOptions::new()
++                .read(true)
++                .open(&src_path)
++                .unwrap(),
++        );
++        state.files.insert(
++            4,
++            std::fs::OpenOptions::new()
++                .read(true)
++                .write(true)
++                .create(true)
++                .truncate(true)
++                .open(&dst_path)
++                .unwrap(),
++        );
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        write_struct(&mut memory, OFFSET, &0i64);
++
++        // Exercise each sendfile descriptor decoder independently while using
++        // the same ordinary regular-file routing as an unadorned syscall.
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sendfile,
++                [HIGH_WORD | 4, 3, OFFSET, 2, 0, 0]
++            ),
++            2
++        );
++        assert_eq!(read_struct::<i64>(&memory, OFFSET), 2);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sendfile,
++                [4, HIGH_WORD | 3, OFFSET, 2, 0, 0]
++            ),
++            2
++        );
++        assert_eq!(read_struct::<i64>(&memory, OFFSET), 4);
++        assert_eq!(std::fs::read(&dst_path).unwrap(), b"abcd");
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_lseek,
++                [HIGH_WORD | 3, 6, libc::SEEK_SET as u64, 0, 0, 0]
++            ),
++            6
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_lseek,
++                [3, 0, libc::SEEK_CUR as u64, 0, 0, 0]
++            ),
++            6
++        );
++
++        // A set low-word sign bit still denotes a negative descriptor. Keep
++        // the offset pointer and whence valid so these are fd-only assertions.
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sendfile,
++                [SIGNED_LOW_WORD | 4, 3, OFFSET, 1, 0, 0]
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sendfile,
++                [4, SIGNED_LOW_WORD | 3, OFFSET, 1, 0, 0]
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_lseek,
++                [SIGNED_LOW_WORD | 3, 0, libc::SEEK_SET as u64, 0, 0, 0]
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(read_struct::<i64>(&memory, OFFSET), 4);
++        assert_eq!(std::fs::read(&dst_path).unwrap(), b"abcd");
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_lseek,
++                [3, 0, libc::SEEK_CUR as u64, 0, 0, 0]
++            ),
++            6
++        );
++    }
++
++    #[test]
++    fn sendfile_rejects_negative_output_before_input_routing() {
++        const SIGNED_LOW_WORD: u64 = 0x5a5a_5a5a_8000_0000;
++        const PIPE_FDS: u64 = 0x100;
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pipe2,
++                [PIPE_FDS, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
++        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
++        let socket_fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_socket,
++            [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
++        );
++        assert!(socket_fd >= 0, "socket() returned {socket_fd}");
++        state
++            .files
++            .insert(20, std::fs::File::open(&root.0).unwrap());
++        state
++            .files
++            .insert(21, std::fs::File::open("/proc/self/status").unwrap());
++
++        for (raw_out, encoding) in [
++            (SIGNED_LOW_WORD | 1, "low-word sign bit"),
++            (u64::MAX, "sign-extended -1"),
++        ] {
++            for (in_fd, input_kind) in [
++                (pipe_fds[0] as u64, "pipe"),
++                (socket_fd as u64, "socket"),
++                (20, "directory"),
++                (libc::STDOUT_FILENO as u64, "standard stream"),
++                (21, "procfs"),
++            ] {
++                assert_eq!(
++                    syscall_result(
++                        &mut memory,
++                        &mut state,
++                        libc::SYS_sendfile,
++                        [raw_out, in_fd, 0, 1, 0, 0]
++                    ),
++                    negative_errno(libc::EBADF),
++                    "{encoding} output must precede {input_kind} routing"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn sendfile_rejects_unusable_output_before_input_routing() {
++        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
++        const SIGN_EXTENDED_HIGH_WORD: u64 = 0xffff_ffff_0000_0000;
++        const INPUT_PIPE_FDS: u64 = 0x100;
++        const INPUT_SOCKET_FDS: u64 = 0x120;
++        const OUTPUT_PIPE_FDS: u64 = 0x140;
++        const PAYLOAD: u64 = 0x200;
++        const PIPE_PAYLOAD: &[u8] = b"pipe-input-preserved";
++        const SOCKET_PAYLOAD: &[u8] = b"socket-input-preserved";
++
++        let root = TestDir::new();
++        let read_only_path = root.0.join("read-only-output");
++        std::fs::write(&read_only_path, b"output").unwrap();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pipe2,
++                [INPUT_PIPE_FDS, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
++        let input_pipe: [libc::c_int; 2] = read_struct(&memory, INPUT_PIPE_FDS);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_socketpair,
++                [
++                    libc::AF_UNIX as u64,
++                    libc::SOCK_STREAM as u64,
++                    0,
++                    INPUT_SOCKET_FDS,
++                    0,
++                    0,
++                ]
++            ),
++            0
++        );
++        let input_socket: [libc::c_int; 2] = read_struct(&memory, INPUT_SOCKET_FDS);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pipe2,
++                [OUTPUT_PIPE_FDS, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
++        let output_pipe: [libc::c_int; 2] = read_struct(&memory, OUTPUT_PIPE_FDS);
++
++        memory.write(PAYLOAD, PIPE_PAYLOAD).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_write,
++                [
++                    input_pipe[1] as u64,
++                    PAYLOAD,
++                    PIPE_PAYLOAD.len() as u64,
++                    0,
++                    0,
++                    0,
++                ]
++            ),
++            PIPE_PAYLOAD.len() as i64
++        );
++        memory.write(PAYLOAD, SOCKET_PAYLOAD).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_write,
++                [
++                    input_socket[1] as u64,
++                    PAYLOAD,
++                    SOCKET_PAYLOAD.len() as u64,
++                    0,
++                    0,
++                    0,
++                ]
++            ),
++            SOCKET_PAYLOAD.len() as i64
++        );
++        for fd in [input_pipe[1], input_socket[1]] {
++            assert_eq!(close(&mut state, fd as u64), 0);
++        }
++
++        state
++            .files
++            .insert(20, std::fs::File::open(&read_only_path).unwrap());
++        state
++            .files
++            .insert(21, std::fs::File::open(&root.0).unwrap());
++        state
++            .files
++            .insert(22, std::fs::File::open("/proc/self/status").unwrap());
++        state
++            .files
++            .insert(23, std::fs::File::open(&read_only_path).unwrap());
++        assert_eq!(close(&mut state, 23), 0);
++        let proc_position = state.files.get_mut(&22).unwrap().stream_position().unwrap();
++        let regular_position = state.files.get_mut(&20).unwrap().stream_position().unwrap();
++
++        for (high_word, encoding) in [
++            (HIGH_WORD, "nonzero high word"),
++            (SIGN_EXTENDED_HIGH_WORD, "sign-extended high word"),
++        ] {
++            for (out_fd, output_kind) in [
++                (23, "closed"),
++                (20, "read-only regular"),
++                (output_pipe[0], "pipe read end"),
++            ] {
++                for (in_fd, input_kind) in [
++                    (input_pipe[0], "pipe"),
++                    (input_socket[0], "socket"),
++                    (21, "directory"),
++                    (libc::STDOUT_FILENO, "standard stream"),
++                    (22, "procfs"),
++                ] {
++                    assert_eq!(
++                        syscall_result(
++                            &mut memory,
++                            &mut state,
++                            libc::SYS_sendfile,
++                            [
++                                high_word | u64::from(out_fd as u32),
++                                in_fd as u64,
++                                0,
++                                1,
++                                0,
++                                0,
++                            ]
++                        ),
++                        negative_errno(libc::EBADF),
++                        "{encoding} {output_kind} output must precede {input_kind} input routing"
++                    );
++                }
++            }
++        }
++
++        assert_eq!(
++            read_fd_to_end(&mut memory, &mut state, input_pipe[0] as i64),
++            PIPE_PAYLOAD
++        );
++        assert_eq!(
++            read_fd_to_end(&mut memory, &mut state, input_socket[0] as i64),
++            SOCKET_PAYLOAD
++        );
++        assert_eq!(
++            state.files.get_mut(&22).unwrap().stream_position().unwrap(),
++            proc_position,
++            "rejected outputs must not consume procfs input"
++        );
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sendfile,
++                [HIGH_WORD | u64::from(output_pipe[1] as u32), 20, 0, 1, 0, 0,]
++            ),
++            negative_errno(libc::ENOSYS),
++            "a valid writable pipe output retains the mediated fallback"
++        );
++        assert_eq!(
++            state.files.get_mut(&20).unwrap().stream_position().unwrap(),
++            regular_position,
++            "the writable-pipe fallback must not consume its input"
++        );
++        assert_eq!(close(&mut state, output_pipe[1] as u64), 0);
++    }
++
+     #[test]
+     fn sendfile_rejects_socket_input_with_enosys_and_unknown_fd_with_ebadf() {
+         let root = TestDir::new();
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index f7b9d83b..72e2b1a6 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -16002,6 +16002,216 @@ int main(void) {
+     }
+ }
+ 
++#[test]
++fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
++    if !kvm_available("KVM sendfile/lseek low-word argument test") {
++        return;
++    }
++
++    const PAYLOAD: &[u8] = b"sendfile-lseek-low-word-ok\n";
++    let directory = TestDirectory::new();
++    let source = directory.0.join("sendfile-lseek-low-word-source");
++    std::fs::write(&source, PAYLOAD).unwrap();
++    let executable = compile_c_program(
++        &directory.0,
++        "sendfile-lseek-low-word",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <sys/socket.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
++#define SIGNED_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
++#define SIGN_EXTENDED_HIGH_WORD UINT64_C(0xffffffff00000000)
++#define PAYLOAD "sendfile-lseek-low-word-ok\n"
++
++static int failed_with(long result, int expected) {
++  return result == -1 && errno == expected;
++}
++
++static int rejected_without_consuming(uint64_t out_fd, int in_fd,
++                                      int input_writer,
++                                      unsigned char sentinel) {
++  if (input_writer >= 0 && write(input_writer, &sentinel, 1) != 1) return 1;
++  errno = 0;
++  long result = syscall(SYS_sendfile, out_fd, (uint32_t)in_fd, NULL, 1);
++  int saved_errno = errno;
++  if (input_writer >= 0) {
++    unsigned char observed = 0;
++    ssize_t count;
++    do {
++      count = read(in_fd, &observed, 1);
++    } while (count < 0 && errno == EINTR);
++    if (count != 1 || observed != sentinel) return 2;
++  }
++  return result == -1 && saved_errno == EBADF ? 0 : 3;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 1;
++  int fd = open(argv[1], O_RDONLY);
++  if (fd < 0) return 2;
++
++  int pipe_fds[2], sockets[2], output_pipe[2];
++  if (pipe2(pipe_fds, O_NONBLOCK) != 0) return 20;
++  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) != 0)
++    return 21;
++  if (pipe(output_pipe) != 0) return 27;
++  int directory = open(".", O_RDONLY | O_DIRECTORY);
++  if (directory < 0) return 28;
++  int closed_output = dup(fd);
++  if (closed_output < 0) return 29;
++  if (close(closed_output) != 0) return 30;
++
++  const uint64_t negative_outputs[] = {
++      SIGNED_LOW_WORD | UINT64_C(1), UINT64_MAX};
++  const int negative_inputs[] = {pipe_fds[0], sockets[0]};
++  const int negative_writers[] = {pipe_fds[1], sockets[1]};
++  for (unsigned output = 0;
++       output < sizeof(negative_outputs) / sizeof(negative_outputs[0]);
++       ++output) {
++    for (unsigned input = 0;
++         input < sizeof(negative_inputs) / sizeof(negative_inputs[0]);
++         ++input) {
++      int check = rejected_without_consuming(
++          negative_outputs[output], negative_inputs[input],
++          negative_writers[input], (unsigned char)(1 + output * 2 + input));
++      if (check != 0) return 31 + (int)((output * 2 + input) * 3) + check;
++    }
++  }
++
++  const int routing_inputs[] = {
++      pipe_fds[0], sockets[0], directory, STDOUT_FILENO};
++  const int routing_writers[] = {pipe_fds[1], sockets[1], -1, -1};
++  const uint64_t high_words[] = {HIGH_WORD, SIGN_EXTENDED_HIGH_WORD};
++  const int unusable_outputs[] = {closed_output, fd, output_pipe[0]};
++  unsigned row = 0;
++  for (unsigned encoding = 0;
++       encoding < sizeof(high_words) / sizeof(high_words[0]);
++       ++encoding) {
++    for (unsigned output = 0;
++         output < sizeof(unusable_outputs) / sizeof(unusable_outputs[0]);
++         ++output) {
++      for (unsigned input = 0;
++           input < sizeof(routing_inputs) / sizeof(routing_inputs[0]);
++           ++input) {
++        int check = rejected_without_consuming(
++            high_words[encoding] | (uint32_t)unusable_outputs[output],
++            routing_inputs[input], routing_writers[input],
++            (unsigned char)(16 + row));
++        if (check != 0) return 43 + (int)(row * 3) + check;
++        ++row;
++      }
++    }
++  }
++
++  off_t offset = 0;
++  errno = 0;
++  if (!failed_with(syscall(SYS_sendfile,
++                           SIGNED_LOW_WORD | (uint32_t)STDOUT_FILENO,
++                           (uint32_t)fd, &offset, 1), EBADF) ||
++      offset != 0) return 3;
++  errno = 0;
++  if (!failed_with(syscall(SYS_sendfile, (uint32_t)STDOUT_FILENO,
++                           SIGNED_LOW_WORD | (uint32_t)fd,
++                           &offset, 1), EBADF) ||
++      offset != 0) return 4;
++
++  // Keep whence valid: this assertion discriminates only fd decoding.
++  errno = 0;
++  if (!failed_with(syscall(SYS_lseek, SIGNED_LOW_WORD | (uint32_t)fd,
++                           0, SEEK_SET), EBADF) ||
++      lseek(fd, 0, SEEK_CUR) != 0) return 5;
++  if (syscall(SYS_lseek, HIGH_WORD | (uint32_t)fd, 3, SEEK_SET) != 3 ||
++      lseek(fd, 0, SEEK_CUR) != 3) return 6;
++
++  // Command::output and KVM capture both expose stdout as a pipe.
++  errno = 0;
++  if (!failed_with(syscall(SYS_lseek,
++                           HIGH_WORD | (uint32_t)STDOUT_FILENO,
++                           0, SEEK_CUR), ESPIPE)) return 7;
++
++  // Split one exact marker so each sendfile fd decoder is exercised alone.
++  offset = 0;
++  const size_t length = sizeof(PAYLOAD) - 1;
++  const size_t split = (sizeof(PAYLOAD) - 1) / 2;
++  if (syscall(SYS_sendfile,
++              HIGH_WORD | (uint32_t)STDOUT_FILENO,
++              (uint32_t)fd, &offset, split) != (long)split ||
++      offset != (off_t)split || lseek(fd, 0, SEEK_CUR) != 3) return 8;
++  if (syscall(SYS_sendfile, (uint32_t)STDOUT_FILENO,
++              HIGH_WORD | (uint32_t)fd, &offset,
++              length - split) != (long)(length - split) ||
++      offset != (off_t)length || lseek(fd, 0, SEEK_CUR) != 3) return 9;
++
++  if (close(pipe_fds[0]) != 0 || close(pipe_fds[1]) != 0 ||
++      close(sockets[0]) != 0 || close(sockets[1]) != 0 ||
++      close(output_pipe[0]) != 0 || close(output_pipe[1]) != 0 ||
++      close(directory) != 0) return 26;
++  if (close(fd) != 0) return 10;
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .arg(&source)
++        .output()
++        .unwrap();
++    assert_eq!(
++        native.status.code(),
++        Some(0),
++        "native stdout={} stderr={}",
++        String::from_utf8_lossy(&native.stdout),
++        String::from_utf8_lossy(&native.stderr)
++    );
++    assert_eq!(native.stdout, PAYLOAD);
++    assert!(native.stderr.is_empty());
++
++    let image = std::fs::read(&executable).unwrap();
++    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
++        let executable = executable.to_str().unwrap();
++        let source = source.to_str().unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable, source],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        let (code, stdout, stderr) = if tool_owned {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        };
++        assert_eq!(
++            code,
++            0,
++            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
++            String::from_utf8_lossy(&stdout),
++            String::from_utf8_lossy(&stderr)
++        );
++        assert_eq!(
++            stdout, native.stdout,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++        assert_eq!(
++            stderr, native.stderr,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++    }
++}
++
+ #[test]
+ fn storage_fd_syscalls_consume_low_words_on_kvm() {
+     if !kvm_available("KVM storage fd low-word argument test") {

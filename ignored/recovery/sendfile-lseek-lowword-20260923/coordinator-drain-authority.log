@@ -1,0 +1,23 @@
+{
+  "blocked": "pane wK:p1 did not become idle/done within 30s; last status=working",
+  "delivered": [],
+  "message_id": "",
+  "outcome": "pending",
+  "pending": [
+    "01790119098292072388-367616",
+    "01790126673903532550-3427378",
+    "01790127573916022140-3622404",
+    "01790145699291745040-3791083",
+    "01790153335031034029-1033603",
+    "01790163478345043093-2736116",
+    "agent-utils-main-race-wrkslots-20260922",
+    "chat-core-cleanup-complete-20260923",
+    "chat-native-goal-resume-20260922",
+    "chat-no-broad-eden-scan-20260923",
+    "chat-ops-reclaim-20260923",
+    "chat-ops-reclaim-correction-20260923",
+    "chat-resource-audit-20260923",
+    "chat-systemd-topology-20260922"
+  ],
+  "quarantined": []
+}
