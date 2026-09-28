@@ -2294,7 +2294,26 @@
     "why": "1 rescue commit, 893 behind; 10 files, +803/-43. A stress-series/v4 producer; the string stress-series/v4 does not appear on main. Related: closed https://github.com/rrnewton/hermit/pull/3009."
    }
   ],
-  "draft_prs": {},
+  "draft_prs": {
+   "codex-liteinst-runtime-resume-01a0a13c": "https://github.com/rrnewton/reverie/pull/737",
+   "dev-hermit-stdio-flags": "https://github.com/rrnewton/hermit/pull/3314",
+   "kvm-finalize-profile": "https://github.com/rrnewton/hermit/pull/3315",
+   "kvm-teardown-opt": "https://github.com/rrnewton/hermit/pull/3316",
+   "liteinst-session-recovery": "https://github.com/rrnewton/hermit/pull/3317",
+   "ci-signal-ptrace-fatal-cleanup-20260920": "https://github.com/rrnewton/reverie/pull/738",
+   "dev-hermit-15-liteinst-rcb-01a0a13c": "https://github.com/rrnewton/reverie/pull/739",
+   "dev-hermit-ci-provenance-20260915": "https://github.com/rrnewton/dev-hermit/pull/396",
+   "dev-hermit-structured-results-20260918": "https://github.com/rrnewton/hermit/pull/3318",
+   "dev-hermit-deferred-capture-api-20260917": "https://github.com/rrnewton/reverie/pull/740",
+   "dev-hermit-verify-two-runs-20260915": "https://github.com/rrnewton/hermit/pull/3319",
+   "verify-two-runs-v4": "https://github.com/rrnewton/hermit/pull/3320",
+   "kvm-signal-abi": "https://github.com/rrnewton/hermit/pull/3321",
+   "astra-hermit-drafts": "https://github.com/rrnewton/hermit/pull/3322",
+   "astra-hermit-drafts-pr2984": "https://github.com/rrnewton/hermit/pull/3323",
+   "astra-hermit-ready": "https://github.com/rrnewton/hermit/pull/3324",
+   "ledger-fix-design": "https://github.com/rrnewton/dev-hermit/pull/397",
+   "slots-recon": "https://github.com/rrnewton/dev-hermit/pull/398"
+  },
   "full_record_files": {
    "records/assess-1.json": {
     "bytes": 504366,
