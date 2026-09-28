@@ -1,0 +1,1 @@
+with-proxy gh pr create -R rrnewton/reverie --draft --base main --head claude/kvm-orphan-reparent-20260926 --title 'Reparent orphaned KVM guest processes instead of refusing' --body-file /tmp/claude-coord-notes/pr-body-kvm-reparent.md

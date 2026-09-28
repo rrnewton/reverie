@@ -1,0 +1,1 @@
+with-proxy git fetch https://github.com/rrnewton/reverie +refs/heads/main:refs/remotes/gh-rrnewton/main +refs/heads/claude/kvm-orphan-reparent-20260926:refs/remotes/gh-rrnewton/claude/kvm-orphan-reparent-20260926
