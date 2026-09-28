@@ -1,0 +1,373 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 41556f98..9d6e2082 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -6856,9 +6856,8 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
+ 
+ // TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
+ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low int descriptor word from the syscall register.
++    let fd = args[0] as libc::c_int;
+     let Some(host_fd) = host_fd(state, fd) else {
+         return negative_errno(libc::EBADF);
+     };
+@@ -6884,9 +6883,8 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+ }
+ 
+ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
+-    let Ok(fd) = i32::try_from(raw_fd) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low unsigned-int descriptor word.
++    let fd = raw_fd as libc::c_int;
+     let Some(host_fd) = host_fd(state, fd) else {
+         return negative_errno(libc::EBADF);
+     };
+@@ -6908,9 +6906,8 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
+ fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low int descriptor word from the syscall register.
++    let fd = args[0] as libc::c_int;
+     let Some(host_fd) = host_fd(state, fd) else {
+         return negative_errno(libc::EBADF);
+     };
+@@ -6934,9 +6931,8 @@ fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
+ fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low int descriptor word from the syscall register.
++    let fd = args[0] as libc::c_int;
+     let Some(host_fd) = host_fd(state, fd) else {
+         return negative_errno(libc::EBADF);
+     };
+@@ -36726,6 +36722,8 @@ mod tests {
+ 
+     #[test]
+     fn positioned_write_seek_truncate_and_sync_round_trip() {
++        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
++        const SIGNED_LOW_WORD: u64 = HIGH_WORD | (1 << 31);
+         const PATH_ADDRESS: u64 = 0x100;
+         const PAYLOAD_ADDRESS: u64 = 0x200;
+         const PATCH_ADDRESS: u64 = 0x300;
+@@ -36803,25 +36801,66 @@ mod tests {
+         assert_eq!(&actual, b"abXYef");
+         for syscall in [libc::SYS_fdatasync, libc::SYS_fsync] {
+             assert_eq!(
+-                syscall_result(&mut memory, &mut state, syscall, [fd as u64, 0, 0, 0, 0, 0],),
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    syscall,
++                    [HIGH_WORD | fd as u64, 0, 0, 0, 0, 0],
++                ),
+                 0
+             );
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    syscall,
++                    [SIGNED_LOW_WORD | fd as u64, 0, 0, 0, 0, 0],
++                ),
++                negative_errno(libc::EBADF),
++                "a set low-word sign bit must not alias a live descriptor"
++            );
+         }
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_readahead,
+-                [fd as u64, 0, 4096, 0, 0, 0],
++                [HIGH_WORD | fd as u64, 0, 4096, 0, 0, 0],
+             ),
+             0
+         );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_readahead,
++                [HIGH_WORD | fd as u64, u64::MAX, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EINVAL),
++            "offset validation follows low-word descriptor decoding"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_readahead,
++                [SIGNED_LOW_WORD | fd as u64, 0, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF)
++        );
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_sync_file_range,
+-                [fd as u64, 0, 4096, libc::SYNC_FILE_RANGE_WRITE as u64, 0, 0,],
++                [
++                    HIGH_WORD | fd as u64,
++                    0,
++                    4096,
++                    libc::SYNC_FILE_RANGE_WRITE as u64,
++                    0,
++                    0,
++                ],
+             ),
+             0
+         );
+@@ -36840,7 +36879,7 @@ mod tests {
+                 &mut state,
+                 libc::SYS_sync_file_range,
+                 [
+-                    fd as u64,
++                    HIGH_WORD | fd as u64,
+                     0,
+                     1,
+                     (libc::SYNC_FILE_RANGE_WAIT_BEFORE
+@@ -36853,6 +36892,22 @@ mod tests {
+             ),
+             negative_errno(libc::EINVAL)
+         );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_sync_file_range,
++                [
++                    SIGNED_LOW_WORD | fd as u64,
++                    0,
++                    1,
++                    libc::SYNC_FILE_RANGE_WRITE as u64,
++                    0,
++                    0,
++                ],
++            ),
++            negative_errno(libc::EBADF)
++        );
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+@@ -36868,7 +36923,7 @@ mod tests {
+             &mut memory,
+             &mut state,
+             libc::SYS_fallocate,
+-            [fd as u64, 0, 0, 8192, 0, 0],
++            [HIGH_WORD | fd as u64, 0, 0, 8192, 0, 0],
+         );
+         assert!(
+             fallocate_result == 0 || fallocate_result == negative_errno(libc::EOPNOTSUPP),
+@@ -36904,7 +36959,7 @@ mod tests {
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_fallocate,
+-                [9, 0, 0, 0, 0, 0],
++                [HIGH_WORD | 9, 0, 0, 0, 0, 0],
+             ),
+             negative_errno(libc::EINVAL),
+             "range validation precedes writable-access validation"
+@@ -36920,7 +36975,7 @@ mod tests {
+                     &mut memory,
+                     &mut state,
+                     libc::SYS_fallocate,
+-                    [9, mode as u64, 0, 1, 0, 0],
++                    [HIGH_WORD | 9, mode as u64, 0, 1, 0, 0],
+                 ),
+                 negative_errno(libc::EOPNOTSUPP),
+                 "invalid mode combination validation precedes writable access"
+@@ -36931,7 +36986,7 @@ mod tests {
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_fallocate,
+-                [9, FALLOC_FL_WRITE_ZEROES as u64, 0, 1, 0, 0],
++                [HIGH_WORD | 9, FALLOC_FL_WRITE_ZEROES as u64, 0, 1, 0, 0],
+             ),
+             negative_errno(libc::EBADF),
+             "valid write-zeroes mode reaches writable-access validation"
+@@ -36942,13 +36997,23 @@ mod tests {
+                 &mut memory,
+                 &mut state,
+                 libc::SYS_fallocate,
+-                [9, 1_u64 << 30, 0, 1, 0, 0],
++                [HIGH_WORD | 9, 1_u64 << 30, 0, 1, 0, 0],
+             ),
+             negative_errno(libc::EOPNOTSUPP),
+             "unknown mode validation precedes writable-access validation"
+         );
+         state.files.remove(&9);
+ 
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fallocate,
++                [SIGNED_LOW_WORD | fd as u64, 0, 0, 1, 0, 0],
++            ),
++            negative_errno(libc::EBADF)
++        );
++
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 03ea30c5..59522cdd 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -16002,5 +16002,144 @@ int main(void) {
+     }
+ }
+ 
++#[test]
++fn storage_fd_syscalls_consume_low_words_on_kvm() {
++    if !kvm_available("KVM storage fd low-word argument test") {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "storage-fd-low-word",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
++#define SIGNED_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
++
++static int failed_with(long result, int expected) {
++  return result == -1 && errno == expected;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 1;
++  int fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR, 0600);
++  if (fd < 0 || write(fd, "data", 4) != 4) return 2;
++
++  if (syscall(SYS_fsync, HIGH_WORD | (uint32_t)fd) != 0) return 3;
++  if (syscall(SYS_fdatasync, HIGH_WORD | (uint32_t)fd) != 0) return 4;
++  if (syscall(SYS_readahead, HIGH_WORD | (uint32_t)fd, 0, 4096) != 0)
++    return 5;
++  if (syscall(SYS_sync_file_range, HIGH_WORD | (uint32_t)fd, 0, 4096,
++              SYNC_FILE_RANGE_WRITE) != 0) return 6;
++
++  errno = 0;
++  long allocated = syscall(SYS_fallocate, HIGH_WORD | (uint32_t)fd,
++                           0, 0, 4096);
++  if (allocated != 0 && !failed_with(allocated, EOPNOTSUPP)) return 7;
++  const char *allocation_result = allocated == 0 ? "ok" : "unsupported";
++
++  // These errors occur only after the high-word alias resolves to the live fd.
++  errno = 0;
++  if (!failed_with(syscall(SYS_fallocate, HIGH_WORD | (uint32_t)fd,
++                           0, 0, 0), EINVAL)) return 8;
++  errno = 0;
++  if (!failed_with(syscall(SYS_readahead, HIGH_WORD | (uint32_t)fd,
++                           (int64_t)-1, 1), EINVAL)) return 9;
++  errno = 0;
++  if (!failed_with(syscall(SYS_sync_file_range,
++                           HIGH_WORD | (uint32_t)fd, 0, 1,
++                           UINT64_C(1) << 30), EINVAL)) return 10;
++
++  // A set low-word sign bit denotes a negative/invalid int fd, even when
++  // unrelated higher bits are also present.
++  uint64_t invalid = SIGNED_LOW_WORD | (uint32_t)fd;
++  errno = 0;
++  if (!failed_with(syscall(SYS_fsync, invalid), EBADF)) return 11;
++  errno = 0;
++  if (!failed_with(syscall(SYS_fdatasync, invalid), EBADF)) return 12;
++  errno = 0;
++  if (!failed_with(syscall(SYS_readahead, invalid, 0, 1), EBADF)) return 13;
++  errno = 0;
++  if (!failed_with(syscall(SYS_sync_file_range, invalid, 0, 1,
++                           SYNC_FILE_RANGE_WRITE), EBADF)) return 14;
++  errno = 0;
++  if (!failed_with(syscall(SYS_fallocate, invalid, 0, 0, 1), EBADF)) return 15;
++
++  if (close(fd) != 0) return 16;
++  printf("storage-low-word-ok fallocate=%s\n", allocation_result);
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .arg(directory.0.join("native-storage-low-word"))
++        .output()
++        .unwrap();
++    assert_eq!(
++        native.status.code(),
++        Some(0),
++        "native stdout={} stderr={}",
++        String::from_utf8_lossy(&native.stdout),
++        String::from_utf8_lossy(&native.stderr)
++    );
++    assert!(
++        native.stdout == b"storage-low-word-ok fallocate=ok\n"
++            || native.stdout == b"storage-low-word-ok fallocate=unsupported\n",
++        "unexpected native oracle: {:?}",
++        String::from_utf8_lossy(&native.stdout)
++    );
++    assert!(native.stderr.is_empty());
++
++    let image = std::fs::read(&executable).unwrap();
++    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
++        let executable = executable.to_str().unwrap();
++        let guest_path = directory
++            .0
++            .join(format!("guest-storage-low-word-{tool_owned}-{repetition}"));
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable, guest_path.to_str().unwrap()],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        let (code, stdout, stderr) = if tool_owned {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        };
++        assert_eq!(
++            code,
++            0,
++            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
++            String::from_utf8_lossy(&stdout),
++            String::from_utf8_lossy(&stderr)
++        );
++        assert_eq!(
++            stdout, native.stdout,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++        assert_eq!(
++            stderr, native.stderr,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++    }
++}
++
+ #[path = "support/natural_retirement.rs"]
+ mod natural_retirement;
