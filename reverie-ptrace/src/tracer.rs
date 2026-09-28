@@ -4017,6 +4017,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     #[cfg(test)]
     final_resume_signal_for_test: Option<crate::task::FinalResumeSignalForTest>,
+
+    #[cfg(test)]
+    pre_syscall_for_test: Option<crate::task::PreSyscallForTest>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -4035,6 +4038,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             clock_test_launcher_branches: 0,
             #[cfg(test)]
             final_resume_signal_for_test: None,
+            #[cfg(test)]
+            pre_syscall_for_test: None,
         }
     }
 
@@ -4237,6 +4242,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     #[cfg(test)]
     fn final_resume_signal_for_test(mut self, hook: crate::task::FinalResumeSignalForTest) -> Self {
         self.final_resume_signal_for_test = Some(hook);
+        self
+    }
+
+    /// Awaits `hook` immediately before each Tool-visible syscall runs,
+    /// under either backend (see [`crate::task::PreSyscallForTest`]).
+    #[cfg(test)]
+    fn pre_syscall_for_test(mut self, hook: crate::task::PreSyscallForTest) -> Self {
+        self.pre_syscall_for_test = Some(hook);
         self
     }
 
@@ -4755,6 +4768,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 backend_stats: backend_stats.clone(),
                 #[cfg(test)]
                 final_resume_signal_for_test: self.final_resume_signal_for_test,
+                #[cfg(test)]
+                pre_syscall_for_test: self.pre_syscall_for_test,
             },
             gdbserver,
         )
@@ -4951,6 +4966,8 @@ where
                     backend_stats: None,
                     #[cfg(test)]
                     final_resume_signal_for_test: None,
+                    #[cfg(test)]
+                    pre_syscall_for_test: None,
                 },
                 None,
             )
