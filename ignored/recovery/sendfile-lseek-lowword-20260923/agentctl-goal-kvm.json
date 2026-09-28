@@ -1,0 +1,17 @@
+{
+  "delivery": "possibly_submitted",
+  "goal": "Correct Reverie PR 628 in the existing authorized kvm-sendfile-lseek-lowword-20260923 slot so every decoded invalid output fd, including positive high-word aliases of closed, read-only, and pipe-read-end descriptors, returns EBADF before ENOSYS input classification; add mutation-killing unit and real-KVM direct and Tool no-input-consumption coverage; preserve disclosed offset, private-fdinfo, and writable-pipe limitations; run all established gates; freeze and push a bot-disclosed exact head for new independent review; do not merge until the primary coordinator relays approval, then continue the descriptor-decoder product lane.",
+  "name": "kvm",
+  "native": {
+    "createdAt": 1790160486,
+    "objective": "Correct Reverie PR 628 in the existing authorized kvm-sendfile-lseek-lowword-20260923 slot so every decoded invalid output fd, including positive high-word aliases of closed, read-only, and pipe-read-end descriptors, returns EBADF before ENOSYS input classification; add mutation-killing unit and real-KVM direct and Tool no-input-consumption coverage; preserve disclosed offset, private-fdinfo, and writable-pipe limitations; run all established gates; freeze and push a bot-disclosed exact head for new independent review; do not merge until the primary coordinator relays approval, then continue the descriptor-decoder product lane.",
+    "status": "blocked",
+    "threadId": "01a0c15f-f777-70b3-80e8-ec09df0b0e52",
+    "timeUsedSeconds": 472,
+    "tokenBudget": null,
+    "tokensUsed": 406156,
+    "updatedAt": 1790160958
+  },
+  "native_status": "blocked",
+  "source": "native"
+}

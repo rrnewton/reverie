@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-sendfile-lseek-lowword-20260923/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.20s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+
+thread 'sendfile_and_lseek_consume_low_descriptor_words_on_kvm' (736285) panicked at reverie-kvm/tests/static_elf.rs:16197:9:
+assertion `left == right` failed: tool_owned=false repetition=0 stdout= stderr=
+  left: 5
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sendfile_and_lseek_consume_low_descriptor_words_on_kvm ... FAILED
+
+failures:
+
+failures:
+    sendfile_and_lseek_consume_low_descriptor_words_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 341 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`
