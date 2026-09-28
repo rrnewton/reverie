@@ -33,10 +33,14 @@ use reverie::ExitStatus;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::Signal;
 use reverie::Subscription;
 use reverie::TimerSchedule;
 use reverie::Tool;
+use reverie::syscalls::AddrMut;
+use reverie::syscalls::Errno;
 use reverie::syscalls::Getpid;
+use reverie::syscalls::RtTgsigqueueinfo;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
@@ -993,4 +997,210 @@ fn colliding_guest_notification_after_flush_between_stops_is_delivered() {
             break;
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+enum RequeueReport {
+    TimerEvent,
+    Injected(Result<i64, i32>),
+    Signal(i32),
+}
+
+#[derive(Debug, Default)]
+struct RequeueLog {
+    timer_events: AtomicU64,
+    injected: Mutex<Vec<Result<i64, i32>>>,
+    signals: Mutex<Vec<i32>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RequeueLog {
+    type Request = RequeueReport;
+    type Response = ();
+    type Config = Config;
+
+    async fn receive_rpc(&self, _from: Pid, report: RequeueReport) {
+        match report {
+            RequeueReport::TimerEvent => {
+                self.timer_events.fetch_add(1, Ordering::SeqCst);
+            }
+            RequeueReport::Injected(result) => self
+                .injected
+                .lock()
+                .expect("injected log lock poisoned")
+                .push(result),
+            RequeueReport::Signal(signal) => self
+                .signals
+                .lock()
+                .expect("signal log lock poisoned")
+                .push(signal),
+        }
+    }
+}
+
+/// At the `getppid` stop, injects `rt_tgsigqueueinfo(self, self, SIGSYS,
+/// rdi)`, where the guest's `rdi` points at a siginfo it prepared.
+#[derive(Debug, Default, Clone)]
+struct LateTimerSigqueueTool;
+
+#[reverie::tool]
+impl Tool for LateTimerSigqueueTool {
+    type GlobalState = RequeueLog;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &Config) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::clock_getres => {
+                let timeout = TimerSchedule::Rcbs(guest.config().timeout_rcbs);
+                guest.set_timer_precise(timeout)?;
+                Ok(0)
+            }
+            Sysno::getppid => {
+                let (_, args) = syscall.into_parts();
+                let result = guest
+                    .inject(
+                        RtTgsigqueueinfo::new()
+                            .with_tgid(guest.pid().as_raw())
+                            .with_tid(guest.tid().as_raw())
+                            .with_sig(libc::SIGSYS)
+                            .with_siginfo(AddrMut::from_raw(args.arg0)),
+                    )
+                    .await;
+                guest
+                    .send_rpc(RequeueReport::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                Ok(0)
+            }
+            _ => guest.tail_inject(syscall).await,
+        }
+    }
+
+    async fn handle_signal_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(RequeueReport::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+
+    async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
+        guest.send_rpc(RequeueReport::TimerEvent).await;
+    }
+}
+
+static REQUEUED_SIGSYS_HANDLED: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn count_requeued_sigsys(_signo: libc::c_int) {
+    REQUEUED_SIGSYS_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+fn getppid_with_siginfo(info: *mut libc::siginfo_t) {
+    // SAFETY: the tool intercepts this getppid; the kernel ignores rdi for
+    // getppid, and the tool reads the siginfo `info` points at.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") libc::SYS_getppid => _,
+            in("rdi") info,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+}
+
+/// After a late overflow notification is discarded before the private
+/// `syscall`, the injection steps again. That step must get the same handling
+/// as the first one. Here the injected syscall queues a synchronous-class
+/// SIGSYS to its own thread, which Linux dequeues ahead of the step SIGTRAP,
+/// so the step stops with the syscall already complete. The signal must be
+/// returned to the kernel queue and reach the Tool through an ordinary
+/// signal-delivery stop, once per injection, exactly as in the injections
+/// with no late notification. A step that bypassed that handling would hold
+/// the signal in the pending-signal slot instead: the guest's handler would
+/// still run, but the Tool would never see the signal, and the step SIGTRAP
+/// would stay queued without being marked stale.
+#[test]
+fn late_overflow_discard_steps_again_with_completed_signal_handling() {
+    let _serial = serialize();
+    if !reverie_ptrace::is_perf_supported() {
+        return;
+    }
+    let discarded_before = late_timer_signals_discarded();
+    let margin = reverie_ptrace::PmuConfig::new().skid_margin();
+    let overflow_leads = MAX_OVERFLOW_LEADS.min(margin / 4);
+    assert!(overflow_leads > 0, "skid margin {margin} leaves no lead");
+    let timeout_rcbs = ARM_RCBS + margin;
+    let (output, log) = test_fn_with_config::<LateTimerSigqueueTool, _>(
+        move || {
+            // SAFETY: the handler only touches an atomic; the siginfo is
+            // plain data.
+            let mut info: libc::siginfo_t = unsafe {
+                let mut action: libc::sigaction = core::mem::zeroed();
+                action.sa_sigaction = count_requeued_sigsys as extern "C" fn(libc::c_int) as usize;
+                // No SA_RESTART, so an interrupted syscall would be visible.
+                action.sa_flags = 0;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(
+                    libc::sigaction(libc::SIGSYS, &action, core::ptr::null_mut()),
+                    0
+                );
+                core::mem::zeroed()
+            };
+            info.si_signo = libc::SIGSYS;
+            // A positive si_code makes the signal synchronous-class. Its
+            // si_call_addr is 0, so it is not taken for a seccomp trap.
+            info.si_code = 1;
+            for i in 0..ITERS {
+                arm_precise_timer();
+                do_branches(ARM_RCBS + i % overflow_leads);
+                getppid_with_siginfo(&mut info);
+            }
+            println!("{}", REQUEUED_SIGSYS_HANDLED.load(Ordering::SeqCst));
+        },
+        Config {
+            timeout_rcbs,
+            retry: false,
+        },
+        true,
+    )
+    .expect("run late-timer sigqueue guest");
+
+    if output.status != ExitStatus::Exited(0) {
+        print_tracee_output(&output);
+    }
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    let injected = log.injected.lock().expect("injected log lock poisoned");
+    assert_eq!(
+        *injected,
+        vec![Ok(0); ITERS as usize],
+        "each injected rt_tgsigqueueinfo runs once and succeeds"
+    );
+    let signals = log.signals.lock().expect("signal log lock poisoned");
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS; ITERS as usize],
+        "each queued SIGSYS reaches the Tool as a signal delivery"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        ITERS.to_string(),
+        "the guest's handler runs once per injection"
+    );
+    assert_eq!(log.timer_events.load(Ordering::SeqCst), 0);
+    let discarded = late_timer_signals_discarded() - discarded_before;
+    println!("{discarded} late timer signals discarded in {ITERS} injections");
+    assert!(
+        discarded > 0,
+        "no late timer signal reached an injected syscall, so nothing was tested"
+    );
 }

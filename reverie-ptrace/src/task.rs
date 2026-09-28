@@ -7303,6 +7303,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             let Wait::Stopped(stopped, _) = wait else {
                 unreachable!("the loop condition matched a stopped task")
             };
+            // The step again needs every case `step_private_syscall` handles:
+            // a group stop, a signal delivered after the `syscall` completed,
+            // a seccomp trap. The discarded stop preceded the `syscall`, so
+            // the finished step requeued nothing, saw no seccomp trap, and
+            // collected any stale step SIGTRAP, which Linux dequeues ahead of
+            // this notification. A new step therefore starts from the same
+            // state. During LiteInst activation the validation above rejects
+            // the notification, so this is reached only outside activation.
+            //
+            // The notification is never seen after the `syscall`: the step
+            // SIGTRAP queued at syscall exit is a synchronous signal, which
+            // Linux dequeues first, so a notification sent during the syscall
+            // stays queued past this step and reaches the timer's own
+            // handling at the next run-loop stop. It is therefore never
+            // requeued or held in `pending_signal` here.
             (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr).await?;
         }
 
