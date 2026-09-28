@@ -85,6 +85,7 @@ static int access_case(const char *path, int flags) {
     } else {
         CHECK(fcntl(alias, F_SETFL, O_NONBLOCK | O_RDWR) == 0);
         got = fcntl(fd, F_GETFL);
+        CHECK(got >= 0);
         CHECK((got & O_ACCMODE) == (flags & O_ACCMODE));
         CHECK((got & O_NONBLOCK) != 0);
         if (readable) CHECK(syscall((long)(SYS_readv), (long)(alias), (long)(NULL), (long)(0)) == 0);
