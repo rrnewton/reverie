@@ -1716,11 +1716,30 @@ static void park_handler(int sig, siginfo_t *si, void *uc_) {
   r->rax = uc->uc_mcontext.gregs[REG_RAX];
 }
 
-static void *park_sibling(void *fd) {
+/* fds: the read end of the pipe that releases the sibling, then the write
+ * end of the pipe that reports its TID. */
+static void *park_sibling(void *fds) {
+  int *fd = fds;
+  pid_t tid = syscall(SYS_gettid);
   char byte;
-  if (read(*(int *)fd, &byte, 1) != 1)
-    die("sibling read");
+  if (write(fd[1], &tid, sizeof tid) != sizeof tid || read(fd[0], &byte, 1) != 1)
+    die("sibling");
   return NULL;
+}
+
+/* Releases the sibling (thread `tid`, blocked reading `release`), waits
+ * for it to exit, and joins it. The wait is a poll of a thread pidfd opened
+ * while the sibling still runs, which reports the exit whether it happened
+ * before or during the poll (a futex wait, as in a bare pthread_join, fails
+ * with EAGAIN in the first case), so the child's own syscall results do not
+ * depend on how the two threads were scheduled; once it returns, the TID
+ * word is clear and pthread_join makes no syscall. */
+static void release_and_join(int release, pthread_t thread, pid_t tid) {
+  int pidfd = syscall(SYS_pidfd_open, tid, O_EXCL /* PIDFD_THREAD */);
+  struct pollfd poll_fd = {.fd = pidfd, .events = POLLIN};
+  if (pidfd < 0 || write(release, "s", 1) != 1 || poll(&poll_fd, 1, -1) != 1 ||
+      close(pidfd) != 0 || pthread_join(thread, NULL) != 0)
+    die("sibling join");
 }
 
 static void park_child(const char *tag, long act, int how, int from_parent, int to_parent) {
@@ -1728,15 +1747,20 @@ static void park_child(const char *tag, long act, int how, int from_parent, int 
   if (how & PARK_TSTP_HANDLER)
     install(SIGTSTP, 0, park_handler);
   sigset_t mask;
-  int sibling_pipe[2];
+  int sibling_pipe[2], tid_pipe[2], sibling_fds[2];
   pthread_t sibling;
+  pid_t sibling_tid = 0;
   if (how & PARK_SIBLING) {
     /* The sibling inherits a mask that blocks everything, so every signal
      * goes to this thread, as in a single-threaded child. */
     sigfillset(&mask);
-    if (pipe(sibling_pipe) != 0 || sigprocmask(SIG_SETMASK, &mask, NULL) != 0)
+    if (pipe(sibling_pipe) != 0 || pipe(tid_pipe) != 0 ||
+        sigprocmask(SIG_SETMASK, &mask, NULL) != 0)
       die("sibling setup");
-    if (pthread_create(&sibling, NULL, park_sibling, &sibling_pipe[0]) != 0)
+    sibling_fds[0] = sibling_pipe[0];
+    sibling_fds[1] = tid_pipe[1];
+    if (pthread_create(&sibling, NULL, park_sibling, sibling_fds) != 0 ||
+        read(tid_pipe[0], &sibling_tid, sizeof sibling_tid) != sizeof sibling_tid)
       die("pthread_create sibling");
   }
   sigemptyset(&mask);
@@ -1750,8 +1774,7 @@ static void park_child(const char *tag, long act, int how, int from_parent, int 
   if (write(to_parent, "after", 5) != 5)
     die("child write after");
   if (how & PARK_SIBLING) {
-    if (write(sibling_pipe[1], "s", 1) != 1 || pthread_join(sibling, NULL) != 0)
-      die("sibling join");
+    release_and_join(sibling_pipe[1], sibling, sibling_tid);
   }
   char token;
   if (read(from_parent, &token, 1) != 1)
