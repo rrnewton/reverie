@@ -1,0 +1,33 @@
+{
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "2400s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/ignored/kvm-proc-backing-pr609-claude-review-v1",
+  "inputs_sha256": "52e6bd40a5df25f32a821ccd0ddbc0eecf762f7404e701ff6689bebd1f64f80e",
+  "kill_after_seconds": 10,
+  "launcher_sha256": "6d7b7c44638e01dec7dc8f321b142a3700b64f794d112da13280142964da5195",
+  "per_output_file_bytes": 67108864,
+  "prompt_sha256": "5cf8470fd0fcdb908bb204ec0df4e5c38b5c571e025c6142ba71cb88b60f5eb9",
+  "review_target": "96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7",
+  "source_entries": 209,
+  "source_input_bytes": 8689469,
+  "started_at": "2026-09-21T07:33:05.459923+00:00",
+  "tree": "e5c35ee9e04aa5935d27c2ac82b918c2c976ad9b",
+  "wall_seconds": 2400
+}

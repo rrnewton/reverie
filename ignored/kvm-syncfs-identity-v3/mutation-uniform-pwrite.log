@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+warning: unused variable: `inode`
+    --> reverie-kvm/src/executor.rs:5685:18
+     |
+5685 |     if let Some(&inode) = state
+     |                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_inode`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib test) generated 1 warning (run `cargo fix --lib -p reverie-kvm --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.77s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_every_regular_surface_matches_native_pwrite_result' (2474081) panicked at reverie-kvm/src/executor.rs:17881:17:
+assertion `left == right` failed: guest pwrite count=1 offset=0x0 for /proc/self/cmdline
+  left: -29
+ right: -9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_every_regular_surface_matches_native_pwrite_result ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_every_regular_surface_matches_native_pwrite_result
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 797 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

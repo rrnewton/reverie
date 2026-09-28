@@ -1,0 +1,22 @@
+commit 33d8ee90c2ae81556e42345b3d05e37f088b9c04
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Mon Sep 21 02:22:01 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Mon Sep 21 02:22:01 2026 -0700
+
+    kvm: correct legacy proc flag precedence
+    
+    [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+    
+    Correct pre-6.4 create-plus-directory ordering for /proc/mounts and
+    dynamic fdinfo paths. Keep negative fdinfo leaves at ENOENT, distinguish
+    the fdinfo directory trailing slash as EISDIR, and clear stale virtual
+    O_NOFOLLOW state when a descriptor number is reused.
+    
+    Add native and guest pwrite ordering checks for fdinfo carriers, explicit
+    seal and credential controls, and disclose the remaining generic-carrier
+    and statx residuals.
+    
+    Tested with 33 focused synthetic-proc tests, one required real-KVM test,
+    815 full reverie-kvm library tests, strict all-target Clippy, native open
+    matrices, and four failing causal mutations.

@@ -1,0 +1,9 @@
+{
+  "base_ref_name": "main",
+  "base_ref_oid": "b13ad926a34f27bb39a349429a1d08e812d741b4",
+  "body_matches_packet": true,
+  "body_sha256": "5bb3c86183d2ce7b3807cc87c6c37372cdce4146dccc66c15e738575192c4efa",
+  "head_ref_name": "codex/kvm-syncfs-identity-20260920",
+  "head_ref_oid": "33d8ee90c2ae81556e42345b3d05e37f088b9c04",
+  "url": "https://github.com/rrnewton/reverie/pull/609"
+}

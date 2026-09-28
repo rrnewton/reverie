@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test clock::entry_interrupt_tests::running_reserved_kick_retains_exact_finite_program_branch_total ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 796 filtered out; finished in 0.60s
+
+real 0.70
+user 0.24
+sys 0.05

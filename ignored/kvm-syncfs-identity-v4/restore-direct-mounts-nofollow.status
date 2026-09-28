@@ -1,0 +1,3 @@
+reverie-kvm/src/elf.rs: OK
+reverie-kvm/src/executor.rs: OK
+reverie-kvm/tests/static_elf.rs: OK

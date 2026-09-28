@@ -1,0 +1,44 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/609. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: rrnewton/reverie base b13ad926a34f27bb39a349429a1d08e812d741b4, exact head 96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7, tree e5c35ee9e04aa5935d27c2ac82b918c2c976ad9b. The exact head is frozen and must not be altered. BASE-TO-HEAD.patch is the complete binary diff. INPUTS.json binds every immutable packet input. SOURCE.json records the exact live checkout, remote PR/base refs, source hashes, and copied candidate source.
+
+Start by reading context/code-review-SKILL.md completely. Then read primary/PR-BODY.md and qualification/v8/REPORT.md as claims to audit, not conclusions to trust. Read the complete diff. Use candidate/reverie-kvm/src/ and candidate/reverie-kvm/tests/ as the complete exact-head source and test snapshots, and base/ for all three changed files at the base. Read relevant surrounding implementation, not just changed hunks. The product and backend documents are under primary/. Pinned upstream Linux source and the cited pre-6.4-to-6.4 behavior-change patch are under linux/. If anything is missing or truncated, state the limitation.
+
+Intended behavior and review boundary:
+
+- Replace writable anonymous backing descriptions for all 17 fixed paths returned by synthetic_proc_content, plus already-readable dynamic fdinfo content, with owned MFD_ALLOW_SEALING memfds populated before publication. Require mode 0444 and F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL, permitting the kernel-added F_SEAL_EXEC variant only. The O_RDWR construction description must never enter the guest file table. Fixed snapshots receive newly reopened O_RDONLY or O_PATH descriptions; already-supported dynamic fdinfo content receives O_RDONLY only.
+- Preserve deterministic bytes and metadata. Trace carrier construction, write/seek/chmod/seal/reopen failure handling, fd allocation and cleanup, descriptor aliasing, dup/close/fork/exec/snapshot behavior, and any way writable or metadata-mutating authority could leak. Check pwrite, ftruncate, fchmod, mmap and later mprotect implications against the precise claims; do not turn an explicitly disclosed residual into an implicit success.
+- Match the scoped Linux open and proc-fd semantics: complete non-O_PATH __O_TMPFILE shape/access validation before pathname access; global O_CREAT|O_DIRECTORY precedence selected by the cached host-policy probe; direct and /proc/self/fd opens; O_NOFOLLOW, O_EXCL, O_DIRECTORY, O_CLOEXEC and supported status bits; ordinary O_PATH normalization; /proc/mounts special handling; bad pointer, bad dirfd, missing/closed path, low-32-bit guest-fd decoding, and path-specific mutation errors.
+- Audit the host policy probe itself: verified path choice, race resistance, EINTR bounding, exact accepted outcomes, failure caching/fail-closed behavior, startup placement, and preservation across fork and exec. Compare current and pre-6.4 ordering with linux/ rather than trusting comments or injected tests.
+- Audit fdinfo existence/content separation and ordering. A syntactically valid live /proc/<selector>/fdinfo/<fd> path must have metadata even if ordinary content rendering is unsupported. Valid write-capable O_TMPFILE/plain O_DIRECTORY and LegacyLookup create-directory errors must precede ENOSYS; only otherwise-admissible content opens should reach content support. Failed opens must not allocate a carrier, consume sequence state, or change file/fdinfo tables.
+- Audit fdinfo lifecycle and locking through leader/thread-self selection, dead leader with live worker, live and closed descriptors, dup/fork/exec/snapshot/close, and success/failure interleavings. Check whether generation and file-table identity can become stale, aliased, or nondeterministic.
+- Check newfstatat/statx synthetic metadata for live supported and unsupported fdinfo targets, including path lookup, mode/link/size semantics, ownership and identity nonclaims, and consistency with open behavior.
+- Trace the real guest execution path, not just helper names or tests: ELF loader initialization, syscall dispatch, guest pointer import, path parsing, file-table/fdinfo-table mutation, carrier creation, KVM static-ELF test path, and returned errno/result.
+
+Explicit scope and claim audit:
+
+- This patch is a prerequisite, not syncfs. It does not implement authenticated SCM_RIGHTS carrier identity, an identity marker, record/replay, or complete KVM parity.
+- /proc/self/loginuid, deterministic random devices, and synthetic sysfs remain on the generic virtual-file path.
+- Linux allows bare live-fdinfo O_PATH forms (including O_PATH|O_NOFOLLOW and ignored legacy bits); Reverie deliberately retains pre-existing ENOSYS. Fdinfo O_TRUNC, O_DIRECT, and bare O_CREAT|O_EXCL precedence are also disclosed residuals.
+- Direct /proc/mounts and proc-fd O_PATH|O_NOFOLLOW link identity, noncanonical aliases, SCM_RIGHTS identity, mmap type/MAP_SHARED_VALIDATE, and mprotect maximum-protection provenance are disclosed residuals.
+- There is no genuine Linux 5.8-6.3 runtime result. Legacy behavior is supported only by pinned upstream code/commit and injected exact tests.
+
+Determine whether each nonclaim is accurately bounded and whether any disclosed or undisclosed residual invalidates the narrower safety/determinism/Linux-semantics claims actually made. Do not credit the patch with a broader capability. Conversely, do not request unrelated full-parity work unless it is required for the stated boundary to be safe or truthful.
+
+Audit the validation evidence adversarially. Exact-head claims are: cargo fmt passed in 2.092 s; 31 focused synthetic-proc library tests passed in 23.167 s; the exact seal control passed in 0.107 s; the dead-leader/live-worker generation control passed in 0.110 s; the required real-KVM test passed in 29.680 s with REVERIE_REQUIRE_KVM=1; the full reverie-kvm library passed 812/812 in 8.650 s; strict all-target Clippy passed in 9.603 s; native matrices covered 4,896 direct, 60 proc-fd, 180 tmpfile-surface, 36 global-order, 99 complete-tmpfile, 18 create-directory, 48 ordinary-O_PATH, and 25 live-fdinfo cases; six causal mutations each failed an exact intended assertion and source hashes were restored; formatting and diff checks passed. The first v8 native-script invocation failed due to wrapper namespace selection and is retained. There are no claimed old-kernel runtime results. Inspect raw status/log/script/hash artifacts in qualification/v8/ and determine what each result does and does not prove. Verify the evidence is tied to the exact source/head rather than accepting filenames or exit labels.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+State all four categories explicitly.
+
+Report findings first. Each finding must include severity, exact candidate file and line evidence, guest-visible or determinism impact, and the required correction. If there are no findings, say so explicitly. Then provide: the four-part goalpost-moving assessment; separate conclusions for determinism, Linux semantics, lifecycle/locking, and sealed-carrier integrity; an audit of every material residual/nonclaim; verification actually inspected and its limitations; and exactly one final verdict, APPROVE or CHANGES REQUESTED, bound only to exact head 96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7. A changed head requires a fresh review.

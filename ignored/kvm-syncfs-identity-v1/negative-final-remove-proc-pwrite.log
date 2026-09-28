@@ -1,0 +1,24 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.89s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_snapshot_is_exactly_sealed_and_exposed_read_only' (1408305) panicked at reverie-kvm/src/executor.rs:17622:13:
+assertion `left == right` failed: syscall 18 unexpectedly accepted the read-only snapshot
+  left: -9
+ right: -29
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_snapshot_is_exactly_sealed_and_exposed_read_only ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_snapshot_is_exactly_sealed_and_exposed_read_only
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 792 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`
+real 7.93
+user 11.14
+sys 2.76

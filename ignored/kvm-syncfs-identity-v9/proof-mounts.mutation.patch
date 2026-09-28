@@ -1,0 +1,14 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -218,6 +218,11 @@
+         RegularCreateDirectoryPolicy::LegacyLookup if flags & libc::O_EXCL as u64 != 0 => {
+             libc::EEXIST
+         }
++        RegularCreateDirectoryPolicy::LegacyLookup
++            if flags & libc::O_NOFOLLOW as u64 != 0 =>
++        {
++            libc::ELOOP
++        }
+         // Linux v6.3 fs/namei.c:3543 applies LOOKUP_DIRECTORY to the resolved
+         // final dentry before may_open; this makes a nofollow /proc/mounts
+         // symlink ENOTDIR here. Without O_DIRECTORY, may_open still yields

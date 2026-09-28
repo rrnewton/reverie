@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.35s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_fdinfo_legacy_create_directory_is_exact' (3104448) panicked at reverie-kvm/src/executor.rs:29261:9:
+assertion `left == right` failed
+  left: -22
+ right: -20
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_fdinfo_legacy_create_directory_is_exact ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_fdinfo_legacy_create_directory_is_exact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 808 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

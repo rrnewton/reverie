@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.65s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 22 tests
+test executor::tests::synthetic_proc_create_directory_policy_mapping_is_exact ... ok
+test executor::tests::synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes ... ok
+test executor::tests::direct_synthetic_proc_opath_preserves_descriptor_and_error_semantics ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation ... ok
+test executor::tests::synthetic_proc_metadata_is_synthetic_and_stable ... ok
+test executor::tests::synthetic_proc_dup_and_reopen_preserve_description_semantics_and_seals ... ok
+test executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files ... ok
+test executor::tests::synthetic_proc_vmstat_and_osrelease_are_served_deterministically ... ok
+test executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths ... ok
+test executor::tests::synthetic_proc_snapshot_has_required_seals_and_readonly_description ... ok
+test executor::tests::synthetic_proc_files_serve_deterministic_content ... ok
+test executor::tests::synthetic_proc_nofollow_metadata_tracks_replacement_and_shared_tables ... ok
+test executor::tests::synthetic_proc_direct_open_flags_and_nofollow_lifecycle_match_linux ... ok
+test executor::tests::utimensat_rejects_empty_paths_on_every_synthetic_proc_inode ... ok
+test executor::tests::synthetic_proc_self_reflects_guest_identity ... ok
+test executor::tests::synthetic_proc_fdinfo_procfd_combined_flags_precede_reopen_refusal ... ok
+test executor::tests::synthetic_proc_fdinfo_tmpfile_access_precedes_directory ... ok
+test executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher ... ok
+test executor::tests::synthetic_proc_every_regular_surface_matches_native_pwrite_result ... ok
+test executor::tests::synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific ... ok
+test executor::tests::synthetic_proc_direct_combined_open_matrix_matches_native ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 783 filtered out; finished in 0.04s
+

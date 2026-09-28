@@ -1,0 +1,33 @@
+{
+  "note": "Pinned tag files plus the pre-6.4 create-directory ordering commit patch.",
+  "sha256": {
+    "43b450632676.patch": "3603300842739aebd53b5fb2e68e3e0053876672163eb48ba736a3d6294d6dd7",
+    "v6.3-fs-fcntl.c": "acec724b66f190a7efbb517998dffd65397eb6af8de1a64e75f5279e6ad173b7",
+    "v6.3-fs-namei.c": "b50726f5dc1ad79a9b62ea052fbcef35523491f8414f89324cdaa35203a184e9",
+    "v6.3-fs-open.c": "263fe30fa92cb8a9692677b975a5af8d029f0b555887a1343af5b8ae299d1e92",
+    "v6.3-fs-proc-fd.c": "58f368453635373e7f8e97ca16758bd105f58457586621b15d33df03aec6908e",
+    "v6.3-fs-read_write.c": "65eb20119356ca0e0c774fc1e67bf71db0020e989c0cee086bc86f9911d1b6a6",
+    "v6.3-fs-seq_file.c": "e7fa2d0553f06d145ac8dee0e63f867a0a505227d764d9b533f15e608741e680",
+    "v7.1-fs-fcntl.c": "bd9cb6e3f2b2fa7aa547844eaffd22fd4385282f7f2c2f8c7108591d29c006af",
+    "v7.1-fs-namei.c": "8a553b187d40f6c694c46e8d1b5932c5d2ccaaedfd323b7dd48ae9fc6ef865f6",
+    "v7.1-fs-open.c": "340e10469b1fc0988a540d2d25fe8e006d4ede3b461be6a16432ec0b0ca6a45f",
+    "v7.1-fs-proc-fd.c": "48fb7d0ecc45bce3a911dcbf6e0e189aaeba4650865d3dbd288c0c8e03666c68",
+    "v7.1-fs-read_write.c": "58fe9b05f89c830accaf97a4f4b680c48e94f7c59ea22e2c2b6dbeb0b063c59f",
+    "v7.1-fs-seq_file.c": "db28fa9bd5006c76035f5ac27d1d888024d31e37f553828c55451b94bcc8ac0d"
+  },
+  "source_urls": {
+    "43b450632676.patch": "https://github.com/torvalds/linux/commit/43b450632676fb60e9faeddff285d9fac94a4f58.patch",
+    "v6.3-fs-fcntl.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/fcntl.c",
+    "v6.3-fs-namei.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/namei.c",
+    "v6.3-fs-open.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/open.c",
+    "v6.3-fs-proc-fd.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/proc/fd.c",
+    "v6.3-fs-read_write.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/read_write.c",
+    "v6.3-fs-seq_file.c": "https://raw.githubusercontent.com/torvalds/linux/v6.3/fs/seq_file.c",
+    "v7.1-fs-fcntl.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/fcntl.c",
+    "v7.1-fs-namei.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/namei.c",
+    "v7.1-fs-open.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/open.c",
+    "v7.1-fs-proc-fd.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/proc/fd.c",
+    "v7.1-fs-read_write.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/read_write.c",
+    "v7.1-fs-seq_file.c": "https://raw.githubusercontent.com/torvalds/linux/v7.1/fs/seq_file.c"
+  }
+}

@@ -1,0 +1,16 @@
+real-proc-write: result=-1 errno=9 (EBADF)
+real-proc-pwrite: result=-1 errno=29 (ESPIPE)
+real-proc-ftruncate: result=-1 errno=22 (EINVAL)
+real-proc-fallocate: result=-1 errno=9 (EBADF)
+real-proc-fchmod: result=-1 errno=1 (EPERM)
+real-proc-rdwr-reopen: result=-1 errno=13 (EACCES)
+real-proc-opath-fchmod: result=-1 errno=9 (EBADF)
+sealed-reader-flags: 0
+sealed-reader-seals: 15
+sealed-reader-ftruncate: result=-1 errno=22 (EINVAL)
+sealed-reader-shared-read-mmap: result=140663247220736 errno=0 (NONE)
+sealed-reader-shared-mprotect-write: result=-1 errno=13 (EACCES)
+sealed-rdwr-shared-write-mmap: result=18446744073709551615 errno=1 (EPERM)
+real 0.06
+user 0.02
+sys 0.01

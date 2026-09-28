@@ -1,0 +1,11 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -13194,8 +13194,6 @@
+         state.proc_files.insert(guest_fd, inode);
+         if guest_status_flags & libc::O_NOFOLLOW != 0 {
+             state.synthetic_proc_nofollow_fds.insert(guest_fd);
+-        } else {
+-            state.synthetic_proc_nofollow_fds.remove(&guest_fd);
+         }
+     }
+     guest_fd

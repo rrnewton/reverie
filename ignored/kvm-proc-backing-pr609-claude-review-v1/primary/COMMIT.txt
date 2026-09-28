@@ -1,0 +1,23 @@
+commit 96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Mon Sep 21 00:26:14 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Mon Sep 21 00:26:14 2026 -0700
+
+    kvm: seal synthetic proc snapshot descriptors
+    
+    [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+    
+    Back fixed synthetic proc snapshots and supported dynamic fdinfo reads with
+    owned memfds that are populated before receiving immutable content seals.
+    Use read-only and O_PATH reopens for fixed snapshots and read-only reopens for
+    supported fdinfo content, keeping construction descriptors out of the guest
+    table.
+    
+    Match the scoped Linux open, proc-fd, metadata, and mutation-error behavior,
+    including runtime-selected create-directory precedence on older kernels.
+    Preserve fdinfo lifecycle identity while separating pathname existence from
+    whether Reverie can render a target's fdinfo content.
+    
+    Add exact native matrices, unit coverage, and required-KVM coverage for the
+    sealed-carrier and error-ordering behavior.

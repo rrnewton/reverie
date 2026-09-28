@@ -1,0 +1,11 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -7071,7 +7071,7 @@
+                 {
+                     // Linux v6.3 fs/namei.c:3460-3469 preserves the trailing
+                     // slash and rejects O_CREAT on the fdinfo directory itself.
+-                    negative_errno(libc::EISDIR)
++                    negative_errno(libc::ENOENT)
+                 } else {
+                     negative_errno(libc::ENOENT)
+                 }

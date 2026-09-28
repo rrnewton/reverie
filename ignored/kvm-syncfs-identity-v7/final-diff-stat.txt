@@ -1,0 +1,4 @@
+ reverie-kvm/src/elf.rs          |  134 ++
+ reverie-kvm/src/executor.rs     | 2822 +++++++++++++++++++++++++++++++++++++--
+ reverie-kvm/tests/static_elf.rs |  375 ++++++
+ 3 files changed, 3217 insertions(+), 114 deletions(-)

@@ -1,0 +1,28 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.57s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 17 tests
+test executor::tests::synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes ... ok
+test executor::tests::direct_synthetic_proc_opath_preserves_descriptor_and_error_semantics ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation ... ok
+test executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files ... ok
+test executor::tests::synthetic_proc_metadata_is_synthetic_and_stable ... ok
+test executor::tests::synthetic_proc_vmstat_and_osrelease_are_served_deterministically ... ok
+test executor::tests::synthetic_proc_dup_and_reopen_preserve_description_semantics_and_seals ... ok
+test executor::tests::synthetic_proc_files_serve_deterministic_content ... ok
+test executor::tests::synthetic_proc_snapshot_has_required_seals_and_readonly_description ... ok
+test executor::tests::synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific ... ok
+test executor::tests::utimensat_rejects_empty_paths_on_every_synthetic_proc_inode ... ok
+test executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths ... ok
+test executor::tests::synthetic_proc_direct_open_flags_and_nofollow_lifecycle_match_linux ... ok
+test executor::tests::synthetic_proc_self_reflects_guest_identity ... ok
+test executor::tests::synthetic_proc_every_regular_surface_matches_native_pwrite_result ... ok
+test executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 781 filtered out; finished in 0.00s
+
+real 8.61
+user 10.10
+sys 3.32

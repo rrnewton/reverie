@@ -1,0 +1,3 @@
+3ef73519f6666c3108b746cbb6d21691cee1953b585a77b310cf85ee2567a3a6  reverie-kvm/src/elf.rs
+74b0e3732462aa83ef926dcd7e44a52802a63df1303bd62722e7fd7bb72df6a2  reverie-kvm/src/executor.rs
+b51557a4ce47c007d58a1257b787c2ff8f60bba6bc9d49d98e5860b775d5ea9f  reverie-kvm/tests/static_elf.rs
