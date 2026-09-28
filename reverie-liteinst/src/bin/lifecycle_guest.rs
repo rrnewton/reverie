@@ -150,7 +150,9 @@ fn install_tool() {
     let coordinator = std::env::var_os(reverie_liteinst::COORDINATOR_ENV)
         .expect("lifecycle fixture requires a LiteInst coordinator");
     // SAFETY: main starts before application-created threads and installs once.
-    unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(coordinator) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(coordinator) }.unwrap();
+    }); }
 }
 
 fn fork_or_panic() -> libc::pid_t {

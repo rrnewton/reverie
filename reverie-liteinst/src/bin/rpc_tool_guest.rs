@@ -5,6 +5,7 @@ use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,7 +26,16 @@ use reverie::syscalls::ExitGroup;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
-use reverie_rpc_transport::RpcServer;
+// Compile the exact production birth/transport service. Some client-only
+// transport members are intentionally unreachable in this host fixture copy.
+#[allow(dead_code)]
+#[path = "../control.rs"]
+mod control;
+#[path = "../coordinator.rs"]
+mod coordinator;
+#[allow(dead_code)]
+#[path = "../supervisor.rs"]
+mod supervisor;
 
 #[path = "rpc_tool_guest/syscall_fallback.rs"]
 mod syscall_fallback_guest;
@@ -35,6 +45,17 @@ mod memory_access_guest;
 
 #[path = "rpc_tool_guest/owned_frame.rs"]
 mod owned_frame_guest;
+
+#[path = "rpc_tool_guest/bootstrap_admission.rs"]
+mod bootstrap_admission;
+
+#[cfg(feature = "rcb-qualification")]
+#[path = "rpc_tool_guest/rcb_acquisition.rs"]
+mod rcb_acquisition;
+
+#[cfg(feature = "rcb-qualification")]
+#[path = "rpc_tool_guest/rcb_initial.rs"]
+mod rcb_initial;
 
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
@@ -58,6 +79,8 @@ static VDSO_CLOCK_CALLS: AtomicU64 = AtomicU64::new(0);
 static CHILD_NESTED_CPUID_NATIVE: AtomicBool = AtomicBool::new(false);
 static CHILD_NESTED_RDTSC_NATIVE: AtomicBool = AtomicBool::new(false);
 static CHILD_NESTED_RDTSCP_NATIVE: AtomicBool = AtomicBool::new(false);
+static NESTED_FORK_ROOT_PID: AtomicI64 = AtomicI64::new(0);
+static CHILD_PROFILE_CPUID_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static INSTRUCTION_TOOL_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static INSTRUCTION_HANDLER_RPC_CALLS: AtomicU64 = AtomicU64::new(0);
 static INSTRUCTION_PATCHED_CPUID_NATIVE: AtomicBool = AtomicBool::new(false);
@@ -251,10 +274,13 @@ impl Tool for NestedInstructionForkTool {
 
     async fn handle_cpuid_event<G: Guest<Self>>(
         &self,
-        _guest: &mut G,
+        guest: &mut G,
         _eax: u32,
         _ecx: u32,
     ) -> Result<CpuIdResult, reverie::Errno> {
+        if i64::from(guest.pid().as_raw()) != NESTED_FORK_ROOT_PID.load(Ordering::Acquire) {
+            CHILD_PROFILE_CPUID_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(CpuIdResult {
             eax: TOOL_CPUID_EAX,
             ebx: TOOL_CPUID_EBX,
@@ -321,7 +347,18 @@ impl Tool for ClockAndVdsoTool {
                     }
                     RCB_AVAILABLE.store(true, Ordering::Release);
                 }
-                Err(_) => RCB_AVAILABLE.store(false, Ordering::Release),
+                // Only the runtime's explicit no-clock result is optional.
+                // A raw kernel error from a published clock, or loss after a
+                // successful sample, must fail this control rather than turn
+                // an active failure into the existing "unmeasured" output.
+                Err(Error::Io(error))
+                    if error.kind() == std::io::ErrorKind::Unsupported
+                        && error.raw_os_error().is_none()
+                        && !RCB_AVAILABLE.load(Ordering::Acquire) =>
+                {
+                    RCB_AVAILABLE.store(false, Ordering::Release);
+                }
+                Err(error) => return Err(error),
             }
         } else if syscall.number() == Sysno::clock_gettime {
             VDSO_CLOCK_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -733,17 +770,150 @@ fn nested_rdtscp() -> (u64, u32) {
     (tsc, aux)
 }
 
-fn coordinator(path: &Path) {
+#[cfg(feature = "rcb-qualification")]
+fn emit_hardware_counter_result(mode: &str) {
+    match reverie_liteinst::private_rcb_snapshot_for_test() {
+        Ok([fd, event_id, owner, clock]) => {
+            let cpu = unsafe { libc::sched_getcpu() };
+            assert!(cpu >= 0, "hardware result CPU");
+            eprintln!(
+                "liteinst hardware counter: mode={mode} fd={fd} event-id={event_id} owner={owner} cpu={cpu} clock={clock}"
+            );
+        }
+        Err(error) => eprintln!(
+            "liteinst hardware counter: mode={mode} unavailable-errno={}",
+            error.raw_os_error().unwrap_or(libc::EIO)
+        ),
+    }
+}
+
+fn supervise(status_fd: i32, mode: &std::ffi::OsStr, path: &Path) {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command;
+    use std::process::Stdio;
+    // The real guest must not inherit the fixture's observation channel.
+    assert_eq!(
+        unsafe { libc::fcntl(status_fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
+    let mut status_pipe = unsafe { std::fs::File::from_raw_fd(status_fd) };
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .arg(mode)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let (audit_send, audit_receive) = std::sync::mpsc::sync_channel(64);
+    let report = if mode == "bootstrap-admission" {
+        supervise_tool(
+            command,
+            path,
+            bootstrap_admission::Global::default(),
+            bootstrap_admission::Config,
+            audit_send,
+        )
+    } else {
+        supervise_tool(command, path, CounterGlobal::default(), (), audit_send)
+    };
+    let wait = report.wait.expect("actual guest wait");
+    let supervisor::WaitResult::Status(status) = wait.result else {
+        panic!("unexpected captured status");
+    };
+    let record = [
+        0x3157_494c_u32,
+        status.into_raw() as u32,
+        u32::from(wait.setup.is_ok()),
+        u32::from(report.service.is_ok()),
+    ];
+    let events: Vec<_> = audit_receive.try_iter().collect();
+    for word in record {
+        status_pipe.write_all(&word.to_le_bytes()).unwrap();
+    }
+    status_pipe
+        .write_all(&(events.len() as u32).to_le_bytes())
+        .unwrap();
+    for event in events {
+        for word in event {
+            status_pipe.write_all(&word.to_le_bytes()).unwrap();
+        }
+    }
+    if let Err(error) = wait.setup {
+        eprintln!("fixture setup error: {error}");
+    }
+    if let Err(error) = report.service {
+        eprintln!("fixture supervisor error: {error}");
+    }
+    std::process::exit(if record[2] == 1 && record[3] == 1 {
+        0
+    } else {
+        120
+    });
+}
+
+fn expected_supervisor_cpu() -> u32 {
+    let mut allowed: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    assert_eq!(
+        unsafe {
+            libc::sched_getaffinity(
+                0,
+                core::mem::size_of::<libc::cpu_set_t>(),
+                &raw mut allowed,
+            )
+        },
+        0,
+        "qualification requires a representable launcher affinity mask",
+    );
+    (0..libc::CPU_SETSIZE as usize)
+        .find(|cpu| unsafe { libc::CPU_ISSET(*cpu, &allowed) })
+        .and_then(|cpu| u32::try_from(cpu).ok())
+        .expect("qualification launcher has an allowed CPU")
+}
+
+fn supervise_tool<G: GlobalTool + 'static>(
+    mut command: std::process::Command,
+    path: &Path,
+    global: G,
+    config: G::Config,
+    audit: std::sync::mpsc::SyncSender<[u64; 10]>,
+) -> supervisor::RunReport {
+    let expected_cpu = expected_supervisor_cpu();
+    unsafe {
+        command.pre_exec(move || {
+            let mut singleton: libc::cpu_set_t = core::mem::zeroed();
+            libc::CPU_SET(expected_cpu as usize, &mut singleton);
+            if libc::sched_setaffinity(
+                0,
+                core::mem::size_of::<libc::cpu_set_t>(),
+                &raw const singleton,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::sched_getcpu() != expected_cpu as i32 {
+                return Err(std::io::Error::other(
+                    "qualification child missed its selected CPU",
+                ));
+            }
+            Ok(())
+        });
+    }
+    let (supervisor, waiter) = supervisor::Supervisor::spawn(
+        command,
+        path,
+        Arc::new(global),
+        config,
+        Arc::new(AtomicBool::new(false)),
+        expected_cpu,
+        Some(audit),
+    )
+    .unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        let server = RpcServer::bind(path, Arc::new(CounterGlobal::default()), ()).unwrap();
-        println!("ready");
-        std::io::stdout().flush().unwrap();
-        server.serve().await.unwrap();
-    });
+    runtime.block_on(supervisor.run(waiter, false, tokio::task::JoinSet::new(), Vec::new()))
 }
 
 unsafe extern "C" fn forbidden_signal_handler(_signal: libc::c_int) {}
@@ -759,7 +929,9 @@ fn guest(path: &Path) {
         )
     };
     assert_eq!(mask_query, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let ignored = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     assert_ne!(ignored, libc::SIG_ERR);
     let defaulted = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -828,7 +1000,9 @@ fn preinstalled_handler_guest(path: &Path) {
         )
     };
     assert_ne!(previous, libc::SIG_ERR);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let previous = unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
     assert_eq!(previous, libc::SIG_DFL);
     println!("preinstalled-handler-reset");
@@ -857,7 +1031,9 @@ fn pending_sigsys_guest(path: &Path) -> ! {
     };
     assert_eq!(block, 0);
     assert_eq!(unsafe { libc::raise(libc::SIGSYS) }, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     panic!("pending guest SIGSYS was not delivered");
 }
 
@@ -872,7 +1048,9 @@ fn preblocked_sigsys_guest(path: &Path) {
         )
     };
     assert_eq!(block, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let mut current = 0_u64;
     let query = unsafe {
         reverie_liteinst_rpc_sigprocmask(
@@ -888,7 +1066,9 @@ fn preblocked_sigsys_guest(path: &Path) {
 }
 
 fn spoof_sigsys_guest(path: &Path) -> ! {
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     unsafe { reverie_liteinst_rpc_raise_sigsys() };
     panic!("guest-generated SIGSYS returned");
 }
@@ -901,21 +1081,23 @@ enum InstructionPublication {
 
 fn instruction_guest(path: &Path, publication: InstructionPublication) {
     INSTRUCTION_EXPECTED_UID.store(i64::from(unsafe { libc::getuid() }), Ordering::Relaxed);
-    let install = match publication {
-        // Exercise the public production default, including guarded
-        // instruction-site publication.
-        InstructionPublication::Concurrent => unsafe {
-            reverie_liteinst::install_tool::<InstructionTool>(path)
-        },
-        // Retain the stopped-tracee/Hermit single-thread contract as a
-        // separate bracket that does not require WordPatch++ calibration.
-        InstructionPublication::Quiescent => unsafe {
-            reverie_liteinst::install_tool_quiescent::<InstructionTool>(path)
-        },
-    };
-    if let Err(error) = install {
-        fail_instruction_install(error);
-    }
+    unsafe { reverie_liteinst::with_tool_root!({
+        let install = match publication {
+            // Exercise the public production default, including guarded
+            // instruction-site publication.
+            InstructionPublication::Concurrent => unsafe {
+                reverie_liteinst::install_tool::<InstructionTool>(path)
+            },
+            // Retain the stopped-tracee/Hermit single-thread contract as a
+            // separate bracket that does not require WordPatch++ calibration.
+            InstructionPublication::Quiescent => unsafe {
+                reverie_liteinst::install_tool_quiescent::<InstructionTool>(path)
+            },
+        };
+        if let Err(error) = install {
+            fail_instruction_install(error);
+        }
+    }); }
     assert_eq!(nested_cpuid(0, 0), tool_cpuid_words());
     let patched_cpuid_address =
         core::ptr::addr_of!(reverie_liteinst_rpc_nested_cpuid_site) as usize as u64;
@@ -1001,7 +1183,9 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
 }
 
 fn clock_and_vdso_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<ClockAndVdsoTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<ClockAndVdsoTool>(path) }.unwrap();
+    }); }
     assert!(unsafe { reverie_liteinst_rpc_getpid() } > 0);
     retire_conditional_branches(128);
     assert!(unsafe { reverie_liteinst_rpc_getpid() } > 0);
@@ -1015,36 +1199,38 @@ fn clock_and_vdso_guest(path: &Path) {
     );
     assert_eq!(VDSO_CLOCK_CALLS.load(Ordering::Relaxed), 1);
 
-    if RCB_AVAILABLE.load(Ordering::Acquire) {
-        let before = RCB_BEFORE.load(Ordering::Relaxed);
-        let after = RCB_AFTER.load(Ordering::Relaxed);
-        assert_eq!(
-            after, before,
-            "branches retired inside the Tool handler must be deducted"
-        );
-        let first = RCB_ENTRIES[0].load(Ordering::Relaxed);
-        let second = RCB_ENTRIES[1].load(Ordering::Relaxed);
-        let third = RCB_ENTRIES[2].load(Ordering::Relaxed);
-        let small_guest_delta = second.checked_sub(first).unwrap();
-        let large_guest_delta = third.checked_sub(second).unwrap();
-        assert!(
-            small_guest_delta > 0,
-            "known guest branches must advance the RCB clock: {first} -> {second}"
-        );
-        assert!(
-            large_guest_delta > small_guest_delta,
-            "4,096 guest branches must advance the guest-only clock more than 128 guest branches; the 65,536 Tool branches before the first interval must be excluded: small={small_guest_delta} large={large_guest_delta}"
-        );
-        println!(
-            "rcb=measured before={before} after={after} small-guest-delta={small_guest_delta} large-guest-delta={large_guest_delta} vdso-calls=1"
-        );
-    } else {
-        println!("rcb=unmeasured vdso-calls=1");
-    }
+    assert!(
+        RCB_AVAILABLE.load(Ordering::Acquire),
+        "the hardware-selected clock/vDSO control requires an acquired RCB event"
+    );
+    let before = RCB_BEFORE.load(Ordering::Relaxed);
+    let after = RCB_AFTER.load(Ordering::Relaxed);
+    assert_eq!(
+        after, before,
+        "branches retired inside the Tool handler must be deducted"
+    );
+    let first = RCB_ENTRIES[0].load(Ordering::Relaxed);
+    let second = RCB_ENTRIES[1].load(Ordering::Relaxed);
+    let third = RCB_ENTRIES[2].load(Ordering::Relaxed);
+    let small_guest_delta = second.checked_sub(first).unwrap();
+    let large_guest_delta = third.checked_sub(second).unwrap();
+    assert!(
+        small_guest_delta > 0,
+        "known guest branches must advance the RCB clock: {first} -> {second}"
+    );
+    assert!(
+        large_guest_delta > small_guest_delta,
+        "4,096 guest branches must advance the guest-only clock more than 128 guest branches; the 65,536 Tool branches before the first interval must be excluded: small={small_guest_delta} large={large_guest_delta}"
+    );
+    println!(
+        "rcb=measured before={before} after={after} small-guest-delta={small_guest_delta} large-guest-delta={large_guest_delta} vdso-calls=1"
+    );
 }
 
 fn unsubscribed_lifecycle_guest(path: &Path) -> ! {
-    unsafe { reverie_liteinst::install_tool::<UnsubscribedLifecycleTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<UnsubscribedLifecycleTool>(path) }.unwrap();
+    }); }
     let flags = libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD;
     let result = unsafe { libc::syscall(libc::SYS_clone, flags, 0, 0, 0, 0) };
     assert_eq!(result, -1);
@@ -1058,7 +1244,9 @@ fn unsubscribed_lifecycle_guest(path: &Path) -> ! {
 }
 
 fn injected_exit_guest(path: &Path) -> ! {
-    unsafe { reverie_liteinst::install_tool::<InjectExitTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<InjectExitTool>(path) }.unwrap();
+    }); }
     unsafe { reverie_liteinst_rpc_getpid() };
     panic!("injected exit returned");
 }
@@ -1073,7 +1261,9 @@ fn wait_for_child(child: libc::pid_t) {
 }
 
 fn fork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let parent = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(parent, i64::from(unsafe { libc::getpid() }));
     let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
@@ -1109,11 +1299,16 @@ fn fork_guest(path: &Path) {
 }
 
 fn nested_instruction_fork_guest(path: &Path) {
-    if let Err(error) =
-        unsafe { reverie_liteinst::install_tool_quiescent::<NestedInstructionForkTool>(path) }
-    {
-        fail_instruction_install(error);
-    }
+    let root_pid = unsafe { libc::getpid() };
+    assert!(root_pid > 0);
+    NESTED_FORK_ROOT_PID.store(i64::from(root_pid), Ordering::Release);
+    unsafe { reverie_liteinst::with_tool_root!({
+        if let Err(error) =
+            unsafe { reverie_liteinst::install_tool_quiescent::<NestedInstructionForkTool>(path) }
+        {
+            fail_instruction_install(error);
+        }
+    }); }
     assert_eq!(nested_cpuid(0, 0), tool_cpuid_words());
     assert_eq!(
         unsafe { reverie_liteinst_rpc_nested_rdtsc() },
@@ -1128,6 +1323,11 @@ fn nested_instruction_fork_guest(path: &Path) {
         std::io::Error::last_os_error()
     );
     if child == 0 {
+        assert_eq!(
+            CHILD_PROFILE_CPUID_CALLBACKS.load(Ordering::Acquire),
+            0,
+            "fork-child counter acquisition must execute no Tool-visible CPUID"
+        );
         assert!(
             CHILD_NESTED_CPUID_NATIVE.load(Ordering::Acquire),
             "Tool-internal CPUID must execute natively"
@@ -1146,6 +1346,11 @@ fn nested_instruction_fork_guest(path: &Path) {
             "the same CPUID site must remain Tool-virtualized in guest code"
         );
         assert_eq!(
+            CHILD_PROFILE_CPUID_CALLBACKS.load(Ordering::Acquire),
+            1,
+            "exactly the deliberate post-acquisition guest CPUID reaches the Tool"
+        );
+        assert_eq!(
             unsafe { reverie_liteinst_rpc_nested_rdtsc() },
             0x1234_5678_9abc_def0,
             "the same RDTSC site must remain Tool-virtualized in guest code"
@@ -1157,6 +1362,17 @@ fn nested_instruction_fork_guest(path: &Path) {
         );
         let observed = unsafe { reverie_liteinst_rpc_getpid() };
         assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
+        const PROOF: &[u8] = b"child-acquisition-cpuid=0 child-guest-cpuid-callbacks=1 virtual-cpuid-eax=0x11111111\n";
+        assert_eq!(
+            unsafe {
+                libc::write(
+                    libc::STDOUT_FILENO,
+                    PROOF.as_ptr().cast(),
+                    PROOF.len(),
+                )
+            },
+            PROOF.len() as isize
+        );
         unsafe { libc::_exit(0) };
     }
 
@@ -1184,7 +1400,9 @@ fn fail_instruction_install(error: std::io::Error) -> ! {
 /// leaves the sender count unchanged (delta 0). A correctly reconnected child
 /// adds exactly one new sender (delta 1).
 fn raw_fork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let parent = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(parent, i64::from(unsafe { libc::getpid() }));
     let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
@@ -1226,7 +1444,9 @@ struct CloneArgs {
 }
 
 fn clone3_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let parent = unsafe { reverie_liteinst_rpc_getpid() };
     let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
     let args = CloneArgs {
@@ -1260,7 +1480,9 @@ fn clone3_guest(path: &Path) {
 }
 
 fn vfork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }); }
     let parent = unsafe { reverie_liteinst_rpc_getpid() };
     let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
     let child = unsafe { libc::syscall(libc::SYS_vfork) };
@@ -1300,12 +1522,16 @@ fn check_reconstructed_fork(label: &str) {
 }
 
 fn unsubscribed_fork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<UnsubscribedForkTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<UnsubscribedForkTool>(path) }.unwrap();
+    }); }
     check_reconstructed_fork("unsubscribed");
 }
 
 fn tail_fork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<TailForkTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<TailForkTool>(path) }.unwrap();
+    }); }
     check_reconstructed_fork("tail");
 }
 
@@ -1315,8 +1541,93 @@ fn main() {
     let mode = args.next().expect("mode");
     let path = args.next().expect("socket path");
     match mode.to_str() {
-        Some("coordinator") => coordinator(Path::new(&path)),
+        Some("supervise") => {
+            let fd = path.to_str().unwrap().parse::<i32>().unwrap();
+            let guest_mode = args.next().expect("guest mode");
+            let guest_path = args.next().expect("guest coordinator identity");
+            assert!(args.next().is_none());
+            supervise(fd, &guest_mode, Path::new(&guest_path));
+        }
         Some("guest") => guest(Path::new(&path)),
+        Some("bootstrap-admission") => bootstrap_admission::run(Path::new(&path)),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-acquisition-fallback") => rcb_acquisition::run(Path::new(&path), false),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-acquisition-installed") => rcb_acquisition::run(Path::new(&path), true),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-profile-refusal") => rcb_acquisition::run_profile_refusal(Path::new(&path)),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-scm-rights") => rcb_acquisition::run_private_transport(
+            Path::new(&path),
+            rcb_acquisition::PrivateTransport::ScmRights,
+        ),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-pidfd-getfd") => rcb_acquisition::run_private_transport(
+            Path::new(&path),
+            rcb_acquisition::PrivateTransport::PidfdGetfd,
+        ),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-io-uring") => rcb_acquisition::run_private_transport(
+            Path::new(&path),
+            rcb_acquisition::PrivateTransport::IoUring,
+        ),
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-scm-rights-sacrificial") => {
+            rcb_acquisition::run_private_transport_sacrificial(
+                Path::new(&path),
+                rcb_acquisition::PrivateTransport::ScmRights,
+            )
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-pidfd-getfd-sacrificial") => {
+            rcb_acquisition::run_private_transport_sacrificial(
+                Path::new(&path),
+                rcb_acquisition::PrivateTransport::PidfdGetfd,
+            )
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-private-io-uring-sacrificial") => {
+            rcb_acquisition::run_private_transport_sacrificial(
+                Path::new(&path),
+                rcb_acquisition::PrivateTransport::IoUring,
+            )
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-inherited-sqpoll") => {
+            rcb_acquisition::run_inherited_sqpoll_refusal(Path::new(&path))
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-zero-fallback") => {
+            rcb_initial::run(Path::new(&path), false, rcb_initial::Probe::Zero)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-zero-installed") => {
+            rcb_initial::run(Path::new(&path), true, rcb_initial::Probe::Zero)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-4096-fallback") => {
+            rcb_initial::run(Path::new(&path), false, rcb_initial::Probe::Branches)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-4096-installed") => {
+            rcb_initial::run(Path::new(&path), true, rcb_initial::Probe::Branches)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-fork-fallback") => {
+            rcb_initial::run(Path::new(&path), false, rcb_initial::Probe::Fork)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-fork-installed") => {
+            rcb_initial::run(Path::new(&path), true, rcb_initial::Probe::Fork)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-signal-fallback") => {
+            rcb_initial::run(Path::new(&path), false, rcb_initial::Probe::Signal)
+        }
+        #[cfg(feature = "rcb-qualification")]
+        Some("rcb-initial-signal-installed") => {
+            rcb_initial::run(Path::new(&path), true, rcb_initial::Probe::Signal)
+        }
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
         Some("syscall-fallback-xstate") => syscall_fallback_guest::run_xstate(Path::new(&path)),
         Some("syscall-fallback-refusal") => syscall_fallback_guest::run_refusal(),
@@ -1347,4 +1658,6 @@ fn main() {
         Some("tail-fork") => tail_fork_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
+    #[cfg(feature = "rcb-qualification")]
+    emit_hardware_counter_result(mode.to_str().expect("UTF-8 guest mode"));
 }

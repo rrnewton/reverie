@@ -150,7 +150,9 @@ pub(super) fn run(path: &Path) {
 
     state.omit_restore = 0;
     CALLBACK_STATE.store(&mut state, Ordering::Relaxed);
-    unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
+    }); }
     assert_eq!(unsafe { fallback_xstate_call(&state) }, 424_242);
     assert_eq!(
         before.bytes(),
@@ -276,7 +278,9 @@ pub(super) fn run_pkey(path: &Path) {
         println!("native pkey={key} pkru={pkru}: state=preserved");
     }
     CALLBACK_STATE.store(state, Ordering::Relaxed);
-    unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
+    }); }
     for pkru in [1, 0] {
         state.pkru = pkru;
         unsafe { *libc::__errno_location() = libc::E2BIG };

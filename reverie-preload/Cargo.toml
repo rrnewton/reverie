@@ -23,6 +23,14 @@ preload-constructor = []
 # `reverie-rpc-transport` `RpcServer<G>` (u32-BE length prefix + bincode2
 # `config::legacy`). Opt-in so the default cdylib stays a lean libc-only .so.
 coordinator-rpc = ["dep:serde", "dep:bincode", "dep:reverie"]
+# Private integration surface used only when this crate is embedded by
+# reverie-liteinst. Standalone default and no-default preload artifacts must not
+# compile the RCB state, controls, TLS, callbacks, or signal-entry assembly.
+liteinst-rcb = []
+# Loaded-address and layout inspection used only by the native qualification
+# artifact. This implies the private LiteInst integration surface but remains
+# outside every ordinary feature set.
+rcb-qualification = ["liteinst-rcb"]
 
 [dependencies]
 libc = "0.2.186"

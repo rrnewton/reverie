@@ -13,6 +13,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["preload-constructor"]
 preload-constructor = []
+# Enables the native RCB qualification binary modes and their private test seam.
+# Production/default library builds must leave this feature disabled.
+rcb-qualification = ["reverie-preload/rcb-qualification"]
 
 [[bin]]
 name = "reverie-liteinst-strace"
@@ -31,11 +34,11 @@ bincode = { version = "2", features = ["serde"] }
 libc = "0.2.186"
 liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "4dab7f01d4d6d394e968fbfad842019f72743c81" }
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
-reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
+reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc", "liteinst-rcb"] }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
 reverie-rpc-transport = { version = "0.2.0", path = "../reverie-rpc-transport" }
 serde = { version = "1.0.219", features = ["derive"] }
-tokio = { version = "1.52.4", features = ["macros", "net", "rt", "time"] }
+tokio = { version = "1.52.4", features = ["macros", "net", "rt", "time", "sync"] }
 tempfile = "3.27.0"
 tracing = "0.1.41"
 
@@ -70,3 +73,8 @@ path = "tests/rpc_tool.rs"
 [[test]]
 name = "lifecycle"
 path = "tests/lifecycle.rs"
+
+[[test]]
+name = "rcb_acquisition"
+path = "tests/rcb_acquisition.rs"
+required-features = ["rcb-qualification"]

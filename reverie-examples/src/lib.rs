@@ -140,13 +140,12 @@ pub async fn run_e9patch_write_strace_with_preload(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
-#[used]
-#[unsafe(link_section = ".init_array")]
-static REVERIE_EXAMPLE_INIT: unsafe extern "C" fn(
-    libc::c_int,
-    *mut *mut libc::c_char,
-    *mut *mut libc::c_char,
-) = initialize;
+// The adapter tail-jumps into LiteInst's assembly-owned root. `initialize`,
+// including bootstrap ownership, selector decoding, Result handling and every
+// setup-local destructor, returns before the root event can be enabled. When
+// this DSO selects e9patch or no backend, the empty LiteInst frame acquires or
+// enables no counter and restores the assembly-captured signal mask exactly.
+reverie_liteinst::tool_root_constructor!(initialize);
 
 const E9PATCH_EXAMPLE_TOOL_ENV: &str = "REVERIE_E9PATCH_EXAMPLE_TOOL";
 
