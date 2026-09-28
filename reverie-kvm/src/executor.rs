@@ -71,6 +71,34 @@ pub(crate) use process_signal_publication::ProcessFamilyExit;
 #[path = "capture_identity.rs"]
 mod capture_identity;
 
+#[path = "executor/poll_select_completion.rs"]
+mod poll_select_completion;
+pub(crate) use poll_select_completion::PollSelectCompletion;
+
+/// Internal execution facts. The public Guest::inject scalar API is unchanged.
+#[derive(Debug)]
+#[must_use]
+pub(crate) enum ExecutedSyscall {
+    Scalar(i64),
+    PollSelect(PollSelectCompletion),
+}
+
+impl ExecutedSyscall {
+    pub(crate) fn raw(&self) -> i64 {
+        match self {
+            Self::Scalar(raw) => *raw,
+            Self::PollSelect(completion) => completion.raw(),
+        }
+    }
+
+    pub(crate) fn into_poll_select(self) -> Option<PollSelectCompletion> {
+        match self {
+            Self::Scalar(_) => None,
+            Self::PollSelect(completion) => Some(completion),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "executor/entry_host_wait_tests.rs"]
 mod entry_host_wait_tests;
@@ -238,6 +266,7 @@ struct OpenHow {
 }
 
 pub(crate) enum SyscallAction {
+    PollSelect(PollSelectCompletion),
     Continue {
         result: i64,
         segment: Option<(SegmentBase, u64)>,
@@ -632,13 +661,16 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         select(memory, state, args)
     } else if number == libc::SYS_pselect6 as u64 {
-        pselect6_validation_preflight(memory, args)
+        return SyscallAction::PollSelect(PollSelectCompletion::existing(
+            pselect6_validation_preflight(memory, args),
+        ));
     } else if number == libc::SYS_poll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         poll(memory, state, args)
     } else if number == libc::SYS_ppoll as u64 {
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        ppoll(memory, state, args)
+        return SyscallAction::PollSelect(PollSelectCompletion::existing(ppoll(
+            memory, state, args,
+        )));
     } else if number == libc::SYS_epoll_create1 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_create1(state, args[0])
@@ -6382,6 +6414,15 @@ impl ElfExecutor {
         request: &SyscallRequest,
         memory: &GuestMemory,
     ) -> crate::Result<i64> {
+        self.execute_checked_completion(request, memory)
+            .map(|completion| completion.raw())
+    }
+
+    pub(crate) fn execute_checked_completion(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> crate::Result<ExecutedSyscall> {
         self.execute_checked_inner(request, memory, None)
     }
 
@@ -6391,6 +6432,16 @@ impl ElfExecutor {
         memory: &GuestMemory,
         terminal_read: &mut crate::terminal_read::ReadContext,
     ) -> crate::Result<i64> {
+        self.execute_checked_with_read_completion(request, memory, terminal_read)
+            .map(|completion| completion.raw())
+    }
+
+    pub(crate) fn execute_checked_with_read_completion(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+        terminal_read: &mut crate::terminal_read::ReadContext,
+    ) -> crate::Result<ExecutedSyscall> {
         self.execute_checked_inner(request, memory, Some(terminal_read))
     }
 
@@ -6399,7 +6450,7 @@ impl ElfExecutor {
         request: &SyscallRequest,
         memory: &GuestMemory,
         terminal_read: Option<&mut crate::terminal_read::ReadContext>,
-    ) -> crate::Result<i64> {
+    ) -> crate::Result<ExecutedSyscall> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
         if let Some(receipt) = self.state.consumed_child_wait.as_ref() {
@@ -6411,10 +6462,10 @@ impl ElfExecutor {
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.execute_child_wait(request, memory) {
-            return result;
+            return result.map(ExecutedSyscall::Scalar);
         }
         if let Some(result) = self.execute_accept(request, memory) {
-            return Ok(result);
+            return Ok(ExecutedSyscall::Scalar(result));
         }
         // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
         // Thread children retain private executor state, but synchronize their
@@ -6429,7 +6480,7 @@ impl ElfExecutor {
             .expect("file-table guard disappeared")
             .install(&mut self.state)
         {
-            return Ok(io_error(error));
+            return Ok(ExecutedSyscall::Scalar(io_error(error)));
         }
         // install cloned every fdinfo description Arc while holding the
         // current table. Scalar dispatch below therefore retains its entry
@@ -6441,7 +6492,7 @@ impl ElfExecutor {
             self.state.file_retirement.drain_unlocked();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
-            return Ok(result);
+            return Ok(ExecutedSyscall::Scalar(result));
         }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -6473,6 +6524,7 @@ impl ElfExecutor {
         }
         match action {
             SyscallAction::Failure(error) => Err(error),
+            SyscallAction::PollSelect(completion) => Ok(ExecutedSyscall::PollSelect(completion)),
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
                     self.pending_segment = segment;
@@ -6481,12 +6533,12 @@ impl ElfExecutor {
                 if let Some(child) = consumed_child {
                     self.state.children.acknowledge(child)?;
                 }
-                Ok(result)
+                Ok(ExecutedSyscall::Scalar(result))
             }
             SyscallAction::Exit(code) => {
                 self.exit_status = Some(code);
                 self.exit_group = request.number() != libc::SYS_exit as u64;
-                Ok(0)
+                Ok(ExecutedSyscall::Scalar(0))
             }
         }
     }
@@ -19529,6 +19581,7 @@ mod tests {
             } => {
                 panic!("filesystem syscall changed a segment base")
             }
+            SyscallAction::PollSelect(completion) => completion.raw(),
             SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
             SyscallAction::Failure(error) => {
                 panic!("filesystem syscall failed internally: {error}")
@@ -19557,6 +19610,7 @@ mod tests {
             SyscallAction::Continue {
                 segment: Some(_), ..
             } => panic!("filesystem syscall changed a segment base"),
+            SyscallAction::PollSelect(completion) => completion.raw(),
             SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
             SyscallAction::Failure(error) => {
                 panic!("filesystem syscall failed internally: {error}")
@@ -47329,7 +47383,7 @@ mod tests {
                 SyscallAction::Exit(status) => {
                     assert_eq!(status, ExitStatus::Exited(expected));
                 }
-                SyscallAction::Continue { .. } => {
+                SyscallAction::Continue { .. } | SyscallAction::PollSelect(_) => {
                     panic!("exit syscall with raw status {raw:#x} did not exit");
                 }
                 SyscallAction::Failure(error) => panic!("exit syscall failed internally: {error}"),
@@ -48053,6 +48107,7 @@ mod tests {
     fn result_of(action: SyscallAction) -> i64 {
         match action {
             SyscallAction::Continue { result, .. } => result,
+            SyscallAction::PollSelect(completion) => completion.raw(),
             SyscallAction::Exit(code) => panic!("expected Continue, got Exit({code:?})"),
             SyscallAction::Failure(error) => {
                 panic!("expected Continue, got internal failure: {error}")

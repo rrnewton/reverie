@@ -55,7 +55,9 @@ use crate::executor::ChildStartCancellation;
 use crate::executor::ChildStartCommand;
 use crate::executor::ChildStartGate;
 use crate::executor::ElfExecutor;
+use crate::executor::ExecutedSyscall;
 use crate::executor::PendingSignal;
+use crate::executor::PollSelectCompletion;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
 use crate::executor::RunAdmission;
@@ -239,11 +241,12 @@ pub(crate) fn is_backend_owned_syscall(number: u64, thread_ownership: ThreadOwne
     if number == libc::SYS_futex as u64 {
         return thread_ownership.futex_is_host_owned();
     }
-    // QEMU's root event loop waits on worker eventfds. KVM syscall
-    // injection cannot perform ppoll, so use translated host descriptors in
-    // either ownership mode.
+    // Host-owned workers can wake QEMU's root event loop through shared
+    // eventfds, so its ppoll stays backend-owned. Tool-owned waits must reach
+    // the Tool's subscriptions; Guest::inject can execute ppoll through the
+    // same translated descriptor table when the Tool requests a probe.
     if number == libc::SYS_ppoll as u64 {
-        return true;
+        return thread_ownership.executes_on_host();
     }
 
     // Host-owned workers execute outside the Tool and can create descriptors
@@ -316,6 +319,14 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     }
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64>;
+
+    fn execute_with_completion(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> Result<ExecutedSyscall> {
+        self.execute(request, memory).map(ExecutedSyscall::Scalar)
+    }
 
     /// Reserve backend bookkeeping before executing an injected syscall.
     /// Refusal is terminal backend failure, never an emulated syscall errno.
@@ -663,13 +674,24 @@ where
     }
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64> {
+        <Self as GuestSyscallExecutor<T>>::execute_with_completion(self, request, memory)
+            .map(|completion| completion.raw())
+    }
+
+    fn execute_with_completion(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> Result<ExecutedSyscall> {
         self.polled_read_attempt = None;
         if !self.signal_injection_allowed(request) {
             // KvmGuest performs the same check before dispatch. Keep the
             // production executor fail-closed as well: a future Guest caller
             // must not execute an irreversible transition and only then learn
             // that SignalBoundary cannot resume its Tool hook.
-            return Ok(-(i64::from(Errno::ENOSYS.into_raw())));
+            return Ok(ExecutedSyscall::Scalar(
+                -(i64::from(Errno::ENOSYS.into_raw())),
+            ));
         }
         if matches!(
             self.process_context,
@@ -678,14 +700,16 @@ where
             .executor
             .lifecycle_signal_mask_preflight(request, memory)
         {
-            return Ok(result);
+            return Ok(ExecutedSyscall::Scalar(result));
         }
         if !self.process_context.injected_signal_allowed(request) {
             // A successful injected self-signal would become pending, but a
             // lifecycle callback has no transported userspace context in which
             // to run the structured hook or build a signal frame. Refuse before
             // mutating pending state instead of delaying it to another syscall.
-            return Ok(-(i64::from(Errno::ENOSYS.into_raw())));
+            return Ok(ExecutedSyscall::Scalar(
+                -(i64::from(Errno::ENOSYS.into_raw())),
+            ));
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-233): Review synthetic initial exec completion.
@@ -696,13 +720,13 @@ where
         ) {
             self.last_result = Some(0);
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
-            return Ok(0);
+            return Ok(ExecutedSyscall::Scalar(0));
         }
         let result = self
             .backend
             .execute_static_elf_syscall(self.executor, request, memory)?;
-        self.last_result = Some(result);
-        self.polled_read_attempt = Some((*request, result));
+        self.last_result = Some(result.raw());
+        self.polled_read_attempt = Some((*request, result.raw()));
         Ok(result)
     }
 
@@ -1462,7 +1486,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             return std::future::pending().await;
         }
         self.admit_ordinary_operation().await;
-        let raw = match self.executor.execute(&request, &self.memory) {
+        let completed = match self
+            .executor
+            .execute_with_completion(&request, &self.memory)
+        {
             Ok(raw) => raw,
             Err(Error::ChildWaitGroupExit { status }) => {
                 // The group exit is already committed, not a request to cancel
@@ -1484,6 +1511,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                 return std::future::pending().await;
             }
         };
+        let raw = completed.raw();
+        // Only legacy no-mask/no-restart facts are produced today. Preserve
+        // them separately from the successful process-action hook's outcome.
+        // A live deferred producer requires durable transfer before this await.
+        let _poll_select = completed
+            .into_poll_select()
+            .map(PollSelectCompletion::into_parts);
         if let Err(error) = self.complete_signal_effects(Some(raw)).await {
             self.signal_handler(HandlerSignal::RuntimeError(error));
             return std::future::pending().await;
@@ -5798,7 +5832,9 @@ impl KvmBackend {
                         executor.with_signal_effects(Error::Reverie(errno.into()), None)
                     })?;
                     let raw = match self.execute_static_elf_syscall(executor, &request, &memory) {
-                        Ok(raw) => raw,
+                        // Unsubscribed Tool shares Direct's required typed
+                        // final-boundary integration, not the injection bridge.
+                        Ok(completion) => completion.raw(),
                         Err(Error::ChildWaitGroupExit { status }) => {
                             return self.wait_group_exit_status(executor, status);
                         }
@@ -6178,6 +6214,298 @@ mod tests {
     use crate::bootstrap::TOOL_STACK_TOP;
     use crate::bootstrap::thread_tool_stack_top;
 
+    // These controls enter the actual Guest::inject future and actual
+    // ElfExecutor ppoll/pselect dispatch. Only the process-action hook is a
+    // counting adapter; no supplied PollSelect enum stands in for dispatch.
+    mod poll_select_injection_transport {
+        use std::sync::atomic::AtomicUsize;
+
+        use super::*;
+
+        #[derive(Default)]
+        struct CloneObservation {
+            clones: AtomicUsize,
+            panic_on_clone: AtomicBool,
+        }
+
+        #[derive(Default)]
+        struct ProbeConfig(Arc<CloneObservation>);
+
+        impl Clone for ProbeConfig {
+            fn clone(&self) -> Self {
+                self.0.clones.fetch_add(1, Ordering::SeqCst);
+                assert!(
+                    !self.0.panic_on_clone.load(Ordering::SeqCst),
+                    "errno injection unexpectedly cloned Tool config",
+                );
+                Self(self.0.clone())
+            }
+        }
+
+        // Unit encoding satisfies the real Config API without adding serde
+        // derive/features or sharing a process-global counter between tests.
+        impl serde::Serialize for ProbeConfig {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                serde::Serialize::serialize(&(), serializer)
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for ProbeConfig {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
+                <() as serde::Deserialize<'de>>::deserialize(deserializer)?;
+                Ok(Self::default())
+            }
+        }
+
+        #[derive(Default)]
+        struct ProbeGlobal;
+        #[reverie::global_tool]
+        impl GlobalTool for ProbeGlobal {
+            type Request = ();
+            type Response = ();
+            type Config = ProbeConfig;
+            async fn receive_rpc(&self, _: Pid, _: ()) {
+                panic!("injection transport control sent an unrelated RPC");
+            }
+        }
+
+        #[derive(Default)]
+        struct ProbeTool;
+        #[reverie::tool]
+        impl Tool for ProbeTool {
+            type GlobalState = ProbeGlobal;
+            type ThreadState = ();
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Completion {
+            Original,
+            Override,
+            Cancel,
+            Exit,
+            Exec,
+            Failure,
+        }
+
+        struct DispatchExecutor {
+            inner: ElfExecutor,
+            dispatches: usize,
+            hooks: usize,
+            completion: Completion,
+            primary: Arc<Error>,
+        }
+
+        impl GuestSyscallExecutor<ProbeTool> for DispatchExecutor {
+            fn read_clock(&self) -> Result<u64> {
+                panic!("injection transport control requested a guest clock");
+            }
+            fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64> {
+                self.execute_with_completion(request, memory)
+                    .map(|value| value.raw())
+            }
+            fn execute_with_completion(
+                &mut self,
+                request: &SyscallRequest,
+                memory: &GuestMemory,
+            ) -> Result<ExecutedSyscall> {
+                self.dispatches += 1;
+                self.inner.execute_checked_completion(request, memory)
+            }
+            fn complete_injection<'a>(
+                &'a mut self,
+                _: ToolContext<'a, ProbeTool>,
+            ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+            where
+                ProbeTool: 'a,
+            {
+                self.hooks += 1;
+                Box::pin(async move {
+                    Ok(match self.completion {
+                        Completion::Original => InjectionCompletion::Returns {
+                            syscall_result: None,
+                        },
+                        Completion::Override => InjectionCompletion::Returns {
+                            syscall_result: Some(37),
+                        },
+                        Completion::Cancel => InjectionCompletion::ThreadCancelled,
+                        Completion::Exit => InjectionCompletion::DoesNotReturn {
+                            image_replaced: false,
+                            process_exited: true,
+                        },
+                        Completion::Exec => InjectionCompletion::DoesNotReturn {
+                            image_replaced: true,
+                            process_exited: false,
+                        },
+                        Completion::Failure => {
+                            return Err(Error::SharedFailure(self.primary.clone()));
+                        }
+                    })
+                })
+            }
+        }
+
+        struct Observed {
+            outcome: HandlerOutcome<std::result::Result<i64, Errno>>,
+            clones: usize,
+            dispatches: usize,
+            hooks: usize,
+            primary: Arc<Error>,
+        }
+
+        fn inject(
+            request: SyscallRequest,
+            panic_on_clone: bool,
+            completion: Completion,
+        ) -> Observed {
+            let mut memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+            // A real writable zero timespec at0x100 makes successful ppoll
+            // strictly nonblocking. Error operands lie beyond this mapping.
+            memory.write(0x100, &[0_u8; 16]).unwrap();
+            let config = ProbeConfig::default();
+            let observations = config.0.clone();
+            let mut executor = DispatchExecutor {
+                inner: ElfExecutor::new(
+                    crate::executor::native_loaded_state(std::path::Path::new("/")),
+                    false,
+                ),
+                dispatches: 0,
+                hooks: 0,
+                completion,
+                primary: Arc::new(Error::GuestClock("completion hook primary".to_owned())),
+            };
+            let global = ProbeGlobal;
+            let mut thread_state = ();
+            let subscriptions = Subscription::none();
+            let handler_signal = Arc::new(Mutex::new(None));
+            let starts = Arc::new(Mutex::new(Vec::new()));
+            let auxv = [];
+            let mut guest = KvmGuest::<ProbeTool>::new(
+                Pid::from_raw(1),
+                Pid::from_raw(1),
+                Arc::new(ProbeTool),
+                memory,
+                &auxv,
+                // SAFETY: these controls do not inspect transported registers.
+                unsafe { std::mem::zeroed() },
+                &mut thread_state,
+                &mut executor,
+                &global,
+                None,
+                &config,
+                &subscriptions,
+                handler_signal.clone(),
+                starts.clone(),
+                TOOL_STACK_TOP,
+                Arc::new(AtomicBool::new(false)),
+            );
+            let before = observations.clones.load(Ordering::SeqCst);
+            observations
+                .panic_on_clone
+                .store(panic_on_clone, Ordering::SeqCst);
+            let outcome = futures::executor::block_on(drive_handler(
+                guest.inject(request.into_syscall().unwrap()),
+                handler_signal,
+                starts.clone(),
+                std::future::pending(),
+            ));
+            let clones = observations.clones.load(Ordering::SeqCst) - before;
+            drop(guest);
+            assert!(starts.lock().unwrap().is_empty());
+            Observed {
+                outcome,
+                clones,
+                dispatches: executor.dispatches,
+                hooks: executor.hooks,
+                primary: executor.primary.clone(),
+            }
+        }
+
+        #[test]
+        fn errno_dispatch_does_not_clone_config_or_run_success_hook() {
+            let bad = u64::MAX;
+            for (request, errno) in [
+                (
+                    SyscallRequest::new(libc::SYS_ppoll as u64, [0, 0, bad, 0, 0, 0]),
+                    Errno::EFAULT,
+                ),
+                (
+                    SyscallRequest::new(libc::SYS_pselect6 as u64, [0, 0, 0, 0, 0, bad]),
+                    Errno::EFAULT,
+                ),
+                (
+                    SyscallRequest::new(libc::SYS_pselect6 as u64, [0; 6]),
+                    Errno::ENOSYS,
+                ),
+            ] {
+                let observed = inject(request, true, Completion::Original);
+                assert!(
+                    matches!(observed.outcome, HandlerOutcome::Returned(Err(actual)) if actual == errno)
+                );
+                assert_eq!(observed.dispatches, 1);
+                assert_eq!(observed.clones, 0);
+                assert_eq!(observed.hooks, 0);
+            }
+        }
+
+        #[test]
+        fn successful_ppoll_keeps_clone_and_exact_completion_outcome() {
+            for completion in [
+                Completion::Original,
+                Completion::Override,
+                Completion::Cancel,
+                Completion::Exit,
+                Completion::Exec,
+                Completion::Failure,
+            ] {
+                let observed = inject(
+                    SyscallRequest::new(libc::SYS_ppoll as u64, [0, 0, 0x100, 0, 0, 0]),
+                    false,
+                    completion,
+                );
+                assert_eq!(observed.dispatches, 1, "{completion:?}");
+                assert_eq!(observed.clones, 1, "{completion:?}");
+                assert_eq!(observed.hooks, 1, "{completion:?}");
+                match completion {
+                    Completion::Original => {
+                        assert!(matches!(observed.outcome, HandlerOutcome::Returned(Ok(0))))
+                    }
+                    Completion::Override => {
+                        assert!(matches!(observed.outcome, HandlerOutcome::Returned(Ok(37))))
+                    }
+                    Completion::Cancel => {
+                        assert!(matches!(observed.outcome, HandlerOutcome::ThreadCancelled))
+                    }
+                    Completion::Exit => assert!(matches!(
+                        observed.outcome,
+                        HandlerOutcome::TailInjected {
+                            result: Ok(0),
+                            image_replaced: false,
+                            process_exited: true,
+                        }
+                    )),
+                    Completion::Exec => assert!(matches!(
+                        observed.outcome,
+                        HandlerOutcome::TailInjected {
+                            result: Ok(0),
+                            image_replaced: true,
+                            process_exited: false,
+                        }
+                    )),
+                    Completion::Failure => match observed.outcome {
+                        HandlerOutcome::RuntimeError(error) => {
+                            assert!(error.retains_primary(&observed.primary))
+                        }
+                        _ => panic!("successful injection lost its completion-hook primary error"),
+                    },
+                }
+            }
+        }
+    }
+
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
     }
@@ -6277,9 +6605,7 @@ mod tests {
 
     #[test]
     fn worker_shared_syscall_ownership_follows_thread_ownership() {
-        // ppoll always stays backend-owned because KVM injection cannot execute it.
         for ownership in [ThreadOwnership::Host, ThreadOwnership::Tool] {
-            assert!(is_backend_owned_syscall(libc::SYS_ppoll as u64, ownership));
             assert!(!is_backend_owned_syscall(
                 libc::SYS_clock_gettime as u64,
                 ownership
@@ -6287,8 +6613,9 @@ mod tests {
         }
 
         // Host-owned workers share descriptors outside the Tool, so reads stay
-        // backend-owned. Tool-owned reads must reach the Tool's subscriptions.
-        for number in [libc::SYS_read, libc::SYS_readv] {
+        // backend-owned. The same applies to ppoll of worker eventfds.
+        // Tool-owned reads and waits must reach the Tool's subscriptions.
+        for number in [libc::SYS_read, libc::SYS_readv, libc::SYS_ppoll] {
             assert!(is_backend_owned_syscall(
                 number as u64,
                 ThreadOwnership::Host

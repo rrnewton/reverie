@@ -1643,7 +1643,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         request: &SyscallRequest,
         memory: &GuestMemory,
-    ) -> Result<i64> {
+    ) -> Result<crate::executor::ExecutedSyscall> {
         // Construct an observer only for the inherited-stdin zero-count
         // candidate. Executor routing and every original precheck still
         // decide whether this request reaches the host read at all.
@@ -1652,9 +1652,9 @@ impl KvmBackend {
             && request.args()[2] == 0
         {
             let mut context = self.terminal_read_context(executor, memory);
-            executor.execute_checked_with_read_context(request, memory, &mut context)
+            executor.execute_checked_with_read_completion(request, memory, &mut context)
         } else {
-            executor.execute_checked(request, memory)
+            executor.execute_checked_completion(request, memory)
         }
     }
 
@@ -4836,7 +4836,10 @@ impl KvmBackend {
                         let result =
                             match self.execute_static_elf_syscall(executor, &request, &self.memory)
                             {
-                                Ok(result) => result,
+                                // Integration seam: Direct must settle the typed
+                                // completion before staging any private restart.
+                                // Current producers carry legacy facts only.
+                                Ok(completion) => completion.raw(),
                                 Err(Error::ChildWaitGroupExit { status }) => {
                                     let exit = executor.retire_child_wait_group_exit(status)?;
                                     return self.finish_static_elf_thread(executor, exit);

@@ -77,6 +77,9 @@ const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 #[path = "support/random_device_stream.rs"]
 mod random_device_stream;
 
+#[path = "support/poll_select_wait.rs"]
+mod poll_select_wait;
+
 #[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
