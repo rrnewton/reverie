@@ -415,7 +415,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     Ok(count) => {
                         return Err(self.trap_only_fail(
                             "trap-only allow-class restore",
-                            anyhow::anyhow!("restored {count} sites for site {site:#x}, expected 1"),
+                            anyhow::anyhow!(
+                                "restored {count} sites for site {site:#x}, expected 1"
+                            ),
                         ));
                     }
                     Err(error) => {
@@ -464,7 +466,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 },
             ));
         }
-        self.trap_only.as_mut().expect("checked above").stepped_entry = true;
+        self.trap_only
+            .as_mut()
+            .expect("checked above")
+            .stepped_entry = true;
         Ok(())
     }
 

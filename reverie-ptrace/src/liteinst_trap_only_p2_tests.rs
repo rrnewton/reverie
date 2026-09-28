@@ -751,7 +751,11 @@ fn assert_equal_runs_except_report(trap_only: &P2Run, ptrace: &P2Run, internal: 
         "stop sequences diverged: {}",
         first_divergence(&trap_only.stops, &ptrace.stops)
     );
-    assert!(ptrace.internal_stops.is_empty(), "{:#?}", ptrace.internal_stops);
+    assert!(
+        ptrace.internal_stops.is_empty(),
+        "{:#?}",
+        ptrace.internal_stops
+    );
     let expected: BTreeMap<String, Vec<String>> = if internal.is_empty() {
         BTreeMap::new()
     } else {
@@ -766,7 +770,11 @@ fn assert_equal_runs_except_report(trap_only: &P2Run, ptrace: &P2Run, internal: 
     );
     let extra = internal.len() as u64;
     let (t, p) = (&trap_only.counts, &ptrace.counts);
-    assert_eq!(t.seccomp_stops(), p.seccomp_stops() + extra, "seccomp stops");
+    assert_eq!(
+        t.seccomp_stops(),
+        p.seccomp_stops() + extra,
+        "seccomp stops"
+    );
     assert_eq!(t.stop_events(), p.stop_events() + extra, "stop events");
     assert_eq!(
         counts_except_seccomp(t),
@@ -1650,7 +1658,11 @@ async fn trap_only_p2_t4_timer_loop() {
                 event.starts_with("entry getpid ") && event.contains(" r11=rflags:false ")
             })
             .count();
-        assert_eq!(stepped, 154, "stepped getpid entries: {:#?}", run.tool_events);
+        assert_eq!(
+            stepped, 154,
+            "stepped getpid entries: {:#?}",
+            run.tool_events
+        );
     }
     assert!(
         ptrace.report.contains("timer loop sum=400\n"),
@@ -1730,11 +1742,18 @@ async fn trap_only_p2_t4b_partial_subscription_patches_nothing() {
         assert_eq!(trap_only.site_state, None);
         assert_report_has(
             &ptrace,
-            &["getuid ok=1", "getpid after pid=1", "partial site bytes 0f 05"],
+            &[
+                "getuid ok=1",
+                "getpid after pid=1",
+                "partial site bytes 0f 05",
+            ],
         );
         assert_eq!(ptrace.status, ExitStatus::Exited(0));
         assert!(
-            !ptrace.all_events().iter().any(|e| e.starts_with("entry getuid")),
+            !ptrace
+                .all_events()
+                .iter()
+                .any(|e| e.starts_with("entry getuid")),
             "getuid is unsubscribed"
         );
     }
@@ -1815,7 +1834,12 @@ async fn trap_only_p2_hop_exit_rip_mismatch_fails_closed() {
 /// under trap-only, because `int 0x80` truncates it.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_unknown_numbers_behave_as_under_ptrace() {
-    let internal = ["seccomp 500", "seccomp 4294967295", "seccomp 337", "seccomp 500"];
+    let internal = [
+        "seccomp 500",
+        "seccomp 4294967295",
+        "seccomp 337",
+        "seccomp 500",
+    ];
     let high = 0x1_0000_0027u64;
     for tail in [false, true] {
         let ptrace = run_p2("unknown", None, tail).await;
@@ -1841,11 +1865,8 @@ async fn trap_only_p2_unknown_numbers_behave_as_under_ptrace() {
         );
         let (stops, stops_changed) =
             unmask(&ptrace.stops, &format!("seccomp {high}"), "seccomp 39");
-        let (resumes, resumes_changed) = unmask(
-            &ptrace.resumes,
-            &format!("orig_rax={high}"),
-            "orig_rax=39",
-        );
+        let (resumes, resumes_changed) =
+            unmask(&ptrace.resumes, &format!("orig_rax={high}"), "orig_rax=39");
         assert_eq!(tool_changed, 1, "one Tool entry shows the full number");
         assert_eq!(stops_changed, 1, "one stop shows the full number");
         assert_eq!(resumes_changed, 1, "one resume shows the full number");
@@ -1901,7 +1922,10 @@ async fn traponly_text_residual_is_exactly_the_site_bytes() {
         .zip(trap_only.report.lines())
         .filter(|(p, t)| p != t)
         .collect();
-    assert_eq!(ptrace.report.lines().count(), trap_only.report.lines().count());
+    assert_eq!(
+        ptrace.report.lines().count(),
+        trap_only.report.lines().count()
+    );
     let (smaps, bytes): (Vec<_>, Vec<_>) = differing
         .into_iter()
         .partition(|(p, _)| p.contains(" smaps "));
@@ -1935,7 +1959,11 @@ async fn traponly_text_residual_is_exactly_the_site_bytes() {
         assert_eq!(get(&trap_only, "Rss"), get(&ptrace, "Rss"), "{tag} Rss");
         assert_eq!(clean(&trap_only), clean(&ptrace) - 4, "{tag} clean");
         for name in ["Private_Dirty", "Anonymous"] {
-            assert_eq!(get(&trap_only, name), get(&ptrace, name) + 4, "{tag} {name}");
+            assert_eq!(
+                get(&trap_only, name),
+                get(&ptrace, name) + 4,
+                "{tag} {name}"
+            );
         }
         for name in ["Shared_Dirty", "AnonHugePages"] {
             assert_eq!(get(&trap_only, name), get(&ptrace, name), "{tag} {name}");

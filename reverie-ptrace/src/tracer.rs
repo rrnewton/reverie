@@ -4542,7 +4542,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // rule 2: a run whose Tool does not subscribe to every syscall is
         // treated exactly as patching Off (plain filter, no per-task state, no
         // site ever patched), with the root table recording why.
-        let trap_only_patching = trap_only_rewrites_sites(self.liteinst_trap_only.as_ref(), &events);
+        let trap_only_patching =
+            trap_only_rewrites_sites(self.liteinst_trap_only.as_ref(), &events);
         let trap_only_task = self
             .liteinst_trap_only
             .as_ref()
