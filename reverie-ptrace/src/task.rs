@@ -5675,7 +5675,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             self.pending_syscall = Some((nr, args));
             self.pending_syscall_already_skipped = syscall_already_skipped;
-            self.original_read_entry = (nr == Sysno::read && !syscall_already_skipped)
+            self.original_read_entry = (matches!(nr, Sysno::read | Sysno::recvfrom)
+                && !syscall_already_skipped)
                 .then(|| original_context::OriginalReadEntry::capture(&task, nr, args));
 
             let retval = cancellable(self.cancel_handler.clone(), async {
@@ -9669,6 +9670,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         read: reverie::syscalls::Read,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
         self.inspect_native_read_range(read)
+    }
+
+    fn inspect_original_recvfrom_range(
+        &self,
+        receive: reverie::syscalls::Recvfrom,
+    ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
+        self.inspect_native_recvfrom_range(receive)
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
