@@ -31,9 +31,24 @@
 //! with [`TAG_SLOT`]. The tracer runs a patched site's syscall through that
 //! stub with every signal blocked (the "masked hop", in `task.rs`), and shows
 //! the tool and the guest the registers the original `syscall` would have
-//! produced. The site-table lifecycle rules for mapping changes, guest seccomp
-//! filters and syscall user dispatch, and the timer rules, are not implemented
-//! yet, which is why `On` stays test-only.
+//! produced.
+//!
+//! The site-table lifecycle (P2 spec sections 4 and 5, in
+//! `task_trap_only.rs`) keeps every patched byte out of the guest's way:
+//! - one table per address space, shared by `CLONE_VM` children, copied on
+//!   fork and replaced on exec;
+//! - before a syscall that creates a second executing task (a `CLONE_VM`
+//!   clone without `CLONE_VFORK`, or any `CLONE_UNTRACED` clone) runs, every
+//!   site is restored and the table is disabled for good;
+//! - before a mapping change (`mmap(MAP_FIXED)`, `munmap`, `mremap`,
+//!   `mprotect`, `pkey_mprotect`, `madvise`, `shmat`, `remap_file_pages`)
+//!   runs, the sites it can reach are restored;
+//! - before the guest installs a seccomp filter or syscall user dispatch,
+//!   every site is restored and the table and all its descendants (fork,
+//!   clone and exec) are disabled.
+//!
+//! The timer rules are not implemented yet, which is why `On` stays
+//! test-only.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -102,6 +117,15 @@ pub(crate) enum RetiredReason {
     /// A second task began executing the address space; the tracer never
     /// writes text another thread may be executing.
     MultiTask,
+    /// A mapping change could reach the site's page (it could make the text
+    /// writable, move it, drop it or revert it).
+    Mapping,
+    /// The guest installed a seccomp filter, which must never see an
+    /// `AUDIT_ARCH_I386` entry that plain ptrace would not produce.
+    GuestSeccomp,
+    /// The guest enabled syscall user dispatch, which must never see an
+    /// `int 0x80` entry that plain ptrace would not produce.
+    Sud,
 }
 
 /// Whether a site's bytes are currently patched.
@@ -127,6 +151,10 @@ pub(crate) enum DisabledReason {
     /// The tool does not subscribe to every syscall, so a patched site could
     /// carry an allowed number that must not become a tool-visible stop.
     PartialSubscription,
+    /// This task lineage installed (or tried to install) a seccomp filter.
+    GuestSeccomp,
+    /// This task lineage enabled (or tried to enable) syscall user dispatch.
+    Sud,
 }
 
 /// Whether an address space may gain new patched sites.
@@ -147,6 +175,14 @@ pub struct SiteTable {
     patching: SitePatching,
     state: TableState,
     sites: BTreeMap<u64, SiteEntry>,
+    /// Set once a task of this address space installs (or tries to install)
+    /// a guest seccomp filter or syscall user dispatch. Every table derived
+    /// from this one, by fork or by exec, starts disabled with this reason.
+    ///
+    /// It lives in the table, so it is shared by every task of the address
+    /// space. That is a superset of the tasks a filter reaches (a filter
+    /// without TSYNC stays on the calling thread), and so conservative.
+    lineage: Option<DisabledReason>,
 }
 
 impl SiteTable {
@@ -156,7 +192,29 @@ impl SiteTable {
             patching,
             state: TableState::Patchable,
             sites: BTreeMap::new(),
+            lineage: None,
         }
+    }
+
+    /// The empty table of the address space an exec installs: patchable,
+    /// unless this lineage installed a guest filter or syscall user dispatch
+    /// (filters survive exec; SUD does not, but stays disabled
+    /// conservatively, P2 spec section 5).
+    pub(crate) fn after_exec(&self) -> Self {
+        let mut fresh = Self::new(self.patching);
+        fresh.lineage = self.lineage;
+        if let Some(reason) = self.lineage {
+            fresh.disable(reason);
+        }
+        fresh
+    }
+
+    /// Marks the lineage of this address space, and disables it.
+    pub(crate) fn mark_lineage(&mut self, reason: DisabledReason) {
+        if self.lineage.is_none() {
+            self.lineage = Some(reason);
+        }
+        self.disable(reason);
     }
 
     /// Returns the patching state of this address space.
@@ -172,7 +230,6 @@ impl SiteTable {
             .count()
     }
 
-    #[cfg(test)]
     pub(crate) fn state(&self) -> TableState {
         self.state
     }
@@ -190,6 +247,12 @@ impl SiteTable {
         self.sites
             .get(&site)
             .is_some_and(|entry| entry.state == SiteState::Live)
+    }
+
+    /// The number of sites ever patched in this address space.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> usize {
+        self.sites.len()
     }
 
     /// Whether the site was ever patched (live or retired).
@@ -226,7 +289,38 @@ impl SiteTable {
             entry.state = SiteState::Retired(reason);
         }
     }
+
+    /// Restores (through each of `tids`, reading each write back) every live
+    /// site whose two bytes intersect one of `ranges`, and marks it retired.
+    /// Returns the number of sites restored.
+    pub(crate) fn restore_sites(
+        &mut self,
+        tids: &[nix::unistd::Pid],
+        ranges: &[(u64, u64)],
+        reason: RetiredReason,
+    ) -> Result<usize, anyhow::Error> {
+        let mut restored = 0;
+        for (site, original) in self.live_sites() {
+            let end = site.saturating_add(2);
+            if !ranges
+                .iter()
+                .any(|(start, stop)| site < *stop && end > *start)
+            {
+                continue;
+            }
+            for tid in tids {
+                write_site(*tid, site, original, false)?;
+            }
+            self.retire(site, reason);
+            restored += 1;
+        }
+        Ok(restored)
+    }
 }
+
+/// Every address: a range for [`SiteTable::restore_sites`] that reaches all
+/// sites.
+pub(crate) const ALL_ADDRESSES: (u64, u64) = (0, u64::MAX);
 
 /// The bytes of a patched site: `int 0x80`.
 pub(crate) const PATCHED_BYTES: [u8; 2] = [0xcd, 0x80];
@@ -289,6 +383,20 @@ pub enum TrapOnlyFailure {
         site: u64,
         /// The syscall number.
         nr: i64,
+    },
+    /// A second executing task appeared in an address space that still had
+    /// live sites or still accepted new ones: the restore that must precede
+    /// the task-creating syscall did not happen.
+    #[error(
+        "TrapOnlyMultiTaskLiveSites: new task {child} shares the address space with {live} live site(s), table {state}"
+    )]
+    MultiTaskLiveSites {
+        /// The new task.
+        child: i32,
+        /// The live sites found.
+        live: usize,
+        /// The table state found.
+        state: String,
     },
 }
 
@@ -391,6 +499,22 @@ pub(crate) fn site_mapping_is_patchable(
 pub(crate) struct TrapOnlyTestHooks {
     /// Skip every patch write, so the readback finds the original bytes.
     pub(crate) skip_patch_write: std::sync::atomic::AtomicBool,
+    /// Every table the run created after the root one, labelled by how
+    /// (`fork`, `share`, `exec`), so a test can inspect non-root tables.
+    pub(crate) tables: Mutex<Vec<(String, Arc<Mutex<SiteTable>>)>>,
+    /// Lifecycle decisions, in order.
+    pub(crate) log: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+impl TrapOnlyTestHooks {
+    pub(crate) fn record_table(&self, label: String, table: &Arc<Mutex<SiteTable>>) {
+        self.tables.lock().unwrap().push((label, Arc::clone(table)));
+    }
+
+    pub(crate) fn record(&self, event: String) {
+        self.log.lock().unwrap().push(event);
+    }
 }
 
 /// Configuration shared by every task of a trap-only run.
@@ -420,6 +544,9 @@ pub(crate) struct TrapOnlyTask {
     pub(crate) new_child_view: Option<libc::user_regs_struct>,
     /// Set while the masked hop runs; the hop must never single-step.
     pub(crate) in_hop: bool,
+    /// The clone flags of the task-creating syscall this task is parked at,
+    /// decoded at its creating stop; consumed by the new-child stop.
+    pub(crate) pending_clone_flags: Option<u64>,
 }
 
 impl TrapOnlyTask {
@@ -430,6 +557,7 @@ impl TrapOnlyTask {
             live_entry: None,
             new_child_view: None,
             in_hop: false,
+            pending_clone_flags: None,
         }
     }
 
@@ -442,6 +570,16 @@ impl TrapOnlyTask {
         } else {
             Arc::new(Mutex::new(self.lock().clone()))
         };
+        #[cfg(test)]
+        self.shared.hooks.record_table(
+            if shares_address_space {
+                "share"
+            } else {
+                "fork"
+            }
+            .to_owned(),
+            &sites,
+        );
         Self::root(sites, Arc::clone(&self.shared))
     }
 
@@ -451,21 +589,18 @@ impl TrapOnlyTask {
             .expect("LiteInst trap-only site table lock poisoned")
     }
 
-    /// Restores every live site of the address space (reading each back)
-    /// and disables further patching.
+    /// Disables further patching of the address space and restores every
+    /// live site through each of `tids` (reading each write back). Returns
+    /// the number of sites restored.
     pub(crate) fn retire_all(
         &self,
-        tid: nix::unistd::Pid,
+        tids: &[nix::unistd::Pid],
         site_reason: RetiredReason,
         table_reason: DisabledReason,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<usize, anyhow::Error> {
         let mut table = self.lock();
         table.disable(table_reason);
-        for (site, original) in table.live_sites() {
-            write_site(tid, site, original, false)?;
-            table.retire(site, site_reason);
-        }
-        Ok(())
+        table.restore_sites(tids, &[ALL_ADDRESSES], site_reason)
     }
 }
 
@@ -546,13 +681,23 @@ pub(crate) fn has_full_subscription(events: &reverie::Subscription) -> bool {
 #[derive(Clone, Debug)]
 pub struct LiteinstTrapOnlyHandle {
     root_sites: Arc<Mutex<SiteTable>>,
+    #[cfg(test)]
+    hooks: Arc<TrapOnlyTestHooks>,
 }
 
 impl LiteinstTrapOnlyHandle {
     pub(crate) fn from_config(config: &LiteinstTrapOnlyConfig) -> Self {
         Self {
             root_sites: Arc::clone(&config.root_sites),
+            #[cfg(test)]
+            hooks: Arc::clone(&config.hooks),
         }
+    }
+
+    /// The run's test hooks: every non-root table and the lifecycle log.
+    #[cfg(test)]
+    pub(crate) fn hooks(&self) -> &TrapOnlyTestHooks {
+        &self.hooks
     }
 
     /// Returns the patching state of the root address space.
@@ -570,6 +715,12 @@ impl LiteinstTrapOnlyHandle {
     #[cfg(test)]
     pub(crate) fn table_state(&self) -> TableState {
         self.lock().state()
+    }
+
+    /// A copy of the root address space's table.
+    #[cfg(test)]
+    pub(crate) fn root_table(&self) -> SiteTable {
+        self.lock().clone()
     }
 
     /// Returns the state of one site of the root address space.
