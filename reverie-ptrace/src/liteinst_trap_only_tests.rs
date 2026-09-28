@@ -658,8 +658,13 @@ fn host_services_int_0x80() {
 fn tempfile_path(label: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path =
-        std::env::temp_dir().join(format!("reverie-{label}-{}-{serial}", std::process::id()));
+    // Fixed width: a guest that opens this path executes a number of
+    // branches that depends on its length, and precise-timer clocks are
+    // compared across runs.
+    let path = std::env::temp_dir().join(format!(
+        "reverie-{label}-{}-{serial:08}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_file(&path);
     path
 }
