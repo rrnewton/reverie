@@ -14,6 +14,12 @@ carry the policy today.
 The policy: an agent closes its own task. The implementor adds `implemented`;
 whoever lands the change adds `landed`. That keeps "closed but not landed" a
 cheap query.
+
+Since 2026-09-28 that whole rule is scoped to ORC. The owner: "Tg is just orcs
+short term memory / dispatch. Period." Evidence goes in the pull request,
+product defects go to GitHub issues, and pull-request ownership is the pull
+request's `Owner:` line. `test_taskgraph_rules_are_scoped_to_orc` keeps the
+staging files from reinstating TaskGraph as a mandate for every agent.
 """
 
 from __future__ import annotations
@@ -88,6 +94,22 @@ class TaskLifecyclePolicyTest(unittest.TestCase):
         self.assertIn("closes its own task", skill)
         self.assertIn("Closure is not routed through the coordinator", skill)
         self.assertIn("whoever lands the change adds `landed`", skill)
+
+    def test_taskgraph_rules_are_scoped_to_orc(self) -> None:
+        policy = _collapsed(POLICY_FILES[0])
+        for required in (
+            "**ORC only.** TaskGraph (`tg`) is ORC's short-term to-do list, not a record",
+            "Product defects always go to GitHub issues",
+            "the pull request's `Owner:` line",
+        ):
+            self.assertIn(required, policy)
+        # The ORC scope must come BEFORE the tg commands it governs.
+        self.assertLess(
+            policy.index("**ORC only.**"),
+            policy.index("close the task yourself with `tg update <id> --status closed`"),
+        )
+        for path in POLICY_FILES[1:]:
+            self.assertIn("TaskGraph is ORC's", _collapsed(path), str(path))
 
 
 if __name__ == "__main__":

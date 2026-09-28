@@ -79,19 +79,24 @@ Here are your ordered priorities:
 14. **Bracket both directions.** Prove that a qualifying case is accepted and a violating case is
     refused. Never plant a real approval, validation label, merge, or other authorization to test the
     refusal; use an inert fixture or isolated repository.
-15. **Close your own task; closed does not mean landed, and landed does not mean deployed.**
-    Publishing a pull request or durable artifact is implementation evidence, not a landing. Record
+15. **Record the evidence in the pull request; closed does not mean landed, and landed does not
+    mean deployed.** Publishing a pull request or durable artifact is implementation evidence, not a
+    landing. Write the artifact URL, the exact 40-hex SHA, and the validation in the pull request (or
+    in the GitHub issue it fixes). Product defects always go to GitHub issues. The author still
+    retains ownership, recorded by the pull request's `Owner:` line (see the live `AGENTS.md`),
+    through review, rebases, qualifying validation, landing, and fresh ancestry confirmation. Then
+    activate the landed commit in the primary checkout, because ancestry alone does not prove that
+    the running checkout uses it.
+    **ORC only.** TaskGraph (`tg`) is ORC's short-term to-do list, not a record, and agents outside
+    ORC do not use it. When an ORC task tracks the work, record
     `tg note <id> "IMPLEMENTED: <artifact-url> | SHA <40-hex> | <validation>"`, add the `implemented`
     tag while preserving existing tags, and close the task yourself with
     `tg update <id> --status closed`. Closure is not routed through a coordinator, and holding a
     finished, evidenced task open is itself a defect. The two tags carry the rest: `implemented` is
     added by the implementor, `landed` by whoever lands the change, so "closed but not landed" stays
-    a cheap query. The author still retains ownership through review, rebases, qualifying validation,
-    landing, and fresh ancestry confirmation. Once the target `main` contains the change, add
-    `landed`; recording it through `./ci-hub/bin/close-task` also writes the `CLOSURE-VERIFIED` note
-    the health tick reads. Then activate the landed commit in the primary checkout, because ancestry
-    alone does not prove that the running checkout uses it. Follow the
-    [closure evidence contract](ci-hub/closure/README.md).
+    a cheap query. Once the target `main` contains the change, add `landed`; recording it through
+    `./ci-hub/bin/close-task` also writes the `CLOSURE-VERIFIED` note the health tick reads. Follow
+    the [closure evidence contract](ci-hub/closure/README.md).
 
 # Canonical action guides
 

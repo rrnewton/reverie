@@ -53,6 +53,12 @@ list it belongs to.
 
 ## Where this is checked, and the optional enforcement boundary
 
+The `close-task` gateway and everything in this directory that reads or writes
+TaskGraph serve ORC's own to-do list only. TaskGraph is not the project record
+and other agents do not use it: they record landing evidence in the pull request
+(see the parent `AGENTS.md`, "Task lists, pull-request ownership, and durable
+records"). The landing rule above applies to everyone.
+
 - **`verified_close.py`** (the `close-task` gateway), when invoked, fetches the remote, then
   tests `mergeCommit.oid` ancestry, returning `CLOSED` / `REFUSED` /
   `UNVERIFIABLE`. The tracked `tg-guard-shim` can force bare `tg` closures through

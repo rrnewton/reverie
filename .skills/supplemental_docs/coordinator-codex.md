@@ -45,9 +45,14 @@ applies here unchanged.
 ## Waking and routing
 
 - **Your own subagents:** `SendMessage` addresses one you spawned, by id or name, and its result returns
-  to you. Task notes (`tg note`) remain the durable record; the direct channel is only the wake.
+  to you. The direct channel is only the wake. Anything that must outlive the session goes in a GitHub
+  issue, a pull-request comment, or a tracked file under `ai_docs/`.
 - **A foreign fleet agent:** `SendMessage` cannot resolve fleet names and is not delivery
-  acknowledgement. Note first, then ask that fleet's coordinator to relay.
+  acknowledgement. Write the message somewhere durable first (the pull request or issue it concerns),
+  then ask that fleet's coordinator to relay.
+- **Your to-do list is your harness's own.** TaskGraph (`tg`) is ORC's list, and you do not need it. Pull
+  requests you own carry an `Owner:` line in their description. See `AGENTS.md`, "Task lists,
+  pull-request ownership, and durable records".
 
 ## KNOWN GAP (2026-08-09)
 

@@ -841,5 +841,148 @@ class TaskDatabaseLineageTest(unittest.TestCase):
         self.assertNotIn("hatch2.db", names)
         self.assertNotIn("scx-sim.db", names)
 
+
+ISSUE = "https://github.com/rrnewton/hermit/issues/4242"
+ISSUE2 = "https://github.com/rrnewton/hermit/issues/4243"
+
+
+class GitHubIssueTaskTest(unittest.TestCase):
+    """A directive's `task` may be a GitHub issue URL instead of a TaskGraph id.
+
+    TaskGraph is ORC's own to-do list (AGENTS.md, 2026-09-28). An agent outside ORC records
+    accountability as a GitHub issue, and the gate used to call that correct workflow drift
+    (`task_not_found`), or refuse the whole ledger because a URL fails TASK_RE. Each test
+    asserts the per-row state, not just the exit code.
+    """
+
+    def evaluate(self, directives, issues, *, tg=None):
+        """`issues` maps URL -> gh JSON payload, or None for a failed lookup."""
+        calls: list[tuple[str, ...]] = []
+        verifier = FakeRunner(set())
+
+        def runner(command, **kwargs):
+            command = tuple(str(item) for item in command)
+            calls.append(command)
+            if command[:4] == ("with-proxy", "gh", "issue", "view"):
+                payload = issues.get(command[4])
+                if payload is None:
+                    return completed(command, rc=1, stderr="GraphQL: Could not resolve to an issue")
+                return completed(command, stdout=json.dumps(payload))
+            if command[:2] == ("tg", "sql"):
+                if tg is None:
+                    raise AssertionError("TaskGraph must not be queried for issue-only ledgers")
+                return tg(command)
+            return verifier(command, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = Path(temporary) / "ledger.json"
+            ledger.write_text(json.dumps({"schema_version": 1, "directives": directives}))
+            report = directive_check.evaluate(
+                ledger_path=ledger, run=runner, checked_at="2026-09-28T00:00:00+00:00"
+            )
+        return report, calls
+
+    def item(self, report, directive_id):
+        return next(i for i in report.directives if i.id == directive_id)
+
+    def test_open_issue_is_accountable_without_taskgraph(self):
+        report, calls = self.evaluate(
+            [directive("row", identity=None, task=ISSUE)], {ISSUE: {"state": "OPEN"}}
+        )
+        item = self.item(report, "row")
+        self.assertEqual("open", item.state)
+        for issue in ("missing_task", "task_not_found", "task_lookup_unavailable", "closed_task"):
+            self.assertNotIn(issue, item.issues)
+        self.assertFalse(any(call[:2] == ("tg", "sql") for call in calls))
+
+    def test_issue_closed_completed_on_unlanded_row_is_unaccountable(self):
+        report, _ = self.evaluate(
+            [directive("row", identity=None, task=ISSUE)],
+            {ISSUE: {"state": "CLOSED", "stateReason": "COMPLETED"}},
+        )
+        item = self.item(report, "row")
+        self.assertEqual("unaccountable", item.state)
+        self.assertIn(item.state, directive_check.DRIFT_STATES)
+        self.assertEqual("completed", item.closure_claim)
+        self.assertIn("the closure claims 'completed', which fresh ancestry contradicts", item.reason)
+
+    def test_issue_closed_not_planned_says_so(self):
+        report, _ = self.evaluate(
+            [directive("row", identity=None, task=ISSUE)],
+            {ISSUE: {"state": "CLOSED", "stateReason": "NOT_PLANNED"}},
+        )
+        item = self.item(report, "row")
+        self.assertEqual("unaccountable", item.state)
+        self.assertEqual("", item.closure_claim)
+        self.assertIn("the issue was closed without being marked completed", item.reason)
+        self.assertNotIn("CLOSURE-VERIFIED", item.reason)
+
+    def test_landed_row_with_closed_issue_stays_satisfied(self):
+        report, _ = self.evaluate(
+            [directive("row", identity="a" * 40, task=ISSUE)],
+            {ISSUE: {"state": "CLOSED", "stateReason": "COMPLETED"}},
+        )
+        item = self.item(report, "row")
+        self.assertEqual("satisfied", item.state)
+        self.assertIn("closed_task", item.issues)
+
+    def test_failed_issue_lookup_is_unverifiable_never_drift(self):
+        report, _ = self.evaluate([directive("row", identity=None, task=ISSUE)], {})
+        item = self.item(report, "row")
+        self.assertEqual("unverifiable", item.state)
+        self.assertNotIn(item.state, directive_check.DRIFT_STATES)
+        self.assertIn("task_lookup_unavailable", item.issues)
+        self.assertNotIn("task_not_found", item.issues)
+        self.assertIn(f"GitHub issue lookup failed for {ISSUE}", item.reason)
+        self.assertIn("Could not resolve to an issue", item.reason)
+
+    def test_taskgraph_outage_does_not_hide_a_resolved_issue(self):
+        def tg_down(command):
+            return completed(command, rc=2, stderr="tg: database locked")
+
+        report, _ = self.evaluate(
+            [
+                directive("issue-row", identity=None, task=ISSUE),
+                directive("tg-row", identity=None, task="t-live"),
+            ],
+            {ISSUE: {"state": "OPEN"}},
+            tg=tg_down,
+        )
+        self.assertEqual("open", self.item(report, "issue-row").state)
+        tg_item = self.item(report, "tg-row")
+        self.assertEqual("unverifiable", tg_item.state)
+        self.assertIn("tg: database locked", tg_item.reason)
+
+    def test_mixed_ledger_resolves_both_kinds(self):
+        def tg_up(command):
+            return completed(command, stdout="t-live\tIN_PROGRESS\n")
+
+        report, _ = self.evaluate(
+            [
+                directive("issue-row", identity=None, task=ISSUE2),
+                directive("tg-row", identity=None, task="t-live"),
+            ],
+            {ISSUE2: {"state": "OPEN"}},
+            tg=tg_up,
+        )
+        self.assertEqual("open", self.item(report, "issue-row").state)
+        self.assertEqual("open", self.item(report, "tg-row").state)
+
+    def test_pull_request_url_is_refused_with_the_message(self):
+        def tg_up(command):
+            return completed(command, stdout="")
+
+        report, _ = self.evaluate(
+            [directive("row", identity=None, task="https://github.com/rrnewton/hermit/pull/1")],
+            {},
+            tg=tg_up,
+        )
+        item = self.item(report, "row")
+        self.assertEqual("unverifiable", item.state)
+        self.assertIn(
+            "or be a full https://github.com/<owner>/<repo>/issues/<n> URL", item.reason
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

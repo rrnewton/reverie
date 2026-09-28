@@ -12,9 +12,11 @@ This role has no independent landing protocol.
    new queue work. Then load
    [pr-landing-planner](../pr-landing-planner/SKILL.md) and follow its canonical agent-utils skill before
    choosing, ordering, or assigning a landing batch.
-   Publish each PR-to-agent assignment on the assigned work's TaskGraph task.
-   Task notes are durable but pull-based; for a time-sensitive ready-to-land
-   handoff, ask the coordinator to relay after writing the note. Do not use
+   Publish each PR-to-agent assignment on the pull request itself: set its
+   `Owner:` line and post a comment (see the live `AGENTS.md`). Under ORC the
+   dispatch task may point at that comment. Comments are pull-based; for a
+   time-sensitive ready-to-land handoff, ask the coordinator to relay after
+   writing the comment. Do not use
    agent-side `SendMessage` with an ORC fleet name or report an attempted send
    as delivery.
 2. **Follow skill `hermit-validation-authority` for validation authority and evidence.** The author normally lands its own reviewed PR.

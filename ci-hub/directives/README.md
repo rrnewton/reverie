@@ -19,7 +19,12 @@ Each record requires:
 - for a temporary directive, an explicit expiry or review trigger in that source record. Expiry does
   not erase history; it changes the directive from active policy to a superseded historical record;
 - the GitHub repository, local checkout, and target branch;
-- an accountable TaskGraph task and owner;
+- an accountable owner and an accountable record in the `task` field: either
+  an ORC TaskGraph task id, or a full GitHub issue URL
+  (`https://github.com/<owner>/<repo>/issues/<n>`) for agents that do not use
+  TaskGraph. An issue URL is checked through `gh issue view`: an open issue
+  keeps the row accountable, a closed one counts exactly like a closed task,
+  and a failed lookup is `unverifiable`, never drift;
 - a full implementing commit SHA or pull request number, or explicit `null`
   while no implementation has been claimed;
 - `parent_id` for every cross-repository or incomplete-scope remainder; and
@@ -42,8 +47,8 @@ drift, so the signal does not cry wolf:
   gate text as historical provenance, but the checked report retires it when
   fresh ancestry proves an implementation or when the accountable task closes;
   stale text therefore cannot keep reporting a block nobody is advancing;
-- `unaccountable` — the row is NOT satisfied and its accountable TaskGraph task is
-  `CLOSED`, so nothing will surface the unmet obligation (genuine drift). Task lookup
+- `unaccountable` — the row is NOT satisfied and its accountable task (an ORC
+  TaskGraph task or a GitHub issue) is `CLOSED`, so nothing will surface the unmet obligation (genuine drift). Task lookup
   tests existence, and a closed task exists; measured 2026-08-08, 3 of 21 rows sat in
   this state. A closed task on a `satisfied` row is expected; a closed task with
   no ancestry-confirmed implementation is unaccountable even if historical

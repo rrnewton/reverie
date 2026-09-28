@@ -25,6 +25,15 @@ ROOT = TOOL_ROOT
 DEFAULT_LEDGER = Path(__file__).resolve().with_name("ledger.json")
 DEFAULT_REPORT = STATE_ROOT / "ignored/ci-hub/directives/latest.json"
 TASK_RE = re.compile(r"[A-Za-z0-9_.-]+")
+# A directive's `task` may instead be a GitHub issue. TaskGraph is ORC's own to-do list, so an
+# agent outside ORC records accountability as an issue; requiring a TaskGraph id would report
+# that correct workflow as `missing_task` / `task_not_found` drift. See AGENTS.md.
+ISSUE_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*"
+)
+# Status recorded for an issue whose lookup failed. A failed lookup is a no-result, never a
+# negative: the row becomes `unverifiable`, not `task_not_found`.
+ISSUE_LOOKUP_FAILED = "LOOKUP_FAILED"
 # Marks a status that came from an ARCHIVED database rather than the live one, so
 # "resolved" never silently means "resolved somewhere we no longer operate".
 ARCHIVED_SUFFIX = "@archived"
@@ -329,11 +338,19 @@ def _query_known_tasks(
     the `closed` status and the `implemented` tag as NON-AUTHORITATIVE, and only fresh ancestry
     can satisfy a directive. This is read so the REASON can be stated, never to settle it.
     """
-    tasks = sorted({item.task for item in directives if item.task})
+    everything = sorted({item.task for item in directives if item.task})
+    issues = [task for task in everything if ISSUE_URL_RE.fullmatch(task)]
+    tasks = [task for task in everything if not ISSUE_URL_RE.fullmatch(task)]
+    known, claims = _query_issues(issues, run, timeout, state_root)
     if not tasks:
-        return {}, {}, None
+        return known, claims, None
     if any(not TASK_RE.fullmatch(task) for task in tasks):
-        return {}, {}, "task ids may contain only letters, digits, dot, underscore, hyphen"
+        return (
+            known,
+            claims,
+            "task ids may contain only letters, digits, dot, underscore, hyphen, "
+            "or be a full https://github.com/<owner>/<repo>/issues/<n> URL",
+        )
     quoted = ",".join("'" + task.replace("'", "''") + "'" for task in tasks)
     # Every claim is reduced to one token IN SQL. Returning note bodies instead would put
     # newlines and pipes into a line-oriented parse, which is how one multi-line note becomes
@@ -356,8 +373,6 @@ def _query_known_tasks(
         f" FROM tasks t WHERE t.local_id IN ({quoted});"
     )
 
-    known: dict[str, str] = {}
-    claims: dict[str, str] = {}
     first_error: str | None = None
     for index, db in enumerate(task_databases()):
         env = dict(os.environ)
@@ -396,11 +411,52 @@ def _query_known_tasks(
             if tab:
                 claimed = claimed.strip()
                 claims[local_id] = "" if claimed == "none-recorded" else claimed
-        if len(known) == len(tasks):
+        if all(task in known for task in tasks):
             break
-    if first_error is not None and not known:
-        return {}, {}, first_error
+    if first_error is not None and not any(task in known for task in tasks):
+        # Issue rows keep their own answers: `_metadata_issues` reads an issue's status
+        # before it consults this TaskGraph error.
+        return known, claims, first_error
     return known, claims, None
+
+
+def _query_issues(
+    issues: Sequence[str],
+    run: Run,
+    timeout: float,
+    state_root: Path = STATE_ROOT,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """GitHub issue URL -> `OPEN` / `CLOSED` / `ISSUE_LOOKUP_FAILED: <why>`, plus closure claims.
+
+    An issue closed as COMPLETED claims `completed`; closed for any other reason (not
+    planned, duplicate) it claims nothing, recorded as the empty string exactly like a
+    TaskGraph closure with no completion claim. Neither is landing evidence; only fresh
+    ancestry satisfies a directive.
+    """
+    known: dict[str, str] = {}
+    claims: dict[str, str] = {}
+    for url in issues:
+        result = run(
+            ("with-proxy", "gh", "issue", "view", url, "--json", "state,stateReason"),
+            cwd=state_root,
+            timeout=timeout,
+        )
+        payload: object = None
+        if result.returncode == 0:
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                payload = None
+        state = payload.get("state") if isinstance(payload, Mapping) else None
+        if state not in {"OPEN", "CLOSED"}:
+            why = (result.stderr or result.stdout or "no state in gh output").strip()
+            known[url] = f"{ISSUE_LOOKUP_FAILED}: {why.splitlines()[0] if why else ''}"
+            continue
+        known[url] = str(state)
+        if state == "CLOSED":
+            reason = payload.get("stateReason") if isinstance(payload, Mapping) else None
+            claims[url] = "completed" if reason == "COMPLETED" else ""
+    return known, claims
 
 
 def archive_lineage_gap() -> str | None:
@@ -514,6 +570,11 @@ def _metadata_issues(
         issues.append("missing_target")
     if not directive.task:
         issues.append("missing_task")
+    elif ISSUE_URL_RE.fullmatch(directive.task):
+        # A GitHub issue answers for itself; the TaskGraph lookup is irrelevant to it.
+        status = known_tasks.get(directive.task)
+        if status is None or status.startswith(ISSUE_LOOKUP_FAILED):
+            issues.append("task_lookup_unavailable")
     elif task_lookup_error:
         issues.append("task_lookup_unavailable")
     elif directive.task not in known_tasks:
@@ -690,11 +751,17 @@ def evaluate(
             )
         elif "task_lookup_unavailable" in issues:
             state = "unverifiable"
-            reason = (
-                task_lookup_error
-                or archive_gap
-                or "TaskGraph lookup unavailable"
-            )
+            if ISSUE_URL_RE.fullmatch(directive.task):
+                reason = (
+                    f"GitHub issue lookup failed for {directive.task}: "
+                    f"{known_tasks.get(directive.task, ISSUE_LOOKUP_FAILED)}"
+                )
+            else:
+                reason = (
+                    task_lookup_error
+                    or archive_gap
+                    or "TaskGraph lookup unavailable"
+                )
         elif "missing_owner" in issues:
             state = "needs_owner"
             reason = "directive has no accountable owner"
@@ -765,6 +832,11 @@ def evaluate(
                 closure_detail = (
                     "this run could not read what that closure recorded, so why it closed "
                     "is unknown here"
+                )
+            elif closure_claim == "" and ISSUE_URL_RE.fullmatch(directive.task):
+                closure_detail = (
+                    "the issue was closed without being marked completed, so the tracking "
+                    "was retired without anyone asserting the work was done"
                 )
             elif closure_claim == "":
                 closure_detail = (

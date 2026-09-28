@@ -241,7 +241,9 @@ before spending repeated validation runs; do not classify a zero-test/no-result 
 
 ### 5. Dispatch from the archived plan
 
-For every assigned PR, write a TaskGraph note on the consumer task containing:
+For every assigned PR, post a dispatch comment on the pull request, and set its `Owner:` line to the
+assigned agent (see the parent `AGENTS.md`, "Task lists, pull-request ownership, and durable records").
+The comment contains:
 
 ```text
 FROM <planning-task>: plan=<durable archive path> repo=<owner/repo>
@@ -251,8 +253,9 @@ conflicts=<edge ids/paths> mechanisms=<slugs> lookahead=<paths/candidates>
 next=<concrete review/rebase/validate/land action>
 ```
 
-TaskGraph is the durable channel. A chat/send attempt is not delivery acknowledgement. Re-plan when
-any head or the base changes; do not patch the old JSON by hand.
+The pull request is the durable channel. Under ORC, the dispatch task may simply point at that
+comment. A chat/send attempt is not delivery acknowledgement. Re-plan when any head or the base
+changes; do not patch the old JSON by hand.
 
 ### 6. Execute and verify
 
@@ -265,8 +268,9 @@ After the executor reports success:
 1. fetch the named target branch freshly;
 2. obtain the actual merge/replay commit OID;
 3. run `git merge-base --is-ancestor <merge-oid> origin/main` and require rc 0;
-4. record the merge OID and target tip on the task;
-5. close only through `ci-hub/bin/close-task`, which re-verifies the durable authority.
+4. record the merge OID and target tip in a comment on the pull request;
+5. under ORC, close the ORC task through `ci-hub/bin/close-task`, which re-verifies the landing.
+   Agents that do not use TaskGraph skip this step.
 
 ## Required outcome metrics
 

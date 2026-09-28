@@ -3,7 +3,7 @@ name: hermit-coord
 description: "Purpose-fixed role for the hermit-coord coordinator agent: task dispatch, slot/checkout ownership, parent-repo hygiene, submodule pinning, and evidence-based health checks. Load when acting as hermit-coord."
 ---
 
-> **TASKGRAPH QUICKSTART** — Run `tg quickstart` before coordinating task state. The tool owns the current inspect/claim/note/handoff command sequence and database gotchas; this skill owns dev-hermit lifecycle policy and must not duplicate the primer.
+> **TASKGRAPH QUICKSTART (ORC only)** — TaskGraph is ORC's short-term to-do list, not a record; pull-request ownership lives in the pull request's `Owner:` line and product defects go to GitHub issues. Under ORC, run `tg quickstart` before coordinating task state. The tool owns the current inspect/claim/note/handoff command sequence and database gotchas; this skill owns dev-hermit lifecycle policy and must not duplicate the primer.
 
 # hermit-coord — coordinator agent
 
@@ -33,7 +33,9 @@ is the operational summary of the coordinator role.
   primary; never detach or branch-switch it. After any op touching a primary,
   verify `git branch --show-current` == `main`.
 - **Task lifecycle:** an implementation agent publishes the PR or durable
-  artifact, records its exact SHA and evidence, adds `implemented`, and closes
+  artifact and records its exact SHA and evidence in that PR; product defects
+  go to GitHub issues. Under ORC only (TaskGraph is ORC's to-do list, not a
+  record), the agent also adds `implemented` and closes
   its own task (`tg update <id> --status closed`). Closure is not routed
   through the coordinator. The author still shepherds review, validation, and
   landing; `implemented` without `landed` is what keeps that debt visible.
@@ -70,11 +72,11 @@ is the operational summary of the coordinator role.
   (`main`/`PR #N`/SHA), the `L0/L1/L2` level and pass count; separate `New this
   run` from `Baseline reconfirmed`; bind evidence to SHAs, not branch names.
 - **Fleet routing:** ordinary agent `SendMessage` lookup is session-scoped, not
-  a global ORC fleet channel. Require producers to put durable deliverables on
-  the consumer task with `tg note`. Notes are pull-based, so for a time-sensitive
-  handoff require the producer to invoke `scripts/orc-hermit-msg.py` after
-  writing the note; relay it through the coordinator's global agent registry and
-  record confirmation on the consumer task. Never treat a send attempt as an
+  a global ORC fleet channel. Require producers to put durable deliverables in
+  the consumer's pull request or GitHub issue (or a tracked `ai_docs/` file).
+  Those are pull-based, so for a time-sensitive handoff require the producer to
+  invoke `scripts/orc-hermit-msg.py` after writing it; relay it through the
+  coordinator's global agent registry and record confirmation in the same place. Never treat a send attempt as an
   acknowledged handoff.
 - **Stable descriptive naming:** use a stable, descriptive, lowercase
   hyphenated slug for every option, wave, workstream, phase, task, and other
@@ -186,8 +188,8 @@ gate: [post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
 - Route unrelated or dynamically assigned work to newly spawned agents with
   neutral, purpose-free sequential ids (`codex-1`, `codex-2`, `claude-1`,
   `metamate-1`). Do not invent a task-shaped agent name or another fixed-role
-  name for a one-off assignment. Keep the task purpose in TaskGraph and
-  `ACTIVE.md`.
+  name for a one-off assignment. Keep the task purpose in the pull request or
+  GitHub issue and in `ACTIVE.md` (under ORC, also in its TaskGraph task).
 - Do not rename an existing live agent, including a misleading historical id.
   Its current id joins the running process to already-written task notes and
   commit trailers. Neutral naming is forward-only.

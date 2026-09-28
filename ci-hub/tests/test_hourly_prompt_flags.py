@@ -195,7 +195,11 @@ class HourlyPromptFlagTests(unittest.TestCase):
             flat,
             "worker evidence must return to the coordinator before owner-facing delivery",
         )
-        self.assertIn("verified taskgraph notes", flat)
+        # 2026-09-28 owner policy: TaskGraph is ORC's to-do list, not the record.
+        # Worker evidence travels through GitHub or a tracked report.
+        self.assertIn("github issue or pull-request comments", flat)
+        self.assertIn("taskgraph is orc's own to-do list", flat)
+        self.assertNotIn("verified taskgraph notes", flat)
         self.assertIn("tracked `ai_docs` reports", flat)
         self.assertIn("`orc.sendgchat`", flat)
 

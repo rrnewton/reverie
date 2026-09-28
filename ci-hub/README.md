@@ -343,7 +343,10 @@ head can truthfully show `claimed_ancestry_rc=1` while
 `change_present_on_main=true`; the landing is identified by the separate full
 `merge_commit_oid`.
 
-Task closure is a separate, fail-closed consumer of that verifier:
+Closing an ORC TaskGraph task is a separate, fail-closed consumer of that
+verifier. It serves ORC's own to-do list only; agents that do not use TaskGraph
+record landing evidence in the pull request instead (see the parent `AGENTS.md`,
+"Task lists, pull-request ownership, and durable records"):
 
 ```bash
 ./ci-hub/bin/close-task TASK --code PR_OR_FULL_SHA --repo OWNER/REPO --source CHECKOUT
@@ -493,7 +496,7 @@ requires every contract label to exist in both supported repositories.
 | `validate/` | Local validation ledger aggregation and linkage to retained profiles. | The generic DAG runner/profile format. |
 | `runners/` | Self-hosted runner image, lifecycle, and host status tooling. | Generic workflow scheduling. |
 | `landing/` | Shared-file **landing mutex** (`land-lock`) that serializes PR landings touching the shared manifest registries. | The land sequence itself (re-union/push/stamp/merge). |
-| `closure/` | Verification and evidence recording required before TaskGraph closure. | Task implementation or coordinator judgement that a goal is complete. |
+| `closure/` | Landing verification, and the evidence ORC records before closing one of its TaskGraph tasks. | Task implementation or coordinator judgement that a goal is complete. |
 
 Runtime data is untracked under `ignored/ci-hub/`; versioned code and schemas
 live here. Reproducible experiment producers and their frozen outputs remain

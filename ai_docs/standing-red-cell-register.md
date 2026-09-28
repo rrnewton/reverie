@@ -26,7 +26,9 @@ For every current red cell the register reports:
   that state was established;
 - the published results-series events named by the scorecard; and
 - current claimed tasks whose complete TaskGraph record mentions the exact
-  cell id or test id.
+  cell id or test id. This column shows only what ORC has dispatched;
+  TaskGraph is ORC's to-do list, not the record. The durable record of a red
+  cell's defect is a GitHub issue.
 
 `red` does not mean that a run failed. The measurement state remains separate:
 `never-measured`, `measured-and-passed`, `measured-no-verdict`,

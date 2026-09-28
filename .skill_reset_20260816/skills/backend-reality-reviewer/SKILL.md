@@ -31,9 +31,12 @@ definitions and the dual-review gate:
 - PR opened = in review.
 - Merged to main + `hermit run --backend X` works = DONE.
 - Never report a backend milestone as delivered for work on an unlanded branch.
-  Closing the task is not the claim — the tags are.
-- At implementation handoff, post the PR and exact SHA, add the `implemented`
-  tag, then close your own task (`tg update <task> --status closed`). The
+  Closing a task is not the claim — landed ancestry on `main` is.
+- At implementation handoff, post the PR and exact SHA in the PR itself; that
+  is the record.
+- ORC only (TaskGraph is ORC's to-do list, not a record): when an ORC task
+  tracks the work, also add the `implemented` tag, then close your own task
+  (`tg update <task> --status closed`). The
   `implemented` tag — not a nonterminal status — is what keeps the unlanded
   backend visible in the drain. Once the commit is on `main`, add `landed`;
   recording it through `./ci-hub/bin/close-task <task> --code <PR-or-full-SHA>

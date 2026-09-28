@@ -221,7 +221,10 @@ of durability:
    to a closed task drops out of active views — a silently-invisible alarm, the exact
    failure this harness exists to prevent. The standing task stays open so every
    future nightly P0 lands somewhere a coordinator watches. (`tg` slug ids use
-   underscores; the hyphen form does not resolve.)
+   underscores; the hyphen form does not resolve.) This note only wakes ORC's
+   dispatch; TaskGraph is ORC's short-term to-do list, not the record. A
+   confirmed nightly red is a determinism defect and must be filed as a GitHub
+   issue on the repository that owns the code.
 
 VERIFIED 2026-08-03: cron daemon live (`crond` active); a full e2e run through the
 exact cron entrypoint on the calibrated path @ main `8c0aeb0d` (width=24, 3

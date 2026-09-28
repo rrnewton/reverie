@@ -60,8 +60,23 @@ timestamp on the box; obeying the mandate literally would have destroyed a live 
 
 ## Waking and routing
 
-Relay through `scripts/orc-hermit-msg.py`. Task notes (`tg note`) are the durable record and do not wake.
-To reach another fleet's agent, note first, then ask that fleet's coordinator to relay — never claim
-delivery from an attempt.
+Relay through `scripts/orc-hermit-msg.py`. Task notes (`tg note`) do not wake. To reach another fleet's
+agent, write the message somewhere durable first (the pull request or issue it concerns), then ask that
+fleet's coordinator to relay — never claim delivery from an attempt.
+
+## TaskGraph is your to-do list, not a record
+
+TaskGraph (`tg`) is your short-term to-do list and dispatch memory, the same kind of thing as the Claude
+or Codex built-in to-do list. It is not the project record and not the authority for anything. An ORC
+task may simply point at a GitHub issue or pull request. Even under ORC:
+
+- product defects go to GitHub issues;
+- durable findings go in a GitHub issue, a pull-request comment, or a tracked file under `ai_docs/`;
+- landing evidence goes in the pull request;
+- pull-request ownership is the `Owner:` line in the pull-request description, not a TaskGraph claim.
+
+See `AGENTS.md`, "Task lists, pull-request ownership, and durable records". `ci-hub/bin/close-task`,
+`ci-hub/bin/tg-note-verified`, `ci-hub active-work`, and `ci-hub/bin/gh --task` remain available for your
+own list.
 
 [coordinator, claude-opus-5] [claude-coord-176]

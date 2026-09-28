@@ -165,8 +165,8 @@ in other cases."*
 The owner directive used ORC as the coordinator substrate then in service. The
 current admission test is **can the coordinator's primary authority observe
 this directly?** If yes, it does not belong here: Herdr plus the exact
-TaskGraph-bound agent snapshot is the authority on agents, panes, tasks and
-ownership, so a second observer of the same fact cannot be more right, only
+TaskGraph-bound agent snapshot is the authority on ORC's agents, panes, and
+its own tasks (not on pull-request ownership, which lives in the pull request), so a second observer of the same fact cannot be more right, only
 differently wrong. If no — GitHub, GH Actions queues, runner lanes, merge gates,
 local disk, local git — reminding the coordinator is the entire point.
 

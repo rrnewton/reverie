@@ -19,9 +19,9 @@ Use the additional harness-specific guide for the coordinator substrate that lau
 Only the ORC coordinator sends, publishes, or replies to owner-facing Google
 Chat messages. Do not delegate Chat delivery to a worker, and do not instruct a
 worker to speak through the owner's identity. Workers return evidence to the
-coordinator through a verified TaskGraph note or a tracked report under
-`ai_docs/`; the coordinator reads that evidence, synthesizes the owner-facing
-message, and sends it with `orc.sendGchat`.
+coordinator through a GitHub issue or pull-request comment, or a tracked report
+under `ai_docs/`; the coordinator reads that evidence, synthesizes the
+owner-facing message, and sends it with `orc.sendGchat`.
 
 # Don't get stuck
 
@@ -62,31 +62,74 @@ Here are your ordered priorities:
 3. Maintain opreational health in other ways: don't accumulate PRs, drain and land.
 4. Work from the project backlog and github issues whenever your immediate tasks are finished.
 
-# Pull-request claims
+# Task lists, pull-request ownership, and durable records
 
-TaskGraph is the only authority for who owns a pull request. A claim is one
-`IN_PROGRESS` task with an owner, and the task must contain the pull request's
-full `https://github.com/.../pull/...` URL. Use `tg claim`; do not create a
-second claim in a pull-request comment. Comments may carry findings, review
-status, or a link to the TaskGraph task, but words such as `claim`, a TTL, or a
-reviewer identity in prose neither acquire nor release ownership.
+**TaskGraph (`tg`) is ORC's short-term to-do list and dispatch memory. Nothing
+more.** It is the same kind of thing as the built-in to-do list in Claude or
+Codex. It is not a project record, it is not the authority for anything, and no
+agent is required to use it. Claude and Codex agents use their own harness
+to-do lists. An ORC task may simply point at a GitHub issue or pull request.
 
-Claims are bounded by live assignment rather than by an unreliably renewed
-wall-clock TTL. The machine-readable authority is `ci-hub active-work --json`:
-its `claimed` list contains exactly those owned `IN_PROGRESS` tasks whose owner
-is present in a fresh ORC snapshot and whose `current_task` resolves uniquely
-to that task. A waiting or idle live agent retains the claim; `actually_active`
-is the narrower set currently running work and is not the ownership authority.
+Where things go:
 
-A claim expires immediately when the task leaves `IN_PROGRESS`, its owner is
-cleared, or a fresh ORC snapshot proves that the owner is gone, terminal,
-unassigned, assigned elsewhere, or ambiguously assigned. The stale TaskGraph
-row remains visible as `stale`, `orphaned`, or `misrouted` for cleanup, but it
-does not remove the pull request from the free queue. If the ORC snapshot is
-missing or older than the command's bounded freshness window (ten minutes by
-default), claim state is unknown: report a range or stop rather than calling
-the pull request free. This is expiry of the existing TaskGraph claim, not a
-third claim store.
+- **Real product defects** (determinism bugs, wrong syscall behaviour, crashes,
+  backend gaps) go to a GitHub issue in the repository that owns the code,
+  always, including when you are running under ORC. Look for an existing issue
+  first.
+- **Durable findings** (an investigation result, a measurement, a recipe
+  another agent needs) go in a GitHub issue, a pull-request comment, or a
+  tracked file under `ai_docs/`. A `tg note`, a harness to-do item, or a pane is
+  not a durable record.
+- **Landing evidence** (the tested 40-hex head SHA, the validation run or
+  receipt, the reviewer's verdict) goes in the pull request, as a comment or in
+  its description.
+- **Short-lived work tracking** goes in your harness to-do list; for ORC, that
+  is TaskGraph.
+
+ORC-only tooling such as `ci-hub/bin/close-task`, `ci-hub/bin/tg-note-verified`,
+`ci-hub active-work`, and `ci-hub/bin/gh --task` serves ORC's own list. Other
+agents do not need it, and its output says nothing about who owns a pull
+request.
+
+## Pull-request ownership lives in the pull request
+
+The owner of an open pull request is named by one line, on its own, in the
+pull-request description:
+
+    Owner: <agent-name> (<harness>, <host>) since <UTC timestamp>
+
+For example: `Owner: claude-3 (claude, devbig014) since 2026-09-28T14:05Z`.
+The harness is `claude`, `codex`, or `orc`. When the owner hands the pull
+request off or stops working on it, it replaces that line with the new owner's
+line or with:
+
+    Owner: none (released <UTC timestamp> by <agent-name>)
+
+The owning agent keeps the line current. A coordinator may rewrite it when it
+reassigns the work or can show that the named agent is gone, and says so in a
+pull-request comment. No `Owner:` line, or `Owner: none`, means the pull request
+is free. Keep exactly one `Owner:` line; the who-am-i tag stays the first line.
+Words in a comment do not take or release ownership. Only this line does.
+
+To take a pull request, read the line first, then set it and read it back:
+
+```bash
+gh pr view <pr-url> --json body -q .body > /tmp/pr-body.md
+# add or replace the single Owner: line in /tmp/pr-body.md
+gh pr edit <pr-url> --body-file /tmp/pr-body.md
+gh pr view <pr-url> --json body -q .body | grep '^Owner:'
+```
+
+`gh pr edit` replaces the whole description, so two agents editing at once can
+overwrite each other. The read-back is the check: if it does not show your line,
+you do not own the pull request.
+
+GitHub assignees cannot carry this. Every agent posts through the same GitHub
+account, so an assignee cannot tell two agents apart.
+
+Pull requests opened before 2026-09-28 usually have no `Owner:` line. Before
+taking one, look at its comments and pushes from the last day for an agent that
+is still working on it, and ask that agent's coordinator if you find one.
 
 # Directory management and concurrency
 
@@ -180,7 +223,7 @@ Don't say "a flag was added", say WHICH flag.  List numbers with provenance and 
 
 Don't intruduce jargon...
 
-When a task or note cites a GitHub issue or pull request, write the FULL HYPERLINK -- `https://github.com/<owner>/<repo>/pull/<n>` -- never a bare `#1234` and never a bare `hermit#1234`. A bare number cannot be resolved from its own text once the surrounding context is gone, and the default repository is not a safe guess: references span at least hermit, agent-utils, reverie and rust-lang/rust, so assuming one silently resolves to a real but unrelated pull request. Three tasks have already been written off as permanently unmatchable for exactly this. The `task-reference-hygiene` gate reports violations; it is advisory today and grandfathers everything created before 2026-08-26.
+When a commit, comment, issue, document, or task cites a GitHub issue or pull request, write the FULL HYPERLINK -- `https://github.com/<owner>/<repo>/pull/<n>` -- never a bare `#1234` and never a bare `hermit#1234`. A bare number cannot be resolved from its own text once the surrounding context is gone, and the default repository is not a safe guess: references span at least hermit, agent-utils, reverie and rust-lang/rust, so assuming one silently resolves to a real but unrelated pull request. Three tasks have already been written off as permanently unmatchable for exactly this. The `task-reference-hygiene` gate reports violations in ORC's TaskGraph tasks; it is advisory today and grandfathers everything created before 2026-08-26.
 
 # Put the who-am-i tag in bodies, never titles
 
@@ -254,12 +297,18 @@ remain protected. A coordinator reads
 either form with `wrkslots read-handoff`, which prints the exact contents and
 durably enqueues that generation for later safe retirement. Reading never
 deletes the handoff, checkout, or slot, and an unread or changed handoff must
-still block removal. Durable investigation write-ups belong in a suitable
-tracked path or TaskGraph note; they are not transient handoffs.
+still block removal. Durable investigation write-ups belong in a GitHub issue,
+a pull-request comment, or a tracked path under `ai_docs/`; they are not
+transient handoffs.
 
-`tg note` is the durable record -- panes are not -- and it is **quoting-safe for
-shell metacharacters**: text that reaches its argv survives `$(...)`, backticks,
-`$VAR`, `${BRACE}` and mixed quotes.
+Write GitHub comment and issue bodies to a file the same way, with a quoted
+heredoc, and pass the file with `--body-file`. Then read the posted text back.
+
+**For ORC only: `tg note`.** A `tg note` is ORC's short-term memory, not the
+durable record (see "Task lists, pull-request ownership, and durable records"
+above). If you write one, it is **quoting-safe for shell metacharacters**: text
+that reaches its argv survives `$(...)`, backticks, `$VAR`, `${BRACE}` and mixed
+quotes.
 
 ⚠️ **IT IS NOT BYTE-IDENTICAL, AND THE EXPOSURE IS NOT ONLY THE SHELL.** `tg`
 ALSO INTERPRETS BACKSLASH ESCAPES in note content: `\t`, `\n` and `\\` are each
@@ -308,9 +357,8 @@ different text stores a WRONG line, which no later reader can detect.
 
 Same class as the `make validate | tail` hazard in `agent-utils/AGENTS.md`: a
 mechanism producing a value that reads as information and carries none. The
-difference is that this one sits in the layer used to record everything else, so
-nothing external cross-checks it -- which is why the check has to be the
-READBACK and not a rule anyone remembers to follow. Both corrections above were
+difference is that nothing external cross-checks what `tg` stored -- which is
+why the check has to be the READBACK and not a rule anyone remembers to follow. Both corrections above were
 found by `tg-note-verified` refusing to confirm a note, not by reading this
 section. A guarantee stated in prose is the thing being checked, not the check.
 

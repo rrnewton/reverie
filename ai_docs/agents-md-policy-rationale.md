@@ -382,6 +382,12 @@ siblings' live work.
 
 ## Task Lifecycle — phantom-closure rationale
 
+**Scope since 2026-09-28: ORC only.** TaskGraph is ORC's short-term to-do list and dispatch memory, not
+a project record, and other agents do not use it. Product defects go to GitHub issues, landing evidence
+goes in the pull request, and pull-request ownership is the `Owner:` line in the pull-request
+description. See `AGENTS.md`, "Task lists, pull-request ownership, and durable records". The rest of
+this section explains the tags ORC's own tooling still reads.
+
 Phantom closures (a task marked done while its work never landed) are a recurring failure mode. The 2026-08-08
 policy stops fighting them with a gatekeeper — the coordinator-only closure step was unsatisfiable, because the
 ORC coordinator has no shell and could never run the gateway, so in practice NOTHING closed and finished work
@@ -408,8 +414,8 @@ for — the agent holding the shell runs the commands and reports.
   cleanliness; classify validation under skill `hermit-validation-authority`; merge only
   when authorized; record the resulting `main` SHA and evidence.
 - **Before parent pinning:** submodule commits clean, reviewed, tested, fetchable; inspect `git diff --submodule=log` before staging; stage only intended gitlinks + parent-owned files; validate a coordinated Hermit/Reverie pair when both move; commit parent changes to `main` only when the task authorizes it.
-- **Before closeout:** each changed repo has a clean committed feature branch; record exact SHAs + validation in the task and `ARCHIVED.md`; detach slot children at their parent-pinned gitlinks; remove/update the slot row; keep ≤ 5 parked; leave unrelated concurrent work exactly as found.
-- **Before closing a task (the OWNING AGENT closes it — superseded 2026-08-08):** the coordinator-only closure gate is GONE. An agent closes its own task with plain `tg update <id> --status closed` once it has posted the PR/artifact URL, exact SHA, and validation evidence and tagged `implemented`. `./ci-hub/bin/close-task` is retained but optional; it is still the only writer of the `CLOSURE-VERIFIED` note that discharges landing debt, so use it once the change is on `main`. See AGENTS.md **Task Lifecycle And Closure**.
+- **Before closeout:** each changed repo has a clean committed feature branch; record exact SHAs + validation in the pull request (or a tracked `ai_docs/` file) and `ARCHIVED.md`; detach slot children at their parent-pinned gitlinks; remove/update the slot row; keep ≤ 5 parked; leave unrelated concurrent work exactly as found.
+- **Before closing a task (ORC TaskGraph only; the OWNING AGENT closes it — superseded 2026-08-08):** the coordinator-only closure gate is GONE. An agent closes its own task with plain `tg update <id> --status closed` once it has posted the PR/artifact URL, exact SHA, and validation evidence and tagged `implemented`. `./ci-hub/bin/close-task` is retained but optional; it is still the only writer of the `CLOSURE-VERIFIED` note that discharges landing debt, so use it once the change is on `main`. See AGENTS.md **Task Lifecycle And Closure**.
 
 ### Manual GH Actions dispatch under `merge-gate-v4` — the measurements
 
