@@ -3164,9 +3164,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
-        self.timer.observe_event();
+        // A trap-only seccomp stop may be the int 0x80 stop of an Allow-class
+        // number at a patched site, which plain ptrace never produces: it
+        // must not advance the timer's cancellation state (O4 rule 3), so
+        // `trap_only_route` observes every other seccomp stop itself.
+        if !(self.trap_only.is_some() && matches!(event, Event::Seccomp)) {
+            self.timer.observe_event();
+        }
         // The guest can remove a timer notification between two stops without
-        // an injection seeing the queue. See `untraced_syscall`.
+        // an injection seeing the queue. See `untraced_syscall`. This reads
+        // the kernel's pending queue, not a Tool-visible event, so it runs at
+        // every stop, the trap-only ones included.
         self.timer.expire_overflow_records(&stopped);
         let tid = self.tid();
 
@@ -3212,9 +3220,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             Event::Seccomp => self.handle_seccomp(stopped).await,
             Event::NewChild(op, child) => {
                 // A trap-only tail hop that ended at this stop restores both
-                // tasks from the patched site's view.
-                let context = self.trap_only_take_new_child_view();
-                self.dispatch_new_task(op, stopped, child, context, None)
+                // tasks from the patched site's view, exactly as the inject
+                // path (`trap_only_inject_hop`) does: the parent without rax,
+                // which the kernel writes when the call returns (plain ptrace
+                // restores nothing here, so a vfork parent still shows the
+                // entry's -ENOSYS at its vfork-done stop), and the child from
+                // the view.
+                let (context, child_context) = match self.trap_only_take_new_child_view() {
+                    Some(view) => {
+                        restore_context(&stopped, view, None, false)
+                            .tracee_context(tid, "restore trap-only tail parent")?;
+                        (None, Some(view))
+                    }
+                    None => (None, None),
+                };
+                self.dispatch_new_task(op, stopped, child, context, child_context)
                     .await
                     .tracee_context(tid, "handle new tracee stop")
             }
