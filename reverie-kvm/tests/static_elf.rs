@@ -5767,6 +5767,43 @@ int main(void) {
 }
 
 #[test]
+fn real_proc_uptime_scm_rights_preserves_identity_after_sender_close() {
+    if !kvm_available("fixed proc snapshot identity after SCM_RIGHTS sender close") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "proc-uptime-transfer",
+        include_str!("fixtures/proc_uptime_transfer.c"),
+        &["-Wall", "-Wextra", "-Werror"],
+    );
+    // The same fixture qualifies the Linux path/descriptor behavior first.
+    // Uptime bytes and stat sizes are not compared across native and KVM runs.
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert!(
+        native.status.success(),
+        "native status={} stdout={} stderr={}",
+        native.status,
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr),
+    );
+    assert_eq!(native.stdout, b"proc uptime transfer identity ok\n");
+    assert!(native.stderr.is_empty());
+
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"proc uptime transfer identity ok\n");
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
 fn worker_exit_group_terminates_the_root_with_its_status() {
     match Kvm::new() {
         Ok(_) => {}
