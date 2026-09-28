@@ -244,11 +244,11 @@ where
                 self.call.original_consumed = false;
                 parked.entry
             }
-            // Consume the original so the injected request, not the guest's
-            // own syscall, is what re-executes.
-            Redo::Injected(request) => {
-                self.call.original_consumed = true;
-                request
+            // CONTROL: re-execute the guest's own syscall instead of the
+            // injected request.
+            Redo::Injected(_) => {
+                self.call.original_consumed = false;
+                parked.entry
             }
             Redo::Nothing => {
                 self.fail(NarfFatal::UnexpectedReexecution);
