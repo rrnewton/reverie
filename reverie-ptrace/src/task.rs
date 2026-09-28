@@ -410,6 +410,34 @@ fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
+/// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
+const SYS_SECCOMP: libc::c_int = 1;
+
+/// Whether the SIGTRAP `task` stopped with is the single-step report of a
+/// private-page `syscall`: x86 raises it at syscall exit with `si_addr` set to
+/// the RIP just past the instruction (`after_syscall`).
+fn is_private_step_trap(task: &Stopped, after_syscall: u64) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    // SAFETY: si_addr reads the fault-address member that SIGTRAP's
+    // TRAP_TRACE and TRAP_BRKPT reports fill in.
+    Ok(siginfo.si_signo == libc::SIGTRAP
+        && matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT)
+        && unsafe { siginfo.si_addr() } as u64 == after_syscall)
+}
+
+/// Whether the SIGSYS `task` stopped with was raised by a guest seccomp
+/// filter's `SECCOMP_RET_TRAP` for the private-page `syscall`. Its
+/// `si_call_addr` (which shares `si_addr`'s place in the siginfo union) is
+/// the RIP just past the trapped instruction (`after_syscall`).
+fn is_private_seccomp_trap(task: &Stopped, after_syscall: u64) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    // SAFETY: for SYS_SECCOMP the union holds `_sigsys`, whose first member
+    // `_call_addr` is at the offset si_addr reads.
+    Ok(siginfo.si_signo == libc::SIGSYS
+        && siginfo.si_code == SYS_SECCOMP
+        && unsafe { siginfo.si_addr() } as u64 == after_syscall)
+}
+
 /// Whether `nr` installs a temporary signal mask that the kernel restores only
 /// after signal handling (`TIF_RESTORE_SIGMASK`). A ptrace mask write discards
 /// that pending restore, so a signal stopping such a syscall must not be
@@ -1886,6 +1914,13 @@ pub struct TracedTask<L: Tool> {
     /// syscall got interrupted (by signal)
     pending_signal: Option<Signal>,
 
+    /// Whether an injected syscall's single step ended at a held signal
+    /// (`step_private_syscall`) before collecting its step SIGTRAP, which the
+    /// kernel therefore still has queued. The next SIGTRAP stop carrying that
+    /// step's siginfo is discarded instead of being read as a later step's
+    /// completion or reported as an unexpected trap.
+    stale_private_step_trap: bool,
+
     /// A channel to allow short-circuiting the next state to main run loop. This
     /// is useful inside of `inject` or `tail_inject` where we might need to
     /// cancel a future early.
@@ -2068,6 +2103,7 @@ impl<L: Tool> TracedTask<L> {
             },
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage,
@@ -2132,6 +2168,7 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(self.pid, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
             orphanage: self.orphanage.clone(),
@@ -2195,6 +2232,7 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(child, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage: self.orphanage.clone(),
@@ -3424,6 +3462,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
+        // A standard signal is queued at most once, so any SIGTRAP stop
+        // consumes the step SIGTRAP an injection left queued.
+        if std::mem::take(&mut self.stale_private_step_trap)
+            && !resumed_by_gdb_step
+            && is_private_step_trap(
+                &task,
+                (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+            )?
+        {
+            tracing::debug!(
+                "[scheduler/tool] (pid = {}) discarding the step SIGTRAP of an injected syscall that ended at a held signal",
+                task.pid()
+            );
+            return Ok(HandleSignalResult::SignalSuppressed(
+                self.resume_stopped(task, None)?.next_state().await?,
+            ));
+        }
         let mut regs = task.getregs()?;
         if let Some(guard) = self.liteinst_entry_guard
             && regs.ip() == guard.address.saturating_add(1)
@@ -6573,6 +6628,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.next_state = tx;
                     self.next_state_rx = Some(rx);
                     self.pending_signal = None;
+                    self.stale_private_step_trap = false;
                     self.pending_syscall = None;
                     self.pending_syscall_already_skipped = false;
                     self.cancel_handler.store(false, Ordering::Release);
@@ -7169,20 +7225,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_private_syscall(task, nr).await?;
+        let (wait, seccomp_trapped) = self.step_private_syscall(task, nr).await?;
 
         // Get the result of the syscall to return to the caller.
         let result = self
             .status_to_result(wait, Some(oldregs), child_context)
             .await?;
+        // A guest seccomp filter's `SECCOMP_RET_TRAP` skipped the syscall and
+        // left its number in RAX. Report that it did not run; the guest's
+        // SIGSYS handler still runs, and seccomp(2) leaves the register it
+        // finds architecture-dependent.
+        let result = if seccomp_trapped {
+            Err(Errno::ENOSYS)
+        } else {
+            result
+        };
         self.observe_liteinst_mapping_result(nr, args, result);
         Ok(result)
     }
 
     /// Single-steps the private-page `syscall` and waits for the stop that
-    /// reports its outcome.
+    /// reports its outcome. Also returns whether a seccomp filter the guest
+    /// installed trapped the syscall (`SECCOMP_RET_TRAP`), in which case the
+    /// kernel did not execute it and RAX holds the syscall number that
+    /// `syscall_rollback` restored rather than a result; the SIGSYS it raised
+    /// (`si_code` `SYS_SECCOMP`, `si_call_addr` just past the private
+    /// `syscall`) is handled like any other signal below.
     ///
-    /// Two non-SIGTRAP stops can precede that outcome without describing it:
+    /// Three kinds of stop can precede that outcome without describing it:
     ///
     /// - A job-control group stop. Under `PTRACE_TRACEME` it is reported as a
     ///   bare stop signal, distinguishable from a signal-delivery stop only
@@ -7195,11 +7265,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   the main loop, it is not reported to `Tool::handle_signal_event`:
     ///   honoring it is impossible either way, and resuming the step without
     ///   a signal is what the main loop's forwarded stop amounts to.
+    /// - A stale step SIGTRAP before the `syscall` executed: the single-step
+    ///   report of an earlier injection whose step ended at a held signal
+    ///   (below), recognized by its siginfo (`si_addr` just past the private
+    ///   `syscall`, which this step has not reached). It is discarded, as the
+    ///   main loop discards it when no further injection follows; read as
+    ///   this step's completion it would report a syscall that never ran.
     /// - A genuine signal-delivery stop after the `syscall` completed (RIP past
     ///   the instruction). Linux dequeues a synchronous-class signal (positive
     ///   `si_code`) queued before the step SIGTRAP ahead of it; several such
-    ///   signals arrive one stop each. RAX already holds the kernel's result,
-    ///   so none of them may turn the syscall into a restart. Each is returned
+    ///   signals arrive one stop each. RAX already holds the kernel's result
+    ///   (or, after `SECCOMP_RET_TRAP`, the rolled-back syscall number), so
+    ///   none of them may turn the syscall into a restart. Each is returned
     ///   to the kernel's queue unchanged: the tracer blocks it and resumes
     ///   with it, and `ptrace_signal` requeues a resumed signal that is now
     ///   blocked, with its original siginfo, behind the step SIGTRAP. Once
@@ -7235,8 +7312,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   The one exception is an unblocked signal after a syscall that swaps
     ///   in a temporary signal mask (`swaps_signal_mask`): a ptrace mask
     ///   write would discard the saved mask the kernel restores after signal
-    ///   handling. Such a signal is held in `pending_signal` instead, and the
-    ///   step fails closed if the slot is already occupied.
+    ///   handling, so the signal cannot be returned to the queue. Its stop is
+    ///   returned as the outcome instead, and `status_to_result` holds the
+    ///   signal in `pending_signal` for delivery at the guest's syscall site.
+    ///   Stepping stops there, so any further signals and the step SIGTRAP
+    ///   stay queued in the kernel with the temporary mask and its pending
+    ///   restore intact, and the kernel delivers them after the held signal
+    ///   exactly as it would for the syscall run in place.
     ///
     /// The same signal returning to this stop is a protocol violation (a
     /// standard signal is queued at most once, a requeued entry lands behind
@@ -7247,32 +7329,58 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// for `status_to_result` to report as an interrupted syscall. During
     /// LiteInst activation every stop is returned unchanged so the activation
     /// signal validation keeps rejecting it.
-    async fn step_private_syscall(&mut self, task: Stopped, nr: Sysno) -> Result<Wait, TraceError> {
+    async fn step_private_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
         let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
         // Signals returned to the kernel queue during this step, still blocked
         // by the tracer. Only these bits are lifted at the final stop.
         let mut requeued: u64 = 0;
-        // Every signal resumed or held at a stop after the `syscall`,
-        // including those the guest already blocked.
+        // Every signal resumed at a stop after the `syscall`, including those
+        // the guest already blocked.
         let mut returned: u64 = 0;
+        let mut seccomp_trapped = false;
+        let lift_requeued = |stopped: &Stopped, requeued: u64| -> Result<(), TraceError> {
+            if requeued != 0 {
+                let mask = stopped.getsigmask()?;
+                stopped.setsigmask(mask & !requeued)?;
+            }
+            Ok(())
+        };
         let mut running = self.step_stopped(task, None)?;
         loop {
             let wait = running.next_state().await?;
             self.arm_liteinst_wait(&wait);
             let (stopped, sig) = match wait {
                 Wait::Stopped(stopped, Event::Signal(sig))
-                    if sig != Signal::SIGTRAP && !self.liteinst_activation_in_progress() =>
+                    if !self.liteinst_activation_in_progress() =>
                 {
+                    if sig == Signal::SIGTRAP
+                        && std::mem::take(&mut self.stale_private_step_trap)
+                        && stopped.getregs()?.ip() != after_syscall
+                        && is_private_step_trap(&stopped, after_syscall)?
+                    {
+                        tracing::debug!(
+                            "[scheduler/tool] (pid = {}) discarding a stale step SIGTRAP before injected {}",
+                            stopped.pid(),
+                            nr
+                        );
+                        running = self.step_stopped(stopped, None)?;
+                        continue;
+                    }
+                    if sig == Signal::SIGTRAP {
+                        lift_requeued(&stopped, requeued)?;
+                        return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
+                    }
                     (stopped, sig)
                 }
                 Wait::Stopped(stopped, event) => {
-                    if requeued != 0 {
-                        let mask = stopped.getsigmask()?;
-                        stopped.setsigmask(mask & !requeued)?;
-                    }
-                    return Ok(Wait::Stopped(stopped, event));
+                    lift_requeued(&stopped, requeued)?;
+                    return Ok((Wait::Stopped(stopped, event), seccomp_trapped));
                 }
-                wait => return Ok(wait),
+                wait => return Ok((wait, seccomp_trapped)),
             };
             if is_group_stop(&stopped, sig)? {
                 tracing::debug!(
@@ -7292,7 +7400,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                     return Err(Errno::EPROTO.into());
                 }
-                returned |= bit;
+                if sig == Signal::SIGSYS && is_private_seccomp_trap(&stopped, after_syscall)? {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) injected {} was trapped by the guest's seccomp filter",
+                        stopped.pid(),
+                        nr
+                    );
+                    seccomp_trapped = true;
+                }
                 // The mask in force, and a mask to write back if not. A
                 // mask-swapping syscall's temporary mask is visible only
                 // through procfs and must not be written.
@@ -7309,6 +7424,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         sig,
                         nr
                     );
+                    returned |= bit;
                     running = self.step_stopped(stopped, sig)?;
                 } else if let Some(mask) = mask {
                     tracing::debug!(
@@ -7319,33 +7435,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                     stopped.setsigmask(mask | bit)?;
                     requeued |= bit;
+                    returned |= bit;
                     running = self.step_stopped(stopped, sig)?;
                 } else {
-                    if let Some(held) = self.pending_signal {
-                        tracing::error!(
-                            "[scheduler/tool] (pid = {}) cannot hold {} delivered after injected {} completed: {} is already held",
-                            stopped.pid(),
-                            sig,
-                            nr,
-                            held
-                        );
-                        return Err(Errno::EPROTO.into());
-                    }
                     tracing::debug!(
-                        "[scheduler/tool] (pid = {}) holding {} delivered after injected {} completed",
+                        "[scheduler/tool] (pid = {}) holding {} delivered after injected {} completed; later signals stay queued",
                         stopped.pid(),
                         sig,
                         nr
                     );
-                    self.pending_signal = Some(sig);
-                    running = self.step_stopped(stopped, None)?;
+                    lift_requeued(&stopped, requeued)?;
+                    self.stale_private_step_trap = true;
+                    return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
                 }
             } else {
-                if requeued != 0 {
-                    let mask = stopped.getsigmask()?;
-                    stopped.setsigmask(mask & !requeued)?;
-                }
-                return Ok(Wait::Stopped(stopped, Event::Signal(sig)));
+                lift_requeued(&stopped, requeued)?;
+                return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
             }
         }
     }
@@ -7445,15 +7550,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                         regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
                             || regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET
                     );
-                    // Interrupted by a signal before the `syscall` executed:
-                    // return -ERESTARTSYS so that the tracee restarts it once
-                    // the signal is delivered. `step_private_syscall` absorbs
-                    // every non-SIGTRAP stop past the instruction, where the
-                    // syscall already completed and RAX holds the kernel's
-                    // result; overwriting that would execute it twice.
                     if sig != Signal::SIGTRAP {
-                        debug_assert_eq!(regs.ip() as usize, cp::PRIVATE_PAGE_OFFSET);
-                        *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                        // Interrupted by a signal before the `syscall`
+                        // executed: return -ERESTARTSYS so that the tracee
+                        // restarts it once the signal is delivered. Past the
+                        // instruction, `step_private_syscall` returns only a
+                        // signal it could not requeue after a mask-swapping
+                        // syscall. That syscall already ran and RAX holds its
+                        // outcome (usually -ERESTARTNOHAND, which the kernel
+                        // resolves when the held signal is delivered);
+                        // overwriting it would execute the syscall twice.
+                        if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
+                            *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                        }
+                        if let Some(held) = self.pending_signal {
+                            // TaskGraph reverie_pending_signal_single_slot.
+                            tracing::warn!(
+                                "[scheduler/tool] (pid = {}) {} replaces held {} in the single pending-signal slot",
+                                stopped.pid(),
+                                sig,
+                                held
+                            );
+                        }
                         self.pending_signal = Some(sig);
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
