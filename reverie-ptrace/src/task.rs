@@ -5986,17 +5986,6 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // numerically signal the root PID.
                     return Err(anyhow::Error::new(err).into());
                 }
-                if !self.is_main_thread() && self.lost_own_tid_to_exec(&err) {
-                    // A nonleader execve (de_thread) hands this thread's TID
-                    // to the leader's pid object and releases it, so a wait on
-                    // the former TID reports ECHILD. The run loop can see that
-                    // before `drive_ordinary` re-polls this thread's exit
-                    // future, which applies the same rule. ECHILD authorizes
-                    // neither exit nor failure: stay pending so the leader's
-                    // actual Exec edge transfers this state, while session
-                    // cancellation and backend failure remain observable.
-                    return future::pending().await;
-                }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
