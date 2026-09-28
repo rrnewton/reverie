@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "with-proxy",
+    "curl",
+    "--fail",
+    "--location",
+    "--silent",
+    "--show-error",
+    "--max-time",
+    "30",
+    "https://sourceware.org/gdb/current/onlinedocs/gdb.html/Host-I_002fO-Packets.html"
+  ],
+  "actual_exit": 0,
+  "elapsed_seconds": 0.19010110013186932,
+  "stderr": ""
+}

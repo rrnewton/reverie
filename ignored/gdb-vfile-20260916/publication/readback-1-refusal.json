@@ -1,0 +1,5 @@
+{
+  "actual_exit": 1,
+  "failure": "readback expected body with final newline stripped; actual exact body bytes are independently compared next",
+  "no_publication_retry": true
+}
