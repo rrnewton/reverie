@@ -1,0 +1,15 @@
+--- native-full-v1/launch.py
++++ native-full-v1/v2/launch.py
+@@ -8,9 +8,9 @@
+ import stat
+ import subprocess
+ 
+-HERE = Path(__file__).resolve().parent
+-PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = '4cf802e57f3d314c4582884824acb1999b92beb91e28d079f293d1866f32a1b2'
++HERE = Path(__file__).resolve().parent.parent
++PLAN = Path(__file__).resolve().parent / 'plan.json'
++PLAN_SHA256 = '7f3cc72f062437331ebc8138953809511c099b8824451f6bcd95fb58badd337c'
+ 
+ 
+ def require(condition, message):

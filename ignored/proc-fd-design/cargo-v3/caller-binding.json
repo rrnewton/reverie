@@ -1,0 +1,32 @@
+{
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/launch.py",
+    "bytes": 17260,
+    "mode": 420,
+    "sha256": "bfe6ee22f917a430a37a787c069eca21a35a735cefd3a84d5524c6911026cd4a"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/plan.json",
+    "bytes": 37258,
+    "mode": 420,
+    "sha256": "8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad"
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/caller-v2-v3.diff",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/caller-v2-v3.diff",
+    "bytes": 10652,
+    "mode": 420,
+    "sha256": "894779bc861c1a98b58e32129acbe34e2a9edc8c54349b3f616992f5f834b599"
+  },
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+    "bytes": 3084,
+    "mode": 420,
+    "sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+  },
+  "status": "prepared, not executed; live source remains v2 pending root release",
+  "scope": "one test-corrected compile/list/37 native controls; no Hermit/KVM guests"
+}

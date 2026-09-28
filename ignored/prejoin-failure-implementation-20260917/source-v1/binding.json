@@ -1,0 +1,67 @@
+{
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "files": [
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "bytes": 8720,
+      "sha256": "4f996c8af0ec2da565bd8b0bd1c3751b83486b53abebbea6df6317122f0fae9d",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1396724,
+      "sha256": "17440047dfd710096f0fa0becdd2d0b3c2e3be2f0895699c903c9dd2d363f0c0",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "bytes": 10384,
+      "sha256": "a9d8adb709108d1350251c7a16c719c598859c19e16aefcb5a8d3aaf9771de7c",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "bytes": 1643,
+      "sha256": "12e05c509eafa12e51fdae5a514cb68726d6b4e7fb8e545a3698f983427eeef9",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "bytes": 154034,
+      "sha256": "6b8ca52bf88003f85b935bd43e9b6c995303d729688239de86d2e4e8f6c9854f",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "bytes": 11408,
+      "sha256": "27e96560f3dee05dc4bc08a7aa5679b753769aadcb6fd7cac5cd1d001725e17d",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "bytes": 286602,
+      "sha256": "046fad1ab8998150077beb546c7af8720e22cd56f547855df0a1ab93cb81cb8d",
+      "mode": "644"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 22113,
+      "sha256": "47199a5de83f5e8d94f883ac5909ee1de24aa1820774be61555d211a4844d85a",
+      "mode": "644"
+    }
+  ],
+  "source_file_count": 2585,
+  "patch_sha256": "2544ff62007ce6e1ad47d83d61d5b1aa7b2fd01dddacbc51d6025d5d499610a0",
+  "patch_bytes": 100238,
+  "new_tests": 8,
+  "existing_selected": 19,
+  "selected_count": 27,
+  "validation": "Source preparation only; rustfmt and git diff --check. No build, test, guest, commit, or public operation."
+}

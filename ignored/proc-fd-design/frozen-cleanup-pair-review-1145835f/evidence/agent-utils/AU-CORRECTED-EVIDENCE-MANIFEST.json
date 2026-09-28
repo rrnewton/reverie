@@ -1,0 +1,52 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-corrected/SOURCE-READBACK.json",
+    "bytes": 140,
+    "sha256": "ba38f81cef17aadb2ce45a81d3a627725f89c852a554bea94fe0c1efacf1154a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-corrected/exit.txt",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-corrected/output.txt",
+    "bytes": 126,
+    "sha256": "308be61075901643b463f0582f9a517b58685b249c7a65fd7703ef38b446396b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-corrected/time.txt",
+    "bytes": 1119,
+    "sha256": "4cd28b81f998478555de7afd1b0ee1c48629e909098eefa4e7ab34a70161c8e2"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-mypy-corrected/exit.txt",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-mypy-corrected/output.txt",
+    "bytes": 44,
+    "sha256": "8f3f4c0ebcb835e848682f2c6610a1bf32c86a993bdb626d9ff36e3a49408398"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-mypy-corrected/time.txt",
+    "bytes": 841,
+    "sha256": "0c71fd1360245a0a2f08f492136e19a9c0e505c5ae556c9a68fd036d0f69fcdd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-before-fix/exit.txt",
+    "bytes": 2,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-before-fix/output.txt",
+    "bytes": 10516,
+    "sha256": "5535c76aad5bbf4279b61427ae376d6ccb8688260ec3cd0cda350167fb022db8"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-initial-binding-before-fix/time.txt",
+    "bytes": 873,
+    "sha256": "6d944b688d6231c5d9dc20742e568375602312acfd689051f463fb6328b56026"
+  }
+]

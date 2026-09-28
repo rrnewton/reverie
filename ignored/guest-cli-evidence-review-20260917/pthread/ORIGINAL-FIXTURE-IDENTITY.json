@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/usr/bin/git",
+    "diff",
+    "--exit-code",
+    "8051335e87104f7cf832204f74920d38416393b2",
+    "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "--",
+    "hermit-cli/tests/kvm_harder.rs",
+    "tests/backend-parity/fixtures/pthread_lifecycle.c"
+  ],
+  "returncode": 0,
+  "stdout_bytes": 0,
+  "stderr_bytes": 0,
+  "scope": "Original production pthread helper and fixture unchanged between 805 and final 5bc; read-only Git object comparison."
+}

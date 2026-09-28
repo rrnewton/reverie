@@ -1,0 +1,97 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_013SsEjUM6jpaYwxAsPEt4dU",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 520,
+    "limit": 85
+  }
+}
+
+Successful public tool result (exact text below):
+520	    }
+521	
+522	    fn forget_flock_modes(&self) {
+523	        for detfd in self.file_handles.values() {
+524	            detfd.forget_flock_mode();
+525	        }
+526	    }
+527	
+528	    // TODO-HUMAN-REVIEW(#2373)
+529	    /// Fork the file table for `child`.
+530	    ///
+531	    /// FORGETTING IS DELIBERATELY *NOT* DONE HERE, and the reason is that this
+532	    /// fork does not produce a second copy of the cache. `DetFd` holds its
+533	    /// `OpenFileDescription` behind an `Arc<Mutex<..>>`, so `file_handles
+534	    /// .clone()` below hands the child the *same* description objects the
+535	    /// parent holds. That mirrors the kernel, where `fork(2)` duplicates the
+536	    /// descriptor table while both tables keep pointing at one open file
+537	    /// description, and an `flock(2)` lock belongs to that description. A
+538	    /// `flock` through either task therefore mutates the one shared record and
+539	    /// both sides observe it; there is no second copy that could go stale, so
+540	    /// invalidating here destroys correct information and buys nothing.
+541	    ///
+542	    /// The case that genuinely needs invalidation is a *separately hosted* tool
+543	    /// state — a real process clone under DBT, where the in-process runtime is
+544	    /// copied into a new address space and the `Arc` stops being shared. That
+545	    /// is handled at its own boundary, by
+546	    /// `reverie_dbt_runtime_process_clone_result`, which calls
+547	    /// `forget_flock_modes` only on a clone the kernel reported as successful.
+548	    ///
+549	    /// Forgetting here as well was not merely redundant, it was harmful: it
+550	    /// marked every descriptor unknown on any fork, and
+551	    /// `has_unsafe_vfork_flock_state` refuses `vfork` on unknown as well as on
+552	    /// held. So any guest that forked and later vforked was refused even when
+553	    /// it had never called `flock` at all.
+554	    pub(crate) fn fork_for(&self, child: DetTid) -> Self {
+555	        self.forget_flock_modes();
+556	        Self {
+557	            files_id: FilesId::forked(child),
+558	            next_open_file_sequence: self.next_open_file_sequence,
+559	            next_socket_open_file_sequence: self.next_socket_open_file_sequence,
+560	            file_handles: self.file_handles.clone(),
+561	        }
+562	    }
+563	
+564	    pub(crate) fn for_exec(&self, task: DetTid) -> Self {
+565	        Self {
+566	            files_id: self.files_id.for_exec(task),
+567	            next_open_file_sequence: self.next_open_file_sequence,
+568	            next_socket_open_file_sequence: self.next_socket_open_file_sequence,
+569	            file_handles: self
+570	                .file_handles
+571	                .iter()
+572	                .filter_map(|(&fd, detfd)| (!detfd.is_cloexec()).then_some((fd, detfd.clone())))
+573	                .collect(),
+574	        }
+575	    }
+576	
+577	    pub(crate) fn exec_blocking_overrides(&self) -> ExecFdBlockingOverrides {
+578	        self.file_handles
+579	            .iter()
+580	            .filter_map(|(&fd, detfd)| {
+581	                (!detfd.is_cloexec() && detfd.physically_nonblocking() && !detfd.is_nonblocking())
+582	                    .then_some(fd)
+583	            })
+584	            .collect()
+585	    }
+586	
+587	    pub(crate) fn apply_exec_blocking_overrides(
+588	        &mut self,
+589	        owner: DetTid,
+590	        overrides: ExecFdBlockingOverrides,
+591	    ) {
+592	        for fd in overrides {
+593	            tracing::trace!(
+594	                "[detcore, dtid {}] restoring descriptor {} as logically blocking after exec",
+595	                owner,
+596	                fd,
+597	            );
+598	            match self.discover_fd_from_current_process(owner, fd) {
+599	                Ok(()) => {
+600	                    self.with_detfd(fd, |detfd| detfd.set_logical_nonblocking(false))
+601	                        .expect("a just-discovered descriptor must remain registered");
+602	                }
+603	                Err(error) => {
+604	                    tracing::warn!(

@@ -1,0 +1,69 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x15db0
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0102e8 0x0102e8 R   0x1000
+  LOAD           0x011000 0x0000000000011000 0x0000000000011000 0x03e435 0x03e435 R E 0x1000
+  LOAD           0x050000 0x0000000000050000 0x0000000000050000 0x010a50 0x010a50 R   0x1000
+  LOAD           0x060e28 0x0000000000061e28 0x0000000000061e28 0x0025e0 0x004b50 RW  0x1000
+  DYNAMIC        0x061908 0x0000000000062908 0x0000000000062908 0x000260 0x000260 RW  0x8
+  NOTE           0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  NOTE           0x0002c8 0x00000000000002c8 0x00000000000002c8 0x000024 0x000024 R   0x4
+  GNU_PROPERTY   0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  GNU_EH_FRAME   0x056a20 0x0000000000056a20 0x0000000000056a20 0x00157c 0x00157c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x060e28 0x0000000000061e28 0x0000000000061e28 0x0021d8 0x0021d8 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .note.gnu.property .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_d .gnu.version_r .rela.dyn .rela.plt 
+   01     .init .plt .plt.sec .text .fini 
+   02     .rodata .eh_frame_hdr .eh_frame 
+   03     .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   04     .dynamic 
+   05     .note.gnu.property 
+   06     .note.gnu.build-id 
+   07     .note.gnu.property 
+   08     .eh_frame_hdr 
+   09     
+   10     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x61908 contains 34 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [liblber.so.2]
+ 0x0000000000000001 (NEEDED)             Shared library: [libevent-2.1.so.7]
+ 0x0000000000000001 (NEEDED)             Shared library: [libsasl2.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libssl.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [libldap.so.2]
+ 0x000000000000000c (INIT)               0x11000
+ 0x000000000000000d (FINI)               0x4f428
+ 0x0000000000000019 (INIT_ARRAY)         0x61e28
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x61e30
+ 0x000000000000001c (FINI_ARRAYSZ)       16 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2f0
+ 0x0000000000000005 (STRTAB)             0x6b18
+ 0x0000000000000006 (SYMTAB)             0x1610
+ 0x000000000000000a (STRSZ)              17295 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x62b68
+ 0x0000000000000002 (PLTRELSZ)           14880 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0xc8c8
+ 0x0000000000000007 (RELA)               0xb6f8
+ 0x0000000000000008 (RELASZ)             4560 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffc (VERDEF)             0xb5c0
+ 0x000000006ffffffd (VERDEFNUM)          2
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0xb5f8
+ 0x000000006fffffff (VERNEEDNUM)         4
+ 0x000000006ffffff0 (VERSYM)             0xaea8
+ 0x000000006ffffff9 (RELACOUNT)          157
+ 0x0000000000000000 (NULL)               0x0

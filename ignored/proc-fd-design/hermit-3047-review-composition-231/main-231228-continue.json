@@ -1,0 +1,117 @@
+{
+  "frozen_head": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+  "argv": [
+    "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+    "--passthrough",
+    "--cpu-budget",
+    "120",
+    "--wall",
+    "180",
+    "--mem",
+    "4Gi",
+    "--label",
+    "kvm-parity-main-231228-continue",
+    "--actual-json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-231228-landing-repair/main-231228-continue-box.json",
+    "--diag-log",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-231228-landing-repair/main-231228-continue-box.log",
+    "--",
+    "git",
+    "rebase",
+    "--continue"
+  ],
+  "command": [
+    "git",
+    "rebase",
+    "--continue"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+  "before_head": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+  "before_staged_tree": "60e6192662cad81a25d444b5136e77a1769f2e4d",
+  "started_at": "2026-09-17T08:12:00.407087+00:00",
+  "environment": {
+    "inherit_current": true,
+    "overrides": {
+      "CARGO_BUILD_JOBS": "2",
+      "THIRD_PARTY_BUILD_JOBS": "2",
+      "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/target",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "XDG_CACHE_HOME": "/tmp/kvm-parity-recovery-20260916-rust-script-cache",
+      "GIT_EDITOR": "true",
+      "GIT_OPTIONAL_LOCKS": "0"
+    },
+    "removals": [
+      "HERMIT_RUN_EVIDENCE_NATIVE_CONTROL",
+      "HERMIT_RUN_EVIDENCE_NATIVE_PATH",
+      "HERMIT_BIN",
+      "HERMIT_INSTALL_DIR",
+      "HERMIT_E2E_ARTIFACT_POINTER",
+      "HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED",
+      "HERMIT_RUST_SCRIPT_ARTIFACT_ROOT",
+      "HERMIT_SCHEMA10_FIXTURE_OUTPUT",
+      "HERMIT_SCHEMA10_PLAN_FIXTURE_OUTPUT"
+    ]
+  },
+  "limits": {
+    "cpu_seconds": 120,
+    "wall_seconds": 180,
+    "memory": "4Gi",
+    "swap_bytes": 0,
+    "output_bytes": 16777216,
+    "outer_wall_seconds": 200
+  },
+  "box_script_sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639",
+  "caller_sha256": "90fd5a6127cb1afeb656dee8a1c6376d8fefbe75ff522f4148448e6ff64aeace",
+  "pid": 2058639,
+  "after_tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
+  "rebased_commits": [
+    {
+      "commit": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789614631 -0700",
+      "message_sha256": "7e96d0a92c3c09eb6faa8bba29e81241885d07327d1d6910d876998a44276851",
+      "empty": false
+    },
+    {
+      "commit": "dda0ebb22abb295a98e533ecda8e76dda5a9c3bc",
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789625771 -0700",
+      "message_sha256": "79a6de97906b1929317b67fd70b0d54987631c6eebec08ef6d63548b3d27fd6e",
+      "empty": false
+    },
+    {
+      "commit": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789629276 -0700",
+      "message_sha256": "fa39e981c77746de5248c0c46b0c4f3f4c88d17f24954a3157381870f64a7199",
+      "empty": false
+    }
+  ],
+  "all_tree_entries_equal_expected_union": true,
+  "complete_patch_sha256": "4425a7f7dddbfb342d4592e4b82b72431e922d680cceba91ce6d5741f1fc4409",
+  "all_authors_messages_and_empty_status_preserved": true,
+  "all_ordered_trees_preserved": true,
+  "all_authored_change_lines_preserved": true,
+  "handoff_bytes_and_stat_unchanged": true,
+  "exit_code": 0,
+  "elapsed_seconds": 1.3373742878902704,
+  "guard": null,
+  "output_bytes_seen": 233,
+  "output_bytes_retained": 233,
+  "log_sha256": "99017171de0d4eb3574c0ad31a793c4ecaaed6ff6ddd5e231e6f9da147e6c3af",
+  "after_head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "source_changed": true,
+  "commit_correct": true,
+  "actual_box": {
+    "cgroup_usage_usec": 1009400,
+    "cpu_budget_seconds": 120,
+    "cpu_seconds": 1.0094,
+    "cpu_source": "systemd CPUUsageNSec after scope exit",
+    "cpu_usage_nsec": 1009400000,
+    "exit_code": 0,
+    "label": "kvm-parity-main-231228-continue",
+    "reaped": false,
+    "schema": "hermit-box-run-actual/v1",
+    "scope": "hermit-box-run-2058639-1789632720487695485.scope",
+    "termination": "completed",
+    "wall_backstop_seconds": 180
+  }
+}

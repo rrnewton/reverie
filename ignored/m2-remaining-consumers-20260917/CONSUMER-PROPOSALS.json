@@ -1,0 +1,100 @@
+{
+  "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "m2_preview": "v10",
+  "consumer_count": 9,
+  "execution": false,
+  "proposals": [
+    {
+      "path": "tests/backend-parity/run_matrix.py",
+      "kind": "requires current/historical split",
+      "reader": "--json matched retained for historical classification; active entry uses canonical-match",
+      "expected_tiers": "unchanged non-KVM stripped and KVM guest minima; historical ladder retained",
+      "additional_obligations": [
+        "active policy description/flag-inference correction",
+        "preserve infrastructure ERROR and expected guest status",
+        "single typed parse/output, no double read"
+      ],
+      "proposed_control_target": "tests/backend-parity/test_verify_tier_evidence.py"
+    },
+    {
+      "path": "tests/backend-parity/e9patch_corpus.py",
+      "kind": "sound report token change plus separate producer-status gap",
+      "reader": "matched -> canonical-match on both self-repeat reports",
+      "additional_obligations": [
+        "capture/check two verification statuses at existing 60/90 second bounds",
+        "retain twenty guests, coverage and normalized tail oracles"
+      ],
+      "proposed_control_target": "existing Python tier/corpus test organization"
+    },
+    {
+      "path": "tests/e2e/lib/data-handling/common.bash",
+      "kind": "sound report token change",
+      "old_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"; then",
+      "proposed_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"; then",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/e2e/lib/determinism-stress/common.sh",
+      "kind": "sound report token change",
+      "old_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"; then",
+      "proposed_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"; then",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/e2e/lib/language-runtimes/run.sh",
+      "kind": "sound report token change",
+      "old_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"; then",
+      "proposed_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"; then",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/e2e/lib/system-utils/_common.sh",
+      "kind": "sound report token change",
+      "old_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" matched \"$VERIFY_REPORT\"; then",
+      "proposed_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" canonical-match \"$VERIFY_REPORT\"; then",
+      "additional_obligations": [
+        "correct stale KVM trace-unavailable success wording"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "kind": "sound report token change",
+      "old_invocation": "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\" || \\",
+      "proposed_invocation": "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\" || \\",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/standalone/strict_setitimer.sh",
+      "kind": "sound report token change",
+      "old_invocation": "if \"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"; then",
+      "proposed_invocation": "if \"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"; then",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    },
+    {
+      "path": "tests/standalone/strict_timer_create.sh",
+      "kind": "sound report token change",
+      "old_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"; then",
+      "proposed_invocation": "if ! \"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"; then",
+      "additional_obligations": [
+        "preserve all original workload/status/gap checks"
+      ],
+      "proposed_control_target": "hermit-cli/tests/verification_report_consumers.rs plus existing original shell controls"
+    }
+  ]
+}

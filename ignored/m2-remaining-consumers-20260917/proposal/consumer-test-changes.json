@@ -1,0 +1,83 @@
+{
+  "base_kind": "exact immutable M2 preview-v10 file",
+  "before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview-v10/hermit-cli/tests/verification_report_consumers.rs",
+    "bytes": 40160,
+    "mode": "0o644",
+    "sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc"
+  },
+  "after": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/proposal/preview/hermit-cli/tests/verification_report_consumers.rs",
+    "bytes": 43858,
+    "mode": "0o644",
+    "sha256": "16166d56985c0b6cd1052cf73db86df2b1d4f69da43a1db27277619ae38887b3"
+  },
+  "changed_entries": [
+    {
+      "path": "tests/e2e/lib/data-handling/common.bash",
+      "old": "    Consumer {\n        path: \"tests/e2e/lib/data-handling/common.bash\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/e2e/lib/data-handling/common.bash\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/e2e/lib/determinism-stress/common.sh",
+      "old": "    Consumer {\n        path: \"tests/e2e/lib/determinism-stress/common.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/e2e/lib/determinism-stress/common.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/e2e/lib/language-runtimes/run.sh",
+      "old": "    Consumer {\n        path: \"tests/e2e/lib/language-runtimes/run.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/e2e/lib/language-runtimes/run.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/e2e/lib/system-utils/_common.sh",
+      "old": "    Consumer {\n        path: \"tests/e2e/lib/system-utils/_common.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$VERIFY_REPORT\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/e2e/lib/system-utils/_common.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$VERIFY_REPORT\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "old": "    Consumer {\n        path: \"tests/qemu-boot/strict_l2_userspace_test.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/qemu-boot/strict_l2_userspace_test.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/standalone/strict_setitimer.sh",
+      "old": "    Consumer {\n        path: \"tests/standalone/strict_setitimer.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/standalone/strict_setitimer.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    },
+    {
+      "path": "tests/standalone/strict_timer_create.sh",
+      "old": "    Consumer {\n        path: \"tests/standalone/strict_timer_create.sh\",\n        requirement: \"matched\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" matched \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },",
+      "new": "    Consumer {\n        path: \"tests/standalone/strict_timer_create.sh\",\n        requirement: \"canonical-match\",\n        invocation: \"\\\"$VERIFICATION_REPORT_BIN\\\" canonical-match \\\"$verify_report\\\"\",\n        minimum_invocations: 1,\n    },"
+    }
+  ],
+  "retained_thirteen_paths": [
+    "tests/e2e/lib/applications/common.sh",
+    "tests/reproducible-builds/run.sh",
+    "tests/backend-parity/e9patch_corpus.py",
+    "tests/backend-parity/run_matrix.py",
+    "tests/e2e/lib/data-handling/common.bash",
+    "tests/e2e/lib/determinism-stress/common.sh",
+    "tests/e2e/lib/language-runtimes/run.sh",
+    "tests/e2e/lib/system-utils/_common.sh",
+    "tests/qemu-boot/strict_l2_network_test.sh",
+    "tests/qemu-boot/strict_l2_test.sh",
+    "tests/qemu-boot/strict_l2_userspace_test.sh",
+    "tests/standalone/strict_setitimer.sh",
+    "tests/standalone/strict_timer_create.sh"
+  ],
+  "retained_declared_test_names": [
+    "immutable_artifact_controls_a_real_integration_consumer",
+    "every_named_consumer_delegates_to_the_shared_typed_reader",
+    "current_match_and_a_typed_verdict_mutation_bracket_every_consumer",
+    "current_shape_and_canonical_evidence_fail_by_name",
+    "qemu_boot_consumer_rejects_noncanonical_and_unequal_match_claims",
+    "json_output_retains_failure_evidence_without_satisfying_a_match_requirement",
+    "generated_verification_commands_validate_fresh_evidence_before_guest_status",
+    "application_shell_consumer_uses_the_real_typed_reader",
+    "canonical_reader_rejects_unequal_counts_while_matched_and_inspection_stay_distinct",
+    "reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements"
+  ],
+  "added_declared_test_name": "remaining_shell_consumers_require_current_canonical_match_evidence",
+  "actual_compiled_inventory": null,
+  "all_other_bytes_retained": true,
+  "formatter_or_tests_run": false
+}

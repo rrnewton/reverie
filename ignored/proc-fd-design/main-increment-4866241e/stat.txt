@@ -1,0 +1,24 @@
+ experimental/reverie-sabre-macros/src/expand.rs    |  13 +
+ experimental/reverie-sabre/src/bootstrap.rs        | 130 ++++++++++
+ experimental/reverie-sabre/src/ffi/clone.rs        | 120 ++++-----
+ experimental/reverie-sabre/src/ffi/mod.rs          |   9 +
+ experimental/reverie-sabre/src/lib.rs              |   1 +
+ experimental/reverie-sabre/src/reverie_adapter.rs  | 146 ++++++++++-
+ experimental/reverie-sabre/src/tool.rs             |  10 +
+ .../tests/fixtures/syscall_frame/frame_probe.S     |  82 +++++++
+ .../tests/fixtures/syscall_frame/frame_probe.c     | 149 +++++++++++
+ .../tests/fixtures/syscall_frame/frame_probe.h     |  25 ++
+ .../reverie-sabre/tests/loader_bootstrap.c         | 273 +++++++++++++++++++++
+ .../reverie-sabre/tests/loader_bootstrap.rs        |  46 ++++
+ .../reverie-sabre/tests/syscall_frame_abi.rs       | 145 +++++++++++
+ .../sabre/arch/x86_64/handle_syscall_loader.s      |  17 +-
+ .../vendor/sabre/arch/x86_64/syscall_stackframe.c  |  20 ++
+ .../vendor/sabre/includes/loader/bootstrap.h       |  60 +++++
+ .../vendor/sabre/loader/CMakeLists.txt             |   1 +
+ .../reverie-sabre/vendor/sabre/loader/bootstrap.c  | 161 ++++++++++++
+ .../vendor/sabre/loader/ld_sc_handler.c            |   9 +
+ .../reverie-sabre/vendor/sabre/loader/loader.c     |   9 +
+ .../reverie-sabre/vendor/sabre/loader/premain.c    |  18 ++
+ .../reverie-sabre/vendor/sabre/loader/rewriter.c   |  15 ++
+ .../arch/x86_64/vfork_return_from_child.s          |  47 ++--
+ 23 files changed, 1397 insertions(+), 109 deletions(-)

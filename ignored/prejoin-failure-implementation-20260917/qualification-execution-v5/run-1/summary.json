@@ -1,0 +1,558 @@
+{
+  "status": "passed",
+  "completed": [
+    {
+      "stage": "static-elf-05",
+      "test": "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "8d39503a0e63e20466ac04394c726449dbf10ec15b499dacb98c3b70e4ce2f0e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "59d326da871d4df13c053b371a6552947fca258182032be7d875ab95a0349357",
+      "cpu_nsec": 382752000,
+      "wall_seconds": 0.982448481
+    },
+    {
+      "stage": "static-elf-06",
+      "test": "leader_exit::later_group_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "d23621ca7e3e11e6dcf17a387a81a97f7af1d386a1586eeecd5b86f0236c9fcc",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d56db920aafbbfa0750f332e2363e89e06ed52968d747556810e77dc69ab14d4",
+      "cpu_nsec": 322817000,
+      "wall_seconds": 2.502865124
+    },
+    {
+      "stage": "static-elf-07",
+      "test": "leader_exit::later_group_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "1ab7d45d6185ffb8961a6dd0151a2409d5f7661c15e5a04cb4addc89ca3289e3",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "db0bcf4fcea0ca26b68763b95cca3c460b92880d38edd40c7865121c65be5601",
+      "cpu_nsec": 321437000,
+      "wall_seconds": 0.845704649
+    },
+    {
+      "stage": "static-elf-08",
+      "test": "leader_exit::leader_exit_preserves_pending_worker_start_callback",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "9078465acd21639a8f5ef1b0cbf50e63dca0b7097a94eeb257c836356c041e5f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "835a953478dafcaf512768af9fa7bf6472edb9e2ea4e6dae56518fa7fca85ade",
+      "cpu_nsec": 323484000,
+      "wall_seconds": 0.824264512
+    },
+    {
+      "stage": "static-elf-09",
+      "test": "leader_exit::panicked_worker_interrupts_natural_join_without_losing_panic",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "f798add45969e9af3be08bad2064698d5a2d657f4a4832d6a9f8e454f02b8579",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "3a83f0048ad25622b146e2c2b2ce797a15ef53a5d46a25e2864eafb686ee5814",
+      "cpu_nsec": 389774000,
+      "wall_seconds": 1.103983984
+    },
+    {
+      "stage": "static-elf-10",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "aaa028339c2ef1c8153f7875f9c37aa22259bfcc7d992df576d4997189ab2ed4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "4e9e2222e6d93513b62c63d102905e0817bbc6ef120bc534b155d0e8c67cd0f5",
+      "cpu_nsec": 369892000,
+      "wall_seconds": 0.958228068
+    },
+    {
+      "stage": "static-elf-11",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "80c14722a8ca8f335fe5afc7d11011bf11433c14a82a8fb4225463c45cf6b80b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "c0bc8288373d8312672efea5f8b3055ca0ad1cd1f6d5958955b8e26ffde34cba",
+      "cpu_nsec": 387099000,
+      "wall_seconds": 1.403621178
+    },
+    {
+      "stage": "static-elf-12",
+      "test": "leader_exit::process_status_precedes_host_join_order",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "738667a74932fe056244692c4fbb0ad4dd8b2159b62e236f9b3dbe16f08d12a7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d3c6f3b552f082a22a28e2a79b8a9b432ff6b74ece4dba09b4fbcb7a783ca22f",
+      "cpu_nsec": 379113000,
+      "wall_seconds": 0.906197222
+    },
+    {
+      "stage": "static-elf-13",
+      "test": "leader_exit::pthread_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "3fef46ce2420dabe87dad9048e6264ed6f29af83b2436a6d65a981e9c814b623",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "910347e63bac6712b076c7f61e9696cbc3e69cb62d160f3cd668df0ecd6ba129",
+      "cpu_nsec": 368188000,
+      "wall_seconds": 0.909595736
+    },
+    {
+      "stage": "static-elf-14",
+      "test": "leader_exit::pthread_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "5ccc92b43c2e57943beba603496b09d43d1a0dc0bd12ae84d6df44bee68e6d32",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "e02b62180dad670924ffa8f2fd08329d5dc7912be196acad163b67d5a7f971c9",
+      "cpu_nsec": 385007000,
+      "wall_seconds": 0.926362314
+    },
+    {
+      "stage": "static-elf-15",
+      "test": "leader_exit::raw_exit_drains_nested_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "e2be4332a4fbf71da6c166948824f5a731a3a4d6cf43ea307130bf2b99764773",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d7165beaf63076091d358d7ec271ae41cb545d403c4cd95535e0330358867d69",
+      "cpu_nsec": 409146000,
+      "wall_seconds": 0.962432482
+    },
+    {
+      "stage": "static-elf-16",
+      "test": "leader_exit::raw_exit_drains_nested_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "bd6b80380c18eb28d0f628500bbef7c02b57653b53fc011de5aa44e42336df7d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "4c802b22bdaef86feeb6619dc63b8178210ab1396311a898934850aed6ce2e5a",
+      "cpu_nsec": 411004000,
+      "wall_seconds": 0.974184231
+    },
+    {
+      "stage": "static-elf-17",
+      "test": "leader_exit::raw_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "ccee4d4b73c0ba76fc7a593ea43cfc8ca6ccec7680c379f190a45b3cc862c7f9",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "70512f7871f6f168c13c90af5285b179d41e6e04da1142b0af1a3ac3eefa712c",
+      "cpu_nsec": 318575000,
+      "wall_seconds": 0.841527737
+    },
+    {
+      "stage": "static-elf-18",
+      "test": "leader_exit::raw_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "2e92c70cc8bbbe7987b2484160315b7fc2222296de70c96c8087228cd1697416",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "7882b9050998bd3b6e387e33b4b04f147a2a67cb1a48374bd057e9fe5e4c27e5",
+      "cpu_nsec": 326551000,
+      "wall_seconds": 0.877145615
+    },
+    {
+      "stage": "static-elf-19",
+      "test": "terminal_fork::backend_exec_failure_joins_live_fork",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "982dcf889b17f6bdbaf5f95f4becefd69d33d82dac78acd6ce1bb13f1963c44d",
+      "stderr_sha256": "eb2614a599e9fe7c94e624f7d32a7cd6d6145dcaa6a0ba6d44fc7cd8ce4f2593",
+      "admission_sha256": "cc32b78bdb839afe2cdb39e10064b981efda9e78a8c8575a0fd8cb55bca83fc8",
+      "cpu_nsec": 369766000,
+      "wall_seconds": 1.020705433
+    },
+    {
+      "stage": "static-elf-20",
+      "test": "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "74b11a2406a09d62ffb8af033b13057360920e2ed892063f4c72168f5d263cfa",
+      "stderr_sha256": "1265bb8e33b6f1f66abdf48ead3925f54ef19d981a2a3678d80e3c70a43deea8",
+      "admission_sha256": "b9753f2339ace896369f6505cd83e8d4bc97c5d83e1366c0ae8fd5661258f55a",
+      "cpu_nsec": 370343000,
+      "wall_seconds": 1.405312934
+    },
+    {
+      "stage": "static-elf-21",
+      "test": "terminal_fork::injected_exec_failure_joins_live_fork",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "042d541e835af8971e9c6bf80530624bcadbc6693b99dc771eea5d17e24d73a1",
+      "stderr_sha256": "4ac1a3362fd7f31bd4580112631e52be2ad31d148bef9fefb6542df768406d4b",
+      "admission_sha256": "f174c1b50cf16a875bec4dbd2e97262ee876c097ba3350053f1198d28ae36681",
+      "cpu_nsec": 369739000,
+      "wall_seconds": 1.011869312
+    },
+    {
+      "stage": "static-elf-22",
+      "test": "terminal_fork::injected_exec_failure_preserves_child_and_owner_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "c6e7ac4979c1a443de1c04650fe7705037f42813ab7acba6cc0c12d5e6bbfdda",
+      "stderr_sha256": "8db81af11696d170f98a1239f7cee5f175fbf2ddc4004ae6071cbd8d996255e7",
+      "admission_sha256": "890e479984d4f6ffb76fa2db43b263c88d9c940955796f0631c111b2ca7a12e3",
+      "cpu_nsec": 371709000,
+      "wall_seconds": 0.992371212
+    }
+  ],
+  "continuation": {
+    "original_plan": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/plan.json",
+    "original_summary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/run-1/summary.json",
+    "original_result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/RESULT.json",
+    "original_report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/REPORT.md",
+    "accepted_prefix_count": 8,
+    "retry_stage": "static-elf-05",
+    "first_attempt_tail": [
+      "static-elf-06",
+      "static-elf-07",
+      "static-elf-08",
+      "static-elf-09",
+      "static-elf-10",
+      "static-elf-11",
+      "static-elf-12",
+      "static-elf-13",
+      "static-elf-14",
+      "static-elf-15",
+      "static-elf-16",
+      "static-elf-17",
+      "static-elf-18",
+      "static-elf-19",
+      "static-elf-20",
+      "static-elf-21",
+      "static-elf-22"
+    ],
+    "reason": "Original static-elf-05 accounting refusal is retained; this attempt repeats that one method and executes the final 17 original methods for the first time on v22."
+  },
+  "prior_accepted": [
+    {
+      "stage": "vm-01",
+      "test": "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "b7c633199b4101475c71fe688331f991a73c56f18f6e887435c43fdeca6ba007",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "02eef641d85c2010386c09bd37d7bf1311fb5cf7e5554d0936c302093e495f65",
+      "cpu_nsec": 279062000,
+      "wall_seconds": 1.042331655
+    },
+    {
+      "stage": "vm-02",
+      "test": "vm::tests::page_fault_action_restores_complete_stopped_context",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "95060f3dd78ffe903df4a72df404a6dc5d810fedbae4f1bbe5800261ae7b8ef6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "9787f6a2966517a17f61c87661971dca3b7e56a778c17ec3070225ba8f6404bd",
+      "cpu_nsec": 290669000,
+      "wall_seconds": 1.385377989
+    },
+    {
+      "stage": "vm-03",
+      "test": "vm::tests::real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "52abe923d7eb61e9fb804d8c4a3f6b9c384ac40d2ee239bce93d50cb13c218c8",
+      "stderr_sha256": "fbe79e2cd5f0effe6dac0e2dc16e803984a79c1331e79dcebab5cd2111781215",
+      "admission_sha256": "529381be324c8e327dc81ecf414068884b280c9605e465ba1474a963b3c49e5c",
+      "cpu_nsec": 289110000,
+      "wall_seconds": 1.529658762
+    },
+    {
+      "stage": "vm-04",
+      "test": "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "e61f98327857c42fbc445c2764f7fc63d101ec499998a7e92e6a5292d84c2792",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "bab748efc7b52230dc96fb60fa5b030edfc641ee0799fd4c200be4918e3f4591",
+      "cpu_nsec": 317554000,
+      "wall_seconds": 2.0482415
+    },
+    {
+      "stage": "static-elf-01",
+      "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "a1d57085e42dc0df924c908ed9d995caaad05d91eaa4a8825f8e06b9258adf57",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "aff26ad013bebe78f7c429b24e1828cf4b9a87fedeab871fe97a4483e6e00ade",
+      "cpu_nsec": 701062000,
+      "wall_seconds": 2.945406442
+    },
+    {
+      "stage": "static-elf-02",
+      "test": "leader_exit::exec_rearms_worker_survival_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "4194584bed68b737ee740c548e3a5bebc1003ccc739b68cb1f26c682addc7dba",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "2555375e62e4569fbad8316cc96b5bdc7a2c21fc19e6532fc5e698a38390eda9",
+      "cpu_nsec": 420298000,
+      "wall_seconds": 1.13100392
+    },
+    {
+      "stage": "static-elf-03",
+      "test": "leader_exit::exec_rearms_worker_survival_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "351045b78268a299fa40d1771ddd0c16d894313b50b899b38d26e3547e62b378",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "a197f257d697583ea045c38517426cde84c9aa5f821ea43d5a2f6417fdde2e4a",
+      "cpu_nsec": 415603000,
+      "wall_seconds": 1.245202753
+    },
+    {
+      "stage": "static-elf-04",
+      "test": "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "ffbd10f534a0282fbf8163a3ab9f7802dc8da52e42dbda3b8b3f3dda1d07b732",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "79b8f380cbbb3f37e88d34834a50c3e0a3d59cee0f9f089aa76e6c6c75690dab",
+      "cpu_nsec": 411864000,
+      "wall_seconds": 1.177884569
+    }
+  ],
+  "scope": "Original 26-method Reverie qualification continued after the retained observer accounting refusal: 8 accepted prior methods (4 VM + 4 static), original static-elf-05 retried with unchanged admission/bounds, then 17 previously unexecuted original static methods. No claim of 26 clean first attempts. Same frozen source and actual ELFs; no Hermit/Detcore or canonical parity evidence."
+}

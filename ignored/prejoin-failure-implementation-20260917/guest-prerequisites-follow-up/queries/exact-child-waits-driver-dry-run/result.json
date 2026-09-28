@@ -1,0 +1,41 @@
+{
+  "name": "exact-child-waits-driver-dry-run",
+  "argv": [
+    "/usr/bin/cc",
+    "-###",
+    "-O0",
+    "-g",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/kvm_exact_child_waits.c",
+    "-o",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/NOT-BUILT-exact-child-waits"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up",
+  "pid": 1705592,
+  "exit_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.004279531072825193,
+  "cpu_seconds": 0.002018000000000006,
+  "bounds": {
+    "cpu_seconds_per_process": 5,
+    "wall_seconds": 15,
+    "address_space_bytes": 1073741824,
+    "file_bytes_per_stream": 1048576,
+    "core_bytes": 0
+  },
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea",
+  "streams": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/exact-child-waits-driver-dry-run/stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/exact-child-waits-driver-dry-run/stderr",
+      "bytes": 5562,
+      "sha256": "cf4f4fdce09ebbea2e385d56d4b2d7862ac8a5f227cf98123e666370c896d2e0"
+    }
+  }
+}

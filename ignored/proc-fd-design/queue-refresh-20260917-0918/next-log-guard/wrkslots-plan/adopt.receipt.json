@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/wrkslots",
+    "adopt",
+    "--help"
+  ],
+  "started_utc": "2026-09-17T10:00:41.693355+00:00",
+  "ended_utc": "2026-09-17T10:00:41.855663+00:00",
+  "exit_code": 0,
+  "wall_seconds": 0.16233284096233547,
+  "stdout_sha256": "7a0763d90bd999395c17a81b08382c7c57ae87da59a0e318a6ef3e511b7b94f8",
+  "stdout_bytes": 601,
+  "stderr_bytes": 0
+}

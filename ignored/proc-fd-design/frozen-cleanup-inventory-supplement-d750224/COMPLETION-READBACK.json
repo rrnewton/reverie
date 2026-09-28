@@ -1,0 +1,1560 @@
+{
+  "recorded_at": "2026-09-17T09:00:48.501635+00:00",
+  "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "base": "1145835fc804f47ae48b29b89009e6937184175a",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "repositories": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "1145835fc804f47ae48b29b89009e6937184175a",
+      "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+      "changed": [
+        "py/tests/test_packaging_infrastructure.py"
+      ],
+      "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0"
+    }
+  },
+  "actual_exit": 0,
+  "elapsed_seconds": 353.3023191320244,
+  "started_at": "2026-09-17T08:54:48.881267+00:00",
+  "finished_at": "2026-09-17T09:00:42.183863+00:00",
+  "normal_terminal_result": true,
+  "result_rows": 1,
+  "result_is_error": false,
+  "invalid_json_lines": [],
+  "source_unchanged_by_launcher": true,
+  "all155_inputs_modes_bytes_unchanged": true,
+  "verified_input_count": 155,
+  "verified_inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/COMPOSITION-SUMMARY.json",
+      "bytes": 5063,
+      "sha256": "2cff351016dbe74be63df15dddf81ad53ff433830658675a5d18cd371903d85a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/EVIDENCE-MANIFEST.json",
+      "bytes": 25225,
+      "sha256": "7bff181f5b2078504e259b5bfc33ca0386b0c788ef30866da96d3e3ad3ab3f00",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/EVIDENCE.md",
+      "bytes": 3141,
+      "sha256": "e3592ca8bbba1bd79a98973409ff900237003b72f088747664e9819c335d13f3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/base-tree.txt",
+      "bytes": 70761,
+      "sha256": "dee048cdcb75de7c9a5c03abeee7c87c60cec47a59623fcc0ff7f8cfdc998790",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/candidate-binding.json",
+      "bytes": 7691,
+      "sha256": "c2d64862726dfe0d0c62c55108c6b17b86593b4294abfb34cdf6ece5fc5e3aea",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/change.patch",
+      "bytes": 1830,
+      "sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/commit.txt",
+      "bytes": 931,
+      "sha256": "2b954c0f5cdc04a8ae4c5ca40d32767b762773d9a568431244f80a670c6f5f81",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/AU-INVENTORY-COMMIT-READBACK.json",
+      "bytes": 1973,
+      "sha256": "b59a401f0f9702f798d728cdc2ac33a165e5777f67ac8d5fef45481ad452e732",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/INVENTORY-MANIFEST.json",
+      "bytes": 791,
+      "sha256": "3b8389772e3fbcedcf1b64d0c50b9d6fa3e36d6e7ada25d9a0576e89d9c57c73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/PROOF.json",
+      "bytes": 40370,
+      "sha256": "cec98ff6fc0a04d57241feff5f456de54787c979dd3685dc843902e2a59205b3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-INVENTORY.json",
+      "bytes": 191300,
+      "sha256": "2299f35d59b132ecd38179fa872cac5962d06d7d7e24fb31f041903f7a76da81",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-SOURCE.json",
+      "bytes": 268,
+      "sha256": "403071f16414f80f51b76dd3a71dee1172df51359b444eb22ce9d08b96f5c35a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-all.RESULT.json",
+      "bytes": 708,
+      "sha256": "19475847348dd5f731919db1c47e941d3b769051a83c02741ba3f483c1c0dc60",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-all.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-all.stdout.txt",
+      "bytes": 89955,
+      "sha256": "cd5d70661d3ced445ff9d4bd0ce9e238b0cf847719610cc1a57627d0e22db38d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped.RESULT.json",
+      "bytes": 750,
+      "sha256": "5f8663e05aa6563856e484c716e828080656991e1679220d9e8f6a4cf8d5a30a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped.stdout.txt",
+      "bytes": 59928,
+      "sha256": "00771562f45cc1475fb3dbb91209203f287f8486d2ad10cf7dade4cb7cdd9ae2",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped_root.RESULT.json",
+      "bytes": 748,
+      "sha256": "26e267aadf65990e71bf30e208bf5434f1655ceb354004114eb9b16efb4cb308",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped_root.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-mapped_root.stdout.txt",
+      "bytes": 248,
+      "sha256": "74c1bccaa3beaa2c165bf024aadc9b36b288567c5b116aa9ca7433027871bb3c",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-ordinary.RESULT.json",
+      "bytes": 747,
+      "sha256": "caa73ad32d82959ad5192829d569543855c545fb2f57d682f279cc29555740ac",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-ordinary.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-ordinary.stdout.txt",
+      "bytes": 30099,
+      "sha256": "d1c315f1c26b8c63c38dd3f58078361f649c3155455b688929063d8ab220eb63",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-INVENTORY.json",
+      "bytes": 153468,
+      "sha256": "1faf1e3d6d47c5ba9d9532282d7b9dbde7a09fb693848539a819ffe0b364bdc9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-SOURCE.json",
+      "bytes": 268,
+      "sha256": "b13a9955f0ec5d10846162138f80b74b3cbc661450d0158cb25a5d0630576248",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-all.RESULT.json",
+      "bytes": 709,
+      "sha256": "df10c0d5e11fdb0ce2e28d7e7b8a1ee73318f7f5dc183b85ef802782721e0577",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-all.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-all.stdout.txt",
+      "bytes": 72040,
+      "sha256": "3927fa54dc4d0891b8b059c073b938b250fbd9c07a3cc6c3a50a7ec710360b1a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped.RESULT.json",
+      "bytes": 751,
+      "sha256": "f983d9763c7141dbaf02ca8ad73016b77d494398f95ce06845f0d7fd17578354",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped.stdout.txt",
+      "bytes": 59927,
+      "sha256": "3fcc80efd55c1102c674911aa2fa3c6caeb4ff65042fe1f30f64d533637b2c21",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped_root.RESULT.json",
+      "bytes": 748,
+      "sha256": "7beb4414e3a29df4338ffa33ffd4364ad069b6e176c778801a6bc8bc9423b845",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped_root.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-mapped_root.stdout.txt",
+      "bytes": 248,
+      "sha256": "374c44442a6699ca24ba03f56ea2630cc7ed7363018e7c19041d4959b33dbbe4",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-ordinary.RESULT.json",
+      "bytes": 748,
+      "sha256": "fae8d5dc12bedb3d73120e8ba4a4c53025d18be777dfb52b40ded05efbb08970",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-ordinary.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/before-ordinary.stdout.txt",
+      "bytes": 12183,
+      "sha256": "80aa7c20af7a5c517423918da23faac3c7d42099b8eac0116be008c7fbf94f79",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/INPUT.json",
+      "bytes": 409,
+      "sha256": "65f1355daf5e2af10a4c2970d5226cfd3e89dc5f4ab98442d8da1b221afaab61",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/RESULT.json",
+      "bytes": 82,
+      "sha256": "736d09553423d8f8a83e3328fe73dd0bff5dc42e193af47a505bf71ea8c8e31f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/exit-code.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/output.txt",
+      "bytes": 98,
+      "sha256": "acc1897d867539d151e7c16b72fe1b4a462f5b2bd7492cb811b3a9905344ee0b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/time.txt",
+      "bytes": 849,
+      "sha256": "09d9788c37b814baa4029f2a6cc28feb9459a87212303830b5670b85260a1b72",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/AU-VALIDATE-FAILURE-MANIFEST.json",
+      "bytes": 1856,
+      "sha256": "35b37e36c052c120e499d4944b956743adc051659f5894e18054d5f0c3a32ef9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/BINDING.json",
+      "bytes": 3164,
+      "sha256": "69e5ef66dba1f53089500df01ddb32c1d908cade9eadeda6b150518cb51ce8be",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/RESULT.json",
+      "bytes": 407,
+      "sha256": "99d1c20a4a883e87e3ae53473f07d304b549fa0b34312f655de9f37b85408516",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/RESULT.md",
+      "bytes": 2010,
+      "sha256": "c0cd73365a1fb1cba92269a322279f1a493c02b709943d77aa55f4a2c7788ef8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/output.txt",
+      "bytes": 13534,
+      "sha256": "4914e2ebb3cb3c893e24a7fd4835860ee5f52236e0d13028935a2dd31903b131",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-root/READBACK.json",
+      "bytes": 1572,
+      "sha256": "4152687093fc1735be4eb4db4ad7cc14ada846d5ab4b21194f036808c8772d99",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-root/REVIEW.md",
+      "bytes": 1967,
+      "sha256": "b5a834c6b27e2d90474dbef609b89c496199257d508f16bdb4dc9923b083b8cf",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-worker/READBACK.json",
+      "bytes": 13704,
+      "sha256": "cf3d7841687dfd190b775d3d6cf084abd4b9c42037e4986f1a7b7368fc3c4798",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-worker/REVIEW.md",
+      "bytes": 3378,
+      "sha256": "6378710526325734e8adc972ba034be92ec9ca51da78e1b3a940eae6951a9f9a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/COMPLETION-READBACK.json",
+      "bytes": 76348,
+      "sha256": "e3fe83b80581ec2de7e0d128278e413242ebae45a8355376479481326e796458",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/RESULTS.md",
+      "bytes": 3901,
+      "sha256": "e18fee9df9f308b768750154374a4f35a66fb6e90e6fcc0617b2895f04659513",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/REVIEW.md",
+      "bytes": 21393,
+      "sha256": "b4bb147c3ad525d26962745beca5fc90fea0bb311c0ef7a96fe02c6cb5beeaae",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/candidate-binding.json",
+      "bytes": 14388,
+      "sha256": "b331c29f7f48d7ff43612d31bf8bcedaec7bdb0ee193ce0aae7e56d91e322218",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/exit.json",
+      "bytes": 2325,
+      "sha256": "d634c6837dd658459faee646b0860e0a150330b8b75325ad31bb08e00071bc10",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/input-binding.json",
+      "bytes": 25361,
+      "sha256": "34ead62e941a9c9b1f0e3a5e8495e1c6da4cf28360c6b67ec5303a9010afe9f9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/execution-plan.json",
+      "bytes": 4693,
+      "sha256": "41a3d98760d55bba75064ede3bdc732f2ccb9686eaaa0ca8e04b97b4b86bede8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/head-tree.txt",
+      "bytes": 70761,
+      "sha256": "36ba04ab6590ed5097d4101e5cf09715fafdefbc6a87a4a545b60f019de165f3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch-review.py",
+      "bytes": 3079,
+      "sha256": "2ba9559e5a34aead7341c72fb14c972980197fd690dd8235c000b71cdff15ea2",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launcher.diff",
+      "bytes": 1537,
+      "sha256": "f7aa9ca249f7eea69fdfd5593ed8852f108dbb47a48208be9adbeedf6b132303",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/plan.diff",
+      "bytes": 4813,
+      "sha256": "bbf18e0a1ef824595ec1c8e792f89893ab1ca994c9bdfea6898a3b56b566cd2a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/prepare.py",
+      "bytes": 24793,
+      "sha256": "5c11a1bcf07d1dc604fd2287f3a758551c715036f28b6c9284cbbd9b0d1b1840",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/prompt.txt",
+      "bytes": 7801,
+      "sha256": "988a96ec3399254177304d40be612bcaf007f63b36c08010bf058f2759f6ed29",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/AGENTS.md",
+      "bytes": 9687,
+      "sha256": "e686649a85d3764a4a3f00df3756ff46e6364254e0d31038ab01d9d0753c0163",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/Makefile",
+      "bytes": 5840,
+      "sha256": "76c4f53cb5f6438344e283fa22ff16bd4b35bee4c1ec35fcc6cadc43f2dcff8f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/pyproject.toml",
+      "bytes": 974,
+      "sha256": "774ef2794445ad6bd89a93e4d67acb451d9c1b28966822162808e264eaf85779",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/tests/conftest.py",
+      "bytes": 2462,
+      "sha256": "2c4fb723f32dbb8843a0549016c5540ac7009edb0ba73cebd5fad4e4298ee210",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/tests/test_packaging_infrastructure.py",
+      "bytes": 21532,
+      "sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/conftest.py",
+      "bytes": 263,
+      "sha256": "51b32b1f30cb363b49cb34468997fb30b01fb8bca6caac991005d52652781c67",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/base/py/tests/test_packaging_infrastructure.py",
+      "bytes": 20896,
+      "sha256": "49fae7da74a5ecb42682352ef4fe656eedddf88d617a0b31bb9c38db0e4ce810",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/prior-base/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 786856,
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/EVIDENCE-MANIFEST.json",
+      "bytes": 18743,
+      "sha256": "900c10aa5e636df011405d3a3dda7934b6a4c4a584a539376488708c21b22ec8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/EVIDENCE.md",
+      "bytes": 3844,
+      "sha256": "f0260f71ec23a83567b3a76a4dd89b8e8ea28af8c1727140f8a8c78fe504d1f9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/agent-utils-commit.txt",
+      "bytes": 1293,
+      "sha256": "0548a13a6860ed2015b0f23b3766f74ba50d9ae821881d409081d7a768d66fde",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/agent-utils-tree.txt",
+      "bytes": 70761,
+      "sha256": "dee048cdcb75de7c9a5c03abeee7c87c60cec47a59623fcc0ff7f8cfdc998790",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/agent-utils.patch",
+      "bytes": 37299,
+      "sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/candidate-binding.json",
+      "bytes": 14388,
+      "sha256": "b331c29f7f48d7ff43612d31bf8bcedaec7bdb0ee193ce0aae7e56d91e322218",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/actual-1839/validate-kvm-closed-stdin-a88f9480-frozen.json",
+      "bytes": 2941,
+      "sha256": "fee1158194a7cb4d0b7c6163322d22126ab2fb92271ade05f1b7a2c9ba51b1dc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/actual-1839/validate-kvm-closed-stdin-a88f9480-frozen.service-result.json",
+      "bytes": 555,
+      "sha256": "bf780df553c03a0245e65da75f600d7b7949864b24ff7b620fe0b6bf47e10fce",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/AU-COMMIT-MESSAGE.txt",
+      "bytes": 1081,
+      "sha256": "73bfb264f7b87e55ca1f596f75d1e62a71f03ae8d32d125e3c5001dd154b464c",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/AU-COMMIT-READBACK.json",
+      "bytes": 2828,
+      "sha256": "cebf1ddf2f0d5c8d88db3f8399cb080997927c1a0ef9d0c00417a4c784df7d03",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/AU-CORRECTED-EVIDENCE-MANIFEST.json",
+      "bytes": 2557,
+      "sha256": "59170fd09c365f2e6b1019ea97368bfe644595a6c27b7dbb31e4079778c014bd",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/AU-SELF-REVIEW.md",
+      "bytes": 4293,
+      "sha256": "22736160a2c73c62dc16bd59c737578339ea934564c03ffda56cacdab461c60f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-corrected-inputs/BINDING.json",
+      "bytes": 512,
+      "sha256": "57f7f6353929a5321db2e357faf81388ced0764d2c0ed798e7f427193a6e8775",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-corrected-inputs/change.patch",
+      "bytes": 37299,
+      "sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-corrected-inputs/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-corrected-inputs/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-before-fix/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-before-fix/output.txt",
+      "bytes": 10516,
+      "sha256": "5535c76aad5bbf4279b61427ae376d6ccb8688260ec3cd0cda350167fb022db8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-before-fix/time.txt",
+      "bytes": 873,
+      "sha256": "6d944b688d6231c5d9dc20742e568375602312acfd689051f463fb6328b56026",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-corrected/SOURCE-READBACK.json",
+      "bytes": 140,
+      "sha256": "ba38f81cef17aadb2ce45a81d3a627725f89c852a554bea94fe0c1efacf1154a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-corrected/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-corrected/output.txt",
+      "bytes": 126,
+      "sha256": "308be61075901643b463f0582f9a517b58685b249c7a65fd7703ef38b446396b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-initial-binding-corrected/time.txt",
+      "bytes": 1119,
+      "sha256": "4cd28b81f998478555de7afd1b0ee1c48629e909098eefa4e7ab34a70161c8e2",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-mypy-corrected/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-mypy-corrected/output.txt",
+      "bytes": 44,
+      "sha256": "8f3f4c0ebcb835e848682f2c6610a1bf32c86a993bdb626d9ff36e3a49408398",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/agent-utils/au-mypy-corrected/time.txt",
+      "bytes": 841,
+      "sha256": "0c71fd1360245a0a2f08f492136e19a9c0e505c5ae556c9a68fd036d0f69fcdd",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/instructions/code-review-SKILL.md",
+      "bytes": 3617,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/plan.json",
+      "bytes": 4146,
+      "sha256": "43ddb68ad6d8b62d37a21e540d321d6d7ba68db149a50ebe47bf2ee719aa3dc0",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/test_start_unit.py",
+      "bytes": 416997,
+      "sha256": "b017bc88d74bd99f887be0c058714c7380dfb5e1042018c041ee9899bf680a82",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/tests.receipt.json",
+      "bytes": 3703,
+      "sha256": "7f86c821958489cf3471ca3204ed2949bf266584401a50bbb972d1c4751d5862",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/tests.stderr",
+      "bytes": 12417,
+      "sha256": "71f9e5fc4b5bd1da37a530387cebecdd0d519d67051b9b1caf1847e5a8cb7413",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-1/tests.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/plan.json",
+      "bytes": 1112,
+      "sha256": "3e47105ac24951739452d2df75f0c573dc6c99b5544ae1dc112339b040aaf8fc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/test_start_unit.py",
+      "bytes": 417442,
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/tests.receipt.json",
+      "bytes": 920,
+      "sha256": "e00762fcda13963a2ec4567f6d9aac956e9d0fd34e94f7b3ade94e9e51152a17",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/tests.stderr",
+      "bytes": 752,
+      "sha256": "739987b9f1f96a13cd99f4fb7b30f59848e7f48914672541432bc96386b5bddc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/parent/parent-implementation-2/tests.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/prior/frozen-cleanup-contract-review/REPORT.md",
+      "bytes": 12233,
+      "sha256": "014d8c2b748250149f145132e904dfe7d4679ee92c3cca9fedf7e4baaefb920f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/prior/frozen-cleanup-contract-review/SOURCE-BINDING.json",
+      "bytes": 5607,
+      "sha256": "1daccc2c05e75bfc725c44f064132ed8bc6533ec77095455b42992075a68aedb",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/prior/parent-cleanup-slice-review/REVIEW.md",
+      "bytes": 8659,
+      "sha256": "1a428e872056aac83fe3794108454d784c7c0a6d5c553971afa8a70ee0bc6596",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/evidence/prior/parent-cleanup-slice-review/SOURCE-BINDING.json",
+      "bytes": 9701,
+      "sha256": "369da1da537c1b08326b89d956f6952fa76b6a6ec125516ddadaafebd896ad1a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/execution-plan.json",
+      "bytes": 4772,
+      "sha256": "30f5add30b6e512876911f28a39a5a662672e2f56140d532f8d51647607910cf",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch-review.py",
+      "bytes": 3073,
+      "sha256": "2c7c2f1ac659c8e6087975b4732eef21998dd86a407c590f14bbd3504b8053d9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launcher.diff",
+      "bytes": 1408,
+      "sha256": "17ed28d2a9827a0d56f9a2a44f2b1203e33a60119ab3c0829fff259370716a00",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/parent-commit.txt",
+      "bytes": 935,
+      "sha256": "7e5bad3a120a6a9424c058f4f66d5157ac5eea9d1669d5420fb71790d6a096ab",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/parent-tree.txt",
+      "bytes": 1313980,
+      "sha256": "3e3f1de5359e0528c75adf6d3a950d0c089a9f52d9e1e734038bbe3f268bade7",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/parent.patch",
+      "bytes": 27842,
+      "sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/prepare.py",
+      "bytes": 10415,
+      "sha256": "84b570d67319ae7e268f4980cc3930734ce6695e80f8fe9be5391d36e4b0b923",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/prompt.txt",
+      "bytes": 9985,
+      "sha256": "153a858c2c4b9dc218ad436b2313935c6435a0c29049c9e297c1d53e477e59cd",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/AGENTS.md",
+      "bytes": 9687,
+      "sha256": "e686649a85d3764a4a3f00df3756ff46e6364254e0d31038ab01d9d0753c0163",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/Makefile",
+      "bytes": 5840,
+      "sha256": "76c4f53cb5f6438344e283fa22ff16bd4b35bee4c1ec35fcc6cadc43f2dcff8f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/py/wrkslots/__init__.py",
+      "bytes": 166,
+      "sha256": "44cd2076564f1406daf3735d7d009317b5ccfb37340da3f12b0d34293cae20dc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/py/wrkslots/__main__.py",
+      "bytes": 396,
+      "sha256": "aca897069fc5460efae86cf5f11b96ea2f39dcdacb5daec6f0e8e670fb0a5da4",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/py/wrkslots/pyproject.toml",
+      "bytes": 984,
+      "sha256": "b1712c1dfa1cbf6666e46d78e05979c4cbc1246fc78b6a2b7e07df88f34233d6",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/agent-utils/scripts/validate.py",
+      "bytes": 18962,
+      "sha256": "59dfef7e7237de484ba3574fc4536ca66b03784c2150a4c381e073c599356c61",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/base/agent-utils/py/wrkslots/cli.py",
+      "bytes": 1041325,
+      "sha256": "d7018b96ded39083a6236cfb5140e1c907fdbb0f1c7500bfdbc5e5c04d166d25",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/base/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 786856,
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/base/parent/ci-hub/validate/start_unit.py",
+      "bytes": 290445,
+      "sha256": "cd57ad64e43afd206c21fa1276cfbf7b9ea7b5bbce1603112b4c10254a3ba4a0",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/base/parent/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 401134,
+      "sha256": "c56bcd215870479a14d30f2617f9bda0933c4ac487a5bf48db7391a27ed2c3a5",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/hermit-contract/ci/manifest-plan/validation-service-result-schema.json",
+      "bytes": 773,
+      "sha256": "5b278e7185731d45c2fa3bd28109d1a654c145eb7c7afcff4a2480b676e01b69",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/hermit-contract/scripts/validate.rs",
+      "bytes": 982114,
+      "sha256": "495c8e614ccf74cec58948cbea6b055f34afc1ca1caaacecfef936b05a8b7493",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/AGENTS.md",
+      "bytes": 17897,
+      "sha256": "f80ea3182e85d7067acc4cb2ae7fe3775e882bdb5053b7c487b5c4939d0e5d1a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/bin/wrkslots",
+      "bytes": 11327,
+      "sha256": "56ae5c51026575f4d32b455785e4904b10b60d18ddab028b6337318e654a3c10",
+      "mode": "0o755"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/health/host_process_context.py",
+      "bytes": 1503,
+      "sha256": "8e3ad5a70c7a9cc2ef20cd2f0a574f36e1f9d6c5d3a0a07cdb8326145a11823a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/health/removal_handoff_writer.py",
+      "bytes": 371,
+      "sha256": "4ff2c20f02289ccb022ebc5ba2ab876f88ec2b52672733455badcff7d42c45ed",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/lib/git_env.py",
+      "bytes": 1611,
+      "sha256": "dd62d2bc3405a5b56f3426941a50b928af483b8f4b04b0e26b0a1c212687067e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/immutable_tool_authority.py",
+      "bytes": 16118,
+      "sha256": "cd9dbcb99d0cc8d8e9dfebeeaaa0546a6d0eae525477e858277cb7c1a6c28bdd",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/run_registry.py",
+      "bytes": 75328,
+      "sha256": "cb973cfcbd5b302cb5cc7dd4cee528014c7f9d5a5d54550305be5d9993514045",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/service_result.py",
+      "bytes": 30350,
+      "sha256": "b62b3cab47a2f3d68e2c1d552208fb02ced6ebcc00c3b5ca972e2b7d8dd8b6f8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 417442,
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent/ci-hub/validate/tree_disposition.py",
+      "bytes": 8274,
+      "sha256": "4d0384dd0cb83f82b434382c29e46ebd42d6899fad8903ac07507658d3f3921b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "mode": "0o755"
+    },
+    {
+      "path": "/usr/bin/timeout",
+      "bytes": 36848,
+      "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+      "mode": "0o755"
+    },
+    {
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d",
+      "mode": "0o755"
+    },
+    {
+      "path": "/usr/local/bin/claude_code/os/claude",
+      "bytes": 669,
+      "sha256": "36f36c0fe279c7077e3e48c8813344d1db59741766923bec9ec2308fa3d278d9",
+      "mode": "0o755"
+    }
+  ],
+  "git_object_copy_readbacks": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/tests/test_packaging_infrastructure.py",
+      "git_blob": "6a0f60208292a60fff0c61fe4724a245d32b9f0f",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/Makefile",
+      "git_blob": "54ef589879ab38499691dfcc4ac2f4878d24f106",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "76c4f53cb5f6438344e283fa22ff16bd4b35bee4c1ec35fcc6cadc43f2dcff8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/pyproject.toml",
+      "git_blob": "e24ecf26549febb94887aad46e8bcd81aebe865d",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "774ef2794445ad6bd89a93e4d67acb451d9c1b28966822162808e264eaf85779"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/conftest.py",
+      "git_blob": "55e2fe0ba598e49a28ab23a8aa1862175f9a1fdb",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "51b32b1f30cb363b49cb34468997fb30b01fb8bca6caac991005d52652781c67"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/tests/conftest.py",
+      "git_blob": "5f088917d93a7a9f07984fa0e5198b23dad72c3a",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "2c4fb723f32dbb8843a0549016c5540ac7009edb0ba73cebd5fad4e4298ee210"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "git_blob": "e743489d28c601cc5b208aef4dd4318bcd99b402",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/cli.py",
+      "git_blob": "f3e2bdd46775145124369ef1265ce5f965c23872",
+      "git_mode": "100755",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/AGENTS.md",
+      "git_blob": "35e67cc78b71e45885abcba8458f43be1270317d",
+      "git_mode": "100644",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "sha256": "e686649a85d3764a4a3f00df3756ff46e6364254e0d31038ab01d9d0753c0163"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/base/py/tests/test_packaging_infrastructure.py",
+      "git_blob": "a246346f4d47d33ab4339af9f09e5c1fa8eb6015",
+      "git_mode": "100644",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "sha256": "49fae7da74a5ecb42682352ef4fe656eedddf88d617a0b31bb9c38db0e4ce810"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/prior-base/py/wrkslots/tests/test_lifecycle.py",
+      "git_blob": "b5a913d3895722388e43a0d935cb9dc652e81284",
+      "git_mode": "100644",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab"
+    }
+  ],
+  "current_candidate_copy_count": 10,
+  "requested_tools_only": [
+    "Glob",
+    "Grep",
+    "Read"
+  ],
+  "tool_calls": [
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/.llms/skills/code-review/SKILL.md"
+      },
+      "id": "toolu_vrtx_01J2Wwrdzwh5svWUyfRr8EEk"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/change.patch"
+      },
+      "id": "toolu_vrtx_016ahTBTMU6S2F3vzwt7BFqq"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/COMPOSITION-SUMMARY.json"
+      },
+      "id": "toolu_vrtx_01FSiKwe7QfsDaivuYjHjZ29"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/EVIDENCE.md"
+      },
+      "id": "toolu_vrtx_01QNQEqyXyQUzFgNFNgV7xJ4"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/candidate-binding.json"
+      },
+      "id": "toolu_vrtx_017bBynBAit59iKFx4BSGfeF"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/prior-combined/REVIEW.md"
+      },
+      "id": "toolu_vrtx_01PwCy8RZtLzQrn3DD5BXmLE"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/PROOF.json"
+      },
+      "id": "toolu_vrtx_01HqhRcDTRv2yVdXuArp2HkN"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/tests/test_packaging_infrastructure.py"
+      },
+      "id": "toolu_vrtx_01Uet782umpTuLooceCFsPmW"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/conftest.py"
+      },
+      "id": "toolu_vrtx_01NuR8p1gK741tYNP2u5DmCP"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/pyproject.toml"
+      },
+      "id": "toolu_vrtx_01Ebokx6NjvpEYh4QhHTEipa"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/Makefile"
+      },
+      "id": "toolu_vrtx_0142PnQzpAnoWuwVvPXPKc6R"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "def test_current_incomplete_frozen_",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+        "output_mode": "content",
+        "-B": 25,
+        "-n": true
+      },
+      "id": "toolu_vrtx_011hkN3s6RuMR4jVrCtNi1k7"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/base/py/tests/test_packaging_infrastructure.py",
+        "offset": 385,
+        "limit": 125
+      },
+      "id": "toolu_vrtx_01CESDyNBP6bhTFwNkAuzZPi"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "mark\\.(skip|skipif|xfail)|pytest\\.skip\\(|pytest\\.xfail|__test__|collect_ignore|addopts|deselect",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+        "output_mode": "content",
+        "-n": true
+      },
+      "id": "toolu_vrtx_01PTiBmmLuAB2BUzWu6irP4w"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "^@pytest\\.mark\\.|^def test_",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+        "output_mode": "count"
+      },
+      "id": "toolu_vrtx_01Qr9QA52uV9M4cLTbbDwkrB"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/prior-base/py/wrkslots/tests/test_lifecycle.py",
+        "offset": 22560,
+        "limit": 60
+      },
+      "id": "toolu_vrtx_01Xcpef11HdATou9bzkv9RL7"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+        "offset": 21930,
+        "limit": 45
+      },
+      "id": "toolu_vrtx_011aP2Jtphz1oCJ3vn5z2cEF"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/prior-base/py/wrkslots/tests/test_lifecycle.py",
+        "offset": 22530,
+        "limit": 30
+      },
+      "id": "toolu_vrtx_01SkEFcorGKtHZ5eruVjAEhU"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+        "offset": 22530,
+        "limit": 30
+      },
+      "id": "toolu_vrtx_017Sg6k1NNTsFgstthknzcu8"
+    },
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "**/*",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence"
+      },
+      "id": "toolu_vrtx_01Vsxwn56E4oJcP86Qef346m"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/INVENTORY-MANIFEST.json"
+      },
+      "id": "toolu_vrtx_014kTWjp5DWMN2MLv7mxCRCb"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-ordinary.RESULT.json"
+      },
+      "id": "toolu_vrtx_01U9xKNRCpbwQGyH2Wog3fof"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections/after-SOURCE.json"
+      },
+      "id": "toolu_vrtx_015os7m5SzXBDsmS1QXpVBpS"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/INPUT.json"
+      },
+      "id": "toolu_vrtx_01NySLz9fwigjWK1dK66GMDn"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "^wrkslots/tests/test_lifecycle\\.py::",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections",
+        "output_mode": "count"
+      },
+      "id": "toolu_vrtx_019huzM25HXGhjq7qKXDKC4h"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "test_current_incomplete_frozen_",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections",
+        "output_mode": "count"
+      },
+      "id": "toolu_vrtx_01M1iLoftPAfD1BVVQsW4Jy3"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "deselected|error|warning|skipped|no tests ran",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections",
+        "output_mode": "content",
+        "-i": true
+      },
+      "id": "toolu_vrtx_015qjxu1vb56qgQsgvmn89dg"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "::(test_adopt_refuses_pid_outside_invoking_process_ancestry|test_create_binds_owner_running_beside_its_assigned_coordinator|test_current_frozen_result_without_removal_proof_blocks_entry|test_direct_current_frozen_recovery_refuses_lost_journal_proof|test_direct_current_frozen_recovery_refuses_tampered_proof|test_direct_current_frozen_recovery_requires_removal_proof|test_direct_frozen_recovery_preserves_proofless_legacy_schemas|test_direct_historical_projection_cannot_use_batch_only_nonblocking_result|test_frozen_parser_and_consumer_use_exact_real_projection_shape|test_frozen_parser_authority_accepts_real_nested_linked_worktree|test_frozen_parser_failures_preserve_checkout_without_journal|test_frozen_parser_reads_immutable_initial_snapshot_during_live_restore|test_frozen_parser_refuses_each_module_tampered_before_or_after_inspect|test_frozen_parser_refuses_record_mutation_after_inspect|test_frozen_validate_batch_closes_operation_owned_fds_before_censuses|test_frozen_validate_batch_accepts_exact_validation_removal_proof|test_frozen_validate_batch_fresh_census_does_not_ignore_current_process|test_frozen_validate_detects_pre_exclusion_same_uid_holder_and_rolls_back|test_frozen_validate_excludes_late_same_uid_checkout_entry|test_frozen_validate_sealed_guard_fd_cannot_open_late_payload|test_frozen_validate_checkout_binds_terminal_record_fields|test_frozen_validate_checkout_recovers_each_durable_crash_boundary|test_frozen_validate_recovery_refuses_exclusion_identity_tampering|test_frozen_validate_recovery_refuses_absent_fenced_path)(\\[|$)",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections",
+        "glob": "*ordinary.stdout.txt",
+        "output_mode": "count"
+      },
+      "id": "toolu_vrtx_0164i6scEnWTjbbpD8zdVDpG"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "::(test_frozen_validate_recovery_refuses_absent_prepared_path_twice|test_frozen_validate_recovery_refuses_changed_identity_binding|test_frozen_validate_recovery_refuses_changed_terminal_record_digest|test_frozen_validate_rebinds_external_proof_after_exclusion_census|test_frozen_validate_refuses_disappearance_after_final_check|test_frozen_validate_refuses_cross_device_exclusion_root|test_frozen_validate_refuses_fenced_replacement_after_final_check|test_frozen_validate_refuses_replacement_after_final_check|test_frozen_validate_refuses_when_verified_root_context_is_unavailable|test_frozen_validate_rejects_counterfeit_minimal_terminal_records|test_historical_frozen_entry_classification_closes_operation_owned_fds|test_historical_frozen_entry_classification_fails_closed_on_evidence_change|test_historical_frozen_entry_classification_fails_closed_on_shape_changes|test_historical_frozen_live_process_identity_blocks_entry|test_historical_frozen_retention_reports_schema_two_exactly|test_lock_conflict_refuses_without_state_change|test_ownerless_validate_batch_removes_terminal_frozen_checkout|test_process_entering_after_final_scan_before_path_move_is_not_deleted|test_remove_refuses_live_process_using_slot|test_root_owned_executable_accepts_host_root_helper|test_run1773_historical_frozen_checkout_is_retained_without_blocking_entry|test_uncontained_current_frozen_checkout_still_cannot_be_removed|test_uncontained_historical_frozen_retention_binds_head_and_source|test_validate_batch_rechecks_external_proof_after_private_seal)(\\[|$)",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/collections",
+        "glob": "*ordinary.stdout.txt",
+        "output_mode": "count"
+      },
+      "id": "toolu_vrtx_014Xd7sEshaKHRKdPPYNi8SB"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/RESULT.json"
+      },
+      "id": "toolu_vrtx_013rtMR8FRnQ8JofabS6DpH1"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/RESULT.json"
+      },
+      "id": "toolu_vrtx_01PaJpxXgrrsgTFrc8icwkUE"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/direct-control/output.txt"
+      },
+      "id": "toolu_vrtx_01ARcUnidLqyBse4XTNNzBmp"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/AU-INVENTORY-COMMIT-READBACK.json"
+      },
+      "id": "toolu_vrtx_01Fi6Ya95zHSGorVgUHgy2DT"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "assert|FAILED|failed|passed|Error",
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/failed-114-validation/output.txt",
+        "output_mode": "content",
+        "-n": true,
+        "head_limit": 60
+      },
+      "id": "toolu_vrtx_01QrHVVsP97gzfEeHdx3vrJm"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-root/REVIEW.md"
+      },
+      "id": "toolu_vrtx_01PDEqpj1ctYAK7dT5mP1oBL"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/evidence/native-worker/REVIEW.md"
+      },
+      "id": "toolu_vrtx_018qCVwumGuN178bsUce8bU1"
+    }
+  ],
+  "tool_results": [
+    {
+      "tool_use_id": "toolu_vrtx_01J2Wwrdzwh5svWUyfRr8EEk",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_016ahTBTMU6S2F3vzwt7BFqq",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01FSiKwe7QfsDaivuYjHjZ29",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01QNQEqyXyQUzFgNFNgV7xJ4",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_017bBynBAit59iKFx4BSGfeF",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01PwCy8RZtLzQrn3DD5BXmLE",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01HqhRcDTRv2yVdXuArp2HkN",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Uet782umpTuLooceCFsPmW",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01NuR8p1gK741tYNP2u5DmCP",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Ebokx6NjvpEYh4QhHTEipa",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_0142PnQzpAnoWuwVvPXPKc6R",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_011hkN3s6RuMR4jVrCtNi1k7",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01CESDyNBP6bhTFwNkAuzZPi",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01PTiBmmLuAB2BUzWu6irP4w",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Qr9QA52uV9M4cLTbbDwkrB",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Xcpef11HdATou9bzkv9RL7",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_011aP2Jtphz1oCJ3vn5z2cEF",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01SkEFcorGKtHZ5eruVjAEhU",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_017Sg6k1NNTsFgstthknzcu8",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Vsxwn56E4oJcP86Qef346m",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_014kTWjp5DWMN2MLv7mxCRCb",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01U9xKNRCpbwQGyH2Wog3fof",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_015os7m5SzXBDsmS1QXpVBpS",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01NySLz9fwigjWK1dK66GMDn",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_019huzM25HXGhjq7qKXDKC4h",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01M1iLoftPAfD1BVVQsW4Jy3",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_015qjxu1vb56qgQsgvmn89dg",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_0164i6scEnWTjbbpD8zdVDpG",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_014Xd7sEshaKHRKdPPYNi8SB",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_013rtMR8FRnQ8JofabS6DpH1",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01PaJpxXgrrsgTFrc8icwkUE",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01ARcUnidLqyBse4XTNNzBmp",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01Fi6Ya95zHSGorVgUHgy2DT",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01QrHVVsP97gzfEeHdx3vrJm",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_01PDEqpj1ctYAK7dT5mP1oBL",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_vrtx_018qCVwumGuN178bsUce8bU1",
+      "is_error": false
+    }
+  ],
+  "public_assistant_text_count": 2,
+  "literal_report_extraction": "Exact JSON-decoded result.result UTF-8, without an added newline",
+  "final_assistant_equals_terminal_result": true,
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/REVIEW.md",
+    "bytes": 11709,
+    "sha256": "75ec0d9d16a91b957030e9daad6b1edf5291bf41bd763a2de0f4e59bad59cdd2",
+    "mode": "0o644"
+  },
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/stdout.jsonl",
+      "bytes": 540331,
+      "sha256": "2756e6e6254db8324e62325f0ecbc72f6319b707e87157c349efeebb676626e8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/stderr.log",
+      "bytes": 93,
+      "sha256": "baa73543804294abc0f6c8fc48aeda5ae18986656b5edbc3c7f41677d79ac60e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch.json",
+      "bytes": 2175,
+      "sha256": "1435fdf50d962c7b7c02f39d400054987ec0a8774e24ed4a801b503453ee2500",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/exit.json",
+      "bytes": 2314,
+      "sha256": "86e024f5937b8f5938cf6f9a2b5832de048964a5d0244e5acbdef50c4f673699",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/input-binding.json",
+      "bytes": 49727,
+      "sha256": "201bfb00df11bca79a93237a36396cb084c63d9f98673cb7d0f8b6d46598cb96",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/candidate-binding.json",
+      "bytes": 7691,
+      "sha256": "c2d64862726dfe0d0c62c55108c6b17b86593b4294abfb34cdf6ece5fc5e3aea",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/prompt.txt",
+      "bytes": 7801,
+      "sha256": "988a96ec3399254177304d40be612bcaf007f63b36c08010bf058f2759f6ed29",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/EVIDENCE.md",
+      "bytes": 3141,
+      "sha256": "e3592ca8bbba1bd79a98973409ff900237003b72f088747664e9819c335d13f3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch-review.py",
+      "bytes": 3079,
+      "sha256": "2ba9559e5a34aead7341c72fb14c972980197fd690dd8235c000b71cdff15ea2",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/audit-completion.py",
+      "bytes": 7775,
+      "sha256": "ab9aed7e17e93e31fee3b9bff36d0e9fb0ea5cc7ea7975e2581843237e26c8be",
+      "mode": "0o644"
+    }
+  ],
+  "no_review_rerun": true,
+  "runtime_attribution": "Inventory-only source review: no new collection, test, build, guest, admission or cleanup. Original normal114 validation exit2/2967pass1fail preserved. Direct assertion1pass belongs to exact new file bytes before d750 commit. Normald750 validation incomplete at input cutoff; later results are separate. Prior pair114/fba5 verdict and real1839 limitations remain intact."
+}

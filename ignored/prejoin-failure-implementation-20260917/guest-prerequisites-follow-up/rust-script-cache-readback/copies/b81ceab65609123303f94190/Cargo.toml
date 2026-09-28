@@ -1,0 +1,26 @@
+[[bin]]
+name = "validate_b81ceab65609123303f94190"
+path = "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/validate.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
+sha2 = "0.10"
+shell-words = "1.1"
+tempfile = "3"
+toml = "0.8.23"
+
+[dependencies.dagrun]
+path = "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/../agent-utils/rs/dagrun"
+
+[dependencies.hermit-manifest-plan]
+path = "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/../ci/manifest-plan"
+
+[package]
+authors = ["Anonymous"]
+edition = "2021"
+name = "validate_b81ceab65609123303f94190"
+version = "0.1.0"
+
+[profile.release]
+strip = true

@@ -1,0 +1,173 @@
+{
+  "status": "passed",
+  "source_version": "v22",
+  "source_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "source_manifest_sha256": "d0bc1940c640bc235b942c7951e5a431996f2a5ff34c90f3594fb4ad6c762997",
+  "plan_sha256": "bf32d2bf209008129a492c822511078b70d8787474edb203c1891a186f8c3cb6",
+  "caller_sha256": "00e25ac1c7787051bf3efd2802076aaefada1a88134a9901eaaeeaa9ed583f30",
+  "launch_sha256": "d45d492330d8c8227d595df1bb20b038473ec4fdf58e5273a3d8368f36008794",
+  "selected_count": 44,
+  "listed_total": 453,
+  "inventory_additions": [
+    "runtime::failure_tests::independent_process_select_then_await_keeps_failed_rpc_pending"
+  ],
+  "compiler_message_count": 0,
+  "compiler_diagnostics": [],
+  "stages": [
+    {
+      "stage": "compile",
+      "cpu_seconds": 7.458868,
+      "wall_seconds": 4.879847419,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v16/compile/result.json",
+      "result_sha256": "7fcd9f270fb9651f07342effafb306580a662650e841061aab4ebbfb9be67cde",
+      "service": {
+        "Id": "safehermit-20260917T165522Z-3360787.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 3361565,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1823051165977,
+        "CPUUsageNSec": 7458868000
+      },
+      "accounting_complete": true,
+      "cgroup_empty": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "stdout": {
+        "bytes": 125556,
+        "sha256": "a8865fb6a3230a0fd70f14cdfef21acde10ab1ccbc3ceb33d91ab8e80d414ad0"
+      },
+      "stderr": {
+        "bytes": 194,
+        "sha256": "14094e419c92bb5d7c1a555058c3c019cda75ada2ea25fc36e9234ddd96cc10e"
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T165522Z-3360787.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "list",
+      "cpu_seconds": 0.219175,
+      "wall_seconds": 0.872096701,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v16/list/result.json",
+      "result_sha256": "61d16fe81546a67f7e6b48fe3742e128e0461f48f2064917b7ef5870cb9c5178",
+      "service": {
+        "Id": "safehermit-20260917T165529Z-3371133.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 3371378,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1823058976515,
+        "CPUUsageNSec": 219175000
+      },
+      "accounting_complete": true,
+      "cgroup_empty": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "stdout": {
+        "bytes": 35541,
+        "sha256": "db5d9048dfcc82fa53aefb05e2d289f32096c9c6d8945e94fe0565f109bd4967"
+      },
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T165529Z-3371133.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "native",
+      "cpu_seconds": 0.244696,
+      "wall_seconds": 1.610203477,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v16/native/result.json",
+      "result_sha256": "fc991e61cf934e87083a3840f7b4efa59810ddaad24a2e3edf8f7ce58cfba317",
+      "service": {
+        "Id": "safehermit-20260917T165533Z-3377249.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 3377708,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1823062666264,
+        "CPUUsageNSec": 244696000
+      },
+      "accounting_complete": true,
+      "cgroup_empty": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "stdout": {
+        "bytes": 4243,
+        "sha256": "946847f8257d44cf897055b060c98b9d667883d5dd1d9f225db3866157a1a0e9"
+      },
+      "stderr": {
+        "bytes": 626,
+        "sha256": "5de5e4862007d777e11ac972b9caed3144c7d5205b9e6a4d64e2700d27236d71"
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T165533Z-3377249.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "retained_elf_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/run-1/retained-elf-v22/binding.json",
+  "retained_elf_binding_sha256": "57413d3766ee5762459b09db2d73cab179a8c6a4e64b2d3e693320c4481f7169",
+  "source_check_after": "Complete comparison passed before source changes; no separate full after snapshot is claimed.",
+  "limits": "All outputs bounded and untruncated; unchanged observer limits and actual service accounting.",
+  "scope": "Selected native execution only; no complete-repair, VM/static, Hermit, determinism or parity claim. See adjacent REPORT.md for source-version limitations."
+}

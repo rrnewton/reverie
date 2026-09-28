@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "gh",
+    "api",
+    "--method",
+    "GET",
+    "repos/rrnewton/hermit/pulls/3066/files?per_page=100"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3",
+  "pid": 459592,
+  "started_at": "2026-09-17T20:25:24.870194+00:00",
+  "ended_at": "2026-09-17T20:25:25.443422+00:00",
+  "wall_seconds": 0.5732364158611745,
+  "exit_code": 0,
+  "timed_out": false,
+  "bounds": {
+    "cpu_seconds_per_process": 15,
+    "wall_seconds": 60,
+    "address_space_limit": "inherited; no added RLIMIT_AS",
+    "bytes_per_stream": 16777216,
+    "core_bytes": 0
+  },
+  "stdout_sha256": "19247c0d77702814b204afa457ab030b700cf0d5e65a4eb08c8c57f0517ac6d2",
+  "stdout_bytes": 19412,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_bytes": 0
+}

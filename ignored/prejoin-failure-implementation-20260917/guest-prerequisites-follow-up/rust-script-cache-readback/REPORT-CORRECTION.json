@@ -1,0 +1,7 @@
+{
+  "old_report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/REPORT.md",
+  "old_sha256": "a6b6e5eb4b8e0e7008af944cf04995a63b6437e05f319723bc38eb32251ada0f",
+  "new_report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/REPORT-v2.md",
+  "new_sha256": "2c393409fa61ee8b6980badc15477bf631fb9b1125ed0b7806dc0a00e6df7fbe",
+  "correction": "Resolved nine literal hash expressions in the final machine-readable record list. All source, cache captures, actual artifact records and findings unchanged. Prior report/manifest retained."
+}

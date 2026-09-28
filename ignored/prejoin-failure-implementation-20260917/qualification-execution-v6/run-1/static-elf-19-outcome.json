@@ -1,0 +1,26 @@
+{
+  "stage": "static-elf-19",
+  "test": "terminal_fork::backend_exec_failure_joins_live_fork",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ],
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "0a367a764fa57d60284d4accfa4182430f2f01b9a4972780f5f4525c541f8015",
+  "stderr_sha256": "914f0aa2be704315d2d10f40c4670f151d42ee5f501863f93d46f39249fcf29a",
+  "admission_sha256": "3b9f34245090e395bee69e00267ee777992c02d1f29664b0d52d052659262a19",
+  "cpu_nsec": 365839000,
+  "wall_seconds": 1.024326262
+}

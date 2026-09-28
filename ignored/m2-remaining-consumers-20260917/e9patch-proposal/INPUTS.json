@@ -1,0 +1,43 @@
+{
+  "sources": [
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+      "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+      "path": "tests/backend-parity/e9patch_corpus.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/e9patch_corpus.py",
+      "mode": "100644",
+      "blob": "dae44c680857a9f08d8a79f866593bf81485fc5b",
+      "bytes": 16102,
+      "sha256": "8e6e1aebf8796c84c37d39d97b5950cbe02dde085f96b72856ae6aeec4593266"
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+      "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+      "path": "tests/backend-parity/test_verify_tier_evidence.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/test_verify_tier_evidence.py",
+      "mode": "100755",
+      "blob": "94ff1493b104cf5052777e9f8861a5f4f48fd96b",
+      "bytes": 28550,
+      "sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda"
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+      "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+      "path": "tests/backend-parity/test_parallel_validate_paths.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/test_parallel_validate_paths.py",
+      "mode": "100644",
+      "blob": "19fc009fe3ad98d99d28fcc4aeec6477f35fc040",
+      "bytes": 15072,
+      "sha256": "7c327fc6bace5fb9365104975f73b8b81d790b448522ea7cd7dc7f160d2dfd72"
+    }
+  ],
+  "parent_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/REPORT.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/parent-REPORT.md",
+    "bytes": 16449,
+    "sha256": "5fae5504402725ffcfcd425bf65876fbd03721e6c346d3127569f429b2ae6664"
+  }
+}

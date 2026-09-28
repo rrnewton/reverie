@@ -1,0 +1,71 @@
+{
+  "prepared_only": true,
+  "no_publication_yet": true,
+  "expected_head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "pull_request": "https://github.com/rrnewton/hermit/pull/3047",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/comment.md",
+      "bytes": 16159,
+      "sha256": "1b0e46dbdc1f3ce3e9ffab4c9f550c6a517bcb994a7c4b619e5f1413218ada24",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/request.json",
+      "bytes": 16273,
+      "sha256": "e825f19a845b87012a8921fd5c0c8d5d1700f192997aed65e7bfb6e0a632317e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/post.py",
+      "bytes": 4444,
+      "sha256": "3cb5eb52061d3320e64eb977ce1b1fd3f843598dd86500ffc67766cc001e4b52",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/who-am-i.stdout",
+      "bytes": 66,
+      "sha256": "7c2a72d0f06a6ff28b7aadf17c8b8fd9035cf989b6e11a385480536be587917b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/who-am-i.stderr",
+      "bytes": 274,
+      "sha256": "ff72660015385e50a3c4caac725b2bd983d66dd56c902cc91886809c178eb322",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/who-am-i.json",
+      "bytes": 133,
+      "sha256": "b131d4f437351743712d435b60e65b7b487a96395e691d319506a45c38cb59d3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/REVIEW.md",
+      "bytes": 14718,
+      "sha256": "ca36cfc5135f6d664195e456067936967e5a748449b4eee4e449b3c9d709ed07",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/COMPLETION-READBACK.json",
+      "bytes": 285718,
+      "sha256": "675aaf2d583ca4758127d61b2fc72883297d85511690ec6b2dd2025ed2eaa638",
+      "mode": "0o644"
+    }
+  ],
+  "proposed_root_argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/post.py",
+    "--post-reviewed-a88f9480"
+  ],
+  "network_commands": [
+    "with-proxy gh api repos/rrnewton/hermit/pulls/3047",
+    "with-proxy gh api --method POST repos/rrnewton/hermit/issues/3047/comments --input /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/request.json",
+    "with-proxy gh api repos/rrnewton/hermit/issues/comments/<actual_id>",
+    "with-proxy gh api repos/rrnewton/hermit/pulls/3047"
+  ],
+  "per_command_timeout_seconds": 60,
+  "no_automatic_retry": true,
+  "no_ready_merge_or_source_ref_change": true
+}

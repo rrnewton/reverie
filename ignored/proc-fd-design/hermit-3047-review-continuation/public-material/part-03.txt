@@ -1,0 +1,1207 @@
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01QdwRDNeNyaaGq5c1Xm2SQ1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.patch",
+    "offset": 600,
+    "limit": 700
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+600	-reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false, optional = true }
+601	-reverie-kvm = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+602	-reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+603	-reverie-liteinst = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false }
+604	-reverie-rpc-transport = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+605	+reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+606	+reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9", default-features = false, optional = true }
+607	+reverie-kvm = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+608	+reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+609	+reverie-liteinst = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9", default-features = false }
+610	+reverie-rpc-transport = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+611	 serde = { version = "1.0.219", features = ["derive", "rc"] }
+612	 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+613	 shell-words = "1.1.1"
+614	diff --git a/hermit-cli/src/lib.rs b/hermit-cli/src/lib.rs
+615	index ce9a8cb68..4b606f332 100644
+616	--- a/hermit-cli/src/lib.rs
+617	+++ b/hermit-cli/src/lib.rs
+618	@@ -334,7 +334,6 @@ use std::io::Write;
+619	 use std::os::fd::AsRawFd;
+620	 use std::os::fd::FromRawFd;
+621	 use std::os::unix::ffi::OsStrExt;
+622	-use std::os::unix::fs::MetadataExt;
+623	 use std::os::unix::fs::OpenOptionsExt;
+624	 use std::os::unix::fs::PermissionsExt;
+625	 use std::path::Path;
+626	@@ -1944,6 +1943,41 @@ fn kvm_cwd_resolution_error(requested_cwd: &Path, error: &std::io::Error) -> Err
+627	     }
+628	 }
+629	 
+630	+/// Bind KVM's raw mountinfo and fdinfo to the same filesystem namespace.
+631	+///
+632	+/// The CLI supplies IdentityGuard provenance from the completed container.
+633	+/// Recapture that full row/parent order before ELF installation, which snapshots
+634	+/// the same namespace in the backend, and refuse stale producer provenance.
+635	+/// Library and no-namespace callers without provenance retain this capture.
+636	+/// KVM does not permit guest namespace changes. Later guest-visible mountinfo
+637	+/// views still use Detcore's existing ordered-subset validation.
+638	+fn prepare_kvm_mountinfo_config(
+639	+    config: &mut DetConfig,
+640	+    capture: impl FnOnce() -> Result<Vec<u64>, Error>,
+641	+) -> Result<(), Error> {
+642	+    if !config.mountinfo_mount_ids_captured
+643	+        && (!config.mountinfo_mount_ids.is_empty() || !config.fdinfo_unlisted_mount_ids.is_empty())
+644	+    {
+645	+        anyhow::bail!("KVM mount identities have no producer-captured namespace");
+646	+    }
+647	+    let order = capture().context("failed to capture the KVM backend mount namespace")?;
+648	+    if config.mountinfo_mount_ids_captured {
+649	+        if config.mountinfo_mount_ids != order {
+650	+            anyhow::bail!(
+651	+                "KVM producer-captured mount identities do not match the backend namespace"
+652	+            );
+653	+        }
+654	+    } else {
+655	+        config.mountinfo_mount_ids = order;
+656	+        config.mountinfo_mount_ids_captured = true;
+657	+    }
+658	+    // The backend now exposes the actual namespace's devices. There is no
+659	+    // synthetic 0:1 root device to translate; stat and mountinfo use the same
+660	+    // raw identities before entering Detcore's shared DevicePool.
+661	+    config.mountinfo_device_rewrites.clear();
+662	+    Ok(())
+663	+}
+664	+
+665	 /// Dispatch a command onto the real reverie-kvm Tool runtime.
+666	 async fn run_kvm(
+667	     command: &Command,
+668	@@ -1953,37 +1987,7 @@ async fn run_kvm(
+669	     capture_output: bool,
+670	 ) -> Result<Output, Error> {
+671	     let dispatch_started = Instant::now();
+672	-    // KVM does not expose the outer container's procfs. Its executor serves a
+673	-    // synthetic `/proc/self/mountinfo` containing one deterministic rootfs row
+674	-    // (`reverie-kvm/src/executor.rs::synthetic_proc_content`). Consequently
+675	-    // none of the outer namespace's Hermit-owned bind mounts, or their raw
+676	-    // mount IDs, can appear in the bytes Detcore receives. The exact provenance
+677	-    // set for KVM's guest-visible mount table is therefore empty. Keeping outer
+678	-    // IDs here is not conservative: it makes the shared sanitizer reject a
+679	-    // valid synthetic row because those IDs name a different namespace.
+680	-    config.mountinfo_root_rewrites.clear();
+681	-    // reverie-kvm's synthetic mountinfo row spells the root filesystem device
+682	-    // as 0:1, while pathname metadata for `/` comes from the host root.  Record
+683	-    // that backend-proven equivalence explicitly so mountinfo and stat/statx
+684	-    // enter Detcore's shared DevicePool under the same raw identity.  This is
+685	-    // not a DevicePool ordinal: the guest-visible number remains allocated by
+686	-    // the same first-observation policy as every other filesystem device.
+687	-    let root_device = fs::metadata("/")
+688	-        .context("failed to inspect the KVM guest root filesystem device")?
+689	-        .dev();
+690	-    config.mountinfo_device_rewrites.clear();
+691	-    config
+692	-        .mountinfo_device_rewrites
+693	-        .push((libc::makedev(0, 1), root_device));
+694	-    // reverie-kvm supplies its own synthetic raw mount IDs. The shared
+695	-    // sanitizer derives their canonical order from that synthetic snapshot;
+696	-    // outer-container IDs describe a different namespace and must not leak in.
+697	-    // The current executor denies `/proc/self/fdinfo/*`, so KVM provides no
+698	-    // fdinfo/mountinfo cross-file assurance; tests pin mountinfo output/status
+699	-    // only and must not promote that result to L2 parity.
+700	-    config.mountinfo_mount_ids.clear();
+701	-    config.mountinfo_mount_ids_captured = false;
+702	-    config.fdinfo_unlisted_mount_ids.clear();
+703	+    prepare_kvm_mountinfo_config(&mut config, capture_mountinfo_identity_order)?;
+704	     let stdin = if capture_output {
+705	         let (snapshot_reserved, snapshot) = output_backend_stdin_reservation()?;
+706	         if snapshot_reserved {
+707	@@ -3183,10 +3187,13 @@ impl HermitData {
+708	 /// Capture the current mount namespace's raw IDs in the exact row/parent order
+709	 /// used by Detcore's canonical mountinfo mapping.
+710	 pub fn capture_mountinfo_identity_order() -> Result<Vec<u64>, Error> {
+711	+    mountinfo_identity_order_from(&fs::read("/proc/self/mountinfo")?)
+712	+}
+713	+
+714	+fn mountinfo_identity_order_from(contents: &[u8]) -> Result<Vec<u64>, Error> {
+715	     use std::collections::BTreeSet;
+716	 
+717	-    let contents = fs::read("/proc/self/mountinfo")?;
+718	-    let rows = detcore_model::procfs::parse_mountinfo(&contents)
+719	+    let rows = detcore_model::procfs::parse_mountinfo(contents)
+720	         .ok_or_else(|| anyhow!("malformed /proc/self/mountinfo"))?;
+721	     let mut visible = Vec::new();
+722	     let mut parents = Vec::new();
+723	@@ -3380,6 +3387,187 @@ mod tests {
+724	 
+725	     static SKID_OVERSHOOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+726	 
+727	+    #[test]
+728	+    fn kvm_mountinfo_config_preserves_captured_provenance() {
+729	+        let rewrite = detcore_model::config::MountInfoRootRewrite {
+730	+            raw_mount_id: 20,
+731	+            deterministic_root: b"/".to_vec(),
+732	+            raw_root_prefix: Some(b"/private-source".to_vec()),
+733	+            deterministic_root_prefix: Some(b"/tmp".to_vec()),
+734	+            raw_mountpoint_prefix: Some(b"/private-source".to_vec()),
+735	+            deterministic_mountpoint_prefix: Some(b"/tmp".to_vec()),
+736	+        };
+737	+        let mut config = DetConfig {
+738	+            mountinfo_mount_ids: vec![10, 20, 30],
+739	+            mountinfo_mount_ids_captured: true,
+740	+            fdinfo_unlisted_mount_ids: vec![700, 701],
+741	+            mountinfo_root_rewrites: vec![rewrite],
+742	+            mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+743	+            ..DetConfig::default()
+744	+        };
+745	+        let mut expected = config.clone();
+746	+        expected.mountinfo_device_rewrites.clear();
+747	+        let mut captures = 0;
+748	+        prepare_kvm_mountinfo_config(&mut config, || {
+749	+            captures += 1;
+750	+            mountinfo_identity_order_from(
+751	+                b"10 30 8:1 / / rw - ext4 /dev/root rw\n\
+752	+                  20 10 0:7 / /test rw - tmpfs tmpfs rw\n",
+753	+            )
+754	+        })
+755	+        .unwrap();
+756	+        assert_eq!(
+757	+            captures, 1,
+758	+            "captured provenance must be checked before any guest read"
+759	+        );
+760	+        assert_eq!(
+761	+            serde_json::to_value(&config).unwrap(),
+762	+            serde_json::to_value(&expected).unwrap(),
+763	+            "root rewrites, listed/unlisted order and every other setting must remain intact"
+764	+        );
+765	+
+766	+        let mut empty = DetConfig {
+767	+            mountinfo_mount_ids_captured: true,
+768	+            ..DetConfig::default()
+769	+        };
+770	+        let mut captures = 0;
+771	+        prepare_kvm_mountinfo_config(&mut empty, || {
+772	+            captures += 1;
+773	+            mountinfo_identity_order_from(b"")
+774	+        })
+775	+        .unwrap();
+776	+        assert_eq!(captures, 1);
+777	+        assert!(empty.mountinfo_mount_ids.is_empty());
+778	+        assert!(empty.mountinfo_mount_ids_captured);
+779	+
+780	+        // Both captures describe the same completed namespace. An ordered
+781	+        // subset is valid for some later guest views, but not this boundary.
+782	+        for actual in [
+783	+            vec![10, 20],
+784	+            vec![10, 20, 30, 40],
+785	+            vec![20, 10, 30],
+786	+            vec![10, 20, 31],
+787	+            vec![10, 20, 20, 30],
+788	+            vec![],
+789	+        ] {
+790	+            let mut stale = config.clone();
+791	+            stale.mountinfo_device_rewrites = vec![(libc::makedev(0, 1), libc::makedev(8, 1))];
+792	+            let before = serde_json::to_value(&stale).unwrap();
+793	+            let error = prepare_kvm_mountinfo_config(&mut stale, || Ok(actual)).unwrap_err();
+794	+            assert!(
+795	+                error
+796	+                    .to_string()
+797	+                    .contains("do not match the backend namespace")
+798	+            );
+799	+            assert_eq!(serde_json::to_value(&stale).unwrap(), before);
+800	+        }
+801	+        let before = serde_json::to_value(&empty).unwrap();
+802	+        let error = prepare_kvm_mountinfo_config(&mut empty, || Ok(vec![10])).unwrap_err();
+803	+        assert!(
+804	+            error
+805	+                .to_string()
+806	+                .contains("do not match the backend namespace")
+807	+        );
+808	+        assert_eq!(serde_json::to_value(&empty).unwrap(), before);
+809	+    }
+810	+
+811	+    #[test]
+812	+    fn kvm_mountinfo_config_captures_validated_ambient_namespace() {
+813	+        let contents = b"80 20 8:1 / / rw - ext4 /dev/root rw\n\
+814	+                         10 80 0:7 / /test rw - tmpfs tmpfs rw\n";
+815	+        let mut config = DetConfig::default();
+816	+        let mut expected = config.clone();
+817	+        expected.mountinfo_mount_ids = vec![80, 10, 20];
+818	+        expected.mountinfo_mount_ids_captured = true;
+819	+        prepare_kvm_mountinfo_config(&mut config, || mountinfo_identity_order_from(contents))
+820	+            .unwrap();
+821	+        assert_eq!(
+822	+            serde_json::to_value(&config).unwrap(),
+823	+            serde_json::to_value(&expected).unwrap(),
+824	+            "visible rows precede parent-only IDs and no guest setting changes"
+825	+        );
+826	+        assert!(detcore_model::procfs::mount_ids_are_ordered_subset(
+827	+            &[80, 10],
+828	+            &config.mountinfo_mount_ids
+829	+        ));
+830	+        assert!(!detcore_model::procfs::mount_ids_are_ordered_subset(
+831	+            &[10, 80],
+832	+            &config.mountinfo_mount_ids
+833	+        ));
+834	+        assert!(!detcore_model::procfs::mount_ids_are_ordered_subset(
+835	+            &[80, 99],
+836	+            &config.mountinfo_mount_ids
+837	+        ));
+838	+        assert!(!detcore_model::procfs::mount_ids_are_ordered_subset(
+839	+            &[80, 80],
+840	+            &config.mountinfo_mount_ids
+841	+        ));
+842	+
+843	+        let mut empty = DetConfig::default();
+844	+        prepare_kvm_mountinfo_config(&mut empty, || mountinfo_identity_order_from(b"")).unwrap();
+845	+        assert!(empty.mountinfo_mount_ids.is_empty());
+846	+        assert!(empty.mountinfo_mount_ids_captured);
+847	+    }
+848	+
+849	+    #[test]
+850	+    fn kvm_mountinfo_config_refuses_missing_or_malformed_capture() {
+851	+        let valid = b"10 20 8:1 / / rw - ext4 /dev/root rw\n";
+852	+        for captured in [false, true] {
+853	+            let config = DetConfig {
+854	+                mountinfo_mount_ids: if captured { vec![10, 20] } else { vec![] },
+855	+                mountinfo_mount_ids_captured: captured,
+856	+                fdinfo_unlisted_mount_ids: if captured { vec![700, 701] } else { vec![] },
+857	+                mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+858	+                ..DetConfig::default()
+859	+            };
+860	+            for contents in [
+861	+                b"malformed".as_slice(),
+862	+                b"10 20 8:1 / / rw - ext4 /dev/root rw\n10 20 8:1 / / rw - ext4 /dev/root rw\n",
+863	+                b"10 20 8:1 / / rw unknown:7 - ext4 /dev/root rw\n",
+864	+            ] {
+865	+                let mut candidate = config.clone();
+866	+                let before = serde_json::to_value(&candidate).unwrap();
+867	+                let error = prepare_kvm_mountinfo_config(&mut candidate, || {
+868	+                    mountinfo_identity_order_from(contents)
+869	+                })
+870	+                .unwrap_err();
+871	+                assert!(format!("{error:#}").contains("malformed /proc/self/mountinfo"));
+872	+                assert_eq!(serde_json::to_value(&candidate).unwrap(), before);
+873	+            }
+874	+            let mut candidate = config;
+875	+            let before = serde_json::to_value(&candidate).unwrap();
+876	+            let error = prepare_kvm_mountinfo_config(&mut candidate, || {
+877	+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+878	+            })
+879	+            .unwrap_err();
+880	+            assert!(
+881	+                error
+882	+                    .downcast_ref::<std::io::Error>()
+883	+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+884	+            );
+885	+            assert_eq!(serde_json::to_value(&candidate).unwrap(), before);
+886	+        }
+887	+        assert_eq!(mountinfo_identity_order_from(valid).unwrap(), [10, 20]);
+888	+    }
+889	+
+890	+    #[test]
+891	+    fn kvm_mountinfo_config_refuses_uncaptured_provenance_vectors() {
+892	+        for (listed, unlisted) in [(vec![10], vec![]), (vec![], vec![700])] {
+893	+            let mut config = DetConfig {
+894	+                mountinfo_mount_ids: listed,
+895	+                fdinfo_unlisted_mount_ids: unlisted,
+896	+                ..DetConfig::default()
+897	+            };
+898	+            let before = serde_json::to_value(&config).unwrap();
+899	+            let error = prepare_kvm_mountinfo_config(&mut config, || {
+900	+                panic!("must not overwrite incomplete provenance")
+901	+            })
+902	+            .unwrap_err();
+903	+            assert!(error.to_string().contains("no producer-captured namespace"));
+904	+            assert_eq!(serde_json::to_value(&config).unwrap(), before);
+905	+        }
+906	+    }
+907	+
+908	     #[test]
+909	     fn skid_overshoot_report_covers_success_error_and_disabled_backends() {
+910	         let _lock = SKID_OVERSHOOT_TEST_LOCK.lock().unwrap();
+911	diff --git a/hermit-cli/tests/cli.rs b/hermit-cli/tests/cli.rs
+912	index 7fd4f5488..23461da54 100644
+913	--- a/hermit-cli/tests/cli.rs
+914	+++ b/hermit-cli/tests/cli.rs
+915	@@ -55,6 +55,7 @@ static DBT_LOG_ENV_GUEST: OnceLock<PathBuf> = OnceLock::new();
+916	 static LITEINST_INERT_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
+917	 static EXEC_CLOCK_CONTINUITY_GUEST: OnceLock<PathBuf> = OnceLock::new();
+918	 static STDIO_LSEEK_IDENTITY_GUEST: OnceLock<PathBuf> = OnceLock::new();
+919	+static STDIO_INODE_IDENTITY_GUEST: OnceLock<PathBuf> = OnceLock::new();
+920	 static FORK_CHILD_GETRANDOM_GUEST: OnceLock<PathBuf> = OnceLock::new();
+921	 static HERMIT_RUN_LOCK: Mutex<()> = Mutex::new(());
+922	 
+923	@@ -451,6 +452,31 @@ stderr:
+924	     })
+925	 }
+926	 
+927	+fn stdio_inode_identity_guest() -> &'static Path {
+928	+    STDIO_INODE_IDENTITY_GUEST.get_or_init(|| {
+929	+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+930	+            .parent()
+931	+            .expect("hermit-cli should be inside the repository");
+932	+        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("stdio-inode-identity");
+933	+        fs::create_dir_all(&build_root).expect("failed to create stdio-inode build directory");
+934	+        let guest = build_root.join("stdio_inode_identity");
+935	+        let output = Command::new("cc")
+936	+            .args(["-O2", "-Wall", "-Wextra", "-Werror"])
+937	+            .arg(repository.join("tests/c/fixtures/stdio_inode_identity.c"))
+938	+            .arg("-o")
+939	+            .arg(&guest)
+940	+            .output()
+941	+            .expect("failed to compile stdio-inode fixture");
+942	+        assert!(
+943	+            output.status.success(),
+944	+            "stdio-inode fixture compilation failed:\nstdout:\n{}\nstderr:\n{}",
+945	+            String::from_utf8_lossy(&output.stdout),
+946	+            String::from_utf8_lossy(&output.stderr),
+947	+        );
+948	+        guest
+949	+    })
+950	+}
+951	+
+952	 // TODO-HUMAN-REVIEW(PR-1052): Review no-namespace fork-child RNG coverage.
+953	 fn fork_child_getrandom_guest() -> &'static Path {
+954	     FORK_CHILD_GETRANDOM_GUEST.get_or_init(|| {
+955	@@ -3416,6 +3442,45 @@ fn run_kvm_preserves_closed_standard_input() {
+956	             .to_ascii_lowercase()
+957	             .contains("bad file descriptor")
+958	     );
+959	+
+960	+    // Keep the original loader/closed-stdin assertion above. These additional
+961	+    // controls start with stdin open, then exercise object identity after the
+962	+    // program's entry point, independently of that historical loader failure.
+963	+    // The fixture's complete-stat-routes mode retains the separate followed
+964	+    // proc-fd stat control; this test explicitly selects descriptor reuse.
+965	+    let guest = stdio_inode_identity_guest();
+966	+    let mode = "descriptor-reuse";
+967	+    let expected = format!("stdio-inode-{mode}-ok\n");
+968	+    let native_dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+969	+        .expect("failed to create native stdio-inode workdir");
+970	+    let native = Command::new(guest)
+971	+        .arg(mode)
+972	+        .current_dir(native_dir.path())
+973	+        .stdin(Stdio::null())
+974	+        .output()
+975	+        .expect("failed to run native stdio-inode control");
+976	+    assert!(native.status.success(), "native {mode} control: {native:?}");
+977	+    assert_eq!(stdout(&native), expected);
+978	+    assert_eq!(stderr(&native), "");
+979	+    for backend in ["ptrace", "kvm"] {
+980	+        let args = [
+981	+            "run",
+982	+            "--backend",
+983	+            backend,
+984	+            "--strict",
+985	+            "--base-env=minimal",
+986	+            "--",
+987	+        ];
+988	+        let output = hermit_command(&args)
+989	+            .arg(guest)
+990	+            .arg(mode)
+991	+            .stdin(Stdio::null())
+992	+            .output()
+993	+            .expect("failed to run stdio-inode identity fixture");
+994	+        assert_success(&output, &args);
+995	+        assert_eq!(stdout(&output), expected, "{backend} {mode}");
+996	+        assert_eq!(stderr(&output), "", "{backend} {mode}");
+997	+    }
+998	 }
+999	 
+1000	 #[test]
+1001	diff --git a/hermit-install/Cargo.toml b/hermit-install/Cargo.toml
+1002	index 0cf8e46a0..7f31a4d47 100644
+1003	--- a/hermit-install/Cargo.toml
+1004	+++ b/hermit-install/Cargo.toml
+1005	@@ -10,4 +10,4 @@ publish = false
+1006	 path = "src/lib.rs"
+1007	 
+1008	 [build-dependencies]
+1009	-reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false }
+1010	+reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9", default-features = false }
+1011	diff --git a/liteinst-runtime-build/Cargo.lock b/liteinst-runtime-build/Cargo.lock
+1012	index cbbc77cf7..5dac3c6d3 100644
+1013	--- a/liteinst-runtime-build/Cargo.lock
+1014	+++ b/liteinst-runtime-build/Cargo.lock
+1015	@@ -896,7 +896,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+1016	 [[package]]
+1017	 name = "reverie-core"
+1018	 version = "0.2.0"
+1019	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1020	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1021	 dependencies = [
+1022	  "addr2line",
+1023	  "anyhow",
+1024	@@ -922,7 +922,7 @@ dependencies = [
+1025	 [[package]]
+1026	 name = "reverie-liteinst"
+1027	 version = "0.2.0"
+1028	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1029	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1030	 dependencies = [
+1031	  "bincode",
+1032	  "libc",
+1033	@@ -940,7 +940,7 @@ dependencies = [
+1034	 [[package]]
+1035	 name = "reverie-memory"
+1036	 version = "0.2.0"
+1037	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1038	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1039	 dependencies = [
+1040	  "syscalls",
+1041	 ]
+1042	@@ -948,7 +948,7 @@ dependencies = [
+1043	 [[package]]
+1044	 name = "reverie-preload"
+1045	 version = "0.2.0"
+1046	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1047	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1048	 dependencies = [
+1049	  "bincode",
+1050	  "libc",
+1051	@@ -959,7 +959,7 @@ dependencies = [
+1052	 [[package]]
+1053	 name = "reverie-process"
+1054	 version = "0.2.0"
+1055	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1056	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1057	 dependencies = [
+1058	  "bincode",
+1059	  "bitflags 2.13.1",
+1060	@@ -976,7 +976,7 @@ dependencies = [
+1061	 [[package]]
+1062	 name = "reverie-ptrace"
+1063	 version = "0.2.0"
+1064	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1065	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1066	 dependencies = [
+1067	  "anyhow",
+1068	  "async-trait",
+1069	@@ -1007,7 +1007,7 @@ dependencies = [
+1070	 [[package]]
+1071	 name = "reverie-rpc-transport"
+1072	 version = "0.2.0"
+1073	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1074	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1075	 dependencies = [
+1076	  "async-trait",
+1077	  "bincode",
+1078	@@ -1021,7 +1021,7 @@ dependencies = [
+1079	 [[package]]
+1080	 name = "reverie-syscalls"
+1081	 version = "0.2.0"
+1082	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1083	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1084	 dependencies = [
+1085	  "bitflags 2.13.1",
+1086	  "derive_more",
+1087	@@ -1079,7 +1079,7 @@ dependencies = [
+1088	 [[package]]
+1089	 name = "safeptrace"
+1090	 version = "0.2.0"
+1091	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+1092	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+1093	 dependencies = [
+1094	  "bitflags 2.13.1",
+1095	  "futures 0.3.33",
+1096	diff --git a/liteinst-runtime-build/runtime/Cargo.toml b/liteinst-runtime-build/runtime/Cargo.toml
+1097	index 0958e8df0..de9f79169 100644
+1098	--- a/liteinst-runtime-build/runtime/Cargo.toml
+1099	+++ b/liteinst-runtime-build/runtime/Cargo.toml
+1100	@@ -5,4 +5,4 @@ edition = "2024"
+1101	 publish = false
+1102	 
+1103	 [dependencies]
+1104	-reverie-liteinst = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false, features = ["preload-constructor"] }
+1105	+reverie-liteinst = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9", default-features = false, features = ["preload-constructor"] }
+1106	diff --git a/tests/c/fixtures/stdio_inode_identity.c b/tests/c/fixtures/stdio_inode_identity.c
+1107	new file mode 100644
+1108	index 000000000..008e0cfcf
+1109	--- /dev/null
+1110	+++ b/tests/c/fixtures/stdio_inode_identity.c
+1111	@@ -0,0 +1,274 @@
+1112	+/*
+1113	+ * An inode identifies an open object, not its descriptor-table slot. Exercise
+1114	+ * ordinary files and pipes installed at fds 0–2, plus their duplicates.
+1115	+ * descriptor-reuse checks descriptors, ordinary paths, fdinfo and pipe links.
+1116	+ * complete-stat-routes additionally checks followed and no-follow proc-fd stat.
+1117	+ * Every assertion in a selected mode is mandatory; there is no fallback mode.
+1118	+ * Inherited stdio uses only fstat bookkeeping: its cross-entrypoint alias
+1119	+ * behavior is a separate repair. Each mode applies unchanged on native Linux,
+1120	+ * ptrace and KVM.
+1121	+ */
+1122	+#define _GNU_SOURCE
+1123	+#include <errno.h>
+1124	+#include <fcntl.h>
+1125	+#include <stdio.h>
+1126	+#include <stdlib.h>
+1127	+#include <string.h>
+1128	+#include <sys/stat.h>
+1129	+#include <sys/syscall.h>
+1130	+#include <sys/sysmacros.h>
+1131	+#include <unistd.h>
+1132	+
+1133	+static int report_fd = STDERR_FILENO;
+1134	+
+1135	+#define CHECK(condition)                                                       \
+1136	+    do {                                                                       \
+1137	+        if (!(condition)) {                                                    \
+1138	+            dprintf(report_fd, "line %d: %s (errno=%d)\n", __LINE__,             \
+1139	+                    #condition, errno);                                        \
+1140	+            exit(1);                                                           \
+1141	+        }                                                                      \
+1142	+    } while (0)
+1143	+
+1144	+static int same_object(struct stat left, struct stat right) {
+1145	+    return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+1146	+}
+1147	+
+1148	+static void check_statx_identity(struct statx actual, struct stat expected) {
+1149	+    CHECK((actual.stx_mask & (STATX_INO | STATX_TYPE)) ==
+1150	+          (STATX_INO | STATX_TYPE));
+1151	+    CHECK(actual.stx_ino == expected.st_ino);
+1152	+    CHECK(actual.stx_dev_major == major(expected.st_dev));
+1153	+    CHECK(actual.stx_dev_minor == minor(expected.st_dev));
+1154	+    CHECK(((mode_t)actual.stx_mode & S_IFMT) == (expected.st_mode & S_IFMT));
+1155	+}
+1156	+
+1157	+static void check_descriptor_stat_routes(int fd, struct stat expected) {
+1158	+    const int flags[] = {AT_EMPTY_PATH, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW};
+1159	+    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); ++i) {
+1160	+        struct stat actual;
+1161	+        CHECK(syscall(SYS_newfstatat, fd, "", &actual, flags[i]) == 0);
+1162	+        CHECK(same_object(actual, expected));
+1163	+        struct statx extended;
+1164	+        CHECK(syscall(SYS_statx, fd, "", flags[i], STATX_BASIC_STATS,
+1165	+                      &extended) == 0);
+1166	+        check_statx_identity(extended, expected);
+1167	+    }
+1168	+
+1169	+    /* Linux copies the pathname before writing a possibly overlapping output.
+1170	+     * An observer must capture its empty-path decision before that write too. */
+1171	+    union {
+1172	+        struct stat result;
+1173	+        char path[sizeof(struct stat)];
+1174	+    } overlapping = {0};
+1175	+    CHECK(syscall(SYS_newfstatat, fd, overlapping.path, &overlapping.result,
+1176	+                  AT_EMPTY_PATH) == 0);
+1177	+    CHECK(same_object(overlapping.result, expected));
+1178	+    union {
+1179	+        struct statx result;
+1180	+        char path[sizeof(struct statx)];
+1181	+    } overlapping_x = {0};
+1182	+    CHECK(syscall(SYS_statx, fd, overlapping_x.path, AT_EMPTY_PATH,
+1183	+                  STATX_BASIC_STATS, &overlapping_x.result) == 0);
+1184	+    check_statx_identity(overlapping_x.result, expected);
+1185	+}
+1186	+
+1187	+static struct stat stat_fd(int fd) {
+1188	+    struct stat result;
+1189	+    /* Keep inherited-stream bookkeeping on its original fstat entrypoint. */
+1190	+    CHECK(syscall(SYS_fstat, fd, &result) == 0);
+1191	+    return result;
+1192	+}
+1193	+
+1194	+static struct stat stat_ordinary_descriptor(int fd) {
+1195	+    struct stat expected = stat_fd(fd);
+1196	+    check_descriptor_stat_routes(fd, expected);
+1197	+    return expected;
+1198	+}
+1199	+
+1200	+static struct stat stat_complete_routes(int fd) {
+1201	+    struct stat expected = stat_ordinary_descriptor(fd);
+1202	+
+1203	+    /* The proc-fd magic link follows this same ordinary object. Its no-follow
+1204	+     * view is a symlink and must not acquire the target's inode or file type. */
+1205	+    char path[64];
+1206	+    CHECK(snprintf(path, sizeof(path), "/proc/self/fd/%d", fd) > 0);
+1207	+    struct stat followed, link;
+1208	+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, path, &followed, 0) == 0);
+1209	+    CHECK(same_object(followed, expected));
+1210	+    struct statx extended;
+1211	+    CHECK(syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS,
+1212	+                  &extended) == 0);
+1213	+    check_statx_identity(extended, expected);
+1214	+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, path, &link,
+1215	+                  AT_SYMLINK_NOFOLLOW) == 0);
+1216	+    CHECK(S_ISLNK(link.st_mode));
+1217	+    CHECK(syscall(SYS_statx, AT_FDCWD, path, AT_SYMLINK_NOFOLLOW,
+1218	+                  STATX_BASIC_STATS, &extended) == 0);
+1219	+    check_statx_identity(extended, link);
+1220	+    return expected;
+1221	+}
+1222	+
+1223	+static void check_stat_errors(int valid_fd) {
+1224	+    struct stat result;
+1225	+    struct statx extended;
+1226	+    errno = 0;
+1227	+    CHECK(syscall(SYS_newfstatat, valid_fd, "", &result, 0) == -1 &&
+1228	+          errno == ENOENT);
+1229	+    errno = 0;
+1230	+    CHECK(syscall(SYS_statx, valid_fd, "", 0, STATX_BASIC_STATS, &extended) == -1 &&
+1231	+          errno == ENOENT);
+1232	+    errno = 0;
+1233	+    CHECK(syscall(SYS_newfstatat, -1, "", &result, AT_EMPTY_PATH) == -1 &&
+1234	+          errno == EBADF);
+1235	+    errno = 0;
+1236	+    CHECK(syscall(SYS_statx, -1, "", AT_EMPTY_PATH, STATX_BASIC_STATS,
+1237	+                  &extended) == -1 && errno == EBADF);
+1238	+    errno = 0;
+1239	+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, ".", &result,
+1240	+                  AT_EMPTY_PATH | 0x40000000) == -1 && errno == EINVAL);
+1241	+    errno = 0;
+1242	+    CHECK(syscall(SYS_statx, AT_FDCWD, ".", AT_EMPTY_PATH | 0x40000000,
+1243	+                  STATX_BASIC_STATS, &extended) == -1 && errno == EINVAL);
+1244	+    errno = 0;
+1245	+    CHECK(syscall(SYS_newfstatat, valid_fd, (char *)1, &result,
+1246	+                  AT_EMPTY_PATH) == -1 && errno == EFAULT);
+1247	+    errno = 0;
+1248	+    CHECK(syscall(SYS_statx, valid_fd, (char *)1, AT_EMPTY_PATH,
+1249	+                  STATX_BASIC_STATS, &extended) == -1 && errno == EFAULT);
+1250	+
+1251	+    /* AT_FDCWD with an empty path is the directory, never an inherited stream. */
+1252	+    struct stat cwd;
+1253	+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, ".", &cwd, 0) == 0);
+1254	+    check_descriptor_stat_routes(AT_FDCWD, cwd);
+1255	+}
+1256	+
+1257	+static void check_fdinfo(int fd, struct stat expected) {
+1258	+    char path[64];
+1259	+    CHECK(snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd) > 0);
+1260	+    int info = open(path, O_RDONLY | O_CLOEXEC);
+1261	+    CHECK(info >= 0);
+1262	+    char text[4096];
+1263	+    ssize_t size = read(info, text, sizeof(text) - 1);
+1264	+    CHECK(size > 0 && size < (ssize_t)sizeof(text) - 1);
+1265	+    CHECK(close(info) == 0);
+1266	+    text[size] = '\0';
+1267	+    const char *line = strstr(text, "\nino:\t");
+1268	+    CHECK(line != NULL);
+1269	+    char *end;
+1270	+    unsigned long long inode = strtoull(line + strlen("\nino:\t"), &end, 10);
+1271	+    CHECK(*end == '\n' && inode == (unsigned long long)expected.st_ino);
+1272	+}
+1273	+
+1274	+static void check_pipe_link(int fd, struct stat expected) {
+1275	+    char path[64], text[128], wanted[128];
+1276	+    CHECK(snprintf(path, sizeof(path), "/proc/self/fd/%d", fd) > 0);
+1277	+    ssize_t size = readlink(path, text, sizeof(text) - 1);
+1278	+    CHECK(size > 0 && size < (ssize_t)sizeof(text) - 1);
+1279	+    text[size] = '\0';
+1280	+    CHECK(snprintf(wanted, sizeof(wanted), "pipe:[%llu]",
+1281	+                   (unsigned long long)expected.st_ino) > 0);
+1282	+    CHECK(strcmp(text, wanted) == 0);
+1283	+}
+1284	+
+1285	+typedef struct stat (*OrdinaryStat)(int fd);
+1286	+
+1287	+static void check_reuse(const int saved[3], const struct stat initial[3],
+1288	+                        OrdinaryStat stat_object) {
+1289	+    char path_a[] = "stdio-inode-a-XXXXXX";
+1290	+    char path_b[] = "stdio-inode-b-XXXXXX";
+1291	+    int file_a = mkstemp(path_a), file_b = mkstemp(path_b);
+1292	+    CHECK(file_a >= 3 && file_b >= 3);
+1293	+    struct stat identity_a = stat_object(file_a);
+1294	+    struct stat identity_b = stat_object(file_b);
+1295	+    CHECK(identity_a.st_dev == identity_b.st_dev);
+1296	+    CHECK(identity_a.st_ino != identity_b.st_ino);
+1297	+
+1298	+    /* AT_EMPTY_PATH does not turn a nonempty pathname into a descriptor stat. */
+1299	+    char cwd[3072], absolute_a[4096];
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01U8gavBpb9zsjHiwoWtVuwG",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.patch",
+    "offset": 1299
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1299	+    char cwd[3072], absolute_a[4096];
+1300	+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+1301	+    int path_size = snprintf(absolute_a, sizeof(absolute_a), "%s/%s", cwd, path_a);
+1302	+    CHECK(path_size > 0 && (size_t)path_size < sizeof(absolute_a));
+1303	+    struct stat absolute_stat;
+1304	+    CHECK(syscall(SYS_newfstatat, saved[1], absolute_a, &absolute_stat,
+1305	+                  AT_EMPTY_PATH) == 0);
+1306	+    CHECK(same_object(absolute_stat, identity_a));
+1307	+    struct statx absolute_statx;
+1308	+    CHECK(syscall(SYS_statx, saved[1], absolute_a, AT_EMPTY_PATH,
+1309	+                  STATX_BASIC_STATS, &absolute_statx) == 0);
+1310	+    check_statx_identity(absolute_statx, identity_a);
+1311	+
+1312	+    for (int low = 0; low < 3; ++low) {
+1313	+        CHECK(close(low) == 0);
+1314	+        CHECK(open(path_a, O_RDWR) == low);
+1315	+        struct stat opened_a = stat_object(low), path_stat;
+1316	+        CHECK(same_object(opened_a, identity_a));
+1317	+        CHECK(syscall(SYS_newfstatat, AT_FDCWD, path_a, &path_stat, 0) == 0);
+1318	+        CHECK(same_object(opened_a, path_stat));
+1319	+        int alias = dup(low);
+1320	+        CHECK(alias >= 3);
+1321	+        CHECK(same_object(opened_a, stat_object(alias)));
+1322	+        check_fdinfo(low, opened_a);
+1323	+        check_fdinfo(alias, opened_a);
+1324	+
+1325	+        CHECK(close(low) == 0);
+1326	+        CHECK(open(path_b, O_RDWR) == low);
+1327	+        struct stat opened_b = stat_object(low);
+1328	+        CHECK(same_object(opened_b, identity_b));
+1329	+        CHECK(!same_object(opened_a, opened_b));
+1330	+        CHECK(same_object(opened_a, stat_object(alias)));
+1331	+        check_fdinfo(low, opened_b);
+1332	+        CHECK(close(alias) == 0);
+1333	+        CHECK(dup2(saved[low], low) == low);
+1334	+        CHECK(same_object(initial[low], stat_fd(low)));
+1335	+    }
+1336	+
+1337	+    for (int low = 0; low < 3; ++low) {
+1338	+        CHECK(close(low) == 0);
+1339	+        int pipe_fds[2];
+1340	+        CHECK(pipe(pipe_fds) == 0 && pipe_fds[0] == low);
+1341	+        struct stat pipe_identity = stat_object(pipe_fds[0]);
+1342	+        int pipe_alias = dup(pipe_fds[0]);
+1343	+        CHECK(pipe_alias >= 3);
+1344	+        CHECK(same_object(pipe_identity, stat_object(pipe_alias)));
+1345	+        check_fdinfo(pipe_fds[0], pipe_identity);
+1346	+        check_fdinfo(pipe_alias, pipe_identity);
+1347	+        check_pipe_link(pipe_fds[0], pipe_identity);
+1348	+        check_pipe_link(pipe_alias, pipe_identity);
+1349	+        CHECK(close(pipe_alias) == 0);
+1350	+        CHECK(close(pipe_fds[0]) == 0);
+1351	+        CHECK(close(pipe_fds[1]) == 0);
+1352	+        CHECK(dup2(saved[low], low) == low);
+1353	+        CHECK(same_object(initial[low], stat_fd(low)));
+1354	+    }
+1355	+
+1356	+    CHECK(close(file_a) == 0 && close(file_b) == 0);
+1357	+    CHECK(unlink(path_a) == 0 && unlink(path_b) == 0);
+1358	+}
+1359	+
+1360	+int main(int argc, char **argv) {
+1361	+    CHECK(argc == 2);
+1362	+    OrdinaryStat stat_object = NULL;
+1363	+    if (strcmp(argv[1], "descriptor-reuse") == 0) {
+1364	+        stat_object = stat_ordinary_descriptor;
+1365	+    } else if (strcmp(argv[1], "complete-stat-routes") == 0) {
+1366	+        stat_object = stat_complete_routes;
+1367	+    }
+1368	+    CHECK(stat_object != NULL);
+1369	+    int saved[3];
+1370	+    struct stat initial[3];
+1371	+    for (int fd = 0; fd < 3; ++fd) {
+1372	+        initial[fd] = stat_fd(fd);
+1373	+        saved[fd] = fcntl(fd, F_DUPFD_CLOEXEC, 10);
+1374	+        CHECK(saved[fd] >= 10);
+1375	+    }
+1376	+    report_fd = saved[2];
+1377	+    check_stat_errors(saved[1]);
+1378	+    check_reuse(saved, initial, stat_object);
+1379	+    for (int fd = 0; fd < 3; ++fd) {
+1380	+        CHECK(close(saved[fd]) == 0);
+1381	+    }
+1382	+    report_fd = STDERR_FILENO;
+1383	+    CHECK(printf("stdio-inode-%s-ok\n", argv[1]) > 0);
+1384	+    return 0;
+1385	+}
+1386	
+
+PUBLIC ASSISTANT TEXT (not a verdict)
+Now let me examine the frozen source. Starting with the descriptor/resource machinery.
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01YBZNzTcTzTnf9iUWhch2x6",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn resource|fn with_detfd|fn add_fd|fn dup_fd|fn remove_fd|ContainerStdin|ContainerStdout|ContainerStderr|fn stat\\(|fn procfs_target_fd|fn open_file_id|fn fork_for|fn for_exec",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/fd.rs",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+328:    pub fn open_file_id(&self) -> OpenFileId {
+355:    pub fn resource(&self) -> Option<ResourceID> {
+503:    pub(crate) fn procfs_target_fd(&self) -> Option<i32> {
+520:    pub fn stat(&self) -> Option<DetStat> {
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01XiYvV2Qy55qfAp4HsBJpWH",
+  "name": "Grep",
+  "input": {
+    "pattern": "ContainerStdin|ContainerStdout|ContainerStderr",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 80
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+detcore/src/syscalls.rs:54:            Device::ContainerStdin | Device::ContainerStdout | Device::ContainerStderr,
+detcore/src/syscalls.rs:81:            ResourceID::Device(Device::ContainerStdin),
+detcore/src/syscalls.rs:82:            ResourceID::Device(Device::ContainerStdout),
+detcore/src/syscalls.rs:83:            ResourceID::Device(Device::ContainerStderr),
+detcore/src/resources.rs:332:    ContainerStdin,
+detcore/src/resources.rs:335:    ContainerStdout,
+detcore/src/resources.rs:338:    ContainerStderr,
+detcore/src/tool_local.rs:655:        .with_resource(ResourceID::Device(Device::ContainerStdin));
+detcore/src/tool_local.rs:663:        .with_resource(ResourceID::Device(Device::ContainerStdout));
+detcore/src/tool_local.rs:671:        .with_resource(ResourceID::Device(Device::ContainerStderr));
+detcore/src/tool_local.rs:845:        0 => Some(ResourceID::Device(Device::ContainerStdin)),
+detcore/src/tool_local.rs:846:        1 => Some(ResourceID::Device(Device::ContainerStdout)),
+detcore/src/tool_local.rs:847:        2 => Some(ResourceID::Device(Device::ContainerStderr)),
+detcore/src/tool_local.rs:1085:            Some(ResourceID::Device(Device::ContainerStdout))
+detcore/src/tool_local.rs:1099:            Some(ResourceID::Device(Device::ContainerStdout))
+detcore/src/syscalls/files.rs:295:            Device::ContainerStdout | Device::ContainerStderr
+detcore/src/syscalls/files.rs:4655:            Device::ContainerStdout
+detcore/src/syscalls/files.rs:4658:            Device::ContainerStderr
+detcore/src/syscalls/files.rs:4661:            Device::ContainerStdin
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01F1hrx9iamVEzLmWNUJWkCZ",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 600,
+    "limit": 300
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+600	                    self.with_detfd(fd, |detfd| detfd.set_logical_nonblocking(false))
+601	                        .expect("a just-discovered descriptor must remain registered");
+602	                }
+603	                Err(error) => {
+604	                    tracing::warn!(
+605	                        "[detcore, dtid {}] unable to restore inherited descriptor {} after exec: {}",
+606	                        owner,
+607	                        fd,
+608	                        error,
+609	                    );
+610	                }
+611	            }
+612	        }
+613	    }
+614	
+615	    pub(crate) fn open_files_closed_on_exec(&self, table_is_shared: bool) -> Vec<OpenFileId> {
+616	        if table_is_shared {
+617	            return Vec::new();
+618	        }
+619	
+620	        let mut open_files = HashMap::new();
+621	        for detfd in self.file_handles.values() {
+622	            let id = detfd.open_file_id();
+623	            let total_aliases = detfd.open_file_alias_count();
+624	            let entry = open_files.entry(id).or_insert((0, total_aliases, true));
+625	            debug_assert_eq!(entry.1, total_aliases);
+626	            entry.0 += 1;
+627	            entry.2 &= detfd.is_cloexec();
+628	        }
+629	
+630	        let mut closed: Vec<_> = open_files
+631	            .into_iter()
+632	            .filter_map(|(id, (table_aliases, total_aliases, all_cloexec))| {
+633	                (all_cloexec && table_aliases == total_aliases).then_some(id)
+634	            })
+635	            .collect();
+636	        closed.sort();
+637	        closed
+638	    }
+639	
+640	    /// set default fds
+641	    fn setup_stdio(mut self, _pid: Pid, owner: DetTid) -> Self {
+642	        // guest stdio can be a pipe, which make things difficult
+643	        // hence use a dummy stat here.
+644	        // SAFETY: stating stdin is likely to always be safe
+645	        let stat: DetStat = stat::fstat(unsafe { BorrowedFd::borrow_raw(0) })
+646	            .unwrap()
+647	            .into();
+648	        let stdin = DetFd::new(
+649	            0,
+650	            OFlag::empty(),
+651	            FdType::Regular,
+652	            self.allocate_open_file_id(owner, FdType::Regular),
+653	        )
+654	        .with_stat(stat)
+655	        .with_resource(ResourceID::Device(Device::ContainerStdin));
+656	        let stdout = DetFd::new(
+657	            1,
+658	            OFlag::empty(),
+659	            FdType::Regular,
+660	            self.allocate_open_file_id(owner, FdType::Regular),
+661	        )
+662	        .with_stat(stat)
+663	        .with_resource(ResourceID::Device(Device::ContainerStdout));
+664	        let stderr = DetFd::new(
+665	            2,
+666	            OFlag::empty(),
+667	            FdType::Regular,
+668	            self.allocate_open_file_id(owner, FdType::Regular),
+669	        )
+670	        .with_stat(stat)
+671	        .with_resource(ResourceID::Device(Device::ContainerStderr));
+672	
+673	        // These descriptors existed before Detcore began observing the guest,
+674	        // so they may already carry flock state that we cannot query.
+675	        stdin.mark_flock_mode_unobserved();
+676	        stdout.mark_flock_mode_unobserved();
+677	        stderr.mark_flock_mode_unobserved();
+678	
+679	        self.add_detfd(stdin);
+680	        self.add_detfd(stdout);
+681	        self.add_detfd(stderr);
+682	
+683	        self
+684	    }
+685	
+686	    // AUTONOMOUS-BOT-IMPLEMENTED
+687	    // TODO-HUMAN-REVIEW(PR-845): Review SaBRe on-demand inherited descriptor discovery.
+688	    fn discover_fd_from_current_process(&mut self, owner: DetTid, fd: RawFd) -> Result<(), Errno> {
+689	        if self.file_handles.contains_key(&fd) {
+690	            return Ok(());
+691	        }
+692	
+693	        let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+694	        let status_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+695	        if fd_flags == -1 || status_flags == -1 {
+696	            return Err(Errno::last());
+697	        }
+698	        let raw_stat =
+699	            stat::fstat(unsafe { BorrowedFd::borrow_raw(fd) }).map_err(|_| Errno::last())?;
+700	        let file_type = stat::SFlag::from_bits_truncate(raw_stat.st_mode);
+701	        let ty = if file_type.contains(stat::SFlag::S_IFIFO) {
+702	            FdType::Pipe
+703	        } else if file_type.contains(stat::SFlag::S_IFSOCK) {
+704	            FdType::Socket
+705	        } else {
+706	            FdType::Regular
+707	        };
+708	        let mut flags = OFlag::from_bits_truncate(status_flags);
+709	        let physically_nonblocking = flags.contains(OFlag::O_NONBLOCK);
+710	        // Discovered descriptors have unknown provenance, so an observed
+711	        // O_NONBLOCK bit must remain guest-visible. Detcore-created scheduler
+712	        // pipes are registered when created and do not reach this fallback.
+713	        if fd_flags & libc::FD_CLOEXEC != 0 {
+714	            flags.insert(OFlag::O_CLOEXEC);
+715	        }
+716	        self.add_fd(owner, fd, flags, ty, Some(raw_stat.into()))?;
+717	        self.with_detfd(fd, |detfd| detfd.forget_flock_mode())?;
+718	        if let Some(resource) = stdio_resource(fd) {
+719	            self.with_detfd(fd, |detfd| detfd.set_resource(resource.clone()))?;
+720	        }
+721	        if ty == FdType::Pipe && physically_nonblocking {
+722	            self.with_detfd(fd, |detfd| detfd.set_physically_nonblocking())?;
+723	        }
+724	        Ok(())
+725	    }
+726	
+727	    /// get detfd from rawfd, rawfd must be added or dup-ed first.
+728	    fn with_detfd<F, U>(&mut self, fd: RawFd, mut f: F) -> Result<U, Errno>
+729	    where
+730	        F: FnMut(&mut DetFd) -> U,
+731	    {
+732	        let detfd = self.file_handles.get_mut(&fd).ok_or(Errno::EBADF)?;
+733	        Ok(f(detfd))
+734	    }
+735	
+736	    /// add a detfd
+737	    fn add_detfd(&mut self, detfd: DetFd) {
+738	        let fd = detfd.fd;
+739	        self.file_handles.insert(fd, detfd);
+740	    }
+741	
+742	    /// add a raw fd
+743	    fn add_fd(
+744	        &mut self,
+745	        creator: DetTid,
+746	        fd: RawFd,
+747	        flags: OFlag,
+748	        ty: FdType,
+749	        stat: Option<DetStat>,
+750	    ) -> Result<(), Errno> {
+751	        let id = self.allocate_open_file_id(creator, ty);
+752	        let detfd = DetFd::new(fd, flags, ty, id).with_stat(stat);
+753	        self.add_detfd(detfd);
+754	        Ok(())
+755	    }
+756	
+757	    /// remove a rawfd
+758	    fn remove_fd(&mut self, fd: RawFd) -> Option<OpenFileId> {
+759	        let detfd = self.file_handles.remove(&fd)?;
+760	        (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())
+761	    }
+762	
+763	    /// Remove every modeled descriptor in an inclusive close_range interval.
+764	    fn remove_fd_range(&mut self, first: u32, last: u32) -> Vec<OpenFileId> {
+765	        let mut descriptors: Vec<_> = self
+766	            .file_handles
+767	            .keys()
+768	            .copied()
+769	            .filter(|fd| *fd >= 0 && first <= *fd as u32 && *fd as u32 <= last)
+770	            .collect();
+771	        descriptors.sort_unstable();
+772	        descriptors
+773	            .into_iter()
+774	            .filter_map(|fd| self.remove_fd(fd))
+775	            .collect()
+776	    }
+777	
+778	    /// dup raw fds.
+779	    fn dup_fd(
+780	        &mut self,
+781	        oldfd: RawFd,
+782	        newfd: RawFd,
+783	        flags: OFlag,
+784	    ) -> Result<Option<OpenFileId>, Errno> {
+785	        if oldfd == newfd {
+786	            self.with_detfd(oldfd, |_| ())?;
+787	            return Ok(None);
+788	        }
+789	
+790	        let detfd = self.with_detfd(oldfd, |old_detfd| {
+791	            old_detfd.clone().with_fd(newfd).with_fd_flags(flags)
+792	        })?;
+793	        let replaced = self.file_handles.insert(newfd, detfd);
+794	        Ok(replaced
+795	            .and_then(|detfd| (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())))
+796	    }
+797	
+798	    /// Capture the exact open-file description currently named by `fd`.
+799	    fn capture_fd(&mut self, fd: RawFd) -> Result<CapturedDetFd, Errno> {
+800	        let detfd = self.with_detfd(fd, |detfd| detfd.clone())?;
+801	        Ok(CapturedDetFd {
+802	            files_id: self.files_id,
+803	            detfd,
+804	        })
+805	    }
+806	
+807	    /// Install a previously captured open-file description as `newfd`.
+808	    ///
+809	    /// Unlike [`Self::dup_fd`], this never resolves the source fd number again.
+810	    /// It succeeds only if the destination still belongs to the descriptor
+811	    /// table in which the source was captured.
+812	    fn install_captured_fd(
+813	        &mut self,
+814	        captured: CapturedDetFd,
+815	        newfd: RawFd,
+816	        flags: OFlag,
+817	    ) -> Result<Option<OpenFileId>, CapturedDetFdInstallError> {
+818	        if captured.files_id != self.files_id {
+819	            return Err(CapturedDetFdInstallError {
+820	                expected_files_id: captured.files_id,
+821	                actual_files_id: self.files_id,
+822	                returned_fd: newfd,
+823	                captured,
+824	            });
+825	        }
+826	
+827	        let detfd = captured.detfd.with_fd(newfd).with_fd_flags(flags);
+828	        let replaced = self.file_handles.insert(newfd, detfd);
+829	        Ok(replaced
+830	            .and_then(|detfd| (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())))
+831	    }
+832	
+833	    /// Drop a capture that was not installed and report whether it retained the
+834	    /// final reference to the open-file description.
+835	    fn abandon_captured_fd(&mut self, captured: CapturedDetFd) -> Option<OpenFileId> {
+836	        let release =
+837	            (captured.detfd.open_file_alias_count() == 1).then(|| captured.detfd.open_file_id());
+838	        drop(captured);
+839	        release
+840	    }
+841	}
+842	
+843	fn stdio_resource(fd: RawFd) -> Option<ResourceID> {
+844	    match fd {
+845	        0 => Some(ResourceID::Device(Device::ContainerStdin)),
+846	        1 => Some(ResourceID::Device(Device::ContainerStdout)),
+847	        2 => Some(ResourceID::Device(Device::ContainerStderr)),
+848	        _ => None,
+849	    }
+850	}
+851	
+852	#[cfg(test)]
+853	mod posix_timers_tests {
+854	    use super::*;
+855	
+856	    fn t(ns: u64) -> LogicalTime {
+857	        LogicalTime::from_nanos(ns)
+858	    }
+859	
+860	    #[test]
+861	    fn ids_are_deterministic_and_sequential() {
+862	        let mut timers = PosixTimers::default();
+863	        assert_eq!(timers.create(None), 0);
+864	        assert_eq!(timers.create(Some(libc::SIGALRM)), 1);
+865	        assert_eq!(timers.create(None), 2);
+866	    }
+867	
+868	    #[test]
+869	    fn settime_reports_previous_arming_and_remaining_uses_virtual_clock() {
+870	        let mut timers = PosixTimers::default();
+871	        let id = timers.create(None);
+872	
+873	        // Arm a one-shot timer for 100ns at t=0. A freshly created timer was
+874	        // disarmed, so the reported old value is zero.
+875	        let old = timers.settime(id, 0, Some(t(100)), t(0)).expect("known id");
+876	        assert_eq!(old, (0, 0));
+877	
+878	        // At t=40 there should be 60ns remaining and no interval.
+879	        assert_eq!(timers.gettime(id, t(40)), Some((60, 0)));
+880	        // Past the deadline the remaining time saturates at 0.
+881	        assert_eq!(timers.gettime(id, t(150)), Some((0, 0)));
+882	    }
+883	
+884	    #[test]
+885	    fn resetting_reports_old_remaining() {
+886	        let mut timers = PosixTimers::default();
+887	        let id = timers.create(None);
+888	        timers.settime(id, 0, Some(t(100)), t(0));
+889	        // Re-arm at t=30 (70ns remained) with a periodic 50ns timer.
+890	        let old = timers
+891	            .settime(id, 50, Some(t(200)), t(30))
+892	            .expect("known id");
+893	        assert_eq!(old, (70, 0));
+894	        assert_eq!(timers.gettime(id, t(30)), Some((170, 50)));
+895	    }
+896	
+897	    // AUTONOMOUS-BOT-IMPLEMENTED
+898	    // TODO-HUMAN-REVIEW(#869)
+899	    #[test]
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_016dtLd7VzLwadAZJCdv4kZ5",
+  "name": "Grep",
+  "input": {
+    "pattern": "discover_fd_from_current_process|stdio_resource\\(",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+detcore/src/tool_local.rs:598:            match self.discover_fd_from_current_process(owner, fd) {
+detcore/src/tool_local.rs:688:    fn discover_fd_from_current_process(&mut self, owner: DetTid, fd: RawFd) -> Result<(), Errno> {
+detcore/src/tool_local.rs:718:        if let Some(resource) = stdio_resource(fd) {
+detcore/src/tool_local.rs:843:fn stdio_resource(fd: RawFd) -> Option<ResourceID> {
+detcore/src/tool_local.rs:1005:            .discover_fd_from_current_process(owner, fd)
+detcore/src/tool_local.rs:1078:            .discover_fd_from_current_process(owner, libc::STDOUT_FILENO)
+detcore/src/tool_local.rs:1164:            .discover_fd_from_current_process(owner, fds[0])
+detcore/src/tool_local.rs:2147:                    .discover_fd_from_current_process(pid, fd)
+detcore/src/tool_local.rs:2447:            metadata.discover_fd_from_current_process(self.dettid, fd)?;
+detcore/src/tool_local.rs:2492:            metadata.discover_fd_from_current_process(self.dettid, oldfd)?;
+detcore/src/tool_local.rs:2511:            metadata.discover_fd_from_current_process(self.dettid, pidfd)?;
+detcore/src/tool_local.rs:2523:            metadata.discover_fd_from_current_process(self.dettid, targetfd)?;
+

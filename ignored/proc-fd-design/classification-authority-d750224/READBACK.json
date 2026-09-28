@@ -1,0 +1,472 @@
+{
+  "recorded_at": "2026-09-17T09:08:41.098084+00:00",
+  "source_head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "retained_attempt": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/frozen-cleanup-real-classification/attempt-1/receipt.json",
+      "bytes": 1268,
+      "sha256": "426bdc7f0b1aae3def0c7c052f0b7a36c7c3f5185e83bf80569d5b4aad0a08dd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/frozen-cleanup-real-classification/attempt-1/BEFORE.json",
+      "bytes": 1720,
+      "sha256": "f6ff9bd817cde9d4f323d3ac2f3519e689fcad2748303eaaf53e76a140d0f361"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/frozen-cleanup-real-classification/attempt-1/AFTER.json",
+      "bytes": 1720,
+      "sha256": "f6ff9bd817cde9d4f323d3ac2f3519e689fcad2748303eaaf53e76a140d0f361"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/frozen-cleanup-real-classification/attempt-1/stdout",
+      "bytes": 356,
+      "sha256": "68b5c76949f7f3b2870f86502fcacfaf1b47c0e899d4003688cf2ad2d028f5b9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/frozen-cleanup-real-classification/attempt-1/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "retained_result": {
+    "classifications": [
+      {
+        "blocks_entry": true,
+        "checkout": "/home/newton/work/.dev-hermit-frozen-validate/validate-fresh-a88f948021a2-3493122-c93d50f4",
+        "reason": "cannot authenticate agent-utils superproject checkout: Git returned an invalid value",
+        "state": "could-not-classify"
+      }
+    ],
+    "create_journals": [],
+    "process_censuses": 1,
+    "requested": 1,
+    "schema": 1
+  },
+  "read_only_git_facts": [
+    {
+      "repository": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel"
+      ],
+      "exit_code": 0,
+      "stdout": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-superproject-working-tree"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "repository": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "exit_code": 0,
+      "stdout": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/worktrees/kvm-frozen-cleanup-20260917/modules/hermit/modules/agent-utils\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-superproject-working-tree"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "exit_code": 0,
+      "stdout": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/worktrees/kvm-frozen-cleanup-20260917/modules/hermit/modules/agent-utils\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-superproject-working-tree"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "exit_code": 0,
+      "stdout": "98d58b9bd6ea722c6d7087d45d5fd81792abfa16\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/worktrees/kvm-frozen-cleanup-20260917/modules/hermit\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit",
+        "ls-tree",
+        "HEAD",
+        "--",
+        "agent-utils"
+      ],
+      "exit_code": 0,
+      "stdout": "160000 commit 2781b1054efc3a9c561dbed35584a6fca1ed8676\tagent-utils\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-superproject-working-tree"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}"
+      ],
+      "exit_code": 0,
+      "stdout": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      ],
+      "exit_code": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "argv": [
+        "/usr/bin/git",
+        "--no-replace-objects",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+        "ls-tree",
+        "HEAD",
+        "--",
+        "hermit"
+      ],
+      "exit_code": 0,
+      "stdout": "160000 commit 98d58b9bd6ea722c6d7087d45d5fd81792abfa16\thermit\n",
+      "stderr": ""
+    }
+  ],
+  "source_bytes": [
+    {
+      "revision": "2781b1054efc3a9c561dbed35584a6fca1ed8676",
+      "git_path": "py/wrkslots/cli.py",
+      "bytes": 1031105,
+      "sha256": "0edcaa5f5d00ce875cef41518216842609a045e6926a9f6d9c9eb56322ac8745"
+    },
+    {
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "git_path": "py/wrkslots/cli.py",
+      "bytes": 1041325,
+      "sha256": "d7018b96ded39083a6236cfb5140e1c907fdbb0f1c7500bfdbc5e5c04d166d25"
+    },
+    {
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/wrkslots/__main__.py",
+      "bytes": 396,
+      "sha256": "aca897069fc5460efae86cf5f11b96ea2f39dcdacb5daec6f0e8e670fb0a5da4"
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "revision": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "git_path": "ci-hub/bin/wrkslots",
+      "bytes": 11327,
+      "sha256": "56ae5c51026575f4d32b455785e4904b10b60d18ddab028b6337318e654a3c10"
+    }
+  ],
+  "unchanged_authority_functions_across2781_872_d750": {
+    "2781b1054efc3a9c561dbed35584a6fca1ed8676": [
+      {
+        "function": "_trusted_git_text",
+        "start_line": 16496,
+        "end_line": 16506,
+        "sha256": "dae18154f96080f4a762d5bbe4d3090d017e59702546e68f0b3ca05e9c0eeb46"
+      },
+      {
+        "function": "_trusted_git_superproject",
+        "start_line": 16537,
+        "end_line": 16549,
+        "sha256": "34868694f7f0adaa5730aec170eb4847a7ef73cb10132b3577a9259e2bd59291"
+      },
+      {
+        "function": "_frozen_validation_authority_chain",
+        "start_line": 16579,
+        "end_line": 16609,
+        "sha256": "97743d34776b18effb515fca2796c43bed696094f1eb8c84c5c6c0c8974e949d"
+      },
+      {
+        "function": "_frozen_validation_authority_commit",
+        "start_line": 16612,
+        "end_line": 16668,
+        "sha256": "630b4bfe00181eb2c6fe88722f944c45e5d9cf57e856fd87341fe860de7f1065"
+      }
+    ],
+    "8720799f78f8ef56d796723dbc473a9171a4f4eb": [
+      {
+        "function": "_trusted_git_text",
+        "start_line": 16665,
+        "end_line": 16675,
+        "sha256": "dae18154f96080f4a762d5bbe4d3090d017e59702546e68f0b3ca05e9c0eeb46"
+      },
+      {
+        "function": "_trusted_git_superproject",
+        "start_line": 16706,
+        "end_line": 16718,
+        "sha256": "34868694f7f0adaa5730aec170eb4847a7ef73cb10132b3577a9259e2bd59291"
+      },
+      {
+        "function": "_frozen_validation_authority_chain",
+        "start_line": 16748,
+        "end_line": 16778,
+        "sha256": "97743d34776b18effb515fca2796c43bed696094f1eb8c84c5c6c0c8974e949d"
+      },
+      {
+        "function": "_frozen_validation_authority_commit",
+        "start_line": 16781,
+        "end_line": 16837,
+        "sha256": "630b4bfe00181eb2c6fe88722f944c45e5d9cf57e856fd87341fe860de7f1065"
+      }
+    ],
+    "d750224cbf10c5a3b35eec40fa4d57d0e98493cb": [
+      {
+        "function": "_trusted_git_text",
+        "start_line": 16665,
+        "end_line": 16675,
+        "sha256": "dae18154f96080f4a762d5bbe4d3090d017e59702546e68f0b3ca05e9c0eeb46"
+      },
+      {
+        "function": "_trusted_git_superproject",
+        "start_line": 16706,
+        "end_line": 16718,
+        "sha256": "34868694f7f0adaa5730aec170eb4847a7ef73cb10132b3577a9259e2bd59291"
+      },
+      {
+        "function": "_frozen_validation_authority_chain",
+        "start_line": 16748,
+        "end_line": 16778,
+        "sha256": "97743d34776b18effb515fca2796c43bed696094f1eb8c84c5c6c0c8974e949d"
+      },
+      {
+        "function": "_frozen_validation_authority_commit",
+        "start_line": 16781,
+        "end_line": 16837,
+        "sha256": "630b4bfe00181eb2c6fe88722f944c45e5d9cf57e856fd87341fe860de7f1065"
+      }
+    ]
+  },
+  "loaded_standalone_and_nested_entrypoint_and_cli_match_committed_d750": true,
+  "zero_new_classification_census_cleanup_recover_admission_build_test_or_source_ref_mutations": true
+}

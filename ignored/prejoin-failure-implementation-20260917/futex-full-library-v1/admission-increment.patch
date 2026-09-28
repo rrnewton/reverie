@@ -1,0 +1,13 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-hermit-20260917/ignored/prejoin-failure-implementation-20260917/hardware-qualification-helper-v1/admit.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/futex-full-library-v1/admit.py
+@@ -53,8 +53,8 @@
+     args = parser.parse_args()
+     require(args.arguments[:1] == ['--'], 'expected exact libtest argument separator')
+     arguments = args.arguments[1:]
+-    require(len(arguments) == 5 and arguments[:4] ==
+-            ['--exact', '--nocapture', '--test-threads', '1'], 'changed libtest invocation')
++    require(arguments == ['--test-threads=1', '--nocapture', '-Z',
++                          'unstable-options', '--format=json'], 'changed full libtest invocation')
+     record = Path(args.record)
+     require(record.is_absolute() and not record.exists() and not record.is_symlink(), 'retain admission record')
+     binary = check_binary(args.executable, args.sha256)

@@ -1,0 +1,19 @@
+{
+  "stage": "vm-04",
+  "test": "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "448"
+    ]
+  ],
+  "stdout_sha256": "590fed54d75471c9244b033b5f77d660735bc3dd0ec109bf1b746187a71633fa",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "acaa14ebdbbd566173e41b0ed22e5b65919f365da9e7b4203b417e448816add4",
+  "cpu_nsec": 296643000,
+  "wall_seconds": 1.27761439
+}

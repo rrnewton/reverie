@@ -1,0 +1,300 @@
+--- v2/detcore/src/logdiff.rs
++++ v3/detcore/src/logdiff.rs
+@@ -137,7 +137,7 @@
+     /// distinct marked address is rewritten to an ordinal placeholder
+     /// `<addr{N}>` assigned by order of first appearance within a single run
+     /// (see `canonicalize_addresses_in_line`). This
+-    /// this discards ONLY the host-specific raw pointer value: it preserves
++    /// discards ONLY the host-specific raw pointer value: it preserves
+     /// identity (same address -> same ordinal), ordering (introduction
+     /// sequence), and aliasing (two names for one address collapse to one
+     /// ordinal), and it leaves every other byte -- virtual-time timestamps,
+@@ -359,8 +359,7 @@
+ /// one captured log.
+ ///
+ /// This removes the real wall-clock prefix and rewrites only explicitly marked
+-/// host addresses to first-appearance ordinals. It does not run the lossy
+-/// `--unsafe-strip-lines` transformation: scheduler turns, virtual time, syscall
++/// host addresses to first-appearance ordinals. Scheduler turns, virtual time, syscall
+ /// values, counts, flags, and every other substantive byte are preserved.
+ pub fn write_canonical_info(file: &Path, writer: &mut impl Write) -> std::io::Result<usize> {
+     write_canonical_info_with_filter(file, writer, |_| true)
+@@ -759,9 +758,8 @@
+ /// Keep the content that identifies a differing event while removing only
+ /// values already carried in separate fields beside it.
+ ///
+-/// This preserves syscall arguments,
+-/// resource names, thread identities, payload bytes, and all other numbers stay
+-/// exact. Record position is not part of the message and remains a separate
++/// Syscall arguments, resource names, thread identities, payload bytes, and all
++/// other numbers stay exact. Record position is not part of the message and remains a separate
+ /// observation.
+ fn first_divergent_message(message: &LogMessage<'_>) -> String {
+     static FINISHED_SYSCALL: LazyLock<Regex> =
+@@ -1039,7 +1037,7 @@
+ /// Returns `true` if a difference is found.
+ ///
+ /// We could use an existing diff library on the entire log, but this provides us more
+-/// control over how to present the (stripped/unstripped) differences, and to focus on the
++/// control over how to present original and canonical differences, and to focus on the
+ /// per-line divergence(s), and potentially focus on the first point of divergence.
+ //
+ // Future TODO:
+@@ -1241,17 +1239,15 @@
+ ///
+ /// With some complexities:
+ ///  * Some entries are multi-line (contain newlines).
+-///  * Some stripping of nondeterministic information is needed for direct comparability.
+-///  * Certain lines are intended to be deterministic/comparable, in their contents,
+-///    and others in their *presence* but not their details.
++///  * Real wall-clock prefixes are removed and marked host addresses are canonicalized.
++///  * Every selected message is compared exactly, including its numeric values.
+ ///
+ /// Reports only whether the two files differ. See [`log_diff_detailed`] when the
+ /// caller must also know how many messages were actually compared; a bare
+ /// `false` here cannot distinguish a match from an empty comparison.
+ //
+ // TODO: we should replace this with a diff algorithm that can handle insertions while maintaining
+-// alignment. There's also no reason we can't output the stripped relevant lines and use a separate
+-// diff tool.
++// alignment.
+ pub fn log_diff(file_a: &Path, file_b: &Path, opts: &LogDiffOpts) -> bool {
+     log_diff_detailed(file_a, file_b, opts).diff_found
+ }
+@@ -2558,7 +2554,7 @@
+     }
+ 
+     #[test]
+-    fn structured_scheduler_flags_control_filtering_and_retained_counts() {
++    fn structured_scheduler_flags_preserve_info_and_retained_counts() {
+         let text = "INFO detcore::scheduler: COMMIT turn 999 at time 999";
+         let internal = super::LogMessage {
+             index: 0,
+@@ -2621,6 +2617,7 @@
+                 clap::error::ErrorKind::UnknownArgument,
+                 "{flag}"
+             );
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
+         }
+     }
+ 
+@@ -3102,7 +3099,7 @@
+     fn test_full_trace_detects_unnormalized_timing_difference() -> std::io::Result<()> {
+         let log_a = "INFO detcore: DETLOG [syscall] finish syscall #1: clock_gettime(CLOCK_MONOTONIC, 100) = Ok(0)";
+         let log_b = "INFO detcore: DETLOG [syscall] finish syscall #1: clock_gettime(CLOCK_MONOTONIC, 101) = Ok(0)";
+-        let normalized = super::LogDiffOpts {
++        let ordinary = super::LogDiffOpts {
+             no_color: true,
+             ..Default::default()
+         };
+@@ -3110,7 +3107,7 @@
+         assert!(super::log_diff_from_strs(
+             log_a,
+             log_b,
+-            &normalized,
++            &ordinary,
+             &mut Vec::new()
+         )?);
+ 
+@@ -3377,7 +3374,6 @@
+         let raw = super::LogDiffOpts {
+             comparison: super::LogComparisonMode::FullTrace,
+             canonicalize_addresses: false,
+-            canonicalize_addresses: false,
+             no_color: true,
+             ..Default::default()
+         };
+@@ -3807,6 +3803,8 @@
+     fn default_comparison_preserves_numeric_values() -> std::io::Result<()> {
+         for (left, right) in [
+             (r#"value=100"#, r#"value=200"#),
++            (r#"CHAOSRAND value=100"#, r#"CHAOSRAND value=200"#),
++            (r#"SCHEDRAND value=100"#, r#"SCHEDRAND value=200"#),
+             (r#"time=800.709_180s"#, r#"time=800.709_181s"#),
+             (r#"value=98.91618ms"#, r#"value=98.91619ms"#),
+         ] {
+--- v2/detcore/tests/testutils/src/lib.rs
++++ v3/detcore/tests/testutils/src/lib.rs
+@@ -825,6 +825,37 @@
+     use super::test_fn_with_config;
+ 
+     #[test]
++    fn commit_comparison_preserves_numeric_values_and_record_count() {
++        let output = reverie::process::Output {
++            status: ExitStatus::Exited(0),
++            stdout: b"same output\n".to_vec(),
++            stderr: Vec::new(),
++        };
++        let line =
++            |time| format!("INFO detcore::scheduler: COMMIT turn 3, dettid 2 at time {time}");
++        let mut same = super::DetTestState::default();
++        super::check_output(&output, vec![line(100)], &mut same);
++        super::check_output(&output, vec![line(100)], &mut same);
++        std::assert_eq!(same.test_run_num, 2);
++        std::assert_eq!(
++            same.last_log,
++            Some(vec![" turn 3, dettid 2 at time 100".to_owned()])
++        );
++
++        for differing in [vec![line(200)], vec![line(100), line(100)]] {
++            let mut state = super::DetTestState::default();
++            super::check_output(&output, vec![line(100)], &mut state);
++            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                super::check_output(&output, differing, &mut state);
++            }));
++            assert!(
++                failure.is_err(),
++                "a COMMIT value or count difference must fail"
++            );
++        }
++    }
++
++    #[test]
+     fn isolated_workdir_request_is_exact_and_fail_closed() {
+         std::assert_eq!(requested_test_workdir(None).unwrap(), None);
+         std::assert_eq!(
+--- v2/hermit-cli/src/bin/hermit/analyze/phases.rs
++++ v3/hermit-cli/src/bin/hermit/analyze/phases.rs
+@@ -292,7 +292,7 @@
+                 run2_log_path.display(),
+             );
+         }
+-        let mut ldopts = LogDiffCLIOpts::new(run1_log_path, run2_log_path);
++        let ldopts = LogDiffCLIOpts::new(run1_log_path, run2_log_path);
+         ldopts.main(global)
+     }
+ 
+--- v2/hermit-cli/src/bin/hermit/backends.rs
++++ v3/hermit-cli/src/bin/hermit/backends.rs
+@@ -77,7 +77,6 @@
+ use super::verify::ComparisonOptions;
+ #[cfg(feature = "dbt")]
+ use super::verify::DbtCountedBranchComparison;
+-#[cfg(feature = "dbt")]
+ #[cfg(feature = "dbt")]
+ use super::verify::Verdict;
+ #[cfg(feature = "dbt")]
+--- v2/hermit-cli/src/bin/hermit/logdiff.rs
++++ v3/hermit-cli/src/bin/hermit/logdiff.rs
+@@ -1411,6 +1411,7 @@
+                 clap::error::ErrorKind::UnknownArgument,
+                 "{flag}"
+             );
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
+         }
+         for argv in [
+             vec!["log-diff", "left", "right"],
+@@ -1466,6 +1467,31 @@
+     }
+ 
+     #[test]
++    fn plain_follow_compares_all_info_without_json_or_compatibility_flags() {
++        let directory = tempfile::tempdir().unwrap();
++        let left = directory.path().join("left.log");
++        let right = directory.path().join("right.log");
++        let text = |value| {
++            format!(
++                "{}Apr 09 06:08:02.100  INFO unrelated: value={value}\n{}",
++                current_record(1, "DETLOG stable"),
++                current_record(3, "DETLOG unfinished tail"),
++            )
++        };
++        std::fs::write(&left, text(100)).unwrap();
++        std::fs::write(&right, text(200)).unwrap();
++        let mut options = LogDiffCLIOpts::new(&left, &right);
++        options.follow = true;
++        options.follow_interval_ms = 1;
++        options.follow_timeout_secs = 1;
++        let global = GlobalOpts::try_parse_from(["hermit"]).unwrap();
++        assert_eq!(
++            options.main(&global),
++            ExitStatus::Exited(HERMIT_VERIFICATION_DIVERGENCE_EXIT)
++        );
++    }
++
++    #[test]
+     fn canonical_all_records_uses_the_fixed_shared_comparator() {
+         let directory = tempfile::tempdir().unwrap();
+         let left = directory.path().join("left.log");
+--- v2/hermit-cli/src/bin/hermit/verify.rs
++++ v3/hermit-cli/src/bin/hermit/verify.rs
+@@ -96,8 +96,8 @@
+ 
+ pub(crate) struct ComparisonOptions {
+     /// Controls only how much diff *output* is printed (a larger syscall-history
+-    /// window), NOT the comparison semantics. The canonical comparison is always enabled so a quiet run is still
+-    /// bitwise-strict — the two knobs were historically conflated behind a single
++    /// window), NOT the comparison semantics. The canonical comparison is always
++    /// enabled, so a quiet run is still bitwise-strict — the two knobs were historically conflated behind a single
+     /// `verbose` flag, which made the only bitwise comparison also the loudest.
+     pub verbose: bool,
+     pub compare_logs: bool,
+@@ -1926,7 +1926,7 @@
+     }
+ 
+     #[test]
+-    fn comparison_spec_maps_strictness_to_concrete_flags() {
++    fn comparison_spec_binds_canonical_policy_and_preserves_historical_reports() {
+         let canonical =
+             ComparisonSpec::new(true, false, true, RecordEnvelopePolicy::AllRecordsV1, true);
+         assert!(!canonical.strip_lines);
+@@ -1942,6 +1942,26 @@
+         );
+         assert_eq!(canonical.log_scope, ComparedLogScope::Info);
+         assert_eq!(canonical.log_comparison_mode(), LogComparisonMode::Info);
++
++        let historical_stripped = ComparisonSpec {
++            strictness: LogCompareStrictness::Stripped,
++            strip_lines: true,
++            canonicalize_addresses: false,
++            full_trace: false,
++            exact_remainder: false,
++            log_scope: ComparedLogScope::Deterministic,
++            stripped_prefixes: &[STRIP_WALL_CLOCK_PREFIX_V1, STRIP_UNSAFE_NORMALIZATION_V1],
++            canonicalizations: &[],
++            display_name: "Stripped",
++            ..canonical
++        };
++        assert!(!historical_stripped.is_bitwise_parity());
++        assert_eq!(
++            comparison_evidence_line(&historical_stripped).as_deref(),
++            Some(
++                ":: comparison=Stripped relaxations=unsafe-numeric-address-and-path-normalization/v1"
++            )
++        );
+ 
+         let no_io_buffers = ComparisonSpec {
+             compare_io_buffers: false,
+@@ -3164,6 +3184,7 @@
+         ] {
+             let error = logdiff::LogDiffOpts::try_parse_from(["log-diff", flag]).unwrap_err();
+             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+-        }
+-    }
+-}
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
++        }
++    }
++}
+--- v2/hermit-verify/src/common/verify.rs
++++ v3/hermit-verify/src/common/verify.rs
+@@ -34,6 +34,8 @@
+         // explicitly here: `hermit_bin` defaults to whatever `HERMIT_BIN` or
+         // the PATH supplies, which can be a published bundle built without the
+         // flag, and passing it there is `error: unexpected argument`, exit 2.
++        // An older binary may still have a lossy default. Require its explicit
++        // canonical capability; an unsupported flag must fail without a fallback.
+         vec![
+             "--canonical-info".to_owned(),
+             format!("--syscall-history={}", self.syscall_history),
+--- v2/hermit-verify/src/trace_replay.rs
++++ v3/hermit-verify/src/trace_replay.rs
+@@ -178,7 +178,7 @@
+     }
+ 
+     #[test]
+-    fn non_chaos_replay_compares_all_detlogs() {
++    fn non_chaos_replay_preserves_output_and_status_checks() {
+         let options = trace_replay_opts(false).options();
+ 
+         assert!(options.verify_stdout);

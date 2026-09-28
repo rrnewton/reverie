@@ -1,0 +1,3063 @@
+diff --git a/reverie-kvm/src/error.rs b/reverie-kvm/src/error.rs
+index d5ac89e8..93c1a4c4 100644
+--- a/reverie-kvm/src/error.rs
++++ b/reverie-kvm/src/error.rs
+@@ -6,6 +6,8 @@
+  * LICENSE file in the root directory of this source tree.
+  */
+ 
++use std::sync::Arc;
++
+ use thiserror::Error;
+ 
+ /// Errors produced by the KVM backend prototype.
+@@ -16,12 +18,17 @@ pub enum Error {
+     #[error("KVM execution stopped after a fatal run failure")]
+     RunAborted,
+ 
++    /// A guest worker panicked. Caught paths publish this before physical join;
++    /// the ordinary join fallback also uses this cause for an unreported panic.
++    #[error("guest thread panicked during teardown")]
++    GuestWorkerPanic,
++
+     /// A shared typed failure retained until the root has joined all children.
+     #[error("{0}")]
+     SharedFailure(#[source] std::sync::Arc<Error>),
+ 
+     /// A typed worker failure with its original guest thread identity.
+-    #[error("KVM worker cleanup failed: thread {tid}: {error}")]
++    #[error("unexpected vCPU exit: KVM worker cleanup failed: thread {tid}: {error}")]
+     WorkerFailure {
+         /// Guest thread whose physical join returned this failure.
+         tid: i32,
+@@ -35,9 +42,9 @@ pub enum Error {
+     WithCleanup {
+         /// Original typed cause, also exposed through the source chain.
+         #[source]
+-        primary: Box<Error>,
++        primary: Arc<Error>,
+         /// Additional failures, without replacing the original cause.
+-        cleanup: Vec<Error>,
++        cleanup: Vec<Arc<Error>>,
+     },
+ 
+     /// A typed cleanup cause with the operation that failed.
+@@ -47,7 +54,7 @@ pub enum Error {
+         phase: &'static str,
+         /// Original typed cleanup error.
+         #[source]
+-        error: Box<Error>,
++        error: Arc<Error>,
+     },
+ 
+     /// A guest branch counter is unavailable or its accounting cannot be trusted.
+@@ -201,29 +208,44 @@ impl Error {
+     /// Original typed cause beneath shared ownership and cleanup aggregation.
+     pub fn primary(&self) -> &Self {
+         match self {
+-            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => error.primary(),
+-            Self::WithCleanup { primary, .. } => primary.primary(),
+-            Self::Cleanup { error, .. } => error.primary(),
++            Self::SharedFailure(error)
++            | Self::WorkerFailure { error, .. }
++            | Self::WithCleanup { primary: error, .. }
++            | Self::Cleanup { error, .. } => error.primary(),
++            Self::ExecWorkerTeardown(error) => error.primary(),
+             _ => self,
+         }
+     }
+ 
+     pub(crate) fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
+         match self {
+-            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => {
++            Self::SharedFailure(error)
++            | Self::WorkerFailure { error, .. }
++            | Self::WithCleanup { primary: error, .. }
++            | Self::Cleanup { error, .. } => {
+                 std::sync::Arc::ptr_eq(error, primary) || error.retains_primary(primary)
+             }
+-            Self::WithCleanup { primary: error, .. }
+-            | Self::Cleanup { error, .. }
+-            | Self::ExecWorkerTeardown(error) => error.retains_primary(primary),
++            Self::ExecWorkerTeardown(error) => error.retains_primary(primary),
+             _ => false,
+         }
+     }
+ 
++    /// Identity of the primary worker cause, never a secondary cleanup error.
++    pub(crate) fn worker_tid(&self) -> Option<i32> {
++        match self {
++            Self::WorkerFailure { tid, .. } => Some(*tid),
++            Self::SharedFailure(error)
++            | Self::WithCleanup { primary: error, .. }
++            | Self::Cleanup { error, .. } => error.worker_tid(),
++            Self::ExecWorkerTeardown(error) => error.worker_tid(),
++            _ => None,
++        }
++    }
++
+     pub(crate) fn cleanup(self, phase: &'static str) -> Self {
+         Self::Cleanup {
+             phase,
+-            error: Box::new(self),
++            error: Arc::new(self),
+         }
+     }
+ 
+@@ -232,8 +254,8 @@ impl Error {
+             self
+         } else {
+             Self::WithCleanup {
+-                primary: Box::new(self),
+-                cleanup,
++                primary: Arc::new(self),
++                cleanup: cleanup.into_iter().map(Arc::new).collect(),
+             }
+         }
+     }
+@@ -246,4 +268,156 @@ impl Error {
+             Err(primary.with_cleanup(errors))
+         }
+     }
++
++    /// Compose the final result after all publishers and owned joins returned.
++    /// The first published Arc is authoritative. Shared aggregate children stay
++    /// shared, so separating a cancellation marker cannot discard a real hook
++    /// error or clone a non-Clone host error into a different cause.
++    pub(crate) fn complete_after_failure(self, first: Arc<Error>, first_tid: i32) -> Self {
++        assert!(!matches!(first.primary(), Error::RunAborted));
++        #[derive(Clone)]
++        enum Context {
++            Worker(i32),
++            Cleanup(&'static str),
++            Exec,
++        }
++        struct Cause {
++            error: Arc<Error>,
++            context: Vec<Context>,
++        }
++        impl Cause {
++            fn into_error(self) -> Error {
++                self.context.into_iter().rev().fold(
++                    Error::SharedFailure(self.error),
++                    |error, context| match context {
++                        Context::Worker(tid) => Error::WorkerFailure {
++                            tid,
++                            error: Arc::new(error),
++                        },
++                        Context::Cleanup(phase) => error.cleanup(phase),
++                        Context::Exec => Error::ExecWorkerTeardown(Box::new(error)),
++                    },
++                )
++            }
++            fn worker_tid(&self) -> Option<i32> {
++                self.context
++                    .iter()
++                    .find_map(|context| match context {
++                        Context::Worker(tid) => Some(*tid),
++                        _ => None,
++                    })
++                    .or_else(|| self.error.worker_tid())
++            }
++        }
++        fn split(
++            error: Arc<Error>,
++            first: &Arc<Error>,
++            context: &mut Vec<Context>,
++            causes: &mut Vec<Cause>,
++        ) {
++            if Arc::ptr_eq(&error, first) || !split_aggregate(&error, first, context, causes) {
++                causes.push(Cause {
++                    error,
++                    context: context.clone(),
++                });
++            }
++        }
++        // Return false for an opaque cause. Exec's existing boxed API remains
++        // intact: its wrapper is reproduced only when the child is an aggregate
++        // or shared reference; otherwise the original complete Arc is retained.
++        fn split_aggregate(
++            error: &Error,
++            first: &Arc<Error>,
++            context: &mut Vec<Context>,
++            causes: &mut Vec<Cause>,
++        ) -> bool {
++            match error {
++                Error::RunAborted => {}
++                Error::SharedFailure(error) => split(error.clone(), first, context, causes),
++                Error::WithCleanup { primary, cleanup } => {
++                    split(primary.clone(), first, context, causes);
++                    for error in cleanup {
++                        split(error.clone(), first, context, causes);
++                    }
++                }
++                Error::WorkerFailure { tid, error } => {
++                    context.push(Context::Worker(*tid));
++                    split(error.clone(), first, context, causes);
++                    context.pop();
++                }
++                Error::Cleanup { phase, error } => {
++                    context.push(Context::Cleanup(phase));
++                    split(error.clone(), first, context, causes);
++                    context.pop();
++                }
++                Error::ExecWorkerTeardown(error) => {
++                    context.push(Context::Exec);
++                    let split = split_aggregate(error, first, context, causes);
++                    context.pop();
++                    return split;
++                }
++                _ => return false,
++            }
++            true
++        }
++        let mut causes = Vec::new();
++        split(Arc::new(self), &first, &mut Vec::new(), &mut causes);
++        // Prefer the already present worker context for the published identity
++        // over a context-free notification alias. A canceled peer carrying the
++        // same cause cannot supply its own TID as the cause's identity. Other
++        // real errors retain their order, regardless of host completion/TID.
++        let selected = causes
++            .iter()
++            .enumerate()
++            .filter(|(_, cause)| {
++                Arc::ptr_eq(&cause.error, &first)
++                    && cause.worker_tid().is_none_or(|tid| tid == first_tid)
++            })
++            .max_by_key(|(index, cause)| {
++                (
++                    cause.worker_tid() == Some(first_tid),
++                    std::cmp::Reverse(*index),
++                )
++            })
++            .map(|(index, _)| index);
++        let primary = selected
++            .map(|index| causes.remove(index).into_error())
++            .unwrap_or_else(|| Error::SharedFailure(first.clone()));
++        let cleanup = causes
++            .into_iter()
++            .filter(|cause| !Arc::ptr_eq(&cause.error, &first))
++            .map(Cause::into_error)
++            .collect();
++        primary.with_cleanup(cleanup)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::sync::Arc;
++
++    use super::*;
++
++    #[test]
++    fn worker_diagnostic_and_primary_survive_exec_and_cleanup_wrappers() {
++        let cause = Arc::new(Error::Reverie(reverie::syscalls::Errno::EIO.into()));
++        let error = Error::ExecWorkerTeardown(Box::new(Error::WorkerFailure {
++            tid: 2,
++            error: cause.clone(),
++        }));
++        assert_eq!(
++            error.to_string(),
++            "unexpected vCPU exit: KVM worker cleanup failed: thread 2: Reverie tool failed: -5 EIO (I/O error)"
++        );
++        assert!(
++            matches!(error.primary(), Error::Reverie(reverie::Error::Errno(errno))
++            if *errno == reverie::syscalls::Errno::EIO)
++        );
++        assert!(error.retains_primary(&cause));
++        assert_eq!(error.worker_tid(), Some(2));
++        let error = error.with_cleanup(vec![Error::GuestClock("secondary".to_owned())]);
++        assert!(error.retains_primary(&cause));
++        assert_eq!(error.worker_tid(), Some(2));
++        assert!(matches!(error.primary(), Error::Reverie(_)));
++    }
+ }
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index ee8b0f24..85f69a79 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -1086,6 +1086,15 @@ pub(crate) struct ElfExecutor {
+ pub(crate) enum ChildStartCommand {
+     Start,
+     Cancel,
++    /// Consuming cleanup after the run's terminal transition, not an ordinary
++    /// successful cancellation or permission to execute the child.
++    CancelAfterFailure,
++}
++
++impl ChildStartCommand {
++    pub(crate) fn failure(self) -> Option<crate::Error> {
++        matches!(self, Self::CancelAfterFailure).then_some(crate::Error::RunAborted)
++    }
+ }
+ 
+ #[derive(Clone)]
+@@ -1135,10 +1144,18 @@ impl ChildStartGate {
+     /// result while the Cancelled state still lets cleanup remove and join the
+     /// exact registered child.
+     pub(crate) fn cancel(&self) -> ChildStartCancellation {
++        self.cancel_with_command(ChildStartCommand::Cancel)
++    }
++
++    pub(crate) fn cancel_after_failure(&self) -> ChildStartCancellation {
++        self.cancel_with_command(ChildStartCommand::CancelAfterFailure)
++    }
++
++    fn cancel_with_command(&self, command: ChildStartCommand) -> ChildStartCancellation {
+         let mut state = self.state.lock().expect("KVM child-start gate poisoned");
+         match &*state {
+             ChildStartGateState::Pending(start) => {
+-                let delivery_failed = start.send(ChildStartCommand::Cancel).is_err();
++                let delivery_failed = start.send(command).is_err();
+                 *state = ChildStartGateState::Cancelled;
+                 ChildStartCancellation::NewlyCancelled { delivery_failed }
+             }
+@@ -2492,7 +2509,7 @@ impl ElfExecutor {
+             // earlier child may need a later child's consuming cleanup.
+             for (pid, process) in &pending {
+                 if matches!(
+-                    process.start.cancel(),
++                    process.start.cancel_after_failure(),
+                     ChildStartCancellation::NewlyCancelled {
+                         delivery_failed: true
+                     }
+@@ -2824,12 +2841,16 @@ impl ElfExecutor {
+     /// scheduler when `Guest::is_root_thread()` is true, so reporting the
+     /// synthetic parent here makes the root guest permanently unschedulable.
+     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
+-        if self.state.is_traced_tree_root {
++        if self.is_traced_tree_root() {
+             return None;
+         }
+         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
+     }
+ 
++    pub(crate) fn is_traced_tree_root(&self) -> bool {
++        self.state.is_traced_tree_root
++    }
++
+     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
+     /// Queues a backend-neutral event selected for this exact guest task.
+     pub(crate) fn defer_signal_delivery(
+@@ -34827,7 +34848,10 @@ mod tests {
+             let wait = if pid == 2 { wait_later.take() } else { None };
+             let done = if pid == 3 { later_done.take() } else { None };
+             let handle = std::thread::spawn(move || {
+-                assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Cancel);
++                assert_eq!(
++                    receiver.recv().unwrap(),
++                    ChildStartCommand::CancelAfterFailure
++                );
+                 if let Some(done) = done {
+                     done.send(()).unwrap();
+                 }
+@@ -34910,6 +34934,39 @@ mod tests {
+                 delivery_failed: true
+             }
+         );
++        assert_eq!(
++            start_gate.cancel_after_failure(),
++            ChildStartCancellation::AlreadyStarted
++        );
++        assert_eq!(
++            cancel_gate.cancel_after_failure(),
++            ChildStartCancellation::AlreadyCancelled
++        );
++        let (fatal_sender, fatal_receiver) = std::sync::mpsc::channel();
++        let fatal_gate = ChildStartGate::new(fatal_sender);
++        assert_eq!(
++            fatal_gate.cancel_after_failure(),
++            ChildStartCancellation::NewlyCancelled {
++                delivery_failed: false
++            }
++        );
++        let command = fatal_receiver.recv().unwrap();
++        assert_eq!(command, ChildStartCommand::CancelAfterFailure);
++        assert!(matches!(command.failure(), Some(crate::Error::RunAborted)));
++        assert_eq!(
++            fatal_gate.cancel(),
++            ChildStartCancellation::AlreadyCancelled
++        );
++        assert_eq!(fatal_gate.start(), Ok(false));
++        let (lost_sender, lost_receiver) = std::sync::mpsc::channel();
++        let lost_gate = ChildStartGate::new(lost_sender);
++        drop(lost_receiver);
++        assert_eq!(
++            lost_gate.cancel_after_failure(),
++            ChildStartCancellation::NewlyCancelled {
++                delivery_failed: true
++            }
++        );
+     }
+ 
+     #[test]
+diff --git a/reverie-kvm/src/failure.rs b/reverie-kvm/src/failure.rs
+index c3dfb3dc..fffe939d 100644
+--- a/reverie-kvm/src/failure.rs
++++ b/reverie-kvm/src/failure.rs
+@@ -65,6 +65,7 @@ impl RunFailure {
+             .map(|(cause, _)| cause.clone())
+     }
+ 
++    #[cfg(test)]
+     pub(crate) fn published_primary(&self) -> Option<Arc<Error>> {
+         self.published
+             .load(Ordering::Acquire)
+@@ -73,8 +74,12 @@ impl RunFailure {
+     }
+ 
+     fn publish(&self, event: BackendFailure, error: Error) -> Error {
+-        if matches!(error, Error::RunAborted) {
+-            return self.primary().map_or(error, Error::SharedFailure);
++        if matches!(error.primary(), Error::RunAborted) {
++            // A Tool subscriber may already be doing terminal cleanup while
++            // the synchronous publisher is still returning. Do not sample its
++            // unpublished primary or turn this cleanup marker into success.
++            // Public completion attaches the retained cause after owned joins.
++            return error;
+         }
+         // Select the first cause and its event in the same publication order.
+         // Keep this lock only through the synchronous terminal hook and local
+@@ -108,18 +113,67 @@ impl RunFailure {
+         }
+         Error::SharedFailure(error)
+     }
++
++    /// Called only after the run's owned workers and processes have returned.
++    /// Terminal cleanup markers do not publish a second cause; retain the
++    /// original typed cause here once its publisher has completed.
++    pub(crate) fn complete<R>(&self, result: crate::Result<R>) -> crate::Result<R> {
++        let first = self
++            .primary
++            .lock()
++            .expect("KVM failure lock poisoned")
++            .as_ref()
++            .map(|(error, event)| (error.clone(), event.tid.as_raw()));
++        match (first, result) {
++            (Some((primary, tid)), Err(error)) => Err(error.complete_after_failure(primary, tid)),
++            (Some((primary, _)), Ok(_)) => Err(Error::SharedFailure(primary)),
++            (None, result) => result,
++        }
++    }
+ }
+ 
+ #[derive(Clone)]
+ pub(crate) struct FailureContext {
+     pub(crate) run: Arc<RunFailure>,
++    process: Arc<ProcessFailure>,
+     pid: Pid,
+     tid: Pid,
+ }
+ 
++struct ProcessFailure {
++    sender: Mutex<Option<oneshot::Sender<()>>>,
++    receiver: FailureSubscription,
++}
++
++impl ProcessFailure {
++    fn new() -> Arc<Self> {
++        let (sender, receiver) = oneshot::channel();
++        Arc::new(Self {
++            sender: Mutex::new(Some(sender)),
++            receiver: receiver.shared(),
++        })
++    }
++
++    fn publish(&self) {
++        if let Some(sender) = self
++            .sender
++            .lock()
++            .expect("KVM process failure sender lock poisoned")
++            .take()
++        {
++            let _ = sender.send(());
++        }
++    }
++}
++
+ impl FailureContext {
+     pub(crate) fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
+-        Self { run, pid, tid }
++        Self {
++            run,
++            process: ProcessFailure::new(),
++            pid,
++            tid,
++        }
+     }
+ 
+     pub(crate) fn for_process(&self, pid: Pid) -> Self {
+@@ -127,18 +181,41 @@ impl FailureContext {
+     }
+ 
+     pub(crate) fn for_thread(&self, tid: Pid) -> Self {
+-        Self::new(self.run.clone(), self.pid, tid)
++        Self {
++            tid,
++            ..self.clone()
++        }
++    }
++
++    /// The initial owner must return every run failure. An independent process
++    /// can finish ordinary work after another process fails, unless its Tool
++    /// explicitly terminates the shared global state. Its RPCs still observe
++    /// the run-wide notification at the actual request boundary.
++    pub(crate) fn driver_subscription(&self, is_traced_tree_root: bool) -> FailureSubscription {
++        if is_traced_tree_root {
++            self.run.subscribe()
++        } else {
++            self.process.receiver.clone()
++        }
+     }
+ 
+     pub(crate) fn publish(&self, phase: &'static str, error: Error) -> Error {
+-        self.run.publish(
++        let real_failure = !matches!(error.primary(), Error::RunAborted);
++        let error = self.run.publish(
+             BackendFailure {
+                 pid: self.pid,
+                 tid: self.tid,
+                 phase,
+             },
+             error,
+-        )
++        );
++        // The synchronous Tool terminal transition has returned before either
++        // a process peer or an owned join can begin failure cleanup. A derived
++        // cancellation marker must not create a new process failure.
++        if real_failure {
++            self.process.publish();
++        }
++        error
+     }
+ }
+ 
+@@ -201,6 +278,183 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn completion_promotes_joined_worker_cause_without_duplicate_diagnostic() {
++        let global = Arc::new(());
++        let failure = RunFailure::new(&global);
++        let event = BackendFailure {
++            pid: Pid::from_raw(1),
++            tid: Pid::from_raw(2),
++            phase: "worker exit",
++        };
++        let published =
++            failure.publish(event, Error::Reverie(reverie::syscalls::Errno::EIO.into()));
++        let first = failure.primary().unwrap();
++        // This is the exact production shape observed in the original
++        // static_elf mode 1: the parked owner sees RunAborted while its physical
++        // join returns the already-published worker failure.
++        let joined = Error::RunAborted.with_cleanup(vec![Error::WorkerFailure {
++            tid: 2,
++            error: Arc::new(published),
++        }]);
++        assert!(
++            !joined.retains_primary(&first),
++            "publication predicate stays on the primary chain"
++        );
++        let error = failure.complete::<()>(Err(joined)).unwrap_err();
++        assert_eq!(
++            error.to_string(),
++            "unexpected vCPU exit: KVM worker cleanup failed: thread 2: Reverie tool failed: -5 EIO (I/O error)"
++        );
++        assert!(error.retains_primary(&first));
++        assert_eq!(error.worker_tid(), Some(2));
++        assert!(std::ptr::eq(error.primary(), first.primary()));
++        assert_eq!(failure.primary.lock().unwrap().as_ref().unwrap().1, event);
++
++        let no_failure = RunFailure::new(&global);
++        assert!(matches!(
++            no_failure.complete::<()>(Err(Error::RunAborted)),
++            Err(Error::RunAborted)
++        ));
++
++        // A canceled peer can return the root's published cause through its
++        // own join handle. Its TID is propagation context, not the origin.
++        let root_failure = RunFailure::new(&global);
++        root_failure.publish(
++            BackendFailure {
++                pid: Pid::from_raw(1),
++                tid: Pid::from_raw(1),
++                phase: "root execution",
++            },
++            Error::InvalidGuestPid(-17),
++        );
++        let root_cause = root_failure.primary().unwrap();
++        for direct_alias in [true, false] {
++            let peer = Error::WorkerFailure {
++                tid: 2,
++                error: root_cause.clone(),
++            };
++            let result = if direct_alias {
++                Error::SharedFailure(root_cause.clone()).with_cleanup(vec![peer])
++            } else {
++                peer
++            };
++            let error = root_failure.complete::<()>(Err(result)).unwrap_err();
++            assert_eq!(error.to_string(), "invalid KVM root guest PID -17");
++            assert_eq!(
++                error.worker_tid(),
++                None,
++                "canceled peer replaced the root identity"
++            );
++            assert!(error.retains_primary(&root_cause));
++            assert!(std::ptr::eq(error.primary(), root_cause.primary()));
++        }
++    }
++
++    #[test]
++    fn completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity() {
++        fn references(error: &Error, target: &Arc<Error>) -> usize {
++            fn shared(error: &Arc<Error>, target: &Arc<Error>) -> usize {
++                if Arc::ptr_eq(error, target) {
++                    1
++                } else {
++                    references(error, target)
++                }
++            }
++            match error {
++                Error::SharedFailure(error)
++                | Error::WorkerFailure { error, .. }
++                | Error::Cleanup { error, .. } => shared(error, target),
++                Error::WithCleanup { primary, cleanup } => {
++                    shared(primary, target)
++                        + cleanup
++                            .iter()
++                            .map(|error| shared(error, target))
++                            .sum::<usize>()
++                }
++                Error::ExecWorkerTeardown(error) => references(error, target),
++                _ => 0,
++            }
++        }
++        let global = Arc::new(());
++        let failure = RunFailure::new(&global);
++        let event = BackendFailure {
++            pid: Pid::from_raw(1),
++            tid: Pid::from_raw(9),
++            phase: "worker execution",
++        };
++        failure.publish(event, Error::Reverie(reverie::syscalls::Errno::EIO.into()));
++        let first = failure.primary().unwrap();
++        // Equal diagnostic text is deliberately a different real cause.
++        let lower_tid = Arc::new(Error::Reverie(reverie::syscalls::Errno::EIO.into()));
++        let first_hook = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
++            libc::ENOSPC,
++        )));
++        let second_hook = Arc::new(Error::Reverie(reverie::syscalls::Errno::EACCES.into()));
++        let cancelled_hook = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
++            libc::EPIPE,
++        )));
++        let worker = |error| Error::WorkerFailure { tid: 9, error };
++        let aggregate = |primary, cleanup| Arc::new(Error::WithCleanup { primary, cleanup });
++        let joined = Error::WorkerFailure {
++            tid: 2,
++            error: lower_tid.clone(),
++        }
++        .with_cleanup(vec![
++            Error::RunAborted
++                .with_cleanup(vec![
++                    worker(aggregate(first.clone(), vec![first_hook.clone()])),
++                    Error::ExecWorkerTeardown(Box::new(worker(aggregate(
++                        first.clone(),
++                        vec![second_hook.clone()],
++                    )))),
++                    Error::WorkerFailure {
++                        tid: 10,
++                        error: aggregate(Arc::new(Error::RunAborted), vec![cancelled_hook.clone()]),
++                    },
++                    Error::SharedFailure(first.clone()),
++                ])
++                .cleanup("owner cleanup"),
++        ]);
++        assert!(!joined.retains_primary(&first));
++        let error = failure.complete::<()>(Err(joined)).unwrap_err();
++        assert!(error.retains_primary(&first));
++        assert!(std::ptr::eq(error.primary(), first.primary()));
++        assert_eq!(
++            error.worker_tid(),
++            Some(9),
++            "lower TID is not the first published cause"
++        );
++        for cause in [
++            &first,
++            &lower_tid,
++            &first_hook,
++            &second_hook,
++            &cancelled_hook,
++        ] {
++            assert_eq!(
++                references(&error, cause),
++                1,
++                "typed cause was lost or duplicated: {error:?}"
++            );
++        }
++        assert_eq!(
++            error.to_string().matches("EIO").count(),
++            2,
++            "same text is not cause identity"
++        );
++        assert!(
++            !error
++                .to_string()
++                .contains("KVM execution stopped after a fatal run failure")
++        );
++        assert!(
++            error.to_string().contains("thread 10:"),
++            "cancelled worker's real hook context was lost"
++        );
++        assert_eq!(failure.primary.lock().unwrap().as_ref().unwrap().1, event);
++    }
++
+     #[test]
+     fn independent_failure_subscribers_wake_before_and_after_publication() {
+         let global = Arc::new(());
+@@ -273,6 +527,71 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn process_failure_subscriptions_preserve_fork_and_thread_ownership() {
++        let global = Arc::new(());
++        let run = RunFailure::new(&global);
++        let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
++        let child = root.for_process(Pid::from_raw(72));
++        let worker = child.for_thread(Pid::from_raw(73));
++        let nested = child.for_process(Pid::from_raw(74));
++        let independent_process = false;
++        assert!(
++            child
++                .driver_subscription(independent_process)
++                .now_or_never()
++                .is_none()
++        );
++        assert!(
++            worker
++                .driver_subscription(independent_process)
++                .now_or_never()
++                .is_none()
++        );
++        assert!(root.driver_subscription(true).now_or_never().is_none());
++
++        worker.publish("worker", Error::InvalidGuestPid(-17));
++        assert_eq!(
++            child
++                .driver_subscription(independent_process)
++                .now_or_never(),
++            Some(Ok(()))
++        );
++        assert_eq!(
++            worker
++                .driver_subscription(independent_process)
++                .now_or_never(),
++            Some(Ok(()))
++        );
++        assert_eq!(root.driver_subscription(true).now_or_never(), Some(Ok(())));
++        assert!(nested.driver_subscription(false).now_or_never().is_none());
++        assert!(matches!(
++            run.primary().unwrap().primary(),
++            Error::InvalidGuestPid(-17)
++        ));
++        assert_eq!(
++            run.primary.lock().unwrap().as_ref().unwrap().1.tid,
++            Pid::from_raw(73)
++        );
++
++        // A derived cleanup marker does not mark a healthy independent process
++        // as a second source of failure or wake its ordinary execution driver.
++        nested.publish("RPC cancellation", Error::RunAborted);
++        assert!(nested.driver_subscription(false).now_or_never().is_none());
++        let first = run.primary().unwrap();
++        nested.publish(
++            "later process failure",
++            Error::HostIo(std::io::Error::from_raw_os_error(libc::EPIPE)),
++        );
++        assert_eq!(
++            nested.driver_subscription(false).now_or_never(),
++            Some(Ok(()))
++        );
++        assert!(Arc::ptr_eq(&first, &run.primary().unwrap()));
++        let later = child.for_process(Pid::from_raw(75));
++        assert!(later.driver_subscription(false).now_or_never().is_none());
++    }
++
+     #[test]
+     fn local_failure_wake_waits_for_synchronous_tool_terminal_transition() {
+         let global = Arc::new(OrderedGlobal::default());
+@@ -283,6 +602,7 @@ mod tests {
+         let failure = RunFailure::new(&global);
+         let mut subscription = failure.subscribe();
+         let context = FailureContext::new(failure.clone(), Pid::from_raw(1), Pid::from_raw(2));
++        let mut process_subscription = context.driver_subscription(false);
+         let publisher = std::thread::spawn(move || {
+             context.publish("worker", Error::GuestClock("primary".to_owned()))
+         });
+@@ -294,6 +614,9 @@ mod tests {
+             Poll::Pending
+         );
+         let unpublished = failure.published_primary().is_none();
++        let process_pending = std::pin::Pin::new(&mut process_subscription)
++            .poll(&mut Context::from_waker(&noop_waker()))
++            .is_pending();
+         release.send(()).unwrap();
+         publisher.join().unwrap();
+         assert!(
+@@ -301,6 +624,11 @@ mod tests {
+             "local cleanup escaped before Tool publication completed"
+         );
+         assert_eq!(futures::executor::block_on(subscription), Ok(()));
++        assert!(
++            process_pending,
++            "process cleanup escaped before Tool publication completed"
++        );
++        assert_eq!(futures::executor::block_on(process_subscription), Ok(()));
+         assert!(failure.published_primary().is_some());
+     }
+ 
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index e413c8fb..e99508f8 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -136,7 +136,20 @@ impl PendingChildStart {
+     }
+ 
+     pub(crate) fn cancel(self) -> PendingChildCancellation {
+-        match self.start.cancel() {
++        self.cancel_with_reason(false)
++    }
++
++    pub(crate) fn cancel_after_failure(self) -> PendingChildCancellation {
++        self.cancel_with_reason(true)
++    }
++
++    fn cancel_with_reason(self, failed: bool) -> PendingChildCancellation {
++        let cancelled = if failed {
++            self.start.cancel_after_failure()
++        } else {
++            self.start.cancel()
++        };
++        match cancelled {
+             ChildStartCancellation::NewlyCancelled { delivery_failed } => {
+                 PendingChildCancellation::NewlyCancelled {
+                     child: self.child,
+@@ -241,6 +254,10 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+ 
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+ 
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        None
++    }
++
+     fn defer_signal_delivery(&mut self, _event: SignalEvent) -> std::result::Result<(), Errno> {
+         Err(Errno::ENOSYS)
+     }
+@@ -420,6 +437,13 @@ where
+         self.backend.vcpu.read_clock()
+     }
+ 
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        self.backend
++            .tool_failure
++            .as_ref()
++            .map(|failure| failure.run.subscribe())
++    }
++
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+         if !self.process_context.ordinary_injection_allowed(request) {
+             // KvmGuest performs the same check before dispatch. Keep the
+@@ -720,7 +744,39 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
+         // Route by the issuing thread's tid: the scheduler keys each thread's
+         // turn (and global-time accounting) on the RPC sender. For a
+         // CLONE_THREAD worker this is the worker tid, not the thread-group pid.
+-        self.global_state.receive_rpc(self.tid, message).await
++        // An independent process may finish ordinary work after a peer fails,
++        // but a pending ordinary RPC can prevent its owner's physical join.
++        // Signal the driver and leave this response unconstructed on failure.
++        // Consuming hooks use KvmGlobal instead and must still deregister.
++        let response = {
++            let mut failure = pin!(wait_for_failure(
++                self.global_state,
++                self.executor.failure_subscription(),
++            ));
++            let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
++            poll_fn(|context| {
++                if failure.as_mut().poll(context).is_ready() {
++                    return Poll::Ready(None);
++                }
++                let result = response.as_mut().poll(context);
++                if failure.as_mut().poll(context).is_ready() {
++                    return Poll::Ready(None);
++                }
++                result.map(Some)
++            })
++            .await
++        };
++        match response {
++            Some(response) => response,
++            None => {
++                // Drop the ordinary request before publishing its nonlocal
++                // result. A callback may poll this RPC again (for example,
++                // after select returns its losing future); terminal polls must
++                // neither resume the completed failure wait nor admit RPC work.
++                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
++                std::future::pending().await
++            }
++        }
+     }
+ 
+     fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
+@@ -1100,33 +1156,36 @@ async fn drive_handler<T>(
+         if failure.as_mut().poll(context).is_ready() {
+             return Poll::Ready(HandlerOutcome::RunFailed);
+         }
++        // A callback can select another ready future after an operation records
++        // a nonlocal result. Consume that result before accepting either a
++        // returned callback value or an ordinary suspension.
++        let handler_signal = handler_signal
++            .lock()
++            .expect("KVM handler signal lock poisoned")
++            .take();
++        match handler_signal {
++            Some(HandlerSignal::ThreadCancelled) => {
++                return Poll::Ready(HandlerOutcome::ThreadCancelled);
++            }
++            Some(HandlerSignal::TailInjected {
++                result,
++                image_replaced,
++                process_exited,
++            }) => {
++                return Poll::Ready(HandlerOutcome::TailInjected {
++                    result,
++                    image_replaced,
++                    process_exited,
++                });
++            }
++            Some(HandlerSignal::RuntimeError(error)) => {
++                return Poll::Ready(HandlerOutcome::RuntimeError(error));
++            }
++            None => {}
++        }
+         match result {
+             Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
+             Poll::Pending => {
+-                let handler_signal = handler_signal
+-                    .lock()
+-                    .expect("KVM handler signal lock poisoned")
+-                    .take();
+-                match handler_signal {
+-                    Some(HandlerSignal::ThreadCancelled) => {
+-                        return Poll::Ready(HandlerOutcome::ThreadCancelled);
+-                    }
+-                    Some(HandlerSignal::TailInjected {
+-                        result,
+-                        image_replaced,
+-                        process_exited,
+-                    }) => {
+-                        return Poll::Ready(HandlerOutcome::TailInjected {
+-                            result,
+-                            image_replaced,
+-                            process_exited,
+-                        });
+-                    }
+-                    Some(HandlerSignal::RuntimeError(error)) => {
+-                        return Poll::Ready(HandlerOutcome::RuntimeError(error));
+-                    }
+-                    None => {}
+-                }
+                 let mut starts = pending_child_starts
+                     .lock()
+                     .expect("KVM child-start lock poisoned");
+@@ -1194,7 +1253,7 @@ where
+     <T::GlobalState as GlobalTool>::Config: 'static,
+ {
+     let tool_stack_top = backend.tool_stack_top();
+-    let failure_subscription = backend.failure_subscription();
++    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
+     loop {
+         if executor.has_eligible_pending_signal() {
+             return Err(Error::UnexpectedVcpuExit(
+@@ -1327,7 +1386,7 @@ where
+     <T::GlobalState as GlobalTool>::Config: 'static,
+ {
+     let tool_stack_top = backend.tool_stack_top();
+-    let failure_subscription = backend.failure_subscription();
++    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
+     let request = initial_exec_request(memory, executor.initial_stack_pointer())?;
+     let syscall = request.into_syscall()?;
+     let mut registers = kvm_registers(backend.vcpu.get_regs()?, request.number());
+@@ -1425,6 +1484,42 @@ impl From<ProcessExit> for ToolProcessExit {
+     }
+ }
+ 
++/// A published run failure can interrupt a permitted CLONE_THREAD worker even
++/// before the backend's ordinary cancellation flag becomes visible.
++pub(crate) fn is_peer_cancelled_tool_worker<R>(
++    identity: (Pid, Pid),
++    start_permitted: bool,
++    outcome: &Result<R>,
++) -> bool {
++    start_permitted
++        && identity.0 != identity.1
++        && outcome
++            .as_ref()
++            .is_err_and(|error| matches!(error.primary(), Error::RunAborted))
++}
++
++/// Keep the interrupted worker's error tree for final cleanup while preserving
++/// ordinary cancellation retirement and any established guest exit status.
++fn retire_peer_cancelled_tool_worker(
++    executor: &mut ElfExecutor,
++    identity: (Pid, Pid),
++    start_permitted: bool,
++    group_status: Option<ExitStatus>,
++    outcome: &Result<ToolProcessExit>,
++) -> Option<ToolProcessExit> {
++    if !is_peer_cancelled_tool_worker(identity, start_permitted, outcome) {
++        return None;
++    }
++    let exit = match group_status {
++        Some(status) => executor.retire_current_thread(status, true),
++        None => executor.cancel_current_thread(),
++    };
++    Some(ToolProcessExit {
++        exit,
++        cancelled: true,
++    })
++}
++
+ #[derive(Clone, Copy)]
+ struct ToolExit {
+     status: ExitStatus,
+@@ -1519,6 +1614,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
+     config: &<T::GlobalState as GlobalTool>::Config,
+     thread_state: T::ThreadState,
+     outcome: Result<ToolProcessExit>,
++    cancelled_exit: Option<ToolProcessExit>,
+     workers: Result<()>,
+     failure: Option<&FailureContext>,
+ ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+@@ -1530,13 +1626,33 @@ async fn finish_tool_process_after_workers<T: Tool>(
+             error
+         }
+     };
+-    let workers = workers.map_err(|error| report("worker teardown", error));
++    let workers = workers.map_err(|error| {
++        let worker_tid = error.worker_tid().map(Pid::from_raw).unwrap_or(tid);
++        match failure {
++            Some(failure) => failure
++                .for_thread(worker_tid)
++                .publish("worker teardown", error),
++            None => {
++                global_state.report_backend_failure(reverie::BackendFailure {
++                    pid,
++                    tid: worker_tid,
++                    phase: "worker teardown",
++                });
++                error
++            }
++        }
++    });
+     let natural_exit = outcome
+         .as_ref()
+         .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
+-    let mut status = outcome
+-        .as_ref()
+-        .map_or(ExitStatus::Exited(255), |exit| exit.exit.status);
++    let mut status = cancelled_exit.map_or_else(
++        || {
++            outcome
++                .as_ref()
++                .map_or(ExitStatus::Exited(255), |exit| exit.exit.status)
++        },
++        |exit| exit.exit.status,
++    );
+     let mut process_status = Ok(());
+     if pid == tid && natural_exit {
+         match executor.process_exit_status() {
+@@ -1632,6 +1748,7 @@ impl KvmBackend {
+         config: &<T::GlobalState as GlobalTool>::Config,
+         thread_state: T::ThreadState,
+         outcome: Result<ToolProcessExit>,
++        start_permitted: bool,
+     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         let (pid, tid) = identity;
+         // Failed exec already reports the joined worker errors as its primary
+@@ -1644,24 +1761,38 @@ impl KvmBackend {
+         let natural_exit = outcome
+             .as_ref()
+             .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
++        let cancelled_exit = retire_peer_cancelled_tool_worker(
++            executor,
++            identity,
++            start_permitted,
++            self.guest_thread_group_exit_status(),
++            &outcome,
++        );
++        if let Some(exit) = cancelled_exit
++            && exit.exit.group
++        {
++            self.request_guest_thread_group_exit(exit.exit.status);
++        }
+         // Retire the exact task generation before consuming hooks can wake a
+         // peer. No guest callback can still borrow Tool or descriptor state.
+-        match &outcome {
+-            Ok(exit) => {
+-                executor.retire_current_thread(exit.exit.status, exit.exit.group);
++        if cancelled_exit.is_none() {
++            match &outcome {
++                Ok(exit) => {
++                    executor.retire_current_thread(exit.exit.status, exit.exit.group);
++                }
++                Err(_) => executor.retire_failed_thread(),
+             }
+-            Err(_) => executor.retire_failed_thread(),
+         }
+         self.release_thread_slot();
+         self.clear_registered_worker_tid_before_exit(executor);
+         executor.release_files_on_exit();
+         self.release_stdin_on_exit();
+-        if outcome.is_err() {
++        if outcome.is_err() && cancelled_exit.is_none() {
+             // A failed worker must interrupt live siblings before a leader's
+             // natural join can block on an earlier handle. Cancellation does
+             // not supply a guest group-exit status; the original error remains.
+             if pid == tid {
+-                self.cancel_guest_threads();
++                self.cancel_guest_threads_after_failure();
+             } else {
+                 self.record_guest_worker_failure(tid.as_raw());
+             }
+@@ -1685,6 +1816,7 @@ impl KvmBackend {
+             config,
+             thread_state,
+             outcome,
++            cancelled_exit,
+             workers,
+             self.tool_failure.as_ref(),
+         )
+@@ -1716,6 +1848,7 @@ impl KvmBackend {
+             config,
+             thread_state,
+             outcome,
++            false,
+         )
+         .await
+     }
+@@ -2046,6 +2179,9 @@ impl KvmBackend {
+                 true,
+             )
+             .await;
++        // All owned children have returned. Do not leave the backend holding
++        // a reporter whose Weak owner is about to be consumed or released.
++        self.tool_failure = None;
+         let global_state = match Arc::try_unwrap(global_state) {
+             Ok(global) => global,
+             Err(_) => {
+@@ -2058,18 +2194,9 @@ impl KvmBackend {
+                 });
+             }
+         };
+-        let result = match (failure.primary(), result) {
+-            (Some(primary), Err(error)) => {
+-                if error.retains_primary(&primary) {
+-                    Err(error)
+-                } else {
+-                    Err(Error::SharedFailure(primary).with_cleanup(vec![error]))
+-                }
+-            }
+-            (Some(primary), Ok(_)) => Err(Error::SharedFailure(primary)),
+-            (None, result) => result
+-                .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr)),
+-        };
++        let result = failure
++            .complete(result)
++            .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr));
+         Ok(ToolRunCompletion {
+             global_state,
+             result,
+@@ -2183,7 +2310,7 @@ impl KvmBackend {
+         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+         let mut process_completed = false;
+         let tool_stack_top = self.tool_stack_top();
+-        let failure_subscription = self.failure_subscription();
++        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+         expose_tool_scratch(memory, tool_stack_top)?;
+         let process_context = if let Some(fault) = fault {
+             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
+@@ -2323,11 +2450,11 @@ impl KvmBackend {
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
+         if let Some(failure) = &self.tool_failure {
+-            self.tool_failure = Some(FailureContext::new(failure.run.clone(), pid, tid));
++            self.tool_failure = Some(failure.for_thread(tid));
+         }
+         executor.observe_ignored_signals_with_tool();
+         let tool_stack_top = self.tool_stack_top();
+-        let failure_subscription = self.failure_subscription();
++        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+         let mut _registration = None;
+         let mut auxv = executor.auxv().to_vec();
+         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
+@@ -3015,6 +3142,7 @@ impl KvmBackend {
+             config,
+             thread_state,
+             outcome,
++            true,
+         )
+         .await
+     }
+@@ -3234,6 +3362,9 @@ mod tests {
+         let handler = poll_fn(|context| match start_receiver.try_recv() {
+             Ok(ChildStartCommand::Start) => Poll::Ready(true),
+             Ok(ChildStartCommand::Cancel) => Poll::Ready(false),
++            Ok(ChildStartCommand::CancelAfterFailure) => {
++                panic!("normal handler sent fatal cancellation")
++            }
+             Err(std::sync::mpsc::TryRecvError::Empty) => {
+                 context.waker().wake_by_ref();
+                 Poll::Pending
+diff --git a/reverie-kvm/src/runtime/failure_tests.rs b/reverie-kvm/src/runtime/failure_tests.rs
+index 8c5c57e9..205862e0 100644
+--- a/reverie-kvm/src/runtime/failure_tests.rs
++++ b/reverie-kvm/src/runtime/failure_tests.rs
+@@ -24,6 +24,9 @@ struct RpcGlobal {
+     failure_events: Mutex<Vec<reverie::BackendFailure>>,
+     failure_required: AtomicBool,
+     late_failure: Mutex<Option<FailureContext>>,
++    terminate_on_failure: AtomicBool,
++    terminal: AtomicBool,
++    terminal_waker: futures::task::AtomicWaker,
+ }
+ 
+ #[reverie::global_tool]
+@@ -68,6 +71,22 @@ impl GlobalTool for RpcGlobal {
+     fn report_backend_failure(&self, event: reverie::BackendFailure) {
+         self.failure_events.lock().unwrap().push(event);
+         self.failures.fetch_add(1, Ordering::SeqCst);
++        if self.terminate_on_failure.load(Ordering::Acquire) {
++            self.terminal.store(true, Ordering::Release);
++            self.terminal_waker.wake();
++        }
++    }
++
++    async fn wait_for_backend_failure(&self) {
++        poll_fn(|context| {
++            self.terminal_waker.register(context.waker());
++            if self.terminal.load(Ordering::Acquire) {
++                Poll::Ready(())
++            } else {
++                Poll::Pending
++            }
++        })
++        .await
+     }
+ }
+ 
+@@ -139,17 +158,200 @@ fn wait_until(condition: impl Fn() -> bool) {
+     }
+ }
+ 
++#[test]
++fn peer_failure_cancellation_preserves_thread_status_and_primary_cause() {
++    fn count_host_errno(error: &Error, expected: i32) -> usize {
++        match error {
++            Error::HostIo(error) => usize::from(error.raw_os_error() == Some(expected)),
++            Error::SharedFailure(error)
++            | Error::WorkerFailure { error, .. }
++            | Error::Cleanup { error, .. } => count_host_errno(error, expected),
++            Error::ExecWorkerTeardown(error) => count_host_errno(error, expected),
++            Error::WithCleanup { primary, cleanup } => {
++                count_host_errno(primary, expected)
++                    + cleanup
++                        .iter()
++                        .map(|error| count_host_errno(error, expected))
++                        .sum::<usize>()
++            }
++            _ => 0,
++        }
++    }
++    for case in [
++        "live peer",
++        "pending thread status",
++        "group status",
++        "peer cleanup errors",
++        "unstarted thread",
++        "own execution error",
++        "process owner",
++        "ordinary cancellation",
++    ] {
++        let global = Arc::new(RpcGlobal::default());
++        let pid = Pid::from_raw(1);
++        let tid = Pid::from_raw(if case == "process owner" { 1 } else { 2 });
++        let identity = (pid, tid);
++        let failure = FailureContext::new(RunFailure::new(&global), pid, tid);
++        let expected_peer = matches!(
++            case,
++            "live peer" | "pending thread status" | "group status" | "peer cleanup errors"
++        );
++        let (_response, receiver) = oneshot::channel();
++        *global.response.lock().unwrap() = Some(receiver);
++        let mut pending_rpc = expected_peer.then(|| {
++            Box::pin(drive_handler(
++                async { Ok::<i64, reverie::Error>(global.receive_rpc(tid, (0, 0)).await) },
++                Arc::new(Mutex::new(None)),
++                Arc::new(Mutex::new(Vec::new())),
++                wait_for_failure(global.as_ref(), Some(failure.run.subscribe())),
++            ))
++        });
++        if let Some(pending) = pending_rpc.as_mut() {
++            assert!(pending.as_mut().now_or_never().is_none());
++            assert!(global.pending.load(Ordering::Acquire));
++        }
++        let mut leader = Some(ElfExecutor::new(
++            crate::executor::native_loaded_state(&std::env::current_dir().unwrap()),
++            false,
++        ));
++        let mut failed_worker = leader.as_ref().unwrap().thread_child(3).unwrap();
++        let mut executor = if pid == tid {
++            leader.take().unwrap()
++        } else {
++            leader.as_ref().unwrap().thread_child(tid.as_raw()).unwrap()
++        };
++        // The real failing worker publishes before its task retirement. No
++        // group cancellation flag is needed for a peer to observe that event.
++        let result: Result<()> = crate::vm::finish_host_worker_outcome(
++            Some(&failure),
++            Pid::from_raw(3),
++            Err(Error::InvalidGuestPid(-17)),
++            |failed| {
++                assert!(failed);
++                failed_worker.retire_failed_thread();
++            },
++        );
++        assert!(result.is_err());
++        if let Some(pending) = pending_rpc {
++            assert!(matches!(
++                futures::executor::block_on(pending),
++                HandlerOutcome::RunFailed,
++            ));
++        }
++        let primary = failure.run.primary().unwrap();
++        let event = global.failure_events.lock().unwrap()[0];
++        assert_eq!(event.pid, pid);
++        assert_eq!(event.tid, Pid::from_raw(3));
++
++        if case == "pending thread status" {
++            let memory = GuestMemory::new(0, 4096).unwrap();
++            assert_eq!(
++                executor.execute(
++                    &SyscallRequest::new(libc::SYS_exit as u64, [37, 0, 0, 0, 0, 0]),
++                    &memory,
++                ),
++                0,
++            );
++        }
++        let group_status = (case == "group status").then_some(ExitStatus::Exited(61));
++        let cleanup = case == "peer cleanup errors";
++        let start_permitted = case != "unstarted thread";
++        let outcome = match case {
++            "own execution error" => Err(Error::Reverie(Errno::ENOTSUPP.into())),
++            "ordinary cancellation" => Ok(ToolProcessExit {
++                exit: executor.cancel_current_thread(),
++                cancelled: true,
++            }),
++            "peer cleanup errors" => Err(Error::RunAborted.with_cleanup(vec![Error::HostIo(
++                std::io::Error::from_raw_os_error(libc::ENOSPC),
++            )])),
++            _ => Err(Error::RunAborted),
++        };
++        let cancelled_exit = retire_peer_cancelled_tool_worker(
++            &mut executor,
++            identity,
++            start_permitted,
++            group_status,
++            &outcome,
++        );
++        assert_eq!(cancelled_exit.is_some(), expected_peer, "{case}");
++        if cancelled_exit.is_none() {
++            match &outcome {
++                Ok(exit) => {
++                    executor.retire_current_thread(exit.exit.status, exit.exit.group);
++                }
++                Err(_) => executor.retire_failed_thread(),
++            }
++        }
++        let result = futures::executor::block_on(finish_tool_process_after_workers(
++            &mut executor,
++            Arc::new(RpcTool),
++            identity,
++            global.as_ref(),
++            &cleanup,
++            tid.as_raw(),
++            outcome,
++            cancelled_exit,
++            Ok(()),
++            Some(&failure),
++        ));
++        let expected_status = match case {
++            "pending thread status" => 37,
++            "group status" => 61,
++            "live peer" | "peer cleanup errors" | "ordinary cancellation" => 0,
++            _ => 255,
++        };
++        let mut expected_events = vec![(1, tid.as_raw(), expected_status)];
++        if pid == tid {
++            expected_events.push((2, pid.as_raw(), expected_status));
++        }
++        assert_eq!(*global.events.lock().unwrap(), expected_events, "{case}");
++        if case != "ordinary cancellation" {
++            assert!(
++                result.is_err(),
++                "cancellation cannot erase the error tree: {case}"
++            );
++        }
++        assert_eq!(
++            is_peer_cancelled_tool_worker(identity, start_permitted, &result),
++            expected_peer,
++            "the outer worker wrapper must preserve the same classification: {case}",
++        );
++        let error = failure.run.complete(result).unwrap_err();
++        assert!(error.retains_primary(&primary), "{case}: {error:?}");
++        assert!(matches!(error.primary(), Error::InvalidGuestPid(-17)));
++        if cleanup {
++            assert_eq!(count_host_errno(&error, libc::ENOSPC), 1);
++            assert!(has_cleanup_eio(&error));
++            assert_eq!(error.to_string().matches("EIO").count(), 1);
++        }
++        assert_eq!(global.failure_events.lock().unwrap()[0], event);
++        if let Some(mut leader) = leader {
++            leader.retire_current_thread(ExitStatus::SUCCESS, false);
++            assert_eq!(
++                leader.process_exit_status(),
++                None,
++                "healthy peer retirement cannot erase the real worker failure: {case}",
++            );
++        }
++    }
++}
++
+ // Install the response rescue and join ownership before the first ordering
+ // assertion. A precondition panic must reap the real worker as well as fail the
+ // test; it must not detach a live RPC waiter into the remaining test process.
+ struct RpcControlCleanup {
+     response: Option<oneshot::Sender<i64>>,
++    panic_release: Option<std::sync::mpsc::Sender<()>>,
+     group: Arc<GuestThreadGroup>,
+     joiner: Option<std::thread::JoinHandle<()>>,
+ }
+ 
+ impl RpcControlCleanup {
+     fn rescue(&mut self) {
++        if let Some(release) = self.panic_release.take() {
++            let _ = release.send(());
++        }
+         if let Some(response) = self.response.take() {
+             let _ = response.send(99);
+         }
+@@ -170,6 +372,10 @@ impl Drop for RpcControlCleanup {
+ }
+ 
+ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
++    joined_rpc_control_with_panic(fail, cleanup_fails, false);
++}
++
++fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics: bool) {
+     let global = Arc::new(RpcGlobal::default());
+     let (response, receiver) = oneshot::channel();
+     *global.response.lock().unwrap() = Some(receiver);
+@@ -179,6 +385,7 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
+     let group = Arc::new(GuestThreadGroup::default());
+     let mut cleanup = RpcControlCleanup {
+         response: Some(response),
++        panic_release: None,
+         group: group.clone(),
+         joiner: None,
+     };
+@@ -262,6 +469,48 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
+         }
+     });
+     group.add_worker_handle(2, worker);
++    let panic_retired = Arc::new(AtomicBool::new(false));
++    if worker_panics {
++        let (release, receiver) = std::sync::mpsc::channel();
++        cleanup.panic_release = Some(release);
++        let context = reporter.clone();
++        let panic_group = group.clone();
++        let panic_global = global.clone();
++        let retired = panic_retired.clone();
++        group.add_worker_handle(
++            3,
++            std::thread::spawn(move || {
++                receiver.recv().unwrap();
++                let marker = Arc::new(());
++                let payload: Box<dyn std::any::Any + Send> = Box::new(marker.clone());
++                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                    crate::vm::finish_caught_worker_panic(
++                        Some(&context),
++                        &panic_group,
++                        3,
++                        payload,
++                        || {
++                            assert_eq!(
++                                *panic_global.failure_events.lock().unwrap(),
++                                vec![reverie::BackendFailure {
++                                    pid: Pid::from_raw(1),
++                                    tid: Pid::from_raw(3),
++                                    phase: "worker panic",
++                                }]
++                            );
++                            retired.store(true, Ordering::Release);
++                        },
++                    )
++                }));
++                let payload = caught.unwrap_err();
++                assert!(
++                    Arc::ptr_eq(payload.downcast_ref::<Arc<()>>().unwrap(), &marker),
++                    "caught worker panic replaced its original payload"
++                );
++                std::panic::resume_unwind(payload)
++            }),
++        );
++    }
+     wait_until(|| global.pending.load(Ordering::Acquire));
+     let join_group = group.clone();
+     let (joined, joined_receiver) = std::sync::mpsc::channel();
+@@ -276,7 +525,9 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
+         joined_receiver.try_recv(),
+         Err(std::sync::mpsc::TryRecvError::Empty)
+     ));
+-    if fail {
++    if worker_panics {
++        cleanup.panic_release.take().unwrap().send(()).unwrap();
++    } else if fail {
+         reporter.publish(
+             "controlled worker failure",
+             Error::GuestClock("typed primary".to_owned()),
+@@ -298,15 +549,36 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
+     let result = group.teardown_result();
+     if fail {
+         let error = result.unwrap_err();
+-        assert!(
+-            has_guest_clock_primary(&error),
+-            "typed worker cause was lost: {error:?}"
+-        );
++        if worker_panics {
++            assert!(matches!(error.primary(), Error::GuestWorkerPanic));
++            assert!(
++                error
++                    .to_string()
++                    .contains("thread 3: guest thread panicked during teardown")
++            );
++            assert!(error.retains_primary(&failure.primary().unwrap()));
++            assert!(panic_retired.load(Ordering::Acquire));
++            assert_eq!(
++                global.failures.load(Ordering::SeqCst),
++                1,
++                "joining the caught panic published it a second time"
++            );
++            assert_eq!(
++                error.to_string().matches("thread 3:").count(),
++                1,
++                "joining the caught panic cached it a second time: {error}"
++            );
++        } else {
++            assert!(
++                has_guest_clock_primary(&error),
++                "typed worker cause was lost: {error:?}"
++            );
++            assert!(matches!(error.primary(), Error::GuestClock(_)));
++        }
+         assert!(
+             error.to_string().contains("thread 2:"),
+             "worker TID diagnostic was lost: {error:?}"
+         );
+-        assert!(matches!(error.primary(), Error::GuestClock(_)));
+         if cleanup_fails {
+             assert!(has_cleanup_eio(&error), "cleanup cause was lost: {error:?}");
+         }
+@@ -356,7 +628,7 @@ fn has_cleanup_eio(error: &Error) -> bool {
+         Error::Reverie(reverie::Error::Errno(errno)) => *errno == Errno::EIO,
+         Error::SharedFailure(error) | Error::WorkerFailure { error, .. } => has_cleanup_eio(error),
+         Error::WithCleanup { primary, cleanup } => {
+-            has_cleanup_eio(primary) || cleanup.iter().any(has_cleanup_eio)
++            has_cleanup_eio(primary) || cleanup.iter().any(|error| has_cleanup_eio(error))
+         }
+         _ => false,
+     }
+@@ -375,6 +647,11 @@ fn normal_rpc_keeps_status_and_worker_before_leader_hooks() {
+     joined_rpc_control(false, false);
+ }
+ 
++#[test]
++fn caught_worker_panic_publishes_before_retirement_and_pending_rpc_join() {
++    joined_rpc_control_with_panic(true, false, true);
++}
++
+ #[test]
+ fn failure_precedes_ready_callback_and_keeps_child_start_gate_closed() {
+     let global = Arc::new(RpcGlobal::default());
+@@ -434,6 +711,452 @@ impl native_test_support::NativeToolCallback<RpcTool> for NativeStatusCall {
+     }
+ }
+ 
++#[test]
++fn independent_process_callbacks_preserve_completion_and_failure_scope() {
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolCallback;
++    use native_test_support::NativeToolOwner;
++
++    struct ReadyCallback {
++        polled: Arc<AtomicBool>,
++        during: Option<FailureContext>,
++        published: Arc<Mutex<Option<Error>>>,
++    }
++    impl NativeToolCallback<RpcTool> for ReadyCallback {
++        fn run<'a, G: Guest<RpcTool>>(
++            &'a self,
++            _: &'a RpcTool,
++            guest: &'a mut G,
++        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
++            Box::pin(async move {
++                assert_eq!(guest.pid(), Pid::from_raw(72));
++                assert_eq!(guest.ppid(), Some(Pid::from_raw(71)));
++                self.polled.store(true, Ordering::Release);
++                if let Some(context) = &self.during {
++                    let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                        Some(context),
++                        Pid::from_raw(79),
++                        Err(Error::InvalidGuestPid(-17)),
++                        |_| {},
++                    );
++                    *self.published.lock().unwrap() = Some(result.unwrap_err());
++                }
++                Ok(73)
++            })
++        }
++    }
++
++    for (case, own_process, global_terminal, during, rpc) in [
++        ("independent completion", false, false, false, false),
++        ("own process before callback", true, false, false, false),
++        ("own process during callback", true, false, true, false),
++        ("global terminal before callback", false, true, false, false),
++        ("global terminal during callback", false, true, true, false),
++        ("RPC after independent failure", false, false, false, true),
++    ] {
++        let global = Arc::new(RpcGlobal::default());
++        global
++            .terminate_on_failure
++            .store(global_terminal, Ordering::Release);
++        let (_response, receiver) = oneshot::channel();
++        *global.response.lock().unwrap() = Some(receiver);
++        let mut owner = NativeToolOwner::new(
++            Pid::from_raw(71),
++            Arc::new(RpcTool),
++            71,
++            global.clone(),
++            false,
++        )
++        .unwrap();
++        let mut child = owner
++            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
++            .unwrap();
++        let context = if own_process {
++            child.failure_context_for_test()
++        } else {
++            owner.failure_context_for_test()
++        };
++        let run = context.run.clone();
++        let published = Arc::new(Mutex::new(None));
++        let polled = Arc::new(AtomicBool::new(false));
++        let callback = ReadyCallback {
++            polled: polled.clone(),
++            during: during.then(|| context.clone()),
++            published: published.clone(),
++        };
++        if !during {
++            let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(79),
++                Err(Error::InvalidGuestPid(-17)),
++                |_| {},
++            );
++            *published.lock().unwrap() = Some(result.unwrap_err());
++        }
++        let outcome = if rpc {
++            futures::executor::block_on(child.run_callback(&NativeRpcCall))
++        } else {
++            futures::executor::block_on(child.run_callback(&callback))
++        };
++        let completed = !own_process && !global_terminal && !rpc;
++        let child_result = if completed {
++            assert!(
++                matches!(outcome, Ok(NativeCallbackOutcome::Returned(Ok(73)))),
++                "{case}"
++            );
++            Ok(ExitStatus::Exited(73))
++        } else {
++            if rpc {
++                assert!(matches!(outcome, Err(Error::RunAborted)), "{case}");
++                assert!(
++                    !global.pending.load(Ordering::Acquire),
++                    "failed RPC was admitted"
++                );
++                assert!(
++                    global.response.lock().unwrap().is_some(),
++                    "failed RPC consumed request state"
++                );
++            } else {
++                assert!(
++                    matches!(outcome, Ok(NativeCallbackOutcome::RunFailed)),
++                    "{case}"
++                );
++            }
++            Err(Error::RunAborted)
++        };
++        assert_eq!(
++            polled.load(Ordering::Acquire),
++            completed || during,
++            "{case}"
++        );
++        let primary = run.primary().unwrap();
++        let published = published.lock().unwrap().take().unwrap();
++        let (child_result, root_result) = if own_process {
++            (
++                Err(Error::RunAborted.with_cleanup(vec![published])),
++                Err(Error::RunAborted),
++            )
++        } else {
++            (child_result, Err(published))
++        };
++        let child_error = futures::executor::block_on(child.finish(child_result)).unwrap_err();
++        assert!(
++            std::ptr::eq(child_error.primary(), primary.primary()),
++            "{case}"
++        );
++        // The actual initial owner remains run-wide even when its numerical
++        // PID is not 1 and the first failure belongs to a forked process.
++        let root_polled = Arc::new(AtomicBool::new(false));
++        let root_callback = ReadyCallback {
++            polled: root_polled.clone(),
++            during: None,
++            published: Arc::new(Mutex::new(None)),
++        };
++        assert!(
++            matches!(
++                futures::executor::block_on(owner.run_callback(&root_callback)),
++                Ok(NativeCallbackOutcome::RunFailed)
++            ),
++            "{case}"
++        );
++        assert!(
++            !root_polled.load(Ordering::Acquire),
++            "initial owner resumed after run failure"
++        );
++        let root_error = futures::executor::block_on(owner.finish(root_result)).unwrap_err();
++        assert!(
++            std::ptr::eq(root_error.primary(), primary.primary()),
++            "{case}"
++        );
++        let child_status = if completed { 73 } else { 255 };
++        assert_eq!(
++            *global.events.lock().unwrap(),
++            vec![
++                (1, 72, child_status),
++                (2, 72, child_status),
++                (1, 71, 255),
++                (2, 71, 255),
++            ],
++            "consuming RPC must remain usable after failure: {case}"
++        );
++        assert_eq!(
++            *global.failure_events.lock().unwrap(),
++            vec![reverie::BackendFailure {
++                pid: Pid::from_raw(if own_process { 72 } else { 71 }),
++                tid: Pid::from_raw(79),
++                phase: "host-owned worker",
++            }],
++            "{case}"
++        );
++    }
++}
++
++#[test]
++fn independent_process_select_cannot_discard_rpc_runtime_failure() {
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolCallback;
++    use native_test_support::NativeToolOwner;
++
++    struct SelectedRpc {
++        alternative_selected: Arc<AtomicBool>,
++    }
++    impl NativeToolCallback<RpcTool> for SelectedRpc {
++        fn run<'a, G: Guest<RpcTool>>(
++            &'a self,
++            _: &'a RpcTool,
++            guest: &'a mut G,
++        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
++            Box::pin(async move {
++                assert_eq!(guest.pid(), Pid::from_raw(72));
++                let request = pin!(guest.send_rpc((0, 0)));
++                match futures::future::select(request, futures::future::ready(73)).await {
++                    futures::future::Either::Left((response, _)) => Ok(response),
++                    futures::future::Either::Right((alternative, _)) => {
++                        self.alternative_selected.store(true, Ordering::Release);
++                        Ok(alternative)
++                    }
++                }
++            })
++        }
++    }
++
++    for (failed, response_ready) in [(true, false), (false, false), (false, true)] {
++        let global = Arc::new(RpcGlobal::default());
++        let (sender, receiver) = oneshot::channel();
++        let mut sender = Some(sender);
++        *global.response.lock().unwrap() = Some(receiver);
++        if response_ready {
++            sender.take().unwrap().send(37).unwrap();
++        }
++        let owner = NativeToolOwner::new(
++            Pid::from_raw(71),
++            Arc::new(RpcTool),
++            71,
++            global.clone(),
++            false,
++        )
++        .unwrap();
++        let mut child = owner
++            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
++            .unwrap();
++        let context = owner.failure_context_for_test();
++        let error = failed.then(|| {
++            let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(79),
++                Err(Error::InvalidGuestPid(-17)),
++                |_| {},
++            );
++            result.unwrap_err()
++        });
++        let alternative_selected = Arc::new(AtomicBool::new(false));
++        let outcome = futures::executor::block_on(child.run_callback(&SelectedRpc {
++            alternative_selected: alternative_selected.clone(),
++        }));
++        assert_eq!(
++            alternative_selected.load(Ordering::Acquire),
++            !response_ready,
++            "the control must actually return through the ready alternative"
++        );
++        assert_eq!(
++            global.pending.load(Ordering::Acquire),
++            !failed && !response_ready
++        );
++        let child_status;
++        let root_status;
++        if failed {
++            assert!(
++                matches!(outcome, Err(Error::RunAborted)),
++                "a ready alternative discarded the RPC's runtime failure"
++            );
++            assert!(
++                global.response.lock().unwrap().is_some(),
++                "terminal RPC must not enter request state"
++            );
++            let primary = context.run.primary().unwrap();
++            let child_error =
++                futures::executor::block_on(child.finish(Err(Error::RunAborted))).unwrap_err();
++            let root_error =
++                futures::executor::block_on(owner.finish(Err(error.unwrap()))).unwrap_err();
++            assert!(std::ptr::eq(child_error.primary(), primary.primary()));
++            assert!(std::ptr::eq(root_error.primary(), primary.primary()));
++            assert_eq!(
++                *global.failure_events.lock().unwrap(),
++                vec![reverie::BackendFailure {
++                    pid: Pid::from_raw(71),
++                    tid: Pid::from_raw(79),
++                    phase: "host-owned worker",
++                }]
++            );
++            child_status = 255;
++            root_status = 255;
++        } else {
++            child_status = if response_ready { 37 } else { 73 };
++            root_status = 37;
++            assert!(matches!(
++                outcome,
++                Ok(NativeCallbackOutcome::Returned(Ok(code))) if code == i64::from(child_status)
++            ));
++            assert!(global.response.lock().unwrap().is_none());
++            if let Some(sender) = sender {
++                assert!(sender.is_canceled(), "the losing ordinary RPC was retained");
++            }
++            assert_eq!(
++                futures::executor::block_on(child.finish(Ok(ExitStatus::Exited(child_status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(child_status)
++            );
++            assert_eq!(
++                futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(root_status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(root_status)
++            );
++            assert!(context.run.primary().is_none());
++            assert!(global.failure_events.lock().unwrap().is_empty());
++        }
++        assert_eq!(
++            *global.events.lock().unwrap(),
++            vec![
++                (1, 72, child_status),
++                (2, 72, child_status),
++                (1, 71, root_status),
++                (2, 71, root_status),
++            ]
++        );
++    }
++}
++
++#[test]
++fn independent_process_select_then_await_keeps_failed_rpc_pending() {
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolCallback;
++    use native_test_support::NativeToolOwner;
++
++    struct SelectThenAwaitRpc {
++        selected: Arc<AtomicBool>,
++        resumed: Arc<AtomicBool>,
++        response: Mutex<Option<oneshot::Sender<i64>>>,
++    }
++    impl NativeToolCallback<RpcTool> for SelectThenAwaitRpc {
++        fn run<'a, G: Guest<RpcTool>>(
++            &'a self,
++            _: &'a RpcTool,
++            guest: &'a mut G,
++        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
++            Box::pin(async move {
++                assert_eq!(guest.pid(), Pid::from_raw(72));
++                let request = pin!(guest.send_rpc((0, 0)));
++                let request =
++                    match futures::future::select(request, futures::future::ready(73)).await {
++                        futures::future::Either::Right((73, request)) => request,
++                        _ => panic!("the control must first select the ready alternative"),
++                    };
++                self.selected.store(true, Ordering::Release);
++                if let Some(response) = self.response.lock().unwrap().take() {
++                    response.send(37).unwrap();
++                }
++                // Poll the same losing RPC again before returning to the
++                // driver. A failed RPC must stay pending, not resume a completed
++                // failure wait or enter its ordinary receive_rpc state.
++                let response = request.await;
++                self.resumed.store(true, Ordering::Release);
++                Ok(response)
++            })
++        }
++    }
++
++    for failed in [true, false] {
++        let global = Arc::new(RpcGlobal::default());
++        let (sender, receiver) = oneshot::channel();
++        let mut sender = Some(sender);
++        *global.response.lock().unwrap() = Some(receiver);
++        let owner = NativeToolOwner::new(
++            Pid::from_raw(71),
++            Arc::new(RpcTool),
++            71,
++            global.clone(),
++            false,
++        )
++        .unwrap();
++        let mut child = owner
++            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
++            .unwrap();
++        let context = owner.failure_context_for_test();
++        let error = failed.then(|| {
++            let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(79),
++                Err(Error::InvalidGuestPid(-17)),
++                |_| {},
++            );
++            result.unwrap_err()
++        });
++        let selected = Arc::new(AtomicBool::new(false));
++        let resumed = Arc::new(AtomicBool::new(false));
++        let callback = SelectThenAwaitRpc {
++            selected: selected.clone(),
++            resumed: resumed.clone(),
++            response: Mutex::new(if failed { None } else { sender.take() }),
++        };
++        let outcome = futures::executor::block_on(child.run_callback(&callback));
++        assert!(selected.load(Ordering::Acquire));
++        assert_eq!(resumed.load(Ordering::Acquire), !failed);
++        assert_eq!(global.pending.load(Ordering::Acquire), !failed);
++        assert_eq!(global.response.lock().unwrap().is_some(), failed);
++        let status;
++        if failed {
++            assert!(matches!(outcome, Err(Error::RunAborted)));
++            let primary = context.run.primary().unwrap();
++            let child_error =
++                futures::executor::block_on(child.finish(Err(Error::RunAborted))).unwrap_err();
++            let root_error =
++                futures::executor::block_on(owner.finish(Err(error.unwrap()))).unwrap_err();
++            assert!(std::ptr::eq(child_error.primary(), primary.primary()));
++            assert!(std::ptr::eq(root_error.primary(), primary.primary()));
++            assert_eq!(
++                *global.failure_events.lock().unwrap(),
++                vec![reverie::BackendFailure {
++                    pid: Pid::from_raw(71),
++                    tid: Pid::from_raw(79),
++                    phase: "host-owned worker",
++                }]
++            );
++            status = 255;
++        } else {
++            assert!(matches!(
++                outcome,
++                Ok(NativeCallbackOutcome::Returned(Ok(37)))
++            ));
++            status = 37;
++            assert_eq!(
++                futures::executor::block_on(child.finish(Ok(ExitStatus::Exited(status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(status)
++            );
++            assert_eq!(
++                futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(status))))
++                    .unwrap()
++                    .0,
++                ExitStatus::Exited(status)
++            );
++            assert!(context.run.primary().is_none());
++            assert!(global.failure_events.lock().unwrap().is_empty());
++        }
++        assert_eq!(
++            *global.events.lock().unwrap(),
++            vec![
++                (1, 72, status),
++                (2, 72, status),
++                (1, 71, status),
++                (2, 71, status)
++            ]
++        );
++    }
++}
++
+ struct NativeControlCleanup {
+     response: Option<oneshot::Sender<i64>>,
+     release: Option<std::sync::mpsc::Sender<()>>,
+@@ -623,6 +1346,12 @@ fn post_worker_control(case: PostWorkerCase) {
+         "post-worker failure joined a descendant before supplying its terminal wake"
+     );
+     let result = result.unwrap();
++    if started {
++        assert!(
++            cleanup.response.as_ref().unwrap().is_canceled(),
++            "the ordinary RPC future must drop before the owned child join returns"
++        );
++    }
+     match case {
+         PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending => {
+             assert!(
+@@ -649,8 +1378,12 @@ fn post_worker_control(case: PostWorkerCase) {
+                 "cached cause was published twice"
+             );
+             assert_eq!(
+-                global.failure_events.lock().unwrap()[0].phase,
+-                "worker teardown"
++                global.failure_events.lock().unwrap()[0],
++                reverie::BackendFailure {
++                    pid: Pid::from_raw(1),
++                    tid: Pid::from_raw(2),
++                    phase: "worker teardown",
++                }
+             );
+         }
+         PostWorkerCase::LateFailure => {
+diff --git a/reverie-kvm/src/runtime/native_test_support.rs b/reverie-kvm/src/runtime/native_test_support.rs
+index 2c2a0e66..c2711888 100644
+--- a/reverie-kvm/src/runtime/native_test_support.rs
++++ b/reverie-kvm/src/runtime/native_test_support.rs
+@@ -1,3 +1,11 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
+ //! Native controls for the real Tool callback driver and post-worker finisher.
+ //!
+ //! No VM or guest instruction is created. Executor task retirement precedes
+@@ -58,11 +66,15 @@ impl NativeChildGate {
+ 
+ struct NoInstructions {
+     parent_pid: Option<Pid>,
++    failure: FailureContext,
+ }
+ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
+     fn parent_pid(&self) -> Option<Pid> {
+         self.parent_pid
+     }
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        Some(self.failure.run.subscribe())
++    }
+     fn read_clock(&self) -> Result<u64> {
+         panic!("native Tool control must disable guest clock operations")
+     }
+@@ -144,6 +156,7 @@ where
+     }
+ 
+     /// Borrow the actual owned thread state when constructing a child's state.
++    #[cfg(feature = "native-test-support")]
+     pub fn thread_state(&self) -> &T::ThreadState {
+         self.thread
+             .as_ref()
+@@ -151,17 +164,13 @@ where
+     }
+ 
+     /// Update the owned parent state before the Tool constructs a clone child.
++    #[cfg(feature = "native-test-support")]
+     pub fn thread_state_mut(&mut self) -> &mut T::ThreadState {
+         self.thread
+             .as_mut()
+             .expect("native thread already consumed")
+     }
+ 
+-    /// Borrow the actual process Tool used by this owner.
+-    pub fn tool(&self) -> &Arc<T> {
+-        self.tool.as_ref().expect("native Tool already consumed")
+-    }
+-
+     /// Create a real fork lifecycle sharing this run's failure subscription.
+     pub fn fork_child(&self, pid: Pid, tool: Arc<T>, thread: T::ThreadState) -> Result<Self> {
+         let failure = self.failure.for_process(pid);
+@@ -214,7 +223,11 @@ where
+         let subscriptions = Subscription::none();
+         let mut executor = NoInstructions {
+             parent_pid: self.executor.as_ref().unwrap().parent_pid(),
++            failure: self.failure.clone(),
+         };
++        let failure_subscription = self
++            .failure
++            .driver_subscription(self.executor.as_ref().unwrap().is_traced_tree_root());
+         let mut guest = KvmGuest::new(
+             self.identity.0,
+             self.identity.1,
+@@ -238,7 +251,7 @@ where
+             callback.run(self.tool.as_ref().unwrap().as_ref(), &mut guest),
+             signal,
+             self.starts.clone(),
+-            wait_for_failure(self.global.as_ref(), Some(self.failure.run.subscribe())),
++            wait_for_failure(self.global.as_ref(), Some(failure_subscription)),
+         )
+         .await
+         {
+@@ -270,10 +283,13 @@ where
+         let handle =
+             crate::failure::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
+                 let outcome = match receiver.recv() {
+-                    Ok(ChildStartCommand::Cancel) => {
++                    Ok(
++                        command @ (ChildStartCommand::Cancel
++                        | ChildStartCommand::CancelAfterFailure),
++                    ) => {
+                         let _ = observed.send(NativeChildCommand::Cancel);
+-                        if let Some(primary) = child.failure.run.published_primary() {
+-                            child.retire(Err(Error::SharedFailure(primary)))
++                        if let Some(failure) = command.failure() {
++                            child.retire(Err(failure))
+                         } else {
+                             Ok(ToolProcessExit {
+                                 exit: child.executor.as_mut().unwrap().cancel_current_thread(),
+@@ -384,7 +400,9 @@ where
+         let outcome = self.retire(result);
+         self.workers.join_workers();
+         let workers = self.workers.teardown_result();
+-        self.finish_retired(outcome, workers).await
++        let failure = self.failure.run.clone();
++        let result = self.finish_retired(outcome, workers).await;
++        failure.complete(result)
+     }
+ 
+     async fn finish_retired(
+@@ -403,6 +421,7 @@ where
+             &self.config,
+             thread,
+             outcome,
++            None,
+             workers,
+             Some(&self.failure),
+         )
+@@ -454,7 +473,7 @@ impl<T: Tool> Drop for NativeToolOwner<T> {
+         );
+         executor.retire_failed_thread();
+         for start in self.starts.lock().unwrap().drain(..) {
+-            start.cancel();
++            start.cancel_after_failure();
+         }
+         self.workers.join_workers();
+         let workers = self.workers.teardown_result();
+@@ -466,6 +485,7 @@ impl<T: Tool> Drop for NativeToolOwner<T> {
+             &self.config,
+             thread,
+             Err(error),
++            None,
+             workers,
+             Some(&self.failure),
+         ));
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index 10b00c40..79979ac9 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -272,6 +272,7 @@ impl ProcessActionOutcome {
+ // TODO-HUMAN-REVIEW(PR-172): Review process-wide KVM worker cancellation state.
+ pub(crate) struct GuestThreadGroup {
+     cancelled: AtomicBool,
++    cancelled_after_failure: AtomicBool,
+     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
+     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
+     exit_status: Mutex<Option<ExitStatus>>,
+@@ -286,6 +287,9 @@ pub(crate) struct GuestThreadGroup {
+     // Intermediate joins must not consume a failed exit hook. Keep every
+     // failure until the process owner reports teardown, ordered by guest TID.
+     worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<Arc<Error>>>>,
++    // A caught worker panic is published before retirement, then matched to
++    // that worker's actual panicked join without creating another cause.
++    reported_worker_panics: Mutex<std::collections::BTreeMap<i32, Arc<Error>>>,
+     failure_state: Mutex<WorkerFailureState>,
+     transport_slots: Mutex<Vec<bool>>,
+ }
+@@ -313,6 +317,36 @@ pub(crate) fn finish_host_worker_outcome<R>(
+     result
+ }
+ 
++/// Finish the already caught worker panic. This is not a general unwind guard:
++/// callback state may already have unwound, so no consuming hook is invented.
++pub(crate) fn finish_caught_worker_panic(
++    failure: Option<&crate::failure::FailureContext>,
++    group: &GuestThreadGroup,
++    tid: i32,
++    payload: Box<dyn std::any::Any + Send>,
++    retire: impl FnOnce(),
++) -> ! {
++    let error = Error::GuestWorkerPanic;
++    let error = match failure {
++        Some(failure) => failure
++            .for_thread(Pid::from_raw(tid))
++            .publish("worker panic", error),
++        None => error,
++    };
++    let previous = group
++        .reported_worker_panics
++        .lock()
++        .expect("KVM reported worker panic lock poisoned")
++        .insert(tid, Arc::new(error));
++    assert!(
++        previous.is_none(),
++        "KVM worker panic recorded twice for tid {tid}"
++    );
++    retire();
++    group.record_worker_failure(tid);
++    std::panic::resume_unwind(payload)
++}
++
+ impl GuestThreadGroup {
+     #[cfg(test)]
+     pub(crate) fn has_worker_handles(&self) -> bool {
+@@ -320,6 +354,7 @@ impl GuestThreadGroup {
+     }
+ 
+     pub(crate) fn record_worker_failure(&self, tid: i32) {
++        self.cancelled_after_failure.store(true, Ordering::Release);
+         let joining = {
+             let mut state = self
+                 .failure_state
+@@ -433,7 +468,7 @@ impl GuestThreadGroup {
+         if self.cancelled.load(Ordering::Acquire)
+             && let Some(gate) = gate
+         {
+-            Self::cancel_worker_gate(&gate);
++            self.cancel_worker_gate(&gate);
+         }
+     }
+ 
+@@ -467,9 +502,14 @@ impl GuestThreadGroup {
+         Ok(true)
+     }
+ 
+-    fn cancel_worker_gate(gate: &ChildStartGate) {
++    fn cancel_worker_gate(&self, gate: &ChildStartGate) {
++        let cancelled = if self.cancelled_after_failure.load(Ordering::Acquire) {
++            gate.cancel_after_failure()
++        } else {
++            gate.cancel()
++        };
+         if matches!(
+-            gate.cancel(),
++            cancelled,
+             crate::executor::ChildStartCancellation::NewlyCancelled {
+                 delivery_failed: true
+             }
+@@ -478,9 +518,9 @@ impl GuestThreadGroup {
+         }
+     }
+ 
+-    fn cancel_pending_worker_gates(handles: &[GuestWorkerHandle]) {
++    fn cancel_pending_worker_gates(&self, handles: &[GuestWorkerHandle]) {
+         for gate in handles.iter().filter_map(|worker| worker.start.as_ref()) {
+-            Self::cancel_worker_gate(gate);
++            self.cancel_worker_gate(gate);
+         }
+     }
+ 
+@@ -497,15 +537,19 @@ impl GuestThreadGroup {
+                 return;
+             }
+             if self.cancelled.load(Ordering::Acquire) {
+-                Self::cancel_pending_worker_gates(&handles);
++                self.cancel_pending_worker_gates(&handles);
+             }
+             for worker in handles {
+                 let error = match worker.handle.join() {
+                     Ok(Ok(_)) => None,
+                     Ok(Err(error)) => Some(Arc::new(error)),
+-                    Err(_) => Some(Arc::new(Error::UnexpectedVcpuExit(
+-                        "guest thread panicked during teardown".to_owned(),
+-                    ))),
++                    Err(_) => Some(
++                        self.reported_worker_panics
++                            .lock()
++                            .expect("KVM reported worker panic lock poisoned")
++                            .remove(&worker.tid)
++                            .unwrap_or_else(|| Arc::new(Error::GuestWorkerPanic)),
++                    ),
+                 };
+                 self.worker_start_gates
+                     .lock()
+@@ -554,7 +598,7 @@ impl GuestThreadGroup {
+             .cloned()
+             .collect::<Vec<_>>();
+         for gate in gates {
+-            Self::cancel_worker_gate(&gate);
++            self.cancel_worker_gate(&gate);
+         }
+         let workers = self.workers.lock().expect("KVM guest worker lock poisoned");
+         for &worker in workers.iter() {
+@@ -582,6 +626,7 @@ impl GuestThreadGroup {
+             .lock()
+             .unwrap_or_else(|poisoned| poisoned.into_inner()) = WorkerFailureState::default();
+         self.cancelled.store(false, Ordering::Release);
++        self.cancelled_after_failure.store(false, Ordering::Release);
+     }
+ 
+     // AUTONOMOUS-BOT-IMPLEMENTED: Reuse syscall transports after guest threads exit.
+@@ -921,10 +966,13 @@ struct InitializedKvmResources {
+ }
+ 
+ impl KvmBackend {
+-    pub(crate) fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++    pub(crate) fn failure_subscription(
++        &self,
++        is_traced_tree_root: bool,
++    ) -> Option<crate::failure::FailureSubscription> {
+         self.tool_failure
+             .as_ref()
+-            .map(|failure| failure.run.subscribe())
++            .map(|failure| failure.driver_subscription(is_traced_tree_root))
+     }
+ 
+     pub(crate) fn report_tool_failure(&self, phase: &'static str, error: Error) -> Error {
+@@ -1820,18 +1868,20 @@ impl KvmBackend {
+ 
+     /// Cancels and joins children created by a Tool action whose parent
+     /// boundary could not be committed.
++    #[cfg(test)]
+     pub(crate) fn discard_unstarted_tool_children(
+         &mut self,
+         executor: &mut ElfExecutor,
+         starts: &SharedChildStarts,
+     ) -> Result<()> {
+-        let children = self.cancel_unstarted_tool_children(starts);
++        let children = self.cancel_unstarted_tool_children(starts, false);
+         self.discard_cancelled_tool_children(executor, children)
+     }
+ 
+     fn cancel_unstarted_tool_children(
+         &self,
+         starts: &SharedChildStarts,
++        failed: bool,
+     ) -> Vec<(PendingChildCancellation, bool)> {
+         // A natural join can already own the handle. Capture exact gate
+         // registration before Cancel lets that join finish and remove it.
+@@ -1850,7 +1900,12 @@ impl KvmBackend {
+                         .get(&tid)
+                         .is_some_and(|found| found.same_gate(gate))
+                 });
+-                (start.cancel(), registered_thread)
++                let cancelled = if failed {
++                    start.cancel_after_failure()
++                } else {
++                    start.cancel()
++                };
++                (cancelled, registered_thread)
+             })
+             .collect()
+     }
+@@ -1948,7 +2003,8 @@ impl KvmBackend {
+             primary => (false, primary),
+         };
+         let primary = self.report_tool_failure("Tool callback", primary);
+-        let result = match self.discard_unstarted_tool_children(executor, starts) {
++        let children = self.cancel_unstarted_tool_children(starts, true);
++        let result = match self.discard_cancelled_tool_children(executor, children) {
+             Ok(()) => primary,
+             Err(cleanup) => {
+                 primary.with_cleanup(vec![cleanup.cleanup("unstarted-child cleanup also failed")])
+@@ -2055,20 +2111,12 @@ impl KvmBackend {
+                         let start = start_receiver.recv();
+                         let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                         let failure = match start {
+-                            Ok(_) => None,
++                            Ok(command) => command.failure(),
+                             Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                 "KVM child process {raw_child_pid} lost its parent start gate"
+                             ))),
+                         };
+                         let result = if cancel {
+-                            let failure = failure.or_else(|| {
+-                                child
+-                                    .backend
+-                                    .tool_failure
+-                                    .as_ref()
+-                                    .and_then(|failure| failure.run.published_primary())
+-                                    .map(Error::SharedFailure)
+-                            });
+                             futures::executor::block_on(child.backend.finish_unstarted_tool(
+                                 &mut child.executor,
+                                 child_tool,
+@@ -2315,11 +2363,7 @@ impl KvmBackend {
+                 let child_thread_state = child_tool
+                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                 if let Some(failure) = &child.tool_failure {
+-                    child.tool_failure = Some(crate::failure::FailureContext::new(
+-                        failure.run.clone(),
+-                        tgid,
+-                        child_tid_pid,
+-                    ));
++                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
+                 }
+                 let pending_child_starts = context.pending_child_starts;
+                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
+@@ -2349,19 +2393,12 @@ impl KvmBackend {
+                                 let start = start_receiver.recv();
+                                 let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                                 let failure = match start {
+-                                    Ok(_) => None,
++                                    Ok(command) => command.failure(),
+                                     Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                         "KVM guest thread {child_tid} lost its parent start gate"
+                                     ))),
+                                 };
+                                 let result = if cancel {
+-                                    let failure = failure.or_else(|| {
+-                                        child
+-                                            .tool_failure
+-                                            .as_ref()
+-                                            .and_then(|failure| failure.run.published_primary())
+-                                            .map(Error::SharedFailure)
+-                                    });
+                                     futures::executor::block_on(child.finish_unstarted_tool(
+                                         &mut child_executor,
+                                         child_tool,
+@@ -2391,11 +2428,17 @@ impl KvmBackend {
+                                     &mut child.memory,
+                                     child_executor.take_clear_child_tid(),
+                                 );
+-                                if result.is_err() {
++                                let peer_cancelled = crate::runtime::is_peer_cancelled_tool_worker(
++                                    (tgid, child_tid_pid),
++                                    !cancel,
++                                    &result,
++                                );
++                                if result.is_err() && !peer_cancelled {
+                                     child_executor.retire_failed_thread();
+                                     child.thread_group.record_worker_failure(child_tid);
+                                 }
+                                 if let Err(error) = &result
++                                    && !peer_cancelled
+                                     && child.thread_group.take_worker_error_report(child_tid)
+                                 {
+                                     eprintln!(
+@@ -3239,6 +3282,13 @@ impl KvmBackend {
+         }
+     }
+ 
++    pub(crate) fn cancel_guest_threads_after_failure(&self) {
++        self.thread_group
++            .cancelled_after_failure
++            .store(true, Ordering::Release);
++        self.cancel_guest_threads();
++    }
++
+     fn finish_panicked_guest_worker(
+         &mut self,
+         executor: &mut ElfExecutor,
+@@ -3248,13 +3298,15 @@ impl KvmBackend {
+         // The callback and its borrowed Tool references have already unwound.
+         // Keep the original JoinHandle panic while releasing this worker's
+         // resources and transferring independent forks to the process owner.
+-        executor.retire_failed_thread();
+-        self.clear_registered_worker_tid_before_exit(executor);
+-        executor.release_files_on_exit();
+-        self.release_stdin_on_exit();
+-        executor.transfer_child_processes_to_owner();
+-        self.thread_group.record_worker_failure(tid);
+-        std::panic::resume_unwind(payload)
++        let failure = self.tool_failure.clone();
++        let group = self.thread_group.clone();
++        finish_caught_worker_panic(failure.as_ref(), &group, tid, payload, || {
++            executor.retire_failed_thread();
++            self.clear_registered_worker_tid_before_exit(executor);
++            executor.release_files_on_exit();
++            self.release_stdin_on_exit();
++            executor.transfer_child_processes_to_owner();
++        })
+     }
+ 
+     pub(crate) fn record_guest_worker_failure(&self, tid: i32) {
+@@ -5772,7 +5824,7 @@ mod tests {
+         let fork_gate = ChildStartGate::new(fork_sender);
+         let fork_completion = Arc::new(Mutex::new(None));
+         let fork_handle = std::thread::spawn(move || match fork_receiver.recv() {
+-            Ok(ChildStartCommand::Cancel) => {
++            Ok(ChildStartCommand::CancelAfterFailure) => {
+                 fork_cancelled_in_child.store(true, Ordering::Release);
+                 Ok(())
+             }
+@@ -5797,7 +5849,7 @@ mod tests {
+         let thread_gate = ChildStartGate::new(thread_sender);
+         let thread_handle = std::thread::spawn(move || {
+             match thread_receiver.recv() {
+-                Ok(ChildStartCommand::Cancel) => {
++                Ok(ChildStartCommand::CancelAfterFailure) => {
+                     thread_cancelled_in_child.store(true, Ordering::Release);
+                 }
+                 other => panic!("unstarted test thread received {other:?}"),
+@@ -5834,6 +5886,288 @@ mod tests {
+         assert!(!backend.thread_group.discard_unstarted_worker(42).unwrap());
+     }
+ 
++    #[derive(Default)]
++    struct GateFailureLog {
++        events: Mutex<Vec<(u8, i32, i32)>>,
++        failures: Mutex<Vec<reverie::BackendFailure>>,
++        wake: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
++        notification: Option<crate::failure::FailureSubscription>,
++        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
++    }
++
++    #[reverie::global_tool]
++    impl GlobalTool for GateFailureLog {
++        type Request = (u8, i32);
++        type Response = ();
++        type Config = ();
++
++        async fn receive_rpc(&self, from: Pid, (kind, status): Self::Request) {
++            self.events
++                .lock()
++                .unwrap()
++                .push((kind, from.as_raw(), status));
++        }
++
++        fn report_backend_failure(&self, event: reverie::BackendFailure) {
++            self.failures.lock().unwrap().push(event);
++            // Model a Tool that has finished its terminal transition and woken
++            // its subscribers, but has not yet returned to the local publisher.
++            if let Some(wake) = self.wake.lock().unwrap().take() {
++                let _ = wake.send(());
++            }
++            if let Some(release) = self.release.lock().unwrap().take() {
++                release.recv().unwrap();
++            }
++        }
++
++        async fn wait_for_backend_failure(&self) {
++            if let Some(notification) = &self.notification {
++                let _ = notification.clone().await;
++            } else {
++                std::future::pending::<()>().await;
++            }
++        }
++    }
++
++    #[derive(Default)]
++    struct GateFailureTool;
++
++    #[reverie::tool]
++    impl Tool for GateFailureTool {
++        type GlobalState = GateFailureLog;
++        type ThreadState = i32;
++
++        fn init_thread_state(&self, tid: Pid, _: Option<(Pid, &i32)>) -> i32 {
++            tid.as_raw()
++        }
++
++        async fn handle_thread_start<G: reverie::Guest<Self>>(
++            &self,
++            _: &mut G,
++        ) -> std::result::Result<(), reverie::Error> {
++            panic!("cancelled constructed child entered its start callback")
++        }
++
++        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
++            &self,
++            tid: Pid,
++            global: &G,
++            state: i32,
++            status: ExitStatus,
++        ) -> std::result::Result<(), reverie::Error> {
++            assert_eq!(tid.as_raw(), state);
++            global.send_rpc((1, conventional_exit_code(status))).await;
++            Ok(())
++        }
++
++        async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
++            self,
++            _: Pid,
++            global: &G,
++            status: ExitStatus,
++        ) -> std::result::Result<(), reverie::Error> {
++            global.send_rpc((2, conventional_exit_code(status))).await;
++            Ok(())
++        }
++    }
++
++    // Install all rescue ownership before constructing a gated OS child.
++    struct GateFailureCleanup {
++        backend: KvmBackend,
++        executor: ElfExecutor,
++        starts: SharedChildStarts,
++        release: Option<std::sync::mpsc::Sender<()>>,
++        publisher: Option<std::thread::JoinHandle<Error>>,
++        done: Option<std::sync::mpsc::Sender<()>>,
++        watchdog: Option<std::thread::JoinHandle<()>>,
++    }
++
++    impl Drop for GateFailureCleanup {
++        fn drop(&mut self) {
++            if let Some(release) = self.release.take() {
++                let _ = release.send(());
++            }
++            if let Some(publisher) = self.publisher.take() {
++                let _ = publisher.join();
++            }
++            if let Some(done) = self.done.take() {
++                let _ = done.send(());
++            }
++            if let Some(watchdog) = self.watchdog.take() {
++                let _ = watchdog.join();
++            }
++            let _ = self
++                .backend
++                .discard_unstarted_tool_children(&mut self.executor, &self.starts);
++            self.backend.cancel_guest_threads();
++            let _ = self.executor.join_child_processes_after_failure();
++        }
++    }
++
++    #[test]
++    fn real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning() {
++        use futures::FutureExt;
++        for thread in [false, true] {
++            for fatal in [false, true] {
++                let Some((backend, executor, boundary)) = backend_at_completed_tool_boundary()
++                else {
++                    return;
++                };
++                let starts = Arc::new(Mutex::new(Vec::new()));
++                let mut cleanup = GateFailureCleanup {
++                    backend,
++                    executor,
++                    starts: starts.clone(),
++                    release: None,
++                    publisher: None,
++                    done: None,
++                    watchdog: None,
++                };
++                cleanup.backend.thread_ownership = ThreadOwnership::Tool;
++                let (wake, notification) = futures::channel::oneshot::channel();
++                let (release, wait_release) = std::sync::mpsc::channel();
++                cleanup.release = Some(release.clone());
++                let global = Arc::new(GateFailureLog {
++                    wake: Mutex::new(Some(wake)),
++                    notification: Some(notification.shared()),
++                    release: Mutex::new(Some(wait_release)),
++                    ..Default::default()
++                });
++                let failure = crate::failure::RunFailure::new(&global);
++                let context = crate::failure::FailureContext::new(
++                    failure.clone(),
++                    Pid::from_raw(1),
++                    Pid::from_raw(1),
++                );
++                cleanup.backend.tool_failure = Some(context.clone());
++                let action = if thread {
++                    ProcessAction::Thread {
++                        child_tid: 2,
++                        child_stack: boundary.registers.rsp,
++                        parent_tid: None,
++                        child_tid_address: None,
++                        clear_child_tid: None,
++                        tls: None,
++                    }
++                } else {
++                    ProcessAction::Fork {
++                        child_pid: 2,
++                        child_stack: None,
++                        parent_tid: None,
++                        child_tid: None,
++                        clear_child_tid: None,
++                        clear_sighand: false,
++                        share_address_space: false,
++                    }
++                };
++                let continuation = ProcessActionContinuation::from_captured(&action, boundary);
++                let tool_context = ToolContext::<GateFailureTool> {
++                    process_state: Arc::new(GateFailureTool),
++                    pid: Pid::from_raw(1),
++                    tid: Pid::from_raw(1),
++                    thread_state: &1,
++                    global_state: Some(global.clone()),
++                    config: (),
++                    subscriptions: reverie::Subscription::none(),
++                    pending_child_starts: starts.clone(),
++                };
++                let result = futures::executor::block_on(
++                    cleanup.backend.run_process_action_with_tool_at_boundary(
++                        &mut cleanup.executor,
++                        action,
++                        tool_context,
++                        continuation,
++                    ),
++                )
++                .unwrap();
++                assert_eq!(result, ProcessActionOutcome::returned(2));
++                assert_eq!(starts.lock().unwrap().len(), 1);
++                let rescued = Arc::new(AtomicBool::new(false));
++                let result = if fatal {
++                    let (done, wait_done) = std::sync::mpsc::channel();
++                    cleanup.done = Some(done);
++                    let watchdog_rescued = rescued.clone();
++                    let watchdog_global = global.clone();
++                    cleanup.watchdog = Some(std::thread::spawn(move || {
++                        if wait_done
++                            .recv_timeout(std::time::Duration::from_secs(2))
++                            .is_err()
++                        {
++                            watchdog_rescued.store(true, Ordering::Release);
++                            if let Some(wake) = watchdog_global.wake.lock().unwrap().take() {
++                                let _ = wake.send(());
++                            }
++                            let _ = release.send(());
++                        }
++                    }));
++                    cleanup.publisher = Some(std::thread::spawn(move || {
++                        context.publish(
++                            "controlled terminal transition",
++                            Error::GuestClock("gate primary".to_owned()),
++                        )
++                    }));
++                    futures::executor::block_on(global.wait_for_backend_failure());
++                    assert!(failure.published_primary().is_none());
++                    assert!(
++                        failure.subscribe().now_or_never().is_none(),
++                        "local wake escaped the Tool hook"
++                    );
++                    let result = cleanup.backend.cleanup_unstarted_tool_children_after_error(
++                        &mut cleanup.executor,
++                        &starts,
++                        Error::RunAborted,
++                    );
++                    assert!(
++                        failure.published_primary().is_none(),
++                        "child cleanup waited for hook return"
++                    );
++                    Err(result)
++                } else {
++                    cleanup
++                        .backend
++                        .discard_unstarted_tool_children(&mut cleanup.executor, &starts)
++                };
++                let status = if fatal { 255 } else { 0 };
++                let mut expected = vec![(1, 2, status)];
++                if !thread {
++                    expected.push((2, 2, status));
++                }
++                assert_eq!(*global.events.lock().unwrap(), expected);
++                assert!(starts.lock().unwrap().is_empty());
++                assert!(!cleanup.executor.has_pending_child_process(2));
++                assert!(!cleanup.backend.thread_group.has_worker_handles());
++                if fatal {
++                    assert!(
++                        !rescued.load(Ordering::Acquire),
++                        "watchdog released a blocked cleanup"
++                    );
++                    cleanup.release.take().unwrap().send(()).unwrap();
++                    let published = cleanup.publisher.take().unwrap().join().unwrap();
++                    cleanup.done.take().unwrap().send(()).unwrap();
++                    cleanup.watchdog.take().unwrap().join().unwrap();
++                    assert!(
++                        matches!(published.primary(), Error::GuestClock(message) if message == "gate primary")
++                    );
++                    let result = failure.complete(result).unwrap_err();
++                    assert!(
++                        matches!(result.primary(), Error::GuestClock(message) if message == "gate primary")
++                    );
++                    assert_eq!(
++                        *global.failures.lock().unwrap(),
++                        vec![reverie::BackendFailure {
++                            pid: Pid::from_raw(1),
++                            tid: Pid::from_raw(1),
++                            phase: "controlled terminal transition",
++                        }]
++                    );
++                } else {
++                    result.unwrap();
++                    assert!(global.failures.lock().unwrap().is_empty());
++                }
++            }
++        }
++    }
++
+     fn minimal_test_elf(code: &[u8]) -> Vec<u8> {
+         const LOAD_ADDRESS: u64 = 0x20_0000;
+         const CODE_OFFSET: usize = 0x1000;
+@@ -6373,7 +6707,10 @@ mod tests {
+                 assert_eq!(message.matches(&original).count(), 1, "{message}");
+                 assert!(starts.lock().unwrap().is_empty());
+                 if failed_cleanup {
+-                    assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Cancel);
++                    assert_eq!(
++                        receiver.recv().unwrap(),
++                        ChildStartCommand::CancelAfterFailure
++                    );
+                     assert!(message.contains("unstarted-child cleanup also failed"));
+                     assert!(message.contains("guest thread 99 was not registered"));
+                 } else {
+@@ -6966,7 +7303,7 @@ mod tests {
+                     receiver
+                         .recv_timeout(std::time::Duration::from_secs(5))
+                         .unwrap(),
+-                    ChildStartCommand::Cancel
++                    ChildStartCommand::CancelAfterFailure
+                 );
+                 done_sender.send(()).unwrap();
+                 Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+@@ -7016,7 +7353,7 @@ mod tests {
+                     receiver
+                         .recv_timeout(std::time::Duration::from_secs(5))
+                         .unwrap(),
+-                    ChildStartCommand::Cancel
++                    ChildStartCommand::CancelAfterFailure
+                 );
+                 release_receiver
+                     .recv_timeout(std::time::Duration::from_secs(5))
+@@ -7107,7 +7444,7 @@ mod tests {
+                 );
+                 assert_eq!(error.to_string(), original);
+             } else {
+-                let children = backend.cancel_unstarted_tool_children(&starts);
++                let children = backend.cancel_unstarted_tool_children(&starts, false);
+                 joining.join().unwrap();
+                 assert!(group.worker_start_gates.lock().unwrap().is_empty());
+                 backend
+@@ -7148,45 +7485,55 @@ mod tests {
+ 
+     #[test]
+     fn pending_start_registered_after_cancellation_is_drained() {
+-        let group = Arc::new(GuestThreadGroup::default());
+-        let poisoning = group.clone();
+-        assert!(
+-            std::thread::spawn(move || {
+-                let _gates = poisoning.worker_start_gates.lock().unwrap();
+-                panic!("controlled start-gate registry poison");
+-            })
+-            .join()
+-            .is_err()
+-        );
+-        group.cancel_workers();
+-        let (sender, receiver) = std::sync::mpsc::channel();
+-        let gate = ChildStartGate::new(sender);
+-        group.add_unstarted_worker(
+-            2,
+-            gate.clone(),
+-            std::thread::spawn(move || {
+-                assert_eq!(
+-                    receiver
+-                        .recv_timeout(std::time::Duration::from_secs(5))
+-                        .unwrap(),
+-                    ChildStartCommand::Cancel
+-                );
+-                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+-            }),
+-        );
+-        assert!(gate.is_cancelled());
+-        group.join_workers();
+-        group.teardown_result().unwrap();
+-        assert!(
+-            group
+-                .worker_start_gates
+-                .lock()
+-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+-                .is_empty()
+-        );
+-        assert!(group.worker_handles.lock().unwrap().is_empty());
+-        group.rearm_after_exec();
+-        assert!(!group.cancelled.load(Ordering::Acquire));
++        for fatal in [false, true] {
++            let group = Arc::new(GuestThreadGroup::default());
++            let poisoning = group.clone();
++            assert!(
++                std::thread::spawn(move || {
++                    let _gates = poisoning.worker_start_gates.lock().unwrap();
++                    panic!("controlled start-gate registry poison");
++                })
++                .join()
++                .is_err()
++            );
++            if fatal {
++                group.record_worker_failure(3);
++            }
++            group.cancel_workers();
++            let (sender, receiver) = std::sync::mpsc::channel();
++            let gate = ChildStartGate::new(sender);
++            group.add_unstarted_worker(
++                2,
++                gate.clone(),
++                std::thread::spawn(move || {
++                    assert_eq!(
++                        receiver
++                            .recv_timeout(std::time::Duration::from_secs(5))
++                            .unwrap(),
++                        if fatal {
++                            ChildStartCommand::CancelAfterFailure
++                        } else {
++                            ChildStartCommand::Cancel
++                        }
++                    );
++                    Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++                }),
++            );
++            assert!(gate.is_cancelled());
++            group.join_workers();
++            group.teardown_result().unwrap();
++            assert!(
++                group
++                    .worker_start_gates
++                    .lock()
++                    .unwrap_or_else(|poisoned| poisoned.into_inner())
++                    .is_empty()
++            );
++            assert!(group.worker_handles.lock().unwrap().is_empty());
++            group.rearm_after_exec();
++            assert!(!group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++        }
+     }
+ 
+     #[test]
+diff --git a/reverie/src/tool.rs b/reverie/src/tool.rs
+index 9dbbe1a5..27eefff6 100644
+--- a/reverie/src/tool.rs
++++ b/reverie/src/tool.rs
+@@ -139,17 +139,31 @@ pub trait GlobalTool: Send + Sync + Default {
+     ///
+     /// It receives a shared reference to the global state object, which must
+     /// manage its own synchronization.
++    ///
++    /// On a fatal KVM run failure, an in-flight Tool callback and its inline
++    /// RPC future may be dropped at any await point. RPC implementations must
++    /// leave shared state safe for concurrent consuming cleanup when dropped;
++    /// a normal response is not manufactured to complete the abandoned RPC.
++    /// The terminal transition in `report_backend_failure` must also make
++    /// cleanup possible for requests that were admitted but did not complete.
+     async fn receive_rpc(&self, _from: Tid, _message: Self::Request) -> Self::Response;
+ 
+     /// Reports a fatal backend failure before cleanup can wait on another Tool
+     /// callback. This is a failed run, not a guest exit, signal, or RPC reply.
+     /// Implementations must finish their terminal transition synchronously,
+     /// including making concurrent consuming cleanup safe, before returning.
++    /// Complete that transition before waking any failure subscriber. Several
++    /// workers may report distinct errors in one run, so this method must be
++    /// idempotent and preserve the first terminal cause. It must not wait for
++    /// Tool callbacks or physical worker joins that depend on that transition.
+     fn report_backend_failure(&self, _event: BackendFailure) {}
+ 
+     /// Waits until this run cannot continue faithfully. Each call must subscribe
+     /// independently: multiple Tool callbacks and the scheduler may be waiting.
+     /// The default preserves Tools that do not own a scheduler.
++    /// Returning allows the backend to drop in-flight callbacks, including
++    /// `receive_rpc`, and proceed to consuming exit hooks. Shared state must
++    /// already support that cleanup; returning is not an ordinary RPC reply.
+     async fn wait_for_backend_failure(&self) {
+         std::future::pending::<()>().await
+     }
+@@ -227,6 +241,14 @@ impl GlobalTool for () {
+ /// allocated dynamically upon guest thread creation. Instances of the thread
+ /// state are also managed by Reverie.
+ ///
++/// During fatal KVM run cleanup, asynchronous event callbacks may be dropped
++/// at any await point. Their thread state is then passed to `on_exit_thread`
++/// even if the start callback was never entered or did not finish. Exit hooks
++/// must consume partially initialized state without requiring guest execution
++/// or a normal response from an abandoned callback. This contract covers
++/// returned runtime errors; arbitrary panic unwinding is not guaranteed to
++/// invoke consuming hooks.
++///
+ /// # Example
+ ///
+ /// Here is an example of a tool that simply counts the number of syscalls
+@@ -360,8 +382,10 @@ pub trait Tool: Send + Sync + Default {
+     /// delaying thread execution or running initialization actions (injections
+     /// or rpcs).
+     ///
+-    /// Both this callback and `init_thread_state` run once for every newly
+-    /// created thread. The important difference is that this callback is
++    /// `init_thread_state` runs once for every constructed thread state. This
++    /// callback runs once when that thread is allowed to start; cancellation
++    /// before admission can consume the state without entering this callback.
++    /// Fatal run failure may also drop it before completion. This callback is
+     /// guaranteed to run independently from the parent. It does not view the
+     /// parents state, and this handler runs in its own asynchronous task.
+     /// Blocking this task on an `.await` will not interfere with the progress of
+@@ -488,6 +512,10 @@ pub trait Tool: Send + Sync + Default {
+     /// will be no more intercepted events on this thread.
+     ///
+     /// Serves as a "destructor" for the thread state, and thus takes it by move.
++    /// KVM cleanup consumes each constructed state once on returned runtime
++    /// errors or cancellation, including states whose `handle_thread_start`
++    /// was never entered or completed. No further guest event is started to
++    /// perform this cleanup. Panic unwinding may bypass the hook.
+     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+         &self,
+         _tid: Tid,
+@@ -504,6 +532,10 @@ pub trait Tool: Send + Sync + Default {
+     ///
+     /// Serves as a "destructor" for the process state (`self`), and thus takes
+     /// it by move.
++    /// On KVM this also consumes a constructed process cancelled before its
++    /// initial thread starts, after the thread states have been consumed. It
++    /// must support cleanup after fatal failure without ordinary guest RPC
++    /// progress. Panic unwinding may bypass the hook.
+     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+         self,
+         _pid: Pid,

@@ -1,0 +1,25 @@
+commit d601651a3a0f4865b72af50a9c5967eaf60c351a
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sat Aug 15 01:21:39 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sat Aug 15 22:32:02 2026 -0700
+
+    [hermit2, codex-overhaul-ultra, unresolved, devbig014, role=impl] Make canonical verification the only verification policy
+    
+    Plain Language Summary and Project Impact
+    
+    Hermit previously kept a lossy verification comparator beside its canonical INFO comparison, allowing tests and documentation to report determinism after numeric values, paths, virtual time, and syscall details had been erased. This change deletes that behavior and makes canonical, non-vacuous verification the only verification policy for run, record/replay, chaos, validation, generated commands, and log comparison. It also makes DBT verification fail closed instead of retaining an untrustworthy fallback while the protected Reverie evidence descriptor remains outstanding. This advances the owner-requested Medium Sanity milestone without tuning away the expected compatibility-score drop.
+    
+    Task: round-2-medium-sanity-strict-verify-default-delete-the-old-behavior
+    
+    Determinism
+    
+    Bare verification now compares canonical INFO evidence, preserving payload whitespace, virtual time, syscall values, counts, flags, and other numeric data while removing only the anchored real wall-clock prefix and canonicalizing host addresses by first appearance. Missing, empty, malformed, output-only, contradictory, or weaker evidence refuses. Replay and chaos retain their behavioral contracts, including allowed deterministic nonzero guest status, but validate the typed receipt before returning that status. The separate strict_compat corpus remains unchanged.
+    
+    Validation
+    
+    Focused checks cover canonical parser discrimination, removed CLI flags, verifier and log-diff units, replay/chaos receipt enforcement, executable generated-command brackets, manifest validation, validation self-tests, non-DBT thread identity, backend-parity contradiction refusal, and DBT fail-closed behavior. Independent adversarial review approved this candidate with DBT protected evidence explicitly outstanding. No compatibility score or full exact-SHA validation is claimed by this commit.
+    
+    Outstanding M2 work
+    
+    The pinned Reverie revision does not expose a descriptor protected from guest enumeration, duplication, writes, truncation, close, or proc-fd aliases in both full and copied-child DBT paths. Direct DBT verification therefore writes no_result and refuses before guest execution. M2 remains incomplete until the reviewed Reverie native-client change lands and Hermit deliberately advances both Reverie pins, after which the combined score must be measured and validated.

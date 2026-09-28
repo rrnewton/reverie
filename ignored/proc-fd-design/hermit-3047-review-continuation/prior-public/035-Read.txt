@@ -1,0 +1,72 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01Sd8u2CqiLyoXuU1UDp74tz",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/manifest-plan/src/validation_dag_static.rs",
+    "offset": 190,
+    "limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+190	
+191	pub(super) const PMU_MEMORY_FAILURE_FAMILY: &str = "super.Weekly PMU parallel memory diagnostic";
+192	pub(super) const PMU_MEMORY_FAILURE_FAMILY_MEMBERS: &[&str] = &[
+193	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_bottom_detcore",
+194	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_default_detcore",
+195	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_middle_detcore",
+196	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_top_detcore",
+197	];
+198	
+199	/// Exact selected populations, independent of Nextest's output parser, make
+200	/// an empty or narrowed run refuse. Update these only after enumerating the
+201	/// corresponding shipped command and accounting for changed test identities.
+202	pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+203	    ("test.isolated_dbt_workdir", 2),
+204	    ("test.isolated_detcore_workdir", 1),
+205	    ("test.regular_crates", 505),
+206	    ("test.hermit_unit", 634),
+207	    ("test.detcore_unit", 679),
+208	    ("test.detcore_misc", 27),
+209	    ("test.detcore_parallel", 5),
+210	    ("test.hermit_integration", 158),
+211	    ("test.arbitrary_binaries", 4),
+212	    ("test.cli", 78),
+213	    ("test.liteinst_strict", 24),
+214	    ("test.sabre_examples", 6),
+215	    ("test.hermit_modes", 19),
+216	    ("test.app_strict_verify", 8),
+217	    ("test.command_strict_verify", 9),
+218	    ("test.ignored_syscall_regressions", 4),
+219	    ("test.rr_suite_contract", 1),
+220	    ("privileged-test.pmu_buck_chaos_cases", 6),
+221	    ("privileged-test.cli_kvm", 24),
+222	    ("test.cli_on_host", 78),
+223	    ("test.hermit_modes_on_host", 19),
+224	    ("privileged-only-test.pmu_buck_chaos_cases", 6),
+225	    ("privileged-only-test.cli_kvm", 24),
+226	    ("privileged-only-test.pmu_buck_chaos_cases_on_host", 6),
+227	    ("privileged-only-test.cli_kvm_on_host", 24),
+228	    ("test.app_strict_verify_on_host", 8),
+229	    ("test.arbitrary_binaries_on_host", 4),
+230	    ("test.command_strict_verify_on_host", 9),
+231	    ("test.detcore_misc_on_host", 27),
+232	    ("test.detcore_parallel_on_host", 5),
+233	    ("test.detcore_unit_on_host", 679),
+234	    ("test.hermit_integration_on_host", 158),
+235	    ("test.hermit_unit_on_host", 634),
+236	    ("test.ignored_syscall_regressions_on_host", 4),
+237	    ("test.liteinst_strict_on_host", 24),
+238	    ("test.regular_crates_on_host", 505),
+239	    ("test.rr_suite_contract_on_host", 1),
+240	    ("test.sabre_examples_on_host", 6),
+241	];
+242	
+243	pub(super) fn structured_result_producer_kind(tag: &str) -> Option<StructuredResultProducerKind> {
+244	    for (tags, kind) in [
+245	        (
+246	            NEXTEST_RESULT_PRODUCERS,
+247	            StructuredResultProducerKind::Nextest,
+248	        ),
+249	        (

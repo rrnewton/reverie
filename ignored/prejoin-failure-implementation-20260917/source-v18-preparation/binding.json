@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "append_to_head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 16191,
+      "sha256": "eb130f64177a6e9d0cd851ce069fd992e0c0eca6eea2eb444ba378506c3fe7ac"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1398838,
+      "sha256": "af6f8a36328f08105bc148a8713bcbf6c81cb2e930727f8015bb35426f560e7a"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 23547,
+      "sha256": "4ed0e8f8bb6c0a30e784c98a4bacbcd031aa86ee1273ee5171e849c4cd9bed19"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 158180,
+      "sha256": "872253d5cbdda3691afe4ec7ce9bb715d37a6df678862dd997a462989b0d7d41"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 34596,
+      "sha256": "9ab53ea40a0849132ac4b695ced2e8e10733034bdc1fc4797ff767f63bb92355"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17535,
+      "sha256": "b31ed7bf0ce43174cc29e065bdb0f630d593a6078e934b7aea26df2d12d1b7d8"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 306214,
+      "sha256": "863939d2ba6bc2a4dc73920c8d5de6d7e143255e5d8ce698e1d40b570ed53135"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    }
+  ],
+  "patch_sha256": "d0d7d03add7e4bc7aafe5a7e5be3f417cac6cf4b7998a60b2e55e44463fbe26e",
+  "patch_bytes": 220672,
+  "increment_sha256": "599175a28dc7c77332290698d2786b290e0395f1793c02576ae40aa67766a123",
+  "report_sha256": "509efdf9926bc470e86333c7c0bd991e1eeaa19a1fdb930d5f9a7a2fba46a709",
+  "source_manifest_sha256": "6b9b87025ee3eaae6ddbb14522ab519e8fef95c946bd443aca483e9451fe4262",
+  "source_file_count": 2586,
+  "selected_tests_sha256": "21ad5f1a143e8ae2535073a874d64e6325b9f5183690a9ddc9b3dab4612145bc",
+  "retained_no_vm_selected_count": 39,
+  "selected_no_vm_count": 40,
+  "separate_new_vm_count": 1,
+  "source_preparation": "Started-peer status correction plus abandoned-owner call adaptation; source v17 and v18 unexecuted.",
+  "previous_binding_sha256": "5365d69109646abfc905f958fd2e8509a83b6c0b3f39e177607528f2c8b09dd4"
+}

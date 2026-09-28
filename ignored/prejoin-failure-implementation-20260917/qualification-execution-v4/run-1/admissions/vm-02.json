@@ -1,0 +1,25 @@
+{
+  "device": "/dev/kvm",
+  "device_inode": 3659,
+  "device_filesystem": 7,
+  "device_number": 2792,
+  "api_version": 12,
+  "supervisor_pid": 3994988,
+  "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T170214Z-3993975.service\n",
+  "test_binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "sha256": "5badcc9e5d19dbbbefa23fc6f97fefe95b30882d0cedcad1bf7b431a1379e27e",
+    "bytes": 116212168,
+    "mode": 493
+  },
+  "hermit_binary": null,
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "--exact",
+    "--nocapture",
+    "--test-threads",
+    "1",
+    "vm::tests::page_fault_action_restores_complete_stopped_context"
+  ],
+  "guest_output": null
+}

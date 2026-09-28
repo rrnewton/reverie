@@ -1,0 +1,59 @@
+{
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "tree": "f55438705183ac6d874cbbf2dfd83c598a007787",
+  "commit_patch_sha256": "e427b4f89f5505f74bb5408b570b1e7bfffb191f717c48250b69c8f39ceafead",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/binding.json",
+      "bytes": 3277,
+      "sha256": "792a1dbe1188e2a306ba556411cac61d033ce257585f7bf03c825bfebea819ac"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/candidate.patch",
+      "bytes": 153730,
+      "sha256": "774f2863f9bd7338a7edb3bc6ad024e5046b58620c71cb07e97411b9a0bef30e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/increment.patch",
+      "bytes": 744,
+      "sha256": "5981b0ab8a0f04c9d5bda987eac62a25555ec5444865e0df941ecaee5aee786a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/tracked-source-manifest.json",
+      "bytes": 464313,
+      "sha256": "ae6cd2cc542dd56192beb234672604fc021940f1450f3f8d9766016983164bfa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/selected-tests.json",
+      "bytes": 9441,
+      "sha256": "befc2fa75c5f82f85d3f6abe5723806278ee1e6aed23b991d0fbb0f09d19cf3f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/landing-preparation/commit-v11-readback.json",
+      "bytes": 632,
+      "sha256": "1260fdbfa78e640ef6712f71115bdc1181b40da1fb26148220436f4a37d892ca"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v7/run-1/summary.json",
+      "bytes": 2113,
+      "sha256": "e4af3afee40a17d136484cabb57049ea4406b27ed064051470c47f68c345b5c4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/vm-qualification-v1/run-1/summary.json",
+      "bytes": 665,
+      "sha256": "344b1cb92004cf07e399824a5dfd704570e261f2fa85730a07fe896da65a7ce1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v3/run-1/summary.json",
+      "bytes": 416,
+      "sha256": "691a7e740d3f596dfe0c011dcaf5513f65d31ab5cf249cb3595a5054c16036e8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v4/run-1/summary.json",
+      "bytes": 308,
+      "sha256": "889b84e57f99063c4bffcc02b7c04de8a7f48a8f70c2e605ec950f66b4b42cf4"
+    }
+  ]
+}

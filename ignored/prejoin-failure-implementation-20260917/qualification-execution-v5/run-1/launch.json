@@ -1,0 +1,330 @@
+{
+  "plan_sha256": "c02613357b235659aeb685245207f333c210bf603d0db90749101a81597dc5fc",
+  "caller_sha256": "eadfd1530021f7129282c43a6f7086f59b69df84bbdfb2364de64d69bdb3a184",
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/launch.py"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "environment": {
+    "HOME": "/home/newton",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/run-1/tmp",
+    "CARGO_TERM_COLOR": "never",
+    "THIRD_PARTY_BUILD_JOBS": "2",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "artifacts": {
+    "lib": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+      "sha256": "5badcc9e5d19dbbbefa23fc6f97fefe95b30882d0cedcad1bf7b431a1379e27e",
+      "bytes": 116212168,
+      "mode": 493,
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_kvm",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "fresh": true
+      }
+    },
+    "static-elf": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+      "sha256": "39b4f10464c491627028788968e568fe61be0fdd189496942f75d051a5fc4185",
+      "bytes": 148699928,
+      "mode": 493,
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "static_elf",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/tests/static_elf.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "fresh": false
+      }
+    }
+  },
+  "selected_tests": {
+    "lib": [
+      "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+      "vm::tests::page_fault_action_restores_complete_stopped_context",
+      "vm::tests::real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning",
+      "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes"
+    ],
+    "static-elf": [
+      "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "leader_exit::exec_rearms_worker_survival_direct",
+      "leader_exit::exec_rearms_worker_survival_tool",
+      "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+      "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+      "leader_exit::later_group_exit_preserves_worker_direct",
+      "leader_exit::later_group_exit_preserves_worker_tool",
+      "leader_exit::leader_exit_preserves_pending_worker_start_callback",
+      "leader_exit::panicked_worker_interrupts_natural_join_without_losing_panic",
+      "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
+      "leader_exit::parent_wait_observes_final_worker_status_tool",
+      "leader_exit::process_status_precedes_host_join_order",
+      "leader_exit::pthread_exit_preserves_worker_direct",
+      "leader_exit::pthread_exit_preserves_worker_tool",
+      "leader_exit::raw_exit_drains_nested_worker_direct",
+      "leader_exit::raw_exit_drains_nested_worker_tool",
+      "leader_exit::raw_exit_preserves_worker_direct",
+      "leader_exit::raw_exit_preserves_worker_tool",
+      "terminal_fork::backend_exec_failure_joins_live_fork",
+      "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
+      "terminal_fork::injected_exec_failure_joins_live_fork",
+      "terminal_fork::injected_exec_failure_preserves_child_and_owner_errors"
+    ]
+  },
+  "continuation": {
+    "original_plan": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/plan.json",
+    "original_summary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/run-1/summary.json",
+    "original_result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/RESULT.json",
+    "original_report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/REPORT.md",
+    "accepted_prefix_count": 8,
+    "retry_stage": "static-elf-05",
+    "first_attempt_tail": [
+      "static-elf-06",
+      "static-elf-07",
+      "static-elf-08",
+      "static-elf-09",
+      "static-elf-10",
+      "static-elf-11",
+      "static-elf-12",
+      "static-elf-13",
+      "static-elf-14",
+      "static-elf-15",
+      "static-elf-16",
+      "static-elf-17",
+      "static-elf-18",
+      "static-elf-19",
+      "static-elf-20",
+      "static-elf-21",
+      "static-elf-22"
+    ],
+    "reason": "Original static-elf-05 accounting refusal is retained; this attempt repeats that one method and executes the final 17 original methods for the first time on v22."
+  },
+  "prior_accepted": [
+    {
+      "stage": "vm-01",
+      "test": "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "b7c633199b4101475c71fe688331f991a73c56f18f6e887435c43fdeca6ba007",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "02eef641d85c2010386c09bd37d7bf1311fb5cf7e5554d0936c302093e495f65",
+      "cpu_nsec": 279062000,
+      "wall_seconds": 1.042331655
+    },
+    {
+      "stage": "vm-02",
+      "test": "vm::tests::page_fault_action_restores_complete_stopped_context",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "95060f3dd78ffe903df4a72df404a6dc5d810fedbae4f1bbe5800261ae7b8ef6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "9787f6a2966517a17f61c87661971dca3b7e56a778c17ec3070225ba8f6404bd",
+      "cpu_nsec": 290669000,
+      "wall_seconds": 1.385377989
+    },
+    {
+      "stage": "vm-03",
+      "test": "vm::tests::real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "52abe923d7eb61e9fb804d8c4a3f6b9c384ac40d2ee239bce93d50cb13c218c8",
+      "stderr_sha256": "fbe79e2cd5f0effe6dac0e2dc16e803984a79c1331e79dcebab5cd2111781215",
+      "admission_sha256": "529381be324c8e327dc81ecf414068884b280c9605e465ba1474a963b3c49e5c",
+      "cpu_nsec": 289110000,
+      "wall_seconds": 1.529658762
+    },
+    {
+      "stage": "vm-04",
+      "test": "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "e61f98327857c42fbc445c2764f7fc63d101ec499998a7e92e6a5292d84c2792",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "bab748efc7b52230dc96fb60fa5b030edfc641ee0799fd4c200be4918e3f4591",
+      "cpu_nsec": 317554000,
+      "wall_seconds": 2.0482415
+    },
+    {
+      "stage": "static-elf-01",
+      "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "a1d57085e42dc0df924c908ed9d995caaad05d91eaa4a8825f8e06b9258adf57",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "aff26ad013bebe78f7c429b24e1828cf4b9a87fedeab871fe97a4483e6e00ade",
+      "cpu_nsec": 701062000,
+      "wall_seconds": 2.945406442
+    },
+    {
+      "stage": "static-elf-02",
+      "test": "leader_exit::exec_rearms_worker_survival_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "4194584bed68b737ee740c548e3a5bebc1003ccc739b68cb1f26c682addc7dba",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "2555375e62e4569fbad8316cc96b5bdc7a2c21fc19e6532fc5e698a38390eda9",
+      "cpu_nsec": 420298000,
+      "wall_seconds": 1.13100392
+    },
+    {
+      "stage": "static-elf-03",
+      "test": "leader_exit::exec_rearms_worker_survival_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "351045b78268a299fa40d1771ddd0c16d894313b50b899b38d26e3547e62b378",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "a197f257d697583ea045c38517426cde84c9aa5f821ea43d5a2f6417fdde2e4a",
+      "cpu_nsec": 415603000,
+      "wall_seconds": 1.245202753
+    },
+    {
+      "stage": "static-elf-04",
+      "test": "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "ffbd10f534a0282fbf8163a3ab9f7802dc8da52e42dbda3b8b3f3dda1d07b732",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "79b8f380cbbb3f37e88d34834a50c3e0a3d59cee0f9f089aa76e6c6c75690dab",
+      "cpu_nsec": 411864000,
+      "wall_seconds": 1.177884569
+    }
+  ],
+  "scope": "Original 26-method Reverie qualification continued after the retained observer accounting refusal: 8 accepted prior methods (4 VM + 4 static), original static-elf-05 retried with unchanged admission/bounds, then 17 previously unexecuted original static methods. No claim of 26 clean first attempts. Same frozen source and actual ELFs; no Hermit/Detcore or canonical parity evidence."
+}

@@ -1,0 +1,2936 @@
+[
+  {
+    "path": "/usr/bin/python3.9",
+    "role": "discovery or compiler executable",
+    "needed": [
+      "libpython3.9.so.1.0",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libpython3.9.so.1.0",
+        "candidates": [
+          {
+            "path": "/lib64/libpython3.9.so.1.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-36cf16204b854856"
+  },
+  {
+    "path": "/usr/bin/readelf",
+    "role": "discovery or compiler executable",
+    "needed": [
+      "libctf-nobfd.so.0",
+      "libz.so.1",
+      "libdebuginfod.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libctf-nobfd.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libctf-nobfd.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libdebuginfod.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libdebuginfod.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-7a7a265f13406784"
+  },
+  {
+    "path": "/usr/sbin/ldconfig",
+    "role": "discovery or compiler executable",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-5872fce018d9375a"
+  },
+  {
+    "path": "/usr/bin/gcc",
+    "role": "discovery or compiler executable",
+    "needed": [
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-321fe5786ee411f6"
+  },
+  {
+    "path": "/usr/bin/as",
+    "role": "discovery or compiler executable",
+    "needed": [
+      "libopcodes-2.35.2-72.el9.so",
+      "libbfd-2.35.2-72.el9.so",
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libopcodes-2.35.2-72.el9.so",
+        "candidates": [
+          {
+            "path": "/lib64/libopcodes-2.35.2-72.el9.so",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libbfd-2.35.2-72.el9.so",
+        "candidates": [
+          {
+            "path": "/lib64/libbfd-2.35.2-72.el9.so",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-06e1069c1a2b32a8"
+  },
+  {
+    "path": "/usr/bin/ld.bfd",
+    "role": "discovery or compiler executable",
+    "needed": [
+      "libbfd-2.35.2-72.el9.so",
+      "libctf.so.0",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libbfd-2.35.2-72.el9.so",
+        "candidates": [
+          {
+            "path": "/lib64/libbfd-2.35.2-72.el9.so",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libctf.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libctf.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-705877901d969dcb"
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "role": "GCC program query cc1",
+    "needed": [
+      "libmpc.so.3",
+      "libmpfr.so.6",
+      "libgmp.so.10",
+      "libz.so.1",
+      "libzstd.so.1",
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libmpc.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libmpc.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libmpfr.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libmpfr.so.6",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgmp.so.10",
+        "candidates": [
+          {
+            "path": "/lib64/libgmp.so.10",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libzstd.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libzstd.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-43bfe0aca043d2ac"
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+    "role": "GCC program query collect2",
+    "needed": [
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-c4052dc35ad1d66a"
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+    "role": "GCC program query lto-wrapper",
+    "needed": [
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-891355bf2c8b08d4"
+  },
+  {
+    "path": "/usr/lib64/Scrt1.o",
+    "role": "GCC file query Scrt1.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-b8d1c8f867743823"
+  },
+  {
+    "path": "/usr/lib64/crt1.o",
+    "role": "GCC file query crt1.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-37b68b02e6d15f0e"
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+    "role": "GCC file query crtbegin.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-598e8e798ce4ef45"
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbeginS.o",
+    "role": "GCC file query crtbeginS.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-8677b339bb461f4a"
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+    "role": "GCC file query crtend.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-dde72046222be052"
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtendS.o",
+    "role": "GCC file query crtendS.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-7f56eb43cf3d555e"
+  },
+  {
+    "path": "/usr/lib64/crti.o",
+    "role": "GCC file query crti.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-24999f77539c2d0b"
+  },
+  {
+    "path": "/usr/lib64/crtn.o",
+    "role": "GCC file query crtn.o",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-efc2e4ca2a672c0f"
+  },
+  {
+    "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+    "role": "GCC file query libgcc_s.so.1",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-cb1be724c6d525d6"
+  },
+  {
+    "path": "/usr/lib64/libc.so.6",
+    "role": "linker script input",
+    "needed": [
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-1f2645b56cffde46"
+  },
+  {
+    "path": "/usr/lib64/ld-linux-x86-64.so.2",
+    "role": "linker script input",
+    "needed": [],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [],
+    "query": "elf-6a1f7ebc9f4fdbc5"
+  },
+  {
+    "path": "/usr/bin/echo",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-6b28654ed9e7d787"
+  },
+  {
+    "path": "/usr/bin/bash",
+    "role": "original required guest executable",
+    "needed": [
+      "libtinfo.so.6",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libtinfo.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libtinfo.so.6",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-82c0aad1330a0c42"
+  },
+  {
+    "path": "/usr/bin/cat",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-96a6d84030f16706"
+  },
+  {
+    "path": "/usr/bin/ls",
+    "role": "original required guest executable",
+    "needed": [
+      "libselinux.so.1",
+      "libcap.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libselinux.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libselinux.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcap.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcap.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-bf1c32c3ce623b19"
+  },
+  {
+    "path": "/usr/bin/date",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-45cd0e4381ee49dc"
+  },
+  {
+    "path": "/usr/bin/hostname",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-779a90ac05b19ff0"
+  },
+  {
+    "path": "/usr/bin/gawk",
+    "role": "original required guest executable",
+    "needed": [
+      "libsigsegv.so.2",
+      "libreadline.so.8",
+      "libmpfr.so.6",
+      "libgmp.so.10",
+      "libm.so.6",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libsigsegv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libsigsegv.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libreadline.so.8",
+        "candidates": [
+          {
+            "path": "/lib64/libreadline.so.8",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libmpfr.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libmpfr.so.6",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgmp.so.10",
+        "candidates": [
+          {
+            "path": "/lib64/libgmp.so.10",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-ae6c315eb1671c69"
+  },
+  {
+    "path": "/usr/bin/perl",
+    "role": "original required guest executable",
+    "needed": [
+      "libperl.so.5.32",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libperl.so.5.32",
+        "candidates": [
+          {
+            "path": "/lib64/libperl.so.5.32",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-615f227d035819ed"
+  },
+  {
+    "path": "/usr/bin/setpriv",
+    "role": "original required guest executable",
+    "needed": [
+      "libcap-ng.so.0",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libcap-ng.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libcap-ng.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-52fc0e5654350693"
+  },
+  {
+    "path": "/usr/bin/env",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-21cc473fde0050ab"
+  },
+  {
+    "path": "/usr/bin/wc",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-a64ee9be5150f23a"
+  },
+  {
+    "path": "/usr/bin/paste",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-4abb7eded190a765"
+  },
+  {
+    "path": "/usr/bin/diff",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-0e4aee450d8de3ba"
+  },
+  {
+    "path": "/usr/bin/id",
+    "role": "original required guest executable",
+    "needed": [
+      "libselinux.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libselinux.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libselinux.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-bcd55439726b03ae"
+  },
+  {
+    "path": "/usr/bin/timeout",
+    "role": "original required guest executable",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-d9c934f717053722"
+  },
+  {
+    "path": "/home/newton/.cargo/bin/rust-script",
+    "role": "production execution helper",
+    "needed": [
+      "libgcc_s.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-ed15f1014af10f7c"
+  },
+  {
+    "path": "/home/newton/.cargo/bin/cargo-nextest",
+    "role": "production execution helper",
+    "needed": [
+      "libgcc_s.so.1",
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-8e3b9f610e2650f0"
+  },
+  {
+    "path": "/usr/lib64/libpython3.9.so.1.0",
+    "role": "DT_NEEDED libpython3.9.so.1.0 for /usr/bin/python3.9",
+    "needed": [
+      "libm.so.6",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-5473f5358ee0d5f1"
+  },
+  {
+    "path": "/usr/lib64/libctf-nobfd.so.0.0.0",
+    "role": "DT_NEEDED libctf-nobfd.so.0 for /usr/bin/readelf",
+    "needed": [
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-ad65b95996f4861c"
+  },
+  {
+    "path": "/usr/lib64/libz.so.1.2.11",
+    "role": "DT_NEEDED libz.so.1 for /usr/bin/readelf",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-0579f2ae70b820b4"
+  },
+  {
+    "path": "/usr/lib64/libdebuginfod-0.195.so",
+    "role": "DT_NEEDED libdebuginfod.so.1 for /usr/bin/readelf",
+    "needed": [
+      "libcurl.so.4",
+      "libelf.so.1",
+      "libcrypto.so.3",
+      "libjson-c.so.5",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libcurl.so.4",
+        "candidates": [
+          {
+            "path": "/lib64/libcurl.so.4",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libelf.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libelf.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libjson-c.so.5",
+        "candidates": [
+          {
+            "path": "/lib64/libjson-c.so.5",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-1c3657ec77b49226"
+  },
+  {
+    "path": "/usr/lib64/libm.so.6",
+    "role": "DT_NEEDED libm.so.6 for /usr/bin/gcc",
+    "needed": [
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-1633b38bb4f46a9a"
+  },
+  {
+    "path": "/usr/lib64/libopcodes-2.35.2-72.el9.so",
+    "role": "DT_NEEDED libopcodes-2.35.2-72.el9.so for /usr/bin/as",
+    "needed": [
+      "libbfd-2.35.2-72.el9.so",
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libbfd-2.35.2-72.el9.so",
+        "candidates": [
+          {
+            "path": "/lib64/libbfd-2.35.2-72.el9.so",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-43434bd3e78b6554"
+  },
+  {
+    "path": "/usr/lib64/libbfd-2.35.2-72.el9.so",
+    "role": "DT_NEEDED libbfd-2.35.2-72.el9.so for /usr/bin/as",
+    "needed": [
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-95ae3e1726783310"
+  },
+  {
+    "path": "/usr/lib64/libctf.so.0.0.0",
+    "role": "DT_NEEDED libctf.so.0 for /usr/bin/ld.bfd",
+    "needed": [
+      "libz.so.1",
+      "libbfd-2.35.2-72.el9.so",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libbfd-2.35.2-72.el9.so",
+        "candidates": [
+          {
+            "path": "/lib64/libbfd-2.35.2-72.el9.so",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-e06d07932a68e986"
+  },
+  {
+    "path": "/usr/lib64/libmpc.so.3.2.1",
+    "role": "DT_NEEDED libmpc.so.3 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "needed": [
+      "libmpfr.so.6",
+      "libgmp.so.10",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libmpfr.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libmpfr.so.6",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgmp.so.10",
+        "candidates": [
+          {
+            "path": "/lib64/libgmp.so.10",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-000cb2101e271659"
+  },
+  {
+    "path": "/usr/lib64/libmpfr.so.6.1.0",
+    "role": "DT_NEEDED libmpfr.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "needed": [
+      "libgmp.so.10",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libgmp.so.10",
+        "candidates": [
+          {
+            "path": "/lib64/libgmp.so.10",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-eefc6b803fac3bd3"
+  },
+  {
+    "path": "/usr/lib64/libgmp.so.10.4.0",
+    "role": "DT_NEEDED libgmp.so.10 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-f13f104661c66322"
+  },
+  {
+    "path": "/usr/lib64/libzstd.so.1.5.5",
+    "role": "DT_NEEDED libzstd.so.1 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-6ca9b3598cfaf65b"
+  },
+  {
+    "path": "/usr/lib64/libtinfo.so.6.2",
+    "role": "DT_NEEDED libtinfo.so.6 for /usr/bin/bash",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-918adaf899b0fa97"
+  },
+  {
+    "path": "/usr/lib64/libselinux.so.1",
+    "role": "DT_NEEDED libselinux.so.1 for /usr/bin/ls",
+    "needed": [
+      "libpcre2-8.so.0",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libpcre2-8.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libpcre2-8.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-fab887fd760ee93d"
+  },
+  {
+    "path": "/usr/lib64/libcap.so.2.48",
+    "role": "DT_NEEDED libcap.so.2 for /usr/bin/ls",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-36e8efe9e7e95d34"
+  },
+  {
+    "path": "/usr/lib64/libsigsegv.so.2.0.6",
+    "role": "DT_NEEDED libsigsegv.so.2 for /usr/bin/gawk",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-3a25641aae82d64d"
+  },
+  {
+    "path": "/usr/lib64/libreadline.so.8.1",
+    "role": "DT_NEEDED libreadline.so.8 for /usr/bin/gawk",
+    "needed": [
+      "libtinfo.so.6",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libtinfo.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libtinfo.so.6",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-ea84cb7e0cef30a4"
+  },
+  {
+    "path": "/usr/lib64/libperl.so.5.32.1",
+    "role": "DT_NEEDED libperl.so.5.32 for /usr/bin/perl",
+    "needed": [
+      "libm.so.6",
+      "libcrypt.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libm.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libm.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libcrypt.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypt.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-c8a626eb342cbc76"
+  },
+  {
+    "path": "/usr/lib64/libcap-ng.so.0.0.0",
+    "role": "DT_NEEDED libcap-ng.so.0 for /usr/bin/setpriv",
+    "needed": [
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-fa4d229284b7be97"
+  },
+  {
+    "path": "/usr/lib64/libcurl.so.4.7.0",
+    "role": "DT_NEEDED libcurl.so.4 for /usr/lib64/libdebuginfod-0.195.so",
+    "needed": [
+      "libnghttp2.so.14",
+      "libidn2.so.0",
+      "libssh.so.4",
+      "libpsl.so.5",
+      "libssl.so.3",
+      "libcrypto.so.3",
+      "libgssapi_krb5.so.2",
+      "libkrb5.so.3",
+      "libk5crypto.so.3",
+      "libcom_err.so.2",
+      "libldap.so.2",
+      "liblber.so.2",
+      "libbrotlidec.so.1",
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libnghttp2.so.14",
+        "candidates": [
+          {
+            "path": "/lib64/libnghttp2.so.14",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libidn2.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libidn2.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libssh.so.4",
+        "candidates": [
+          {
+            "path": "/lib64/libssh.so.4",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libpsl.so.5",
+        "candidates": [
+          {
+            "path": "/lib64/libpsl.so.5",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libssl.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libssl.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgssapi_krb5.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libgssapi_krb5.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkrb5.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libk5crypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libk5crypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcom_err.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcom_err.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libldap.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libldap.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "liblber.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/liblber.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libbrotlidec.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libbrotlidec.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-460087a9dc792952"
+  },
+  {
+    "path": "/usr/lib64/libelf-0.195.so",
+    "role": "DT_NEEDED libelf.so.1 for /usr/lib64/libdebuginfod-0.195.so",
+    "needed": [
+      "libz.so.1",
+      "libzstd.so.1",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libzstd.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libzstd.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-0d281bb52f50e0ce"
+  },
+  {
+    "path": "/usr/lib64/libcrypto.so.3.5.7",
+    "role": "DT_NEEDED libcrypto.so.3 for /usr/lib64/libdebuginfod-0.195.so",
+    "needed": [
+      "libz.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-cd6f2d0f88898d1f"
+  },
+  {
+    "path": "/usr/lib64/libjson-c.so.5.0.0",
+    "role": "DT_NEEDED libjson-c.so.5 for /usr/lib64/libdebuginfod-0.195.so",
+    "needed": [
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-7d5780384d79fac7"
+  },
+  {
+    "path": "/usr/lib64/libpcre2-8.so.0.11.0",
+    "role": "DT_NEEDED libpcre2-8.so.0 for /usr/lib64/libselinux.so.1",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-23f561d028792b41"
+  },
+  {
+    "path": "/usr/lib64/libcrypt.so.2.0.0",
+    "role": "DT_NEEDED libcrypt.so.2 for /usr/lib64/libperl.so.5.32.1",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-ae51c9d87577342a"
+  },
+  {
+    "path": "/usr/lib64/libnghttp2.so.14.20.1",
+    "role": "DT_NEEDED libnghttp2.so.14 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-51b64edf0542762d"
+  },
+  {
+    "path": "/usr/lib64/libidn2.so.0.3.7",
+    "role": "DT_NEEDED libidn2.so.0 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libunistring.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libunistring.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libunistring.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-fb74d83aa1262ea0"
+  },
+  {
+    "path": "/usr/lib64/libssh.so.4.9.4",
+    "role": "DT_NEEDED libssh.so.4 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libcrypto.so.3",
+      "libz.so.1",
+      "libgssapi_krb5.so.2",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libz.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libz.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgssapi_krb5.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libgssapi_krb5.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-5b02b95ec65cf610"
+  },
+  {
+    "path": "/usr/lib64/libpsl.so.5.3.3",
+    "role": "DT_NEEDED libpsl.so.5 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libunistring.so.2",
+      "libidn2.so.0",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libunistring.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libunistring.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libidn2.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libidn2.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-d382ad95ef7bb6ca"
+  },
+  {
+    "path": "/usr/lib64/libssl.so.3.5.7",
+    "role": "DT_NEEDED libssl.so.3 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libcrypto.so.3",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-5815d1bd8e057d8a"
+  },
+  {
+    "path": "/usr/lib64/libgssapi_krb5.so.2.2",
+    "role": "DT_NEEDED libgssapi_krb5.so.2 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libkrb5.so.3",
+      "libk5crypto.so.3",
+      "libcom_err.so.2",
+      "libkrb5support.so.0",
+      "libkeyutils.so.1",
+      "libcrypto.so.3",
+      "libresolv.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libkrb5.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libk5crypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libk5crypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcom_err.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcom_err.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkrb5support.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5support.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkeyutils.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libkeyutils.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libresolv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libresolv.so.2",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-0c0920c9f364ff2a"
+  },
+  {
+    "path": "/usr/lib64/libkrb5.so.3.3",
+    "role": "DT_NEEDED libkrb5.so.3 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libk5crypto.so.3",
+      "libcom_err.so.2",
+      "libkrb5support.so.0",
+      "libkeyutils.so.1",
+      "libcrypto.so.3",
+      "libresolv.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libk5crypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libk5crypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcom_err.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcom_err.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkrb5support.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5support.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkeyutils.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libkeyutils.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libresolv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libresolv.so.2",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-b2a7fbd844ecb24e"
+  },
+  {
+    "path": "/usr/lib64/libk5crypto.so.3.1",
+    "role": "DT_NEEDED libk5crypto.so.3 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libkrb5support.so.0",
+      "libkeyutils.so.1",
+      "libcrypto.so.3",
+      "libresolv.so.2",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libkrb5support.so.0",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5support.so.0",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkeyutils.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libkeyutils.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libresolv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libresolv.so.2",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-f342b1461a2f1f3f"
+  },
+  {
+    "path": "/usr/lib64/libcom_err.so.2.1",
+    "role": "DT_NEEDED libcom_err.so.2 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "elf-8345645c5955e499"
+  },
+  {
+    "path": "/usr/lib64/libldap_r.so.2.0.200",
+    "role": "DT_NEEDED libldap.so.2 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "liblber.so.2",
+      "libevent-2.1.so.7",
+      "libsasl2.so.3",
+      "libssl.so.3",
+      "libcrypto.so.3",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "liblber.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/liblber.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libevent-2.1.so.7",
+        "candidates": [
+          {
+            "path": "/lib64/libevent-2.1.so.7",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libsasl2.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libsasl2.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libssl.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libssl.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-87d06ae4f60eaa40"
+  },
+  {
+    "path": "/usr/lib64/liblber.so.2.0.200",
+    "role": "DT_NEEDED liblber.so.2 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libevent-2.1.so.7",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libevent-2.1.so.7",
+        "candidates": [
+          {
+            "path": "/lib64/libevent-2.1.so.7",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-0160acb516c81070"
+  },
+  {
+    "path": "/usr/lib64/libbrotlidec.so.1.0.9",
+    "role": "DT_NEEDED libbrotlidec.so.1 for /usr/lib64/libcurl.so.4.7.0",
+    "needed": [
+      "libbrotlicommon.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libbrotlicommon.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libbrotlicommon.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-c03e47f956f16a50"
+  },
+  {
+    "path": "/usr/lib64/libunistring.so.2.1.0",
+    "role": "DT_NEEDED libunistring.so.2 for /usr/lib64/libidn2.so.0.3.7",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-f079b6babafea9d9"
+  },
+  {
+    "path": "/usr/lib64/libkrb5support.so.0.1",
+    "role": "DT_NEEDED libkrb5support.so.0 for /usr/lib64/libgssapi_krb5.so.2.2",
+    "needed": [
+      "libkeyutils.so.1",
+      "libcrypto.so.3",
+      "libresolv.so.2",
+      "libselinux.so.1",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libkeyutils.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libkeyutils.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcrypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libresolv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libresolv.so.2",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libselinux.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libselinux.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-366b56eca3e9078d"
+  },
+  {
+    "path": "/usr/lib64/libkeyutils.so.1.10",
+    "role": "DT_NEEDED libkeyutils.so.1 for /usr/lib64/libgssapi_krb5.so.2.2",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-f903455842f21db5"
+  },
+  {
+    "path": "/usr/lib64/libresolv.so.2",
+    "role": "DT_NEEDED libresolv.so.2 for /usr/lib64/libgssapi_krb5.so.2.2",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-508bc388225fd7c8"
+  },
+  {
+    "path": "/usr/lib64/libevent-2.1.so.7.0.1",
+    "role": "DT_NEEDED libevent-2.1.so.7 for /usr/lib64/libldap_r.so.2.0.200",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-b01737a3fc5d5122"
+  },
+  {
+    "path": "/usr/lib64/libsasl2.so.3.0.0",
+    "role": "DT_NEEDED libsasl2.so.3 for /usr/lib64/libldap_r.so.2.0.200",
+    "needed": [
+      "libcrypt.so.2",
+      "libgssapi_krb5.so.2",
+      "libkrb5.so.3",
+      "libk5crypto.so.3",
+      "libcom_err.so.2",
+      "libresolv.so.2",
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libcrypt.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcrypt.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libgssapi_krb5.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libgssapi_krb5.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libkrb5.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libkrb5.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libk5crypto.so.3",
+        "candidates": [
+          {
+            "path": "/lib64/libk5crypto.so.3",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libcom_err.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libcom_err.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libresolv.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/libresolv.so.2",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-09d2c5cb177cd152"
+  },
+  {
+    "path": "/usr/lib64/libbrotlicommon.so.1.0.9",
+    "role": "DT_NEEDED libbrotlicommon.so.1 for /usr/lib64/libbrotlidec.so.1.0.9",
+    "needed": [
+      "libc.so.6"
+    ],
+    "interpreters": [],
+    "runpath": [],
+    "rpath": [],
+    "resolutions": [
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      }
+    ],
+    "query": "elf-79a933e6d120c911"
+  }
+]

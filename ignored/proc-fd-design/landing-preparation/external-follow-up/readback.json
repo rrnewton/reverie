@@ -1,0 +1,9 @@
+{
+  "all_bound_inputs_artifacts_match": true,
+  "merge_argv_only_added_pair": [
+    "--match-head-commit",
+    "696f0476aa46cf29e31b947a89379d80b4542ce3"
+  ],
+  "binding_sha256": "5fdb30cb2ca1d1ba874e6829ef553d64225176355953c58654085faf87097f6b",
+  "not_executed": true
+}

@@ -1,0 +1,93 @@
+[
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libbincode_derive-624c3c3043c74fda.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libbincode_derive-624c3c3043c74fda.so",
+    "bytes": 782688,
+    "mode": 493,
+    "sha256": "b167834d6d6e912b6eda20ea3ce1ec38abec40f20d9051402f05747bd5dd2ec0",
+    "device": 49,
+    "inode": 397391875,
+    "mtime_ns": 1789673539683799692,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libclap_derive-c0101511bc61bfb9.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libclap_derive-c0101511bc61bfb9.so",
+    "bytes": 2707824,
+    "mode": 493,
+    "sha256": "8410030840cf86d0d6b387957068b9e110f0c9d86d7a22b368f61713ad1fcdd0",
+    "device": 49,
+    "inode": 397391778,
+    "mtime_ns": 1789673539409799433,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libderive_more_impl-048b71c754f27cdf.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libderive_more_impl-048b71c754f27cdf.so",
+    "bytes": 4325904,
+    "mode": 493,
+    "sha256": "d6a55feee4d72b92689e35df571dfff6dbca6f78c8cb2ed789b86c4660999371",
+    "device": 49,
+    "inode": 397391165,
+    "mtime_ns": 1789673534711794989,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libpaste-31c501312c153a28.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libpaste-31c501312c153a28.so",
+    "bytes": 515712,
+    "mode": 493,
+    "sha256": "86c319286669941d15afc9e7a6b3ce48c8c0ffc90a38bc5b4799704ddfa0b828",
+    "device": 49,
+    "inode": 397393156,
+    "mtime_ns": 1789673545123804838,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_derive-7e283c29f158dc09.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_derive-7e283c29f158dc09.so",
+    "bytes": 3185152,
+    "mode": 493,
+    "sha256": "a904ca799e8e2ec2f1519c8a104abf12dae77c805b113769f233e9c054cb79b2",
+    "device": 49,
+    "inode": 397390362,
+    "mtime_ns": 1789673527991788633,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_repr-6fe5845da9dcc335.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_repr-6fe5845da9dcc335.so",
+    "bytes": 1776488,
+    "mode": 493,
+    "sha256": "4e231c882ab8f0601e57a0fcbd9c03f47eec1bb3550d23710e67c8e7893c8320",
+    "device": 49,
+    "inode": 397390742,
+    "mtime_ns": 1789673532068792489,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libtracing_attributes-5fff14927471bb56.so",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libtracing_attributes-5fff14927471bb56.so",
+    "bytes": 2627752,
+    "mode": 493,
+    "sha256": "3edfa8cab7edbe76ea6de350630d5c7041470c6c6f3257de5de3eef4e5eaf2e5",
+    "device": 49,
+    "inode": 397393476,
+    "mtime_ns": 1789673546034805700,
+    "roles": [
+      "existing proc-macro shared object used by compiler"
+    ]
+  }
+]

@@ -1,0 +1,92 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01WwaZNTmsSGoHgUyvFyYh4U",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/.llms/skills/code-review/SKILL.md"
+  }
+}
+
+Successful public tool result (exact text below):
+1	---
+2	name: code-review
+3	description: "Review code changes adversarially for correctness and evidence, with an explicit check that tests, assertions, tolerances, comparators, labels, and gates were not weakened to make the change appear successful. Use whenever reviewing a diff, commit, pull request, test change, validation change, or dispatching an adversarial code review."
+4	---
+5	
+6	# Code review
+7	
+8	## Purpose
+9	
+10	Try to refute the change's correctness claims. Inspect the implementation, its
+11	tests, and the evidence together. A passing suite is not sufficient when the
+12	change also weakens what the suite requires.
+13	
+14	This skill owns the substance of adversarial code review. Separate skills may
+15	set reviewer counts, exact-head attestation, validation authority, and landing
+16	policy.
+17	
+18	## Establish the review target
+19	
+20	Before reviewing, identify the repository, base revision, exact head revision,
+21	and intended behavior. Review the complete diff and the relevant surrounding
+22	code and tests. Bind the verdict to the exact head; a changed head requires a
+23	fresh review.
+24	
+25	## Mandatory goalpost-moving check
+26	
+27	The coordinator applies this check before dispatching an adversarial review and
+28	includes this complete block in every adversarial-review prompt, not a pointer
+29	to it:
+30	
+31	> GOALPOST-MOVING REVIEW RULE
+32	>
+33	> Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+34	>
+35	> Treat each of these as an explicit review target:
+36	> - weakening an assertion so a test passes
+37	> - widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+38	> - renaming or relabelling so a failure reads as a pass
+39	> - deleting a check rather than satisfying it
+40	
+41	Compare every changed test, threshold, allowlist, skip, label, classification,
+42	and gate with the base revision. Determine whether the implementation now meets
+43	the original requirement or whether the requirement was changed to admit the
+44	implementation. Call out either result explicitly, including when no lowering
+45	of the bar is present.
+46	
+47	## Review method
+48	
+49	1. Trace the changed behavior through the real execution path. Do not infer
+50	   behavior from names, configuration, or successful exit status alone.
+51	2. Check the claimed evidence against the exact behavior it is supposed to
+52	   prove. Identify missing identity, causation, coverage, or provenance links.
+53	3. Inspect production and test changes together. Require a qualifying case to
+54	   pass and a violating case to be refused when the change introduces or alters
+55	   a guard.
+56	4. Report concrete findings with file and line evidence, impact, and the change
+57	   required to resolve them. Do not substitute a vague procedural objection for
+58	   a technical finding.
+59	5. State a verdict only after resolving the goalpost-moving check and the
+60	   correctness findings against the exact reviewed head.
+61	
+62	## Report structure
+63	
+64	```text
+65	Review target: <repository> <base>..<exact head>
+66	
+67	Findings:
+68	- <severity>: <file:line> — <problem, impact, and required change>
+69	
+70	Goalpost-moving assessment:
+71	- Assertions weakened: yes/no — <evidence>
+72	- Tolerance widened, exemption added, case skipped, or comparator relaxed: yes/no — <evidence>
+73	- Failure renamed or relabelled as a pass: yes/no — <evidence>
+74	- Check deleted instead of satisfied: yes/no — <evidence>
+75	
+76	Verification: <commands or evidence inspected, with limitations>
+77	Verdict: approve / changes requested
+78	```
+79	
+80	Put findings first. If there are no findings, say so explicitly and still
+81	include the goalpost-moving assessment, residual risks, and verification limits.
+82	

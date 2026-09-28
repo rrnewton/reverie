@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "remote_refs": {
+    "refs/heads/codex/kvm-fatal-cleanup-20260917": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+    "refs/heads/codex/kvm-prejoin-failure-20260917": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917": "696f0476aa46cf29e31b947a89379d80b4542ce3"
+  },
+  "plan_sha256": "abd022f22e52df70a70a56c134b58b5518e79659f1c65305b49bb70503cc29b5",
+  "caller_sha256": "114f728023fd664ec9afb4fd1039814aea33ccea6d9f0d2720795b941f5fc5ee",
+  "launch_sha256": "c76d87f1fa193206ebb07cc25047a753b5aa07c3786fd7144f9580711fe9c9fe",
+  "cpu_nsec": 583253000,
+  "wall_seconds": 2.627108807,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "74575424d85bcfb7fd927060279906e30683b03db6393137bdf6e9455b16af2f",
+  "hook_expectation": "Normal installed composite pre-push dispatcher remains enabled. The current source has no tracked or existing .githooks/pre-push, so that hook exits normally without running a repository build; completed final-head checks are separately bound. No hook override or skip variable is used."
+}

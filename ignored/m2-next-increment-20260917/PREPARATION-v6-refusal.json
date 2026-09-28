@@ -1,0 +1,11 @@
+{
+  "stage": "isolated preview preparation; no product execution",
+  "command": "python3 ignored/m2-next-increment-20260917/prepare-v6.py",
+  "exit_status": 1,
+  "cause": "Exact source-text assertion failed before packet creation; selector accidentally contained a literal plus and wrong indentation. Existing v5 bytes remain unchanged. Corrected only the intended analyze displayed-command text in the not-yet-frozen v6 preview.",
+  "retained_caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/prepare-v6.py",
+    "bytes": 13949,
+    "sha256": "6d4de558924bc74f19ea9954099bd8ea63f99d624a2173d482d50c83b3b18db3"
+  }
+}

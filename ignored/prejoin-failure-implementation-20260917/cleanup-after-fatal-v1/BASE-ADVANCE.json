@@ -1,0 +1,233 @@
+{
+  "status": "passed",
+  "time_unix": 1789668717.3657894,
+  "old_head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "new_head": "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "source_bytes_unchanged": true,
+  "source_tree": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24",
+  "preserved_file_count": 326,
+  "preserved_before_sha256": "7d9be1932bfa2f3ae3b3e4bb47e42913a00503bd710e8c4238314333445d364f",
+  "rescue": {
+    "ref": "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+    "tip": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "bundle": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle",
+    "bundle_bytes": 50950,
+    "bundle_sha256": "9e09e636e797ecc4622b747aaede52a28876147e31b2aa9c71e3bd6a78bc073d",
+    "prerequisite": "526c21cf06ef9e5098ec9002b93e40e2022e798f",
+    "tree_entries": 2596,
+    "tree_stream_sha256": "c8f69361f0de7a4240e3ec93932f62935218ff1db6e54ed040e31fccd07f26a6"
+  },
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "9db60ab95587d4cb5e0438dfeca409471eb9baf5^{tree}"
+      ],
+      "exit": 0,
+      "stdout": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "c8f4ca9d2e95460e027678ff23f6dec2529d255d^{tree}"
+      ],
+      "exit": 0,
+      "stdout": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "update-ref",
+        "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+        "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+        "0000000000000000000000000000000000000000"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "bundle",
+        "create",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle",
+        "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+        "^526c21cf06ef9e5098ec9002b93e40e2022e798f"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "bundle",
+        "verify",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle"
+      ],
+      "exit": 0,
+      "stdout": "The bundle contains this ref:\n9db60ab95587d4cb5e0438dfeca409471eb9baf5 refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917\nThe bundle requires this ref:\n526c21cf06ef9e5098ec9002b93e40e2022e798f \nThe bundle uses this hash algorithm: sha1\n",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle is okay\n"
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917"
+      ],
+      "exit": 0,
+      "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rebase",
+        "--onto",
+        "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+        "9db60ab95587d4cb5e0438dfeca409471eb9baf5"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "Successfully rebased and updated refs/heads/codex/kvm-proc-fd-identity-20260917.\n"
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "c8f4ca9d2e95460e027678ff23f6dec2529d255d\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--exit-code",
+        "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+        "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+        "--"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--git-path",
+        "rebase-merge"
+      ],
+      "exit": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-proc-fd-identity-20260917/rebase-merge\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--git-path",
+        "rebase-apply"
+      ],
+      "exit": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-proc-fd-identity-20260917/rebase-apply\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--git-path",
+        "MERGE_HEAD"
+      ],
+      "exit": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-proc-fd-identity-20260917/MERGE_HEAD\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "--git-path",
+        "CHERRY_PICK_HEAD"
+      ],
+      "exit": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-proc-fd-identity-20260917/CHERRY_PICK_HEAD\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD^{tree}"
+      ],
+      "exit": 0,
+      "stdout": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24\n",
+      "stderr": ""
+    }
+  ],
+  "public_ref_mutation": false
+}

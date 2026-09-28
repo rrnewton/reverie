@@ -1,0 +1,82 @@
+[
+  {
+    "authored": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+    "landed": "382a61a540237cae1dbf82da23fd922bbc125a9c",
+    "patch_sha256": "a5f38e4e6ed482d1491f4220f7c5d8a8474b05c41ce879f587eb8ef7938bef38",
+    "landed_patch_sha256": "a5f38e4e6ed482d1491f4220f7c5d8a8474b05c41ce879f587eb8ef7938bef38",
+    "patch_equal": true,
+    "paths": [
+      "detcore/src/syscalls.rs",
+      "detcore/src/syscalls/files.rs",
+      "detcore/src/syscalls/namespace.rs",
+      "detcore/src/tool_local.rs",
+      "hermit-cli/tests/cli.rs",
+      "tests/c/fixtures/stdio_inode_identity.c"
+    ],
+    "landed_same_blob_mode": [
+      "detcore/src/syscalls.rs",
+      "detcore/src/syscalls/files.rs",
+      "detcore/src/syscalls/namespace.rs",
+      "detcore/src/tool_local.rs",
+      "hermit-cli/tests/cli.rs",
+      "tests/c/fixtures/stdio_inode_identity.c"
+    ],
+    "landed_different_blob_mode": []
+  },
+  {
+    "authored": "dda0ebb22abb295a98e533ecda8e76dda5a9c3bc",
+    "landed": "cd7a69b08fdcaf9365d07af3b6046e22ec0e41b0",
+    "patch_sha256": "e35cac44deffbd0b1b7bc04c8e35797654eb6839cd3b42b747ea4464468da6a8",
+    "landed_patch_sha256": "e35cac44deffbd0b1b7bc04c8e35797654eb6839cd3b42b747ea4464468da6a8",
+    "patch_equal": true,
+    "paths": [
+      "Cargo.lock",
+      "ci/configure-build-jobs.sh",
+      "ci/dag/validate.json",
+      "ci/manifest-plan/src/validation_dag_static.rs",
+      "ci/run-with-reverie-dbt-budget.sh",
+      "detcore-dbt/Cargo.toml",
+      "detcore-model/Cargo.toml",
+      "detcore-sabre/Cargo.toml",
+      "detcore/Cargo.toml",
+      "detcore/tests/testutils/Cargo.toml",
+      "hermit-cli/Cargo.toml",
+      "hermit-cli/src/lib.rs",
+      "hermit-install/Cargo.toml",
+      "liteinst-runtime-build/Cargo.lock",
+      "liteinst-runtime-build/runtime/Cargo.toml"
+    ],
+    "landed_same_blob_mode": [
+      "Cargo.lock",
+      "ci/configure-build-jobs.sh",
+      "ci/dag/validate.json",
+      "ci/manifest-plan/src/validation_dag_static.rs",
+      "ci/run-with-reverie-dbt-budget.sh",
+      "detcore-dbt/Cargo.toml",
+      "detcore-model/Cargo.toml",
+      "detcore-sabre/Cargo.toml",
+      "detcore/Cargo.toml",
+      "detcore/tests/testutils/Cargo.toml",
+      "hermit-cli/Cargo.toml",
+      "hermit-cli/src/lib.rs",
+      "hermit-install/Cargo.toml",
+      "liteinst-runtime-build/Cargo.lock",
+      "liteinst-runtime-build/runtime/Cargo.toml"
+    ],
+    "landed_different_blob_mode": []
+  },
+  {
+    "authored": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+    "landed": "cdf828ddeb381a51e493b65c1f348f0dae2135e3",
+    "patch_sha256": "de1a0f032131c0ab6623e4d77bd7b033a5be509e05698b2699fa2db9212cb6c6",
+    "landed_patch_sha256": "de1a0f032131c0ab6623e4d77bd7b033a5be509e05698b2699fa2db9212cb6c6",
+    "patch_equal": true,
+    "paths": [
+      "hermit-cli/tests/cli.rs"
+    ],
+    "landed_same_blob_mode": [
+      "hermit-cli/tests/cli.rs"
+    ],
+    "landed_different_blob_mode": []
+  }
+]

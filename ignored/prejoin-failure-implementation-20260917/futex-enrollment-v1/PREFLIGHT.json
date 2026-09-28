@@ -1,0 +1,16 @@
+{
+  "all_bound_inputs_match": 95,
+  "full_source_checked": true,
+  "library_elf": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b",
+  "inventory": 453,
+  "selected_tests": [
+    "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+    "vm::tests::fatal_worker_rw_delayed_waiter_qualifies",
+    "vm::tests::fatal_worker_ro_failed_store_still_wakes",
+    "vm::tests::fatal_worker_rw_store_wake_and_slot_release"
+  ],
+  "active_cache_users": [],
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "unchanged_limits_and_admission": true
+}

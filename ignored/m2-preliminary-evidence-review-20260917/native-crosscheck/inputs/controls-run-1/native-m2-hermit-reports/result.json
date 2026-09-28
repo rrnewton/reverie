@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "phase": "native-m2-hermit-reports",
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-plan.json",
+    "bytes": 13092,
+    "mode": 420,
+    "sha256": "6adf3cd1fecc63fe6e75444abd68a5b782ef9dfb86d278824defd1af76303ed5"
+  },
+  "accepted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/tracked-source-manifest.json",
+    "bytes": 285094,
+    "mode": 420,
+    "sha256": "e263883c153cf2ed59c81a939dda4a48c560f34f0561fe93e2a968308535ab63"
+  },
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "1048576",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-plan.json",
+      "6adf3cd1fecc63fe6e75444abd68a5b782ef9dfb86d278824defd1af76303ed5"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 1.4553018738515675,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "1c787f8744c4e3ffeb32dcf21b15dab5de0a41d2eabbf047c67b490b36775e90"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/result.json",
+    "bytes": 39358,
+    "mode": 384,
+    "sha256": "065464437bd05c5f48935e719b38c172282e243e22f6a1fcc6323ab09e461e18"
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "elapsed_seconds": 0.015355207957327366,
+    "local_wait_timed_out": false,
+    "reaped": true
+  },
+  "readback": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stdout",
+      "bytes": 1853,
+      "mode": 384,
+      "sha256": "0d71f46441a442f9a296e9db0c66b4dabc1c8d8b74457ce9b1083699c5107dce"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stderr",
+      "bytes": 0,
+      "mode": 384,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_service_status": 0,
+    "passed_names": [
+      "canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings",
+      "canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse",
+      "canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none",
+      "canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason",
+      "canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable",
+      "canonical_verdict::tests::a_report_without_the_divergence_position_still_parses",
+      "canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position",
+      "canonical_verdict::tests::brackets_every_canonical_match_requirement",
+      "canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history",
+      "canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused",
+      "canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name",
+      "canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields",
+      "canonical_verdict::tests::divergence_position_survives_the_parse",
+      "canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count",
+      "canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused",
+      "canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse",
+      "canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused",
+      "canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type"
+    ],
+    "passed": 18,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 367
+  },
+  "final_source_inputs_unchanged": true
+}

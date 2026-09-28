@@ -1,0 +1,33 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_013HEvsYVMGEB2jTcbxi8Epz",
+  "name": "Grep",
+  "input": {
+    "pattern": "ProcMountSnapshot|capture\\(\\)|mount_snapshot|proc_mounts",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+
+Successful public tool result (exact text below):
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/lib.rs:26:mod proc_mounts;
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:16:pub(crate) struct ProcMountSnapshot {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:21:impl ProcMountSnapshot {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:22:    pub(crate) fn capture() -> io::Result<Self> {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:53:    fn mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:70:    fn mount_snapshot_propagates_read_error_without_partial_success() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:502:    pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:602:            proc_mounts: self.proc_mounts.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:736:        self.proc_mounts = previous.proc_mounts;
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:1033:        proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:10652:        b"/proc/mounts" | b"/proc/self/mounts" => state.proc_mounts.mounts.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:10656:        b"/proc/self/mountinfo" => state.proc_mounts.mountinfo.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:14488:            proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15221:        assert_eq!(state.proc_mounts.mountinfo, expected);
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15254:        assert!(Arc::ptr_eq(&state.proc_mounts, &child.proc_mounts));
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15255:        let snapshot = state.proc_mounts.clone();
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15258:        assert!(Arc::ptr_eq(&snapshot, &replacement.proc_mounts));
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:17878:    fn ordinary_vectored_io_preserves_limits_faults_replacement_and_capture() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:24465:        let mounts = f.executor.state.proc_mounts.clone();
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:24468:        assert!(Arc::ptr_eq(&mounts, &f.executor.state.proc_mounts));

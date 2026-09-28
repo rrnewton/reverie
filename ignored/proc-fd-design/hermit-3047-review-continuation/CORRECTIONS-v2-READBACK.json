@@ -1,0 +1,57 @@
+{
+  "prepared_at": "2026-09-17T06:57:50.567126+00:00",
+  "correction": "Only two factual topics changed in prompt/appendix; original preparation preserved. Two actual admission artifacts added.",
+  "input_count": 445,
+  "input_bytes": 28468422,
+  "unchanged_prior_input_rows": 441,
+  "changed_input_rows": 2,
+  "added_input_rows": 2,
+  "all_bound_files_modes_bytes_verified": true,
+  "original_attempt_untouched": true,
+  "caller_and_plan_unchanged": true,
+  "no_launch": true,
+  "files": {
+    "prompt.txt": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/prompt.txt",
+      "bytes": 9668,
+      "sha256": "ef212605d1db6efa254fb19bf6313e682021e0c4f615c1fc12657ac5a5b9ecac",
+      "mode": "0o644"
+    },
+    "EVIDENCE-APPENDIX.md": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/EVIDENCE-APPENDIX.md",
+      "bytes": 5773,
+      "sha256": "f1a088c35698dca9e9fed2df57df05443648e28a66124fe06c909055a1560c3a",
+      "mode": "0o644"
+    },
+    "input-binding.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/input-binding.json",
+      "bytes": 139830,
+      "sha256": "fc80029a53e53c335014f86a4236d69c7c555c23555ae17a10d63a36c64a95d3",
+      "mode": "0o644"
+    },
+    "factual-corrections-v2.diff": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/factual-corrections-v2.diff",
+      "bytes": 8604,
+      "sha256": "61dccb7d6066d1e2a2145603843cd2a2c79b5ceecc5de35acee4d79e53e825fb",
+      "mode": "0o644"
+    },
+    "input-binding-v2.diff": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/input-binding-v2.diff",
+      "bytes": 1713,
+      "sha256": "0ad19291c169175c52501efb10bdd9680e40117d0a0d947b9cbcb50d04ee66f3",
+      "mode": "0o644"
+    },
+    "launch-review.py": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/launch-review.py",
+      "bytes": 3014,
+      "sha256": "f0adcef76eb824ee986c6ec05d707a6fc89de50e0f0fb25eae36ab8754a0ad0a",
+      "mode": "0o644"
+    },
+    "execution-plan.json": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/execution-plan.json",
+      "bytes": 4153,
+      "sha256": "66df1e89808a904eaca07e959dde60ea46ec07347cd784fa1b2e14b939d4b26b",
+      "mode": "0o644"
+    }
+  }
+}

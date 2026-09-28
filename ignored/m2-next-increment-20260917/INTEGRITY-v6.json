@@ -1,0 +1,222 @@
+{
+  "checks": [
+    {
+      "path": "README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "ci/compat-envelope/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "demos/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/src/metadata.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "tests/bin/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "base_matches": true,
+      "preview_matches": true,
+      "full_patch_matches": true,
+      "increment_matches": true
+    }
+  ],
+  "all_v5_packet_and_preview_bytes_unchanged": true,
+  "v5_to_v6_changed_paths": [
+    "README.md",
+    "ci/compat-envelope/README.md",
+    "demos/README.md",
+    "hermit-cli/src/bin/hermit/analyze/phases.rs",
+    "tests/backend-parity/README.md",
+    "tests/bin/README.md",
+    "tests/e2e/determinism-stress/README.md",
+    "tests/reproducible-builds/README.md"
+  ],
+  "all_comparison_and_control_logic_unchanged": true,
+  "analyze_only_two_prose_changes": true,
+  "all_tests_and_demo_executable_bytes_unchanged": true,
+  "method": "Strict in-memory unified diff application with exact hunk context/counts and immutable base Git blobs; no product or test execution."
+}

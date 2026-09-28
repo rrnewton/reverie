@@ -1,0 +1,62 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x4df0
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x003230 0x003230 R   0x1000
+  LOAD           0x004000 0x0000000000004000 0x0000000000004000 0x00d479 0x00d479 R E 0x1000
+  LOAD           0x012000 0x0000000000012000 0x0000000000012000 0x003f44 0x003f44 R   0x1000
+  LOAD           0x016690 0x0000000000016690 0x0000000000016690 0x000990 0x000af0 RW  0x1000
+  DYNAMIC        0x016a20 0x0000000000016a20 0x0000000000016a20 0x0001f0 0x0001f0 RW  0x8
+  NOTE           0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  NOTE           0x0002c8 0x00000000000002c8 0x00000000000002c8 0x000024 0x000024 R   0x4
+  GNU_PROPERTY   0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  GNU_EH_FRAME   0x013568 0x0000000000013568 0x0000000000013568 0x000724 0x000724 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x016690 0x0000000000016690 0x0000000000016690 0x000970 0x000970 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .note.gnu.property .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt 
+   01     .init .plt .plt.sec .text .fini 
+   02     .rodata .eh_frame_hdr .eh_frame 
+   03     .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   04     .dynamic 
+   05     .note.gnu.property 
+   06     .note.gnu.build-id 
+   07     .note.gnu.property 
+   08     .eh_frame_hdr 
+   09     
+   10     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x16a20 contains 27 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [liblto_plugin.so]
+ 0x000000000000000c (INIT)               0x4000
+ 0x000000000000000d (FINI)               0x1146c
+ 0x0000000000000019 (INIT_ARRAY)         0x16690
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x16698
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2f0
+ 0x0000000000000005 (STRTAB)             0x1460
+ 0x0000000000000006 (SYMTAB)             0x5a8
+ 0x000000000000000a (STRSZ)              2092 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x16c10
+ 0x0000000000000002 (PLTRELSZ)           2640 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x27e0
+ 0x0000000000000007 (RELA)               0x1e38
+ 0x0000000000000008 (RELASZ)             2472 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0x1dc8
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0x1c8c
+ 0x000000006ffffff9 (RELACOUNT)          86
+ 0x0000000000000000 (NULL)               0x0

@@ -1,0 +1,282 @@
+{
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/AU-NORMAL-VALIDATION-RECEIPT.json",
+      "bytes": 2986,
+      "sha256": "cbaf099ed420195c5d2749c39471482fc787f9fd213940e28d49f3d6e6ebcfff",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/AU-NORMAL-VALIDATION-RECEIPT.json"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/INPUT.json",
+      "bytes": 580,
+      "sha256": "64287f4dbf742be84ef0cde26ba6bb737a315d01bfbdd41348ad108cba656930",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/INPUT.json"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/RESULT.json",
+      "bytes": 1107,
+      "sha256": "9eae6d6db989909c9c47a46eb9132ad075f86f4c3a0a5b07117c7ba7e42201ef",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/RESULT.json"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/exit-code.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/exit-code.txt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/output.txt",
+      "bytes": 97944,
+      "sha256": "d693a268686a199d46a73e70887446e75895608148a7861d80e7ff488806b8a1",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/output.txt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/time.txt",
+      "bytes": 778,
+      "sha256": "e01ea3acf8ad275128ebd8117acee64e20e252352780196904b6962ef3ff240a",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/au-public-increment-review-8720799f/normal-validation/time.txt"
+    }
+  ],
+  "receipt_commit": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "raw_output_sha256": "d693a268686a199d46a73e70887446e75895608148a7861d80e7ff488806b8a1",
+  "source_hashes_match_immutable_commit": true,
+  "result_post_commit_and_status_agree": true,
+  "summary_and_limit_lines": [
+    {
+      "line": 12,
+      "text": "check-client-names --self-test: PASSED (12 controls)"
+    },
+    {
+      "line": 18,
+      "text": "check-documented-defaults --self-test: PASSED (111 controls, 9 pins)"
+    },
+    {
+      "line": 62,
+      "text": "validate --self-test: PASSED (16 mapping controls, 8 always-on controls)"
+    },
+    {
+      "line": 64,
+      "text": "check-client-names --self-test: PASSED (12 controls)"
+    },
+    {
+      "line": 68,
+      "text": "check-documented-defaults --self-test: PASSED (111 controls, 9 pins)"
+    },
+    {
+      "line": 118,
+      "text": "=============================== warnings summary ==============================="
+    },
+    {
+      "line": 120,
+      "text": "  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-577 (die_without_publishing)"
+    },
+    {
+      "line": 132,
+      "text": "  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info."
+    },
+    {
+      "line": 133,
+      "text": "    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))"
+    },
+    {
+      "line": 136,
+      "text": "  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-579 (retire_then_die)"
+    },
+    {
+      "line": 148,
+      "text": "  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info."
+    },
+    {
+      "line": 149,
+      "text": "    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))"
+    },
+    {
+      "line": 151,
+      "text": "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+    },
+    {
+      "line": 152,
+      "text": "2968 passed, 2 warnings in 517.00s (0:08:37)"
+    },
+    {
+      "line": 161,
+      "text": "556 passed, 241 deselected in 564.91s (0:09:24)"
+    },
+    {
+      "line": 166,
+      "text": "241 passed, 556 deselected in 402.11s (0:06:42)"
+    },
+    {
+      "line": 263,
+      "text": "test cgroup::tests::short_rows_are_skipped_whole_so_counts_are_not_misattributed ... ok"
+    },
+    {
+      "line": 425,
+      "text": "test memory_feedback::tests::a_skipped_step_is_left_alone_even_when_the_authored_baseline_is_known ... ok"
+    },
+    {
+      "line": 701,
+      "text": "test result: ok. 491 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s"
+    },
+    {
+      "line": 707,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 713,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 720,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s"
+    },
+    {
+      "line": 728,
+      "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s"
+    },
+    {
+      "line": 742,
+      "text": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s"
+    },
+    {
+      "line": 749,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s"
+    },
+    {
+      "line": 756,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s"
+    },
+    {
+      "line": 763,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s"
+    },
+    {
+      "line": 772,
+      "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.78s"
+    },
+    {
+      "line": 779,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.74s"
+    },
+    {
+      "line": 791,
+      "text": "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 802,
+      "text": "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s"
+    },
+    {
+      "line": 811,
+      "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s"
+    },
+    {
+      "line": 818,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s"
+    },
+    {
+      "line": 826,
+      "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s"
+    },
+    {
+      "line": 836,
+      "text": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s"
+    },
+    {
+      "line": 845,
+      "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.31s"
+    },
+    {
+      "line": 855,
+      "text": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.31s"
+    },
+    {
+      "line": 870,
+      "text": "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s"
+    },
+    {
+      "line": 878,
+      "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s"
+    },
+    {
+      "line": 887,
+      "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.66s"
+    },
+    {
+      "line": 902,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.77s"
+    },
+    {
+      "line": 909,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.17s"
+    },
+    {
+      "line": 916,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s"
+    },
+    {
+      "line": 923,
+      "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s"
+    },
+    {
+      "line": 931,
+      "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s"
+    },
+    {
+      "line": 951,
+      "text": "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1156,
+      "text": "test result: ok. 199 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s"
+    },
+    {
+      "line": 1162,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1168,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1232,
+      "text": "test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+    },
+    {
+      "line": 1238,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1320,
+      "text": "test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s"
+    },
+    {
+      "line": 1326,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1332,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1338,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1344,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1350,
+      "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    {
+      "line": 1381,
+      "text": "check_python_packages: all 7 distributions passed"
+    },
+    {
+      "line": 1387,
+      "text": "check_rust_packages: all 4 crates passed"
+    }
+  ]
+}

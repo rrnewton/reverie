@@ -1,0 +1,17 @@
+46670790208e71be0b1aa0e249297c0f4b38663a
+2c5ffe82932954367046ae55a43c0a94e1afa6a1
+15c54d10cf3dcade87ffa236b29d25313cd1ec5b
+Ryan Newton
+rrnewton@gmail.com
+Account for the composed Hermit unit population
+
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Preserve the stdio append test and the newly landed DBT environment regression in the unit count. The actual 532 feature and 532 main inventories share 531 exact identities and metadata, contributing one distinct test each for a union of 533. Source composition retains both tests and every prior assertion.
+
+Canonical generation, freshness and formatting pass. Only local/hosted unit expected counts change 532 to 533; every other node field and all CLI 87/44 identities remain unchanged. This is derived inventory metadata, not a new guest execution. The previous CLI failures and unqualified manifest gate remain separately retained.
+
+Task: astra-lane-drains-hermit-reverie-pr-queues-to-zero
+

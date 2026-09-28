@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "/usr/bin/git",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "branch",
+    "--show-current"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+  "wall_limit_seconds": 5,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.05160926794633269,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

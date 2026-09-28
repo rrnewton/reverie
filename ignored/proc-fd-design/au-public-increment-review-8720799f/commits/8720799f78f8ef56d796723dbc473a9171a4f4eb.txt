@@ -1,0 +1,12 @@
+tree 7a9a784258398e836f7cc18c346b4f05694b6754
+parent ae7b8682d3a2043b19ac44c6511bde9959f29150
+author Ryan Newton <rrnewton@gmail.com> 1789596963 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789599082 -0700
+predecessor eb9473dee2344d9d74e551307e2e0a9e2a3dfdaf
+predecessor-op rebase
+
+wrkslots: align unbound-owner cleanup tests with the current policy
+
+[gpt-6-astra] Update two stale refusal expectations left by the historical-owner policy change. Verify that expired unused slots are removed and archived, and that a fresh heartbeat still prevents cleanup.
+
+Validated nine lifecycle controls in the same PID namespace used by make test, the ordinary live-process refusal control, and partition inventory checks. Runtime behavior is unchanged.

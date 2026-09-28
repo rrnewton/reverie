@@ -1,0 +1,157 @@
+{
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "local_branch": "codex/kvm-proc-fd-identity-20260917",
+  "remote_branch": "refs/heads/codex/kvm-prejoin-failure-20260917",
+  "preserved_remote_branch": "refs/heads/codex/kvm-proc-fd-identity-20260917",
+  "preserved_remote_tip": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "source_plans": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/plan.json",
+      "sha256": "9b3ecdc839a0f978e2fdf8c20bfdff1046a173306cc0e66a69b28b9ec6d98aff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/plan.json",
+      "sha256": "88d3c517941d7bf46187e71532dc23589d53e0cdb95a966f92dffb49fec185fa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/plan.json",
+      "sha256": "dded5fa1f935a87eafb5454437c5e962a5dcce4da60a1b4a94bc2e3cd103618b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v14/plan.json",
+      "sha256": "a109c46c97bb229e6d2c3a2e83a55e35375a02bea97c9c7e52376729f16744b8"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/RESULT.json",
+      "sha256": "a471d543bd6e4e0b76fc90907d322edcbf0a60cdc9287925a82a55a0376ca426"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/REPORT.md",
+      "sha256": "1d5129da36fcd2e612e37e17489c886c32ec1a232421943430efb5f1defd33f7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/RESULT.json",
+      "sha256": "10861f2ebc67b791fe384f841cb94da88358c12859c55e2206a17618c78f527b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/REPORT.md",
+      "sha256": "feb8d82b402e50db3548d4a68d2b5c603b24a158a55def2e580dc5cac69c7708"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/RESULT.json",
+      "sha256": "dbc9c47beac0bc6c3f7bae4cac2c63d4ea8420e74307412c1f832b1233071be7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/REPORT.md",
+      "sha256": "de69eba91d4845828199a9a536f4ea73acb5026b5ce9cfc8ef0ce70aea167c67"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v14/RESULT.json",
+      "sha256": "d9a291d5138a63b9a80e0a57d7c7c50ccb3f1c6d062043c0a375e209ea132b55"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v14/REPORT.md",
+      "sha256": "118fb0d139992832e0fd27fa3a98b451d438f31e834985c31c3d0baaa5a4f1ea"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/TERMINAL-READBACK.json",
+      "sha256": "6d8072023379632a9bbf4191dbe011f65d9fa1e309d987b5b96fba486d86ec99"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/successor-before.json",
+      "sha256": "30ca4a7110eae9b6ca3a7f9a1e8711ae78aa400f287d39f8bc5f12cc840febf9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/successor-before.stdout",
+      "sha256": "e1d9d2764da730abe7628cc1822361c90c9c01e842a7947cb37abc483bdf4671"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/remote-ancestry.json",
+      "sha256": "c1d875d24a8a761ed7f2ef823b7f6daf872517e6c2fe5915791e3ef9c52bf9ab"
+    },
+    {
+      "path": "/usr/bin/with-proxy",
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-push",
+      "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+    }
+  ],
+  "helpers": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v9/launch.py",
+    "sha256": "5ed942ccd8c7d1773ea1cfddc713f1a66308fc04b030a7a4abe3ccb8583f8764"
+  },
+  "environment_keys": [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS"
+  ],
+  "environment_fixed": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v7",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/run-1/tmp",
+    "CARGO_TERM_COLOR": "never",
+    "THIRD_PARTY_BUILD_JOBS": "2"
+  },
+  "service_memory_max_bytes": 17179869184,
+  "service_swap_max_bytes": 0,
+  "stage": {
+    "name": "push",
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-push-9db60ab9-v1/push",
+    "cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "stderr_limit_bytes": 16777216,
+    "reader_limit_bytes": 16777216,
+    "payload": [
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "push",
+      "origin",
+      "HEAD:refs/heads/codex/kvm-prejoin-failure-20260917"
+    ],
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-push-9db60ab9-v1/push",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "push",
+      "origin",
+      "HEAD:refs/heads/codex/kvm-prejoin-failure-20260917"
+    ]
+  },
+  "run_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/run-1",
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/launch.py"
+  ],
+  "hook_expectation": "Normal installed composite pre-push dispatcher remains enabled. The current source has no tracked or existing .githooks/pre-push, so that hook exits normally without running a repository build; completed final-head checks are separately bound. No hook override or skip variable is used.",
+  "authority": "Root authorized ordinary first push of this exact tested head after accepted final 44 native and original 26 real methods, to fresh successor ref without changing local branch or old remote ref."
+}

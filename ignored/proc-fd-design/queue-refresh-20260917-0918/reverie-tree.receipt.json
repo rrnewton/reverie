@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/git/trees/4db9ddb68126ce97ff929c7f30b61a633e48513e?recursive=1"
+  ],
+  "started_utc": "2026-09-17T09:46:57.152210+00:00",
+  "ended_utc": "2026-09-17T09:46:57.752949+00:00",
+  "wall_seconds": 0.600779009051621,
+  "exit_code": 0,
+  "stdout_bytes": 734160,
+  "stderr_bytes": 0,
+  "stdout_sha256": "b84a43754e4fe2aad516e0d1a93f9fc555988c1b25542cd77830437a588740f3"
+}

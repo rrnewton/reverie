@@ -1,0 +1,50 @@
+{
+  "scope": "standalone owned-preview formatting; only changed methods copied back; no product build/test/guest execution",
+  "formatter": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+  "formatter_sha256": "016e3712bb170692190f20ce3356646d6d2c59343b81516de66af7c5fd2e5e7c",
+  "cpu_seconds_per_file": 10,
+  "wall_seconds_per_file": 20,
+  "output_bytes_cap": 1048576,
+  "files": [
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/formatted/hermit-cli/src/canonical_verdict.rs"
+      ],
+      "status": 0,
+      "timeout": false,
+      "wall_seconds": 0.032891168957576156,
+      "cpu_seconds": 0.016655,
+      "before_sha256": "e3b51915843a4ff6cd1e6b676c98bf4706d883375841bd117f2588e8616aaa91",
+      "formatted_copy_sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101",
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/hermit-cli_src_canonical_verdict.rs.stdout",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/hermit-cli_src_canonical_verdict.rs.stderr",
+      "preview_after_sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101"
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/formatted/hermit-cli/tests/verification_report_consumers.rs"
+      ],
+      "status": 0,
+      "timeout": false,
+      "wall_seconds": 0.03244745312258601,
+      "cpu_seconds": 0.015746,
+      "before_sha256": "62b0d6f69e0719ef37ec2da63844e0c85928e76afd18dcd7f77d1122750b09c1",
+      "formatted_copy_sha256": "90e4a0f51cf55fba5af54704d3cd390325de4f44ed583b77498d80ddc5156206",
+      "stdout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/hermit-cli_tests_verification_report_consumers.rs.stdout",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v8/hermit-cli_tests_verification_report_consumers.rs.stderr",
+      "preview_after_sha256": "90e4a0f51cf55fba5af54704d3cd390325de4f44ed583b77498d80ddc5156206"
+    }
+  ]
+}

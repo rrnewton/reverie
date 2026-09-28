@@ -1,0 +1,7 @@
+# Full native follow-up metadata correction
+
+This v2 package preserves the original native-full-v1 files and fixes its limits_and_sequence description, which incorrectly retained Clippy-only prose. The corrected text says exactly what the existing command does: one normal 427-test native-library run, including existing C fixture compilation, real VM controls and child helpers; no new Rust build or relisting. The measured 37-test result and all earlier failures remain unchanged.
+
+No payload, limit, source, assertion, selector, environment, working directory or output destination changed. The JSON plan differs only in limits_and_sequence and the execution entrypoint naming this preserved v2 launcher. The launcher changes only its plan hash and package lookup: HERE remains the original native-full-v1 execution root via parent.parent, while PLAN reads the v2 copy. All other caller bytes remain identical. Thus the existing fresh run root and proposed observer child remain unused and unchanged; this package does not introduce a second attempt or reuse prior outputs.
+
+The exact caller and plan are bound alongside complete caller.diff, plan.diff and parsed plan-differences.json. Python AST parsing and artifact/source hash readback are preparation checks only. No controller, test, VM, compiler, service, source mutation or ref operation was executed. Root must read this corrected package and release its one concrete run.

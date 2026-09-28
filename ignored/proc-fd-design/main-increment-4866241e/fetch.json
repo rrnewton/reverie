@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "with-proxy",
+    "timeout",
+    "--kill-after=5s",
+    "60s",
+    "git",
+    "fetch",
+    "--no-tags",
+    "origin",
+    "refs/heads/main"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.390485315117985,
+  "stdout": "",
+  "stderr": "From https://github.com/rrnewton/reverie\n * branch              main       -> FETCH_HEAD\n"
+}

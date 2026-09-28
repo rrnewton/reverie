@@ -1,0 +1,42 @@
+{
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "body": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-12d4ce8c-v1/pr-body-12d4ce8c-approved.md",
+    "sha256": "cb683659faea6d69fa00eec4a39ea206b3d7ab76814b00199bb87acc9c401ffd"
+  },
+  "claude_approval": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/reverie-cleanup-claude-review-12d4ce8c/REPORT.md",
+    "sha256": "3341a272cad1ae9277ab82b1ce8a77027c436d30b4b35f4005d71e0efb6e1ed8"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-12d4ce8c-v1/plan.json",
+    "sha256": "abd022f22e52df70a70a56c134b58b5518e79659f1c65305b49bb70503cc29b5"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-12d4ce8c-v1/launch.py",
+    "sha256": "114f728023fd664ec9afb4fd1039814aea33ccea6d9f0d2720795b941f5fc5ee"
+  },
+  "source_plans": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/futex-full-library-v3/plan.json",
+      "sha256": "ce46884d151174f224bc29aa5850f8c65c684329582bafe42b61d4b36a537021"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v8/plan.json",
+      "sha256": "da42a565b988aae444068b8466552e5c822d542002f25da9eb62d50168fac483"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v7/plan.json",
+      "sha256": "1b43c8ab82248ffc2645f1673a22bb7c2fc9c1abffe12296d9862bf71194a2e3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v15/plan.json",
+      "sha256": "a388b4d6449c06ddb29e96fcbc5776af6d5dab95153449096691f1fb80bc22d1"
+    }
+  ],
+  "preserved_remote_refs": {
+    "refs/heads/codex/kvm-proc-fd-identity-20260917": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "refs/heads/codex/kvm-prejoin-failure-20260917": "9db60ab95587d4cb5e0438dfeca409471eb9baf5"
+  },
+  "authority": "Root authorized normal first push of exactly 12d4 to new absent codex/kvm-fatal-cleanup-20260917 after actual source approval and local source/helper/ELF checks. Preserve old 696f and 9db branches, registered local branch and every prior result. No force, hook bypass or PR creation."
+}

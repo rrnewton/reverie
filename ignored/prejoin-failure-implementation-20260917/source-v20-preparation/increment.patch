@@ -1,0 +1,616 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -2841,10 +2841,14 @@
+     /// scheduler when `Guest::is_root_thread()` is true, so reporting the
+     /// synthetic parent here makes the root guest permanently unschedulable.
+     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
+-        if self.state.is_traced_tree_root {
++        if self.is_traced_tree_root() {
+             return None;
+         }
+         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
++    }
++
++    pub(crate) fn is_traced_tree_root(&self) -> bool {
++        self.state.is_traced_tree_root
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
+--- a/reverie-kvm/src/failure.rs
++++ b/reverie-kvm/src/failure.rs
+@@ -135,13 +135,45 @@
+ #[derive(Clone)]
+ pub(crate) struct FailureContext {
+     pub(crate) run: Arc<RunFailure>,
++    process: Arc<ProcessFailure>,
+     pid: Pid,
+     tid: Pid,
+ }
+ 
++struct ProcessFailure {
++    sender: Mutex<Option<oneshot::Sender<()>>>,
++    receiver: FailureSubscription,
++}
++
++impl ProcessFailure {
++    fn new() -> Arc<Self> {
++        let (sender, receiver) = oneshot::channel();
++        Arc::new(Self {
++            sender: Mutex::new(Some(sender)),
++            receiver: receiver.shared(),
++        })
++    }
++
++    fn publish(&self) {
++        if let Some(sender) = self
++            .sender
++            .lock()
++            .expect("KVM process failure sender lock poisoned")
++            .take()
++        {
++            let _ = sender.send(());
++        }
++    }
++}
++
+ impl FailureContext {
+     pub(crate) fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
+-        Self { run, pid, tid }
++        Self {
++            run,
++            process: ProcessFailure::new(),
++            pid,
++            tid,
++        }
+     }
+ 
+     pub(crate) fn for_process(&self, pid: Pid) -> Self {
+@@ -149,18 +181,41 @@
+     }
+ 
+     pub(crate) fn for_thread(&self, tid: Pid) -> Self {
+-        Self::new(self.run.clone(), self.pid, tid)
++        Self {
++            tid,
++            ..self.clone()
++        }
++    }
++
++    /// The initial owner must return every run failure. An independent process
++    /// can finish ordinary work after another process fails, unless its Tool
++    /// explicitly terminates the shared global state. Its RPCs still observe
++    /// the run-wide notification at the actual request boundary.
++    pub(crate) fn driver_subscription(&self, is_traced_tree_root: bool) -> FailureSubscription {
++        if is_traced_tree_root {
++            self.run.subscribe()
++        } else {
++            self.process.receiver.clone()
++        }
+     }
+ 
+     pub(crate) fn publish(&self, phase: &'static str, error: Error) -> Error {
+-        self.run.publish(
++        let real_failure = !matches!(error.primary(), Error::RunAborted);
++        let error = self.run.publish(
+             BackendFailure {
+                 pid: self.pid,
+                 tid: self.tid,
+                 phase,
+             },
+             error,
+-        )
++        );
++        // The synchronous Tool terminal transition has returned before either
++        // a process peer or an owned join can begin failure cleanup. A derived
++        // cancellation marker must not create a new process failure.
++        if real_failure {
++            self.process.publish();
++        }
++        error
+     }
+ }
+ 
+@@ -473,6 +528,71 @@
+     }
+ 
+     #[test]
++    fn process_failure_subscriptions_preserve_fork_and_thread_ownership() {
++        let global = Arc::new(());
++        let run = RunFailure::new(&global);
++        let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
++        let child = root.for_process(Pid::from_raw(72));
++        let worker = child.for_thread(Pid::from_raw(73));
++        let nested = child.for_process(Pid::from_raw(74));
++        let independent_process = false;
++        assert!(
++            child
++                .driver_subscription(independent_process)
++                .now_or_never()
++                .is_none()
++        );
++        assert!(
++            worker
++                .driver_subscription(independent_process)
++                .now_or_never()
++                .is_none()
++        );
++        assert!(root.driver_subscription(true).now_or_never().is_none());
++
++        worker.publish("worker", Error::InvalidGuestPid(-17));
++        assert_eq!(
++            child
++                .driver_subscription(independent_process)
++                .now_or_never(),
++            Some(Ok(()))
++        );
++        assert_eq!(
++            worker
++                .driver_subscription(independent_process)
++                .now_or_never(),
++            Some(Ok(()))
++        );
++        assert_eq!(root.driver_subscription(true).now_or_never(), Some(Ok(())));
++        assert!(nested.driver_subscription(false).now_or_never().is_none());
++        assert!(matches!(
++            run.primary().unwrap().primary(),
++            Error::InvalidGuestPid(-17)
++        ));
++        assert_eq!(
++            run.primary.lock().unwrap().as_ref().unwrap().1.tid,
++            Pid::from_raw(73)
++        );
++
++        // A derived cleanup marker does not mark a healthy independent process
++        // as a second source of failure or wake its ordinary execution driver.
++        nested.publish("RPC cancellation", Error::RunAborted);
++        assert!(nested.driver_subscription(false).now_or_never().is_none());
++        let first = run.primary().unwrap();
++        nested.publish(
++            "later process failure",
++            Error::HostIo(std::io::Error::from_raw_os_error(libc::EPIPE)),
++        );
++        assert_eq!(
++            nested.driver_subscription(false).now_or_never(),
++            Some(Ok(()))
++        );
++        assert!(Arc::ptr_eq(&first, &run.primary().unwrap()));
++        let later = child.for_process(Pid::from_raw(75));
++        assert!(later.driver_subscription(false).now_or_never().is_none());
++    }
++
++    #[test]
+     fn local_failure_wake_waits_for_synchronous_tool_terminal_transition() {
+         let global = Arc::new(OrderedGlobal::default());
+         let (entered, receive_entered) = std::sync::mpsc::channel();
+@@ -482,6 +602,7 @@
+         let failure = RunFailure::new(&global);
+         let mut subscription = failure.subscribe();
+         let context = FailureContext::new(failure.clone(), Pid::from_raw(1), Pid::from_raw(2));
++        let mut process_subscription = context.driver_subscription(false);
+         let publisher = std::thread::spawn(move || {
+             context.publish("worker", Error::GuestClock("primary".to_owned()))
+         });
+@@ -493,6 +614,9 @@
+             Poll::Pending
+         );
+         let unpublished = failure.published_primary().is_none();
++        let process_pending = std::pin::Pin::new(&mut process_subscription)
++            .poll(&mut Context::from_waker(&noop_waker()))
++            .is_pending();
+         release.send(()).unwrap();
+         publisher.join().unwrap();
+         assert!(
+@@ -500,6 +624,11 @@
+             "local cleanup escaped before Tool publication completed"
+         );
+         assert_eq!(futures::executor::block_on(subscription), Ok(()));
++        assert!(
++            process_pending,
++            "process cleanup escaped before Tool publication completed"
++        );
++        assert_eq!(futures::executor::block_on(process_subscription), Ok(()));
+         assert!(failure.published_primary().is_some());
+     }
+ 
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -254,6 +254,10 @@
+ 
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+ 
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        None
++    }
++
+     fn defer_signal_delivery(&mut self, _event: SignalEvent) -> std::result::Result<(), Errno> {
+         Err(Errno::ENOSYS)
+     }
+@@ -431,6 +435,13 @@
+ {
+     fn read_clock(&self) -> Result<u64> {
+         self.backend.vcpu.read_clock()
++    }
++
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        self.backend
++            .tool_failure
++            .as_ref()
++            .map(|failure| failure.run.subscribe())
+     }
+ 
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+@@ -733,7 +744,28 @@
+         // Route by the issuing thread's tid: the scheduler keys each thread's
+         // turn (and global-time accounting) on the RPC sender. For a
+         // CLONE_THREAD worker this is the worker tid, not the thread-group pid.
+-        self.global_state.receive_rpc(self.tid, message).await
++        // An independent process may finish ordinary work after a peer fails,
++        // but a pending ordinary RPC can prevent its owner's physical join.
++        // Signal the driver and leave this response unconstructed on failure.
++        // Consuming hooks use KvmGlobal instead and must still deregister.
++        let mut failure = pin!(wait_for_failure(
++            self.global_state,
++            self.executor.failure_subscription(),
++        ));
++        let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
++        poll_fn(|context| {
++            if failure.as_mut().poll(context).is_ready() {
++                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
++                return Poll::Pending;
++            }
++            let result = response.as_mut().poll(context);
++            if failure.as_mut().poll(context).is_ready() {
++                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
++                return Poll::Pending;
++            }
++            result
++        })
++        .await
+     }
+ 
+     fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
+@@ -1207,7 +1239,7 @@
+     <T::GlobalState as GlobalTool>::Config: 'static,
+ {
+     let tool_stack_top = backend.tool_stack_top();
+-    let failure_subscription = backend.failure_subscription();
++    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
+     loop {
+         if executor.has_eligible_pending_signal() {
+             return Err(Error::UnexpectedVcpuExit(
+@@ -1340,7 +1372,7 @@
+     <T::GlobalState as GlobalTool>::Config: 'static,
+ {
+     let tool_stack_top = backend.tool_stack_top();
+-    let failure_subscription = backend.failure_subscription();
++    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
+     let request = initial_exec_request(memory, executor.initial_stack_pointer())?;
+     let syscall = request.into_syscall()?;
+     let mut registers = kvm_registers(backend.vcpu.get_regs()?, request.number());
+@@ -2264,7 +2296,7 @@
+         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+         let mut process_completed = false;
+         let tool_stack_top = self.tool_stack_top();
+-        let failure_subscription = self.failure_subscription();
++        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+         expose_tool_scratch(memory, tool_stack_top)?;
+         let process_context = if let Some(fault) = fault {
+             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
+@@ -2404,11 +2436,11 @@
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
+         if let Some(failure) = &self.tool_failure {
+-            self.tool_failure = Some(FailureContext::new(failure.run.clone(), pid, tid));
++            self.tool_failure = Some(failure.for_thread(tid));
+         }
+         executor.observe_ignored_signals_with_tool();
+         let tool_stack_top = self.tool_stack_top();
+-        let failure_subscription = self.failure_subscription();
++        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+         let mut _registration = None;
+         let mut auxv = executor.auxv().to_vec();
+         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
+--- a/reverie-kvm/src/runtime/failure_tests.rs
++++ b/reverie-kvm/src/runtime/failure_tests.rs
+@@ -24,6 +24,9 @@
+     failure_events: Mutex<Vec<reverie::BackendFailure>>,
+     failure_required: AtomicBool,
+     late_failure: Mutex<Option<FailureContext>>,
++    terminate_on_failure: AtomicBool,
++    terminal: AtomicBool,
++    terminal_waker: futures::task::AtomicWaker,
+ }
+ 
+ #[reverie::global_tool]
+@@ -68,6 +71,22 @@
+     fn report_backend_failure(&self, event: reverie::BackendFailure) {
+         self.failure_events.lock().unwrap().push(event);
+         self.failures.fetch_add(1, Ordering::SeqCst);
++        if self.terminate_on_failure.load(Ordering::Acquire) {
++            self.terminal.store(true, Ordering::Release);
++            self.terminal_waker.wake();
++        }
++    }
++
++    async fn wait_for_backend_failure(&self) {
++        poll_fn(|context| {
++            self.terminal_waker.register(context.waker());
++            if self.terminal.load(Ordering::Acquire) {
++                Poll::Ready(())
++            } else {
++                Poll::Pending
++            }
++        })
++        .await
+     }
+ }
+ 
+@@ -692,6 +711,186 @@
+     }
+ }
+ 
++#[test]
++fn independent_process_callbacks_preserve_completion_and_failure_scope() {
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolCallback;
++    use native_test_support::NativeToolOwner;
++
++    struct ReadyCallback {
++        polled: Arc<AtomicBool>,
++        during: Option<FailureContext>,
++        published: Arc<Mutex<Option<Error>>>,
++    }
++    impl NativeToolCallback<RpcTool> for ReadyCallback {
++        fn run<'a, G: Guest<RpcTool>>(
++            &'a self,
++            _: &'a RpcTool,
++            guest: &'a mut G,
++        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
++            Box::pin(async move {
++                assert_eq!(guest.pid(), Pid::from_raw(72));
++                assert_eq!(guest.ppid(), Some(Pid::from_raw(71)));
++                self.polled.store(true, Ordering::Release);
++                if let Some(context) = &self.during {
++                    let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                        Some(context),
++                        Pid::from_raw(79),
++                        Err(Error::InvalidGuestPid(-17)),
++                        |_| {},
++                    );
++                    *self.published.lock().unwrap() = Some(result.unwrap_err());
++                }
++                Ok(73)
++            })
++        }
++    }
++
++    for (case, own_process, global_terminal, during, rpc) in [
++        ("independent completion", false, false, false, false),
++        ("own process before callback", true, false, false, false),
++        ("own process during callback", true, false, true, false),
++        ("global terminal before callback", false, true, false, false),
++        ("global terminal during callback", false, true, true, false),
++        ("RPC after independent failure", false, false, false, true),
++    ] {
++        let global = Arc::new(RpcGlobal::default());
++        global
++            .terminate_on_failure
++            .store(global_terminal, Ordering::Release);
++        let (_response, receiver) = oneshot::channel();
++        *global.response.lock().unwrap() = Some(receiver);
++        let mut owner = NativeToolOwner::new(
++            Pid::from_raw(71),
++            Arc::new(RpcTool),
++            71,
++            global.clone(),
++            false,
++        )
++        .unwrap();
++        let mut child = owner
++            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
++            .unwrap();
++        let context = if own_process {
++            child.failure_context_for_test()
++        } else {
++            owner.failure_context_for_test()
++        };
++        let run = context.run.clone();
++        let published = Arc::new(Mutex::new(None));
++        let polled = Arc::new(AtomicBool::new(false));
++        let callback = ReadyCallback {
++            polled: polled.clone(),
++            during: during.then(|| context.clone()),
++            published: published.clone(),
++        };
++        if !during {
++            let result: Result<()> = crate::vm::finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(79),
++                Err(Error::InvalidGuestPid(-17)),
++                |_| {},
++            );
++            *published.lock().unwrap() = Some(result.unwrap_err());
++        }
++        let outcome = if rpc {
++            futures::executor::block_on(child.run_callback(&NativeRpcCall))
++        } else {
++            futures::executor::block_on(child.run_callback(&callback))
++        };
++        let completed = !own_process && !global_terminal && !rpc;
++        let child_result = if completed {
++            assert!(
++                matches!(outcome, Ok(NativeCallbackOutcome::Returned(Ok(73)))),
++                "{case}"
++            );
++            Ok(ExitStatus::Exited(73))
++        } else {
++            if rpc {
++                assert!(matches!(outcome, Err(Error::RunAborted)), "{case}");
++                assert!(
++                    !global.pending.load(Ordering::Acquire),
++                    "failed RPC was admitted"
++                );
++                assert!(
++                    global.response.lock().unwrap().is_some(),
++                    "failed RPC consumed request state"
++                );
++            } else {
++                assert!(
++                    matches!(outcome, Ok(NativeCallbackOutcome::RunFailed)),
++                    "{case}"
++                );
++            }
++            Err(Error::RunAborted)
++        };
++        assert_eq!(
++            polled.load(Ordering::Acquire),
++            completed || during,
++            "{case}"
++        );
++        let primary = run.primary().unwrap();
++        let published = published.lock().unwrap().take().unwrap();
++        let (child_result, root_result) = if own_process {
++            (
++                Err(Error::RunAborted.with_cleanup(vec![published])),
++                Err(Error::RunAborted),
++            )
++        } else {
++            (child_result, Err(published))
++        };
++        let child_error = futures::executor::block_on(child.finish(child_result)).unwrap_err();
++        assert!(
++            std::ptr::eq(child_error.primary(), primary.primary()),
++            "{case}"
++        );
++        // The actual initial owner remains run-wide even when its numerical
++        // PID is not 1 and the first failure belongs to a forked process.
++        let root_polled = Arc::new(AtomicBool::new(false));
++        let root_callback = ReadyCallback {
++            polled: root_polled.clone(),
++            during: None,
++            published: Arc::new(Mutex::new(None)),
++        };
++        assert!(
++            matches!(
++                futures::executor::block_on(owner.run_callback(&root_callback)),
++                Ok(NativeCallbackOutcome::RunFailed)
++            ),
++            "{case}"
++        );
++        assert!(
++            !root_polled.load(Ordering::Acquire),
++            "initial owner resumed after run failure"
++        );
++        let root_error = futures::executor::block_on(owner.finish(root_result)).unwrap_err();
++        assert!(
++            std::ptr::eq(root_error.primary(), primary.primary()),
++            "{case}"
++        );
++        let child_status = if completed { 73 } else { 255 };
++        assert_eq!(
++            *global.events.lock().unwrap(),
++            vec![
++                (1, 72, child_status),
++                (2, 72, child_status),
++                (1, 71, 255),
++                (2, 71, 255),
++            ],
++            "consuming RPC must remain usable after failure: {case}"
++        );
++        assert_eq!(
++            *global.failure_events.lock().unwrap(),
++            vec![reverie::BackendFailure {
++                pid: Pid::from_raw(if own_process { 72 } else { 71 }),
++                tid: Pid::from_raw(79),
++                phase: "host-owned worker",
++            }],
++            "{case}"
++        );
++    }
++}
++
+ struct NativeControlCleanup {
+     response: Option<oneshot::Sender<i64>>,
+     release: Option<std::sync::mpsc::Sender<()>>,
+@@ -881,6 +1080,12 @@
+         "post-worker failure joined a descendant before supplying its terminal wake"
+     );
+     let result = result.unwrap();
++    if started {
++        assert!(
++            cleanup.response.as_ref().unwrap().is_canceled(),
++            "the ordinary RPC future must drop before the owned child join returns"
++        );
++    }
+     match case {
+         PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending => {
+             assert!(
+--- a/reverie-kvm/src/runtime/native_test_support.rs
++++ b/reverie-kvm/src/runtime/native_test_support.rs
+@@ -66,10 +66,14 @@
+ 
+ struct NoInstructions {
+     parent_pid: Option<Pid>,
++    failure: FailureContext,
+ }
+ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
+     fn parent_pid(&self) -> Option<Pid> {
+         self.parent_pid
++    }
++    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++        Some(self.failure.run.subscribe())
+     }
+     fn read_clock(&self) -> Result<u64> {
+         panic!("native Tool control must disable guest clock operations")
+@@ -219,7 +223,11 @@
+         let subscriptions = Subscription::none();
+         let mut executor = NoInstructions {
+             parent_pid: self.executor.as_ref().unwrap().parent_pid(),
++            failure: self.failure.clone(),
+         };
++        let failure_subscription = self
++            .failure
++            .driver_subscription(self.executor.as_ref().unwrap().is_traced_tree_root());
+         let mut guest = KvmGuest::new(
+             self.identity.0,
+             self.identity.1,
+@@ -243,7 +251,7 @@
+             callback.run(self.tool.as_ref().unwrap().as_ref(), &mut guest),
+             signal,
+             self.starts.clone(),
+-            wait_for_failure(self.global.as_ref(), Some(self.failure.run.subscribe())),
++            wait_for_failure(self.global.as_ref(), Some(failure_subscription)),
+         )
+         .await
+         {
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -966,10 +966,13 @@
+ }
+ 
+ impl KvmBackend {
+-    pub(crate) fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
++    pub(crate) fn failure_subscription(
++        &self,
++        is_traced_tree_root: bool,
++    ) -> Option<crate::failure::FailureSubscription> {
+         self.tool_failure
+             .as_ref()
+-            .map(|failure| failure.run.subscribe())
++            .map(|failure| failure.driver_subscription(is_traced_tree_root))
+     }
+ 
+     pub(crate) fn report_tool_failure(&self, phase: &'static str, error: Error) -> Error {
+@@ -2360,11 +2363,7 @@
+                 let child_thread_state = child_tool
+                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                 if let Some(failure) = &child.tool_failure {
+-                    child.tool_failure = Some(crate::failure::FailureContext::new(
+-                        failure.run.clone(),
+-                        tgid,
+-                        child_tid_pid,
+-                    ));
++                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
+                 }
+                 let pending_child_starts = context.pending_child_starts;
+                 let (start_sender, start_receiver) = std::sync::mpsc::channel();

@@ -1,0 +1,10 @@
+--- a/reverie-kvm/src/runtime/native_test_support.rs
++++ b/reverie-kvm/src/runtime/native_test_support.rs
+@@ -477,6 +477,7 @@
+             &self.config,
+             thread,
+             Err(error),
++            None,
+             workers,
+             Some(&self.failure),
+         ));

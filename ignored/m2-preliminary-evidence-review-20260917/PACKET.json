@@ -1,0 +1,42 @@
+[
+  {
+    "path": "REPORT.md",
+    "bytes": 8074,
+    "sha256": "048544b021fe6d24915b2c74f60488d60ab05a3fc52b84a842295336d2ebfdc7"
+  },
+  {
+    "path": "RESULT.json",
+    "bytes": 11377,
+    "sha256": "0f48db47c2913c58909bbef9d9e9bdb6a9e0197e4a90daa51d89f9e700232147"
+  },
+  {
+    "path": "COMPILE-LISTS-READBACK.json",
+    "bytes": 318731,
+    "sha256": "37ec0bf73f59518aabf9b6bc49a3ff5b3cc4ced833b79c8e057cc4dfe1b6afef"
+  },
+  {
+    "path": "audit-retained.py",
+    "bytes": 13789,
+    "sha256": "a5a1b37202c3df1d7b4598ec0aa0aff46b1607f286ae5e0c3bb6cac3c1b16c10"
+  },
+  {
+    "path": "audit-retained-v2.py",
+    "bytes": 13803,
+    "sha256": "197391b38d4492e1de9a7959302928a31bc31e6fc1805445816d94a0d52a2130"
+  },
+  {
+    "path": "finish-audit.py",
+    "bytes": 4274,
+    "sha256": "005d0247d35f27d9f2924c53d57f0c269fcf668eea96aa20f1f34cd417c45d1c"
+  },
+  {
+    "path": "DISCOVERY-NOTE.md",
+    "bytes": 418,
+    "sha256": "739e6683a60ab09a80b6d4b58c76a48e695a6d7875efb85a0a72f18759f61387"
+  },
+  {
+    "path": "native-crosscheck/PACKET.json",
+    "bytes": 545,
+    "sha256": "ee16b16d7d323b245da5ad8cee8082648375338f75c2c188f12af06acc378057"
+  }
+]

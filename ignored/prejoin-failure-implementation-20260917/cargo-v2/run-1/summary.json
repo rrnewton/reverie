@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "active_stage": "compile",
+  "error": "compile failed",
+  "retained_stages": [
+    "compile"
+  ],
+  "artifact": null,
+  "scope": "Retained failure; no source repair, retry, guest or parity claim."
+}

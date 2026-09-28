@@ -1,0 +1,40 @@
+--- readback-guest-cli-v1.py
++++ readback-guest-cli-v2.py
+@@ -7,8 +7,8 @@
+ from readback import inventory, nextest_events
+ from run_phase import scm_readback
+ 
+-D = HERE / 'guest-cli-readback-v1'
+-BINDING = HERE / 'guest-cli-readback-v1-binding.json'
++D = HERE / 'guest-cli-readback-v2'
++BINDING = HERE / 'guest-cli-readback-v2-binding.json'
+ CLI = 'original-kvm-cli'
+ TYPED = CLI + '-typed-results'
+ EXTRA = 'hermit::cli$run_dbt_verifies_fresh_physical_workdirs'
+@@ -21,7 +21,15 @@
+     require(len(lookup) == len(identities), 'inventory identities duplicated')
+     matched = {key for key, row in lookup.items() if row['filter_match']['status'] == 'matches'}
+     require(matched == expected and all(lookup[key]['ignored'] is False for key in expected), 'selected inventory differs')
+-    terminals = [event for event in events if event.get('type') == 'test' and event.get('event') in ('ok', 'failed', 'ignored')]
++    test_rows = [(index, event) for index, event in enumerate(events) if event.get('type') == 'test']
++    require(all(event.get('event') in ('started', 'ok', 'failed', 'ignored') for _, event in test_rows), 'unexpected test event kind')
++    starts = [(index, event['name']) for index, event in test_rows if event['event'] == 'started']
++    terminals_indexed = [(index, event) for index, event in test_rows if event['event'] in ('ok', 'failed', 'ignored')]
++    require(len(starts) == len({name for _, name in starts}), 'duplicate test start')
++    start_at = {name: index for index, name in starts}
++    require(set(start_at) == {event['name'] for _, event in terminals_indexed}, 'unmatched test start or terminal')
++    require(all(start_at[event['name']] < index for index, event in terminals_indexed), 'terminal precedes its start')
++    terminals = [event for _, event in terminals_indexed]
+     actual = [event['name'] for event in terminals]
+     require(len(actual) == len(set(actual)), 'duplicate terminal identity or retry')
+     ignored = []
+@@ -56,6 +64,9 @@
+         changed = copy.deepcopy(identities)
+         next(row for row in changed if row['binary_id'] + '$' + row['test_name'] == EXTRA)[field] = value
+         variants.append(('extra-inventory-' + field, events, changed))
++    rows = copy.deepcopy(events); rows.append(dict(type='test', event='started', name='hermit::cli$unknown')); variants.append(('unknown-unmatched-start', rows, identities))
++    rows = copy.deepcopy(events); rows.append(dict(type='test', event='started', name=rows[index]['name'])); variants.append(('selected-duplicate-start', rows, identities))
++    rows = copy.deepcopy(events); start = next(i for i, row in enumerate(rows) if row.get('name') == rows[index]['name'] and row.get('event') == 'started'); rows[start], rows[index] = rows[index], rows[start]; variants.append(('terminal-before-start', rows, identities))
+     for label, rows, population in variants:
+         try:
+             selected_events(rows, names, population)

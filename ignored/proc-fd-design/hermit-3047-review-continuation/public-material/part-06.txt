@@ -1,0 +1,1252 @@
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01E44qB165otfqBdWxrRW2B8",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore-model/src/procfs.rs",
+    "offset": 1,
+    "limit": 140
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	/*
+2	 * Copyright (c) Meta Platforms, Inc. and affiliates.
+3	 * All rights reserved.
+4	 *
+5	 * This source code is licensed under the BSD-style license found in the
+6	 * LICENSE file in the root directory of this source tree.
+7	 */
+8	
+9	//! Types and parsers shared by procfs producers and consumers.
+10	
+11	use std::collections::BTreeSet;
+12	
+13	/// Identity-bearing fields from one Linux `/proc/*/mountinfo` row.
+14	#[derive(Clone, Debug, Eq, PartialEq)]
+15	pub struct MountInfoRow {
+16	    pub raw_mount_id: u64,
+17	    pub raw_parent_id: u64,
+18	    pub raw_device: u64,
+19	    pub root: Vec<u8>,
+20	    pub raw_peer_groups: Vec<u64>,
+21	}
+22	
+23	// AUTONOMOUS-BOT-IMPLEMENTED
+24	// TODO-HUMAN-REVIEW(PR-873): Review private mount-root normalization.
+25	pub const MOUNT_PEER_PREFIXES: [&[u8]; 3] = [b"shared:", b"master:", b"propagate_from:"];
+26	
+27	/// Whether every visible mount ID occurs once and in the same relative order
+28	/// as the producer-captured namespace.
+29	pub fn mount_ids_are_ordered_subset(visible: &[u64], captured: &[u64]) -> bool {
+30	    let mut seen = BTreeSet::new();
+31	    if !visible.iter().all(|raw| seen.insert(*raw)) {
+32	        return false;
+33	    }
+34	    let mut captured = captured.iter();
+35	    visible
+36	        .iter()
+37	        .all(|raw| captured.by_ref().any(|candidate| candidate == raw))
+38	}
+39	
+40	fn decimal(field: &[u8]) -> Option<u64> {
+41	    if field.is_empty() || field.iter().any(|byte| !byte.is_ascii_digit()) {
+42	        return None;
+43	    }
+44	    std::str::from_utf8(field).ok()?.parse().ok()
+45	}
+46	
+47	fn mount_peer_group(field: &[u8]) -> Option<Option<u64>> {
+48	    for prefix in MOUNT_PEER_PREFIXES {
+49	        if let Some(raw) = field.strip_prefix(prefix) {
+50	            return Some(Some(decimal(raw)?));
+51	        }
+52	    }
+53	    Some(None)
+54	}
+55	
+56	fn parse_mountinfo_row(line: &[u8]) -> Option<MountInfoRow> {
+57	    let fields = line.split(|byte| *byte == b' ').collect::<Vec<_>>();
+58	    if fields.iter().any(|field| field.is_empty()) {
+59	        return None;
+60	    }
+61	    let separator = fields.iter().position(|field| *field == b"-")?;
+62	    if separator < 6 || separator + 4 != fields.len() {
+63	        return None;
+64	    }
+65	    let mut device = fields[2].split(|byte| *byte == b':');
+66	    let major = u32::try_from(decimal(device.next()?)?).ok()?;
+67	    let minor = u32::try_from(decimal(device.next()?)?).ok()?;
+68	    if device.next().is_some() {
+69	        return None;
+70	    }
+71	    let mut raw_peer_groups = Vec::new();
+72	    for field in &fields[6..separator] {
+73	        if let Some(raw) = mount_peer_group(field)? {
+74	            raw_peer_groups.push(raw);
+75	        } else if field
+76	            .iter()
+77	            .position(|byte| *byte == b':')
+78	            .is_some_and(|separator| decimal(&field[separator + 1..]).is_some())
+79	        {
+80	            // Unknown numeric optional fields can carry mount-namespace
+81	            // identity just like the peer-group fields above. Passing one
+82	            // through would expose an unsanitized host identifier, so refuse
+83	            // until its Linux semantics and deterministic mapping are known.
+84	            return None;
+85	        }
+86	    }
+87	    Some(MountInfoRow {
+88	        raw_mount_id: decimal(fields[0])?,
+89	        raw_parent_id: decimal(fields[1])?,
+90	        raw_device: libc::makedev(major, minor),
+91	        root: fields[3].to_vec(),
+92	        raw_peer_groups,
+93	    })
+94	}
+95	
+96	/// Strictly parse a Linux `/proc/*/mountinfo` snapshot.
+97	///
+98	/// Empty files are valid empty snapshots. Malformed rows and duplicate mount
+99	/// IDs are rejected so every producer and consumer accepts the same grammar.
+100	pub fn parse_mountinfo(contents: &[u8]) -> Option<Vec<MountInfoRow>> {
+101	    if contents.is_empty() {
+102	        return Some(Vec::new());
+103	    }
+104	    let body = contents.strip_suffix(b"\n").unwrap_or(contents);
+105	    if body.is_empty() {
+106	        return None;
+107	    }
+108	    let rows = body
+109	        .split(|byte| *byte == b'\n')
+110	        .map(parse_mountinfo_row)
+111	        .collect::<Option<Vec<_>>>()?;
+112	    let mut seen = BTreeSet::new();
+113	    rows.iter()
+114	        .all(|row| seen.insert(row.raw_mount_id))
+115	        .then_some(rows)
+116	}
+117	
+118	/// Parse the one decimal `mnt_id` field required by Linux fdinfo.
+119	///
+120	/// Missing, duplicate, malformed, signed, or out-of-range values are rejected.
+121	/// Keeping this byte parser below both `hermit-cli` and `detcore` prevents the
+122	/// container capture path from accepting input the guest-visible sanitizer
+123	/// would later refuse.
+124	pub fn parse_fdinfo_mount_id(contents: &[u8]) -> Option<u64> {
+125	    let mut mount_id = None;
+126	    for line in contents.split(|byte| *byte == b'\n') {
+127	        let Some(value) = line.strip_prefix(b"mnt_id:") else {
+128	            continue;
+129	        };
+130	        let value = value
+131	            .strip_prefix(b"\t")
+132	            .or_else(|| value.strip_prefix(b" "))?;
+133	        if value.is_empty() || value.iter().any(|byte| !byte.is_ascii_digit()) || mount_id.is_some()
+134	        {
+135	            return None;
+136	        }
+137	        let text = std::str::from_utf8(value).ok()?;
+138	        mount_id = Some(text.parse().ok()?);
+139	    }
+140	    mount_id
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01XGQoneYnBNm4BFASBPKb5H",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 3180,
+    "limit": 60
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+3180	        let mut file = tempfile::NamedTempFile::new_in(self.data_dir.join("tmp"))?;
+3181	        write!(file, "{}", id)?;
+3182	        file.persist(self.data_dir.join("last"))?;
+3183	        Ok(())
+3184	    }
+3185	}
+3186	
+3187	/// Capture the current mount namespace's raw IDs in the exact row/parent order
+3188	/// used by Detcore's canonical mountinfo mapping.
+3189	pub fn capture_mountinfo_identity_order() -> Result<Vec<u64>, Error> {
+3190	    mountinfo_identity_order_from(&fs::read("/proc/self/mountinfo")?)
+3191	}
+3192	
+3193	fn mountinfo_identity_order_from(contents: &[u8]) -> Result<Vec<u64>, Error> {
+3194	    use std::collections::BTreeSet;
+3195	
+3196	    let rows = detcore_model::procfs::parse_mountinfo(contents)
+3197	        .ok_or_else(|| anyhow!("malformed /proc/self/mountinfo"))?;
+3198	    let mut visible = Vec::new();
+3199	    let mut parents = Vec::new();
+3200	    let mut seen = BTreeSet::new();
+3201	    for row in rows {
+3202	        seen.insert(row.raw_mount_id);
+3203	        visible.push(row.raw_mount_id);
+3204	        parents.push(row.raw_parent_id);
+3205	    }
+3206	    for parent in parents {
+3207	        if seen.insert(parent) {
+3208	            visible.push(parent);
+3209	        }
+3210	    }
+3211	    Ok(visible)
+3212	}
+3213	
+3214	impl<'a> From<Option<&'a PathBuf>> for HermitData {
+3215	    fn from(data_dir: Option<&'a PathBuf>) -> Self {
+3216	        data_dir.map_or_else(Self::new, Self::with_dir)
+3217	    }
+3218	}
+3219	
+3220	/// Records to the specified directory, which must already exist.
+3221	///
+3222	/// This low-level API supplies no pre-captured mount provenance. Detcore reads
+3223	/// the completed guest namespace after command mounts and stdio are installed.
+3224	/// Container-aware callers with producer-owned provenance must use
+3225	/// [`record_to_with_mountinfo`].
+3226	#[tokio::main(flavor = "current_thread")]
+3227	pub async fn record_to(command: Command, dir: &Path) -> Result<ExitStatus, Error> {
+3228	    record_to_async(command, dir, Vec::new(), None).await
+3229	}
+3230	
+3231	/// Records to the specified directory with exact mountinfo provenance.
+3232	#[tokio::main(flavor = "current_thread")]
+3233	pub async fn record_to_with_mountinfo(
+3234	    command: Command,
+3235	    dir: &Path,
+3236	    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+3237	) -> Result<ExitStatus, Error> {
+3238	    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+3239	    record_to_async(
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01BPsZmNdYxC3neZdeVRxcQ9",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/Cargo.toml",
+    "limit": 40
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	# @generated by autocargo from //hermetic_infra/hermit/hermit-cli:[hermit,libhermit]
+2	
+3	[package]
+4	name = "hermit"
+5	description = "Hermit: a deterministic Linux execution engine for reproducible runs, record and replay, and concurrency-race search."
+6	version = "0.2.0"
+7	edition = "2024"
+8	repository = "https://github.com/facebookexperimental/hermit"
+9	license = "BSD-3-Clause"
+10	
+11	[lib]
+12	crate-type = ["rlib", "cdylib"]
+13	
+14	# Third-party-dependency execution backends are OFF by default so the shipped
+15	# `hermit` binary is a single static binary with the ptrace/kvm/liteinst
+16	# backends and no DynamoRIO/e9patch/SaBRe third-party dependencies. CI builds
+17	# with `--features third-party-backends` to compile and test them. `dbt` is the
+18	# only feature that adds Rust dependencies (detcore-dbt + reverie-dbt); `sabre`
+19	# and `e9patch` shell out to external artifacts at runtime and only gate their
+20	# in-crate dispatch code.
+21	[features]
+22	default = []
+23	dbt = ["dep:detcore-dbt", "dep:reverie-dbt"]
+24	sabre = []
+25	e9patch = []
+26	third-party-backends = ["dbt", "sabre", "e9patch"]
+27	
+28	[dependencies]
+29	anyhow = "1.0.103"
+30	bincode = { version = "2", features = ["serde"] }
+31	addr2line = "0.26.1"
+32	clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+33	colored = "2.1.0"
+34	detcore = { package = "hermit-detcore", version = "0.2.0", path = "../detcore" }
+35	detcore-dbt = { version = "0.2.0", path = "../detcore-dbt", optional = true }
+36	detcore-model = { version = "0.2.0", path = "../detcore-model" }
+37	diff = "0.1.13"
+38	dirs = "6.0"
+39	fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+40	goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Sd8u2CqiLyoXuU1UDp74tz",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/manifest-plan/src/validation_dag_static.rs",
+    "offset": 190,
+    "limit": 60
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+190	
+191	pub(super) const PMU_MEMORY_FAILURE_FAMILY: &str = "super.Weekly PMU parallel memory diagnostic";
+192	pub(super) const PMU_MEMORY_FAILURE_FAMILY_MEMBERS: &[&str] = &[
+193	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_bottom_detcore",
+194	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_default_detcore",
+195	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_middle_detcore",
+196	    "super.weekly_pmu_parallel_memory_diagnostic_mem_race_top_detcore",
+197	];
+198	
+199	/// Exact selected populations, independent of Nextest's output parser, make
+200	/// an empty or narrowed run refuse. Update these only after enumerating the
+201	/// corresponding shipped command and accounting for changed test identities.
+202	pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+203	    ("test.isolated_dbt_workdir", 2),
+204	    ("test.isolated_detcore_workdir", 1),
+205	    ("test.regular_crates", 505),
+206	    ("test.hermit_unit", 634),
+207	    ("test.detcore_unit", 679),
+208	    ("test.detcore_misc", 27),
+209	    ("test.detcore_parallel", 5),
+210	    ("test.hermit_integration", 158),
+211	    ("test.arbitrary_binaries", 4),
+212	    ("test.cli", 78),
+213	    ("test.liteinst_strict", 24),
+214	    ("test.sabre_examples", 6),
+215	    ("test.hermit_modes", 19),
+216	    ("test.app_strict_verify", 8),
+217	    ("test.command_strict_verify", 9),
+218	    ("test.ignored_syscall_regressions", 4),
+219	    ("test.rr_suite_contract", 1),
+220	    ("privileged-test.pmu_buck_chaos_cases", 6),
+221	    ("privileged-test.cli_kvm", 24),
+222	    ("test.cli_on_host", 78),
+223	    ("test.hermit_modes_on_host", 19),
+224	    ("privileged-only-test.pmu_buck_chaos_cases", 6),
+225	    ("privileged-only-test.cli_kvm", 24),
+226	    ("privileged-only-test.pmu_buck_chaos_cases_on_host", 6),
+227	    ("privileged-only-test.cli_kvm_on_host", 24),
+228	    ("test.app_strict_verify_on_host", 8),
+229	    ("test.arbitrary_binaries_on_host", 4),
+230	    ("test.command_strict_verify_on_host", 9),
+231	    ("test.detcore_misc_on_host", 27),
+232	    ("test.detcore_parallel_on_host", 5),
+233	    ("test.detcore_unit_on_host", 679),
+234	    ("test.hermit_integration_on_host", 158),
+235	    ("test.hermit_unit_on_host", 634),
+236	    ("test.ignored_syscall_regressions_on_host", 4),
+237	    ("test.liteinst_strict_on_host", 24),
+238	    ("test.regular_crates_on_host", 505),
+239	    ("test.rr_suite_contract_on_host", 1),
+240	    ("test.sabre_examples_on_host", 6),
+241	];
+242	
+243	pub(super) fn structured_result_producer_kind(tag: &str) -> Option<StructuredResultProducerKind> {
+244	    for (tags, kind) in [
+245	        (
+246	            NEXTEST_RESULT_PRODUCERS,
+247	            StructuredResultProducerKind::Nextest,
+248	        ),
+249	        (
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_018pfcwnzmsyLF9e1C9xkFye",
+  "name": "Glob",
+  "input": {
+    "pattern": "ci/*.sh",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+ci/configure-build-jobs.sh
+ci/run-with-reverie-dbt-budget.sh
+ci/publish-hermit-e2e-artifact.sh
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_014uytuAK8Lkmb5Ya8L7nmGE",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/run-with-reverie-dbt-budget.sh",
+    "offset": 150,
+    "limit": 160
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+150	# change remains build-relevant and requires fresh validation; this carry does
+151	# not reuse a receipt.
+152	# CARRY TO 1f226acd (2026-08-27): all three source_recipe_key repository
+153	# inputs are byte-identical to 4f3fbd50:
+154	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+155	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+156	#     third-party/                  fb49c0ba7a9a -> fb49c0ba7a9a
+157	# so the measured key and conservative threshold carry unchanged.
+158	# CARRY TO af42d9cf (2026-08-28): the same three inputs are byte-identical
+159	# from 1f226acd, checked by tree object rather than by reading the diff:
+160	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+161	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+162	#     third-party/                  fb49c0ba7a9a -> fb49c0ba7a9a
+163	# The intervening Reverie commits are the LiteInst task-creation change (#447),
+164	# which touches only reverie-ptrace/src/{task,tracer,error}.rs,
+165	# reverie-liteinst/src/backend.rs, reverie-liteinst/tests/hybrid.rs and six C
+166	# fixtures, and a documentation commit (#511). Neither can affect the elapsed
+167	# time of a DynamoRIO content-key miss, so the measured key and conservative
+168	# threshold carry unchanged and this is NOT a recalibration.
+169	# CARRY TO bc106a19 (2026-08-28): both repository inputs to the DynamoRIO
+170	# content-key miss are byte-identical to af42d9cf:
+171	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+172	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+173	# The changed Reverie files are confined to reverie-ptrace timer recovery and
+174	# tests. They are build-relevant to Hermit, so this pin still requires fresh
+175	# validation; only the measured DBT build budget carries unchanged.
+176	# CARRY TO c2e2c8fb (2026-09-02): both repository inputs to the DynamoRIO
+177	# content-key miss are byte-identical to bc106a19 by git object id:
+178	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+179	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+180	# The five intervening commits change validation evidence, exhaustive internal
+181	# enum dispatch, and the common Backend output API, but no native DBT recipe
+182	# input. The measured native-build budget therefore carries unchanged; the Rust
+183	# API change still requires a fresh Hermit build and validation.
+184	# CARRY TO 4b18ecf0 (2026-09-05): both repository inputs to the DynamoRIO
+185	# content-key miss are byte-identical to 37e7b727 by git object id:
+186	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+187	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+188	# The intervening commit changes DBT evidence and launcher behavior, not the
+189	# native DBT build recipe. The measured native-build budget carries unchanged;
+190	# fresh Hermit validation is still required for the evidence API change.
+191	# CARRY TO 8c8c0a57 (2026-09-05): both repository inputs to the DynamoRIO
+192	# content-key miss are byte-identical to 4b18ecf0 by git object id:
+193	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+194	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+195	# The intervening commit changes only reverie-kvm runtime behavior and its
+196	# static-ELF tests. The measured native DBT build budget carries unchanged;
+197	# fresh Hermit validation is still required for the KVM runtime change.
+198	# CARRY TO a158914e (2026-09-15): both repository inputs to the DynamoRIO
+199	# content-key miss are byte-identical to 8c8c0a57 by Git object identity:
+200	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+201	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+202	# CMAKE and CMAKE_GENERATOR selection is unchanged. The existing 16-job clamp
+203	# and 1050 effective-job-second threshold carry at recipe key
+204	# c9c1ee55257cbb0635b56f494a75ee1dc6af839ca8e289231f533b0208340463.
+205	# This is source identity, not a new timing sample or a validation receipt;
+206	# fresh Hermit validation is required for the runtime and API changes.
+207	# CARRY TO a2cc1868 (2026-09-17): the private-loader fallback changes
+208	# core/unix/loader.c; build.rs, CMake targets/options and MAX_PARALLEL_JOBS=16
+209	# remain unchanged. The default native recipe key therefore changes to
+210	# 0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4.
+211	# A genuine local content-key MISS built in 27.71s at jobs=4 (110.84 job-seconds)
+212	# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+213	# effective-job-second threshold and 16-job clamp; it is not a replacement
+214	# hosted-runner calibration or a claim of unchanged recipe bytes.
+215	# The same pin also carries stricter RPC partial-header EOF classification;
+216	# it does not select the new mapped transport. Fresh Hermit build and original
+217	# unit assertions remain required; native loader fixtures are not guest evidence.
+218	# CARRY TO b3049e54 (2026-09-17): the landed SaBRe frame ABI repair and
+219	# opt-in mapped-RPC ownership APIs leave the entire reverie-dbt subtree,
+220	# build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+221	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+222	# This source-identity carry supplies no new timing or Hermit guest evidence.
+223	# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+224	# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+225	# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+226	# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+227	# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+228	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+229	# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+230	# not a new timing sample or Hermit guest receipt.
+231	expected_pin=596b9adee8473dc0a7e62dce18580eead3d0c5c9
+232	
+233	# TAKE THE PIN, NOT WHATEVER ELSE THE PRODUCER PRINTED.
+234	#
+235	# This captured the whole of `--print-pin` and compared it. A later change made
+236	# that command also emit a pin-uniformity report on stdout, so the capture became
+237	# 941 characters over 8 lines and the comparison below COULD NEVER SUCCEED FOR
+238	# ANY PIN, including a correctly calibrated one. Every node behind this wrapper
+239	# then failed closed in about a second, and updating `expected_pin` could not fix
+240	# it because the recorded side was never a sha. The producer is fixed too -- its
+241	# report now goes to stderr -- but a value parsed out of a shared stream should
+242	# be validated by the consumer rather than trusted to stay clean.
+243	recorded_pin=$(
+244	    "$ROOT_DIR/ci/run-reverie-pin-check.sh" --repo "$ROOT_DIR" --print-pin
+245	)
+246	
+247	# ⚠️ A REFUSAL EXITS 75 (EX_TEMPFAIL), NOT 2, AND THE DIFFERENCE IS THE WHOLE
+248	# POINT OF THIS BLOCK.
+249	#
+250	# `scripts/validate.rs` defines NO_RESULT_EXIT_CODE = 75 as "the only nonzero
+251	# code that is not a product failure" -- a completed node saying it COULD NOT
+252	# DETERMINE ITS CONDITION. That is exactly what this wrapper is when it declines:
+253	# it never invoked the command, so it has measured nothing and has no verdict to
+254	# offer about the tree.
+255	#
+256	# Every layer above already distinguishes 75 and needs no change:
+257	#     ledger_gate_result   75 -> "no_result", not "fail"
+258	#     ledger_run_results   no_results>0 -> run result "no_result", NEVER "pass"
+259	#     print_cost_table     renders "NO_RESULT", a distinct status from ok/FAIL
+260	#
+261	# THIS DOES NOT MAKE A REFUSAL QUIETER, and it cannot restore a false green.
+262	# ci-hub/lib/qualifying_receipt.rs refuses a receipt on `result != "pass"` AND
+263	# separately on `executed_tests == 0`; a declining wrapper trips both. no_result
+264	# is strictly LESS green than fail, not more.
+265	#
+266	# WHAT IT STOPS BEING CONFUSED WITH, measured on this repository:
+267	#     a genuine compile failure exits 101 -- cargo's code, passed through by the
+268	#     `exec` below, verified: wrapping `exit 0|2|101` returns 0|2|101 unchanged
+269	#     a refusal exited 2, a code nothing else on these 17 nodes produces
+270	# Both were recorded as gate result "fail" with a bare `exit N` reason, so a node
+271	# that compiled nothing was indistinguishable in the ledger from one that compiled
+272	# and broke. The 2026-08-25 red at 323a87d1da5f was read as two failing builds by
+273	# three separate reports; it was this wrapper declining, because that branch
+274	# declared pin f4152f8f while its wrapper still expected 13cf8bcb.
+275	#
+276	# The `$# == 0` usage error above deliberately KEEPS exit 2: a caller that passed
+277	# no command is a caller bug, not a node that declined, and it should stay loud.
+278	DECLINED_EXIT_CODE=75
+279	
+280	if [[ ! $recorded_pin =~ ^[0-9a-f]{40}$ ]]; then
+281	    echo "run-with-reverie-dbt-budget.sh: --print-pin did not yield a 40-hex revision; got ${#recorded_pin} char(s): ${recorded_pin:0:80}" >&2
+282	    echo "run-with-reverie-dbt-budget.sh: DECLINED (no_result, exit $DECLINED_EXIT_CODE): NOT RUNNING '$*' against an unidentified Reverie pin. Nothing was built or tested, so this node has no verdict about the tree." >&2
+283	    exit "$DECLINED_EXIT_CODE"
+284	fi
+285	if [[ $recorded_pin != "$expected_pin" ]]; then
+286	    echo "run-with-reverie-dbt-budget.sh: no calibrated budget for Reverie pin $recorded_pin (expected $expected_pin)" >&2
+287	    echo "run-with-reverie-dbt-budget.sh: DECLINED (no_result, exit $DECLINED_EXIT_CODE): NOT RUNNING '$*'. Nothing was built or tested, so this node has no verdict about the tree -- it is NOT a build failure. To recalibrate, confirm reverie-dbt/vendor/dynamorio and reverie-dbt/build.rs are unchanged and CMAKE/CMAKE_GENERATOR select the same tooling between the pins, then update expected_pin here." >&2
+288	    exit "$DECLINED_EXIT_CODE"
+289	fi
+290	REVERIE_DBT_BUDGET_BOUND_PIN=$recorded_pin
+291	export REVERIE_DBT_BUDGET_BOUND_PIN
+292	
+293	# shellcheck source=ci/configure-build-jobs.sh
+294	source "$ROOT_DIR/ci/configure-build-jobs.sh" reverie-dbt-budget-child
+295	
+296	echo "run-with-reverie-dbt-budget.sh: reverie-dbt-budget={pin:$REVERIE_DBT_BUDGET_BOUND_PIN,source:$REVERIE_DBT_BUILD_JOBS_SOURCE,raw-build-jobs:$REVERIE_DBT_RAW_BUILD_JOBS,effective-cpus-source:$REVERIE_DBT_EFFECTIVE_CPUS_SOURCE,effective-cpus:$REVERIE_DBT_EFFECTIVE_CPUS,reverie-max-jobs:$REVERIE_DBT_MAX_PARALLEL_JOBS,effective-native-jobs:$REVERIE_DBT_EFFECTIVE_BUILD_JOBS,effective-job-seconds:$REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS,max-elapsed-seconds:$REVERIE_DBT_MAX_BUILD_SECONDS,basis:github-portable-cold-miss-n3-affinity4,carried-to-pin-on-dynamorio-recipe-key:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4}" >&2
+297	
+298	exec "$@"
+299	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01PX1kRyBHcARUrXHpjSVgc6",
+  "name": "Grep",
+  "input": {
+    "pattern": "1050|MAX_PARALLEL_JOBS|MAX_BUILD_EFFECTIVE_JOB_SECONDS|clamp|16",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 40
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+5:# use every granted core. On the 316-CPU validation host that inference produced
+33:    unset REVERIE_DBT_MAX_PARALLEL_JOBS
+35:    unset REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+43:    unset CI_DAG_REVERIE_DBT_MAX_PARALLEL_JOBS
+45:    unset CI_DAG_REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+46:    unset REVERIE_DBT_PINNED_MAX_PARALLEL_JOBS
+94:# here; a pin bump cannot silently retain the old clamp or threshold.
+100:# CMAKE_GENERATOR are unchanged, so the measured 1050 effective-job-second
+101:# budget and MAX_PARALLEL_JOBS=16 carry unchanged. Fresh validation remains
+104:# CARRY TO 200439dc (2026-08-26): a16e3c46..200439dc changes only
+108:# remains install key 132d77130980c546c8867fc196d97e664bc4816b1dfa9ea9c18de4a94d109c4d.
+109:# The 1050 effective-job-second budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+120:# no reverie-dbt Rust change to argue about at all. MAX_PARALLEL_JOBS=16 is
+128:# effective-job-seconds budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+148:# and the native source build took 33.38s at jobs=16, or 534.08 effective
+149:# job-seconds. The existing 1050 effective-job-second threshold remains above
+153:# CARRY TO 1645b64b (2026-08-27): the three source_recipe_key repository
+229:# CMAKE and CMAKE_GENERATOR selection is unchanged. The existing 16-job clamp
+230:# and 1050 effective-job-second threshold carry at recipe key
+234:# CARRY TO d87a03a3 (2026-09-16): the native-build inputs remain identical
+241:# The 16-job clamp and 1050 effective-job-second threshold carry unchanged
+248:# core/unix/loader.c; build.rs, CMake targets/options and MAX_PARALLEL_JOBS=16
+252:# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+253:# effective-job-second threshold and 16-job clamp; it is not a replacement
+261:# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+268:# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+305:# Reverie 9470712's DynamoRIO build.rs clamps Cargo NUM_JOBS to 16 before
+309:#   effective native jobs = min(requested jobs, child CPUs, Reverie clamp)
+315:# i.e. 463.28, 513.08, and 524.84 effective-job-seconds at min(8, 4, 16)=4.
+317:# observations; applying that policy and rounding up gives 1050
+332:# 158.32 / 164.04). The new pin's slowest sample is 3% faster than the old
+338:# MAX_PARALLEL_JOBS is still 16.
+342:# DynamoRIO tree, build commands, MAX_PARALLEL_JOBS=16 clamp, and
+353:# MAX_PARALLEL_JOBS=16 clamp are byte-identical, so source_recipe_key() remains
+361:# MAX_PARALLEL_JOBS=16 clamp remain byte-identical. The DBT recipe identity
+379:# the MAX_PARALLEL_JOBS=16 clamp still applies. The hosted-runner budget
+398:# MAX_PARALLEL_JOBS=16 clamp (reverie-dbt/build.rs:25) still applies, so the
+420:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost is
+440:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost cannot
+443:# Those 2026-08-05 samples deliberately do NOT replace 1050. They come from a
+
+[Showing results with pagination = limit: 40]
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01YVFYf7bd17ar5FZbU3tfsd",
+  "name": "Grep",
+  "input": {
+    "pattern": "1050|MAX_PARALLEL_JOBS|MAX_BUILD_EFFECTIVE_JOB_SECONDS",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/ci/configure-build-jobs.sh",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 40
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+33:    unset REVERIE_DBT_MAX_PARALLEL_JOBS
+35:    unset REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+43:    unset CI_DAG_REVERIE_DBT_MAX_PARALLEL_JOBS
+45:    unset CI_DAG_REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+46:    unset REVERIE_DBT_PINNED_MAX_PARALLEL_JOBS
+100:# CMAKE_GENERATOR are unchanged, so the measured 1050 effective-job-second
+101:# budget and MAX_PARALLEL_JOBS=16 carry unchanged. Fresh validation remains
+109:# The 1050 effective-job-second budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+120:# no reverie-dbt Rust change to argue about at all. MAX_PARALLEL_JOBS=16 is
+128:# effective-job-seconds budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+149:# job-seconds. The existing 1050 effective-job-second threshold remains above
+230:# and 1050 effective-job-second threshold carry at recipe key
+241:# The 16-job clamp and 1050 effective-job-second threshold carry unchanged
+248:# core/unix/loader.c; build.rs, CMake targets/options and MAX_PARALLEL_JOBS=16
+252:# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+261:# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+309:# observations; applying that policy and rounding up gives 1050
+330:# MAX_PARALLEL_JOBS is still 16.
+334:# DynamoRIO tree, build commands, MAX_PARALLEL_JOBS=16 clamp, and
+345:# MAX_PARALLEL_JOBS=16 clamp are byte-identical, so source_recipe_key() remains
+353:# MAX_PARALLEL_JOBS=16 clamp remain byte-identical. The DBT recipe identity
+371:# the MAX_PARALLEL_JOBS=16 clamp still applies. The hosted-runner budget
+390:# MAX_PARALLEL_JOBS=16 clamp (reverie-dbt/build.rs:25) still applies, so the
+412:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost is
+432:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost cannot
+435:# Those 2026-08-05 samples deliberately do NOT replace 1050. They come from a
+462:# the MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost
+464:# Budget values (1050 effective-job-seconds, 263/66 max-elapsed-seconds) carry
+508:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost cannot
+509:# have moved. Budget values (1050 effective-job-seconds, 263/66 max-elapsed)
+540:# DynamoRIO content-key miss measured by this budget. MAX_PARALLEL_JOBS=16 and
+541:# the 1050 effective-job-second threshold carry unchanged. Fresh validation is
+554:# outside the DynamoRIO content-key recipe. MAX_PARALLEL_JOBS=16 and the 1050
+557:REVERIE_DBT_MAX_PARALLEL_JOBS=16
+558:REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS=1050
+563:if ((REVERIE_DBT_MAX_PARALLEL_JOBS < REVERIE_DBT_EFFECTIVE_BUILD_JOBS)); then
+564:    REVERIE_DBT_EFFECTIVE_BUILD_JOBS=$REVERIE_DBT_MAX_PARALLEL_JOBS
+567:    (REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS +
+616:# Budget values (MAX_PARALLEL_JOBS=16, 1050 effective-job-seconds, 263/66
+640:# MAX_PARALLEL_JOBS=16 and the measured 1050 effective-job-second threshold
+
+[Showing results with pagination = limit: 40]
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_019nUB48FFYuJq8TTntqzW8d",
+  "name": "Grep",
+  "input": {
+    "pattern": "^REVERIE_DBT_MAX_PARALLEL_JOBS=|^REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS=|^REVERIE_DBT_MAX_BUILD_SECONDS",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+565:REVERIE_DBT_MAX_PARALLEL_JOBS=16
+566:REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS=1050
+574:REVERIE_DBT_MAX_BUILD_SECONDS=$((
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01UzbZxwwNGUsTjzK9Db1o4C",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "offset": 250,
+    "limit": 40
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+250	# 0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4.
+251	# A genuine local content-key MISS built in 27.71s at jobs=4 (110.84 job-seconds)
+252	# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+253	# effective-job-second threshold and 16-job clamp; it is not a replacement
+254	# hosted-runner calibration or a claim of unchanged recipe bytes.
+255	# The same pin also carries stricter RPC partial-header EOF classification;
+256	# it does not select the new mapped transport. Fresh Hermit build and original
+257	# unit assertions remain required; native loader fixtures are not guest evidence.
+258	# CARRY TO b3049e54 (2026-09-17): the landed SaBRe frame ABI repair and
+259	# opt-in mapped-RPC ownership APIs leave the entire reverie-dbt subtree,
+260	# build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+261	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+262	# This source-identity carry supplies no new timing or Hermit guest evidence.
+263	# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+264	# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+265	# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+266	# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+267	# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+268	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+269	# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+270	# not a new timing sample or Hermit guest receipt.
+271	if [[ ${REVERIE_DBT_BUDGET_BOUND_PIN:-} != 596b9adee8473dc0a7e62dce18580eead3d0c5c9 ]]; then
+272	    echo "configure-build-jobs.sh: DECLINED (no_result, exit 75): DBT budget is not bound to Reverie 596b9adee8473dc0a7e62dce18580eead3d0c5c9 (bound pin: ${REVERIE_DBT_BUDGET_BOUND_PIN:-<unset>})" >&2
+273	    return 75
+274	fi
+275	
+276	if [[ -n ${CARGO_BUILD_JOBS:-} ]]; then
+277	    REVERIE_DBT_RAW_BUILD_JOBS=$CARGO_BUILD_JOBS
+278	    if [[ ${DAGRUN_IN_SCOPE:-} == 1 ]]; then
+279	        REVERIE_DBT_BUILD_JOBS_SOURCE=runner-child-cargo-build-jobs
+280	    else
+281	        REVERIE_DBT_BUILD_JOBS_SOURCE=inherited-launch-cargo-build-jobs
+282	    fi
+283	else
+284	    REVERIE_DBT_RAW_BUILD_JOBS=$CI_DAG_BUILD_JOBS
+285	    REVERIE_DBT_BUILD_JOBS_SOURCE=ci-dag-build-jobs-fallback
+286	fi
+287	if [[ ! $REVERIE_DBT_RAW_BUILD_JOBS =~ ^[1-9][0-9]*$ ]]; then
+288	    echo "configure-build-jobs.sh: selected raw build width must be a positive integer" >&2
+289	    return 2
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_014ppQdtxajH8eFK4Nmks8Ko",
+  "name": "Grep",
+  "input": {
+    "pattern": "b3049e54c644e28e2894402a36bb65664ab4508b",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "count"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+No matches found
+
+Found 0 total occurrences across 0 files.
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_0122pxXEUdoKRckxaaJxUNPB",
+  "name": "Grep",
+  "input": {
+    "pattern": "rev = \"|rev=|596b9ade",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/scripts/check-reverie-pin.rs",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+379:    let start = line.find("?rev=")? + "?rev=".len();
+2446:        let line = r#"reverie = { git = "https://github.com/rrnewton/reverie.git", rev = "0123456789abcdef0123456789abcdef01234567" }"#;
+2705:        let line = r#"source = "git+https://github.com/rrnewton/reverie.git?rev=0123456789abcdef0123456789abcdef01234567#0123456789abcdef0123456789abcdef01234567""#;
+3704:                "[[package]]\nname = \"reverie-core\"\nsource = \"git+https://github.com/rrnewton/reverie.git?rev={stale}#{stale}\"\n"
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_011YwmvirGzx5gMFPyMgyuWT",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn run_kvm_preserves_closed_standard_input",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 60
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+3375:fn run_kvm_preserves_closed_standard_input() {
+3376-    if !Path::new("/dev/kvm").exists() {
+3377-        return;
+3378-    }
+3379-
+3380-    let args = [
+3381-        "run",
+3382-        "--backend",
+3383-        "kvm",
+3384-        "--strict",
+3385-        "--base-env=minimal",
+3386-        "--",
+3387-        "/bin/cat",
+3388-    ];
+3389-    let output = hermit_with_closed_stdin(&args);
+3390-
+3391-    // ⚠️ THE GUEST RAN, SO THIS IS THE GUEST'S OWN STATUS AND NOT A `Refusal`.
+3392-    // `/bin/cat` starts, finds stdin closed, prints its own diagnostic
+3393-    // ("/bin/cat: -: Bad file descriptor") and exits 1 of its own accord. That
+3394-    // the closed descriptor is PRESERVED INTO THE GUEST is the whole subject of
+3395-    // this test, so a hermit-internal code here would assert the opposite of
+3396-    // what the test exists to check.
+3397-    //
+3398-    // This assertion was briefly changed to `HERMIT_INTERNAL_FAILURE_EXIT` on
+3399-    // the theory that no guest was launched. It was wrong, and the reason it
+3400-    // looked right is worth keeping: from a checkout under /tmp the case fails
+3401-    // earlier, with "failed to resolve KVM guest working directory", and that
+3402-    // unrelated failure hides the real exit status. Verify this one from a
+3403-    // checkout OUTSIDE /tmp or the evidence is not about this test.
+3404-    //
+3405-    // So this is a deliberate bare literal, like the guest arm of
+3406-    // `a_guest_side_fault_is_not_reported_as_a_hermit_internal_failure`: it must
+3407-    // NOT track a hermit constant, because it is not hermit's number.
+3408-    assert_eq!(
+3409-        output.status.code(),
+3410-        Some(1),
+3411-        "expected the guest's own exit status to survive a closed stdin: {output:?}"
+3412-    );
+3413-    assert_eq!(stdout(&output), "");
+3414-    assert!(
+3415-        stderr(&output)
+3416-            .to_ascii_lowercase()
+3417-            .contains("bad file descriptor")
+3418-    );
+3419-}
+3420-
+3421-#[test]
+3422-fn run_kvm_verify_does_not_write_to_standard_input() {
+3423-    if !Path::new("/usr/bin/perl").exists() {
+3424-        return;
+3425-    }
+3426-
+3427-    for backend in ["ptrace", "kvm"] {
+3428-        if backend == "kvm" && !Path::new("/dev/kvm").exists() {
+3429-            continue;
+3430-        }
+3431-
+3432-        let temp = tempfile::tempdir().expect("failed to create stdin fixture");
+3433-        let path = temp.path().join("stdin");
+3434-        fs::write(&path, b"original-data").expect("failed to write stdin fixture");
+3435-        let stdin = fs::OpenOptions::new()
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_012k327paa7UsSrRKyTfoCam",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn hermit_command|fn assert_success|fn stdout\\(|fn stderr\\(",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 40,
+    "head_limit": 160
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+206:fn hermit_command(args: &[&str]) -> Command {
+207-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+208-    append_hermit_args(&mut command, args);
+209-    command
+210-}
+211-
+212-fn hermit(args: &[&str]) -> Output {
+213-    hermit_command(args)
+214-        .output()
+215-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+216-}
+217-
+218-fn hermit_with_stdin(args: &[&str], input: &[u8]) -> Output {
+219-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+220-    append_hermit_args(&mut command, args);
+221-    let mut child = command
+222-        .stdin(Stdio::piped())
+223-        .stdout(Stdio::piped())
+224-        .stderr(Stdio::piped())
+225-        .spawn()
+226-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+227-    child
+228-        .stdin
+229-        .take()
+230-        .expect("hermit stdin should be piped")
+231-        .write_all(input)
+232-        .expect("failed to write hermit stdin");
+233-    child
+234-        .wait_with_output()
+235-        .unwrap_or_else(|error| panic!("failed to wait for hermit with {args:?}: {error}"))
+236-}
+237-
+238-fn dbt_stderr_guest() -> &'static Path {
+239-    DBT_STDERR_GUEST.get_or_init(|| {
+240-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+241-            .parent()
+242-            .expect("hermit-cli should be inside the repository");
+243-        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-stderr-nostdlib");
+244-        fs::create_dir_all(&build_root).expect("failed to create DBT stderr guest directory");
+245-        let guest = build_root.join("stderr_nostdlib");
+246-        let output = Command::new("cc")
+--
+764:fn assert_success(output: &Output, args: &[&str]) {
+765-    assert!(
+766-        output.status.success(),
+767-        "hermit {args:?} failed with {}\nstdout:\n{}\nstderr:\n{}",
+768-        output.status,
+769-        String::from_utf8_lossy(&output.stdout),
+770-        String::from_utf8_lossy(&output.stderr),
+771-    );
+772-}
+773-
+774:fn stdout(output: &Output) -> String {
+775-    String::from_utf8(output.stdout.clone()).expect("hermit stdout should be UTF-8")
+776-}
+777-
+778:fn stderr(output: &Output) -> String {
+779-    String::from_utf8(output.stderr.clone()).expect("hermit stderr should be UTF-8")
+780-}
+781-
+782-#[test]
+783-fn kvm_pinned_root_arguments_are_exact_and_fail_closed() {
+784-    assert!(execution_root_args(None).unwrap().is_empty());
+785-    assert_eq!(
+786-        execution_root_args(Some(OsStr::new("/test"))).unwrap(),
+787-        [
+788-            OsString::from("--mount=type=tmpfs,target=/test"),
+789-            OsString::from("--workdir=/test"),
+790-        ]
+791-    );
+792-    let error = execution_root_args(Some(OsStr::new("/tmp"))).unwrap_err();
+793-    assert!(error.contains("HERMIT_E2E_EMPTY_WORKDIR must be /test"));
+794-
+795-    let args = ["run", "--backend", "kvm", "--", "/bin/true"];
+796-    let mut host_command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+797-    append_hermit_args_with_execution_root(&mut host_command, &args, None)
+798-        .expect("an unset workdir request should preserve the host command");
+799-    assert_eq!(
+800-        host_command.get_args().collect::<Vec<_>>(),
+801-        args.map(OsStr::new)
+802-    );
+803-
+804-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+805-    append_hermit_args_with_execution_root(&mut command, &args, Some(OsStr::new("/test")))
+806-        .expect("the documented workdir request should build a command");
+807-    assert_eq!(
+808-        command.get_args().collect::<Vec<_>>(),
+809-        [
+810-            OsStr::new("run"),
+811-            OsStr::new("--backend"),
+812-            OsStr::new("kvm"),
+813-            OsStr::new("--base-env=minimal"),
+814-            OsStr::new("--mount=type=tmpfs,target=/test"),
+815-            OsStr::new("--workdir=/test"),
+816-            OsStr::new("--"),
+817-            OsStr::new("/bin/true"),
+818-        ]
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01GLnbujrvteFiMGErh7w9jr",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn append_hermit_args",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 45
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+107:fn append_hermit_args_with_execution_root(
+108-    command: &mut Command,
+109-    args: &[&str],
+110-    requested_workdir: Option<&OsStr>,
+111-) -> Result<(), String> {
+112-    let options = command
+113-        .get_args()
+114-        .chain(args.iter().map(OsStr::new))
+115-        .take_while(|arg| *arg != OsStr::new("--"))
+116-        .collect::<Vec<_>>();
+117-    let uses_outer_mount = options.contains(&OsStr::new("--no-namespace"))
+118-        || options.contains(&OsStr::new("--backend=dbt"))
+119-        || options
+120-            .windows(2)
+121-            .any(|pair| pair == [OsStr::new("--backend"), OsStr::new("dbt")]);
+122-    append_hermit_args_with_execution_root_mode(command, args, requested_workdir, !uses_outer_mount)
+123-}
+124-
+125:fn append_hermit_args_with_execution_root_mode(
+126-    command: &mut Command,
+127-    args: &[&str],
+128-    requested_workdir: Option<&OsStr>,
+129-    private_mount: bool,
+130-) -> Result<(), String> {
+131-    let mut execution_root = execution_root_args(requested_workdir)?;
+132-    if execution_root.is_empty() {
+133-        command.args(args);
+134-        return Ok(());
+135-    }
+136-    // These are Hermit options, so they must precede the delimiter rather than
+137-    // becoming arguments to the guest program.
+138-    let Some(guest_separator) = args.iter().position(|arg| *arg == "--") else {
+139-        // Argument-parsing and non-guest subcommand tests have no guest whose
+140-        // working directory can be changed. Preserve their argv so they keep
+141-        // exercising Hermit's parser. The requested value was validated above,
+142-        // so an unsupported marker still fails before Hermit can run.
+143-        command.args(args);
+144-        return Ok(());
+145-    };
+146-    // Several tests append the guest only after adding a Path argument to the
+147-    // command. Classify the complete Hermit prefix, not just that final slice.
+148-    let command_args = command
+149-        .get_args()
+150-        .chain(args[..guest_separator].iter().map(OsStr::new))
+151-        .collect::<Vec<_>>();
+152-    let starts_guest = command_args.contains(&OsStr::new("run"))
+153-        || command_args
+154-            .iter()
+155-            .position(|arg| *arg == OsStr::new("record"))
+156-            .is_some_and(|record| {
+157-                !command_args[record + 1..].iter().any(|arg| {
+158-                    matches!(
+159-                        arg.to_str(),
+160-                        Some("list" | "ls" | "rm" | "remove" | "clean")
+161-                    )
+162-                })
+163-            });
+164-    if !starts_guest {
+165-        command.args(args);
+166-        return Ok(());
+167-    }
+168-    let has_explicit_base_env = command_args.iter().any(|arg| {
+169-        *arg == OsStr::new("--base-env")
+170-            || arg
+--
+194:fn append_hermit_args(command: &mut Command, args: &[&str]) {
+195-    let requested = std::env::var_os(ISOLATED_WORKDIR_ENV);
+196-    append_hermit_args_with_execution_root(command, args, requested.as_deref())
+197-        .unwrap_or_else(|error| panic!("PATH-CONTRACT: {error}"));
+198-}
+199-
+200:fn append_hermit_args_using_outer_mount(command: &mut Command, args: &[&str]) {
+201-    let requested = std::env::var_os(ISOLATED_WORKDIR_ENV);
+202-    append_hermit_args_with_execution_root_mode(command, args, requested.as_deref(), false)
+203-        .unwrap_or_else(|error| panic!("PATH-CONTRACT: {error}"));
+204-}
+205-
+206-fn hermit_command(args: &[&str]) -> Command {
+207-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+208-    append_hermit_args(&mut command, args);
+209-    command
+210-}
+211-
+212-fn hermit(args: &[&str]) -> Output {
+213-    hermit_command(args)
+214-        .output()
+215-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+216-}
+217-
+218-fn hermit_with_stdin(args: &[&str], input: &[u8]) -> Output {
+219-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+220-    append_hermit_args(&mut command, args);
+221-    let mut child = command
+222-        .stdin(Stdio::piped())
+223-        .stdout(Stdio::piped())
+224-        .stderr(Stdio::piped())
+225-        .spawn()
+226-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+227-    child
+228-        .stdin
+229-        .take()
+230-        .expect("hermit stdin should be piped")
+231-        .write_all(input)
+232-        .expect("failed to write hermit stdin");
+233-    child
+234-        .wait_with_output()
+235-        .unwrap_or_else(|error| panic!("failed to wait for hermit with {args:?}: {error}"))
+236-}
+237-
+238-fn dbt_stderr_guest() -> &'static Path {
+239-    DBT_STDERR_GUEST.get_or_init(|| {
+240-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+241-            .parent()
+242-            .expect("hermit-cli should be inside the repository");
+243-        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-stderr-nostdlib");
+244-        fs::create_dir_all(&build_root).expect("failed to create DBT stderr guest directory");
+245-        let guest = build_root.join("stderr_nostdlib");
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01H67V8YzDYLvpKsrfnL7fAg",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/fd.rs",
+    "offset": 315,
+    "limit": 70
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+315	    /// the physical (scheduler) nonblocking state untouched. This lets a guest
+316	    /// clear O_NONBLOCK while Detcore keeps the fd physically nonblocking, which
+317	    /// the scheduler relies on for nonblockize-and-retry.
+318	    pub fn set_logical_nonblocking(&self, enabled: bool) {
+319	        let mut description = self.description();
+320	        if enabled {
+321	            description.status_flags |= OFlag::O_NONBLOCK.bits();
+322	        } else {
+323	            description.status_flags &= !OFlag::O_NONBLOCK.bits();
+324	        }
+325	    }
+326	
+327	    /// Stable identity shared by dup and fork aliases.
+328	    pub fn open_file_id(&self) -> OpenFileId {
+329	        self.description().id
+330	    }
+331	
+332	    /// Number of modeled descriptor slots that retain this open file description.
+333	    pub(crate) fn open_file_alias_count(&self) -> usize {
+334	        Arc::strong_count(&self.open_file)
+335	    }
+336	
+337	    /// File type attached to the open file description.
+338	    pub fn ty(&self) -> FdType {
+339	        self.description().ty
+340	    }
+341	
+342	    /// Record the process identity carried by a newly created pidfd.
+343	    pub(crate) fn set_pidfd_target(&self, target: DetPid) {
+344	        let mut description = self.description();
+345	        debug_assert_eq!(description.ty, FdType::Pidfd);
+346	        description.pidfd_target = Some(target);
+347	    }
+348	
+349	    /// Return the process identity carried by this pidfd, when known.
+350	    pub(crate) fn pidfd_target(&self) -> Option<DetPid> {
+351	        self.description().pidfd_target
+352	    }
+353	
+354	    /// Resource attached to the open file description.
+355	    pub fn resource(&self) -> Option<ResourceID> {
+356	        self.description().resource.clone()
+357	    }
+358	
+359	    // AUTONOMOUS-BOT-IMPLEMENTED
+360	    // TODO-HUMAN-REVIEW(PR-1096): Review canonical random-device cursor sharing.
+361	    /// Return the cursor shared by aliases of this random-device open file.
+362	    pub(crate) fn random_device_offset(&self) -> u64 {
+363	        self.description().random_device_offset
+364	    }
+365	
+366	    // AUTONOMOUS-BOT-IMPLEMENTED
+367	    // TODO-HUMAN-REVIEW(PR-1096): Review canonical random-device cursor sharing.
+368	    /// Advance the cursor shared by aliases of this random-device open file.
+369	    pub(crate) fn advance_random_device_offset(&self, count: usize) {
+370	        let mut description = self.description();
+371	        description.random_device_offset = description
+372	            .random_device_offset
+373	            .saturating_add(count as u64);
+374	    }
+375	
+376	    /// Path used to open this file description, when it was observable.
+377	    pub(crate) fn path(&self) -> Option<PathBuf> {
+378	        self.description().path.clone()
+379	    }
+380	
+381	    /// Record the resolved path used to open this file description.
+382	    pub(crate) fn set_path<P: AsRef<Path>>(&self, path: P) {
+383	        self.description().path = Some(path.as_ref().to_path_buf());
+384	    }
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_013yG1PCpT7QKG5HUTAU8W5j",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/fd.rs",
+    "offset": 495,
+    "limit": 45
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+495	            .and_then(|procfs| procfs.take_timer_slack_at(value, offset, maximum))
+496	    }
+497	
+498	    /// Return the shared procfs cursor and initialized snapshot length.
+499	    pub(crate) fn procfs_position(&self) -> Option<(usize, Option<usize>)> {
+500	        self.description().procfs.as_ref().map(ProcfsFile::position)
+501	    }
+502	
+503	    pub(crate) fn procfs_target_fd(&self) -> Option<i32> {
+504	        self.description()
+505	            .procfs
+506	            .as_ref()
+507	            .and_then(ProcfsFile::target_fd)
+508	    }
+509	
+510	    /// Update the cursor shared by every alias of a procfs open file.
+511	    pub(crate) fn set_procfs_offset(&self, offset: usize) {
+512	        self.description()
+513	            .procfs
+514	            .as_mut()
+515	            .expect("procfs fd disappeared while updating its offset")
+516	            .set_offset(offset);
+517	    }
+518	
+519	    /// Cached stat data attached to the backing object.
+520	    pub fn stat(&self) -> Option<DetStat> {
+521	        self.description().stat
+522	    }
+523	
+524	    /// Whether Detcore has made the open file description physically nonblocking.
+525	    pub fn physically_nonblocking(&self) -> bool {
+526	        self.description().physically_nonblocking
+527	    }
+528	
+529	    pub(crate) fn status_flags(&self) -> i32 {
+530	        self.description().status_flags
+531	    }
+532	
+533	    /// Mark every alias of this open file description physically nonblocking.
+534	    pub fn set_physically_nonblocking(&self) {
+535	        self.description().physically_nonblocking = true;
+536	    }
+537	
+538	    /// Update file status flags for every alias of this open file description.
+539	    pub fn set_status_flags(&self, flags: i32) {
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01YRkgokaa198xEstS8eL1FQ",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 280,
+    "limit": 30
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+280	        | Whence::SEEK_DATA
+281	        | Whence::SEEK_HOLE => Ok(0),
+282	        _ => Err(Errno::EINVAL),
+283	    }
+284	}
+285	
+286	/// Inherited container output is a stream even when an outer runner stores it
+287	/// in a seekable file.  The backing file also carries Hermit's own diagnostics,
+288	/// so exposing its live offset makes tool logging guest-visible.  Preserve real
+289	/// file semantics after a guest replaces stdout/stderr: `dup2(file, 1)` copies
+290	/// the file's resource rather than this container-output resource.
+291	fn is_inherited_container_output(resource: Option<ResourceID>) -> bool {
+292	    matches!(
+293	        resource,
+294	        Some(ResourceID::Device(
+295	            Device::ContainerStdout | Device::ContainerStderr
+296	        ))
+297	    )
+298	}
+299	
+300	fn unix_autobind_addrlen() -> i32 {
+301	    (std::mem::offset_of!(libc::sockaddr_un, sun_path) + UNIX_AUTOBIND_NAME_LEN) as i32
+302	}
+303	
+304	fn unix_autobind_address(port: u16) -> libc::sockaddr_un {
+305	    // Linux autobind names are a leading NUL followed by five lowercase hex digits.
+306	    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+307	    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+308	    for (destination, source) in address.sun_path[1..UNIX_AUTOBIND_NAME_LEN]
+309	        .iter_mut()
+

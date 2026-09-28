@@ -1,0 +1,151 @@
+{
+  "scope": "Read-only source review; report/source copies only; no tests or runtime execution",
+  "sources": [
+    {
+      "path": "detcore/src/scheduler.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+      "git_entry": "100644 blob e8038325b066901cad527df9996cbb3518c123f3\tdetcore/src/scheduler.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/tool_global.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512",
+      "git_entry": "100644 blob 5c7017b67167f9001ce39ad6b23c033ce568e768\tdetcore/src/tool_global.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/tool_local.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e",
+      "git_entry": "100644 blob de19b512e9b630aa3fd0d8b66f6902379bd02f3d\tdetcore/src/tool_local.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/lib.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83",
+      "git_entry": "100644 blob 4a945cec6301aaa529fa72a1e940ffa3413930c0\tdetcore/src/lib.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/config.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+      "git_entry": "100644 blob 9d9b6504b4dd1ba3c0f4a08f6118a0fee74ea4a1\tdetcore/src/config.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/ivar.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "7ea0a7400bec8d63f7d83892abc5071cabfc10e483a00d4b6893065f070163c7",
+      "git_entry": "100644 blob e64cc9c5850fd47245f393ab9a7b3d6b0a93bd86\tdetcore/src/ivar.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c",
+      "git_entry": "100644 blob 4b606f33275836489986b9383e6987dcdd9c1259\thermit-cli/src/lib.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "3625e831ac2e8e1d731447aa4e8bef4d9f59fcca01964162795f29102e272f30",
+      "git_entry": "100644 blob 4a2a3af5c83463f6734f5d9ff5397f85eb81fd5a\treverie/src/tool.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie/src/guest.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+      "git_entry": "100644 blob fb4de8c2b10dd59031f07623f537528cfc7aecfa\treverie/src/guest.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e",
+      "git_entry": "100644 blob b289ec97da382c588ae6ad2a81d845c3f0f35403\treverie-kvm/src/runtime.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d",
+      "git_entry": "100644 blob 13aeec30c28f15cb96525f342261efde290d792f\treverie-kvm/src/vm.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1",
+      "git_entry": "100644 blob 44ee9f7c26dd71075291aad4446051eeee6eba02\treverie-kvm/src/executor.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "a6c0077a8dc795ebd5a413527b426862822fb2d539dfc533a718500e7bcbb128",
+      "git_entry": "100644 blob 13dac1cb8b5167a3872d6c96e3c6067b5218e3f4\treverie-kvm/src/error.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/Cargo.toml",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "20612dc169307740341a8266ef630eeb6b41a48ec0b9829fabc42be1e8f29761",
+      "git_entry": "100644 blob aa601a6e4ac1f7982d6e7d3ba1238d0d5c833a5c\tdetcore/Cargo.toml",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore/src/record_or_replay.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "e9d2b4d01996a94344b557b1ad086c6bcc5fdec2703c917ef4f26f5f9f1a547b",
+      "git_entry": "100644 blob 22d3abd6ac65c21ccb99aeeefe9ef43a44ab6534\tdetcore/src/record_or_replay.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "detcore-model/src/config.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+      "git_entry": "100644 blob 6205e6751fb0256d363214404e37e17d420e384b\tdetcore-model/src/config.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "hermit-cli/src/error.rs",
+      "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+      "git_entry": "100644 blob 07061315058c483ffa43d688ac34c44dda83aa23\thermit-cli/src/error.rs",
+      "copy_equal_to_git_object": true
+    },
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "sha256": "e57f461a611e2a9d300607191e9fbc8e8abc6082af1445028e237b1f7c66aba5",
+      "git_entry": "100644 blob 4377574a4849625f4b155ffff9aeb7664e18db2f\treverie-kvm/Cargo.toml",
+      "copy_equal_to_git_object": true
+    }
+  ],
+  "checkout_state_at_readback": [
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "branch": "codex/kvm-parity-recovery-20260916",
+      "status": " M agent-utils\n"
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "branch": "codex/kvm-proc-fd-identity-20260917",
+      "status": ""
+    }
+  ],
+  "prior_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-sigchld-follow-up/REPORT.md",
+    "sha256": "bbd35ce71d3a2e54c11149747d6121b783ad56aade6edfff530d5ed98bc942cb"
+  },
+  "source_binding_sha256": "dffc1f918bf11c830f1ff7d329255f86fbee21c542c4d1f23b39266be0f15dd8",
+  "additional_source_binding_sha256": "3fbcf76c998042f4c9809eb9a299f40e507d24eb608dbddc7247b3d0cb67159f"
+}

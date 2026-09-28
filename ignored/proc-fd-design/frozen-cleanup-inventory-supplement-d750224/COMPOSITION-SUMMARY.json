@@ -1,0 +1,124 @@
+{
+  "base": "1145835fc804f47ae48b29b89009e6937184175a",
+  "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "sole_parent": "1145835fc804f47ae48b29b89009e6937184175a",
+  "all_tree_entry_paths_identical": true,
+  "tree_entry_count": 828,
+  "changed_paths": [
+    "py/tests/test_packaging_infrastructure.py"
+  ],
+  "every_other_blob_type_mode_unchanged": true,
+  "retention_cli_and_lifecycle_test_identical_to_approved_114": true,
+  "parent_head_unchanged": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+  "whole_packaging_ast_identical_after_exact_two_counts_and_eight_names_restored": true,
+  "old_lifecycle_source_is_exact_prefix": true,
+  "before_counts": {
+    "all": 654,
+    "ordinary": 98,
+    "mapped": 556,
+    "mapped_root": 2
+  },
+  "after_counts": {
+    "all": 797,
+    "ordinary": 241,
+    "mapped": 556,
+    "mapped_root": 2
+  },
+  "all654_prior_identities_preserved": true,
+  "exact143_added_ordinary_cases": true,
+  "new_method_names": [
+    "test_current_incomplete_frozen_binds_checkout_and_gitlink_identity",
+    "test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot",
+    "test_current_incomplete_frozen_rechecks_after_fresh_census",
+    "test_current_incomplete_frozen_refuses_untrusted_or_live_evidence",
+    "test_current_incomplete_frozen_requires_exact_current_shape",
+    "test_current_incomplete_frozen_requires_pristine_recursive_checkout",
+    "test_current_incomplete_frozen_retains_evidence_and_allows_stable_source_work",
+    "test_current_incomplete_frozen_retention_does_not_authorize_direct_recovery"
+  ],
+  "collection_receipts": [
+    {
+      "phase": "before",
+      "partition": "all",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "collected": 654,
+      "actual_exit": 0,
+      "wall_seconds": 2.853792601963505,
+      "stdout_sha256": "3927fa54dc4d0891b8b059c073b938b250fbd9c07a3cc6c3a50a7ec710360b1a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "before",
+      "partition": "ordinary",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "collected": 98,
+      "actual_exit": 0,
+      "wall_seconds": 2.9224217899609357,
+      "stdout_sha256": "80aa7c20af7a5c517423918da23faac3c7d42099b8eac0116be008c7fbf94f79",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "before",
+      "partition": "mapped",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "collected": 556,
+      "actual_exit": 0,
+      "wall_seconds": 2.891987606184557,
+      "stdout_sha256": "3fcc80efd55c1102c674911aa2fa3c6caeb4ff65042fe1f30f64d533637b2c21",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "before",
+      "partition": "mapped_root",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "collected": 2,
+      "actual_exit": 0,
+      "wall_seconds": 2.959675770951435,
+      "stdout_sha256": "374c44442a6699ca24ba03f56ea2630cc7ed7363018e7c19041d4959b33dbbe4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "after",
+      "partition": "all",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "collected": 797,
+      "actual_exit": 0,
+      "wall_seconds": 2.854550850111991,
+      "stdout_sha256": "cd5d70661d3ced445ff9d4bd0ce9e238b0cf847719610cc1a57627d0e22db38d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "after",
+      "partition": "ordinary",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "collected": 241,
+      "actual_exit": 0,
+      "wall_seconds": 2.8969816700555384,
+      "stdout_sha256": "d1c315f1c26b8c63c38dd3f58078361f649c3155455b688929063d8ab220eb63",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "after",
+      "partition": "mapped",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "collected": 556,
+      "actual_exit": 0,
+      "wall_seconds": 2.957748658955097,
+      "stdout_sha256": "00771562f45cc1475fb3dbb91209203f287f8486d2ad10cf7dade4cb7cdd9ae2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "phase": "after",
+      "partition": "mapped_root",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "collected": 2,
+      "actual_exit": 0,
+      "wall_seconds": 2.9274277940858155,
+      "stdout_sha256": "74c1bccaa3beaa2c165bf024aadc9b36b288567c5b116aa9ca7433027871bb3c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "assertion_test_source_sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b",
+  "measurements": "Retained collections and direct test only; no new test/collection was executed during preparation."
+}

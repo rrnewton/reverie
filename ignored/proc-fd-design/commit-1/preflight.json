@@ -1,0 +1,18 @@
+{
+  "head": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "source_binding_sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496",
+  "message_sha256": "c4f14c3cd4b2e48ae0f20b5f28c42d8ac3184c1a1a4aea01e5a24c87d0f9a61b",
+  "paths": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/fdinfo.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/proc_mounts.rs"
+  ],
+  "status": " M reverie-kvm/src/elf.rs\n M reverie-kvm/src/executor.rs\n M reverie-kvm/src/lib.rs\n M reverie-kvm/src/memory.rs\n?? HANDOFF.md\n?? ignored/\n?? reverie-kvm/src/fdinfo.rs\n?? reverie-kvm/src/proc_mounts.rs\n",
+  "author_ident": "Ryan Newton <rrnewton@gmail.com> 1789621833 -0700",
+  "committer_ident": "Ryan Newton <rrnewton@gmail.com> 1789621833 -0700",
+  "index_initially_empty": true
+}

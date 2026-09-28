@@ -1,0 +1,178 @@
+{
+  "_assert_handoff_read": {
+    "after": {
+      "bytes": 1510,
+      "last_line": 9106,
+      "line": 9073,
+      "sha256": "14e9bb0d752b844491d1fb48bafcb85aae03e4d07da3a1859e602258defbe92c"
+    },
+    "before": {
+      "bytes": 1510,
+      "last_line": 8958,
+      "line": 8925,
+      "sha256": "14e9bb0d752b844491d1fb48bafcb85aae03e4d07da3a1859e602258defbe92c"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_assert_registered_liveness": {
+    "after": {
+      "bytes": 771,
+      "last_line": 7952,
+      "line": 7938,
+      "sha256": "b51603b1929603e979afd8d344ff989efb8940a9191db6133f8258c12a826835"
+    },
+    "before": {
+      "bytes": 771,
+      "last_line": 7807,
+      "line": 7793,
+      "sha256": "b51603b1929603e979afd8d344ff989efb8940a9191db6133f8258c12a826835"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_cmd_classify_ownerless_validate_batch": {
+    "after": {
+      "bytes": 9533,
+      "last_line": 24274,
+      "line": 24043,
+      "sha256": "003e514118d25198e098ede05dc68b51eb1f205a1d36f611d12b1215423d0e7d"
+    },
+    "before": {
+      "bytes": 9533,
+      "last_line": 24099,
+      "line": 23868,
+      "sha256": "003e514118d25198e098ede05dc68b51eb1f205a1d36f611d12b1215423d0e7d"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_cmd_recover_ownerless_validate_batch": {
+    "after": {
+      "bytes": 10633,
+      "last_line": 24040,
+      "line": 23778,
+      "sha256": "d9b0d7b29cae8688d7b6dc7306a91197bb07a8888ba96039938b26ff10ae2d5d"
+    },
+    "before": {
+      "bytes": 10633,
+      "last_line": 23865,
+      "line": 23603,
+      "sha256": "d9b0d7b29cae8688d7b6dc7306a91197bb07a8888ba96039938b26ff10ae2d5d"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_frozen_no_proof_disposition": {
+    "after": {
+      "bytes": 7120,
+      "last_line": 17718,
+      "line": 17527,
+      "sha256": "16a0ddb2f96103021503bc2d7198204862e5391b2885437ca63d6a635f9413d2"
+    },
+    "before": {
+      "bytes": 7120,
+      "last_line": 17549,
+      "line": 17358,
+      "sha256": "16a0ddb2f96103021503bc2d7198204862e5391b2885437ca63d6a635f9413d2"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_frozen_validation_authority_chain": {
+    "after": {
+      "bytes": 1417,
+      "last_line": 16778,
+      "line": 16748,
+      "sha256": "59ce26e86622a32d26939c3b82682ae6c89d944d2e359ed91b84e246358590e9"
+    },
+    "before": {
+      "bytes": 1417,
+      "last_line": 16609,
+      "line": 16579,
+      "sha256": "59ce26e86622a32d26939c3b82682ae6c89d944d2e359ed91b84e246358590e9"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_frozen_validation_authority_commit": {
+    "after": {
+      "bytes": 2239,
+      "last_line": 16837,
+      "line": 16781,
+      "sha256": "4305c99e1b8c864f0aebfcd194fac60d4720c192d5d886956ed5dbcfd4b978f5"
+    },
+    "before": {
+      "bytes": 2239,
+      "last_line": 16668,
+      "line": 16612,
+      "sha256": "4305c99e1b8c864f0aebfcd194fac60d4720c192d5d886956ed5dbcfd4b978f5"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_salvage_agent_slot": {
+    "after": {
+      "bytes": 679,
+      "last_line": 8857,
+      "line": 8840,
+      "sha256": "f600fef5d5e656c5a7634c589c48f308ce86c3cb02310abf3dd0347fa1814863"
+    },
+    "before": {
+      "bytes": 679,
+      "last_line": 8709,
+      "line": 8692,
+      "sha256": "f600fef5d5e656c5a7634c589c48f308ce86c3cb02310abf3dd0347fa1814863"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_terminal_validation_record": {
+    "after": {
+      "bytes": 4348,
+      "last_line": 17195,
+      "line": 17099,
+      "sha256": "bb99a3b00ffcd7fd86fdb89bb10748fa9d29a691249e43ae52c6f99fb9b947da"
+    },
+    "before": {
+      "bytes": 4348,
+      "last_line": 17026,
+      "line": 16930,
+      "sha256": "bb99a3b00ffcd7fd86fdb89bb10748fa9d29a691249e43ae52c6f99fb9b947da"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_trusted_git_superproject": {
+    "after": {
+      "bytes": 492,
+      "last_line": 16718,
+      "line": 16706,
+      "sha256": "4f2ec90189f018609764aa1055e8da63725367b83e23b49eaf93d1fb6507c755"
+    },
+    "before": {
+      "bytes": 492,
+      "last_line": 16549,
+      "line": 16537,
+      "sha256": "4f2ec90189f018609764aa1055e8da63725367b83e23b49eaf93d1fb6507c755"
+    },
+    "identical": true,
+    "present": true
+  },
+  "_trusted_git_text": {
+    "after": {
+      "bytes": 518,
+      "last_line": 16675,
+      "line": 16665,
+      "sha256": "514ab58ed4d97583eb7cfe39dab0f83ba9f79a5eba8bd60accbcfba0901405b4"
+    },
+    "before": {
+      "bytes": 518,
+      "last_line": 16506,
+      "line": 16496,
+      "sha256": "514ab58ed4d97583eb7cfe39dab0f83ba9f79a5eba8bd60accbcfba0901405b4"
+    },
+    "identical": true,
+    "present": true
+  }
+}

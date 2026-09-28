@@ -1,0 +1,79 @@
+{
+  "commit": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "command": [
+    "with-proxy",
+    "make",
+    "validate"
+  ],
+  "exit_code": 0,
+  "wall_seconds": 2064.2353799180128,
+  "start_utc": "2026-09-17T08:42:43Z",
+  "end_utc": "2026-09-17T09:17:07Z",
+  "source_readback": "all three changed paths match input and committed bytes; clean status",
+  "source_hashes": {
+    "py/wrkslots/cli.py": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+    "py/wrkslots/tests/test_lifecycle.py": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+    "py/tests/test_packaging_infrastructure.py": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b"
+  },
+  "python_partitions": [
+    {
+      "passed": 2968,
+      "warnings": 2,
+      "seconds": 517.0
+    },
+    {
+      "passed": 556,
+      "deselected": 241,
+      "seconds": 564.91
+    },
+    {
+      "passed": 241,
+      "deselected": 556,
+      "seconds": 402.11
+    }
+  ],
+  "python_total_passed": 3765,
+  "rust": "normal workspace suite passed",
+  "cross": {
+    "dagrun": 764,
+    "cpuset-alloc": 58,
+    "tick-hub": 106,
+    "pr-landing-planner": 291,
+    "herdr-run": 228,
+    "herdr-agent": 90
+  },
+  "cross_total": 1537,
+  "cross_limitations": "existing herdr-run coverage notes retained in full original output",
+  "python_distributions": 7,
+  "rust_crates": 4,
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/INPUT.json",
+      "bytes": 580,
+      "sha256": "64287f4dbf742be84ef0cde26ba6bb737a315d01bfbdd41348ad108cba656930"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/RESULT.json",
+      "bytes": 1107,
+      "sha256": "9eae6d6db989909c9c47a46eb9132ad075f86f4c3a0a5b07117c7ba7e42201ef"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/exit-code.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/output.txt",
+      "bytes": 97944,
+      "sha256": "d693a268686a199d46a73e70887446e75895608148a7861d80e7ff488806b8a1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-make-validate-inventory-corrected/time.txt",
+      "bytes": 778,
+      "sha256": "e01ea3acf8ad275128ebd8117acee64e20e252352780196904b6962ef3ff240a"
+    }
+  ],
+  "prior_normal_failure": "preserved at original commit1145835 in au-make-validate; not relabelled",
+  "public_push": "held for root, prepared separately"
+}

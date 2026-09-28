@@ -1,0 +1,210 @@
+{
+  "commits": [
+    {
+      "name": "reverie",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "base": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "object_status": 0,
+      "object_type": "commit",
+      "stderr": "",
+      "tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083\n",
+      "commits": "3955492bfa383a5fe51e114cb067a03f79e904be Return observed PKRU with native syscall results\n226c3e31389599a00400938e93461c59d56f846e Declare the SaBRe loader's zlib runtime dependency\n114b309413612fafc2657c74e83811c71aac7b19 Adopt LiteInst branch and fork arena repairs\n",
+      "paths": "M\texperimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt\nM\treverie-liteinst/Cargo.toml\nM\treverie-preload/Cargo.toml\nA\treverie-preload/src/bin/native_syscall_result.rs\nM\treverie-preload/src/trap.rs\nA\treverie-preload/tests/native_syscall_result.rs\nM\treverie-rpc-transport/tests/fixtures/owned_lifecycle.rs\n"
+    },
+    {
+      "name": "hermit",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "base": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "object_status": 0,
+      "object_type": "commit",
+      "stderr": "",
+      "tree": "03addfff257ee8f8a48be4a4d38a6ca9454bb5ea\n",
+      "commits": "f8f425368ce1168b4f588bd40c6a0295aa4b3225 Adopt LiteInst trampoline and fork arena repairs\n",
+      "paths": "M\tCargo.lock\nM\tci/configure-build-jobs.sh\nM\tci/run-with-reverie-dbt-budget.sh\nM\tdetcore-dbt/Cargo.toml\nM\tdetcore-model/Cargo.toml\nM\tdetcore-sabre/Cargo.toml\nM\tdetcore/Cargo.toml\nM\tdetcore/tests/testutils/Cargo.toml\nM\thermit-cli/Cargo.toml\nM\thermit-install/Cargo.toml\nM\tliteinst-runtime-build/Cargo.lock\nM\tliteinst-runtime-build/runtime/Cargo.toml\n"
+    }
+  ],
+  "original_source_checks": [
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/scheduler.rs",
+      "git_entry": "100644 blob e8038325b066901cad527df9996cbb3518c123f3\tdetcore/src/scheduler.rs",
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/tool_global.rs",
+      "git_entry": "100644 blob 5c7017b67167f9001ce39ad6b23c033ce568e768\tdetcore/src/tool_global.rs",
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/tool_local.rs",
+      "git_entry": "100644 blob de19b512e9b630aa3fd0d8b66f6902379bd02f3d\tdetcore/src/tool_local.rs",
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/lib.rs",
+      "git_entry": "100644 blob 4a945cec6301aaa529fa72a1e940ffa3413930c0\tdetcore/src/lib.rs",
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/config.rs",
+      "git_entry": "100644 blob 9d9b6504b4dd1ba3c0f4a08f6118a0fee74ea4a1\tdetcore/src/config.rs",
+      "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/ivar.rs",
+      "git_entry": "100644 blob e64cc9c5850fd47245f393ab9a7b3d6b0a93bd86\tdetcore/src/ivar.rs",
+      "sha256": "7ea0a7400bec8d63f7d83892abc5071cabfc10e483a00d4b6893065f070163c7",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "hermit-cli/src/lib.rs",
+      "git_entry": "100644 blob 4b606f33275836489986b9383e6987dcdd9c1259\thermit-cli/src/lib.rs",
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie/src/tool.rs",
+      "git_entry": "100644 blob 4a2a3af5c83463f6734f5d9ff5397f85eb81fd5a\treverie/src/tool.rs",
+      "sha256": "3625e831ac2e8e1d731447aa4e8bef4d9f59fcca01964162795f29102e272f30",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie/src/guest.rs",
+      "git_entry": "100644 blob fb4de8c2b10dd59031f07623f537528cfc7aecfa\treverie/src/guest.rs",
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie-kvm/src/runtime.rs",
+      "git_entry": "100644 blob b289ec97da382c588ae6ad2a81d845c3f0f35403\treverie-kvm/src/runtime.rs",
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie-kvm/src/vm.rs",
+      "git_entry": "100644 blob 13aeec30c28f15cb96525f342261efde290d792f\treverie-kvm/src/vm.rs",
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie-kvm/src/executor.rs",
+      "git_entry": "100644 blob 44ee9f7c26dd71075291aad4446051eeee6eba02\treverie-kvm/src/executor.rs",
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie-kvm/src/error.rs",
+      "git_entry": "100644 blob 13dac1cb8b5167a3872d6c96e3c6067b5218e3f4\treverie-kvm/src/error.rs",
+      "sha256": "a6c0077a8dc795ebd5a413527b426862822fb2d539dfc533a718500e7bcbb128",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/Cargo.toml",
+      "git_entry": "100644 blob 6da8de4d6a5b086867235fac4f8523770c2d8a10\tdetcore/Cargo.toml",
+      "sha256": "ae39f510744e4fca446e990a95ee59286ea97531a32f78002fa8c15036ce77d2",
+      "same_as_original_report_source": false
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore/src/record_or_replay.rs",
+      "git_entry": "100644 blob 22d3abd6ac65c21ccb99aeeefe9ef43a44ab6534\tdetcore/src/record_or_replay.rs",
+      "sha256": "e9d2b4d01996a94344b557b1ad086c6bcc5fdec2703c917ef4f26f5f9f1a547b",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "detcore-model/src/config.rs",
+      "git_entry": "100644 blob 6205e6751fb0256d363214404e37e17d420e384b\tdetcore-model/src/config.rs",
+      "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+      "path": "hermit-cli/src/error.rs",
+      "git_entry": "100644 blob 07061315058c483ffa43d688ac34c44dda83aa23\thermit-cli/src/error.rs",
+      "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+      "same_as_original_report_source": true
+    },
+    {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "head": "114b309413612fafc2657c74e83811c71aac7b19",
+      "path": "reverie-kvm/Cargo.toml",
+      "git_entry": "100644 blob 4377574a4849625f4b155ffff9aeb7664e18db2f\treverie-kvm/Cargo.toml",
+      "sha256": "e57f461a611e2a9d300607191e9fbc8e8abc6082af1445028e237b1f7c66aba5",
+      "same_as_original_report_source": true
+    }
+  ],
+  "copied_changed_sources": [
+    {
+      "path": "reverie-preload/Cargo.toml",
+      "sha256": "46382517e4af355c658c5a790948779bc200e512aed9069dbb78f64970f35de8",
+      "bytes": 1766,
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/compatibility-114b/sources/reverie/reverie-preload/Cargo.toml"
+    },
+    {
+      "path": "reverie-preload/src/trap.rs",
+      "sha256": "ef72e86145109582042f6422b89be285124a5de96d2efe3b8dc51d3cc96b92fe",
+      "bytes": 18029,
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/compatibility-114b/sources/reverie/reverie-preload/src/trap.rs"
+    },
+    {
+      "path": "reverie-preload/src/bin/native_syscall_result.rs",
+      "sha256": "3ae224d82ad37b3fe228915ef99d669f82b95fded18419f7059ee0cf38d0caf0",
+      "bytes": 11985,
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/compatibility-114b/sources/reverie/reverie-preload/src/bin/native_syscall_result.rs"
+    },
+    {
+      "path": "reverie-preload/tests/native_syscall_result.rs",
+      "sha256": "842b42eae0b6248841c6ab9ea4239de870946030548ecf5ddc5c8e364c596ca4",
+      "bytes": 1464,
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/compatibility-114b/sources/reverie/reverie-preload/tests/native_syscall_result.rs"
+    },
+    {
+      "path": "reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs",
+      "sha256": "c98d6bc43035105bedf7245ae6e18e030e182e14eb568ea9b3084e87f896e6c5",
+      "bytes": 7543,
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/compatibility-114b/sources/reverie/reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs"
+    }
+  ],
+  "patch_sha256": "9ef7ce74f1fd0a400f60ab37ce4459834daca7ba241d1720010e84c41437c265",
+  "callers_sha256": "d4752aa21942833e71f1f8f6bce4f87fd47afbab18682b8685cf973dc71fed95",
+  "original_report_sha256": "be4067390976a2b5862b7c9a59d90dd52279ba4b2ddf7549478de6e9bb40b21d",
+  "runtime_executed": false
+}

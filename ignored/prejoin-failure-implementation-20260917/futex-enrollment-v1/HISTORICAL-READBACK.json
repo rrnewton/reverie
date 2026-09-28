@@ -1,0 +1,148 @@
+{
+  "status": "historical failure preserved",
+  "old_methods": 427,
+  "passed": 426,
+  "failed": [
+    {
+      "type": "test",
+      "name": "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+      "event": "failed"
+    }
+  ],
+  "adjacent_outcomes": [
+    {
+      "type": "test",
+      "name": "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+      "event": "failed"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::fatal_worker_ro_failed_store_still_wakes",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::fatal_worker_rw_delayed_waiter_qualifies",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::fatal_worker_rw_store_wake_and_slot_release",
+      "event": "ok"
+    }
+  ],
+  "cpu_seconds": 8.260615,
+  "wall_seconds": 21.283923545,
+  "old_artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "bytes": 106866600,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "accounting_complete": true,
+  "final_accounting": {
+    "source": "systemd CPUUsageNSec after service exit",
+    "cpu_usage_nsec": 8260615000,
+    "cgroup_empty": true,
+    "exec_main_code": 1,
+    "exec_main_status": 101,
+    "properties": {
+      "Id": "safehermit-20260917T061039Z-1596708.service",
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ControlGroup": "",
+      "MainPID": 0,
+      "ExecMainPID": 1597303,
+      "ExecMainCode": 1,
+      "ExecMainStatus": 101,
+      "ExecMainStartTimestampMonotonic": 1784368997336,
+      "CPUUsageNSec": 8260615000
+    }
+  },
+  "comparison_eligible": false,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/v2/launch.py",
+      "bytes": 20329,
+      "sha256": "d580eae20a9a4d76369229c5935a3d083738824ca2da927dd045409c6dbe0746"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/v2/plan.json",
+      "bytes": 73430,
+      "sha256": "7f3cc72f062437331ebc8138953809511c099b8824451f6bcd95fb58badd337c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native-full-v1/native/stdout",
+      "bytes": 201677,
+      "sha256": "5c63435386d43135e9ab0ea8055fc61b8f9171666d3f011c14d1bbbecaf2085c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native-full-v1/native/stderr",
+      "bytes": 9760,
+      "sha256": "1b538ab47f8b0f5897f8bb2bdb7fc61968161da6050acc337810a0866d406e1d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native-full-v1/native/result.json",
+      "bytes": 39820,
+      "sha256": "8f465b62f9ca251f8d9aee87de1927d15c7faebb1e3701b56262c6232da675dc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/run-1/summary.json",
+      "bytes": 227,
+      "sha256": "0fc8dd7e89a749ac35a75393f46ce5935a9f560747900a4a8e810899b8b0848f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/run-1/launch.json",
+      "bytes": 1522,
+      "sha256": "538296d0931d0bf6d8c60b9e073649b5f20ee4e5517c548703c4793304a814da"
+    }
+  ],
+  "unchanged_source_sections": [
+    {
+      "name": "enrollment",
+      "bytes": 1928,
+      "sha256": "25923b814be3cfeb5c3eeeeb6a44f18ccb9ca8fa01f615e27ad203a533cc75d1",
+      "old_and_current_identical": true
+    },
+    {
+      "name": "memory-and-four-methods",
+      "bytes": 7825,
+      "sha256": "f99cfeea90cad89099773d65c62a6c9b8e600f76f89a1da9399faf78bf542bb4",
+      "old_and_current_identical": true
+    }
+  ],
+  "failure_phase": "Reverse enrollment requeue returned 0 instead of 1; waiter result was -1/ETIMEDOUT. The fixture had not called start_pending_children for the fatal worker. No syscall timing, host cause, or base runtime evidence follows."
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "git",
+    "rebase",
+    "--onto",
+    "526c21cf06ef9e5098ec9002b93e40e2022e798f",
+    "114b309413612fafc2657c74e83811c71aac7b19"
+  ],
+  "exit": 0,
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "status": "?? HANDOFF.md\n?? ignored/\n",
+  "rebase_paths": {
+    "rebase-merge": false,
+    "rebase-apply": false
+  }
+}

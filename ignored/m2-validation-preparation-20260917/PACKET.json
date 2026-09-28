@@ -1,0 +1,66 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "m2_patch_sha256": "31656e6427181c6ca268cc82b58fecbdc20ce89f1ba59b136a942ee91d35243e",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/REPORT.md",
+      "bytes": 18401,
+      "sha256": "62d1486636c1025f7f77ff1ca4544e9833901d100398d2ce079c6b0883ddea66"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/COMMANDS.json",
+      "bytes": 212078,
+      "sha256": "ab53ca65f094bddaaf0a622b98ae84f6576a6d75e916909dea37f7ffc712e39c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/MODULE-MAP.json",
+      "bytes": 4305,
+      "sha256": "d99b3b072d78061c83342dbac9ec871d47428e019472356be8963a900c896b51"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/CALLER-ANCHORS.json",
+      "bytes": 13717,
+      "sha256": "339bdab272fec35c1745cf9e22e6a627ece52a2c08f17b9330b262394811676a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/SOURCE-DECLARATIONS.json",
+      "bytes": 129630,
+      "sha256": "90c9015111fb739c01cfce534cbef7c0ebc97f0544f4d69c12c31ccb81c8d0b3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/SOURCE-MANIFEST.json",
+      "bytes": 55196,
+      "sha256": "9bd6fa91a1936a4660ec018124c57850fb4f60d03513fb0c97ea0229a797e336"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/FIXTURE-SOURCES.json",
+      "bytes": 45999,
+      "sha256": "5e461a8d6c3f82890b63629349edff978e34caca984fe069f8341d258f30b8b1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/FIXTURE-DISPOSITIONS.json",
+      "bytes": 4253,
+      "sha256": "35daccd2468e24ec5516d142d85a24a9723336db105d5126a12e480cc78bb3d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/M2-PREVIEW-READBACK.json",
+      "bytes": 3953,
+      "sha256": "898485149e741c00fc21d7add83c83cdc52d469fb45d10714405218dd8c95b02"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/READBACK.json",
+      "bytes": 19352,
+      "sha256": "3a1ea13586f6426e6ac36ed8663fc388980f26f3867d080b24963d69a46c570d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/FOCUSED-CALLER-SEARCH-v2.txt",
+      "bytes": 4350,
+      "sha256": "860acaeb0f97e53d778e97e6fdd64dddf577bdedb905de1bf988e127980f30ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/assemble_mapping.py",
+      "bytes": 9385,
+      "sha256": "3c3323e217308226a5a4da42d44002119f49362078065cefb088cf095f672406"
+    }
+  ]
+}

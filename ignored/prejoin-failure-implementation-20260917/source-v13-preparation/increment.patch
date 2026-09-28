@@ -1,0 +1,15 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -6008,8 +6008,10 @@
+         use futures::FutureExt;
+         for thread in [false, true] {
+             for fatal in [false, true] {
+-                let (backend, executor, boundary) = backend_at_completed_tool_boundary()
+-                    .expect("real cancellation control requires KVM and PMU");
++                let Some((backend, executor, boundary)) = backend_at_completed_tool_boundary()
++                else {
++                    return;
++                };
+                 let starts = Arc::new(Mutex::new(Vec::new()));
+                 let mut cleanup = GateFailureCleanup {
+                     backend,

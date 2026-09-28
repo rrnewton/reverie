@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "rev-parse",
+    "--git-path",
+    "CHERRY_PICK_HEAD"
+  ],
+  "exit": 0,
+  "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-proc-fd-identity-20260917/CHERRY_PICK_HEAD\n",
+  "stderr": ""
+}

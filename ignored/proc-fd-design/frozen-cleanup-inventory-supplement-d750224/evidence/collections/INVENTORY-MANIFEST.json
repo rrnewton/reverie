@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-lifecycle-inventory/PROOF.json",
+    "bytes": 40370,
+    "sha256": "cec98ff6fc0a04d57241feff5f456de54787c979dd3685dc843902e2a59205b3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-lifecycle-inventory/before-INVENTORY.json",
+    "bytes": 153468,
+    "sha256": "1faf1e3d6d47c5ba9d9532282d7b9dbde7a09fb693848539a819ffe0b364bdc9"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-lifecycle-inventory/after-INVENTORY.json",
+    "bytes": 191300,
+    "sha256": "2299f35d59b132ecd38179fa872cac5962d06d7d7e24fb31f041903f7a76da81"
+  }
+]

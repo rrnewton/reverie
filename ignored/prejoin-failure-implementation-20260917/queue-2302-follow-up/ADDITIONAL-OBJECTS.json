@@ -1,0 +1,23 @@
+[
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/src/bin/hermit/record_start.rs",
+    "bytes": 36087,
+    "sha256": "48229a9cc82a1b75df99583b1c4646766abba7130b23e4550c5169eba7424470",
+    "blob": "ed49e298efd07c7afc7bbbcd1ecd46096cb71ec8"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/src/canonical_verdict.rs",
+    "bytes": 58894,
+    "sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1",
+    "blob": "b41bf71c993e5a6a07c3fb4fe0e2ccbcf7927eea"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-cli/src/bin/hermit/record_start.rs",
+    "bytes": 23993,
+    "sha256": "722e7bd4cc746bfa87f562a677ff37325bb648d95afe4ed71492f9899ff4032b",
+    "blob": "92390ef590bb819ea8de3bed22dffb012cbbc02c"
+  }
+]

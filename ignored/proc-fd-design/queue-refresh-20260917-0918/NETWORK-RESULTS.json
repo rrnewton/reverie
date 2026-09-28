@@ -1,0 +1,216 @@
+[
+  {
+    "name": "hermit-2958",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/pulls/2958"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.183202+00:00",
+    "ended_utc": "2026-09-17T09:45:40.824623+00:00",
+    "wall_seconds": 0.6414051400497556,
+    "exit_code": 0,
+    "stdout_bytes": 18672,
+    "stderr_bytes": 0,
+    "stdout_sha256": "6c60b6808dc55ccf9297a827a04febdf195cc3be9ad8d155fad509341fb7e006",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-2969",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/pulls/2969"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.183441+00:00",
+    "ended_utc": "2026-09-17T09:45:40.838846+00:00",
+    "wall_seconds": 0.6554219480603933,
+    "exit_code": 0,
+    "stdout_bytes": 20901,
+    "stderr_bytes": 0,
+    "stdout_sha256": "37e582de934c4fb2a353dd80a546a4e2e984e9c2746a1fa6277b5b6a5c0b711f",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-2694",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/pulls/2694"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.184559+00:00",
+    "ended_utc": "2026-09-17T09:45:40.832662+00:00",
+    "wall_seconds": 0.6481037449557334,
+    "exit_code": 0,
+    "stdout_bytes": 29107,
+    "stderr_bytes": 0,
+    "stdout_sha256": "66c43f9435643a0997cbdf1d322ce7d437293cfa99cf77e731c8b29fcd4722ae",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-2747",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/pulls/2747"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.185170+00:00",
+    "ended_utc": "2026-09-17T09:45:40.839877+00:00",
+    "wall_seconds": 0.65467549697496,
+    "exit_code": 0,
+    "stdout_bytes": 22430,
+    "stderr_bytes": 0,
+    "stdout_sha256": "035ce91a9a29bf0e6901c6d139aa5d3edc069d4cf893a03e4a4a879ca8aa112a",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-2302",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/pulls/2302"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.186118+00:00",
+    "ended_utc": "2026-09-17T09:45:40.829505+00:00",
+    "wall_seconds": 0.6433751571457833,
+    "exit_code": 0,
+    "stdout_bytes": 23121,
+    "stderr_bytes": 0,
+    "stdout_sha256": "891bfdccdc5d8d16adac03614ec5df911d1303284d54d50839916b426899e260",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-open",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      "rrnewton/hermit",
+      "--state",
+      "open",
+      "--limit",
+      "300",
+      "--json",
+      "number,url,title,state,isDraft,headRefOid,headRefName,baseRefOid,baseRefName,updatedAt,body,labels,author"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.186360+00:00",
+    "ended_utc": "2026-09-17T09:45:40.843243+00:00",
+    "wall_seconds": 0.6568842530250549,
+    "exit_code": 0,
+    "stdout_bytes": 95771,
+    "stderr_bytes": 0,
+    "stdout_sha256": "9bbd12e3ddb67eaa04f875d49069f93e730128d3b599f740b78a5700f0cc71fe",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "reverie-open",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      "rrnewton/reverie",
+      "--state",
+      "open",
+      "--limit",
+      "300",
+      "--json",
+      "number,url,title,state,isDraft,headRefOid,headRefName,baseRefOid,baseRefName,updatedAt,body,labels,author"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.824886+00:00",
+    "ended_utc": "2026-09-17T09:45:41.230248+00:00",
+    "wall_seconds": 0.4053790040779859,
+    "exit_code": 0,
+    "stdout_bytes": 9519,
+    "stderr_bytes": 0,
+    "stdout_sha256": "1aab6d3beaf5735e5a6eeb4dec7648b55ad4b8601b5cb496417780d85c1c426a",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "reverie-main",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/reverie/commits/main"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.829727+00:00",
+    "ended_utc": "2026-09-17T09:45:41.176906+00:00",
+    "wall_seconds": 0.347202988807112,
+    "exit_code": 0,
+    "stdout_bytes": 34459,
+    "stderr_bytes": 0,
+    "stdout_sha256": "7c3186866d1d35994d15e3946fdd2a304afdbbdae7ce28b95da9f2294f196cfc",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "reverie-since-596",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/reverie/compare/596b9adee8473dc0a7e62dce18580eead3d0c5c9...main?per_page=100"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.832863+00:00",
+    "ended_utc": "2026-09-17T09:45:41.536955+00:00",
+    "wall_seconds": 0.7041150701697916,
+    "exit_code": 0,
+    "stdout_bytes": 418082,
+    "stderr_bytes": 0,
+    "stdout_sha256": "24a7f22610aa0b2667430b2b6c2cb9c695a5379171300759749b2208b03ab324",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "hermit-main",
+    "argv": [
+      "with-proxy",
+      "gh",
+      "api",
+      "repos/rrnewton/hermit/commits/main"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.839093+00:00",
+    "ended_utc": "2026-09-17T09:45:41.177306+00:00",
+    "wall_seconds": 0.3382140579633415,
+    "exit_code": 0,
+    "stdout_bytes": 5830,
+    "stderr_bytes": 0,
+    "stdout_sha256": "0ed0fa7d3d3b348ea633a2fd11dd8e396122dd2597f13d3513928cddcfaf29b8",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "authority",
+    "argv": [
+      "with-proxy",
+      "/home/newton/work/dev-hermit/ci-hub/ci-hub",
+      "active-work",
+      "--json"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "started_utc": "2026-09-17T09:45:40.840015+00:00",
+    "ended_utc": "2026-09-17T09:45:41.552845+00:00",
+    "wall_seconds": 0.7128509820904583,
+    "exit_code": 1,
+    "stdout_bytes": 107650,
+    "stderr_bytes": 102,
+    "stdout_sha256": "7be06dbf4776755f6a10a9ac98196426059ac6082a106f1bc662fdf006d09724",
+    "stderr_sha256": "def3f34c82e6ef202301c5e118a77a16364dc4f90fc58cec91916276e910a954"
+  }
+]

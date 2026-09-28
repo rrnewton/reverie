@@ -1,0 +1,33 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01XiYvV2Qy55qfAp4HsBJpWH",
+  "name": "Grep",
+  "input": {
+    "pattern": "ContainerStdin|ContainerStdout|ContainerStderr",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 80
+  }
+}
+
+Successful public tool result (exact text below):
+detcore/src/syscalls.rs:54:            Device::ContainerStdin | Device::ContainerStdout | Device::ContainerStderr,
+detcore/src/syscalls.rs:81:            ResourceID::Device(Device::ContainerStdin),
+detcore/src/syscalls.rs:82:            ResourceID::Device(Device::ContainerStdout),
+detcore/src/syscalls.rs:83:            ResourceID::Device(Device::ContainerStderr),
+detcore/src/resources.rs:332:    ContainerStdin,
+detcore/src/resources.rs:335:    ContainerStdout,
+detcore/src/resources.rs:338:    ContainerStderr,
+detcore/src/tool_local.rs:655:        .with_resource(ResourceID::Device(Device::ContainerStdin));
+detcore/src/tool_local.rs:663:        .with_resource(ResourceID::Device(Device::ContainerStdout));
+detcore/src/tool_local.rs:671:        .with_resource(ResourceID::Device(Device::ContainerStderr));
+detcore/src/tool_local.rs:845:        0 => Some(ResourceID::Device(Device::ContainerStdin)),
+detcore/src/tool_local.rs:846:        1 => Some(ResourceID::Device(Device::ContainerStdout)),
+detcore/src/tool_local.rs:847:        2 => Some(ResourceID::Device(Device::ContainerStderr)),
+detcore/src/tool_local.rs:1085:            Some(ResourceID::Device(Device::ContainerStdout))
+detcore/src/tool_local.rs:1099:            Some(ResourceID::Device(Device::ContainerStdout))
+detcore/src/syscalls/files.rs:295:            Device::ContainerStdout | Device::ContainerStderr
+detcore/src/syscalls/files.rs:4655:            Device::ContainerStdout
+detcore/src/syscalls/files.rs:4658:            Device::ContainerStderr
+detcore/src/syscalls/files.rs:4661:            Device::ContainerStdin

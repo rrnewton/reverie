@@ -1,0 +1,6 @@
+{
+  "stage": "format",
+  "status": "failed",
+  "error": "format failed",
+  "stop_remaining_checks": false
+}

@@ -1,0 +1,6 @@
+{
+  "error": "AttributeError: 'float' object has no attribute 'replace'",
+  "cause": "readback helper assumed a string timestamp; actual structured authority timestamp is numeric",
+  "external_mutation_started": false,
+  "utc": "2026-09-17T05:54:37.046488+00:00"
+}

@@ -1,0 +1,8 @@
+{
+  "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/REPORT.md",
+  "report_sha256": "be4067390976a2b5862b7c9a59d90dd52279ba4b2ddf7549478de6e9bb40b21d",
+  "bytes": 15213,
+  "source_readback_sha256": "9604eaca250f3996d6e7456e29dd146d400eb035b00f802fdd520e9aa7afc8c9",
+  "execution": "none",
+  "source_changes": "none"
+}

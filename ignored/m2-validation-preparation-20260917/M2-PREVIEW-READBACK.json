@@ -1,0 +1,116 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "preview_manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PREVIEW-MANIFEST-v5.json",
+  "checks": [
+    {
+      "path": "detcore/src/logdiff.rs",
+      "sha256": "1c06f7605d5f708e9fe952c1692c0b52f6d323b981b67e70426dc05fd928ed8c",
+      "matched": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "sha256": "46f4ce21d44193aed462754592d5a7741ff9e115c36d93b386a8537576c04c0e",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "sha256": "6caade73b41fbf4f284905260bc071e17b49781b513c109cc3384fb8df380d76",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "sha256": "3414ef8350d5c047ba4048401e1cd86127d29b6651cb15c3887fac9e8319b65c",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "sha256": "c5e1e50e8ce323d007ee827a51908c9738587f5748d8b10ac4132e82d50c2429",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "sha256": "cda184f7e4dee1e9a1869666878c25910218283c769225dc947375a5aa8031c2",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "sha256": "bfff71ff40179e301cb47fd3177f3ef2a1ebe3ed7ec1ef67b8c3b43de838978a",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "sha256": "7638e6321c0119de46e1b3bf0ea0eaf8ec4098eefbc03f901022aa58420db612",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "sha256": "2c1acdb200d7d661cd0bec53d9f9f778578c7f6a4ea3f52a81fd0c59c90f94b8",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "sha256": "27c48623217d0bab06250928c58672d161a537bee40cb02b138f17873e0b6947",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/src/metadata.rs",
+      "sha256": "f48699b96f052a533c3ed38ef29dd4e98584659590e9f2fe9c9344b8879cc3b0",
+      "matched": true
+    },
+    {
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "sha256": "8a5f18d356fc40b9492a7a42e9b9a3329c621b80d5db48c9384a2cf50c9b0945",
+      "matched": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "sha256": "b24ce39d6e54cfc4e93ef6409a2d4e613b8076d261cc64bf31ce60d003d8ff08",
+      "matched": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "sha256": "040a4fc39ad39316e80ebe7f1506da2a5a285c0bdda2e8837b4209aec2561b4a",
+      "matched": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "sha256": "14a8a75c78111c77b237b5b8ef9cc08e93cacd93bd15ad8fd83313b505d6e416",
+      "matched": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "sha256": "feb93a343b1ee0cd309403b721e83c1bc245adbc4d34202143a52677856f7d55",
+      "matched": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "sha256": "39ee743207ae76e79e25d1efe8ee2785abf96bd267707fec799110f1aec727fc",
+      "matched": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "sha256": "b9c6e0b4e028f86f9bd5ac6292d2849a74cc264ef062dbc2cad7b8673a78c616",
+      "matched": true
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "sha256": "7a1bbe181df84ccf1f2bece0c53a271940385e1b1daf2ed58b06b57f998dd3fe",
+      "matched": true
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "sha256": "dd8d23b0c9d02eb27a8b1d87a2022b2ef11c48bac5111a58ad48355b457f2e23",
+      "matched": true
+    }
+  ]
+}

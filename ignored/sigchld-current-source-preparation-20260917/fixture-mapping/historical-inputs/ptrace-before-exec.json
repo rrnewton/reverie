@@ -1,0 +1,51 @@
+{
+  "payload": {
+    "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/final-e2e-current/bundles/b116625c6a6c36e2716ebb13a6213d43ce7ea2f5e48e9bc35347ec84ba2a824f/hermit",
+    "binary_sha256": "77b75f844625ebb022bf3ec691967a1acf4dfb3f84aa9fbe8c0d91fcc13c460a",
+    "arguments": [
+      "--log",
+      "info",
+      "run",
+      "--base-env=minimal",
+      "--backend",
+      "ptrace",
+      "--strict",
+      "--verify-strict",
+      "--verify",
+      "--verify-json",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/verify.json",
+      "--keep-logs",
+      "--verify-log-dir",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs",
+      "--mount=type=tmpfs,target=/test",
+      "--workdir",
+      "/test",
+      "--env",
+      "LC_ALL=C",
+      "--env",
+      "TZ=UTC",
+      "--env",
+      "HOME=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/home",
+      "--env",
+      "XDG_CONFIG_HOME=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/xdg-config",
+      "--env",
+      "E2E_TMPDIR=/test",
+      "--env",
+      "E2E_FIXTURE_DIR=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/fixtures",
+      "--env",
+      "HERMIT_E2E_SCHEDULED_JOBS=1",
+      "--",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/fixtures/program"
+    ]
+  },
+  "token": "d629ce8d160c6e325faef9e7feac25f083318298bfef401eb68776ac409ec505",
+  "observer_pid": 3438981,
+  "locale_environment": {
+    "LC_CTYPE": "C.UTF-8",
+    "LC_ALL": null,
+    "LANG": "C.UTF-8"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 176878253,
+  "deadline_monotonic_ns": 1768807883324787
+}

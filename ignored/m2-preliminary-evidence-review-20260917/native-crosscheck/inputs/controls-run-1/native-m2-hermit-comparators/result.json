@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "phase": "native-m2-hermit-comparators",
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-plan.json",
+    "bytes": 58851,
+    "mode": 420,
+    "sha256": "a7637e29d7c09a656af86fdbb72ab1f7b9cb9f7677d1eff12a09c640f37cd163"
+  },
+  "accepted": false,
+  "terminal_authenticated": true,
+  "raw_status": 101,
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/tracked-source-manifest.json",
+    "bytes": 285094,
+    "mode": 420,
+    "sha256": "e263883c153cf2ed59c81a939dda4a48c560f34f0561fe93e2a968308535ab63"
+  },
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "1048576",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-plan.json",
+      "a7637e29d7c09a656af86fdbb72ab1f7b9cb9f7677d1eff12a09c640f37cd163"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 1,
+    "elapsed_seconds": 12.129878079984337,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/observer.stdout",
+      "bytes": 164,
+      "mode": 420,
+      "sha256": "190c8b33278f57602526a966ce58549f6980f44051765be1219cbf56696afea4"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/result.json",
+    "bytes": 30425,
+    "mode": 384,
+    "sha256": "32af4165b4456e0e56a793eb46f944ac8e4db33ec841ddad2ecf84c248c3525f"
+  },
+  "payload_exit": {
+    "returncode": 101,
+    "elapsed_seconds": 10.78468658705242,
+    "local_wait_timed_out": false,
+    "reaped": true
+  },
+  "error": "RuntimeError('actual named native outcomes differ')",
+  "final_source_inputs_unchanged": true
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "detcore/tests/testutils/src/lib.rs",
+    "bytes": 30737,
+    "sha256": "87fabd5c6a30a5224ac609ba15c0991187e67784cad5fb8d0bc19d0779666132",
+    "blob": "c540d6f4c836559f72a78ae3e05854788197c465"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "detcore/tests/testutils/src/lib.rs",
+    "bytes": 25734,
+    "sha256": "fd9528abc55fbc57ef2f009cc58f1e512d8b862e8ac16b0349e02fea8410a9d1",
+    "blob": "9d01daacdecab026342a7e04cdc784f98321c6c0"
+  }
+]

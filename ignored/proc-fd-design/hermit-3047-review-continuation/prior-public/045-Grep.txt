@@ -1,0 +1,112 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_012k327paa7UsSrRKyTfoCam",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn hermit_command|fn assert_success|fn stdout\\(|fn stderr\\(",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 40,
+    "head_limit": 160
+  }
+}
+
+Successful public tool result (exact text below):
+206:fn hermit_command(args: &[&str]) -> Command {
+207-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+208-    append_hermit_args(&mut command, args);
+209-    command
+210-}
+211-
+212-fn hermit(args: &[&str]) -> Output {
+213-    hermit_command(args)
+214-        .output()
+215-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+216-}
+217-
+218-fn hermit_with_stdin(args: &[&str], input: &[u8]) -> Output {
+219-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+220-    append_hermit_args(&mut command, args);
+221-    let mut child = command
+222-        .stdin(Stdio::piped())
+223-        .stdout(Stdio::piped())
+224-        .stderr(Stdio::piped())
+225-        .spawn()
+226-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+227-    child
+228-        .stdin
+229-        .take()
+230-        .expect("hermit stdin should be piped")
+231-        .write_all(input)
+232-        .expect("failed to write hermit stdin");
+233-    child
+234-        .wait_with_output()
+235-        .unwrap_or_else(|error| panic!("failed to wait for hermit with {args:?}: {error}"))
+236-}
+237-
+238-fn dbt_stderr_guest() -> &'static Path {
+239-    DBT_STDERR_GUEST.get_or_init(|| {
+240-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+241-            .parent()
+242-            .expect("hermit-cli should be inside the repository");
+243-        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-stderr-nostdlib");
+244-        fs::create_dir_all(&build_root).expect("failed to create DBT stderr guest directory");
+245-        let guest = build_root.join("stderr_nostdlib");
+246-        let output = Command::new("cc")
+--
+764:fn assert_success(output: &Output, args: &[&str]) {
+765-    assert!(
+766-        output.status.success(),
+767-        "hermit {args:?} failed with {}\nstdout:\n{}\nstderr:\n{}",
+768-        output.status,
+769-        String::from_utf8_lossy(&output.stdout),
+770-        String::from_utf8_lossy(&output.stderr),
+771-    );
+772-}
+773-
+774:fn stdout(output: &Output) -> String {
+775-    String::from_utf8(output.stdout.clone()).expect("hermit stdout should be UTF-8")
+776-}
+777-
+778:fn stderr(output: &Output) -> String {
+779-    String::from_utf8(output.stderr.clone()).expect("hermit stderr should be UTF-8")
+780-}
+781-
+782-#[test]
+783-fn kvm_pinned_root_arguments_are_exact_and_fail_closed() {
+784-    assert!(execution_root_args(None).unwrap().is_empty());
+785-    assert_eq!(
+786-        execution_root_args(Some(OsStr::new("/test"))).unwrap(),
+787-        [
+788-            OsString::from("--mount=type=tmpfs,target=/test"),
+789-            OsString::from("--workdir=/test"),
+790-        ]
+791-    );
+792-    let error = execution_root_args(Some(OsStr::new("/tmp"))).unwrap_err();
+793-    assert!(error.contains("HERMIT_E2E_EMPTY_WORKDIR must be /test"));
+794-
+795-    let args = ["run", "--backend", "kvm", "--", "/bin/true"];
+796-    let mut host_command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+797-    append_hermit_args_with_execution_root(&mut host_command, &args, None)
+798-        .expect("an unset workdir request should preserve the host command");
+799-    assert_eq!(
+800-        host_command.get_args().collect::<Vec<_>>(),
+801-        args.map(OsStr::new)
+802-    );
+803-
+804-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+805-    append_hermit_args_with_execution_root(&mut command, &args, Some(OsStr::new("/test")))
+806-        .expect("the documented workdir request should build a command");
+807-    assert_eq!(
+808-        command.get_args().collect::<Vec<_>>(),
+809-        [
+810-            OsStr::new("run"),
+811-            OsStr::new("--backend"),
+812-            OsStr::new("kvm"),
+813-            OsStr::new("--base-env=minimal"),
+814-            OsStr::new("--mount=type=tmpfs,target=/test"),
+815-            OsStr::new("--workdir=/test"),
+816-            OsStr::new("--"),
+817-            OsStr::new("/bin/true"),
+818-        ]

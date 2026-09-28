@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "update-ref",
+    "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+    "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "0000000000000000000000000000000000000000"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

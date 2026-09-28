@@ -1,0 +1,326 @@
+{
+  "scope": "read-only source/input authentication, not tests or runtime evidence",
+  "trees": {
+    "14d63ed54b7284b7f8bc29d44c7610a809815621": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+    "5bc8dfd9a2c024426aaefe504f250a71394bbb09": "d828fca5783a8183e1cff1d42937a2beb5d4f743"
+  },
+  "checks": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/run_matrix.py",
+      "bytes": 84430,
+      "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024",
+      "git_path": "tests/backend-parity/run_matrix.py",
+      "git_entry": "100755 blob 06e87de2267ef2376d235312dc6d0441273234a9\ttests/backend-parity/run_matrix.py",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/e9patch_corpus.py",
+      "bytes": 16102,
+      "sha256": "8e6e1aebf8796c84c37d39d97b5950cbe02dde085f96b72856ae6aeec4593266",
+      "git_path": "tests/backend-parity/e9patch_corpus.py",
+      "git_entry": "100644 blob dae44c680857a9f08d8a79f866593bf81485fc5b\ttests/backend-parity/e9patch_corpus.py",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/hermit-cli/tests/verification_report_consumers.rs",
+      "bytes": 24973,
+      "sha256": "5f79232ebbf264f59d9faa6d9808055a02f1d74c2d1804fdb30e752c9a306669",
+      "git_path": "hermit-cli/tests/verification_report_consumers.rs",
+      "git_entry": "100644 blob 92d001c7f998e072bed715fc9aff425cb4eac4a1\thermit-cli/tests/verification_report_consumers.rs",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/README.md",
+      "bytes": 29575,
+      "sha256": "fb42e68367fde5a9dc19c23e75788252887bcf4c66bb699ee4bad733a00b29df",
+      "git_path": "tests/backend-parity/README.md",
+      "git_entry": "100644 blob 2240751ae06f17a35d34eafe625b15ba3d3aa3e3\ttests/backend-parity/README.md",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_verify_tier_evidence.py",
+      "bytes": 28550,
+      "sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda",
+      "git_path": "tests/backend-parity/test_verify_tier_evidence.py",
+      "git_entry": "100755 blob 94ff1493b104cf5052777e9f8861a5f4f48fd96b\ttests/backend-parity/test_verify_tier_evidence.py",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_parallel_validate_paths.py",
+      "bytes": 15072,
+      "sha256": "7c327fc6bace5fb9365104975f73b8b81d790b448522ea7cd7dc7f160d2dfd72",
+      "git_path": "tests/backend-parity/test_parallel_validate_paths.py",
+      "git_entry": "100644 blob 19fc009fe3ad98d99d28fcc4aeec6477f35fc040\ttests/backend-parity/test_parallel_validate_paths.py",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_scorecard_header_compat.py",
+      "bytes": 32156,
+      "sha256": "da610b2ae0de6bc7a8d6662c73272fe33d302d83cac44aed31ee9c3271bcfca7",
+      "git_path": "tests/backend-parity/test_scorecard_header_compat.py",
+      "git_entry": "100755 blob ca2df1b36c09e80296cbdf006f7b44836cf65c27\ttests/backend-parity/test_scorecard_header_compat.py",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/ci/run-with-hermit-e2e-artifact.sh",
+      "bytes": 1139,
+      "sha256": "c2c90ff03c6ad120ec09b9452accd98ae41f1240a3aafce697b0070987ffd1de",
+      "git_path": "ci/run-with-hermit-e2e-artifact.sh",
+      "git_entry": "100755 blob 2531f5564470aa616b19c143264cdcba9d4a85f2\tci/run-with-hermit-e2e-artifact.sh",
+      "git_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/CONSUMER-MAP.json",
+      "bytes": 6871,
+      "sha256": "5e3033f3cd7848ba16b3969d73dad5610da6144c9bbac978a52d576acffaa8ce",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/PACKAGING-INPUTS.json",
+      "bytes": 1531,
+      "sha256": "101801cc74149ad4a3d87347e9690dd83d37049f85f93b7d0aeaa8cf89878c03",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/PRIOR-INPUTS.json",
+      "bytes": 2170,
+      "sha256": "201db860129cfa721cfcd319bb582a703f81465591c9e906d05af83007d2775b",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/READER-INPUTS.json",
+      "bytes": 6593,
+      "sha256": "7d6578ff9ad5d4e3e2fe6fe19a0573e1f1b6c8fd962b27a65c7f5a58534c7b02",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/REPORT.md",
+      "bytes": 12443,
+      "sha256": "9f85185c10ced9ada4b2aad084c8c1dad7f828bf1c2ddcfc21a38609bccb0c13",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/SOURCE-INPUTS.json",
+      "bytes": 4689,
+      "sha256": "fd423cb5ef9b158a01d60f475524a3b85fe8116ed91b2d218b03a3f8b328d586",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/ci/publish-hermit-e2e-artifact.sh",
+      "bytes": 4801,
+      "sha256": "a7af5922cfeeb4f3603760a30764afc513cdcb8cb86baf298d47e6f74b3edf3c",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/ci/run-with-hermit-e2e-artifact.sh",
+      "bytes": 1139,
+      "sha256": "c2c90ff03c6ad120ec09b9452accd98ae41f1240a3aafce697b0070987ffd1de",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/hermit-cli/tests/common/hermit_binary.rs",
+      "bytes": 7156,
+      "sha256": "2e7afa54130736051e600408b788c1ad0aafe1104553a75155a655782382852c",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/preview-inputs/hermit-cli/src/bin/hermit/main.rs",
+      "bytes": 55019,
+      "sha256": "cda184f7e4dee1e9a1869666878c25910218283c769225dc947375a5aa8031c2",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/preview-inputs/hermit-cli/src/bin/hermit/run.rs",
+      "bytes": 239730,
+      "sha256": "7638e6321c0119de46e1b3bf0ea0eaf8ec4098eefbc03f901022aa58420db612",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/preview-inputs/hermit-cli/src/bin/hermit/verify.rs",
+      "bytes": 132721,
+      "sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/preview-inputs/hermit-cli/src/canonical_verdict.rs",
+      "bytes": 60594,
+      "sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/preview-inputs/hermit-cli/tests/verification_report_consumers.rs",
+      "bytes": 40160,
+      "sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/OTHER-CONSUMERS-v8.md",
+      "bytes": 6299,
+      "sha256": "15f5a900cc735ac2302a791ec5fbe3df0d030059613e4f58ef7c582513a37fd0",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/OTHER-MATCHED-CONSUMERS-v9.md",
+      "bytes": 3454,
+      "sha256": "2e9205bb52ae594562990a05089412ce0f54b71893fa4d1d48d34c5fcf0fcaaf",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/PACKET-v10.json",
+      "bytes": 3100,
+      "sha256": "b6a893869b922e911260a8620cb983b89a7e6ff6a810d1e0e7b7eddde9f35620",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/PREVIEW-MANIFEST-v10.json",
+      "bytes": 23687,
+      "sha256": "0764a3c8f62486daf7eebd81e38029eecc6341911442ce1192c823bc7b9eadb4",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/REPORT-v10.md",
+      "bytes": 2491,
+      "sha256": "b78a07d7c7343db34761b5962795a3a8dd8a78c19a1745763cef997f05be26bf",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/reader-inputs/hermit-cli/Cargo.toml",
+      "bytes": 4358,
+      "sha256": "b9b275fbe4280150a8baa334d4d698e8683bee978171db4640180b354cbfd744",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/reader-inputs/hermit-cli/src/bin/verification-report.rs",
+      "bytes": 5310,
+      "sha256": "9eb5082f3363fc223330c5404fe98cdfd7d58079d33aa1e51045df1be4d36d46",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/data-handling/common.bash",
+      "bytes": 4684,
+      "sha256": "329e9bcd8931a6394938dec57678f15a0cb91221c0c6cd1a0ee81ac9f07336c9",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/determinism-stress/common.sh",
+      "bytes": 8569,
+      "sha256": "38a70abc0078e6dd718ac2a8d75b61a1058d341b09ffdac19cf893e82fbdcf26",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/language-runtimes/run.sh",
+      "bytes": 4347,
+      "sha256": "9fa2cd462f1dbc358e90dffc3a61dafa589f5bf212070873c7f9a650dff32e57",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/e2e/lib/system-utils/_common.sh",
+      "bytes": 7120,
+      "sha256": "cd08a5a44c22757ac73ad106a968dab330163fa116d94d69d377e7280df48864",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/qemu-boot/strict_l2_userspace_test.sh",
+      "bytes": 10833,
+      "sha256": "e75fca3a7bc832db83d80a3415c116752d4552b8a562d3e9c9e6f96a29ed15d1",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/standalone/strict_setitimer.sh",
+      "bytes": 5976,
+      "sha256": "d7c1bcf30860624fed6cebde51e7243b37833921e60e5dcbc522b2071faa05fa",
+      "helper_binding_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/sources/tests/standalone/strict_timer_create.sh",
+      "bytes": 3309,
+      "sha256": "ba8a6d49595c4e02d578369814d554c2e350956baafa9e53e138a1cdd62ccb57",
+      "helper_binding_equal": true
+    },
+    {
+      "git_path": "tests/e2e/lib/data-handling/common.bash",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "329e9bcd8931a6394938dec57678f15a0cb91221c0c6cd1a0ee81ac9f07336c9"
+    },
+    {
+      "git_path": "tests/e2e/lib/determinism-stress/common.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "38a70abc0078e6dd718ac2a8d75b61a1058d341b09ffdac19cf893e82fbdcf26"
+    },
+    {
+      "git_path": "tests/e2e/lib/language-runtimes/run.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "9fa2cd462f1dbc358e90dffc3a61dafa589f5bf212070873c7f9a650dff32e57"
+    },
+    {
+      "git_path": "tests/e2e/lib/system-utils/_common.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "cd08a5a44c22757ac73ad106a968dab330163fa116d94d69d377e7280df48864"
+    },
+    {
+      "git_path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "e75fca3a7bc832db83d80a3415c116752d4552b8a562d3e9c9e6f96a29ed15d1"
+    },
+    {
+      "git_path": "tests/standalone/strict_setitimer.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "d7c1bcf30860624fed6cebde51e7243b37833921e60e5dcbc522b2071faa05fa"
+    },
+    {
+      "git_path": "tests/standalone/strict_timer_create.sh",
+      "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+      "git_bytes_equal": true,
+      "sha256": "ba8a6d49595c4e02d578369814d554c2e350956baafa9e53e138a1cdd62ccb57"
+    }
+  ],
+  "m2_v10_inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/candidate-v10.patch",
+      "bytes": 200081,
+      "sha256": "9d880d6be995f55b6d05173284030d3b1959303f5a68cd88843cf86d2b18709a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/REPORT-v10.md",
+      "bytes": 2491,
+      "sha256": "b78a07d7c7343db34761b5962795a3a8dd8a78c19a1745763cef997f05be26bf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PREVIEW-MANIFEST-v10.json",
+      "bytes": 23687,
+      "sha256": "0764a3c8f62486daf7eebd81e38029eecc6341911442ce1192c823bc7b9eadb4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PACKET-v10.json",
+      "bytes": 3100,
+      "sha256": "b6a893869b922e911260a8620cb983b89a7e6ff6a810d1e0e7b7eddde9f35620"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/OTHER-MATCHED-CONSUMERS-v9.md",
+      "bytes": 3454,
+      "sha256": "2e9205bb52ae594562990a05089412ce0f54b71893fa4d1d48d34c5fcf0fcaaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/OTHER-CONSUMERS-v8.md",
+      "bytes": 6299,
+      "sha256": "15f5a900cc735ac2302a791ec5fbe3df0d030059613e4f58ef7c582513a37fd0"
+    }
+  ],
+  "all_checks_passed": true,
+  "discovery_limits": [
+    {
+      "path": "tests/backend-parity/cases.tsv",
+      "status": "absent in immutable revision; actual case catalog is embedded in run_matrix.py; original diagnostic preserved in ADDITIONAL-INPUTS.json"
+    },
+    {
+      "path": "ci/hermit-e2e-artifact.sh",
+      "status": "guessed path absent, git show returned 128; actual publish/verify/run-with scripts are bound in shell-helper/PACKAGING-INPUTS.json"
+    }
+  ]
+}

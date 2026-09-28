@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "env",
+    "TG_DB_PATH=/home/newton/.tg/hermit2.db",
+    "tg",
+    "kvm-lane-to-full-determinism-and-parity",
+    "-v"
+  ],
+  "returncode": 0,
+  "read_at_utc": "2026-09-17T05:46:29.119360+00:00",
+  "stdout_bytes": 332558,
+  "stdout_sha256": "c741dbc7a023f4edc1294dcd1da52cab09823b24caef70e6f15c2e3cb8943b5d",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

@@ -1,0 +1,29 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01XvPZ8jC97tE9FouJZgtfJ4",
+  "name": "Grep",
+  "input": {
+    "pattern": "discover_live_file_metadata",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+
+Successful public tool result (exact text below):
+detcore-model/src/config.rs:91:    pub discover_live_file_metadata: bool,
+hermit-cli/src/lib.rs:2338:    config.discover_live_file_metadata = backend == Backend::Sabre;
+hermit-cli/src/lib.rs:4168:        assert!(sabre.discover_live_file_metadata);
+hermit-cli/src/lib.rs:4182:        assert!(!ptrace.discover_live_file_metadata);
+detcore/src/tool_local.rs:1770:    pub(crate) discover_live_file_metadata: bool,
+detcore/src/tool_local.rs:2143:        let file_metadata = if cfg.discover_live_file_metadata {
+detcore/src/tool_local.rs:2164:            discover_live_file_metadata: cfg.discover_live_file_metadata,
+detcore/src/tool_local.rs:2446:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2491:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2510:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2522:        if self.discover_live_file_metadata {
+detcore/src/lib.rs:1521:                    discover_live_file_metadata: pts.1.discover_live_file_metadata,
+detcore/src/syscalls/files.rs:1551:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:1993:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:2205:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:2279:                guest.config().discover_live_file_metadata,

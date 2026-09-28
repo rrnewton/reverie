@@ -1,0 +1,62 @@
+commit df8f668f9956797ffaeb72a26a938619c0be5df9
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 20:10:31 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 22:24:13 2026 -0700
+
+    Preserve ordinary inode identity when standard descriptors are reused
+    
+    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+    
+    Plain Language Summary and Project Impact
+    Files and pipes reopened at descriptors 0 through 2 now use their ordinary
+    inode identity. Fixed standard-stream inode values apply only while those
+    slots contain inherited container streams. This repairs the measured KVM
+    fstat versus empty-path stat disagreement after descriptor reuse.
+    
+    Task: kvm-lane-to-full-determinism-and-parity
+    
+    Use the same resource guard for fstat, fdinfo, maps and anonymous proc-fd
+    readlink metadata. Preserve inherited-stream slot outcomes and existing alias
+    behavior. Extend the existing resource tests and keep the original closed-stdin
+    cat assertions first and unchanged, followed by descriptor-reuse controls on
+    native Linux, ptrace and KVM.
+    
+    The fixture retains complete-stat-routes as a separate control. Its broader
+    proc-fd failure remains unresolved; this change does not claim to repair that
+    route or prove the cause of the historical cat loader failure.
+
+commit aa7ea4827b8328345e715d76518d7f2205e41110
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 23:16:11 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 23:16:11 2026 -0700
+
+    Bind KVM mount identities to the actual backend namespace
+    
+    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+    
+    Plain Language Summary and Project Impact
+    KVM now retains the real completed-container mount identity order and validates
+    it against the namespace where the backend opens files. Public library callers
+    capture that same order before guest execution. This lets the shared Detcore
+    fdinfo and mountinfo normalization use actual descriptor and mount identities.
+    
+    Task: kvm-lane-to-full-determinism-and-parity
+    
+    Advance the maintained Reverie pin to landed 596b9adee8473dc0a7e62dce18580eead3d0c5c9,
+    which preserves owned proc-fd metadata and fdinfo semantics. Carry the existing
+    DBT 1050 effective-job-second threshold and 16-job clamp only after verifying
+    all build/vendor/config inputs are unchanged. The first updater invocation
+    retained its calibration refusal; the second completed the normal locked
+    workspace/all-target compile before applying this mount integration.
+    
+    Require exact startup mount-order agreement before mutating captured config;
+    preserve root rewrites and genuine unlisted mount provenance, and remove the
+    obsolete synthetic 0:1 device mapping. Four focused config controls raise only
+    the two Hermit unit inventory declarations from 630 to 634. Generated commands,
+    selected populations, dependencies and resources stay unchanged.
+    
+    The existing descriptor-reuse, complete-stat-routes and original closed-stdin
+    assertions remain unchanged. Their integrated runtime validation is pending;
+    this source change does not assert backend parity or discharge those checks.

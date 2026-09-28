@@ -1,0 +1,12 @@
+{
+  "head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "tree": "f55438705183ac6d874cbbf2dfd83c598a007787",
+  "parent": "114b309413612fafc2657c74e83811c71aac7b19",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "source_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v11-preparation/binding.json",
+  "source_binding_sha256": "792a1dbe1188e2a306ba556411cac61d033ce257585f7bf03c825bfebea819ac",
+  "file_count": 11,
+  "all_commit_source_bytes_match_binding": true,
+  "tracked_worktree_and_index_clean": true,
+  "public_push": false
+}

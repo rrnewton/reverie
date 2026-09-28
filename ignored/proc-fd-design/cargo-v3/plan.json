@@ -1,0 +1,579 @@
+{
+  "schema": 1,
+  "status": "prepared; requires root source-v3 test-only application and concrete execution release",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "source_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "source_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+  "source_manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/tracked-source-manifest.json",
+  "selected_tests": [
+    "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+    "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+    "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+    "executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit",
+    "executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers",
+    "executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable",
+    "executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec",
+    "executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions",
+    "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime",
+    "executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags",
+    "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state",
+    "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts",
+    "executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields",
+    "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+    "executor::tests::guest_fd_paths_reopen_mapped_descriptors",
+    "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags",
+    "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned",
+    "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+    "executor::tests::proc_executable_link_marks_unlinked_and_replaced_files_deleted",
+    "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+    "executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher",
+    "executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation",
+    "executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files",
+    "executor::tests::synthetic_proc_files_serve_deterministic_content",
+    "executor::tests::synthetic_proc_metadata_is_synthetic_and_stable",
+    "executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths",
+    "executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable",
+    "executor::tests::synthetic_proc_self_reflects_guest_identity",
+    "executor::tests::virtual_identity_and_random_files_are_read_only",
+    "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy",
+    "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts",
+    "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset",
+    "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone",
+    "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable",
+    "memory::tests::tracked_user_access_faults_and_returns_partial_copies",
+    "proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success",
+    "proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input"
+  ],
+  "new_test_count": 17,
+  "required_count": 37,
+  "observer": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+  "observer_sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/unit_reference.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "resolved_path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "bytes": 29416,
+      "mode": 493,
+      "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "resolved_path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "bytes": 42932,
+      "mode": 493,
+      "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "resolved_path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "bytes": 15385,
+      "mode": 493,
+      "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "resolved_path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "resolved_path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "bytes": 23892,
+      "mode": 420,
+      "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+    },
+    {
+      "path": "/usr/bin/busctl",
+      "resolved_path": "/usr/bin/busctl",
+      "bytes": 106664,
+      "mode": 493,
+      "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+    },
+    {
+      "path": "/usr/bin/systemctl",
+      "resolved_path": "/usr/bin/systemctl",
+      "bytes": 330440,
+      "mode": 493,
+      "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+    },
+    {
+      "path": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "resolved_path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "mode": 493,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+    },
+    {
+      "path": "/usr/bin/cc",
+      "resolved_path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "mode": 493,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+      "bytes": 3084,
+      "mode": 420,
+      "sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/tracked-source-manifest.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/tracked-source-manifest.json",
+      "bytes": 458357,
+      "mode": 420,
+      "sha256": "1d16067b6d63962afa58c64b44bdeb26da936f17dc4e0aa756b995096eb87253"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/selected-tests.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/selected-tests.json",
+      "bytes": 6403,
+      "mode": 420,
+      "sha256": "11309696fc60610ee35ffcd4db964f445ff481d1228d33defe3a7207165fff8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/NATIVE-PLAN.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/NATIVE-PLAN.json",
+      "bytes": 10592,
+      "mode": 420,
+      "sha256": "82ebbc4e1d20bd261ba2003de3e6c75cb94b5ecba4a5e8038d5038cb1108ab16"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/REVIEW-GUIDE.md",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/REVIEW-GUIDE.md",
+      "bytes": 6398,
+      "mode": 420,
+      "sha256": "e2f301a4236eccdb5ede6cc70165c6af45adf13a1e0f4280b4b248ee0167abcb"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 35930328,
+      "mode": 493,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 647712,
+      "mode": 493,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "bytes": 12485592,
+      "mode": 493,
+      "sha256": "68d9145d164f32d7dbf7b90213f6e07dc1b6e62efb1b329d6507e0471f4c3eed"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+      "bytes": 67056,
+      "mode": 420,
+      "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/PROPOSAL.md",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/PROPOSAL.md",
+      "bytes": 2522,
+      "mode": 420,
+      "sha256": "3a2f495e1f085f19ba795aa6739352e4d257fb4ab013db29f0e23ebc7aa9347c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/delta.patch",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/delta.patch",
+      "bytes": 7060,
+      "mode": 420,
+      "sha256": "107d8831058583ac92ad706c8608d8c245b81a08368cde8a06eea321693bb877"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/plan.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/plan.json",
+      "bytes": 25731,
+      "mode": 420,
+      "sha256": "465afcfc42cd95f78b86fa163e5e14ef5bcab1674d56b33ba78cd9284151c554"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/execution-readback.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/execution-readback.json",
+      "bytes": 17160,
+      "mode": 420,
+      "sha256": "9cb42add9eeb071e9cc459819cd74e68bc10bb68f13fb993248f09df9bca8fba"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/summary.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/summary.json",
+      "bytes": 225,
+      "mode": 420,
+      "sha256": "9fe842e3fba60940dfa4f4441d12bf4e940ace7953905a6909f15c441fd65500"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/compile-service-post.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/compile-service-post.json",
+      "bytes": 372,
+      "mode": 420,
+      "sha256": "85f397aaebe93b6b72e986bd987f715453920797e09924465f934b0026e88dc2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1/compile/result.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1/compile/result.json",
+      "bytes": 31873,
+      "mode": 384,
+      "sha256": "4dc7dc2df4b8b0b73210615d858dbf587766a838504c0769e6252cfec3ececed"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+      "bytes": 31457,
+      "mode": 420,
+      "sha256": "4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/execution-readback.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/execution-readback.json",
+      "bytes": 18090,
+      "mode": 420,
+      "sha256": "1fbfab914d5a454c02e442fe287a5bc235007a38a02f446f2cd04b1afea00ae5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/summary.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/summary.json",
+      "bytes": 1769,
+      "mode": 420,
+      "sha256": "203b0ad9d647f6b919812d5dbe33df0155d7919ac471d1ec168277133b533296"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/retained-executable.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/retained-executable.json",
+      "bytes": 1942,
+      "mode": 420,
+      "sha256": "9d3442353d5202ef56d77bdf36ea80a67939c3767e265671d74879208fc45d80"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/reverie_kvm-source-v2",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/reverie_kvm-source-v2",
+      "bytes": 106835472,
+      "mode": 493,
+      "sha256": "40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/result.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/result.json",
+      "bytes": 34393,
+      "mode": 384,
+      "sha256": "a3a092b03d7d0debdefd7109e49060b6f9c69f3ff6b9f32b188db1463ea93ec1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/result.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/result.json",
+      "bytes": 32203,
+      "mode": 384,
+      "sha256": "cef743affa6763a4982a3d1366f883dac86e43763f1913840b00bf88ea8238e7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/result.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/result.json",
+      "bytes": 42186,
+      "mode": 384,
+      "sha256": "521e3d5e413449b3a8938ba7fa6af62c788e228b16699738ea5fb21c26d0d2bb"
+    }
+  ],
+  "run_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/run-1",
+  "observer_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3",
+  "target_dir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1",
+  "tmpdir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/run-1/tmp",
+  "environment_keys": [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS"
+  ],
+  "environment_fixed": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/run-1/tmp",
+    "CARGO_TERM_COLOR": "never"
+  },
+  "service_memory_max_bytes": 17179869184,
+  "service_swap_max_bytes": 0,
+  "preparation_changes": [
+    "The earlier unexecuted NATIVE-PLAN.json proposed 8 GiB. The unchanged approved observer verifies actual 16 GiB/zero swap; root explicitly accepted this preparation correction. No memory-bound runtime failed or was retried.",
+    "Actual output limits are fatal wrapper stderr: compile 16 MiB, list/native 1 MiB; unchanged observer independently caps each retained stdio file at 64 MiB. Caller reads refuse compile JSON over 16 MiB and list/native over 1 MiB. These distinct limits are stated rather than treating a read cap as a producer cap.",
+    "The terminal v1 compile failed with E0061 and no test executable. Its result/accounting and source-v1 files remain retained. This v2 plan requires all corrected source-v2 bytes before dispatch.",
+    "Reuse only the already-owned proc-fd-native-v1 target after verifying the bound prior failed compile has complete empty accounting and reading its service inactive again. Cache path identity is not executable or source identity.",
+    "Cargo.lock was generated by the v1 unlocked offline compilation. Its exact 67056 bytes are now bound, and v2 adds --locked while retaining --offline and two jobs. The lockfile must stay unchanged through all phases.",
+    "The new cargo-v2 observer output directory is proposed for root release; no observer files or services are created by preparation.",
+    "The released source-v2 sequence compiled and listed successfully, then retained native35 pass/1 failure; this source-v3 test-only correction keeps that result and an immutable copy of its actual test executable. Prior history remains evidence, not a retry pass.",
+    "Retain all36 selected identities and add the existing executable-link replacement/deletion control;37 must pass with zero ignored. Production code is byte-identical to v2.",
+    "Fresh cargo-v3 observer subtree is proposed for root release. Same bounds and owned target, now admitted only after all3 prior-v2 stages are independently confirmed inactive and empty."
+  ],
+  "stages": [
+    {
+      "name": "compile",
+      "cpu_usec": 600000000,
+      "wall_seconds": 900,
+      "stderr_limit_bytes": 16777216,
+      "reader_limit_bytes": 16777216,
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/compile",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/compile",
+        "--cpu-usec",
+        "600000000",
+        "--wall-seconds",
+        "900",
+        "--log-bytes",
+        "16777216",
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ]
+    },
+    {
+      "name": "list",
+      "cpu_usec": 5000000,
+      "wall_seconds": 15,
+      "stderr_limit_bytes": 1048576,
+      "reader_limit_bytes": 1048576,
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/list",
+      "payload": [
+        "<verified-compiled-test-executable>",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/list",
+        "--cpu-usec",
+        "5000000",
+        "--wall-seconds",
+        "15",
+        "--log-bytes",
+        "1048576",
+        "<verified-compiled-test-executable>",
+        "--list",
+        "--format",
+        "terse"
+      ]
+    },
+    {
+      "name": "native",
+      "cpu_usec": 30000000,
+      "wall_seconds": 60,
+      "stderr_limit_bytes": 1048576,
+      "reader_limit_bytes": 1048576,
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/native",
+      "payload": [
+        "<verified-compiled-test-executable>",
+        "--exact",
+        "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+        "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+        "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+        "executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit",
+        "executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers",
+        "executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable",
+        "executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec",
+        "executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions",
+        "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime",
+        "executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags",
+        "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state",
+        "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts",
+        "executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields",
+        "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+        "executor::tests::guest_fd_paths_reopen_mapped_descriptors",
+        "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags",
+        "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned",
+        "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+        "executor::tests::proc_executable_link_marks_unlinked_and_replaced_files_deleted",
+        "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+        "executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher",
+        "executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation",
+        "executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files",
+        "executor::tests::synthetic_proc_files_serve_deterministic_content",
+        "executor::tests::synthetic_proc_metadata_is_synthetic_and_stable",
+        "executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths",
+        "executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable",
+        "executor::tests::synthetic_proc_self_reflects_guest_identity",
+        "executor::tests::virtual_identity_and_random_files_are_read_only",
+        "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy",
+        "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts",
+        "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset",
+        "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone",
+        "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable",
+        "memory::tests::tracked_user_access_faults_and_returns_partial_copies",
+        "proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success",
+        "proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/native",
+        "--cpu-usec",
+        "30000000",
+        "--wall-seconds",
+        "60",
+        "--log-bytes",
+        "1048576",
+        "<verified-compiled-test-executable>",
+        "--exact",
+        "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+        "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+        "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+        "executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit",
+        "executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers",
+        "executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable",
+        "executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec",
+        "executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions",
+        "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime",
+        "executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags",
+        "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state",
+        "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts",
+        "executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields",
+        "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+        "executor::tests::guest_fd_paths_reopen_mapped_descriptors",
+        "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags",
+        "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned",
+        "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+        "executor::tests::proc_executable_link_marks_unlinked_and_replaced_files_deleted",
+        "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+        "executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher",
+        "executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation",
+        "executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files",
+        "executor::tests::synthetic_proc_files_serve_deterministic_content",
+        "executor::tests::synthetic_proc_metadata_is_synthetic_and_stable",
+        "executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths",
+        "executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable",
+        "executor::tests::synthetic_proc_self_reflects_guest_identity",
+        "executor::tests::virtual_identity_and_random_files_are_read_only",
+        "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy",
+        "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts",
+        "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset",
+        "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone",
+        "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable",
+        "memory::tests::tracked_user_access_faults_and_returns_partial_copies",
+        "proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success",
+        "proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input",
+        "--test-threads=1",
+        "--nocapture"
+      ]
+    }
+  ],
+  "no_retries": true,
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/launch.py"
+  ],
+  "provenance_limit": "Bound source, tool entrypoints, supervisor and actual emitted test executable. This is native mechanism coverage, not compiler reproducibility, Hermit guest success or KVM parity. Registry/header/transitive compiler files are not exhaustively frozen.",
+  "dependency_lockfile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+  },
+  "prior_sequence": {
+    "plan": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+    "readback": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/execution-readback.json",
+    "summary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/summary.json",
+    "retained_executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/retained-executable.json",
+    "stages": [
+      {
+        "name": "compile",
+        "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/result.json",
+        "expected_exit": 0
+      },
+      {
+        "name": "list",
+        "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/result.json",
+        "expected_exit": 0
+      },
+      {
+        "name": "native",
+        "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/result.json",
+        "expected_exit": 101
+      }
+    ]
+  }
+}

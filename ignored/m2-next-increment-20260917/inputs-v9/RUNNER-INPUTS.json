@@ -1,0 +1,26 @@
+{
+  "scope": "immutable runner source only; no execution",
+  "files": [
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/rust-script-bin/rust-script",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/ci/rust-script-bin/rust-script",
+      "bytes": 5505,
+      "sha256": "ebcc3722e47d56ba0a898a4fc277bbc281f7f3dbbf95f746bacbd0566604a000"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/rust-script-bin/run-test-harness",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/ci/rust-script-bin/run-test-harness",
+      "bytes": 1281,
+      "sha256": "7cc8037bf634cf16ba66e0fd0737dc49feb7f3990c178a499144c1ba793be6a9"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/prepare-rust-scripts.sh",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/ci/prepare-rust-scripts.sh",
+      "bytes": 16140,
+      "sha256": "177849b3af75a9251d11048ccbe374bd2ee9a9c2a42354e7699757857f05268a"
+    }
+  ]
+}

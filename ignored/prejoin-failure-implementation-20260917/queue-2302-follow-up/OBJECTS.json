@@ -1,0 +1,142 @@
+[
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "detcore/src/logdiff.rs",
+    "bytes": 193571,
+    "sha256": "d1021d8334488bbd3a8fc2f66228fc7b20f161482204ae8f592a5ef6226358eb",
+    "blob": "3c3e916c8db6f2193ee1e4face9887afb81cc3e7"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+    "bytes": 60913,
+    "sha256": "7f83414e4c8f09040a3796579600b24c9e3cfaaacd6114767023b0c79c7a25c6",
+    "blob": "497978d7646bade232f807af45579e7765aedf49"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/src/bin/hermit/verify.rs",
+    "bytes": 139006,
+    "sha256": "cc961fc62ba42e4cea9b37b9744e234522158ec0acc899c9712ebf6b503bd7d2",
+    "blob": "fab34db8b7df8238ce9c60677c633584b5a3d0a4"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/src/bin/hermit/run.rs",
+    "bytes": 241817,
+    "sha256": "29bd21b6ac3a267288fe1440e561f59a657226ff601c3be9828ae2526dbf8155",
+    "blob": "97b2bb98361cbf786b5669ddccd42d9b2f88753c"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-cli/tests/cli.rs",
+    "bytes": 267845,
+    "sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0",
+    "blob": "297c41ff7e2360dd3c91a6a836a4b27a4fe8a654"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-verify/src/common/verify.rs",
+    "bytes": 12531,
+    "sha256": "93b32880b33ba1cc7d1edc314f1c64bac1386da80de0d0ec88b98cd3a10d6874",
+    "blob": "e6ad28fca9234126c2a2a13cd1cc6de288ed4915"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-verify/src/use_case.rs",
+    "bytes": 2915,
+    "sha256": "80b328bed959d19b35df1ddb17a3056a93d26e435f567dceb82fa430c67b768b",
+    "blob": "4f0b35e06ac4e8d112b6dbc7a43378b6cabfc13b"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-verify/src/use_case/run_usecase.rs",
+    "bytes": 3845,
+    "sha256": "5551582360d3cb0d77c9402c167eb2d7d07eb8086f8b9899efeb3ff82ea313b8",
+    "blob": "83243e1c127591023d1e422f4a0840a6354840cf"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-verify/src/chaos_replay.rs",
+    "bytes": 3883,
+    "sha256": "20ee20ccf992cc7c512cab041c669798fd2adf9a2cb3d0fed3aa1980afd05bab",
+    "blob": "3352eac540310de96d10dfd82ce2c59faed079ad"
+  },
+  {
+    "revision": "969437b9f1a2a48ff34b62ee960570fbf3be2de5",
+    "path": "hermit-verify/src/trace_replay.rs",
+    "bytes": 7873,
+    "sha256": "251b72604553af9b8693a48cf7b7f4f4abaf7c1711144e48e9567faf871a5bcf",
+    "blob": "1cb6ae932e4f8622d62b788fc9aff71d160ef1c9"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "detcore/src/logdiff.rs",
+    "bytes": 68579,
+    "sha256": "bbdba116e252c8eba81dcfcd5956aba55acd3d6a646034e41d4e611c4189d8e9",
+    "blob": "c057bef7af23735ae03a425bfed2d3ab100e6c56"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+    "bytes": 10535,
+    "sha256": "04f447e14a043ac1f0c24c0573ef2c75e97aca3161dd937b8acba1726ff6840a",
+    "blob": "1a6328c3cb2fba2f08c3b0c92b60cfff290c769f"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-cli/src/bin/hermit/verify.rs",
+    "bytes": 72118,
+    "sha256": "3f8f020d2bddb355b894420c254cffb1370ba3d4d4dc21f50b414dda738d8a0c",
+    "blob": "34397aa401aed81fd8ec5acb3f63ea3b7e04ba9b"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-cli/src/bin/hermit/run.rs",
+    "bytes": 132108,
+    "sha256": "4968b9c09ee0b72a7cb6f138a0cc7e3c341cc0576d094f78d79b164c1f6b82f3",
+    "blob": "75a8af60967f20194b3f491756b0be7a78335da3"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-cli/tests/cli.rs",
+    "bytes": 73280,
+    "sha256": "ef9fe34f750558fe5e281a772bac699054b86e6aa449c99c675ada250fee03ab",
+    "blob": "ed52a5081e1224f195106680d93853bdcddb36be"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-verify/src/common/verify.rs",
+    "bytes": 9450,
+    "sha256": "a137accd9b6b13c1cf4b8161df863bc39f1eaf8e3b338f5c02842b4b022ee6d9",
+    "blob": "5aa9d1e80497bd120c22d69af7f431d9c869ead2"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-verify/src/use_case.rs",
+    "bytes": 2295,
+    "sha256": "39ee743207ae76e79e25d1efe8ee2785abf96bd267707fec799110f1aec727fc",
+    "blob": "53bb888bb2f521e1e743ebc29a72d34a8f368345"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-verify/src/use_case/run_usecase.rs",
+    "bytes": 3394,
+    "sha256": "feb93a343b1ee0cd309403b721e83c1bc245adbc4d34202143a52677856f7d55",
+    "blob": "5022cf9142e5c54250bff5ac04fba71c95bc220c"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-verify/src/chaos_replay.rs",
+    "bytes": 3658,
+    "sha256": "b24ce39d6e54cfc4e93ef6409a2d4e613b8076d261cc64bf31ce60d003d8ff08",
+    "blob": "a4775cf52dceaa177b8b26517ecae0fd3b94273b"
+  },
+  {
+    "revision": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "path": "hermit-verify/src/trace_replay.rs",
+    "bytes": 6397,
+    "sha256": "0b9973149bdf9135f5fe017218670ae2f4523da4e10760d29d6369de91464c68",
+    "blob": "43827ec1b04db771504c69ce1e6adc40ef6fa43f"
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "literal": "unsupported_contained_status_flag_change",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "record_or_replay_inherited_write",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "inherited_stdio_alias_error",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "append-record-replay step=",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "stdio-status-flags-ok",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "append-native child pid=",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "stderr_append_after_stdout_set=",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "literal": "guest_append=1 guest_nonblock=1",
+    "exit": 1,
+    "stdout": "",
+    "stderr": ""
+  }
+]

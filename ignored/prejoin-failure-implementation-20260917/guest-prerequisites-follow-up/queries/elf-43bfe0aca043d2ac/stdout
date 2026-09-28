@@ -1,0 +1,76 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x1154770
+There are 14 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x000310 0x000310 R   0x8
+  INTERP         0x000350 0x0000000000000350 0x0000000000000350 0x00001c 0x00001c R   0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x3b4f70 0x3b4f70 R   0x1000
+  LOAD           0x3b5000 0x00000000003b5000 0x00000000003b5000 0xf9e2c5 0xf9e2c5 R E 0x1000
+  LOAD           0x1354000 0x0000000001354000 0x0000000001354000 0x67dd09 0x67dd09 R   0x1000
+  LOAD           0x19d2a98 0x00000000019d2a98 0x00000000019d2a98 0x179fe8 0x2d6b50 RW  0x1000
+  DYNAMIC        0x1b41490 0x0000000001b41490 0x0000000001b41490 0x000260 0x000260 RW  0x8
+  NOTE           0x000370 0x0000000000000370 0x0000000000000370 0x000030 0x000030 R   0x8
+  NOTE           0x0003a0 0x00000000000003a0 0x00000000000003a0 0x000044 0x000044 R   0x4
+  TLS            0x19d2a98 0x00000000019d2a98 0x00000000019d2a98 0x000000 0x000010 R   0x8
+  GNU_PROPERTY   0x000370 0x0000000000000370 0x0000000000000370 0x000030 0x000030 R   0x8
+  GNU_EH_FRAME   0x178d2bc 0x000000000178d2bc 0x000000000178d2bc 0x05473c 0x05473c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x19d2a98 0x00000000019d2a98 0x00000000019d2a98 0x16f568 0x16f568 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .interp .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt 
+   03     .init .plt .plt.sec .text .fini 
+   04     .rodata .stapsdt.base .eh_frame_hdr .eh_frame .gcc_except_table 
+   05     .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   06     .dynamic 
+   07     .note.gnu.property 
+   08     .note.gnu.build-id .note.ABI-tag 
+   09     .tbss 
+   10     .note.gnu.property 
+   11     .eh_frame_hdr 
+   12     
+   13     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x1b41490 contains 34 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libmpc.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libmpfr.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgmp.so.10]
+ 0x0000000000000001 (NEEDED)             Shared library: [libz.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libzstd.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]
+ 0x000000000000000c (INIT)               0x3b5000
+ 0x000000000000000d (FINI)               0x13532b8
+ 0x0000000000000019 (INIT_ARRAY)         0x19d2a98
+ 0x000000000000001b (INIT_ARRAYSZ)       24 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x19d2ab0
+ 0x000000000000001c (FINI_ARRAYSZ)       16 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x3e8
+ 0x0000000000000005 (STRTAB)             0xa85b8
+ 0x0000000000000006 (SYMTAB)             0x29328
+ 0x000000000000000a (STRSZ)              928515 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x1b416f0
+ 0x0000000000000002 (PLTRELSZ)           5232 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x3b3b00
+ 0x0000000000000007 (RELA)               0x195b38
+ 0x0000000000000008 (RELASZ)             2219976 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x195a48
+ 0x000000006fffffff (VERNEEDNUM)         3
+ 0x000000006ffffff0 (VERSYM)             0x18b0bc
+ 0x000000006ffffff9 (RELACOUNT)          92425
+ 0x0000000000000000 (NULL)               0x0

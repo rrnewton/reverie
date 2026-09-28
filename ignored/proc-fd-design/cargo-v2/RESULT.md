@@ -1,0 +1,9 @@
+The single released v2 attempt compiled successfully and listed all 36 selected names. The native run exited 101: 35 passed, one failed, zero ignored. No automatic retry or source change occurred.
+
+The sole failure is executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned, executor.rs:23558: private fd_object_inodes value Some(553648131) was compared with followed-stat native pipe inode Some(1480778888). Earlier checks in that same test verified all pipe aliases and their readlink/followed-stat equality, including survival after closing the first descriptor. The failure occurs after allocating a replacement pipe, where the preserved test mixed its private synthetic identity with the now-native visible identity. This source distinction supports a separate private-ID assertion plus direct-fstat/native-stat/readlink replacement control, not removing the nonreuse check. No repair has been applied.
+
+Compile used 16.327283 CPU / 11.590730082 wall seconds; listing 0.201525 / 0.829528188; native 0.227789 / 0.891097215. All three services have complete CPU accounting and fresh inactive/dead/MainPID0/empty control-group readbacks. There was no observer or resource-bound failure. The prior v1 E0061 compile failure remains retained.
+
+The emitted KVM library test executable is 106835472 bytes, SHA256 40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be. Its actual Cargo JSON, all 36 individual outcomes, current executable bytes/mode, all 30 plan inputs, all 2550 source files, six candidate modes and the unchanged Cargo.lock were independently read back. Both v2 boundary correction controls passed. These are native mechanism results; no Hermit guest, KVM guest, closed-stdin success or parity is claimed.
+
+All per-test names, complete stderr and exact artifacts are in execution-readback.json (SHA256 1fbfab914d5a454c02e442fe287a5bc235007a38a02f446f2cd04b1afea00ae5).

@@ -1,0 +1,110 @@
+{
+  "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tree": "b86bfdb0703e96d377007c102eccfa57ba362396",
+  "parent": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "commit_headers": [
+    "tree b86bfdb0703e96d377007c102eccfa57ba362396",
+    "parent 24cd5bb518b027eddb62a226805210d74d31c3d8",
+    "author Ryan Newton <rrnewton@gmail.com> 1789621856 -0700",
+    "committer Ryan Newton <rrnewton@gmail.com> 1789621856 -0700"
+  ],
+  "message_sha256": "c4f14c3cd4b2e48ae0f20b5f28c42d8ac3184c1a1a4aea01e5a24c87d0f9a61b",
+  "message_exact": true,
+  "tracked_tree_clean": true,
+  "changed_files_exactly_six": true,
+  "files": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "git_mode": "100644",
+      "blob": "7959e7780cec9d3b41a6cf13088e474e3b03c1bf",
+      "bytes": 64373,
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "git_mode": "100644",
+      "blob": "44ee9f7c26dd71075291aad4446051eeee6eba02",
+      "bytes": 1393581,
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1"
+    },
+    {
+      "path": "reverie-kvm/src/fdinfo.rs",
+      "git_mode": "100644",
+      "blob": "2518463e81b35fb2c27ef823edc3d103ec3bba01",
+      "bytes": 3629,
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "git_mode": "100644",
+      "blob": "b0645d69507e33ca76880691ccb5c5f9c8d9d190",
+      "bytes": 1594,
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9"
+    },
+    {
+      "path": "reverie-kvm/src/memory.rs",
+      "git_mode": "100644",
+      "blob": "ce39403ae27b32ff5c0952868759951a10acbb40",
+      "bytes": 55591,
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6"
+    },
+    {
+      "path": "reverie-kvm/src/proc_mounts.rs",
+      "git_mode": "100644",
+      "blob": "413c53832e52d380814741306e7a2ba528d78424",
+      "bytes": 2674,
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    }
+  ],
+  "normal_git_commit": {
+    "argv": [
+      "git",
+      "commit",
+      "-F",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/commit-preparation/commit-message.txt"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.20160028501413763,
+    "normal_hooks": true,
+    "no_amend_no_override": true
+  },
+  "hook_configuration": {
+    "exit": 0,
+    "stdout": "file:/home/newton/work/dev-hermit/.git/modules/reverie/config\t/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks\n",
+    "stderr": ""
+  },
+  "hook_files": [
+    {
+      "name": "pre-commit",
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-commit",
+      "exists": true,
+      "executable": true,
+      "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+    },
+    {
+      "name": "prepare-commit-msg",
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/prepare-commit-msg",
+      "exists": true,
+      "executable": true,
+      "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+    },
+    {
+      "name": "commit-msg",
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/commit-msg",
+      "exists": true,
+      "executable": true,
+      "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+    },
+    {
+      "name": "post-commit",
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-commit",
+      "exists": true,
+      "executable": true,
+      "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+    }
+  ],
+  "hook_claim": "Normal git commit invocation, no bypass; hook presence recorded separately, no unobserved check claimed.",
+  "publication": "local commit only; no push or PR",
+  "source_v3_binding_sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+}

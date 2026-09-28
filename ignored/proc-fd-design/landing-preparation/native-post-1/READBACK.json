@@ -1,0 +1,12 @@
+{
+  "comment_url": "https://github.com/rrnewton/reverie/pull/565#issuecomment-5709597673",
+  "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "body_sha256": "8798420ff214cbbbf18f0486d59260e8d0c6b6ff0be76410672223474d4ceb75",
+  "public_bytes_equal": true,
+  "after": {
+    "headRefOid": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "isDraft": true,
+    "state": "OPEN",
+    "url": "https://github.com/rrnewton/reverie/pull/565"
+  }
+}

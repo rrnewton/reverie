@@ -1,0 +1,13 @@
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:203:L2_ALLOWED = {
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:259:DEFAULT_VERIFY_POLICY = VerifyPolicy.checked(
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:1044:def verify_tier_from_json(path: Path) -> dict[str, str] | None:
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:1236:def run_case_verify(
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:1272:            verify_tier_from_json(verdict_path) if verdict_path.exists() else None
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/run_matrix.py:1365:        return run_case_verify(
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_parallel_validate_paths.py:105:            receipt = run_matrix.verify_tier_from_json(path)
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:68:            return verify_tier_from_json(path)
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:69:        return verify_tier_from_json(path)
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:208:            result, detail, _ = run_case_verify(
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:399:    check("malformed JSON yields None", verify_tier_from_json(bad) is None)
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:438:canonical_policy = VerifyPolicy.checked(
+14d63ed54b7284b7f8bc29d44c7610a809815621:tests/backend-parity/test_verify_tier_evidence.py:458:        VerifyPolicy.checked(flags, tier, "invalid test policy")

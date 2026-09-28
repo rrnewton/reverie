@@ -1,0 +1,188 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -23441,7 +23441,41 @@
+             negative_errno(libc::ENOENT)
+         );
+ 
+-        // Kernel pipe inode numbers are host-specific; expose a guest-stable link.
++        // Ordinary pipe links report the owned kernel object, matching direct
++        // fstat. Keep private object bookkeeping separate from visible inodes.
++        fn assert_pipe_stat_identity(
++            memory: &mut GuestMemory,
++            state: &mut LoadedStaticElf,
++            fd: libc::c_int,
++            followed: &libc::stat,
++        ) {
++            let mut native: libc::stat = unsafe { std::mem::zeroed() };
++            assert_eq!(
++                unsafe { libc::fstat(state.files[&fd].as_raw_fd(), &mut native) },
++                0
++            );
++            assert_eq!(
++                syscall_result(
++                    memory,
++                    state,
++                    libc::SYS_fstat,
++                    [fd as u64, STAT, 0, 0, 0, 0],
++                ),
++                0
++            );
++            let direct: libc::stat = read_struct(memory, STAT);
++            assert_eq!(native.st_mode & libc::S_IFMT, libc::S_IFIFO);
++            for observed in [followed, &direct] {
++                assert_eq!(
++                    (
++                        observed.st_dev,
++                        observed.st_ino,
++                        observed.st_mode & libc::S_IFMT
++                    ),
++                    (native.st_dev, native.st_ino, native.st_mode & libc::S_IFMT)
++                );
++            }
++        }
+         assert_eq!(
+             syscall_result(
+                 &mut memory,
+@@ -23460,6 +23494,16 @@
+             [pipe_fds[0] as u64, 0, 0, 0, 0, 0],
+         );
+         assert_eq!(duplicate, 5);
++        let private_inode = state.fd_object_inodes[&pipe_fds[0]].inode;
++        for fd in [pipe_fds[0], pipe_fds[1], duplicate as libc::c_int] {
++            assert_eq!(
++                state
++                    .fd_object_inodes
++                    .get(&fd)
++                    .map(|identity| identity.inode),
++                Some(private_inode)
++            );
++        }
+ 
+         let mut targets = Vec::new();
+         let mut inodes = Vec::new();
+@@ -23485,6 +23529,7 @@
+                 0
+             );
+             let stat: libc::stat = read_struct(&memory, STAT);
++            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
+             inodes.push(stat.st_ino);
+         }
+ 
+@@ -23520,6 +23565,7 @@
+                 0
+             );
+             let stat: libc::stat = read_struct(&memory, STAT);
++            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
+             assert_eq!(
+                 stat.st_ino, stable_inode,
+                 "closing the first pipe fd must not change surviving identity"
+@@ -23539,7 +23585,7 @@
+         );
+         let second_pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+         assert_eq!(second_pipe_fds, [3, 6]);
+-        let new_inode = state
++        let new_private_inode = state
+             .fd_object_inodes
+             .get(&second_pipe_fds[0])
+             .map(|identity| identity.inode)
+@@ -23549,33 +23595,76 @@
+                 .fd_object_inodes
+                 .get(&second_pipe_fds[1])
+                 .map(|identity| identity.inode),
+-            Some(new_inode)
++            Some(new_private_inode)
+         );
+         assert_ne!(
+-            new_inode, stable_inode,
++            new_private_inode, private_inode,
+             "descriptor reuse must allocate a distinct live pipe identity"
+         );
+-        assert_eq!(
+-            state
+-                .fd_object_inodes
+-                .get(&pipe_fds[1])
+-                .map(|identity| identity.inode),
+-            Some(stable_inode)
+-        );
+-        write_c_string(
+-            &mut memory,
+-            PATH,
+-            &format!("/proc/self/fd/{}", second_pipe_fds[0]),
+-        );
+-        let count = syscall_result(
+-            &mut memory,
+-            &mut state,
+-            libc::SYS_readlink,
+-            [PATH, OUTPUT, 4096, 0, 0, 0],
+-        );
+-        let mut target = vec![0; count as usize];
+-        memory.read(OUTPUT, &mut target).unwrap();
+-        assert_eq!(target, format!("pipe:[{new_inode}]").as_bytes());
++        for fd in [pipe_fds[1], duplicate as libc::c_int] {
++            assert_eq!(
++                state
++                    .fd_object_inodes
++                    .get(&fd)
++                    .map(|identity| identity.inode),
++                Some(private_inode)
++            );
++            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_newfstatat,
++                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
++                ),
++                0
++            );
++            let stat: libc::stat = read_struct(&memory, STAT);
++            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
++            assert_eq!(stat.st_ino, stable_inode);
++            let count = syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_readlink,
++                [PATH, OUTPUT, 4096, 0, 0, 0],
++            );
++            assert_eq!(count, stable_pipe.len() as i64);
++            let mut target = vec![0; count as usize];
++            memory.read(OUTPUT, &mut target).unwrap();
++            assert_eq!(target, stable_pipe.as_bytes());
++        }
++        let mut new_inodes = Vec::new();
++        for fd in second_pipe_fds {
++            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_newfstatat,
++                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
++                ),
++                0
++            );
++            let stat: libc::stat = read_struct(&memory, STAT);
++            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
++            assert_ne!(
++                stat.st_ino, stable_inode,
++                "descriptor reuse must expose a distinct live pipe object"
++            );
++            new_inodes.push(stat.st_ino);
++            let count = syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_readlink,
++                [PATH, OUTPUT, 4096, 0, 0, 0],
++            );
++            let expected = format!("pipe:[{}]", stat.st_ino);
++            assert_eq!(count, expected.len() as i64);
++            let mut target = vec![0; count as usize];
++            memory.read(OUTPUT, &mut target).unwrap();
++            assert_eq!(target, expected.as_bytes());
++        }
++        assert_eq!(new_inodes[0], new_inodes[1]);
+     }
+ 
+     #[test]

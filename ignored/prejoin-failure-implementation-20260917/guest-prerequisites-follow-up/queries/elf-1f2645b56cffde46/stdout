@@ -1,0 +1,68 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x2a7d0
+There are 14 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x000310 0x000310 R   0x8
+  INTERP         0x1c4920 0x00000000001c4920 0x00000000001c4920 0x00001c 0x00001c R   0x10
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x028118 0x028118 R   0x1000
+  LOAD           0x029000 0x0000000000029000 0x0000000000029000 0x17466c 0x17466c R E 0x1000
+  LOAD           0x19e000 0x000000000019e000 0x000000000019e000 0x0580d4 0x0580d4 R   0x1000
+  LOAD           0x1f68b8 0x00000000001f78b8 0x00000000001f78b8 0x004ff0 0x012718 RW  0x1000
+  DYNAMIC        0x1f9ba0 0x00000000001faba0 0x00000000001faba0 0x0001e0 0x0001e0 RW  0x8
+  NOTE           0x000350 0x0000000000000350 0x0000000000000350 0x000030 0x000030 R   0x8
+  NOTE           0x000380 0x0000000000000380 0x0000000000000380 0x000044 0x000044 R   0x4
+  TLS            0x1f68b8 0x00000000001f78b8 0x00000000001f78b8 0x000028 0x000088 R   0x8
+  GNU_PROPERTY   0x000350 0x0000000000000350 0x0000000000000350 0x000030 0x000030 R   0x8
+  GNU_EH_FRAME   0x1c493c 0x00000000001c493c 0x00000000001c493c 0x00741c 0x00741c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x1f68b8 0x00000000001f78b8 0x00000000001f78b8 0x003748 0x003748 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_d .gnu.version_r .rela.dyn .rela.plt 
+   03     .plt .plt.sec .text __libc_freeres_fn 
+   04     .rodata .stapsdt.base .interp .eh_frame_hdr .eh_frame .gcc_except_table .hash 
+   05     .tdata .init_array __libc_subfreeres __libc_atexit __libc_IO_vtables .data.rel.ro .dynamic .got .got.plt .data .bss 
+   06     .dynamic 
+   07     .note.gnu.property 
+   08     .note.gnu.build-id .note.ABI-tag 
+   09     .tdata .tbss 
+   10     .note.gnu.property 
+   11     .eh_frame_hdr 
+   12     
+   13     .tdata .init_array __libc_subfreeres __libc_atexit __libc_IO_vtables .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x1f9ba0 contains 26 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]
+ 0x000000000000000e (SONAME)             Library soname: [libc.so.6]
+ 0x0000000000000019 (INIT_ARRAY)         0x1f78e0
+ 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)
+ 0x0000000000000004 (HASH)               0x1f21a0
+ 0x000000006ffffef5 (GNU_HASH)           0x3c8
+ 0x0000000000000005 (STRTAB)             0x16670
+ 0x0000000000000006 (SYMTAB)             0x4ac0
+ 0x000000000000000a (STRSZ)              32579 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x1fb000
+ 0x0000000000000002 (PLTRELSZ)           1416 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x27b90
+ 0x0000000000000007 (RELA)               0x202e8
+ 0x0000000000000008 (RELASZ)             30888 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffc (VERDEF)             0x1fd58
+ 0x000000006ffffffd (VERDEFNUM)          38
+ 0x000000000000001e (FLAGS)              BIND_NOW STATIC_TLS
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0x20298
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0x1e5b4
+ 0x000000006ffffff9 (RELACOUNT)          1200
+ 0x0000000000000000 (NULL)               0x0

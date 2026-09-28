@@ -1,0 +1,11 @@
+--- a/reverie-kvm/src/runtime/failure_tests.rs
++++ b/reverie-kvm/src/runtime/failure_tests.rs
+@@ -238,7 +238,7 @@
+         let cleanup = case == "peer cleanup errors";
+         let start_permitted = case != "unstarted thread";
+         let outcome = match case {
+-            "own execution error" => Err(Error::Reverie(Errno::ENOTSUP.into())),
++            "own execution error" => Err(Error::Reverie(Errno::ENOTSUPP.into())),
+             "ordinary cancellation" => Ok(ToolProcessExit {
+                 exit: executor.cancel_current_thread(),
+                 cancelled: true,

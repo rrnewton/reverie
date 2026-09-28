@@ -1,0 +1,62 @@
+{
+  "remote_after_refusal": {
+    "argv": [
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "ls-remote",
+      "--heads",
+      "origin",
+      "refs/heads/codex/kvm-prejoin-failure-20260917",
+      "refs/heads/codex/kvm-proc-fd-identity-20260917"
+    ],
+    "exit": 0,
+    "stdout": "696f0476aa46cf29e31b947a89379d80b4542ce3\trefs/heads/codex/kvm-proc-fd-identity-20260917\n",
+    "stderr": ""
+  },
+  "branch": {
+    "argv": [
+      "git",
+      "branch",
+      "--show-current"
+    ],
+    "exit": 0,
+    "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+    "stderr": ""
+  },
+  "head": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit": 0,
+    "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\n",
+    "stderr": ""
+  },
+  "tracked_status": {
+    "argv": [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=no"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "terminal": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "safehermit-20260917T174058Z-3062058.service",
+      "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+    ],
+    "exit": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+    "stderr": ""
+  },
+  "source_checks": "All four complete source/input plans match after refusal",
+  "failure": "Script payload failed at before_exec with FileNotFoundError on fd 3; Git was not executed.",
+  "raw_result_sha256": "ba78a447db9940e9386dfed23d347fe75d805e564aa12ef4f735331777b1984a"
+}

@@ -1,0 +1,89 @@
+{
+  "scope": "immutable scoped evidence review",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/REPORT.md",
+      "bytes": 9880,
+      "mode": 420,
+      "sha256": "febd2ebab49212b74e5d3ce6e57985fa9e70730cf9163e0d1fe05f749f5a6674"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/ORIGINAL-FIXTURE-IDENTITY.json",
+      "bytes": 463,
+      "mode": 420,
+      "sha256": "b1c0482a8ff06e4bee5af77bb6a683d258e8d58376838175d69c2b294ae52ec1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/readback-v1.py",
+      "bytes": 17659,
+      "mode": 420,
+      "sha256": "0cda8e2b32ec440086012b33064d5979fd3ccee0638c5f4378dda7d178b1447c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/readback-v2.py",
+      "bytes": 17951,
+      "mode": 420,
+      "sha256": "7d7c6783c32e127fc19995928c67e76a42df8827c65f49ddec2715581a8a4a75"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/readback-v3.py",
+      "bytes": 18025,
+      "mode": 420,
+      "sha256": "aeadcd8eb7cc925c4f52071c7ab3bc165808c7acb1812a0accd4b0c9ee1ca376"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/attempt-1/READBACK.json",
+      "bytes": 7695657,
+      "mode": 420,
+      "sha256": "7bb7988d1a1f30121c7b138f7b29cd6a9b5a030b15f1657edb89953c61e98c5e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/attempt-2/READBACK.json",
+      "bytes": 7699824,
+      "mode": 420,
+      "sha256": "e674bbb63137cf599c846d6625bf0efe8015fedcaf9e26077fa13d2ef52550d3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/attempt-3/READBACK.json",
+      "bytes": 7707223,
+      "mode": 420,
+      "sha256": "8cd9dff852d8ad81131dc648d79c290bdcb568bd171d5bac7fcf8e41488b71df"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion-readback-v1.py",
+      "bytes": 14654,
+      "mode": 420,
+      "sha256": "190cf5707987c3fdf3cdc377eb4e4fcd719cb9618eec03f33e11b217b9783817"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion-readback-v2.py",
+      "bytes": 14839,
+      "mode": 420,
+      "sha256": "3851e4c8628288eb8d3e011c30d2069b241f74f56cd56b4884de7b9a8e628de5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion-readback-v3.py",
+      "bytes": 14836,
+      "mode": 420,
+      "sha256": "23ba4db401e1cb006c8f983eb855edf840be3aae60c0b6d153af4c635fe782e8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion/READBACK.json",
+      "bytes": 7683266,
+      "mode": 420,
+      "sha256": "7825838f633c40e436e86654e08fc7245712a00b5ca60324da9fcfe48a8b7de0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion-2/READBACK.json",
+      "bytes": 7683337,
+      "mode": 420,
+      "sha256": "0888a72f4898e717163c1fdc309547ceb5a9df9e22046e0c96ac217c1af29c03"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/pthread/completion-3/READBACK.json",
+      "bytes": 7685157,
+      "mode": 420,
+      "sha256": "6baf3f06dbb0d1071d5fc062a5cf4754184b81c962bf26adf8aaf90046ff49bf"
+    }
+  ]
+}

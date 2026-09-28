@@ -1,0 +1,422 @@
+{
+  "outcome": "compile failure; no native test executed",
+  "caller_exit": 1,
+  "cargo_exit": 101,
+  "error_count": 1,
+  "warning_count": 0,
+  "errors": [
+    {
+      "rendered": "error[E0061]: this function takes 7 arguments but 6 arguments were supplied\n     --> reverie-kvm/src/executor.rs:36844:25\n      |\n36844 |             let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);\n      |                         ^^^^^^^^^^^^^^^^--------------------------------------------------------- argument #7 of type `bool` is missing\n      |\nnote: function defined here\n     --> reverie-kvm/src/executor.rs:12813:4\n      |\n12813 | fn readlink_at_impl(\n      |    ^^^^^^^^^^^^^^^^\n...\n12820 |     capture_output: bool,\n      |     --------------------\nhelp: provide the argument\n      |\n36844 |             let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096, /* bool */);\n      |                                                                                                 ++++++++++++\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "function defined here",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 481207,
+              "byte_start": 481187,
+              "column_end": 25,
+              "column_start": 5,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/executor.rs",
+              "is_primary": false,
+              "label": "",
+              "line_end": 12820,
+              "line_start": 12820,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 25,
+                  "highlight_start": 5,
+                  "text": "    capture_output: bool,"
+                }
+              ]
+            },
+            {
+              "byte_end": 481021,
+              "byte_start": 481005,
+              "column_end": 20,
+              "column_start": 4,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/executor.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 12813,
+              "line_start": 12813,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 20,
+                  "highlight_start": 4,
+                  "text": "fn readlink_at_impl("
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "provide the argument",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 1332200,
+              "byte_start": 1332143,
+              "column_end": 98,
+              "column_start": 41,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/executor.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 36844,
+              "line_start": 36844,
+              "suggested_replacement": "(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096, /* bool */)",
+              "suggestion_applicability": "HasPlaceholders",
+              "text": [
+                {
+                  "highlight_end": 98,
+                  "highlight_start": 41,
+                  "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this function takes 7 arguments but 6 arguments were supplied",
+      "spans": [
+        {
+          "byte_end": 1332200,
+          "byte_start": 1332143,
+          "column_end": 98,
+          "column_start": 41,
+          "expansion": null,
+          "file_name": "reverie-kvm/src/executor.rs",
+          "is_primary": false,
+          "label": "argument #7 of type `bool` is missing",
+          "line_end": 36844,
+          "line_start": 36844,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 98,
+              "highlight_start": 41,
+              "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+            }
+          ]
+        },
+        {
+          "byte_end": 1332143,
+          "byte_start": 1332127,
+          "column_end": 41,
+          "column_start": 25,
+          "expansion": null,
+          "file_name": "reverie-kvm/src/executor.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 36844,
+          "line_start": 36844,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 41,
+              "highlight_start": 25,
+              "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0061",
+        "explanation": "An invalid number of arguments was passed when calling a function.\n\nErroneous code example:\n\n```compile_fail,E0061\nfn f(u: i32) {}\n\nf(); // error!\n```\n\nThe number of arguments passed to a function must match the number of arguments\nspecified in the function signature.\n\nFor example, a function like:\n\n```\nfn f(a: u16, b: &str) {}\n```\n\nMust always be called with exactly two arguments, e.g., `f(2, \"test\")`.\n\nNote that Rust does not have a notion of optional function arguments or\nvariadic functions (except for its C-FFI).\n"
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "error[E0061]: this function takes 7 arguments but 6 arguments were supplied\n     --> reverie-kvm/src/executor.rs:36844:25\n      |\n36844 |             let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);\n      |                         ^^^^^^^^^^^^^^^^--------------------------------------------------------- argument #7 of type `bool` is missing\n      |\nnote: function defined here\n     --> reverie-kvm/src/executor.rs:12813:4\n      |\n12813 | fn readlink_at_impl(\n      |    ^^^^^^^^^^^^^^^^\n...\n12820 |     capture_output: bool,\n      |     --------------------\nhelp: provide the argument\n      |\n36844 |             let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096, /* bool */);\n      |                                                                                                 ++++++++++++\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "note",
+            "message": "function defined here",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 481207,
+                "byte_start": 481187,
+                "column_end": 25,
+                "column_start": 5,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/executor.rs",
+                "is_primary": false,
+                "label": "",
+                "line_end": 12820,
+                "line_start": 12820,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "text": [
+                  {
+                    "highlight_end": 25,
+                    "highlight_start": 5,
+                    "text": "    capture_output: bool,"
+                  }
+                ]
+              },
+              {
+                "byte_end": 481021,
+                "byte_start": 481005,
+                "column_end": 20,
+                "column_start": 4,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/executor.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 12813,
+                "line_start": 12813,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "text": [
+                  {
+                    "highlight_end": 20,
+                    "highlight_start": 4,
+                    "text": "fn readlink_at_impl("
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "children": [],
+            "code": null,
+            "level": "help",
+            "message": "provide the argument",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 1332200,
+                "byte_start": 1332143,
+                "column_end": 98,
+                "column_start": 41,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/executor.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 36844,
+                "line_start": 36844,
+                "suggested_replacement": "(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096, /* bool */)",
+                "suggestion_applicability": "HasPlaceholders",
+                "text": [
+                  {
+                    "highlight_end": 98,
+                    "highlight_start": 41,
+                    "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "level": "error",
+        "message": "this function takes 7 arguments but 6 arguments were supplied",
+        "spans": [
+          {
+            "byte_end": 1332200,
+            "byte_start": 1332143,
+            "column_end": 98,
+            "column_start": 41,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/executor.rs",
+            "is_primary": false,
+            "label": "argument #7 of type `bool` is missing",
+            "line_end": 36844,
+            "line_start": 36844,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 98,
+                "highlight_start": 41,
+                "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+              }
+            ]
+          },
+          {
+            "byte_end": 1332143,
+            "byte_start": 1332127,
+            "column_end": 41,
+            "column_start": 25,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/executor.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 36844,
+            "line_start": 36844,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 41,
+                "highlight_start": 25,
+                "text": "            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "E0061",
+          "explanation": "An invalid number of arguments was passed when calling a function.\n\nErroneous code example:\n\n```compile_fail,E0061\nfn f(u: i32) {}\n\nf(); // error!\n```\n\nThe number of arguments passed to a function must match the number of arguments\nspecified in the function signature.\n\nFor example, a function like:\n\n```\nfn f(a: u16, b: &str) {}\n```\n\nMust always be called with exactly two arguments, e.g., `f(2, \"test\")`.\n\nNote that Rust does not have a notion of optional function arguments or\nvariadic functions (except for its C-FFI).\n"
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "For more information about this error, try `rustc --explain E0061`.\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "failure-note",
+        "message": "For more information about this error, try `rustc --explain E0061`.",
+        "spans": [],
+        "code": null
+      }
+    }
+  ],
+  "build_finished": [
+    {
+      "reason": "build-finished",
+      "success": false
+    }
+  ],
+  "kvm_library_test_executables": [],
+  "listed_or_executed_test_names": [],
+  "test_pass_count": 0,
+  "test_fail_count": 0,
+  "aggregate_cpu_seconds": 71.735035,
+  "wall_seconds": 38.123902429,
+  "accounting_complete": true,
+  "observer_error": null,
+  "stop_reason": null,
+  "terminal_accounting": {
+    "source": "systemd CPUUsageNSec after service exit",
+    "cpu_usage_nsec": 71735035000,
+    "cgroup_empty": true,
+    "exec_main_code": 1,
+    "exec_main_status": 101,
+    "properties": {
+      "Id": "safehermit-20260917T044039Z-3384380.service",
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ControlGroup": "",
+      "MainPID": 0,
+      "ExecMainPID": 3385093,
+      "ExecMainCode": 1,
+      "ExecMainStatus": 101,
+      "ExecMainStartTimestampMonotonic": 1778968743961,
+      "CPUUsageNSec": 71735035000
+    }
+  },
+  "fresh_service_readback": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "safehermit-20260917T044039Z-3384380.service",
+      "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+    ],
+    "exit": 0,
+    "properties": {
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "ControlGroup": ""
+    },
+    "stderr": ""
+  },
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1/compile/result.json",
+      "bytes": 31873,
+      "sha256": "4dc7dc2df4b8b0b73210615d858dbf587766a838504c0769e6252cfec3ececed"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1/compile/stdout",
+      "bytes": 129917,
+      "sha256": "c34329e5ca0de7dd92e1ff8f318c5293e4a81d01da458d44eb91c42ce248d377"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1/compile/stderr",
+      "bytes": 4726,
+      "sha256": "a966e0931a8c1858b504f63a2c233569a7884377cb70edec882ff27c1c3ee13b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/summary.json",
+      "bytes": 225,
+      "sha256": "9fe842e3fba60940dfa4f4441d12bf4e940ace7953905a6909f15c441fd65500"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1/compile-service-post.json",
+      "bytes": 372,
+      "sha256": "85f397aaebe93b6b72e986bd987f715453920797e09924465f934b0026e88dc2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+      "bytes": 67056,
+      "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+    }
+  ],
+  "verified_surrounding_source_files": 2550,
+  "all_plan_input_hashes_match": true,
+  "source_v1_unchanged": true,
+  "unlaunched_stages_absent": true,
+  "no_retry_or_source_edit": true
+}

@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-04",
+  "test": "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "ffbd10f534a0282fbf8163a3ab9f7802dc8da52e42dbda3b8b3f3dda1d07b732",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "79b8f380cbbb3f37e88d34834a50c3e0a3d59cee0f9f089aa76e6c6c75690dab",
+  "cpu_nsec": 411864000,
+  "wall_seconds": 1.177884569
+}

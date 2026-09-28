@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "time_unix": 1789670242.5505095,
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "da42a565b988aae444068b8466552e5c822d542002f25da9eb62d50168fac483",
+  "caller_sha256": "799e02fafe1f0994a10237125f6c4009488810fd214420515eadb596bfc37286",
+  "inputs": 258,
+  "stage_count": 16,
+  "same_original_tail_except_fresh_paths": true,
+  "preserved_six_accepted_and_refusal": true,
+  "full_source_input_artifact_checks": true,
+  "fresh_destinations": true,
+  "active_owned_work": [],
+  "retry_stage": "static-elf-07",
+  "remaining_first_attempts": 15
+}

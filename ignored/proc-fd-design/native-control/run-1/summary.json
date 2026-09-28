@@ -1,0 +1,7 @@
+{
+  "status": "failed",
+  "error": "observer did not retain result: compile",
+  "completed_stages": [],
+  "fixture_sha256": null,
+  "scope": "Preserved native/control failure; no retry or guest execution."
+}

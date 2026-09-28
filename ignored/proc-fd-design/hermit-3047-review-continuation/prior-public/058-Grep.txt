@@ -1,0 +1,34 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_013eRWvtMuMuqaJCVt5hnj6c",
+  "name": "Grep",
+  "input": {
+    "pattern": "mnt_id|ino:\\\\t|fdinfo_text|fn fdinfo",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+1343:fn fdinfo_private_carrier_error(
+1442:fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<Result<(i32, i32), i64>> {
+1475:fn fdinfo_target_generation(
+10921:        mount_id: stat.stx_mnt_id,
+14128:            stat.stx_mnt_id
+14148:        changed.stx_mnt_id ^= 1;
+24033:    fn fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields() {
+24034:        let raw = b"pos:\t23\nflags:\t02100002\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
+24044:        let expected = b"pos:\t23\nflags:\t02\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
+24127:            for field in ["ino:", "mnt_id:"] {
+24134:    fn fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec() {
+24208:    fn fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state() {
+24250:    fn fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions() {
+24421:    fn fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime() {
+24509:    fn fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit() {
+24567:    fn fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts() {
+24596:            assert_ne!(FdinfoFixture::field(&bytes, "mnt_id:", 10), 0);
+24602:    fn fdinfo_dispatch_preserves_supported_open_status_flags() {
+24709:    fn fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable() {
+24779:    fn fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers() {

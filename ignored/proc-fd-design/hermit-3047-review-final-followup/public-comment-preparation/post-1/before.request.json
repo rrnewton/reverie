@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/pulls/3047"
+  ],
+  "started_at": "2026-09-17T07:30:27.998927+00:00"
+}

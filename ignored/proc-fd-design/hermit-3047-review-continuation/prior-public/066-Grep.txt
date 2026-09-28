@@ -1,0 +1,137 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01GMRSVHVDsVrTN2ruWnA5tF",
+  "name": "Grep",
+  "input": {
+    "pattern": "NEXTEST_EXPECTED_COUNTS|NEXTEST_EXPECTED_EXECUTED",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/manifest-plan/src/validation_dag.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-C": 8
+  }
+}
+
+Successful public tool result (exact text below):
+22-use dagrun::model::ResultManifest;
+23-use dagrun::model::Step;
+24-use dagrun::model::result_manifest_owner;
+25-use dagrun::select_steps_by_labels;
+26-use serde::Deserialize;
+27-
+28-use crate::runner::E2E_KERNEL_VERSION_ENV;
+29-use crate::runner::E2E_MACHINE_SHORTNAME_ENV;
+30:use crate::validation_dag_static::NEXTEST_EXPECTED_COUNTS;
+31-use crate::validation_dag_static::StructuredResultProducerKind;
+32-
+33-pub const OUTPUT: &str = "ci/dag/validate.json";
+34-const EXPECTED_PLAN: &str = "ci/expected-e2e-plan.json";
+35-const SUPER_REPETITIONS: &str = "20";
+36-const PINNED_ROOT_FETCH_TAG: &str = "setup.pinned_root_fetch";
+37-const PINNED_ROOT_FETCH_COMMAND: &str = "seed=(); if [ -n \"${CARGO_HOME:-}\" ]; then seed=(--seed-cargo \"$CARGO_HOME\"); fi; ./ci/hermetic/run-split-validate.sh --fetch-only \"${seed[@]}\"";
+38-const PIN_GATE_COMMAND: &str = r#"export PATH="$PWD/ci/rust-script-bin:$PATH"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT="$PWD/target/ci/rust-scripts"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; with-proxy ./ci/run-reverie-pin-check.sh --repo "$PWD""#;
+--
+1119-    }
+1120-    if expected.len() != 106 {
+1121-        return Err(format!(
+1122-            "structured result producer registry has {} entries, expected 106",
+1123-            expected.len()
+1124-        ));
+1125-    }
+1126-
+1127:    let mut expected_counts = NEXTEST_EXPECTED_COUNTS
+1128-        .iter()
+1129-        .copied()
+1130-        .collect::<BTreeMap<_, _>>();
+1131-    if expected_counts.len() != 38 {
+1132-        return Err(format!(
+1133-            "Nextest expected-count registry has {} entries, expected 38",
+1134-            expected_counts.len()
+1135-        ));
+--
+1155-            }
+1156-            _ => {
+1157-                return Err(format!(
+1158-                    "{tag} invokes more than one structured result producer: {command_kinds:?}"
+1159-                ));
+1160-            }
+1161-        };
+1162-        let command = crate::nextest_build_selections::execution_command(step)?;
+1163:        if command.contains("NEXTEST_EXPECTED_EXECUTED") {
+1164-            return Err(format!(
+1165:                "{tag} declares NEXTEST_EXPECTED_EXECUTED in command text instead of typed step environment"
+1166-            ));
+1167-        }
+1168-        if command_kind == Some(StructuredResultProducerKind::Nextest)
+1169-            || step.cmd.contains("nextest-binaries.rs executable ")
+1170-        {
+1171-            crate::nextest_build_selections::assert_command_selection(step)?;
+1172-        }
+1173-        let declared = step
+--
+1208-                    "{tag} declares structured results but invokes no registered writer"
+1209-                ));
+1210-            }
+1211-            (None, None, None) => {}
+1212-        }
+1213-
+1214-        match (
+1215-            expected_counts.remove(tag.as_str()),
+1216:            step.env.get("NEXTEST_EXPECTED_EXECUTED"),
+1217-        ) {
+1218-            (Some(expected_count), Some(actual)) if actual == &expected_count.to_string() => {}
+1219-            (Some(expected_count), Some(actual)) => {
+1220-                return Err(format!(
+1221-                    "{tag} expects {expected_count} Nextest tests but declares {actual:?}"
+1222-                ));
+1223-            }
+1224-            (Some(expected_count), None) => {
+1225-                return Err(format!(
+1226:                    "{tag} omits NEXTEST_EXPECTED_EXECUTED={expected_count}"
+1227-                ));
+1228-            }
+1229-            (None, Some(actual)) => {
+1230-                return Err(format!(
+1231:                    "{tag} declares unexpected NEXTEST_EXPECTED_EXECUTED={actual:?}"
+1232-                ));
+1233-            }
+1234-            (None, None) => {}
+1235-        }
+1236-    }
+1237-    if !expected.is_empty() {
+1238-        return Err(format!(
+1239-            "registered structured result producers are absent from the DAG: {}",
+--
+2974-            let step = changed
+2975-                .steps
+2976-                .iter_mut()
+2977-                .find(|step| step.tag() == tag)
+2978-                .unwrap();
+2979-            match mutation {
+2980-                Some(value) => {
+2981-                    step.env
+2982:                        .insert("NEXTEST_EXPECTED_EXECUTED".into(), value.into());
+2983-                }
+2984-                None => {
+2985:                    step.env.remove("NEXTEST_EXPECTED_EXECUTED");
+2986-                }
+2987-            }
+2988-            let error = assert_structured_result_producers(&changed).unwrap_err();
+2989-            assert!(error.contains(tag), "{error}");
+2990-        }
+2991-
+2992-        let mut inline_count = committed.clone();
+2993-        inline_count
+2994-            .steps
+2995-            .iter_mut()
+2996-            .find(|step| step.tag() == "test.cli")
+2997-            .unwrap()
+2998-            .cmd
+2999:            .insert_str(0, "NEXTEST_EXPECTED_EXECUTED=71 ");
+3000-        let error = assert_structured_result_producers(&inline_count).unwrap_err();
+3001-        assert!(
+3002-            error.contains("test.cli") && error.contains("command text"),
+3003-            "{error}"
+3004-        );
+3005-
+3006-        let mut duplicate_writer = committed.clone();
+3007-        duplicate_writer

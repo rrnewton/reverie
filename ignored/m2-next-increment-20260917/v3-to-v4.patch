@@ -1,0 +1,111 @@
+--- v3/detcore/src/logdiff.rs
++++ v4/detcore/src/logdiff.rs
+@@ -359,8 +359,8 @@
+ /// one captured log.
+ ///
+ /// This removes the real wall-clock prefix and rewrites only explicitly marked
+-/// host addresses to first-appearance ordinals. Scheduler turns, virtual time, syscall
+-/// values, counts, flags, and every other substantive byte are preserved.
++/// host addresses to first-appearance ordinals. Scheduler turns, virtual time,
++/// syscall values, counts, flags, and every other substantive byte are preserved.
+ pub fn write_canonical_info(file: &Path, writer: &mut impl Write) -> std::io::Result<usize> {
+     write_canonical_info_with_filter(file, writer, |_| true)
+ }
+@@ -759,8 +759,8 @@
+ /// values already carried in separate fields beside it.
+ ///
+ /// Syscall arguments, resource names, thread identities, payload bytes, and all
+-/// other numbers stay exact. Record position is not part of the message and remains a separate
+-/// observation.
++/// other numbers stay exact. Record position is not part of the message and
++/// remains a separate observation.
+ fn first_divergent_message(message: &LogMessage<'_>) -> String {
+     static FINISHED_SYSCALL: LazyLock<Regex> =
+         LazyLock::new(|| Regex::new(r"(finish syscall #)[0-9][0-9_]*").unwrap());
+@@ -3827,46 +3827,42 @@
+     /// Preserve the exact fields after a temporary path.
+     #[test]
+     fn default_comparison_preserves_fields_after_tmp_paths() -> std::io::Result<()> {
+-        for (left, right) in [(
++        let (left, right) = (
+             r#"open path="/tmp/scratch" flags="O_RDONLY""#,
+             r#"open path="/tmp/scratch" flags="O_WRONLY""#,
+-        )] {
+-            let left = format!("INFO detcore: DETLOG {left}");
+-            let right = format!("INFO detcore: DETLOG {right}");
+-            let options = super::LogDiffOpts::default();
+-            let summary =
+-                super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
+-            assert!(summary.diff_found, "{left} versus {right}");
+-            assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
+-            assert!(!summary.matched_with_evidence());
+-            assert!(
+-                super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
+-                    .matched_with_evidence()
+-            );
+-        }
++        );
++        let left = format!("INFO detcore: DETLOG {left}");
++        let right = format!("INFO detcore: DETLOG {right}");
++        let options = super::LogDiffOpts::default();
++        let summary = super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++        assert!(summary.diff_found, "{left} versus {right}");
++        assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++        assert!(!summary.matched_with_evidence());
++        assert!(
++            super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                .matched_with_evidence()
++        );
+         Ok(())
+     }
+ 
+     /// Different temporary paths must remain distinguishable.
+     #[test]
+     fn default_comparison_preserves_differing_tmp_paths() -> std::io::Result<()> {
+-        for (left, right) in [(
++        let (left, right) = (
+             r#"open path="/tmp/hermit-aaaa/f" flags="O_RDONLY""#,
+             r#"open path="/tmp/hermit-bbbb/f" flags="O_RDONLY""#,
+-        )] {
+-            let left = format!("INFO detcore: DETLOG {left}");
+-            let right = format!("INFO detcore: DETLOG {right}");
+-            let options = super::LogDiffOpts::default();
+-            let summary =
+-                super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
+-            assert!(summary.diff_found, "{left} versus {right}");
+-            assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
+-            assert!(!summary.matched_with_evidence());
+-            assert!(
+-                super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
+-                    .matched_with_evidence()
+-            );
+-        }
++        );
++        let left = format!("INFO detcore: DETLOG {left}");
++        let right = format!("INFO detcore: DETLOG {right}");
++        let options = super::LogDiffOpts::default();
++        let summary = super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++        assert!(summary.diff_found, "{left} versus {right}");
++        assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++        assert!(!summary.matched_with_evidence());
++        assert!(
++            super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                .matched_with_evidence()
++        );
+         Ok(())
+     }
+ 
+--- v3/hermit-cli/src/bin/hermit/verify.rs
++++ v4/hermit-cli/src/bin/hermit/verify.rs
+@@ -97,8 +97,9 @@
+ pub(crate) struct ComparisonOptions {
+     /// Controls only how much diff *output* is printed (a larger syscall-history
+     /// window), NOT the comparison semantics. The canonical comparison is always
+-    /// enabled, so a quiet run is still bitwise-strict — the two knobs were historically conflated behind a single
+-    /// `verbose` flag, which made the only bitwise comparison also the loudest.
++    /// enabled, so a quiet run is still bitwise-strict. The two knobs were
++    /// historically conflated behind a single `verbose` flag, which made the
++    /// only bitwise comparison also the loudest.
+     pub verbose: bool,
+     pub compare_logs: bool,
+     /// Compare DEBUG/TRACE diagnostics in addition to the canonical INFO
