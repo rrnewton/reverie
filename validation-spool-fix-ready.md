@@ -1,0 +1,9 @@
+Fix ready at local commit cad0fd0127270b607bb57d5a1bc4dcf9832f248a on top of origin/main a9505da16bcd41e4879099783db9d60c6e6481ab.
+
+Diagnosis: this was a failing publisher, not an absent schedule. The hourly gate recorded a launch, while the publisher log retained repeated nonzero current-tool attempts before the later successful run. The launcher used `systemd-run --collect`, so systemd discarded the child result at exit, and the launcher itself returned zero for launched, refused and unavailable states. With `when: failure`, all of those appeared as CLEAN. Ledger and series share the one `publish_backlog.py` process and writer, but remain separate validation/publication calls inside it.
+
+The fix omits `--collect`, reads a retained failed unit's Result and ExecMainStatus on the next sweep, reports that through a nonzero gate result, resets the failed unit, and launches a retry. A publisher still active at the next hourly sweep and launcher refusals are also nonzero rather than CLEAN. Successful transient units were measured to unload normally; a scratch failed unit retained Result=exit-code and ExecMainStatus=1, and the next launcher invocation reported that exact result before retrying.
+
+Live recovery: the old incident batches published as d4f23bd245c6875bf91e4e8c9087dcee69ad35b0 (ledger) and 5310674786969d90377993b79a75088686e3b9ee (series). I published the one later fresh ledger batch normally as a9505da16bcd41e4879099783db9d60c6e6481ab and verified event devbig014-1788655390-2384345 from origin/main. Both current checks now report depth=0 and oldest_age_seconds=0.0 across three producing parents.
+
+Verification: launcher bracket PASS including a reconstructed old launcher that hides the same child failure; 109 ledger/series publisher tests plus 9 subtests PASS; both deliberately invalid ledger and series batches remain spooled; 14 health-tick provenance tests PASS; shellcheck and git diff --check PASS.
