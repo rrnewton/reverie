@@ -1105,6 +1105,17 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// Forces the order a loaded tracer thread produces by chance: a nonleader
+    /// thread's run loop observes its own TID vanish in a non-leader execve
+    /// before `drive_ordinary` polls that thread's exit future again. Every
+    /// nonleader `drive_ordinary` on this thread leaves its exit future
+    /// unpolled for the duration of its run-loop race; the leader is
+    /// unaffected.
+    pub(crate) static NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
     pub(crate) static FATAL_FORK_PAUSE: std::cell::RefCell<Option<Arc<FatalForkPause>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_SETUP_CONTROL: std::cell::RefCell<Option<Arc<FatalSetupControl>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_FREEZE_CONTROL: std::cell::RefCell<Option<Arc<FatalFreezeControl>>> = const { std::cell::RefCell::new(None) };
@@ -5975,6 +5986,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // numerically signal the root PID.
                     return Err(anyhow::Error::new(err).into());
                 }
+                if !self.is_main_thread() && self.lost_own_tid_to_exec(&err) {
+                    // A nonleader execve (de_thread) hands this thread's TID
+                    // to the leader's pid object and releases it, so a wait on
+                    // the former TID reports ECHILD. The run loop can see that
+                    // before `drive_ordinary` re-polls this thread's exit
+                    // future, which applies the same rule. ECHILD authorizes
+                    // neither exit nor failure: stay pending so the leader's
+                    // actual Exec edge transfers this state, while session
+                    // cancellation and backend failure remain observable.
+                    return future::pending().await;
+                }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
@@ -6224,6 +6246,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 },
                 error.into(),
             );
+        }
+    }
+
+    /// True when `err` is ECHILD from a wait on this task's own TID. Both
+    /// forms reach the run loop: annotated waits use `tracee_context`, and
+    /// handler waits on this task's own `Running` propagate with `?`.
+    fn lost_own_tid_to_exec(&self, err: &Error) -> bool {
+        match err {
+            Error::Tracee {
+                pid,
+                source: TraceError::Errno(Errno::ECHILD),
+                ..
+            } => *pid == self.tid(),
+            Error::Internal(TraceError::Errno(Errno::ECHILD)) => true,
+            _ => false,
         }
     }
 
@@ -6493,12 +6530,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .timer
                             .exec_test_identity()
                             .expect("read replacement perf identity");
+                        // Probe by event ID, not by descriptor number: other
+                        // tests in this process reuse a freed number at once.
                         let closed = displaced.as_ref().is_some_and(|old| {
-                            [old.clock_fd, old.timer_fd].into_iter().all(|fd| {
-                                (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
-                                    && std::io::Error::last_os_error().raw_os_error()
-                                        == Some(libc::EBADF)
-                            })
+                            [
+                                (old.clock_fd, old.clock_event_id),
+                                (old.timer_fd, old.timer_event_id),
+                            ]
+                            .into_iter()
+                            .all(|(fd, id)| crate::perf::fd_no_longer_names_event(fd, id))
                         });
                         EXEC_TIMER_TRANSFERS.with(|control| {
                             control.borrow().as_ref().unwrap().lock().unwrap().push(
@@ -6591,12 +6631,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         session: &Arc<FatalSession>,
     ) -> crate::tracer::OrdinaryTerminal {
         let global = self.global_state.gs_ref.clone();
+        #[cfg(test)]
+        let exit_deferred = !self.is_main_thread()
+            && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         let outcome = {
             let run_loop = self.ordinary_start(start).fuse();
             let cancelled = session.cancelled().fuse();
             let global_failure = global.wait_for_backend_failure().fuse();
             futures::pin_mut!(run_loop, cancelled, global_failure);
-            let exit = (&mut *exit_event).fuse();
+            let exit = async {
+                #[cfg(test)]
+                if exit_deferred {
+                    return future::pending().await;
+                }
+                (&mut *exit_event).await
+            }
+            .fuse();
             futures::pin_mut!(exit);
             futures::select_biased! {
                 () = cancelled => None,
