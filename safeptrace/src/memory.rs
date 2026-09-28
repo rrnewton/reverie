@@ -1003,8 +1003,8 @@ mod test {
                 let mut memory = Stopped::new_unchecked(child);
                 let payload = *b"12345678";
                 let local = [io::IoSlice::new(&payload)];
-                let remote = [remote(address, 4), remote(address + 4, 4)];
-                let first = memory.write_native_user_vectored(child.as_raw(), &local, &remote);
+                let remote_ranges = [remote(address, 4), remote(address + 4, 4)];
+                let first = memory.write_native_user_vectored(child.as_raw(), &local, &remote_ranges);
                 let mut expected = [0xa5; 32];
                 expected[8..12].copy_from_slice(&payload[..4]);
                 let after_prefix = native_write_readback(&memory, address - 8);
