@@ -37,6 +37,8 @@ use futures::future::FutureExt;
 use futures::future::TryFutureExt;
 use nix::sys::mman::ProtFlags;
 use nix::sys::signal::Signal;
+#[cfg(target_arch = "x86_64")]
+use reverie::BackendBootstrapEntropy;
 use reverie::Backtrace;
 use reverie::Errno;
 use reverie::ExitStatus;
@@ -66,6 +68,7 @@ use safeptrace::Event;
 use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::StoppedMemory;
+use safeptrace::TransferredStopSuccessor;
 use safeptrace::Wait;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -133,6 +136,21 @@ use crate::vdso;
 mod after_loader_task;
 
 #[cfg(target_arch = "x86_64")]
+fn validate_liteinst_injected_user_regs_update(
+    current: &libc::user_regs_struct,
+    requested: &libc::user_regs_struct,
+) -> Result<(), Errno> {
+    // HostSyscallFrame intentionally treats RSP/RIP as authenticated metadata
+    // and never copies them back into HookContext. Reject an RSP update instead
+    // of reporting success for a value that the runtime would silently drop.
+    if current.rsp == requested.rsp {
+        Ok(())
+    } else {
+        Err(Errno::ENOTSUPP)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 fn validate_liteinst_installed_user_regs_update(
     current: &libc::user_regs_struct,
     requested: &libc::user_regs_struct,
@@ -178,6 +196,97 @@ enum LiteinstInstalledTailResumeAction {
     RestoreGenerated,
     Deopt,
     PreserveDeoptimized,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiteinstTimerHookPolicy {
+    /// The timer notification transport has never been activated, so direct
+    /// hooks may be retained or installed.
+    DirectHooksAllowed,
+    /// Notification transport debt may exist, but no direct hook remains.
+    PtraceOnly,
+    /// Notification transport debt may exist while a direct hook is still
+    /// published. The stopped boundary must deopt before any physical resume.
+    DeoptRequired,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl LiteinstTimerHookPolicy {
+    fn permits_new_hook(self) -> bool {
+        self == Self::DirectHooksAllowed
+    }
+
+    fn resume_is_safe(self) -> bool {
+        self != Self::DeoptRequired
+    }
+
+    fn requires_deopt(self) -> bool {
+        self == Self::DeoptRequired
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_timer_hook_policy(
+    notification_transport_activated: bool,
+    active_hooks_present: bool,
+) -> LiteinstTimerHookPolicy {
+    match (notification_transport_activated, active_hooks_present) {
+        (false, _) => LiteinstTimerHookPolicy::DirectHooksAllowed,
+        (true, false) => LiteinstTimerHookPolicy::PtraceOnly,
+        (true, true) => LiteinstTimerHookPolicy::DeoptRequired,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_timer_predeoptimized_tail_is_valid(
+    notification_transport_activated: bool,
+    retained_resume_rip: Option<u64>,
+    relocated_tail: u64,
+    active_pc_footprint_present: bool,
+    active_hooks_present: bool,
+) -> bool {
+    notification_transport_activated
+        && retained_resume_rip == Some(relocated_tail)
+        && !active_pc_footprint_present
+        && !active_hooks_present
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_generated_tail_resume_rip(
+    policy: LiteinstTimerHookPolicy,
+    relocated_tail: Option<u64>,
+) -> Option<u64> {
+    policy
+        .permits_new_hook()
+        .then_some(relocated_tail)
+        .flatten()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InjectedFrameCompletion {
+    ClearControllerExecution,
+    MaterializeLogicalGuest,
+}
+
+fn injected_frame_completion(
+    pending_signal: bool,
+    deferred_gdb_boundary: bool,
+    timer_notification_transport_activated: bool,
+) -> InjectedFrameCompletion {
+    if pending_signal || deferred_gdb_boundary || timer_notification_transport_activated {
+        InjectedFrameCompletion::MaterializeLogicalGuest
+    } else {
+        InjectedFrameCompletion::ClearControllerExecution
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_timer_requires_injected_materialization(
+    notification_transport_activated: bool,
+    injected_transaction_is_liteinst: bool,
+) -> bool {
+    notification_transport_activated && injected_transaction_is_liteinst
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -804,6 +913,15 @@ struct PrivateSyscallEntry {
 }
 
 #[cfg(target_arch = "x86_64")]
+struct AuthenticatedAfterLoaderPrivateSyscallExit {
+    task: Stopped,
+    result: Result<i64, Errno>,
+    generation: safeptrace::PhysicalEventGenerationId,
+    logical_stop: safeptrace::LogicalStopId,
+    physical_status: safeptrace::PhysicalStatusId,
+}
+
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InjectedSyscallLiveXstate {
     Controller,
@@ -895,6 +1013,23 @@ fn private_syscall_registers_match(
     expected == *completion
 }
 
+#[cfg(target_arch = "x86_64")]
+const X86_RFLAGS_RF: u64 = 1 << 16;
+
+#[cfg(target_arch = "x86_64")]
+fn private_syscall_entry_rflags(flags: u64) -> u64 {
+    // RF belongs to the faulting guest instruction.  Redirecting a fault stop
+    // to the controller's private syscall page would consume RF on that
+    // unrelated successful instruction, so exclude it from the sealed private
+    // frame and restore the untouched logical frame after the injection.
+    flags & !X86_RFLAGS_RF
+}
+
+#[cfg(target_arch = "x86_64")]
+fn restore_private_syscall_rflags(current: u64, saved: u64) -> u64 {
+    (current & !X86_RFLAGS_RF) | (saved & X86_RFLAGS_RF)
+}
+
 fn private_syscall_transaction_matches(
     task: &Stopped,
     entry: &PrivateSyscallEntry,
@@ -905,8 +1040,21 @@ fn private_syscall_transaction_matches(
         return Ok(false);
     }
     #[cfg(target_arch = "x86_64")]
-    if task.get_x86_extended_state()? != entry.xstate {
-        return Ok(false);
+    {
+        let observed_xstate = task.get_x86_extended_state()?;
+        if observed_xstate != entry.xstate
+            && !entry
+                .xstate
+                .kernel_snapshot_matches_after_non_xstate_syscall(&observed_xstate)
+        {
+            return Ok(false);
+        }
+        if observed_xstate != entry.xstate {
+            task.set_x86_extended_state(&entry.xstate)?;
+            if task.get_x86_extended_state()? != entry.xstate {
+                return Ok(false);
+            }
+        }
     }
     Ok(true)
 }
@@ -1453,7 +1601,7 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) syscall_marker: u64,
     pub(crate) newborn_tracees: NewbornTracees,
     pub(crate) held_task_stops: HeldTaskStops,
-    /// Records a fail-closed LiteInst refusal raised by any task.
+    /// Records a fail-closed LiteInst refusal raised by a non-root task.
     ///
     /// A non-root task's error cannot reach the root's cleanup guard, so
     /// without this the session could finish "successfully" after a child was
@@ -1810,7 +1958,9 @@ fn commit_liteinst_deopt_state(
 struct LiteinstInstallHelperArm {
     tid: Pid,
     generation: u64,
-    origin_status: u64,
+    physical_generation: safeptrace::PhysicalEventGenerationId,
+    origin_logical_stop: safeptrace::LogicalStopId,
+    origin_status: Option<u64>,
     entry: u64,
     entry_rip: u64,
     site: u64,
@@ -1823,31 +1973,63 @@ struct LiteinstInstallHelperArm {
     entry_bytes: [u8; 16],
 }
 
-fn physical_status_advanced(origin: u64, observed: Option<u64>) -> bool {
-    observed.is_some_and(|observed| observed > origin)
+fn liteinst_physical_status_mode_matches(
+    physical_status_required: bool,
+    status: Option<u64>,
+) -> bool {
+    !physical_status_required || status.is_some()
+}
+
+fn liteinst_physical_status_strictly_advances(origin: Option<u64>, observed: Option<u64>) -> bool {
+    match (origin, observed) {
+        (Some(origin), Some(observed)) => observed > origin,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn liteinst_stop_strictly_advances(
+    origin_generation: safeptrace::PhysicalEventGenerationId,
+    origin_logical_stop: safeptrace::LogicalStopId,
+    origin_status: Option<u64>,
+    task: &Stopped,
+) -> bool {
+    task.physical_event_generation() == origin_generation
+        && task
+            .logical_stop_id()
+            .is_strictly_after(origin_logical_stop)
+        && liteinst_physical_status_strictly_advances(
+            origin_status,
+            task.physical_status_id().map(|status| status.get()),
+        )
 }
 
 #[cfg(target_arch = "x86_64")]
 fn liteinst_helper_entry_scalars_match(
-    arm: &LiteinstInstallHelperArm,
+    expected_tid: Pid,
+    expected_generation: u64,
+    expected_entry_rip: u64,
+    expected_site: u64,
+    expected_stack_pointer: u64,
+    expected_request: LiteinstInstallRequest,
     tid: Pid,
     generation: u64,
-    observed_status: Option<u64>,
+    stop_strictly_advanced: bool,
     regs: &libc::user_regs_struct,
     si_code: i32,
     entry_opcode: u8,
     request: LiteinstInstallRequest,
 ) -> bool {
-    arm.tid == tid
-        && arm.generation == generation
-        && physical_status_advanced(arm.origin_status, observed_status)
-        && regs.rip == arm.entry_rip
-        && regs.rdi == arm.site
-        && regs.rsp == arm.stack_pointer
+    expected_tid == tid
+        && expected_generation == generation
+        && stop_strictly_advanced
+        && regs.rip == expected_entry_rip
+        && regs.rdi == expected_site
+        && regs.rsp == expected_stack_pointer
         && regs.orig_rax == u64::MAX
         && matches!(si_code, libc::TRAP_BRKPT | libc::SI_KERNEL)
         && entry_opcode == 0xcc
-        && request == arm.request
+        && request == expected_request
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1966,7 +2148,6 @@ fn kernel_page_covering_range(
 fn snapshot_liteinst_install_request(
     task: &Stopped,
     site: u64,
-    page_size: u64,
 ) -> Option<(LiteinstInstallRequest, GuestRange, GuestMap)> {
     let patch = GuestRange::new(site, LITEINST_PATCH_WORD_BYTES)?;
     let maps = guest_maps(task.pid())?;
@@ -1993,8 +2174,12 @@ fn snapshot_liteinst_install_request(
     if source[..2] != [0x0f, 0x05] {
         return None;
     }
-    let protection =
-        kernel_page_covering_range(site, LITEINST_PATCH_WORD_BYTES, page_size).ok()??;
+    // Opening only the site page permanently splits some file-backed Linux
+    // VMAs even after their permissions are restored. Protect the complete
+    // authenticated source VMA so the transaction can require byte-for-byte
+    // restoration of the original `/proc/<pid>/maps` entry. The stopped helper
+    // snapshots every active patch word covered by this wider range.
+    let protection = GuestRange::new(mapping.start, mapping.end.checked_sub(mapping.start)?)?;
     Some((
         LiteinstInstallRequest {
             version: LITEINST_INSTALL_REQUEST_VERSION,
@@ -2535,7 +2720,7 @@ struct ActiveHookFootprint {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LiteinstInstalledPrivatePhase {
     AwaitingRuntimeTrap,
-    AwaitingCompletion { runtime_status: u64 },
+    AwaitingCompletion { runtime_status: Option<u64> },
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2553,7 +2738,7 @@ struct LiteinstStopResolutionSnapshot {
 enum LiteinstInstalledEventPhase {
     AwaitingRuntimeTrap,
     AwaitingCompletion {
-        runtime_status: u64,
+        runtime_status: Option<u64>,
     },
     AwaitStopResolution {
         prior: LiteinstInstalledPrivatePhase,
@@ -2589,8 +2774,7 @@ impl LiteinstInstalledEventPhase {
 struct LiteinstInstalledEvent {
     generation: u64,
     physical_generation: safeptrace::PhysicalEventGenerationId,
-    entry_status: u64,
-    status_floor: u64,
+    status_floor: Option<u64>,
     logical_stop_floor: safeptrace::LogicalStopId,
     footprint: ActiveHookFootprint,
     entry_regs: libc::user_regs_struct,
@@ -2758,6 +2942,16 @@ fn liteinst_private_sigmask(original: safeptrace::PtraceSigmask) -> safeptrace::
         let index = signal - 1;
         bytes[index / u8::BITS as usize] &= !(1 << (index % u8::BITS as usize));
     }
+    safeptrace::PtraceSigmask::from_bytes(bytes)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_private_trap_stop_sigmask(
+    private: safeptrace::PtraceSigmask,
+) -> safeptrace::PtraceSigmask {
+    let mut bytes = private.into_bytes();
+    let index = libc::SIGTRAP as usize - 1;
+    bytes[index / u8::BITS as usize] &= !(1 << (index % u8::BITS as usize));
     safeptrace::PtraceSigmask::from_bytes(bytes)
 }
 
@@ -4477,7 +4671,7 @@ impl<L: Tool> TracedTask<L> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn materialize_injected_frame_for_deferred_signal(
+    fn materialize_injected_frame_for_interposed_resume(
         &mut self,
         task: &Stopped,
     ) -> Result<(), TraceError>
@@ -4557,7 +4751,7 @@ impl<L: Tool> TracedTask<L> {
     }
 
     #[cfg(not(target_arch = "x86_64"))]
-    fn materialize_injected_frame_for_deferred_signal(
+    fn materialize_injected_frame_for_interposed_resume(
         &mut self,
         task: &Stopped,
     ) -> Result<(), TraceError> {
@@ -4606,6 +4800,22 @@ impl<L: Tool> TracedTask<L> {
         }
         self.injected_syscall.take().ok_or(Errno::EPROTO)?;
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn liteinst_injected_timer_requires_materialization(&self) -> bool {
+        let transaction_is_liteinst = self.injected_syscall.as_ref().is_some_and(|transaction| {
+            matches!(&transaction.xstate, InjectedSyscallXstate::Liteinst { .. })
+        });
+        liteinst_timer_requires_injected_materialization(
+            self.timer.notification_transport_activated(),
+            transaction_is_liteinst,
+        )
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn liteinst_injected_timer_requires_materialization(&self) -> bool {
+        false
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -4722,6 +4932,10 @@ impl<L: Tool> TracedTask<L> {
             let mut frame = self.read_injected_syscall_frame(task, address)?;
             let current = self.read_guest_registers(task)?;
             InjectedSyscallFrame::validate_user_regs_update(&current, regs)?;
+            #[cfg(target_arch = "x86_64")]
+            if matches!(&transaction.xstate, InjectedSyscallXstate::Liteinst { .. }) {
+                validate_liteinst_injected_user_regs_update(&current, regs)?;
+            }
             frame.copy_from_user_regs(regs);
             self.write_injected_syscall_frame(task, address, &frame)
         } else {
@@ -4955,7 +5169,22 @@ fn restore_context(
     // pre-syscall snapshot. (No-op on aarch64.)
     regs.restore_syscall_clobbers(&context);
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The private entry intentionally cleared the guest's fault-restart
+        // state before executing an unrelated controller instruction.  Keep
+        // every completion flag exact and put only that saved RF bit back.
+        regs.eflags = restore_private_syscall_rflags(regs.eflags, context.eflags);
+    }
+
     task.setregs(&regs)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_exit_completion_has_terminal_proof<L, R>(
+    completion: &Either<(Option<L>, Result<Wait, TraceError>), R>,
+) -> bool {
+    matches!(completion, Either::Left((Some(_), Ok(Wait::Exited(_, _)))))
 }
 
 impl<L: Tool + 'static> TracedTask<L> {
@@ -5520,6 +5749,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        self.ensure_liteinst_timer_hook_resume_safe()?;
         let armer = self.liteinst_stop_armer(&task);
         let held_task_stops = armer
             .as_ref()
@@ -5570,8 +5801,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.timer.finalize_requests();
         #[cfg(target_arch = "x86_64")]
         {
+            self.deopt_liteinst_hooks_for_timer_transport(
+                &task,
+                LiteinstDeoptProgramCounter::PreserveObserved,
+            )?;
+            let timer_hook_policy = self.current_liteinst_timer_hook_policy();
             self.liteinst_installed_resume_rip = None;
-            if let Some(translation) = pc_translation.as_ref() {
+            if timer_hook_policy.permits_new_hook()
+                && let Some(translation) = pc_translation.as_ref()
+            {
                 match liteinst_tool_program_counter_action(
                     task.getregs()?.ip(),
                     translation.logical_rip,
@@ -5586,6 +5824,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                         )?;
                     }
                 }
+            }
+            if timer_hook_policy == LiteinstTimerHookPolicy::PtraceOnly
+                && (self.liteinst_active_pc_footprint.is_some()
+                    || !self
+                        .liteinst_runtime
+                        .lock()
+                        .unwrap()
+                        .active_hooks
+                        .is_empty())
+            {
+                return Err(Errno::EPROTO.into());
             }
         }
         Ok((true, task))
@@ -5963,10 +6212,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.observe_liteinst_mapping_result(nr, args, result);
             }
             self.write_injected_syscall_result(&task, result)?;
-            if self.pending_signal.is_some() || self.deferred_gdb_boundary.is_some() {
-                self.materialize_injected_frame_for_deferred_signal(&task)?;
-            } else {
-                self.clear_injected_frame_execution(&task)?;
+            match injected_frame_completion(
+                self.pending_signal.is_some(),
+                self.deferred_gdb_boundary.is_some(),
+                self.liteinst_injected_timer_requires_materialization(),
+            ) {
+                InjectedFrameCompletion::MaterializeLogicalGuest => {
+                    self.materialize_injected_frame_for_interposed_resume(&task)?;
+                }
+                InjectedFrameCompletion::ClearControllerExecution => {
+                    self.clear_injected_frame_execution(&task)?;
+                }
             }
             return match self
                 .route_deferred_signal_stop(
@@ -6020,11 +6276,23 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             self.pending_syscall = None;
             self.pending_syscall_already_skipped = false;
-            if self.pending_signal.is_some() || self.deferred_gdb_boundary.is_some() {
-                self.materialize_injected_frame_for_deferred_signal(&task)?;
-            } else {
-                self.clear_injected_frame_execution(&task)?;
+            match injected_frame_completion(
+                self.pending_signal.is_some(),
+                self.deferred_gdb_boundary.is_some(),
+                self.liteinst_injected_timer_requires_materialization(),
+            ) {
+                InjectedFrameCompletion::MaterializeLogicalGuest => {
+                    self.materialize_injected_frame_for_interposed_resume(&task)?;
+                }
+                InjectedFrameCompletion::ClearControllerExecution => {
+                    self.clear_injected_frame_execution(&task)?;
+                }
             }
+            #[cfg(target_arch = "x86_64")]
+            self.deopt_liteinst_hooks_for_timer_transport(
+                &task,
+                LiteinstDeoptProgramCounter::TranslateGenerated,
+            )?;
             let wait = match self
                 .route_deferred_signal_stop(
                     task,
@@ -6393,7 +6661,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     #[cfg(target_arch = "x86_64")]
     fn is_liteinst_installed_entry_candidate(&self, task: &Stopped) -> bool {
-        if self.after_loader_config().is_none() || self.liteinst_installed_event.is_some() {
+        if self.liteinst_installed_event.is_some() {
             return false;
         }
         let Ok(registers) = task.getregs() else {
@@ -6473,7 +6741,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if !liteinst_callback_stack_maps_match(&task, callback_stack) {
             return Err(Errno::EPROTO.into());
         }
-        let entry_status = task.physical_status_id().ok_or(Errno::EPROTO)?.get();
+        let entry_status = self.liteinst_stop_status(&task)?;
         let entry_logical_stop = task.logical_stop_id();
         let original_sigmask = task.getsigmask()?;
         let private_sigmask = liteinst_private_sigmask(original_sigmask);
@@ -6507,7 +6775,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.liteinst_installed_event = Some(LiteinstInstalledEvent {
             generation,
             physical_generation: task.physical_event_generation(),
-            entry_status,
             status_floor: entry_status,
             logical_stop_floor: entry_logical_stop,
             footprint,
@@ -6558,7 +6825,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (
             generation,
             physical_generation,
-            entry_status,
             status_floor,
             logical_stop_floor,
             site,
@@ -6567,6 +6833,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             callback_stack,
             footprint,
             phase,
+            private_sigmask,
         ) = {
             let transaction = self
                 .liteinst_installed_event
@@ -6575,7 +6842,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             (
                 transaction.generation,
                 transaction.physical_generation,
-                transaction.entry_status,
                 transaction.status_floor,
                 transaction.logical_stop_floor,
                 transaction.footprint.site.start,
@@ -6584,9 +6850,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 transaction.callback_stack,
                 transaction.footprint.clone(),
                 transaction.phase.private(),
+                transaction.private_sigmask,
             )
         };
-        let runtime_status = task.physical_status_id().ok_or(Errno::EPROTO)?.get();
+        let runtime_status = self.liteinst_stop_status(&task)?;
+        let stop_strictly_advanced = liteinst_stop_strictly_advances(
+            physical_generation,
+            logical_stop_floor,
+            status_floor,
+            &task,
+        );
         let registers = task.getregs()?;
         let authenticated = self.authenticate_liteinst_injected_syscall(
             &task,
@@ -6598,20 +6871,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         )?;
         let frame = authenticated.frame;
         let current_generation = self.liteinst_runtime.lock().unwrap().generation;
+        let runtime_sigmask = task.getsigmask()?;
         if phase != Some(LiteinstInstalledPrivatePhase::AwaitingRuntimeTrap)
             || generation != current_generation
-            || task.physical_event_generation() != physical_generation
-            || runtime_status <= entry_status
-            || runtime_status <= status_floor
-            || !task.logical_stop_id().is_strictly_after(logical_stop_floor)
+            || !stop_strictly_advanced
             || !liteinst_runtime_frame_matches_entry(&frame, &entry_regs, site)
             || authenticated.guest_xstate != entry_xstate
-            || task.getsigmask()?
-                != self
-                    .liteinst_installed_event
-                    .as_ref()
-                    .ok_or(Errno::EPROTO)?
-                    .private_sigmask
+            || runtime_sigmask != liteinst_private_trap_stop_sigmask(private_sigmask)
         {
             return Err(Errno::EPROTO.into());
         }
@@ -6629,6 +6895,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         transaction.runtime_controller_xstate = Some(authenticated.controller_xstate);
         transaction.saved_guest_xstate = Some(authenticated.guest_xstate);
         transaction.phase = LiteinstInstalledEventPhase::AwaitingCompletion { runtime_status };
+        // Linux exposes a synchronous SIGTRAP stop with SIGTRAP cleared from
+        // the blocked mask. Authenticate that exact transition above, then
+        // restore the fully private mask before any tracee instruction runs.
+        task.setsigmask(&private_sigmask)?;
+        if task.getsigmask()? != private_sigmask {
+            return Err(Errno::EIO.into());
+        }
         let wait = self.resume_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait)?;
         Ok(wait)
@@ -6639,7 +6912,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         mut task: Stopped,
     ) -> Result<Wait, TraceError> {
-        let completion_status = task.physical_status_id().ok_or(Errno::EPROTO)?.get();
+        self.liteinst_stop_status(&task)?;
         let completion_regs = task.getregs()?;
         let siginfo = task.getsiginfo()?;
         let current_generation = self.liteinst_runtime.lock().unwrap().generation;
@@ -6654,13 +6927,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(Errno::EPROTO.into());
             }
         };
+        let stop_strictly_advanced = liteinst_stop_strictly_advances(
+            transaction.physical_generation,
+            transaction.logical_stop_floor,
+            transaction.status_floor,
+            &task,
+        );
+        let completion_sigmask = task.getsigmask()?;
         if transaction.generation != current_generation
-            || task.physical_event_generation() != transaction.physical_generation
-            || completion_status <= runtime_status
-            || completion_status <= transaction.status_floor
-            || !task
-                .logical_stop_id()
-                .is_strictly_after(transaction.logical_stop_floor)
+            || runtime_status != transaction.status_floor
+            || !stop_strictly_advanced
             || completion_regs.ip() != transaction.footprint.ptrace_completion_stop_rip
             || transaction.footprint.ptrace_completion_stop_rip
                 != transaction.footprint.relocated_tail
@@ -6682,7 +6958,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             || transaction.runtime_controller_xstate.is_none()
             || transaction.saved_guest_xstate.as_ref() != Some(&transaction.entry_xstate)
             || task.get_x86_extended_state()? != transaction.entry_xstate
-            || task.getsigmask()? != transaction.private_sigmask
+            || completion_sigmask
+                != liteinst_private_trap_stop_sigmask(transaction.private_sigmask)
         {
             return Err(Errno::EPROTO.into());
         }
@@ -6754,6 +7031,58 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         relocated_tail: u64,
     ) -> Result<Wait, TraceError> {
+        let timer_predeoptimized = {
+            let state = self.liteinst_runtime.lock().unwrap();
+            liteinst_timer_predeoptimized_tail_is_valid(
+                self.timer.notification_transport_activated(),
+                self.liteinst_installed_resume_rip,
+                relocated_tail,
+                self.liteinst_active_pc_footprint.is_some(),
+                !state.active_hooks.is_empty(),
+            )
+        };
+        if timer_predeoptimized {
+            let task = match self
+                .route_deferred_signal_stop(
+                    task,
+                    LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
+                )
+                .await?
+            {
+                DeferredSignalRoute::Forward(wait) => {
+                    self.pending_syscall = None;
+                    self.pending_syscall_already_skipped = false;
+                    self.liteinst_installed_resume_rip = None;
+                    return Ok(wait);
+                }
+                DeferredSignalRoute::Resume(task) => task,
+            };
+            if self.current_liteinst_timer_hook_policy() != LiteinstTimerHookPolicy::PtraceOnly
+                || self.liteinst_active_pc_footprint.is_some()
+                || self.liteinst_installed_resume_rip != Some(relocated_tail)
+            {
+                return Err(Errno::EPROTO.into());
+            }
+            if let Some(config) = self.after_loader_config() {
+                let observed_rip = task.getregs()?.ip();
+                config
+                    .diagnostics
+                    .record(
+                        "timer transport deoptimized installed tail",
+                        self.timer.diagnostic_clock(),
+                        format!(
+                            "observed_rip={observed_rip:#x} relocated_tail={relocated_tail:#x}"
+                        ),
+                    )
+                    .map_err(|_| Errno::EOVERFLOW)?;
+            }
+            self.pending_syscall = None;
+            self.pending_syscall_already_skipped = false;
+            self.liteinst_installed_resume_rip = None;
+            let wait = self.resume_after_deferred_route(task)?.next_state().await?;
+            self.arm_liteinst_wait(&wait)?;
+            return Ok(wait);
+        }
         let expected_footprint = self
             .liteinst_active_pc_footprint
             .as_ref()
@@ -6784,6 +7113,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             DeferredSignalRoute::Resume(task) => task,
         };
+        self.deopt_liteinst_hooks_for_timer_transport(
+            &task,
+            LiteinstDeoptProgramCounter::PreserveObserved,
+        )?;
         let mut registers = task.getregs()?;
         let footprint_transition = {
             let state = self.liteinst_runtime.lock().unwrap();
@@ -6840,7 +7173,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         prior: LiteinstInstalledPrivatePhase,
         snapshot: &LiteinstStopResolutionSnapshot,
-        status_floor: u64,
+        status_floor: Option<u64>,
         logical_stop_floor: safeptrace::LogicalStopId,
     ) -> Result<(), TraceError> {
         let transaction = self
@@ -6854,7 +7187,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             } if *retained_prior == prior && retained_snapshot == snapshot => {}
             _ => return Err(Errno::EPROTO.into()),
         }
-        if status_floor < snapshot.delivery_status
+        if !status_floor.is_some_and(|status| status >= snapshot.delivery_status)
             || (!logical_stop_floor.is_strictly_after(snapshot.delivery_logical_stop)
                 && logical_stop_floor != snapshot.delivery_logical_stop)
         {
@@ -6902,8 +7235,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if *event != Event::Signal(Signal::SIGTRAP) {
             return Err(Errno::EPROTO.into());
         }
-        let status = task.physical_status_id().ok_or(Errno::EPROTO)?.get();
-        let logical_stop = task.logical_stop_id();
+        let status = self.liteinst_stop_status(task)?.ok_or(Errno::EPROTO)?;
         let transaction = self
             .liteinst_installed_event
             .as_ref()
@@ -6915,10 +7247,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 snapshot,
             } if *retained_prior == prior && snapshot == delivery
         );
+        let stop_strictly_advanced = liteinst_stop_strictly_advances(
+            transaction.physical_generation,
+            delivery.delivery_logical_stop,
+            Some(delivery.delivery_status),
+            task,
+        );
         if !retained_matches
-            || task.physical_event_generation() != transaction.physical_generation
-            || status <= delivery.delivery_status
-            || !logical_stop.is_strictly_after(delivery.delivery_logical_stop)
+            || !stop_strictly_advanced
             || task.getsigmask()? != transaction.private_sigmask
         {
             return Err(Errno::EPROTO.into());
@@ -6946,7 +7282,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if state.phase != LiteinstRuntimePhase::Ready
                     || state.generation != transaction.generation
                     || state.ready_generation != Some(transaction.generation)
-                    || status <= runtime_status
+                    || !liteinst_physical_status_strictly_advances(runtime_status, Some(status))
                     || registers.ip() != transaction.footprint.ptrace_completion_stop_rip
                     || transaction.footprint.ptrace_completion_stop_rip
                         != transaction.footprint.relocated_tail
@@ -7006,7 +7342,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             Err(error) => return Err(error),
         };
         let _ = delivery_info;
-        let delivery_status = task.physical_status_id().ok_or(Errno::EPROTO)?.get();
+        // Stop-resolution watching consumes observer-produced WCONTINUED
+        // evidence. The legacy preload mode has no physical observer, so a
+        // private SIGSTOP there remains fail-closed rather than pretending
+        // logical stop order can authenticate a continued notification.
+        let delivery_status = self.liteinst_stop_status(&task)?.ok_or(Errno::EPROTO)?;
         let delivery_logical_stop = task.logical_stop_id();
         let (
             prior,
@@ -7022,7 +7362,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             (
                 transaction.phase.private().ok_or(Errno::EPROTO)?,
                 transaction.physical_generation,
-                transaction.status_floor,
+                transaction.status_floor.ok_or(Errno::EPROTO)?,
                 transaction.logical_stop_floor,
                 transaction.private_sigmask,
             )
@@ -7052,7 +7392,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .liteinst_installed_event
                 .as_mut()
                 .ok_or(Errno::EPROTO)?;
-            transaction.status_floor = delivery_status;
+            transaction.status_floor = Some(delivery_status);
             transaction.logical_stop_floor = delivery_logical_stop;
             transaction.phase = LiteinstInstalledEventPhase::AwaitStopResolution {
                 prior,
@@ -7075,7 +7415,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.restore_liteinst_stop_resolution(
                     prior,
                     &snapshot,
-                    delivery_status,
+                    Some(delivery_status),
                     delivery_logical_stop,
                 )?;
                 return Err(error);
@@ -7096,7 +7436,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.restore_liteinst_stop_resolution(
                     prior,
                     &snapshot,
-                    delivery_status,
+                    Some(delivery_status),
                     delivery_logical_stop,
                 )?;
                 return Err(error);
@@ -7112,7 +7452,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Ok(exited);
             }
         };
-        let next_status = next_task.physical_status_id().ok_or(Errno::EPROTO)?.get();
+        let next_status = self
+            .liteinst_stop_status(&next_task)?
+            .ok_or(Errno::EPROTO)?;
         let next_logical_stop = next_task.logical_stop_id();
         if next_task.physical_event_generation() != physical_generation
             || next_status <= delivery_status
@@ -7155,7 +7497,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.restore_liteinst_stop_resolution(
                 prior,
                 &snapshot,
-                delivery_status,
+                Some(delivery_status),
                 delivery_logical_stop,
             )?;
             return Ok(Wait::Stopped(next_task, next_event));
@@ -7222,7 +7564,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.restore_liteinst_stop_resolution(
                     prior,
                     &snapshot,
-                    continued_status,
+                    Some(continued_status),
                     next_logical_stop,
                 )?;
                 if let Some(boundary) = watcher.begin_continued_resume()? {
@@ -7284,7 +7626,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.restore_liteinst_stop_resolution(
                     prior,
                     &snapshot,
-                    next_status,
+                    Some(next_status),
                     next_logical_stop,
                 )?;
                 Err(Errno::EPROTO.into())
@@ -7379,23 +7721,29 @@ impl<L: Tool + 'static> TracedTask<L> {
         registers.rax = Sysno::rt_sigreturn as u64;
         registers.orig_rax = Sysno::rt_sigreturn as u64;
         registers.rip = cp::PRIVATE_PAGE_OFFSET as u64;
-        self.arm_after_loader_syscall_permit(
-            &task,
-            after_loader_task::AfterLoaderSyscallPurpose::GuestRtSigreturn,
-            Sysno::rt_sigreturn as i64,
-            [
-                args.arg0 as u64,
-                args.arg1 as u64,
-                args.arg2 as u64,
-                args.arg3 as u64,
-                args.arg4 as u64,
-                args.arg5 as u64,
-            ],
-            cp::PRIVATE_PAGE_OFFSET as u64,
-        )?;
+        let traced_admission = self.after_loader_config().is_some() && !self.command_bootstrap;
+        if traced_admission {
+            self.arm_after_loader_syscall_permit(
+                &task,
+                after_loader_task::AfterLoaderSyscallPurpose::GuestRtSigreturn,
+                Sysno::rt_sigreturn as i64,
+                [
+                    args.arg0 as u64,
+                    args.arg1 as u64,
+                    args.arg2 as u64,
+                    args.arg3 as u64,
+                    args.arg4 as u64,
+                    args.arg5 as u64,
+                ],
+                cp::PRIVATE_PAGE_OFFSET as u64,
+            )?;
+        }
         task.setregs(&registers)?;
         let wait = self.resume_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait)?;
+        if !traced_admission {
+            return Ok(wait);
+        }
         let stopped = match wait {
             Wait::Stopped(stopped, Event::Seccomp) => stopped,
             _ => return Err(Errno::EPROTO.into()),
@@ -7596,7 +7944,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Some(LiteinstTrap::Invalid);
         }
         #[cfg(target_arch = "x86_64")]
-        if self.after_loader_config().is_some() {
+        {
             if let Some(transaction) = self.liteinst_installed_event.as_ref() {
                 if regs.ip() == transaction.footprint.ptrace_completion_stop_rip {
                     return matches!(
@@ -7674,13 +8022,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             state.current_break = Some(frame.initial_program_break);
             return Some(LiteinstTrap::HandshakeReady);
         }
-        if regs.rax != config.syscall_marker {
-            #[cfg(target_arch = "x86_64")]
-            if self.liteinst_installed_event.is_some() {
-                return Some(LiteinstTrap::Invalid);
-            }
-            return None;
-        }
         #[cfg(target_arch = "x86_64")]
         if self.after_loader_config().is_some() {
             let (phase, generation, trap, runtime_mapping, frame_bound) = {
@@ -7736,8 +8077,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
         let handshake = self.liteinst_runtime.lock().unwrap().frame?;
+        if regs.rax != config.syscall_marker {
+            #[cfg(target_arch = "x86_64")]
+            if self.liteinst_installed_event.is_some() {
+                return Some(LiteinstTrap::Invalid);
+            }
+            return (regs.ip() == handshake.syscall_trap_rip).then_some(LiteinstTrap::Invalid);
+        }
         if regs.ip() != handshake.syscall_trap_rip {
-            return None;
+            return Some(LiteinstTrap::Invalid);
         }
         let stack_address = usize::try_from(regs.rsp).ok()?;
         let frame_address = usize::try_from(regs.rdi).ok()?;
@@ -7781,7 +8129,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if return_address != handshake.syscall_trap_return_rip {
             // A same-process caller can find the raw trap entry, but only the
             // hidden runtime wrapper produces this exact inner return site.
-            return None;
+            return Some(LiteinstTrap::Invalid);
         }
         let envelope: LiteinstInjectedSyscallEnvelope =
             match task.read_value(Addr::from_raw(frame_address)?) {
@@ -7899,11 +8247,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let callback_stack_usable =
                     liteinst_callback_stack_range(frame).ok_or(Errno::EPROTO)?;
                 let helper_code = bind_liteinst_helper_code(&task, frame).ok_or(Errno::EPROTO)?;
+                let (next, aliases_isolated) = self
+                    .set_liteinst_arena_writable_protection(task, &prepared_arenas, libc::PROT_NONE)
+                    .await?;
+                task = next;
                 let (next, protection_result) = self
                     .set_liteinst_internal_protection(task, helper_code.range, libc::PROT_NONE)
                     .await?;
                 task = next;
-                if protection_result != Ok(0)
+                if !aliases_isolated
+                    || protection_result != Ok(0)
                     || !liteinst_helper_code_has_protection(&task, &helper_code, libc::PROT_NONE)
                     || !liteinst_helper_code_bytes_match(&task, &helper_code)
                     || !liteinst_callback_stack_maps_match(&task, callback_stack_usable)
@@ -7967,7 +8320,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await?;
                 return Ok(HandleSignalResult::SignalSuppressed(next_state));
             }
-            Some(LiteinstTrap::Invalid) => return Err(Errno::EPROTO.into()),
+            Some(LiteinstTrap::Invalid) => {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::UnexpectedActivationTrap,
+                    Error::Tracee {
+                        operation: "reject unauthenticated trap at reserved LiteInst protocol boundary",
+                        pid: self.tid(),
+                        source: Errno::EPROTO.into(),
+                    },
+                );
+                return Err(Errno::EPROTO.into());
+            }
             None => {}
         }
         let phase = self.liteinst_runtime.lock().unwrap().phase;
@@ -8089,6 +8452,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let task = self.take_tool_callback_stop()?;
                 let regs = register_result?;
                 task.setregs(&regs)?;
+                self.deopt_liteinst_hooks_for_timer_transport(
+                    &task,
+                    LiteinstDeoptProgramCounter::TranslateGenerated,
+                )?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 )
@@ -8099,6 +8466,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let task = self.take_tool_callback_stop()?;
                 let regs = register_result?;
                 task.setregs(&regs)?;
+                self.deopt_liteinst_hooks_for_timer_transport(
+                    &task,
+                    LiteinstDeoptProgramCounter::TranslateGenerated,
+                )?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 )
@@ -8135,7 +8506,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
         };
         let failure = LiteinstActivationFailure::new(stage, reason, error);
-        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
+        // The root returns its local typed failure directly. Publishing that
+        // same failure into the cross-task slot would make its own watcher win
+        // the select and discard the stopped-capability owner before run-loop
+        // unwinding can hand it to session cleanup. Only a non-root failure
+        // needs the shared wakeup to reach the root cleanup guard.
+        if self.liteinst_root_config().is_none()
+            && let Some(runtime) = self.global_state.liteinst_runtime.clone()
+        {
             let mut slot = runtime.session_failure.lock().unwrap();
             if slot.is_none() {
                 *slot = Some(format!("tracee {}: {failure}", self.tid()));
@@ -8593,10 +8971,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                     || self.liteinst_after_loader_private_call.is_some()
                     || self.liteinst_after_loader_private_state.is_some()
                     || self.liteinst_installed_event.is_some()
-                    || self.liteinst_installed_resume_rip.is_some()
                 {
                     return Err(Errno::EPROTO.into());
                 }
+                // A successful exec cannot return to the old installed
+                // hook's relocated tail. PTRACE_EVENT_EXEC is the kernel proof
+                // that both this continuation and its old-image PC footprint
+                // are obsolete; true in-flight private transactions above
+                // remain a protocol error.
+                self.liteinst_installed_resume_rip = None;
+                self.liteinst_active_pc_footprint = None;
                 self.liteinst_after_loader_guard = None;
             }
             self.injected_syscall.take();
@@ -9185,6 +9569,21 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn liteinst_stop_status(&self, task: &Stopped) -> Result<Option<u64>, TraceError> {
+        let status = task.physical_status_id().map(|status| status.get());
+        // Observer attachment is immutable for this Event generation. Require
+        // its status whenever it exists; the after-loader contract additionally
+        // requires an observer even if a malformed capability lost the handle.
+        let physical_status_required =
+            task.physical_event_observer().is_some() || self.after_loader_config().is_some();
+        if liteinst_physical_status_mode_matches(physical_status_required, status) {
+            Ok(status)
+        } else {
+            Err(Errno::EPROTO.into())
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn liteinst_install_helper_is_quiescent(&self, task: &Stopped) -> bool {
         let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
             return false;
@@ -9202,13 +9601,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
             return false;
         };
-        runtime.after_loader.is_some()
-            && runtime.root_tid.get() == Some(&task.pid())
+        runtime.root_tid.get() == Some(&task.pid())
             && task.pid() == self.tid()
-            && task.continued_status_authority_is_live()
+            && (task.physical_event_observer().is_none()
+                || task.continued_status_authority_is_live())
             && !runtime.multi_task.load(Ordering::Acquire)
             && runtime.newborn_tracees.lock().unwrap().is_empty()
-            && process_has_exactly_one_task(task.pid())
             && process_has_exactly_one_task(task.pid())
     }
 
@@ -9273,6 +9671,79 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn current_liteinst_timer_hook_policy(&self) -> LiteinstTimerHookPolicy {
+        let active_hooks_present = !self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .active_hooks
+            .is_empty();
+        liteinst_timer_hook_policy(
+            self.timer.notification_transport_activated(),
+            active_hooks_present,
+        )
+    }
+
+    /// Fail closed at every physical resume if the asynchronous timer
+    /// transport can still have stale notification debt while direct hooks are
+    /// published. Higher-level stopped boundaries normally deopt first; this
+    /// check makes a missed boundary an error rather than unobserved execution.
+    #[cfg(target_arch = "x86_64")]
+    fn ensure_liteinst_timer_hook_resume_safe(&self) -> Result<(), TraceError> {
+        if !self.current_liteinst_timer_hook_policy().resume_is_safe() {
+            Err(Errno::EPROTO.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// At an exact stopped, single-task boundary, retire every direct hook once
+    /// timer notification transport debt becomes possible. The activation bit
+    /// is monotonic, so a successful transition remains ptrace-only for this
+    /// timer's lifetime.
+    #[cfg(target_arch = "x86_64")]
+    fn deopt_liteinst_hooks_for_timer_transport(
+        &mut self,
+        task: &Stopped,
+        program_counter: LiteinstDeoptProgramCounter,
+    ) -> Result<(), TraceError> {
+        if !self.current_liteinst_timer_hook_policy().requires_deopt() {
+            return Ok(());
+        }
+        self.deopt_liteinst_hooks_quiescent(task, program_counter)?;
+        if self.current_liteinst_timer_hook_policy() != LiteinstTimerHookPolicy::PtraceOnly {
+            return Err(Errno::EPROTO.into());
+        }
+        Ok(())
+    }
+
+    /// A Tool may request a timer and then inject another syscall before its
+    /// callback returns. Retire direct hooks synchronously while the callback's
+    /// exact stopped capability is still owned, so that nested controller work
+    /// never reaches a physical resume with an armed timer and published hook.
+    #[cfg(target_arch = "x86_64")]
+    fn deopt_active_tool_stop_for_timer_transport(&mut self) -> Result<(), TraceError> {
+        if !self.current_liteinst_timer_hook_policy().requires_deopt() {
+            return Ok(());
+        }
+        let mode = if self.injected_syscall.is_some() {
+            // The native stop is still in the generated runtime. Its logical
+            // register image remains in the authenticated injected frame and
+            // will be materialized before the callback's final resume.
+            LiteinstDeoptProgramCounter::TranslateGenerated
+        } else {
+            // Ordinary and installed-hook callbacks expose logical registers to
+            // the Tool. Preserve even a Tool-selected address that happens to
+            // fall inside a trampoline mapping.
+            LiteinstDeoptProgramCounter::PreserveObserved
+        };
+        let task = self.active_tool_stop.take().ok_or(Errno::EPROTO)?;
+        let result = self.deopt_liteinst_hooks_for_timer_transport(&task, mode);
+        self.active_tool_stop = Some(task);
+        result
     }
 
     /// Retire every direct hook while the exact process consists only of this
@@ -9384,27 +9855,40 @@ impl<L: Tool + 'static> TracedTask<L> {
         frame: LiteinstHandshakeFrame,
         site: u64,
         request: LiteinstInstallRequest,
-    ) -> Option<LiteinstInstallHelperArm> {
+    ) -> Result<Option<LiteinstInstallHelperArm>, TraceError> {
         if !self.liteinst_install_helper_is_quiescent(task) {
-            return None;
+            return Ok(None);
         }
-        let entry_range = GuestRange::new(frame.install_helper, 16)?;
-        let maps = guest_maps(task.pid())?;
-        let code_mapping = maps.into_iter().find(|mapping| {
+        let Some(entry_range) = GuestRange::new(frame.install_helper, 16) else {
+            return Ok(None);
+        };
+        let Some(maps) = guest_maps(task.pid()) else {
+            return Ok(None);
+        };
+        let Some(code_mapping) = maps.into_iter().find(|mapping| {
             mapping.readable
                 && !mapping.writable
                 && mapping.executable
                 && !mapping.shared
                 && mapping.contains_range(entry_range)
                 && mapping.contains(frame.install_helper_rip)
-        })?;
+        }) else {
+            return Ok(None);
+        };
         let mut entry_bytes = [0_u8; 16];
-        task.read_exact(frame.install_helper as usize, &mut entry_bytes)
-            .ok()?;
-        if entry_bytes[0] != 0xcc {
-            return None;
+        if task
+            .read_exact(frame.install_helper as usize, &mut entry_bytes)
+            .is_err()
+        {
+            return Ok(None);
         }
-        let state = self.liteinst_runtime.lock().ok()?;
+        if entry_bytes[0] != 0xcc {
+            return Ok(None);
+        }
+        let state = self
+            .liteinst_runtime
+            .lock()
+            .map_err(|_| TraceError::from(Errno::EIO))?;
         if state.phase != LiteinstRuntimePhase::Ready
             || state.ready_generation != Some(state.generation)
             || state.frame != Some(frame)
@@ -9422,32 +9906,40 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             || !liteinst_active_trampoline_bytes_match(task, &state.active_hooks)
         {
-            return None;
+            return Ok(None);
         }
-        let helper_code = state.helper_code.clone()?;
+        let Some(helper_code) = state.helper_code.clone() else {
+            return Ok(None);
+        };
         if !liteinst_helper_code_has_protection(
             task,
             &helper_code,
             libc::PROT_READ | libc::PROT_EXEC,
         ) || !liteinst_helper_code_bytes_match(task, &helper_code)
         {
-            return None;
+            return Ok(None);
         }
-        Some(LiteinstInstallHelperArm {
+        let origin_status = self.liteinst_stop_status(task)?;
+        let Some(stack_pointer) = frame.helper_stack_top.checked_sub(8) else {
+            return Ok(None);
+        };
+        Ok(Some(LiteinstInstallHelperArm {
             tid: task.pid(),
             generation: state.generation,
-            origin_status: task.physical_status_id()?.get(),
+            physical_generation: task.physical_event_generation(),
+            origin_logical_stop: task.logical_stop_id(),
+            origin_status,
             entry: frame.install_helper,
             entry_rip: frame.install_helper_rip,
             site,
-            stack_pointer: frame.helper_stack_top.checked_sub(8)?,
+            stack_pointer,
             return_address: frame.helper_return,
             request_address: frame.install_request,
             request,
             code_mapping,
             helper_code,
             entry_bytes,
-        })
+        }))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -9508,6 +10000,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             && liteinst_active_trampoline_bytes_match(task, &state.active_hooks);
         drop(state);
+        let stop_strictly_advanced = self.liteinst_stop_status(task).is_ok()
+            && liteinst_stop_strictly_advances(
+                arm.physical_generation,
+                arm.origin_logical_stop,
+                arm.origin_status,
+                task,
+            );
         ready
             && return_address == arm.return_address
             && entry_bytes == arm.entry_bytes
@@ -9519,10 +10018,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             )
             && liteinst_helper_code_bytes_match(task, &arm.helper_code)
             && liteinst_helper_entry_scalars_match(
-                &arm,
+                arm.tid,
+                arm.generation,
+                arm.entry_rip,
+                arm.site,
+                arm.stack_pointer,
+                arm.request,
                 task.pid(),
                 generation,
-                task.physical_status_id().map(|status| status.get()),
+                stop_strictly_advanced,
                 &regs,
                 siginfo.si_code,
                 entry_opcode,
@@ -9902,12 +10406,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    async fn restore_liteinst_helper_and_source(
+    async fn restore_liteinst_helper_and_source_unboxed(
         &mut self,
         task: Stopped,
         saved: &LiteinstHelperSavedState,
         frame: LiteinstHandshakeFrame,
-        protection: GuestRange,
+        _protection: GuestRange,
         original_mapping: &GuestMap,
         helper_code: &LiteinstHelperCode,
         prior_words: &[LiteinstPatchWordSnapshot],
@@ -9928,10 +10432,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "PROT_NONE transition or exact alias readback differed",
             ));
         }
+        let original_source_range = original_mapping
+            .end
+            .checked_sub(original_mapping.start)
+            .and_then(|len| GuestRange::new(original_mapping.start, len))
+            .ok_or_else(|| {
+                Error::runtime(
+                    self.tid(),
+                    "restore LiteInst patch-source protection",
+                    "original source mapping has invalid geometry",
+                )
+            })?;
         let (task, result) = self
             .set_liteinst_patch_source_protection(
                 task,
-                protection,
+                original_source_range,
                 libc::PROT_READ | libc::PROT_EXEC,
             )
             .await
@@ -9988,6 +10503,30 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.liteinst_helper_failure(original, rollback_failures));
         }
         Ok((task, rollback_failures))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn restore_liteinst_helper_and_source<'a>(
+        &'a mut self,
+        task: Stopped,
+        saved: &'a LiteinstHelperSavedState,
+        frame: LiteinstHandshakeFrame,
+        protection: GuestRange,
+        original_mapping: &'a GuestMap,
+        helper_code: &'a LiteinstHelperCode,
+        prior_words: &'a [LiteinstPatchWordSnapshot],
+        helper_was_executable: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<(Stopped, Vec<String>), Error>> + Send + 'a>> {
+        Box::pin(self.restore_liteinst_helper_and_source_unboxed(
+            task,
+            saved,
+            frame,
+            protection,
+            original_mapping,
+            helper_code,
+            prior_words,
+            helper_was_executable,
+        ))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -10358,7 +10897,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
         }
 
-        let Some(arm) = self.arm_liteinst_install_helper(&task, frame, site, request) else {
+        let Some(arm) = self.arm_liteinst_install_helper(&task, frame, site, request)? else {
             let (stopped, rollback) = self
                 .restore_liteinst_helper_and_source(
                     task,
@@ -10484,10 +11023,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Wait::Exited(_, exit_status) => self.exit(exit_status).await,
         };
-        let entry_status = entry_task
-            .physical_status_id()
-            .expect("authenticated helper entry has a physical status")
-            .get();
+        let entry_generation = entry_task.physical_event_generation();
+        let entry_logical_stop = entry_task.logical_stop_id();
+        let entry_status = self.liteinst_stop_status(&entry_task)?;
         let running = match self.resume_stopped(entry_task, None) {
             Ok(running) => running,
             Err(error) => {
@@ -10575,16 +11113,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let consumed_request: Option<LiteinstInstallRequest> =
                     stopped.read_value(request_read).ok();
                 let request_consumed = consumed_request == Some(LiteinstInstallRequest::default());
+                let stop_strictly_advanced = self.liteinst_stop_status(&stopped).is_ok()
+                    && liteinst_stop_strictly_advances(
+                        entry_generation,
+                        entry_logical_stop,
+                        entry_status,
+                        &stopped,
+                    );
                 if regs.r10 != helper_return_marker
                     || regs.ip() != frame.helper_return_rip
                     || regs.rsp != frame.helper_stack_top
                     || return_opcode != Some(0xcc)
                     || !si_code
                         .is_some_and(|code| matches!(code, libc::TRAP_BRKPT | libc::SI_KERNEL))
-                    || !physical_status_advanced(
-                        entry_status,
-                        stopped.physical_status_id().map(|status| status.get()),
-                    )
+                    || !stop_strictly_advanced
                     || !request_consumed
                     || !liteinst_temporary_source_is_rwx(&stopped, &original_mapping, protection)
                     || !liteinst_helper_code_has_protection(
@@ -10598,7 +11140,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let original = Error::runtime(
                         self.tid(),
                         "validate LiteInst patch-helper return",
-                        "return trap identity, physical status, consumed request, mappings, or prior patch words differed",
+                        "return trap identity, stop progression, consumed request, mappings, or prior patch words differed",
                     );
                     return match self
                         .restore_liteinst_helper_and_source(
@@ -10803,9 +11345,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             state.frame.ok_or(Errno::EIO)?
         };
 
-        let page_size = host_page_size()?;
+        #[cfg(target_arch = "x86_64")]
+        if !self.current_liteinst_timer_hook_policy().permits_new_hook() {
+            self.deopt_liteinst_hooks_for_timer_transport(
+                &task,
+                LiteinstDeoptProgramCounter::TranslateGenerated,
+            )?;
+            self.record_liteinst_fallback_stats(&task, frame, site);
+            return Ok((task, false, None));
+        }
+
         let Some((request, protection, original_mapping)) =
-            snapshot_liteinst_install_request(&task, site, page_size)
+            snapshot_liteinst_install_request(&task, site)
         else {
             self.record_liteinst_fallback_stats(&task, frame, site);
             return Ok((task, false, None));
@@ -10824,9 +11375,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         // calling arbitrary tracee code. The original event is still serviced
         // exactly once by the host Tool below.
         let task = self.skip_seccomp_syscall(task).await?;
-        let (task, install) = self
-            .call_liteinst_install_helper(task, frame, site, request, protection, original_mapping)
-            .await?;
+        // The rollback-rich helper future has many mutually exclusive await
+        // states. Keep that cold-path state on the heap so polling the tracer
+        // does not require an unusually large thread stack.
+        let (task, install) = Box::pin(self.call_liteinst_install_helper(
+            task,
+            frame,
+            site,
+            request,
+            protection,
+            original_mapping,
+        ))
+        .await?;
         let relocated_tail = install.as_ref().map(|(address, _)| *address);
         if let Some((_, footprint)) = install {
             self.liteinst_runtime
@@ -10919,6 +11479,47 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_liteinst_task_creation_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<Wait, Error> {
+        let tid = self.tid();
+        if !is_task_creating_syscall(nr) {
+            return Err(Errno::EINVAL.into());
+        }
+        // Tool subscriptions are a dispatch choice, not permission to copy an
+        // address space containing active hooks. This seccomp stop precedes the
+        // kernel operation, so the original process is still the sole task and
+        // the normal quiescence proof can restore every patch before fork or
+        // clone makes it reachable in another task.
+        self.deopt_liteinst_hooks_quiescent(&task, LiteinstDeoptProgramCounter::TranslateGenerated)
+            .tracee_context(tid, "deopt LiteInst hooks before task creation")?;
+        let wait = self
+            .syscall_stopped(task, None)
+            .tracee_context(tid, "resume controller-observed task creation")?
+            .next_state()
+            .await
+            .tracee_context(tid, "wait for controller-observed task creation")?;
+        self.arm_liteinst_wait(&wait)?;
+        let (task, _result) = self
+            .status_to_result(
+                wait,
+                None,
+                None,
+                None,
+                NewChildContinuation::NestedSyscallExit,
+            )
+            .await
+            .tracee_context(tid, "complete controller-observed task creation")?;
+        self.resume_stopped(task, None)
+            .tracee_context(tid, "resume after controller-observed task creation")?
+            .next_state()
+            .await
+            .tracee_context(tid, "wait after controller-observed task creation")
+    }
+
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
         let raw_number = task
@@ -10941,6 +11542,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             .subscriptions
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
+        #[cfg(target_arch = "x86_64")]
+        if is_task_creating_syscall(nr) && !tool_subscribed && self.after_loader_config().is_none()
+        {
+            // Task creation can recursively construct a child run-loop future.
+            // Keep this controller-only cold path off handle_seccomp's already
+            // large stack-resident state machine.
+            return Box::pin(self.handle_liteinst_task_creation_syscall(task, nr)).await;
+        }
         if is_liteinst_mapping_syscall(nr, args) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
@@ -11040,6 +11649,17 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             self.pending_syscall_already_skipped = false;
 
+            #[cfg(target_arch = "x86_64")]
+            self.deopt_liteinst_hooks_for_timer_transport(
+                &task,
+                LiteinstDeoptProgramCounter::PreserveObserved,
+            )?;
+
+            #[cfg(target_arch = "x86_64")]
+            let liteinst_resume_rip = liteinst_generated_tail_resume_rip(
+                self.current_liteinst_timer_hook_policy(),
+                liteinst_resume_rip,
+            );
             if let Some(resume_rip) = liteinst_resume_rip {
                 let mut regs = task
                     .getregs()
@@ -11181,6 +11801,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(Errno::EPROTO.into());
         }
         #[cfg(target_arch = "x86_64")]
+        self.ensure_liteinst_timer_hook_resume_safe()?;
+        #[cfg(target_arch = "x86_64")]
         if entry_guard_inspection_blocks_resume(
             self.liteinst_entry_guard_inspection.is_some(),
             self.liteinst_entry_guard_uncertain,
@@ -11212,6 +11834,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             return Err((Errno::EPROTO.into(), None, None));
         }
+        if let Err(error) = self.ensure_liteinst_timer_hook_resume_safe() {
+            return Err((error, None, None));
+        }
         self.lease_liteinst_stop(task)
             .resume_with_physical_attempt(None)
     }
@@ -11224,6 +11849,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.pending_signal.is_some() || self.deferred_gdb_boundary.is_some() {
             return Err(Errno::EPROTO.into());
         }
+        #[cfg(target_arch = "x86_64")]
+        self.ensure_liteinst_timer_hook_resume_safe()?;
         #[cfg(target_arch = "x86_64")]
         if entry_guard_inspection_blocks_resume(
             self.liteinst_entry_guard_inspection.is_some(),
@@ -11242,6 +11869,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.pending_signal.is_some() || self.deferred_gdb_boundary.is_some() {
             return Err(Errno::EPROTO.into());
         }
+        #[cfg(target_arch = "x86_64")]
+        self.ensure_liteinst_timer_hook_resume_safe()?;
         #[cfg(target_arch = "x86_64")]
         if entry_guard_inspection_blocks_resume(
             self.liteinst_entry_guard_inspection.is_some(),
@@ -11978,14 +12607,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             Ok(exit_status) => Ok(exit_status),
             Err(err) => {
                 if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-                    let mut failure = runtime.session_failure.lock().unwrap();
-                    if failure.is_none() {
-                        *failure = Some(format!(
-                            "tracee {} failed while owning its exact notifier generation: {err}",
-                            self.tid()
-                        ));
-                        drop(failure);
-                        runtime.session_failure_changed.notify_waiters();
+                    // The root consumes this future directly and retains its
+                    // local typed failure. Publishing into its own watcher
+                    // would make the biased session-failure branch discard
+                    // that result and its stopped-capability owner. Only a
+                    // non-root task needs to wake the root cleanup guard.
+                    if self.liteinst_root_config().is_none() {
+                        let mut failure = runtime.session_failure.lock().unwrap();
+                        if failure.is_none() {
+                            *failure = Some(format!(
+                                "tracee {} failed while owning its exact notifier generation: {err}",
+                                self.tid()
+                            ));
+                            drop(failure);
+                            runtime.session_failure_changed.notify_waiters();
+                        }
                     }
                     // Return immediately to the outer LiteInst cleanup guard.
                     // It owns the original root pidfd and every generation-
@@ -12202,14 +12838,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         #[cfg(target_arch = "x86_64")]
-        if matches!(completion, Either::Left((Some(_), _)))
+        if liteinst_exit_completion_has_terminal_proof(&completion)
             && (self.liteinst_installed_event.is_some()
                 || self.after_loader_private_timer_is_owned())
         {
-            // `Some` exists only when ExitFuture yielded this generation's
-            // typed PTRACE_EVENT_EXIT stop. Arbitrary ExitFuture errors and
-            // special stopped results carry no terminal proof and must not
-            // retire private state.
+            // A typed PTRACE_EVENT_EXIT stop is not itself terminal: Linux
+            // de_thread may replace the leader and return a distinct Exec
+            // stop from the following wait. Retire private state only after
+            // that exact wait proves process death. Stopped successors and
+            // errors retain the token for fail-closed session cleanup.
             self.retire_liteinst_installed_event_on_terminal()
                 .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
         }
@@ -12238,11 +12875,35 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.liteinst_runtime.is_some() && former_tid != self.tid() =>
             {
                 // `wait_after_exit_event` already retired the old claimed exit
-                // token atomically with its typed continuation. This `wait` is
-                // a distinct ordinary Exec stop and remains armed for session
-                // cleanup without transferring the consumed exit claim again.
+                // token atomically with its typed continuation. This `wait` is a
+                // distinct ordinary Exec stop: arm it before publishing the
+                // refusal. Queue SIGKILL through the registered generation's
+                // exact pidfd without issuing PTRACE_CONT for this Exec stop:
+                // SIGKILL acts during ptrace-stop, and the armed durable shadow
+                // lets cleanup supersede this stop with the resulting Exit stop.
                 let error = match self.arm_liteinst_wait(&wait) {
-                    Ok(()) => self.reject_liteinst_nonleader_exec(former_tid),
+                    Ok(()) => {
+                        let Wait::Stopped(task, Event::Exec(_)) = wait else {
+                            unreachable!("matched nonleader Exec stop changed variant")
+                        };
+                        let terminal = task.terminal_cleanup();
+                        let successor = TransferredStopSuccessor::from_stopped(&task);
+                        let cleanup_preparation = terminal
+                            .rearm_completed_exit_for_successor(&successor)
+                            .and_then(|()| terminal.send_sigkill_for_cleanup());
+                        // The held shadow installed above is now the only
+                        // durable owner. Drop the typed value before publishing
+                        // session failure so concurrent root cleanup cannot
+                        // activate the shadow while this capability is live.
+                        drop(task);
+                        if let Err(error) = cleanup_preparation {
+                            tracing::error!(
+                                %error,
+                                "nonleader Exec cleanup preparation failed before fail-closed session cleanup"
+                            );
+                        }
+                        self.reject_liteinst_nonleader_exec(former_tid)
+                    }
                     Err(error) => error,
                 };
                 handle_internal_error(error.into()).await
@@ -12486,6 +13147,72 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn authenticate_after_loader_private_syscall_exit(
+        &mut self,
+        wait: Wait,
+        expected_permit: &after_loader_task::AfterLoaderSyscallPermit,
+        entry: &PrivateSyscallEntry,
+    ) -> Result<AuthenticatedAfterLoaderPrivateSyscallExit, TraceError> {
+        let task = match wait {
+            Wait::Stopped(task, Event::Syscall) => task,
+            _ => return Err(Errno::EPROTO.into()),
+        };
+        let registers = task.getregs()?;
+        let expected_rip = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as Reg;
+        if !is_private_syscall_completion_stop(&task, expected_rip)?
+            || !private_syscall_transaction_matches(&task, entry, &registers, expected_rip)?
+        {
+            return Err(Errno::EPROTO.into());
+        }
+        let generation = task.physical_event_generation();
+        let logical_stop = task.logical_stop_id();
+        let physical_status = task.physical_status_id().ok_or(Errno::EPROTO)?;
+        let completed_permit = self
+            .complete_after_loader_syscall_inflight(&task)?
+            .ok_or(Errno::EPROTO)?;
+        if &completed_permit != expected_permit {
+            return Err(Errno::EPROTO.into());
+        }
+        let result = Errno::from_ret(registers.ret() as usize).map(|value| value as i64);
+        Ok(AuthenticatedAfterLoaderPrivateSyscallExit {
+            task,
+            result,
+            generation,
+            logical_stop,
+            physical_status,
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn finish_after_loader_private_syscall_exit(
+        &mut self,
+        authenticated: AuthenticatedAfterLoaderPrivateSyscallExit,
+        context: libc::user_regs_struct,
+        child_context: Option<libc::user_regs_struct>,
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
+        let AuthenticatedAfterLoaderPrivateSyscallExit {
+            task,
+            result,
+            generation,
+            logical_stop,
+            physical_status,
+        } = authenticated;
+        if task.physical_event_generation() != generation
+            || task.logical_stop_id() != logical_stop
+            || task.physical_status_id() != Some(physical_status)
+        {
+            return Err(Errno::EPROTO.into());
+        }
+        if child_context.is_some() {
+            task.setregs(&context)?;
+        } else {
+            restore_context(&task, context, None, false)?;
+        }
+        self.retain_nested_gdb_boundary(&task, &Event::Syscall)?;
+        Ok((task, result))
+    }
+
     async fn untraced_syscall_with_mapping_observation(
         &mut self,
         task: Stopped,
@@ -12534,6 +13261,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             args.arg5 as Reg,
         ));
         let child_context = self.injected_syscall.is_some().then_some(regs);
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            regs.eflags = private_syscall_entry_rflags(regs.eflags);
+        }
 
         // Jump to our private page to run the syscall instruction there. See
         // `populate_mmap_page` for details.
@@ -12585,17 +13317,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .ok_or(Errno::EPROTO)?;
             wait = self.syscall_stopped(stopped, None)?.next_state().await?;
             self.arm_liteinst_wait(&wait)?;
-            match &wait {
-                Wait::Stopped(stopped, Event::Syscall) => {
-                    let completed = self
-                        .complete_after_loader_syscall_inflight(stopped)?
-                        .ok_or(Errno::EPROTO)?;
-                    if completed != permit {
-                        return Err(Errno::EPROTO.into());
-                    }
-                }
-                _ => return Err(Errno::EPROTO.into()),
+            let authenticated =
+                self.authenticate_after_loader_private_syscall_exit(wait, &permit, &private_entry)?;
+            let (task, result) = self.finish_after_loader_private_syscall_exit(
+                authenticated,
+                oldregs,
+                child_context,
+            )?;
+            if is_task_creating_syscall(nr) {
+                self.finish_injected_task_creation_xstate(&task)?;
             }
+            if observe_mapping {
+                self.observe_liteinst_mapping_result(nr, args, result);
+            }
+            return Ok((task, result));
         }
 
         // Get the result of the syscall to return to the caller.
@@ -12711,13 +13446,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                         let mut regs = stopped.getregs()?;
                         let expected_rip =
                             (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as Reg;
+                        let transaction_matches = private_syscall_transaction_matches(
+                            &stopped,
+                            private_entry.as_ref().ok_or(Errno::EPROTO)?,
+                            &regs,
+                            expected_rip,
+                        )?;
                         if (expected_private_trap || committed_child.is_some())
-                            && !private_syscall_transaction_matches(
-                                &stopped,
-                                private_entry.as_ref().ok_or(Errno::EPROTO)?,
-                                &regs,
-                                expected_rip,
-                            )?
+                            && !transaction_matches
                         {
                             return Err(Errno::EPROTO.into());
                         }
@@ -13144,6 +13880,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         command: DeferredGdbResumeCommand,
     ) -> Result<Running, TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        self.ensure_liteinst_timer_hook_resume_safe()?;
         #[cfg(target_arch = "x86_64")]
         let after_loader_syscall_continuation =
             self.liteinst_after_loader_forward_inflight.is_some();
@@ -13778,21 +14516,28 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
             //if timer is imprecise there is no really a point in trying to single step any further than r
             TimerSchedule::RcbsAndInstructions(r, _) => r,
         };
-        self.timer
-            .request_event(TimerEventRequest::Imprecise(rcbs))?;
+        let request = self.timer.request_event(TimerEventRequest::Imprecise(rcbs));
+        #[cfg(target_arch = "x86_64")]
+        self.deopt_active_tool_stop_for_timer_transport()
+            .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+        request?;
         Ok(())
     }
 
     fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), reverie::Error> {
-        match sched {
-            TimerSchedule::Rcbs(r) => self.timer.request_event(TimerEventRequest::Precise(r))?,
+        let request = match sched {
+            TimerSchedule::Rcbs(r) => self.timer.request_event(TimerEventRequest::Precise(r)),
             TimerSchedule::Time(dur) => self
                 .timer
-                .request_event(TimerEventRequest::Precise(Timer::as_ticks(dur)))?,
+                .request_event(TimerEventRequest::Precise(Timer::as_ticks(dur))),
             TimerSchedule::RcbsAndInstructions(r, i) => self
                 .timer
-                .request_event(TimerEventRequest::PreciseInstruction(r, i))?,
+                .request_event(TimerEventRequest::PreciseInstruction(r, i)),
         };
+        #[cfg(target_arch = "x86_64")]
+        self.deopt_active_tool_stop_for_timer_transport()
+            .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+        request?;
         Ok(())
     }
 
@@ -13913,6 +14658,165 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn timer_transport_hook_policy_is_fail_closed_without_disabling_ptrace_resume() {
+        for (transport, hooks, expected) in [
+            (false, false, LiteinstTimerHookPolicy::DirectHooksAllowed),
+            (false, true, LiteinstTimerHookPolicy::DirectHooksAllowed),
+            (true, false, LiteinstTimerHookPolicy::PtraceOnly),
+            (true, true, LiteinstTimerHookPolicy::DeoptRequired),
+        ] {
+            let policy = liteinst_timer_hook_policy(transport, hooks);
+            assert_eq!(policy, expected);
+            assert_eq!(policy.permits_new_hook(), !transport);
+            assert_eq!(policy.resume_is_safe(), !(transport && hooks));
+            assert_eq!(policy.requires_deopt(), transport && hooks);
+        }
+
+        let ptrace_only = liteinst_timer_hook_policy(true, false);
+        assert!(ptrace_only.resume_is_safe());
+        assert!(!ptrace_only.permits_new_hook());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn timer_deopt_never_restores_a_generated_tail() {
+        assert_eq!(
+            liteinst_generated_tail_resume_rip(
+                LiteinstTimerHookPolicy::DirectHooksAllowed,
+                Some(0x7000),
+            ),
+            Some(0x7000),
+        );
+        for policy in [
+            LiteinstTimerHookPolicy::PtraceOnly,
+            LiteinstTimerHookPolicy::DeoptRequired,
+        ] {
+            assert_eq!(
+                liteinst_generated_tail_resume_rip(policy, Some(0x7000)),
+                None,
+            );
+        }
+        assert_eq!(
+            liteinst_generated_tail_resume_rip(LiteinstTimerHookPolicy::DirectHooksAllowed, None,),
+            None,
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn timer_predeoptimized_installed_tail_requires_every_identity_witness() {
+        let valid = (true, Some(0x8110), 0x8110, false, false);
+        assert!(liteinst_timer_predeoptimized_tail_is_valid(
+            valid.0, valid.1, valid.2, valid.3, valid.4,
+        ));
+        for invalid in [
+            (false, valid.1, valid.2, valid.3, valid.4),
+            (valid.0, None, valid.2, valid.3, valid.4),
+            (valid.0, Some(0x8111), valid.2, valid.3, valid.4),
+            (valid.0, valid.1, valid.2, true, valid.4),
+            (valid.0, valid.1, valid.2, valid.3, true),
+        ] {
+            assert!(!liteinst_timer_predeoptimized_tail_is_valid(
+                invalid.0, invalid.1, invalid.2, invalid.3, invalid.4,
+            ));
+        }
+    }
+
+    #[test]
+    fn timer_active_injected_completion_materializes_instead_of_clearing() {
+        assert_eq!(
+            injected_frame_completion(false, false, false),
+            InjectedFrameCompletion::ClearControllerExecution,
+        );
+        for (signal, gdb, timer) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                injected_frame_completion(signal, gdb, timer),
+                InjectedFrameCompletion::MaterializeLogicalGuest,
+            );
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        for (transport, liteinst, expected) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                liteinst_timer_requires_injected_materialization(transport, liteinst),
+                expected,
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn private_timer_retirement_requires_typed_exit_and_terminal_successor() {
+        type Completion = Either<(Option<()>, Result<Wait, TraceError>), ()>;
+
+        fn apply_retirement(
+            completion: &Completion,
+            owned_token: &mut Option<u64>,
+            retirements: &mut usize,
+        ) {
+            if liteinst_exit_completion_has_terminal_proof(completion) && owned_token.is_some() {
+                assert_eq!(owned_token.take(), Some(73));
+                *retirements += 1;
+            }
+        }
+
+        fn assert_retained(completion: Completion) {
+            let mut owned_token = Some(73);
+            let mut retirements = 0;
+            apply_retirement(&completion, &mut owned_token, &mut retirements);
+            assert_eq!(owned_token, Some(73));
+            assert_eq!(retirements, 0);
+        }
+
+        let terminal: Completion = Either::Left((
+            Some(()),
+            Ok(Wait::Exited(Pid::from_raw(2301), ExitStatus::Exited(17))),
+        ));
+        let mut owned_token = Some(73);
+        let mut retirements = 0;
+        apply_retirement(&terminal, &mut owned_token, &mut retirements);
+        apply_retirement(&terminal, &mut owned_token, &mut retirements);
+        assert_eq!(owned_token, None);
+        assert_eq!(retirements, 1);
+
+        assert_retained(Either::Left((
+            Some(()),
+            Ok(Wait::Stopped(
+                Stopped::new_unchecked(Pid::from_raw(i32::MAX - 101)),
+                Event::Exec(Pid::from_raw(i32::MAX - 102)),
+            )),
+        )));
+        assert_retained(Either::Left((
+            Some(()),
+            Ok(Wait::Stopped(
+                Stopped::new_unchecked(Pid::from_raw(i32::MAX - 103)),
+                Event::Signal(Signal::SIGSTOP),
+            )),
+        )));
+        assert_retained(Either::Left((Some(()), Err(Errno::EIO.into()))));
+        assert_retained(Either::Left((None, Err(Errno::EIO.into()))));
+        assert_retained(Either::Left((
+            None,
+            Ok(Wait::Exited(Pid::from_raw(2302), ExitStatus::Exited(18))),
+        )));
+        assert_retained(Either::Right(()));
+    }
 
     #[test]
     fn nested_gdb_boundary_truth_table_preserves_continue_signal_stop() {
@@ -15140,58 +16044,30 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn helper_entry_scalar_authority_is_single_status_and_exact() {
-        let code_mapping = GuestMap {
-            start: 0x7000,
-            end: 0x8000,
-            offset: 0,
-            device_major: 8,
-            device_minor: 1,
-            readable: true,
-            writable: false,
-            executable: true,
-            shared: false,
-            inode: 7,
-            path: Some(PathBuf::from("/runtime")),
-        };
-        let helper_code = LiteinstHelperCode {
-            range: GuestRange::new(0x9000, 0x1000).unwrap(),
-            original_mapping: GuestMap {
-                start: 0x9000,
-                end: 0xa000,
-                ..code_mapping.clone()
-            },
-            bytes: vec![0; 0x1000],
-        };
+    fn helper_entry_scalar_authority_requires_exact_identity_and_stop_progress() {
         let request = liteinst_install_request_for_test();
         let tid = Pid::from_raw(77);
-        let arm = LiteinstInstallHelperArm {
-            tid,
-            generation: 4,
-            origin_status: 10,
-            entry: 0x7100,
-            entry_rip: 0x7101,
-            site: request.site_start,
-            stack_pointer: 0xbff8,
-            return_address: 0x7200,
-            request_address: 0xc000,
-            request,
-            code_mapping,
-            helper_code,
-            entry_bytes: [0; 16],
-        };
+        let generation = 4;
+        let entry_rip = 0x7101;
+        let site = request.site_start;
+        let stack_pointer = 0xbff8;
         let regs = libc::user_regs_struct {
-            rip: arm.entry_rip,
-            rdi: arm.site,
-            rsp: arm.stack_pointer,
+            rip: entry_rip,
+            rdi: site,
+            rsp: stack_pointer,
             orig_rax: u64::MAX,
             ..unsafe { core::mem::zeroed() }
         };
         assert!(liteinst_helper_entry_scalars_match(
-            &arm,
             tid,
-            arm.generation,
-            Some(11),
+            generation,
+            entry_rip,
+            site,
+            stack_pointer,
+            request,
+            tid,
+            generation,
+            true,
             &regs,
             libc::TRAP_BRKPT,
             0xcc,
@@ -15199,60 +16075,75 @@ mod tests {
         ));
         for rejected in [
             liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation,
-                None,
+                generation,
+                entry_rip,
+                site,
+                stack_pointer,
+                request,
+                tid,
+                generation,
+                false,
                 &regs,
                 libc::TRAP_BRKPT,
                 0xcc,
                 request,
             ),
             liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation,
-                Some(9),
+                generation,
+                entry_rip,
+                site,
+                stack_pointer,
+                request,
+                Pid::from_raw(78),
+                generation,
+                true,
                 &regs,
                 libc::TRAP_BRKPT,
                 0xcc,
                 request,
             ),
             liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation,
-                Some(10),
+                generation,
+                entry_rip,
+                site,
+                stack_pointer,
+                request,
+                tid,
+                generation + 1,
+                true,
                 &regs,
                 libc::TRAP_BRKPT,
                 0xcc,
                 request,
             ),
             liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation + 1,
-                Some(11),
-                &regs,
-                libc::TRAP_BRKPT,
-                0xcc,
+                generation,
+                entry_rip,
+                site,
+                stack_pointer,
                 request,
-            ),
-            liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation,
-                Some(11),
+                generation,
+                true,
                 &regs,
                 libc::SI_USER,
                 0xcc,
                 request,
             ),
             liteinst_helper_entry_scalars_match(
-                &arm,
                 tid,
-                arm.generation,
-                Some(11),
+                generation,
+                entry_rip,
+                site,
+                stack_pointer,
+                request,
+                tid,
+                generation,
+                true,
                 &regs,
                 libc::TRAP_BRKPT,
                 0x90,
@@ -15261,10 +16152,30 @@ mod tests {
         ] {
             assert!(!rejected);
         }
-        assert!(physical_status_advanced(10, Some(11)));
-        assert!(!physical_status_advanced(10, None));
-        assert!(!physical_status_advanced(10, Some(10)));
-        assert!(!physical_status_advanced(10, Some(9)));
+    }
+
+    #[test]
+    fn liteinst_physical_status_modes_and_progression_are_exact() {
+        assert!(liteinst_physical_status_mode_matches(false, None));
+        assert!(liteinst_physical_status_mode_matches(false, Some(10)));
+        assert!(!liteinst_physical_status_mode_matches(true, None));
+        assert!(liteinst_physical_status_mode_matches(true, Some(10)));
+
+        assert!(liteinst_physical_status_strictly_advances(None, None));
+        assert!(liteinst_physical_status_strictly_advances(
+            Some(10),
+            Some(11)
+        ));
+        for (origin, observed) in [
+            (None, Some(11)),
+            (Some(10), None),
+            (Some(10), Some(10)),
+            (Some(10), Some(9)),
+        ] {
+            assert!(!liteinst_physical_status_strictly_advances(
+                origin, observed
+            ));
+        }
     }
 
     #[test]
@@ -16208,6 +17119,28 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn injected_liteinst_register_update_rejects_unrepresentable_stack_pointer() {
+        let current = libc::user_regs_struct {
+            rsp: 0x7fff_1000,
+            ..unsafe { core::mem::zeroed() }
+        };
+        let mut allowed = current;
+        allowed.rax = 17;
+        allowed.rip += 2;
+        assert_eq!(
+            validate_liteinst_injected_user_regs_update(&current, &allowed),
+            Ok(())
+        );
+        let mut rejected = allowed;
+        rejected.rsp += 8;
+        assert_eq!(
+            validate_liteinst_injected_user_regs_update(&current, &rejected),
+            Err(Errno::ENOTSUPP)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn installed_native_register_update_allows_rip_and_rsp_but_preserves_syscall_identity() {
         let current = libc::user_regs_struct {
             rip: 0x401002,
@@ -16804,6 +17737,10 @@ VmFlags: rd ex ht mr mw me\n"
 
         let normalized = liteinst_private_sigmask(safeptrace::PtraceSigmask::from_bytes([0xff; 8]));
         assert_eq!(normalized.into_bytes(), expected);
+
+        let trap_stop = liteinst_private_trap_stop_sigmask(private);
+        expected[(libc::SIGTRAP as usize - 1) / 8] &= !(1 << ((libc::SIGTRAP as usize - 1) % 8));
+        assert_eq!(trap_stop.into_bytes(), expected);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -16914,6 +17851,118 @@ VmFlags: rd ex ht mr mw me\n"
             completion_rip + 1,
             callback_stack_top,
         ));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn private_syscall_exit_requires_exact_registers_except_architectural_outputs() {
+        let mut entry = unsafe { core::mem::zeroed::<libc::user_regs_struct>() };
+        entry.r15 = 1;
+        entry.r14 = 2;
+        entry.r13 = 3;
+        entry.r12 = 4;
+        entry.rbp = 5;
+        entry.rbx = 6;
+        entry.r10 = 7;
+        entry.r9 = 8;
+        entry.r8 = 9;
+        entry.rax = Sysno::mprotect as u64;
+        entry.orig_rax = Sysno::mprotect as u64;
+        entry.rdi = cp::TRAMPOLINE_BASE as u64;
+        entry.rsi = cp::TRAMPOLINE_SIZE as u64;
+        entry.rdx = (libc::PROT_READ | libc::PROT_EXEC) as u64;
+        entry.rsp = 0x7fff_0000;
+        entry.rip = cp::PRIVATE_PAGE_OFFSET as u64;
+        entry.eflags = 0x246;
+        let completion_rip = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
+        let mut completion = entry;
+        completion.rax = 0;
+        completion.rip = completion_rip;
+        completion.rcx = completion_rip;
+        completion.r11 = entry.eflags;
+        assert!(private_syscall_registers_match(
+            &entry,
+            &completion,
+            completion_rip,
+        ));
+
+        for mutate in [
+            |registers: &mut libc::user_regs_struct| registers.r15 ^= 1,
+            |registers: &mut libc::user_regs_struct| registers.r10 ^= 1,
+            |registers: &mut libc::user_regs_struct| registers.rdi ^= 1,
+            |registers: &mut libc::user_regs_struct| registers.rsp ^= 8,
+            |registers: &mut libc::user_regs_struct| registers.eflags ^= 1,
+            |registers: &mut libc::user_regs_struct| registers.orig_rax ^= 1,
+        ] {
+            let mut forged = completion;
+            mutate(&mut forged);
+            assert!(
+                !private_syscall_registers_match(&entry, &forged, completion_rip),
+                "private syscall completion accepted a changed non-output register"
+            );
+        }
+        let mut wrong_rip = completion;
+        wrong_rip.rip += 1;
+        assert!(!private_syscall_registers_match(
+            &entry,
+            &wrong_rip,
+            completion_rip,
+        ));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn private_syscall_entry_consumes_no_guest_fault_resume_flag() {
+        let guest_flags = 0x202 | X86_RFLAGS_RF;
+        assert_eq!(private_syscall_entry_rflags(guest_flags), 0x202);
+        assert_eq!(
+            private_syscall_entry_rflags(guest_flags | (1 << 10)),
+            0x202 | (1 << 10),
+            "private entry must canonicalize RF and no other flag",
+        );
+        assert_eq!(
+            restore_private_syscall_rflags(0x246, guest_flags),
+            0x246 | X86_RFLAGS_RF,
+            "restore must take only RF from the saved guest frame",
+        );
+        assert_eq!(
+            restore_private_syscall_rflags(0x246 | X86_RFLAGS_RF, 0x202),
+            0x246,
+            "restore must clear an RF absent from the saved guest frame",
+        );
+        assert_eq!(
+            restore_private_syscall_rflags(u64::MAX ^ X86_RFLAGS_RF, u64::MAX),
+            u64::MAX,
+            "restore must preserve every unrelated completion bit",
+        );
+        assert_eq!(
+            restore_private_syscall_rflags(u64::MAX, 0),
+            u64::MAX ^ X86_RFLAGS_RF,
+            "restore must source no unrelated bit from the saved frame",
+        );
+
+        let mut entry = unsafe { core::mem::zeroed::<libc::user_regs_struct>() };
+        entry.rax = Sysno::getppid as u64;
+        entry.orig_rax = Sysno::getppid as u64;
+        entry.rip = cp::PRIVATE_PAGE_OFFSET as u64;
+        entry.eflags = private_syscall_entry_rflags(guest_flags);
+        let completion_rip = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
+        let mut completion = entry;
+        completion.rax = 1;
+        completion.rip = completion_rip;
+        completion.rcx = completion_rip;
+        completion.r11 = entry.eflags;
+        assert!(private_syscall_registers_match(
+            &entry,
+            &completion,
+            completion_rip,
+        ));
+
+        completion.eflags |= X86_RFLAGS_RF;
+        assert!(
+            !private_syscall_registers_match(&entry, &completion, completion_rip),
+            "completion seal must remain byte-exact after entry canonicalization",
+        );
     }
 
     #[cfg(target_arch = "x86_64")]

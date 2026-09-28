@@ -1572,7 +1572,9 @@ impl Drop for CurrentVdsoPatch {
 /// pseudo-vDSO function. This shares the authoritative symbol table with
 /// ptrace's stopped-guest path instead of maintaining a backend-specific list.
 #[cfg(target_arch = "x86_64")]
-pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<CurrentVdsoPatch, Error> {
+pub fn patch_current_vdso_transaction(
+    subscriptions: &Subscription,
+) -> Result<CurrentVdsoPatch, Error> {
     if !is_patch_required(subscriptions) {
         return Ok(CurrentVdsoPatch {
             sites: Vec::new(),
@@ -1642,6 +1644,19 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<CurrentVdsoPat
     compiler_fence(Ordering::SeqCst);
     transaction.close_with(|protection| protect_current_vdso_mapping(start, len, protection))?;
     Ok(transaction)
+}
+
+/// Rewrite the current vDSO and retain the legacy committed-site return type.
+///
+/// This compatibility wrapper commits the rewrite before returning, matching
+/// the historical API. New callers that must roll back on a later installation
+/// failure should use [`patch_current_vdso_transaction`].
+#[cfg(target_arch = "x86_64")]
+pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscallSite>, Error> {
+    let transaction = patch_current_vdso_transaction(subscriptions)?;
+    let sites = transaction.sites().to_vec();
+    transaction.commit();
+    Ok(sites)
 }
 
 // get vdso symbols offset/size from current process
@@ -1748,6 +1763,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn legacy_current_vdso_patch_signature_is_preserved() {
+        let _: fn(&Subscription) -> Result<Vec<VdsoSyscallSite>, Error> = patch_current_vdso;
+    }
 
     #[cfg(target_arch = "x86_64")]
     fn synthetic_current_vdso_patch(

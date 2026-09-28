@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -84,7 +86,71 @@ static count_fn load_count(const char *name) {
   return function;
 }
 
-int main(void) {
+static int write_all(int fd, const char *bytes, size_t length) {
+  while (length != 0) {
+    ssize_t written = write(fd, bytes, length);
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
+    if (written <= 0) {
+      return -1;
+    }
+    bytes += (size_t)written;
+    length -= (size_t)written;
+  }
+  return 0;
+}
+
+static int write_pid_file(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    return -1;
+  }
+  char pid[32];
+  int length = snprintf(pid, sizeof(pid), "%ld\n", syscall(SYS_gettid));
+  int failed = length <= 0 || (size_t)length >= sizeof(pid) ||
+               write_all(fd, pid, (size_t)length) != 0;
+  failed |= close(fd) != 0;
+  return failed ? -1 : 0;
+}
+
+int main(int argc, char **argv) {
+  const char *spoof_mode = NULL;
+  const char *spoof_proof = NULL;
+  int spoof_proof_fd = -1;
+  trap_fn trap = NULL;
+  if (argc == 5) {
+    spoof_mode = argv[1];
+    if (strcmp(spoof_mode, "raw-trap") == 0) {
+      spoof_proof =
+          "calls=32 traps=1 hooks=31 ac=0 simd=1 mode=raw-trap\n";
+    } else if (strcmp(spoof_mode, "forged-frame") == 0) {
+      spoof_proof =
+          "calls=32 traps=1 hooks=31 ac=0 simd=1 mode=forged-frame\n";
+    } else if (strcmp(spoof_mode, "marker-int3") == 0) {
+      spoof_proof =
+          "calls=32 traps=1 hooks=31 ac=0 simd=1 mode=marker-int3\n";
+    } else {
+      return 24;
+    }
+    if (write_pid_file(argv[2]) != 0) {
+      return 25;
+    }
+    spoof_proof_fd =
+        open(argv[3], O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (spoof_proof_fd < 0) {
+      return 27;
+    }
+    trap_address_fn trap_address = (trap_address_fn)dlsym(
+        RTLD_DEFAULT, "reverie_liteinst_host_syscall_trap_address");
+    if (trap_address == NULL) {
+      return 28;
+    }
+    trap = trap_address();
+  } else if (argc != 1) {
+    return 26;
+  }
+
   long expected = -1;
   for (unsigned i = 0; i < 32; ++i) {
     long observed = reverie_liteinst_hybrid_getpid();
@@ -106,34 +172,36 @@ int main(void) {
   uint64_t traps = load_count("reverie_liteinst_site_trap_count")(address);
   uint64_t hooks = load_count("reverie_liteinst_site_hook_count")(address);
 
-  int spoof_attempts = 0;
-  trap_address_fn trap_address = (trap_address_fn)dlsym(
-      RTLD_DEFAULT, "reverie_liteinst_host_syscall_trap_address");
-  if (trap_address == NULL) {
-    return 24;
+  if (spoof_mode == NULL) {
+    printf("calls=32 traps=%" PRIu64 " hooks=%" PRIu64
+           " ac=0 simd=1 spoofs=0\n",
+           traps, hooks);
+    return 0;
   }
-  trap_fn trap = trap_address();
-  trap((void *)1);
-  ++spoof_attempts;
-
-  struct host_syscall_frame forged = {0};
-  forged.rax = SYS_getpid;
-  forged.rsp = (uint64_t)(uintptr_t)&forged;
-  forged.rip = address;
-  trap(&forged);
-  ++spoof_attempts;
-
-  __asm__ volatile("movabs $0x7265766c69000004, %%rax\n\tint3"
-                   :
-                   :
-                   : "rax", "memory");
-  ++spoof_attempts;
-  if (spoof_attempts != 3) {
-    return 25;
+  if (traps != 1 || hooks != 31 ||
+      write_all(spoof_proof_fd, spoof_proof, strlen(spoof_proof)) != 0 ||
+      close(spoof_proof_fd) != 0) {
+    return 27;
+  }
+  while (access(argv[4], F_OK) != 0) {
+    if (errno != ENOENT || (usleep(1000) != 0 && errno != EINTR)) {
+      return 29;
+    }
   }
 
-  printf("calls=32 traps=%" PRIu64 " hooks=%" PRIu64
-         " ac=0 simd=1 spoofs=%d\n",
-         traps, hooks, spoof_attempts);
-  return 0;
+  if (strcmp(spoof_mode, "raw-trap") == 0) {
+    trap((void *)1);
+  } else if (strcmp(spoof_mode, "forged-frame") == 0) {
+    struct host_syscall_frame forged = {0};
+    forged.rax = SYS_getpid;
+    forged.rsp = (uint64_t)(uintptr_t)&forged;
+    forged.rip = address;
+    trap(&forged);
+  } else {
+    __asm__ volatile("movabs $0x7265766c69000004, %%rax\n\tint3"
+                     :
+                     :
+                     : "rax", "memory");
+  }
+  return 30;
 }

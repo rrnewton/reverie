@@ -31,6 +31,7 @@ use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_liteinst::LiteinstDispatchPath;
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 
 // Linux truncates PR_SET_NAME to 15 bytes.  Give every concurrently running
@@ -1236,6 +1237,81 @@ async fn run_fail_closed_and_assert_reaped(command: Command, pid_file: &std::pat
     error
 }
 
+async fn wait_for_exact_file(path: &std::path::Path, expected: &[u8]) {
+    loop {
+        if fs::read(path).is_ok_and(|contents| contents == expected) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn run_hot_spoof_fail_closed_and_assert_reaped(
+    command: Command,
+    pid_file: &std::path::Path,
+    proof_file: &std::path::Path,
+    release_file: &std::path::Path,
+    expected_proof: &[u8],
+) -> Error {
+    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<
+        PassthroughGetpid,
+    >(command, (), preload_path()));
+    let mut early_result = None;
+    let pid = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = &mut run => {
+                early_result = Some(result);
+                wait_for_pid_file(pid_file).await
+            }
+            pid = wait_for_pid_file(pid_file) => pid,
+        }
+    })
+    .await
+    .expect("hot-spoof fixture did not publish its pid");
+    if let Some(result) = early_result {
+        panic!("hot-spoof fixture completed before its exact proof: {result:?}");
+    }
+
+    let completed_while_waiting = match tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            result = &mut run => Some(result),
+            () = wait_for_exact_file(proof_file, expected_proof) => None,
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            drop(run);
+            assert_pid_reaped(pid);
+            panic!("hot-spoof fixture did not establish its exact installed-path proof")
+        }
+    };
+
+    let result = match completed_while_waiting {
+        Some(result) => {
+            panic!("hot-spoof fixture completed before its authenticated release: {result:?}")
+        }
+        None => {
+            fs::write(release_file, b"release\n").unwrap();
+            match tokio::time::timeout(Duration::from_secs(3), &mut run).await {
+                Ok(result) => result,
+                Err(_) => {
+                    drop(run);
+                    assert_pid_reaped(pid);
+                    panic!("authenticated hot-spoof refusal hung after exact proof")
+                }
+            }
+        }
+    };
+    let error = match result {
+        Ok(_) => panic!("authenticated LiteInst spoof unexpectedly remained active"),
+        Err(error) => error,
+    };
+    assert_pid_reaped(pid);
+    error
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn initial_dynamic_preload_handshake_activates_host_lifecycle() {
     let (_directory, guest) = compile_fixture("allocator_getrandom.c");
@@ -1389,7 +1465,7 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
     .unwrap();
 
     assert_eq!(
-        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=0\n",
         "{output:?}"
     );
     assert_eq!(global.delivered.load(Ordering::SeqCst), 33, "{output:?}");
@@ -1438,6 +1514,90 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
         stats.cacheline_straddlers()
     );
     assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn installed_private_stop_spoofs_are_refused_and_reaped() {
+    let (_directory, guest) = compile_fixture("hybrid_hot_site.c");
+    let evidence_directory = tempfile::tempdir().unwrap();
+
+    for mode in ["raw-trap", "forged-frame", "marker-int3"] {
+        let pid_file = evidence_directory.path().join(format!("{mode}.pid"));
+        let proof_file = evidence_directory.path().join(format!("{mode}.proof"));
+        let release_file = evidence_directory.path().join(format!("{mode}.release"));
+        let mut command = Command::new(&guest);
+        command
+            .arg(mode)
+            .arg(&pid_file)
+            .arg(&proof_file)
+            .arg(&release_file);
+
+        let expected_proof = format!("calls=32 traps=1 hooks=31 ac=0 simd=1 mode={mode}\n");
+        let error = run_hot_spoof_fail_closed_and_assert_reaped(
+            command,
+            &pid_file,
+            &proof_file,
+            &release_file,
+            expected_proof.as_bytes(),
+        )
+        .await;
+        let text = error.to_string();
+        assert!(
+            text.contains(
+                "reject unauthenticated trap at reserved LiteInst protocol boundary failed"
+            ) && text.contains("EPROTO")
+                && !text.contains("LiteInst tracee cleanup failed")
+                && !text.contains("notifier did not acknowledge terminal cleanup"),
+            "{mode} did not retain the authenticated private-stop refusal: {text}"
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[tokio::test(flavor = "current_thread")]
+async fn installed_rt_sigreturn_restores_the_default_preload_signal_frame() {
+    let (_directory, guest) = compile_fixture("hybrid_rt_sigreturn_site.c");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_with_output_and_preload_and_stats::<PassthroughGetpid>(
+            Command::new(guest),
+            (),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("installed rt_sigreturn default-preload regression hung")
+    .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout, b"rt-sigreturn-restored calls=2 traps=1 hooks=2 original=1 handler=1\n",
+        "{output:?}"
+    );
+    assert_eq!(
+        global.delivered.load(Ordering::SeqCst),
+        2,
+        "rt_sigreturn must not become a Tool event"
+    );
+    assert_eq!(stats.snapshot().process_reports(), 0, "{stats}");
+    assert_eq!(stats.decision_counts(), [0, 1, 0, 0], "{stats}");
+    assert_eq!(stats.patch_candidates(), 1, "{stats}");
+    assert_eq!(stats.distinct_rips(), 1, "{stats}");
+    assert_eq!(stats.deoptimized_fallback_hits(), 0, "{stats}");
+    let paths = stats.dispatch_path_counts();
+    for path in LiteinstDispatchPath::ALL {
+        let expected = match path {
+            LiteinstDispatchPath::FirstSiteSeccomp => 1,
+            LiteinstDispatchPath::PtraceInstallation => 1,
+            LiteinstDispatchPath::DirectHook => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            paths.count(path),
+            expected,
+            "unexpected installed rt_sigreturn dispatch count for {path}: {stats}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1594,7 +1754,7 @@ async fn first_discovery_event_can_replace_the_syscall() {
     .unwrap();
 
     assert_eq!(
-        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=0\n",
         "{output:?}"
     );
     assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
@@ -1613,7 +1773,7 @@ async fn first_discovery_event_can_inject_more_than_once() {
     .unwrap();
 
     assert_eq!(
-        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=0\n",
         "{output:?}"
     );
     assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
@@ -1706,7 +1866,7 @@ async fn task_subscriber_does_not_report_task_creation_without_one() {
     .unwrap();
 
     assert_eq!(
-        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=0\n",
         "{output:?}"
     );
     assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
@@ -1718,28 +1878,28 @@ async fn task_subscriber_does_not_report_task_creation_without_one() {
     assert!(output.status.success(), "{output:?}");
 }
 
-/// KNOWN GAP, committed as a reproducer rather than described: two generations
-/// of children do not reliably complete under this harness.
+/// The hybrid follows a second-generation child and retires both exact
+/// descendant cleanup records after their typed task futures join.
 ///
-/// The grandchild's new-task event belongs to a NON-root parent, which is the
-/// case the cleanup guard's newborn registration has to cover -- scoping that
-/// registration to the root leaves the grandchild unregistered and
-/// `handle_new_task` aborts on `stored child event ownership must remain
-/// registered`. That much is fixed and this fixture does reach
-/// `fork-tree-followed`: it passed once here, and Hermit's
-/// `determinism-stress-c/fork-tree` reaches canonical L2 under the real Detcore
-/// tool, which sequentializes the guest.
-///
-/// It is `ignore`d because it is NOT reliable here: after that single pass it
-/// wedged with no forward progress on three consecutive runs, under both this
-/// tool and a variant that also subscribes to the task-creating syscalls. A
-/// flaky hang is worse than no test, so it does not run by default. Do not
-/// treat the fix it covers as verified until this is diagnosed and the `ignore`
-/// removed.
+/// The fixture holds the grandchild behind a pipe until its non-root parent has
+/// continued far enough to publish a readiness byte. Thus no racing SIGCHLD can
+/// mask an erroneous post-NewChild single-step. Run it once without subscribing
+/// to task-creating syscalls and once with those sites instrumented; both paths
+/// must reach and reap the grandchild, while the subscribing path must report
+/// exactly the fixture's two forks.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "known gap: second-generation fork does not reliably complete in this harness"]
 async fn hybrid_follows_a_grandchild() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_fork_tree.c",
+        "fork-tree-followed\n",
+    )
+    .await;
+    assert_eq!(
+        global.task_creation_events.load(Ordering::SeqCst),
+        2,
+        "the task-subscribing tool did not observe exactly the two fixture forks"
+    );
 }
 
 /// A child that removes the required preload before exec fails the whole

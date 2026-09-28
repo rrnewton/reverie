@@ -214,8 +214,8 @@ impl ControllerStartupPublisher {
         record[4] = STARTUP_RECORD_VERSION;
         record[5] = kind;
         if let Some(error) = error {
-            record[8..12].copy_from_slice(&error.errno().into_raw().to_ne_bytes());
-            record[12..16].copy_from_slice(&error.context().wire_value().to_ne_bytes());
+            let encoded: [u8; 8] = error.into();
+            record[8..].copy_from_slice(&encoded);
         }
         let written = unsafe { libc::write(fd, record.as_ptr().cast(), record.len()) };
         let write_error = (written == -1).then(Errno::last);
@@ -281,11 +281,14 @@ pub(super) fn decode_startup_record(
                 return None;
             }
             let context = u32::from_ne_bytes(record[12..16].try_into().ok()?);
-            let context = Context::try_from_wire(context)?;
-            Some(ControllerStartupRecord::Error(Error::new(
-                Errno::new(errno),
-                context,
-            )))
+            if context > Context::Exec as u32 {
+                return None;
+            }
+            let encoded: [u8; 8] = record[8..].try_into().ok()?;
+            // Every Error bit pattern has been validated before using the
+            // crate's existing fixed-width representation: Errno is in the
+            // Linux error range and Context is a declared repr(u32) variant.
+            Some(ControllerStartupRecord::Error(Error::from(encoded)))
         }
         _ => None,
     }
@@ -459,6 +462,10 @@ impl PendingControllerLaunch {
 /// Post-clone operation that failed while exact launch authority was retained.
 #[derive(Debug)]
 pub enum ControllerSpawnFailure {
+    /// Reading the post-PDEATHSIG child acknowledgment failed.
+    LivenessHandshakeRead(io::Error),
+    /// The post-PDEATHSIG child acknowledgment was missing or malformed.
+    LivenessHandshakeShortRead(usize),
     /// Releasing the pre-exec child gate failed.
     GateWrite(io::Error),
     /// The clone-returned pidfd failed exact descriptor validation.
@@ -477,11 +484,15 @@ impl ControllerSpawnFailure {
     /// Returns the exact errno when one exists, otherwise a protocol errno.
     pub fn errno(&self) -> Errno {
         match self {
-            Self::GateWrite(error) | Self::StartupRecordRead(error) => {
+            Self::LivenessHandshakeRead(error)
+            | Self::GateWrite(error)
+            | Self::StartupRecordRead(error) => {
                 error.raw_os_error().map(Errno::new).unwrap_or(Errno::EIO)
             }
             Self::PidfdValidation(error) => *error,
-            Self::StartupRecordShortRead(_) | Self::StartupRecordMalformed => Errno::EPROTO,
+            Self::LivenessHandshakeShortRead(_)
+            | Self::StartupRecordShortRead(_)
+            | Self::StartupRecordMalformed => Errno::EPROTO,
             Self::ChildStartup(error) => error.errno(),
         }
     }
@@ -490,6 +501,15 @@ impl ControllerSpawnFailure {
 impl fmt::Display for ControllerSpawnFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LivenessHandshakeRead(error) => {
+                write!(f, "read controller parent-liveness handshake: {error}")
+            }
+            Self::LivenessHandshakeShortRead(bytes) => {
+                write!(
+                    f,
+                    "controller parent-liveness handshake contained {bytes} bytes"
+                )
+            }
             Self::GateWrite(error) => write!(f, "release controller child gate: {error}"),
             Self::PidfdValidation(error) => {
                 write!(f, "validate clone-returned controller pidfd: {error}")

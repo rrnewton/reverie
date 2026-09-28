@@ -634,7 +634,9 @@ struct Event {
 
     /// Independently retained `PTRACE_EVENT_EXIT` publication. Keeping this
     /// separate prevents a following final wait status from stealing the exit
-    /// event from a held [`ExitFuture`].
+    /// event from a held [`ExitFuture`]. A consumed exit followed by a proven
+    /// same-generation `de_thread` successor may reset this slot for a later
+    /// cleanup-only exit without restoring the one-shot typed capability.
     exit_status: AtomicI32,
 
     /// Physical status behind `exit_status`, or zero while unavailable.
@@ -650,8 +652,9 @@ struct Event {
     /// Next generation-local nonce proving one live cleanup lease instance.
     next_cleanup_lease_nonce: AtomicU64,
 
-    /// Linear claim for the one stopped-state capability represented by this
-    /// exact Event generation's retained exit-stop observation.
+    /// Linear claim for the one typed stopped-state capability represented by
+    /// this exact Event generation's first retained exit-stop observation.
+    /// Cleanup-only rearm leaves this expired across any later exit cycle.
     exit_capability: AtomicU8,
 
     /// Prevents the PENDING-revoke/publication race from recording the same
@@ -1681,8 +1684,24 @@ enum CleanupAuthorityState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LegacyExitStopHandoff {
+    Vacant,
+    /// A legacy cleanup owner revoked the capability before publication.
+    Pending,
+    /// The sole raw-continuation permit was handed to a legacy cleanup owner.
+    ///
+    /// This is deliberately distinct from `ExitStopCleanupCompletion::Finished`:
+    /// the compatibility API cannot observe the caller's later raw syscall.
+    HandedOff {
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExitPublicationState {
     cleanup: ExitStopCleanupCompletion,
+    legacy_handoff: LegacyExitStopHandoff,
     /// Sole cleanup authority retained outside this mutex or rolled back into
     /// this exact Event generation for internal reacquisition.
     cleanup_authority: CleanupAuthorityState,
@@ -1697,6 +1716,7 @@ impl Default for ExitPublicationState {
     fn default() -> Self {
         Self {
             cleanup: ExitStopCleanupCompletion::NotAttempted,
+            legacy_handoff: LegacyExitStopHandoff::Vacant,
             cleanup_authority: CleanupAuthorityState::Vacant,
             retired_through: None,
             superseded_status: None,
@@ -1722,6 +1742,31 @@ impl ExitPublicationState {
     fn retire(&mut self, key: CleanupStopKey) {
         self.advance_retired_through(key);
         self.cleanup_authority = CleanupAuthorityState::Vacant;
+    }
+
+    fn bind_pending_legacy_handoff(
+        &mut self,
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+    ) -> Result<bool, Errno> {
+        match self.legacy_handoff {
+            LegacyExitStopHandoff::Vacant => Ok(false),
+            LegacyExitStopHandoff::Pending => {
+                if !matches!(self.cleanup, ExitStopCleanupCompletion::NotAttempted)
+                    || !matches!(self.cleanup_authority, CleanupAuthorityState::Vacant)
+                    || self.is_retired(CleanupStopKey(stop_id))
+                {
+                    return Err(Errno::EPROTO);
+                }
+                self.legacy_handoff = LegacyExitStopHandoff::HandedOff {
+                    stop_id,
+                    diagnostic_status,
+                };
+                self.retire(CleanupStopKey(stop_id));
+                Ok(true)
+            }
+            LegacyExitStopHandoff::HandedOff { .. } => Err(Errno::EALREADY),
+        }
     }
 }
 
@@ -3706,7 +3751,11 @@ impl Event {
         {
             return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
         }
-        match self.observer.set(observer.clone()) {
+        let publication = self.exit_publication.lock();
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
+        }
+        let result = match self.observer.set(observer.clone()) {
             Ok(()) => {
                 observer.attach_generation(self.generation);
                 Ok(())
@@ -3721,7 +3770,9 @@ impl Event {
                     Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached)
                 }
             }
-        }
+        };
+        drop(publication);
+        result
     }
 
     fn take_controller_launch_identity(
@@ -3931,6 +3982,33 @@ impl Event {
         }
     }
 
+    fn handoff_exit_capability_to_legacy_cleanup(&self, owns_claimed: bool) -> Result<(), Errno> {
+        loop {
+            let state = self.exit_capability.load(Ordering::Acquire);
+            let admitted = if owns_claimed {
+                state == EXIT_CAP_CLAIMED
+            } else {
+                matches!(state, EXIT_CAP_PENDING | EXIT_CAP_AVAILABLE)
+            };
+            if !admitted {
+                return Err(Errno::EALREADY);
+            }
+            if self
+                .exit_capability
+                .compare_exchange(state, EXIT_CAP_EXPIRED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if let Some(status) =
+                    PhysicalStatusId::from_raw(self.exit_physical_status.load(Ordering::Acquire))
+                {
+                    self.record_exit_revoked_once(status);
+                }
+                self.exit_waiters.wake_all();
+                return Ok(());
+            }
+        }
+    }
+
     fn record_exit_revoked_once(&self, status: PhysicalStatusId) {
         if self
             .exit_revocation_recorded
@@ -3955,16 +4033,25 @@ impl Event {
         // capability. A controller holding an older D can therefore never arm
         // its watcher after this later exit stop has already become visible.
         let mut stop_resolution = self.stop_resolution.lock();
-        // Publish STOPPED first. A waiter that observes this half-published
-        // state is already registered and returns Pending until AVAILABLE is
-        // released and wake_all runs below.
-        let publication = self.exit_publication.lock();
-        let previous = self.exit_status.compare_exchange(
-            EXIT_PENDING,
-            EXIT_STOPPED,
-            Ordering::Release,
-            Ordering::Acquire,
-        );
+        // Ordinarily publish STOPPED first. A registered typed waiter returns
+        // Pending until AVAILABLE is released below. A legacy external owner
+        // instead requires the logical handoff to be bound before
+        // `exit_stop_observed` may expose STOPPED to its raw-continuation loop.
+        let mut publication = self.exit_publication.lock();
+        let legacy_pending = matches!(publication.legacy_handoff, LegacyExitStopHandoff::Pending);
+        let previous = if legacy_pending {
+            match self.exit_status.load(Ordering::Acquire) {
+                EXIT_PENDING => Ok(EXIT_PENDING),
+                state => Err(state),
+            }
+        } else {
+            self.exit_status.compare_exchange(
+                EXIT_PENDING,
+                EXIT_STOPPED,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+        };
         debug_assert!(matches!(
             previous,
             Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD | EXIT_ERROR)
@@ -3982,6 +4069,19 @@ impl Event {
                         PhysicalStatusPublication::ExitCapability,
                     );
                 }
+            }
+            if legacy_pending {
+                publication
+                    .bind_pending_legacy_handoff(stop_id, status.physical)
+                    .expect("pending legacy exit handoff lost its publication state");
+                self.exit_status
+                    .compare_exchange(
+                        EXIT_PENDING,
+                        EXIT_STOPPED,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    )
+                    .expect("legacy exit handoff raced terminal publication under its lock");
             }
             between_status_and_capability();
             let stop_resolution_changed = self
@@ -4069,6 +4169,55 @@ impl Event {
         }
     }
 
+    fn resolve_legacy_exit_handoff(&self, proof: AmbiguousCleanupResolution) -> bool {
+        let mut publication = self.exit_publication.lock();
+        let LegacyExitStopHandoff::HandedOff {
+            stop_id,
+            diagnostic_status,
+        } = publication.legacy_handoff
+        else {
+            return false;
+        };
+        let key = CleanupStopKey(stop_id);
+        let source_is_exact = self.observer().is_none()
+            && diagnostic_status.is_none()
+            && matches!(
+                self.exit_status.load(Ordering::Acquire),
+                EXIT_STOPPED | EXIT_ERROR
+            )
+            && LogicalStopId::from_raw(self.exit_logical_stop.load(Ordering::Acquire))
+                == Some(stop_id)
+            && PhysicalStatusId::from_raw(self.exit_physical_status.load(Ordering::Acquire))
+                == diagnostic_status
+            && matches!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted)
+            && matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+            && publication.is_retired(key);
+        let proof_is_exact = match proof {
+            AmbiguousCleanupResolution::LaterStopped(status) => {
+                libc::WIFSTOPPED(status.raw)
+                    && status.physical.is_none()
+                    && status
+                        .logical_stop
+                        .is_some_and(|later| later.get() > stop_id.get())
+            }
+            AmbiguousCleanupResolution::FinalStatus(status) => {
+                (libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw))
+                    && status.physical.is_none()
+            }
+            AmbiguousCleanupResolution::ProvenEchild(wait) => wait.is_none(),
+        };
+        if !source_is_exact || !proof_is_exact {
+            debug_assert!(false, "legacy exit handoff received invalid causal proof");
+            return true;
+        }
+        publication.cleanup = ExitStopCleanupCompletion::Finished {
+            stop_id,
+            diagnostic_status,
+        };
+        publication.legacy_handoff = LegacyExitStopHandoff::Vacant;
+        true
+    }
+
     /// Resolves a quarantined ESRCH/EIO only from evidence published by this
     /// Event's kernel-wait path. Logical IDs supplied by cleanup callers never
     /// enter this method and therefore cannot manufacture causal progress.
@@ -4077,6 +4226,9 @@ impl Event {
         if let Some(pause) = self.ambiguous_resolution_pause.lock().take() {
             pause.captured.send(()).expect("capture resolution pause");
             pause.resume.recv().expect("resume resolution pause");
+        }
+        if self.resolve_legacy_exit_handoff(proof) {
+            return;
         }
         let mut publication = self.exit_publication.lock();
         let ExitStopCleanupCompletion::Ambiguous {
@@ -4427,6 +4579,7 @@ impl Event {
     ) {
         let mut stop_resolution = self.stop_resolution.lock();
         self.publish_terminal_exit_state(EXIT_ECHILD);
+        self.resolve_legacy_exit_handoff(AmbiguousCleanupResolution::ProvenEchild(None));
         let mut state = self.status.lock();
         if state.terminal.raw == INVALID_STATUS {
             state.terminal = ObservedStatus::unobserved(ECHILD_STATUS);
@@ -5448,6 +5601,10 @@ impl EventHandle {
         {
             return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
         }
+        let publication = event.exit_publication.lock();
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
+        }
         if event.observer().is_some() {
             return Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached);
         }
@@ -5470,7 +5627,7 @@ impl EventHandle {
             .as_ref()
             .expect("validated controller launch token disappeared")
             .launch_id();
-        observer.attach_original_root_launch(
+        let result = observer.attach_original_root_launch(
             PhysicalTaskIdentity::direct_child(root),
             event.generation,
             controller_launch,
@@ -5481,7 +5638,9 @@ impl EventHandle {
                     .expect("original-root observer changed while wait ownership was locked");
             },
             |link| capability.physical_link = Some(link),
-        )
+        );
+        drop(publication);
+        result
     }
 
     pub(super) fn physical_observer(&self) -> Option<PhysicalEventObserver> {
@@ -5965,6 +6124,9 @@ impl EventHandle {
         }
         let event = self.event();
         let mut publication = event.exit_publication.lock();
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(nix::errno::Errno::EALREADY);
+        }
         if event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED
             || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_CLAIMED
         {
@@ -10676,8 +10838,40 @@ fn resume_cancelled_sync_status(
     // typed and cleanup continuations across PTRACE_CONT, so no cleanup shadow
     // can acquire the stop between the syscall and its durable outcome.
     let mut exit_publication = if let Some(stop_id) = exit_stop {
-        let publication = event.exit_publication.lock();
+        let mut publication = event.exit_publication.lock();
         let key = CleanupStopKey(stop_id);
+        if matches!(publication.legacy_handoff, LegacyExitStopHandoff::Pending) {
+            if event.exit_status.load(Ordering::Acquire) != EXIT_PENDING
+                || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_EXPIRED
+                || !matches!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted)
+                || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+                || publication.is_retired(key)
+                || event.observer().is_some()
+                || status.physical.is_some()
+            {
+                return Err(Errno::EPROTO.into());
+            }
+            event
+                .exit_logical_stop
+                .store(stop_id.get(), Ordering::Release);
+            event.exit_physical_status.store(0, Ordering::Release);
+            publication
+                .bind_pending_legacy_handoff(stop_id, None)
+                .map_err(Error::Errno)?;
+            event
+                .exit_status
+                .compare_exchange(
+                    EXIT_PENDING,
+                    EXIT_STOPPED,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| Error::Errno(Errno::EPROTO))?;
+            drop(publication);
+            event.exit_waiters.wake_all();
+            cancelled.commit();
+            return Err(Errno::EALREADY.into());
+        }
         if event.exit_status.load(Ordering::Acquire) != EXIT_PENDING
             || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_PENDING
             || !matches!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted)
@@ -12368,8 +12562,12 @@ impl TerminalCleanup {
     /// This is a cancellation-only escape hatch for the ptracer thread that
     /// owns this exact event generation. The FIFO front remains present and
     /// unavailable to other consumers until [`PendingStatusReservation::commit`].
-    /// Dropping the reservation performs an allocation-free rollback without
-    /// changing FIFO order.
+    /// Dropping an undecoded reservation performs an allocation-free rollback
+    /// without changing FIFO order. For source compatibility, the legacy
+    /// [`PendingStatusReservation::decode`] method still borrows the
+    /// reservation; once that method successfully returns a typed [`Wait`],
+    /// explicit commit or drop irrevocably removes the FIFO front so rollback
+    /// cannot mint a duplicate stopped capability.
     pub fn reserve_pending_for_cleanup(
         &self,
         timeout: Duration,
@@ -12394,6 +12592,8 @@ impl TerminalCleanup {
             reservation,
             event: self.event.resolved(),
             state,
+            decode_attempted: AtomicBool::new(false),
+            legacy_wait_escaped: AtomicBool::new(false),
             completed: false,
         })
     }
@@ -12427,6 +12627,58 @@ impl TerminalCleanup {
         LogicalStopId::from_raw(self.event.event().exit_logical_stop.load(Ordering::Acquire))
     }
 
+    fn handoff_exit_stop_to_legacy_cleanup(&self, owns_claimed: bool) -> Result<(), Errno> {
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        if event.observer().is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if !matches!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted)
+            || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+            || !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant)
+        {
+            return Err(Errno::EALREADY);
+        }
+        let exit_state = event.exit_status.load(Ordering::Acquire);
+        if !matches!(exit_state, EXIT_PENDING | EXIT_STOPPED) {
+            return Err(Errno::EALREADY);
+        }
+        event.handoff_exit_capability_to_legacy_cleanup(owns_claimed)?;
+        publication.legacy_handoff = LegacyExitStopHandoff::Pending;
+        if exit_state == EXIT_STOPPED {
+            let stop_id = LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+                .ok_or(Errno::EPROTO)?;
+            let diagnostic_status =
+                PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+            publication.bind_pending_legacy_handoff(stop_id, diagnostic_status)?;
+        }
+        Ok(())
+    }
+
+    /// Revokes an unclaimed exit-stop capability and hands its sole raw
+    /// continuation permit to a legacy cancellation-cleanup caller.
+    ///
+    /// The caller must issue at most one raw transition. Because this legacy
+    /// signature cannot report that later result, typed cleanup remains
+    /// permanently fail-closed until trusted kernel-wait evidence proves that
+    /// the stop was consumed.
+    pub fn revoke_unclaimed_exit_stop(&self) -> Result<(), Errno> {
+        self.handoff_exit_stop_to_legacy_cleanup(false)
+    }
+
+    /// Transfers a claimed exit-stop capability and its sole raw continuation
+    /// permit to a legacy cancellation-cleanup caller.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove exclusive ownership of the exact stopped tracee
+    /// generation, destroy or transfer the previously returned [`Stopped`],
+    /// and issue at most one raw transition. This compatibility API cannot
+    /// observe the result of that later syscall.
+    pub unsafe fn revoke_owned_exit_stop(&self) -> Result<(), Errno> {
+        self.handoff_exit_stop_to_legacy_cleanup(true)
+    }
+
     fn lease_cleanup_stop(
         &self,
         transfer: &CleanupStopTransfer,
@@ -12445,6 +12697,9 @@ impl TerminalCleanup {
         publication: &mut ExitPublicationState,
         transfer: &CleanupStopTransfer,
     ) -> Result<CleanupStopLease, Errno> {
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(Errno::EALREADY);
+        }
         let key = CleanupStopKey(transfer.stop_id);
         if publication.is_retired(key) {
             return Err(Errno::EALREADY);
@@ -12594,6 +12849,97 @@ impl TerminalCleanup {
         successor: &TransferredStopSuccessor,
     ) -> Result<Option<TransferredStopCompletion>, Errno> {
         self.consume_transferred_stop_completion_inner(transfer, Some(successor))
+    }
+
+    /// Reopens exit-stop publication after a completed exit stop was followed
+    /// by a distinct stopped successor in this exact Event generation.
+    ///
+    /// Linux `de_thread` may report the old leader's `PTRACE_EVENT_EXIT`, let
+    /// the tracer consume that stop, and then return the surviving task at a
+    /// later `PTRACE_EVENT_EXEC` without changing this notifier generation.
+    /// The completed exit therefore cannot remain this generation's terminal
+    /// publication. The old logical identity stays retired, while a later
+    /// exit stop may publish for cancellation cleanup.
+    ///
+    /// This deliberately leaves the generation's exit capability expired: an
+    /// `ExitFuture` is one-shot for an immutable Event generation, and a stale
+    /// duplicate future must not be able to claim the later cleanup-only exit.
+    pub fn rearm_completed_exit_for_successor(
+        &self,
+        successor: &TransferredStopSuccessor,
+    ) -> Result<(), Errno> {
+        if successor.pid != self.pid || !Arc::ptr_eq(successor.event.event(), self.event.event()) {
+            return Err(Errno::EINVAL);
+        }
+
+        let event = self.event.event();
+        // Match exit-stop publication's lock order. Holding stop_resolution
+        // also excludes terminal/final-status publication while every checked
+        // field is validated and reset as one generation-local transition.
+        let mut stop_resolution = event.stop_resolution.lock();
+        if event.sticky_terminal_error().is_some() {
+            return Err(Errno::EALREADY);
+        }
+        {
+            // Synchronous cancellation may carry a StatusState guard into
+            // exit-publication cleanup. Inspect and release status first so
+            // this transition never creates the inverse lock order.
+            let status = event.status.lock();
+            if status.terminal.raw != INVALID_STATUS || !status.pending.is_empty() {
+                return Err(Errno::EALREADY);
+            }
+        }
+        let mut publication = event.exit_publication.lock();
+
+        let ExitStopCleanupCompletion::Finished {
+            stop_id: completed_stop,
+            diagnostic_status: completed_status,
+        } = publication.cleanup
+        else {
+            return Err(Errno::EALREADY);
+        };
+        let completed_key = CleanupStopKey(completed_stop);
+        let successor_key = CleanupStopKey(successor.stop_id);
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant)
+            || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+            || !publication.is_retired(completed_key)
+            || publication.is_retired(successor_key)
+            || successor.stop_id.get() <= completed_stop.get()
+            || event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED
+            || LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+                != Some(completed_stop)
+            || PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire))
+                != completed_status
+            || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_EXPIRED
+            || !stop_resolution.terminal
+            || stop_resolution.active.is_some()
+            || stop_resolution.drained_plain_sigstop.is_some()
+            || stop_resolution.latest_stopped
+                != Some(StopResolutionStopped {
+                    logical_stop: successor.stop_id,
+                    physical_status: successor.diagnostic_status,
+                })
+        {
+            return Err(Errno::EPROTO);
+        }
+        match (completed_status, successor.diagnostic_status) {
+            (None, None) => {}
+            (Some(completed), Some(successor)) if successor.get() > completed.get() => {}
+            (None, Some(_)) | (Some(_), None) | (Some(_), Some(_)) => {
+                return Err(Errno::EPROTO);
+            }
+        }
+
+        publication.cleanup = ExitStopCleanupCompletion::NotAttempted;
+        publication.superseded_status = None;
+        event.exit_logical_stop.store(0, Ordering::Release);
+        event.exit_physical_status.store(0, Ordering::Release);
+        event
+            .exit_revocation_recorded
+            .store(false, Ordering::Release);
+        event.exit_status.store(EXIT_PENDING, Ordering::Release);
+        stop_resolution.terminal = false;
+        Ok(())
     }
 
     fn consume_transferred_stop_completion_inner(
@@ -12924,6 +13270,9 @@ impl TerminalCleanup {
                 .expect("report exit-publication lock probe");
         }
         let mut publication = event.exit_publication.lock();
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(Errno::EALREADY);
+        }
         if let Some(error) =
             Self::ambiguous_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
         {
@@ -13425,6 +13774,9 @@ impl TerminalCleanup {
             pause.captured.wait();
             pause.resume.wait();
         }
+        if !matches!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant) {
+            return Err(Errno::EALREADY);
+        }
         if let Some(error) =
             Self::ambiguous_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
         {
@@ -13680,13 +14032,15 @@ impl TerminalCleanup {
 }
 
 /// A rollback-safe reservation of one exact-generation notifier FIFO front.
-#[must_use = "drop rolls the reservation back; consume it with decode"]
+#[must_use = "drop rolls an undecoded reservation back; consume it with decode_guard"]
 pub struct PendingStatusReservation<'a> {
     pid: Pid,
     status: ObservedStatus,
     reservation: Option<PhysicalReservationId>,
     event: &'a EventHandle,
     state: MutexGuard<'a, StatusState>,
+    decode_attempted: AtomicBool,
+    legacy_wait_escaped: AtomicBool,
     completed: bool,
 }
 
@@ -13706,11 +14060,14 @@ impl<'a> PendingStatusReservation<'a> {
         }
     }
 
-    /// Consumes the reservation and decodes its status into a guard. A typed
-    /// [`Wait`] cannot leave that guard until [`DecodedPendingStatusReservation::commit`]
-    /// has removed the FIFO front. Dropping the guard destroys the typed state
-    /// before rolling the reservation back.
-    pub fn decode(self) -> Result<DecodedPendingStatusReservation<'a>, Error> {
+    fn decode_wait(&self) -> Result<Wait, Error> {
+        if self
+            .decode_attempted
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(Errno::EALREADY.into());
+        }
         let terminal_error = self.event.event().terminal_error.lock();
         if let Some(error) = *terminal_error {
             return Err(error.into());
@@ -13733,10 +14090,7 @@ impl<'a> PendingStatusReservation<'a> {
         );
         drop(terminal_error);
         match decoded {
-            Ok(wait) => Ok(DecodedPendingStatusReservation {
-                reservation: Some(self),
-                wait: Some(wait),
-            }),
+            Ok(wait) => Ok(wait),
             Err(error) => {
                 self.record_decode_finished(PhysicalDecodeOutcome::RetryRolledBack);
                 Err(error)
@@ -13744,14 +14098,39 @@ impl<'a> PendingStatusReservation<'a> {
         }
     }
 
+    /// Decodes this reservation with the pre-0.2 compatibility signature.
+    ///
+    /// The returned typed state has escaped the reservation, so dropping the
+    /// reservation after a successful decode commits the FIFO front instead
+    /// of rolling it back and minting a duplicate stopped capability. New code
+    /// should use [`PendingStatusReservation::decode_guard`], which can safely
+    /// destroy the typed state before rollback. A reservation admits exactly
+    /// one decode attempt: after an error, drop it and reserve the unchanged
+    /// FIFO front again; a repeated attempt returns [`Errno::EALREADY`].
+    pub fn decode(&self) -> Result<Wait, Error> {
+        let wait = self.decode_wait()?;
+        self.legacy_wait_escaped.store(true, Ordering::Relaxed);
+        Ok(wait)
+    }
+
+    /// Consumes the reservation and decodes its status into a guard. A typed
+    /// [`Wait`] cannot leave that guard until [`DecodedPendingStatusReservation::commit`]
+    /// has removed the FIFO front. Dropping the guard destroys the typed state
+    /// before rolling the reservation back.
+    pub fn decode_guard(self) -> Result<DecodedPendingStatusReservation<'a>, Error> {
+        let wait = self.decode_wait()?;
+        Ok(DecodedPendingStatusReservation {
+            reservation: Some(self),
+            wait: Some(wait),
+        })
+    }
+
     /// Returns the physical status reserved from the notifier FIFO.
     pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
         self.status.physical
     }
 
-    /// Removes the reserved front after all associated ownership is durable.
-    /// Public callers can reach this only through the decoded guard.
-    fn commit(mut self) {
+    fn commit_inner(&mut self) {
         let committed = self.state.pending.pop_front();
         debug_assert_eq!(committed, Some(self.status));
         if let (Some(observer), Some(reservation), Some(status)) = (
@@ -13762,6 +14141,24 @@ impl<'a> PendingStatusReservation<'a> {
             observer.record_cleanup_reservation_committed(reservation, status);
         }
         self.completed = true;
+    }
+
+    /// Removes the reserved front after ownership returned by the legacy
+    /// [`PendingStatusReservation::decode`] API is durable.
+    ///
+    /// Calling this after a failed decode leaves the FIFO front rolled back.
+    /// New code should commit the guard returned by
+    /// [`PendingStatusReservation::decode_guard`] instead.
+    pub fn commit(mut self) {
+        if self.decode_attempted.load(Ordering::Relaxed)
+            && !self.legacy_wait_escaped.load(Ordering::Relaxed)
+        {
+            return;
+        }
+        if self.legacy_wait_escaped.load(Ordering::Relaxed) {
+            self.record_decode_finished(PhysicalDecodeOutcome::Returned);
+        }
+        self.commit_inner();
     }
 }
 
@@ -13789,7 +14186,8 @@ impl DecodedPendingStatusReservation<'_> {
             .take()
             .expect("decoded cleanup reservation committed twice");
         reservation.record_decode_finished(PhysicalDecodeOutcome::Returned);
-        reservation.commit();
+        let mut reservation = reservation;
+        reservation.commit_inner();
         self.wait
             .take()
             .expect("decoded cleanup reservation lost its typed state")
@@ -13811,6 +14209,11 @@ impl Drop for DecodedPendingStatusReservation<'_> {
 impl Drop for PendingStatusReservation<'_> {
     fn drop(&mut self) {
         if self.completed {
+            return;
+        }
+        if self.legacy_wait_escaped.load(Ordering::Relaxed) {
+            self.record_decode_finished(PhysicalDecodeOutcome::Returned);
+            self.commit_inner();
             return;
         }
         if let (Some(observer), Some(reservation), Some(status)) = (
@@ -14533,14 +14936,18 @@ mod test {
 
     fn spawn_initial_observed_protocol_fixture() -> InitialObservedProtocolFixture {
         let mut command = reverie_process::Command::new("/bin/true");
-        let launch = command
-            .spawn_controller_with(|publisher| {
+        // SAFETY: this post-clone test closure performs only ptrace, fixed-size
+        // publisher write/close, and raise; it captures nothing, allocates
+        // nothing, acquires no locks, and returns every failure.
+        let launch = unsafe {
+            command.spawn_controller_with(|publisher| {
                 crate::traceme()?;
                 publisher.publish_ready()?;
                 crate::stop_for_tracer()?;
                 Ok(())
             })
-            .expect("spawn controller-owned startup protocol tracee");
+        }
+        .expect("spawn controller-owned startup protocol tracee");
         let reverie_process::ControllerLaunchParts {
             token,
             stdin,
@@ -15795,6 +16202,372 @@ mod test {
             .expect("bind production direct-exit pidfd generation");
         arm_direct_cont_protocol_completion(pid, handle, Arc::clone(identity));
         guard
+    }
+
+    #[test]
+    fn legacy_exit_cleanup_method_signatures_remain_source_compatible() {
+        let _: fn(&TerminalCleanup) -> Result<(), Errno> =
+            TerminalCleanup::revoke_unclaimed_exit_stop;
+        let _: unsafe fn(&TerminalCleanup) -> Result<(), Errno> =
+            TerminalCleanup::revoke_owned_exit_stop;
+    }
+
+    #[test]
+    fn observerless_prepublished_legacy_handoff_blocks_typed_continuation() {
+        let pid = crate::Pid::from_raw(i32::MAX - 120);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("hand off published legacy exit stop");
+        assert_eq!(terminal.revoke_unclaimed_exit_stop(), Err(Errno::EALREADY));
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.legacy_handoff,
+            LegacyExitStopHandoff::HandedOff {
+                stop_id,
+                diagnostic_status: None,
+            }
+        );
+        assert!(publication.is_retired(CleanupStopKey(stop_id)));
+        drop(publication);
+
+        let attempts = AtomicUsize::new(0);
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+            Err(Errno::EALREADY)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn observerless_prepublication_legacy_handoff_binds_before_stopped_is_visible() {
+        let pid = crate::Pid::from_raw(i32::MAX - 121);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("reserve unpublished legacy exit handoff");
+        assert_eq!(
+            event.exit_publication.lock().legacy_handoff,
+            LegacyExitStopHandoff::Pending
+        );
+
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {
+            assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_STOPPED);
+        });
+        let stop_id = retained_exit_stop_id(event);
+        assert_eq!(
+            event.exit_publication.lock().legacy_handoff,
+            LegacyExitStopHandoff::HandedOff {
+                stop_id,
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("typed cleanup reused a legacy raw-continuation permit")
+                },
+            ),
+            Err(Errno::EALREADY)
+        );
+    }
+
+    #[test]
+    fn synchronous_cancelled_exit_publication_hands_off_without_raw_continuation() {
+        let pid = crate::Pid::from_raw(i32::MAX - 122);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("reserve synchronous legacy exit handoff");
+        let status = event.identify_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP));
+        let state = {
+            let mut state = event.status.lock();
+            state.pending.push_back(status);
+            state
+        };
+        let cancelled = CancelledStatusReservation {
+            reservation: Some(event.reserve_status(status, Some(state))),
+        };
+
+        assert_eq!(
+            resume_cancelled_sync_status(pid, cancelled, &handle),
+            Err(Error::Errno(Errno::EALREADY))
+        );
+        assert!(event.status.lock().pending.is_empty());
+        let stop_id = retained_exit_stop_id(event);
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.legacy_handoff,
+            LegacyExitStopHandoff::HandedOff {
+                stop_id,
+                diagnostic_status: None,
+            }
+        );
+        assert!(publication.is_retired(CleanupStopKey(stop_id)));
+    }
+
+    #[test]
+    fn claimed_legacy_handoff_requires_the_unsafe_owned_signature() {
+        let pid = crate::Pid::from_raw(i32::MAX - 123);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+
+        assert_eq!(terminal.revoke_unclaimed_exit_stop(), Err(Errno::EALREADY));
+        // SAFETY: this synthetic test owns the sole claimed capability and
+        // never constructs or retains a `Stopped` value for it.
+        unsafe { terminal.revoke_owned_exit_stop() }
+            .expect("transfer the synthetic claimed stop to legacy cleanup");
+        assert_eq!(
+            unsafe { terminal.revoke_owned_exit_stop() },
+            Err(Errno::EALREADY)
+        );
+    }
+
+    #[test]
+    fn physical_observer_and_legacy_handoff_are_mutually_exclusive() {
+        let pid = crate::Pid::from_raw(i32::MAX - 124);
+        let observed_handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create legacy-handoff exclusion observer");
+        observed_handle
+            .attach_physical_observer(&observer)
+            .expect("attach observer before legacy handoff");
+        let observed_terminal = TerminalCleanup {
+            pid,
+            event: observed_handle.clone(),
+        };
+        assert_eq!(
+            observed_terminal.revoke_unclaimed_exit_stop(),
+            Err(Errno::EOPNOTSUPP)
+        );
+        assert_eq!(
+            observed_handle
+                .event()
+                .exit_capability
+                .load(Ordering::Acquire),
+            EXIT_CAP_PENDING
+        );
+        assert_eq!(
+            observed_handle
+                .event()
+                .exit_publication
+                .lock()
+                .legacy_handoff,
+            LegacyExitStopHandoff::Vacant
+        );
+        observer.close();
+
+        let handed_off = EventHandle::new();
+        let handed_off_terminal = TerminalCleanup {
+            pid,
+            event: handed_off.clone(),
+        };
+        handed_off_terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("reserve legacy handoff before observer attachment");
+        let late_observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create late legacy-handoff observer");
+        assert_eq!(
+            handed_off.attach_physical_observer(&late_observer),
+            Err(PhysicalObserverAttachError::WaitAlreadyStarted)
+        );
+        late_observer.close();
+    }
+
+    #[test]
+    fn trusted_terminal_proof_finishes_legacy_handoff_without_repeating_cont() {
+        let pid = crate::Pid::from_raw(i32::MAX - 125);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("hand off legacy exit stop before terminal proof");
+
+        event.update(0);
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Finished {
+                stop_id,
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(publication.legacy_handoff, LegacyExitStopHandoff::Vacant);
+        drop(publication);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("terminal proof repeated a legacy raw continuation")
+                    },
+                )
+                .expect("read trusted legacy completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_handoff_racing_typed_cleanup_has_one_continuation_owner() {
+        let pid = crate::Pid::from_raw(i32::MAX - 126);
+        let handle = EventHandle::new();
+        handle
+            .event()
+            .publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let start = Arc::new(Barrier::new(3));
+        let typed_calls = Arc::new(AtomicUsize::new(0));
+
+        let typed_handle = handle.clone();
+        let typed_start = Arc::clone(&start);
+        let typed_call_count = Arc::clone(&typed_calls);
+        let typed = std::thread::spawn(move || {
+            let terminal = TerminalCleanup {
+                pid,
+                event: typed_handle,
+            };
+            typed_start.wait();
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    typed_call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+        });
+
+        let legacy_handle = handle;
+        let legacy_start = Arc::clone(&start);
+        let legacy = std::thread::spawn(move || {
+            let terminal = TerminalCleanup {
+                pid,
+                event: legacy_handle,
+            };
+            legacy_start.wait();
+            terminal.revoke_unclaimed_exit_stop()
+        });
+
+        start.wait();
+        let typed = typed.join().expect("join typed cleanup racer");
+        let legacy = legacy.join().expect("join legacy cleanup racer");
+        match (typed, legacy) {
+            (
+                Ok(TerminalCleanupContinue::Attempted {
+                    source_status: None,
+                    error: None,
+                }),
+                Err(Errno::EALREADY),
+            ) => assert_eq!(typed_calls.load(Ordering::SeqCst), 1),
+            (Err(Errno::EALREADY), Ok(())) => {
+                assert_eq!(typed_calls.load(Ordering::SeqCst), 0)
+            }
+            other => panic!("cleanup ownership race produced an invalid outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn real_legacy_raw_continue_finishes_once_without_typed_retry() {
+        let (pid, stopped, mut cleanup) =
+            spawn_traced_process(None).expect("spawn legacy raw-continuation tracee");
+        stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable legacy raw-continuation exit stop");
+        let mut exit = Box::pin(
+            cleanup
+                .exit_event(&stopped)
+                .expect("bind legacy cleanup generation to notifier"),
+        );
+        let terminal = cleanup
+            .terminal()
+            .expect("retain legacy terminal-cleanup handle");
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(exit.as_mut().poll(&mut context), Poll::Pending);
+        stopped
+            .resume(None)
+            .expect("resume legacy tracee to exit stop");
+
+        let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        while !terminal.exit_stop_observed() {
+            assert!(
+                Instant::now() < deadline,
+                "legacy tracee did not publish its exit stop"
+            );
+            thread::yield_now();
+        }
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("hand the published exit stop to legacy cleanup");
+        nix::sys::ptrace::cont(pid, None).expect("issue the sole legacy raw continuation");
+        assert!(
+            terminal.wait(TRACEE_WAIT_TIMEOUT),
+            "legacy raw continuation did not reach terminal notifier completion"
+        );
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("typed cleanup repeated the legacy raw continuation")
+                    },
+                )
+                .expect("read completion after the legacy raw continuation"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, &mut exit)
+                .await
+                .expect("legacy ExitFuture did not resolve after raw continuation"),
+            Err(Error::Errno(Errno::EALREADY))
+        );
+        cleanup.disarm();
     }
 
     #[test]
@@ -20002,6 +20775,401 @@ mod test {
             .expect("dispose observerless successor exactly once");
     }
 
+    #[test]
+    fn completed_exit_rearm_admits_later_exit_cleanup_exactly_once() {
+        let pid = crate::Pid::from_raw(i32::MAX - 109);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let old_exit = retained_exit_stop_id(event);
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = futures::task::noop_waker();
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+
+        let old_cont_calls = AtomicUsize::new(0);
+        handle
+            .continue_claimed_exit_stop_with(pid, old_exit, None, None, || {
+                old_cont_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("consume old observerless exit stop");
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        event.update((Signal::SIGTRAP as i32) << 8 | 0x7f);
+        let decoded = terminal
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve ordinary successor FIFO")
+            .decode_guard()
+            .expect("decode ordinary successor FIFO");
+        let (successor_stopped, successor_event) = decoded.commit().assume_stopped();
+        assert_eq!(successor_event, crate::Event::Signal(Signal::SIGTRAP));
+        let ordinary_successor = StopResolutionStopped {
+            logical_stop: successor_stopped.logical_stop_id(),
+            physical_status: successor_stopped.physical_status_id(),
+        };
+        assert!(ordinary_successor.logical_stop.get() > old_exit.get());
+        assert_eq!(ordinary_successor.physical_status, None);
+        let successor = TransferredStopSuccessor::from_stopped(&successor_stopped);
+
+        let foreign = EventHandle::new();
+        let foreign_successor = synthetic_transferred_stop_successor(
+            pid,
+            &foreign,
+            ordinary_successor.logical_stop,
+            None,
+        );
+        assert_eq!(
+            terminal.rearm_completed_exit_for_successor(&foreign_successor),
+            Err(Errno::EINVAL),
+        );
+        let stale_successor = synthetic_transferred_stop_successor(pid, &handle, old_exit, None);
+        assert_eq!(
+            terminal.rearm_completed_exit_for_successor(&stale_successor),
+            Err(Errno::EPROTO),
+        );
+        {
+            let publication = event.exit_publication.lock();
+            assert_eq!(
+                publication.cleanup,
+                ExitStopCleanupCompletion::Finished {
+                    stop_id: old_exit,
+                    diagnostic_status: None,
+                },
+            );
+            assert_eq!(publication.retired_through, Some(CleanupStopKey(old_exit)));
+        }
+
+        terminal
+            .rearm_completed_exit_for_successor(&successor)
+            .expect("rearm completed exit for exact ordinary successor");
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert_eq!(event.exit_logical_stop.load(Ordering::Acquire), 0);
+        assert_eq!(event.exit_physical_status.load(Ordering::Acquire), 0);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED,
+            "same-generation rearm minted a second ExitFuture capability",
+        );
+        {
+            let publication = event.exit_publication.lock();
+            assert_eq!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted);
+            assert_eq!(publication.retired_through, Some(CleanupStopKey(old_exit)));
+            assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+        }
+        {
+            let resolution = event.stop_resolution.lock();
+            assert!(!resolution.terminal);
+            assert_eq!(resolution.latest_stopped, Some(ordinary_successor));
+        }
+        let duplicate = Arc::new(ExitWaiter::default());
+        assert_eq!(
+            event.poll_exit(&duplicate, &waker),
+            Poll::Ready(Err(Errno::EALREADY)),
+            "rearm allowed a stale ExitFuture to wait for the cleanup-only exit",
+        );
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("cleanup repeated the completed old exit continuation")
+                    },
+                )
+                .expect("rearmed cleanup waits for the successor's exit"),
+            TerminalCleanupContinue::WaitingForExitStop,
+        );
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+
+        let mut successor_lease = Some(
+            successor_stopped
+                .into_cleanup_stop_lease()
+                .expect("lease exact ordinary successor before later exit"),
+        );
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let later_exit = retained_exit_stop_id(event);
+        assert!(later_exit.get() > ordinary_successor.logical_stop.get());
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED
+        );
+        assert_eq!(
+            event.poll_exit(&duplicate, &waker),
+            Poll::Ready(Err(Errno::EALREADY)),
+        );
+
+        let later_cont_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut successor_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        later_cont_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("continue cleanup-only later exit"),
+            TerminalCleanupContinue::Attempted {
+                source_status: None,
+                error: None,
+            },
+        );
+        assert!(successor_lease.is_none());
+        assert_eq!(later_cont_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut successor_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("later observerless exit stop was continued twice")
+                    },
+                )
+                .expect("recognize completed later exit cleanup"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            },
+        );
+        assert_eq!(later_cont_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            event.exit_publication.lock().retired_through,
+            Some(CleanupStopKey(later_exit)),
+        );
+    }
+
+    #[test]
+    fn observed_completed_exit_rearm_revokes_later_exit_and_supersedes_successor_once() {
+        let (child, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn observed completed-exit rearm tracee");
+        let pid: crate::Pid = child.into();
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid)
+                .expect("capture observed completed-exit rearm identity"),
+        );
+        assert!(identity.is_active_tracee());
+        assert!(identity.is_current_ptracer());
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+            .expect("create completed-exit rearm observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach completed-exit rearm observer");
+        let generation = handle.physical_generation();
+        let task = identity.physical_identity();
+        let event = handle.event();
+        observer.record_worker_started(generation);
+        let exit_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: (libc::PTRACE_EVENT_EXIT << 8) | libc::SIGTRAP,
+        };
+
+        let old_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let old_status = observer.allocate_status();
+        observer.record_wait_siginfo(old_wait, exit_siginfo, Some(old_status));
+        observer.finish_wait_status_with_id(
+            old_wait,
+            old_status,
+            PTRACE_EVENT_EXIT_STOP,
+            Some(exit_siginfo),
+        );
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(old_status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        let old_exit = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let old_cont_calls = AtomicUsize::new(0);
+        let mut old_lease = None;
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut old_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        old_cont_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("continue old observed exit stop"),
+            TerminalCleanupContinue::Attempted {
+                source_status: Some(old_status),
+                error: None,
+            },
+        );
+        assert!(old_lease.is_none());
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+        assert!(event.exit_revocation_recorded.load(Ordering::Acquire));
+
+        let successor_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let successor_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: libc::SIGTRAP,
+        };
+        let successor_status = observer.allocate_status();
+        observer.record_wait_siginfo(successor_wait, successor_siginfo, Some(successor_status));
+        observer.finish_wait_status_with_id(
+            successor_wait,
+            successor_status,
+            (Signal::SIGTRAP as i32) << 8 | 0x7f,
+            Some(successor_siginfo),
+        );
+        event.update(ObservedStatus {
+            raw: (Signal::SIGTRAP as i32) << 8 | 0x7f,
+            physical: Some(successor_status),
+            logical_stop: None,
+        });
+        let decoded = terminal
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve observed ordinary successor")
+            .decode_guard()
+            .expect("decode observed ordinary successor");
+        let (successor_stopped, successor_event) = decoded.commit().assume_stopped();
+        assert_eq!(successor_event, crate::Event::Signal(Signal::SIGTRAP));
+        assert_eq!(
+            successor_stopped.physical_status_id(),
+            Some(successor_status),
+        );
+        assert!(successor_stopped.logical_stop_id().get() > old_exit.get());
+        let successor = TransferredStopSuccessor::from_stopped(&successor_stopped);
+        terminal
+            .rearm_completed_exit_for_successor(&successor)
+            .expect("rearm observed completed exit cycle");
+        assert!(!event.exit_revocation_recorded.load(Ordering::Acquire));
+        let mut successor_lease = Some(
+            successor_stopped
+                .into_cleanup_stop_lease()
+                .expect("lease observed ordinary successor"),
+        );
+
+        let later_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let later_status = observer.allocate_status();
+        observer.record_wait_siginfo(later_wait, exit_siginfo, Some(later_status));
+        observer.finish_wait_status_with_id(
+            later_wait,
+            later_status,
+            PTRACE_EVENT_EXIT_STOP,
+            Some(exit_siginfo),
+        );
+        assert!(later_status.get() > successor_status.get());
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(later_status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        assert!(event.exit_revocation_recorded.load(Ordering::Acquire));
+
+        let later_cont_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut successor_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        later_cont_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("continue later observed exit stop"),
+            TerminalCleanupContinue::Attempted {
+                source_status: Some(later_status),
+                error: None,
+            },
+        );
+        assert!(successor_lease.is_none());
+        assert_eq!(old_cont_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(later_cont_calls.load(Ordering::SeqCst), 1);
+
+        drop(stopped);
+        tracee_cleanup
+            .cleanup()
+            .expect("clean up observed completed-exit rearm tracee");
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        observer.finish_wait_error(terminal_wait, libc::ECHILD);
+        observer.record_echild_pidfd_exited(terminal_wait, generation, task, libc::POLLIN);
+        observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+        observer.record_generation_finished(generation);
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert_eq!(validation.physical_statuses, 3);
+        assert_eq!(validation.successful_resumes, 2);
+        assert_eq!(validation.explicit_dispositions, 1);
+        assert!(validation.is_valid(), "{validation:#?}");
+        assert_eq!(
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.kind(),
+                    PhysicalEventRecordKind::ExitCapability {
+                        status,
+                        transition: PhysicalExitCapabilityTransition::Revoked,
+                    } if status == old_status || status == later_status
+                ))
+                .count(),
+            2,
+        );
+        assert_eq!(
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.kind(),
+                    PhysicalEventRecordKind::StatusDisposition {
+                        status,
+                        disposition: PhysicalStatusDisposition::KernelSupersededByExitStop,
+                    } if status == successor_status
+                ))
+                .count(),
+            1,
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn exit_future_typed_resume_finishes_real_tracee_cleanup_exactly_once() {
         let (pid, stopped, mut tracee_cleanup) =
@@ -21875,7 +23043,7 @@ mod test {
                 let decoded = terminal
                     .reserve_pending_for_cleanup(Duration::ZERO)
                     .expect("reserve trusted successor FIFO")
-                    .decode()
+                    .decode_guard()
                     .expect("decode trusted successor FIFO");
                 let successor = match decoded.commit() {
                     Wait::Stopped(stopped, _) => stopped,
@@ -23027,10 +24195,137 @@ mod test {
         let reservation = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("reserve child-event FIFO front");
-        assert!(reservation.decode().is_err(), "fake child event decoded");
+        assert!(
+            reservation.decode_guard().is_err(),
+            "fake child event decoded"
+        );
         let retry = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("decode failure removed FIFO front");
+        assert_eq!(retry.status.raw, child_event);
+    }
+
+    #[test]
+    fn legacy_cleanup_decode_and_commit_remains_source_compatible() {
+        let pid = crate::Pid::from_raw(i32::MAX - 44);
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup { pid, event: handle };
+
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve legacy cleanup FIFO front");
+        let wait = reservation.decode().expect("decode legacy cleanup stop");
+        assert!(matches!(
+            &wait,
+            Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))
+        ));
+        reservation.commit();
+        assert!(cleanup.pending_is_empty());
+        drop(wait);
+    }
+
+    #[test]
+    fn legacy_cleanup_decode_is_one_shot_and_drop_commits_escaped_wait() {
+        let pid = crate::Pid::from_raw(i32::MAX - 45);
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup { pid, event: handle };
+
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve one-shot legacy cleanup FIFO front");
+        let wait = reservation
+            .decode()
+            .expect("decode one legacy cleanup stop");
+        assert!(matches!(
+            reservation.decode(),
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        drop(reservation);
+        assert!(
+            cleanup.pending_is_empty(),
+            "dropping a reservation after legacy Wait escape rolled it back"
+        );
+        drop(wait);
+
+        handle_pending_guard_after_legacy_decode(pid);
+    }
+
+    #[test]
+    fn concurrent_legacy_cleanup_decode_has_one_typed_winner() {
+        let pid = crate::Pid::from_raw(i32::MAX - 47);
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup { pid, event: handle };
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve concurrent legacy cleanup FIFO front");
+
+        let decoded = thread::scope(|scope| {
+            let attempt = || match reservation.decode() {
+                Ok(wait) => {
+                    assert!(matches!(
+                        wait,
+                        Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))
+                    ));
+                    true
+                }
+                Err(Error::Errno(Errno::EALREADY)) => false,
+                Err(error) => panic!("unexpected concurrent decode error: {error}"),
+            };
+            let first = scope.spawn(attempt);
+            let second = scope.spawn(attempt);
+            [
+                first.join().expect("first decode thread"),
+                second.join().expect("second decode thread"),
+            ]
+        });
+        assert_eq!(decoded.into_iter().filter(|decoded| *decoded).count(), 1);
+        drop(reservation);
+        assert!(cleanup.pending_is_empty());
+    }
+
+    fn handle_pending_guard_after_legacy_decode(pid: crate::Pid) {
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup { pid, event: handle };
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve legacy-to-guard cleanup FIFO front");
+        let wait = reservation.decode().expect("decode legacy cleanup stop");
+        assert!(matches!(
+            reservation.decode_guard(),
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        assert!(cleanup.pending_is_empty());
+        drop(wait);
+    }
+
+    #[test]
+    fn failed_legacy_cleanup_decode_rolls_fifo_front_back() {
+        let pid = crate::Pid::from_raw(i32::MAX - 46);
+        let handle = EventHandle::new();
+        let child_event = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        handle.event().update(child_event);
+        let cleanup = TerminalCleanup { pid, event: handle };
+
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve legacy decode-error FIFO front");
+        assert!(reservation.decode().is_err(), "fake child event decoded");
+        assert!(matches!(
+            reservation.decode(),
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        drop(reservation);
+        let retry = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("legacy decode error removed FIFO front");
         assert_eq!(retry.status.raw, child_event);
     }
 
@@ -23057,7 +24352,7 @@ mod test {
                 thread::yield_now();
             }
             assert!(matches!(
-                reservation.decode(),
+                reservation.decode_guard(),
                 Err(Error::Errno(Errno::EPROTO))
             ));
             publisher.join().expect("join terminal-error publisher");
@@ -23088,7 +24383,7 @@ mod test {
         let decoded = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("reserve first cleanup FIFO guard")
-            .decode()
+            .decode_guard()
             .expect("decode first cleanup FIFO guard");
         assert!(matches!(
             decoded.wait(),
@@ -23099,7 +24394,7 @@ mod test {
         let retried = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("decoded guard drop did not restore FIFO front")
-            .decode()
+            .decode_guard()
             .expect("decode retried cleanup FIFO guard");
         assert!(matches!(
             retried.wait(),
@@ -23137,7 +24432,7 @@ mod test {
         let reservation = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("cleanup reserves rolled-back ordinary status");
-        let decoded = reservation.decode().expect("decode cleanup stop");
+        let decoded = reservation.decode_guard().expect("decode cleanup stop");
         assert!(matches!(
             decoded.wait(),
             Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))

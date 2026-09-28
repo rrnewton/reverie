@@ -498,6 +498,61 @@ impl PartialEq for X86ExtendedState {
 #[cfg(target_arch = "x86_64")]
 impl Eq for X86ExtendedState {}
 
+#[cfg(target_arch = "x86_64")]
+impl X86ExtendedState {
+    /// Checks that a second kernel XSTATE snapshot represents the same
+    /// architectural state after a syscall which cannot modify XSTATE.
+    ///
+    /// Linux may canonicalize an initialized XSAVE component by clearing its
+    /// `XSTATE_BV` bit on a later `PTRACE_GETREGSET` snapshot. The kernel emits
+    /// architectural INIT bytes for every clear component, so an extended
+    /// component bit may safely clear only when every byte other than
+    /// `XSTATE_BV` remains exact. Legacy x87/SSE bits must remain exact, and no
+    /// bit may become set through this equivalence. This deliberately stays
+    /// separate from `PartialEq`, whose contract remains byte identity.
+    pub fn kernel_snapshot_matches_after_non_xstate_syscall(&self, after: &Self) -> bool {
+        if self == after {
+            return true;
+        }
+        match (self, after) {
+            (Self::Fxsave64(before), Self::Fxsave64(after)) => {
+                fpregs_bytes(before) == fpregs_bytes(after)
+            }
+            (Self::StandardXsave64(before), Self::StandardXsave64(after)) => {
+                standard_xsave64_snapshot_matches_after_non_xstate_syscall(&before.0, &after.0)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn standard_xsave64_snapshot_matches_after_non_xstate_syscall(before: &[u8], after: &[u8]) -> bool {
+    if before.len() != after.len()
+        || validate_standard_header(before).is_err()
+        || validate_standard_header(after).is_err()
+        || before[..XSAVE64_XSTATE_BV_OFFSET] != after[..XSAVE64_XSTATE_BV_OFFSET]
+        || before[XSAVE64_XSTATE_BV_OFFSET + 8..] != after[XSAVE64_XSTATE_BV_OFFSET + 8..]
+    {
+        return false;
+    }
+    let Ok(kernel_xfeatures) = read_u64(before, XSAVE64_KERNEL_XCR0_OFFSET) else {
+        return false;
+    };
+    let Ok(before_bv) = read_u64(before, XSAVE64_XSTATE_BV_OFFSET) else {
+        return false;
+    };
+    let Ok(after_bv) = read_u64(after, XSAVE64_XSTATE_BV_OFFSET) else {
+        return false;
+    };
+    let cleared = before_bv & !after_bv;
+    before_bv & !kernel_xfeatures == 0
+        && after_bv & !kernel_xfeatures == 0
+        && after_bv & !before_bv == 0
+        && cleared != 0
+        && cleared & LEGACY_XFEATURES == 0
+}
+
 /// Why a saved x86 state image could not be merged safely.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -900,6 +955,98 @@ mod x86_state_tests {
 
     fn set_u64(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn non_xstate_syscall_snapshot_accepts_only_clear_bit_canonicalization() {
+        const LENGTH: usize = 2440;
+        const SSE: u64 = 1 << 1;
+        const HI16_ZMM: u64 = 1 << 7;
+        let kernel_xfeatures = SSE | HI16_ZMM;
+        let mut before = vec![0; LENGTH];
+        set_u64(&mut before, XSAVE64_KERNEL_XCR0_OFFSET, kernel_xfeatures);
+        set_u64(&mut before, XSAVE64_XSTATE_BV_OFFSET, kernel_xfeatures);
+        let mut after = before.clone();
+        set_u64(&mut after, XSAVE64_XSTATE_BV_OFFSET, SSE);
+
+        assert!(
+            X86ExtendedState::StandardXsave64(XState(before.clone()))
+                .kernel_snapshot_matches_after_non_xstate_syscall(
+                    &X86ExtendedState::StandardXsave64(XState(before.clone()))
+                )
+        );
+        assert!(standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before, &after
+        ));
+        assert!(
+            X86ExtendedState::StandardXsave64(XState(before.clone()))
+                .kernel_snapshot_matches_after_non_xstate_syscall(
+                    &X86ExtendedState::StandardXsave64(XState(after.clone()))
+                )
+        );
+
+        let mut newly_set = after.clone();
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &after, &before
+        ));
+        newly_set[1536] = 1;
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &after, &newly_set
+        ));
+
+        let mut changed_payload = after.clone();
+        changed_payload[1536] = 1;
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before,
+            &changed_payload
+        ));
+
+        let mut changed_kernel_mask = after.clone();
+        set_u64(&mut changed_kernel_mask, XSAVE64_KERNEL_XCR0_OFFSET, SSE);
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before,
+            &changed_kernel_mask
+        ));
+
+        let mut compacted = after.clone();
+        set_u64(&mut compacted, XSAVE64_XCOMP_BV_OFFSET, 1 << 63);
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before, &compacted
+        ));
+        let mut reserved = after.clone();
+        reserved[XSAVE64_RESERVED_OFFSET] = 1;
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before, &reserved
+        ));
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before,
+            &after[..after.len() - 1]
+        ));
+
+        let mut invalid_mask = before.clone();
+        set_u64(
+            &mut invalid_mask,
+            XSAVE64_XSTATE_BV_OFFSET,
+            kernel_xfeatures | (1 << 9),
+        );
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &invalid_mask,
+            &after
+        ));
+
+        let mut legacy_cleared = before.clone();
+        set_u64(&mut legacy_cleared, XSAVE64_XSTATE_BV_OFFSET, HI16_ZMM);
+        assert!(!standard_xsave64_snapshot_matches_after_non_xstate_syscall(
+            &before,
+            &legacy_cleared
+        ));
+
+        let zeroed_fpregs: FpRegs = unsafe { core::mem::zeroed() };
+        let fxsave = X86ExtendedState::Fxsave64(Box::new(zeroed_fpregs));
+        assert!(fxsave.kernel_snapshot_matches_after_non_xstate_syscall(&fxsave));
+        assert!(!fxsave.kernel_snapshot_matches_after_non_xstate_syscall(
+            &X86ExtendedState::StandardXsave64(XState(before))
+        ));
     }
 
     #[test]

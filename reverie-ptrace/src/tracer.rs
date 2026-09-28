@@ -240,6 +240,54 @@ struct TraceeSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueuedParentCheck {
+    Active(TraceeSnapshot),
+    Unavailable,
+    LiveTracerChanged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentScanErrorResolution {
+    DiscardParent,
+}
+
+fn resolve_parent_scan_error(
+    parent: QueuedParentCheck,
+    active_error: std::io::Error,
+) -> std::io::Result<ParentScanErrorResolution> {
+    match parent {
+        QueuedParentCheck::Active(_) => Err(active_error),
+        QueuedParentCheck::Unavailable => Ok(ParentScanErrorResolution::DiscardParent),
+        QueuedParentCheck::LiveTracerChanged => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "parent generation changed live tracer authority during descendant discovery",
+        )),
+    }
+}
+
+fn same_descendant_scan_authority(left: TraceeSnapshot, right: TraceeSnapshot) -> bool {
+    left.tgid == right.tgid
+        && left.start_time == right.start_time
+        && left.tracer_pid == right.tracer_pid
+}
+
+fn classify_queued_parent(
+    baseline: Option<TraceeSnapshot>,
+    observed: TraceeSnapshot,
+    tracer_is_current: bool,
+) -> QueuedParentCheck {
+    if !tracer_is_current {
+        QueuedParentCheck::Unavailable
+    } else if baseline.map_or(true, |baseline| {
+        same_descendant_scan_authority(baseline, observed)
+    }) {
+        QueuedParentCheck::Active(observed)
+    } else {
+        QueuedParentCheck::LiveTracerChanged
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TraceeGenerationState {
     Same(TraceeSnapshot),
     GoneOrReplaced,
@@ -250,6 +298,33 @@ enum TerminalOwnership {
     TracerOwned,
     CapturedParentOwned,
     Released,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalOwnershipSample {
+    Stable(TerminalOwnership),
+    Changed,
+}
+
+fn require_stable_terminal_ownership(
+    tid: Pid,
+    sample: TerminalOwnershipSample,
+) -> std::io::Result<TerminalOwnership> {
+    match sample {
+        TerminalOwnershipSample::Stable(ownership) => Ok(ownership),
+        TerminalOwnershipSample::Changed => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("tracee {tid} ownership changed while sampled"),
+        )),
+    }
+}
+
+fn terminal_descendant_stably_released(sample: TerminalOwnershipSample) -> bool {
+    sample == TerminalOwnershipSample::Stable(TerminalOwnership::Released)
+}
+
+fn terminal_ownership_permits_continuation(sample: TerminalOwnershipSample) -> bool {
+    sample == TerminalOwnershipSample::Stable(TerminalOwnership::TracerOwned)
 }
 
 #[derive(Debug)]
@@ -1007,7 +1082,7 @@ impl NewbornTracee {
                 }
                 return Err(Errno::ETIMEDOUT.into());
             };
-            let state = reservation.decode()?.commit();
+            let state = reservation.decode_guard()?.commit();
             let Wait::Stopped(stopped, _) = state else {
                 continue;
             };
@@ -1239,27 +1314,43 @@ impl TraceeIdentity {
         Ok(TraceeGenerationState::Same(current))
     }
 
-    fn checked_terminal_ownership(&self) -> std::io::Result<TerminalOwnership> {
-        let TraceeGenerationState::Same(before) = self.checked_generation()? else {
-            return Ok(TerminalOwnership::Released);
+    fn checked_terminal_ownership_sample(&self) -> std::io::Result<TerminalOwnershipSample> {
+        self.checked_terminal_ownership_sample_with(
+            || self.checked_generation(),
+            checked_tracer_is_current,
+        )
+    }
+
+    fn checked_terminal_ownership_sample_with(
+        &self,
+        mut checked_generation: impl FnMut() -> std::io::Result<TraceeGenerationState>,
+        tracer_is_current: impl FnOnce(Pid) -> std::io::Result<bool>,
+    ) -> std::io::Result<TerminalOwnershipSample> {
+        let TraceeGenerationState::Same(before) = checked_generation()? else {
+            return Ok(TerminalOwnershipSample::Stable(TerminalOwnership::Released));
         };
-        let tracer_owned = checked_tracer_is_current(before.tracer_pid)?;
-        let TraceeGenerationState::Same(after) = self.checked_generation()? else {
-            return Ok(TerminalOwnership::Released);
+        let tracer_owned = tracer_is_current(before.tracer_pid)?;
+        let TraceeGenerationState::Same(after) = checked_generation()? else {
+            return Ok(TerminalOwnershipSample::Stable(TerminalOwnership::Released));
         };
         if before != after {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                format!("tracee {} ownership changed while sampled", self.tid),
-            ));
+            return Ok(TerminalOwnershipSample::Changed);
         }
         if tracer_owned {
-            return Ok(TerminalOwnership::TracerOwned);
+            return Ok(TerminalOwnershipSample::Stable(
+                TerminalOwnership::TracerOwned,
+            ));
         }
         if self.parent.is_some() && after.ppid == self.snapshot.ppid {
-            return Ok(TerminalOwnership::CapturedParentOwned);
+            return Ok(TerminalOwnershipSample::Stable(
+                TerminalOwnership::CapturedParentOwned,
+            ));
         }
-        Ok(TerminalOwnership::Released)
+        Ok(TerminalOwnershipSample::Stable(TerminalOwnership::Released))
+    }
+
+    fn checked_terminal_ownership(&self) -> std::io::Result<TerminalOwnership> {
+        require_stable_terminal_ownership(self.tid, self.checked_terminal_ownership_sample()?)
     }
 
     fn send_raw_signal(&self, signal: i32) -> Result<(), Errno> {
@@ -1737,7 +1828,7 @@ impl LiteinstTraceeCleanup {
                     .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                 return Ok(());
             };
-            let decoded = reservation.decode().map_err(|error| {
+            let decoded = reservation.decode_guard().map_err(|error| {
                 std::io::Error::other(format!("decode queued cancellation state: {error}"))
             })?;
             #[cfg(test)]
@@ -1769,7 +1860,7 @@ impl LiteinstTraceeCleanup {
                     else {
                         return Ok(());
                     };
-                    let decoded = reservation.decode().map_err(|error| {
+                    let decoded = reservation.decode_guard().map_err(|error| {
                         std::io::Error::other(format!(
                             "decode rolled-back cancellation state: {error}"
                         ))
@@ -2074,7 +2165,7 @@ impl LiteinstTraceeCleanup {
             if self.root_frozen_stop.is_none()
                 && let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining)
             {
-                let decoded = reservation.decode().map_err(|error| {
+                let decoded = reservation.decode_guard().map_err(|error| {
                     std::io::Error::other(format!(
                         "decode exact root freeze state for {}: {error}",
                         self.pid()
@@ -2090,7 +2181,7 @@ impl LiteinstTraceeCleanup {
                         else {
                             continue;
                         };
-                        let decoded = reservation.decode().map_err(|error| {
+                        let decoded = reservation.decode_guard().map_err(|error| {
                             std::io::Error::other(format!(
                                 "decode rolled-back root freeze state for {}: {error}",
                                 self.pid()
@@ -2700,7 +2791,12 @@ impl LiteinstTraceeCleanup {
             // never make progress here.
             let mut released = Vec::new();
             for (generation, identity) in terminal_descendants.iter() {
-                if identity.checked_terminal_ownership()? == TerminalOwnership::Released {
+                // A PPid/TracerPid transition supplies no release authority.
+                // Retain it until a later bounded iteration obtains a stable
+                // ownership proof.
+                if terminal_descendant_stably_released(
+                    identity.checked_terminal_ownership_sample()?,
+                ) {
                     released.push(*generation);
                 }
             }
@@ -2731,9 +2827,14 @@ impl LiteinstTraceeCleanup {
                 // Preserve parentage until every descendant is terminal and
                 // reaped. Otherwise an auto-attached child can be reparented
                 // before its notifier consumes the final wait status.
+                // A changing ownership sample performs no raw continuation;
+                // the next bounded iteration must obtain a stable local-tracer
+                // proof first.
                 if !root_done
                     && (descendants.is_empty() || root_terminal.terminal_error().is_some())
-                    && self.identity.checked_terminal_ownership()? == TerminalOwnership::TracerOwned
+                    && terminal_ownership_permits_continuation(
+                        self.identity.checked_terminal_ownership_sample()?,
+                    )
                 {
                     continue_registered_exit_stop(
                         root_terminal,
@@ -2743,8 +2844,9 @@ impl LiteinstTraceeCleanup {
                 }
                 for tracee in descendants.values_mut() {
                     if tracee.signal_authority
-                        && tracee.identity.checked_terminal_ownership()?
-                            == TerminalOwnership::TracerOwned
+                        && terminal_ownership_permits_continuation(
+                            tracee.identity.checked_terminal_ownership_sample()?,
+                        )
                     {
                         tracee.continue_exit_stop()?;
                     }
@@ -3132,51 +3234,70 @@ impl LiteinstTraceeCleanup {
         }
 
         let mut visited = BTreeSet::new();
-        while let Some((parent_generation, parent)) = queue.pop_front() {
+        'parents: while let Some((parent_generation, parent)) = queue.pop_front() {
             if !visited.insert(parent_generation) {
                 continue;
             }
-            let parent_snapshot = match self.checked_queued_parent(
+            let Some(parent_snapshot) = self.resample_queued_parent(
                 descendants,
                 root_generation,
                 parent_generation,
                 parent,
-            )? {
-                Some(snapshot) => snapshot,
-                None => continue,
+                None,
+            )?
+            else {
+                continue;
             };
             let children = match direct_children(parent) {
                 Ok(children) => children,
                 Err(error) => {
+                    let parent_check = match self.checked_queued_parent(
+                        descendants,
+                        root_generation,
+                        parent_generation,
+                        parent,
+                        Some(parent_snapshot),
+                    ) {
+                        Ok(parent_check) => parent_check,
+                        Err(error) => {
+                            Self::restore_transferred_newborns(
+                                &self.newborn_tracees,
+                                descendants,
+                                &mut transferred,
+                                &mut absorbed,
+                            )?;
+                            return Err(error);
+                        }
+                    };
                     let error = std::io::Error::new(
                         error.kind(),
                         format!("read direct children of bound tracee {parent}: {error}"),
                     );
-                    Self::restore_transferred_newborns(
-                        &self.newborn_tracees,
-                        descendants,
-                        &mut transferred,
-                        &mut absorbed,
-                    )?;
-                    return Err(error);
+                    match resolve_parent_scan_error(parent_check, error) {
+                        Ok(ParentScanErrorResolution::DiscardParent) => continue 'parents,
+                        Err(error) => {
+                            Self::restore_transferred_newborns(
+                                &self.newborn_tracees,
+                                descendants,
+                                &mut transferred,
+                                &mut absorbed,
+                            )?;
+                            return Err(error);
+                        }
+                    }
                 }
             };
-            match self.checked_queued_parent(
-                descendants,
-                root_generation,
-                parent_generation,
-                parent,
-            )? {
-                Some(after) if after == parent_snapshot => {}
-                None => continue,
-                Some(_) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!(
-                            "parent generation {parent_generation:?} changed while its children were scanned"
-                        ),
-                    ));
-                }
+            if self
+                .resample_queued_parent(
+                    descendants,
+                    root_generation,
+                    parent_generation,
+                    parent,
+                    Some(parent_snapshot),
+                )?
+                .is_none()
+            {
+                continue 'parents;
             }
             for child in children {
                 if Self::contains_current_tid(descendants, terminal_descendants, child)?
@@ -3192,46 +3313,57 @@ impl LiteinstTraceeCleanup {
                     Ok(Some(identity)) => identity,
                     Ok(None) => continue,
                     Err(error) => {
+                        let parent_check = match self.checked_queued_parent(
+                            descendants,
+                            root_generation,
+                            parent_generation,
+                            parent,
+                            Some(parent_snapshot),
+                        ) {
+                            Ok(parent_check) => parent_check,
+                            Err(error) => {
+                                Self::restore_transferred_newborns(
+                                    &self.newborn_tracees,
+                                    descendants,
+                                    &mut transferred,
+                                    &mut absorbed,
+                                )?;
+                                return Err(error);
+                            }
+                        };
                         let error = std::io::Error::new(
                             error.kind(),
                             format!("bind listed tracee {child} under parent {parent}: {error}"),
                         );
-                        Self::restore_transferred_newborns(
-                            &self.newborn_tracees,
-                            descendants,
-                            &mut transferred,
-                            &mut absorbed,
-                        )?;
-                        return Err(error);
+                        match resolve_parent_scan_error(parent_check, error) {
+                            Ok(ParentScanErrorResolution::DiscardParent) => continue 'parents,
+                            Err(error) => {
+                                Self::restore_transferred_newborns(
+                                    &self.newborn_tracees,
+                                    descendants,
+                                    &mut transferred,
+                                    &mut absorbed,
+                                )?;
+                                return Err(error);
+                            }
+                        }
                     }
                 };
                 let identity_snapshot = match identity.checked_generation()? {
                     TraceeGenerationState::Same(snapshot) => snapshot,
                     TraceeGenerationState::GoneOrReplaced => continue,
                 };
-                match self.checked_queued_parent(
-                    descendants,
-                    root_generation,
-                    parent_generation,
-                    parent,
-                )? {
-                    Some(after) if after == parent_snapshot => {}
-                    None => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            format!(
-                                "parent generation {parent_generation:?} ended while child {child} was bound"
-                            ),
-                        ));
-                    }
-                    Some(_) => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            format!(
-                                "parent generation {parent_generation:?} changed while child {child} was bound"
-                            ),
-                        ));
-                    }
+                if self
+                    .resample_queued_parent(
+                        descendants,
+                        root_generation,
+                        parent_generation,
+                        parent,
+                        Some(parent_snapshot),
+                    )?
+                    .is_none()
+                {
+                    continue 'parents;
                 }
                 let running = match Running::try_new_current(child) {
                     Ok(running) => running,
@@ -3372,12 +3504,13 @@ impl LiteinstTraceeCleanup {
         root_generation: PhysicalEventGenerationId,
         generation: PhysicalEventGenerationId,
         tid: Pid,
-    ) -> std::io::Result<Option<TraceeSnapshot>> {
+        baseline: Option<TraceeSnapshot>,
+    ) -> std::io::Result<QueuedParentCheck> {
         let identity = if generation == root_generation {
             &self.identity
         } else {
             let Some(tracee) = descendants.get(&generation) else {
-                return Ok(None);
+                return Ok(QueuedParentCheck::Unavailable);
             };
             &tracee.identity
         };
@@ -3385,7 +3518,12 @@ impl LiteinstTraceeCleanup {
             TraceeGenerationState::Same(snapshot)
                 if snapshot.tgid == identity.tid && identity.tid == tid =>
             {
-                Ok(Some(snapshot))
+                let tracer_is_current = checked_tracer_is_current(snapshot.tracer_pid)?;
+                Ok(classify_queued_parent(
+                    baseline,
+                    snapshot,
+                    tracer_is_current,
+                ))
             }
             TraceeGenerationState::Same(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -3393,7 +3531,27 @@ impl LiteinstTraceeCleanup {
                     "descendant generation {generation:?} is not the queued group leader {tid}"
                 ),
             )),
-            TraceeGenerationState::GoneOrReplaced => Ok(None),
+            TraceeGenerationState::GoneOrReplaced => Ok(QueuedParentCheck::Unavailable),
+        }
+    }
+
+    fn resample_queued_parent(
+        &self,
+        descendants: &BTreeMap<PhysicalEventGenerationId, RegisteredTraceeCleanup>,
+        root_generation: PhysicalEventGenerationId,
+        generation: PhysicalEventGenerationId,
+        tid: Pid,
+        baseline: Option<TraceeSnapshot>,
+    ) -> std::io::Result<Option<TraceeSnapshot>> {
+        match self.checked_queued_parent(descendants, root_generation, generation, tid, baseline)? {
+            QueuedParentCheck::Active(snapshot) => Ok(Some(snapshot)),
+            QueuedParentCheck::Unavailable => Ok(None),
+            QueuedParentCheck::LiveTracerChanged => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!(
+                    "parent generation {generation:?} changed live tracer authority during descendant discovery"
+                ),
+            )),
         }
     }
 
@@ -5016,11 +5174,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             // trace them so successful VMA churn can invalidate patched-site
             // provenance, without adding them to the Tool's subscription set.
             traced_events.syscalls([
+                Sysno::clone,
+                Sysno::clone3,
+                Sysno::fork,
                 Sysno::mmap,
                 Sysno::munmap,
                 Sysno::mremap,
                 Sysno::mprotect,
                 Sysno::pkey_mprotect,
+                Sysno::vfork,
             ]);
         }
         let gref = Arc::new(global_state);
@@ -5121,9 +5283,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let mut controller_stdio: Option<SpawnStdio> = None;
         #[cfg(target_arch = "x86_64")]
         let (guest_pid, running_child) = if after_loader.is_some() {
-            match command.spawn_controller_with(|publisher| {
-                init_controller_tracee(intercept_rdtsc, publisher)
-            }) {
+            // SAFETY: the closure captures only a bool and performs raw
+            // prctl/personality/ptrace/write/close/raise/sigaction operations
+            // on stack/static data. It neither allocates nor acquires a lock,
+            // and every failure is returned instead of unwinding.
+            match unsafe {
+                command.spawn_controller_with(|publisher| {
+                    init_controller_tracee(intercept_rdtsc, publisher)
+                })
+            } {
                 Ok(launch) => {
                     let ControllerLaunchParts {
                         token,
@@ -8720,6 +8888,257 @@ mod tests {
             )
             .unwrap(),
             TraceeGenerationState::GoneOrReplaced,
+        );
+    }
+
+    #[test]
+    fn descendant_scan_authority_ignores_reparenting_but_requires_a_live_tracer() {
+        let baseline = TraceeSnapshot {
+            tgid: Pid::from_raw(41),
+            ppid: Pid::from_raw(42),
+            tracer_pid: Pid::from_raw(43),
+            start_time: 44,
+        };
+        assert_eq!(
+            classify_queued_parent(None, baseline, true),
+            QueuedParentCheck::Active(baseline)
+        );
+
+        let reparented = TraceeSnapshot {
+            ppid: Pid::from_raw(45),
+            ..baseline
+        };
+        assert_eq!(
+            classify_queued_parent(Some(baseline), reparented, true),
+            QueuedParentCheck::Active(reparented)
+        );
+        assert_eq!(
+            classify_queued_parent(Some(baseline), baseline, false),
+            QueuedParentCheck::Unavailable
+        );
+
+        let other_live_tracer = TraceeSnapshot {
+            tracer_pid: Pid::from_raw(46),
+            ..baseline
+        };
+        assert_eq!(
+            classify_queued_parent(Some(baseline), other_live_tracer, true),
+            QueuedParentCheck::LiveTracerChanged
+        );
+    }
+
+    #[test]
+    fn terminal_ownership_sampler_distinguishes_stable_release_from_change() {
+        let tid = Pid::from_raw(41);
+        let parent = Pid::from_raw(42);
+        let tracer = Pid::from_raw(43);
+        let identity = synthetic_tracee_identity(
+            tid,
+            tid,
+            parent,
+            tracer,
+            44,
+            45,
+            Some((parent, parent, Some(ChildOp::Fork))),
+        );
+        let baseline = identity.snapshot;
+        let sample = |states: Vec<TraceeGenerationState>, expected_tracer, tracer_owned| {
+            let mut states = VecDeque::from(states);
+            let result = identity
+                .checked_terminal_ownership_sample_with(
+                    || {
+                        Ok(states
+                            .pop_front()
+                            .expect("terminal ownership generation sample"))
+                    },
+                    |observed| {
+                        assert_eq!(observed, expected_tracer);
+                        Ok(tracer_owned)
+                    },
+                )
+                .expect("sample terminal ownership");
+            assert!(states.is_empty(), "sampler did not consume both snapshots");
+            result
+        };
+
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(baseline),
+                    TraceeGenerationState::Same(baseline),
+                ],
+                tracer,
+                true,
+            ),
+            TerminalOwnershipSample::Stable(TerminalOwnership::TracerOwned),
+        );
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(baseline),
+                    TraceeGenerationState::Same(baseline),
+                ],
+                tracer,
+                false,
+            ),
+            TerminalOwnershipSample::Stable(TerminalOwnership::CapturedParentOwned),
+        );
+
+        let released = TraceeSnapshot {
+            ppid: Pid::from_raw(46),
+            tracer_pid: Pid::from_raw(0),
+            ..baseline
+        };
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(released),
+                    TraceeGenerationState::Same(released),
+                ],
+                Pid::from_raw(0),
+                false,
+            ),
+            TerminalOwnershipSample::Stable(TerminalOwnership::Released),
+        );
+
+        let reparented = TraceeSnapshot {
+            ppid: Pid::from_raw(46),
+            ..baseline
+        };
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(baseline),
+                    TraceeGenerationState::Same(reparented),
+                ],
+                tracer,
+                true,
+            ),
+            TerminalOwnershipSample::Changed,
+        );
+        let untraced = TraceeSnapshot {
+            tracer_pid: Pid::from_raw(0),
+            ..baseline
+        };
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(baseline),
+                    TraceeGenerationState::Same(untraced),
+                ],
+                tracer,
+                true,
+            ),
+            TerminalOwnershipSample::Changed,
+        );
+        assert_eq!(
+            sample(
+                vec![
+                    TraceeGenerationState::Same(baseline),
+                    TraceeGenerationState::GoneOrReplaced,
+                ],
+                tracer,
+                true,
+            ),
+            TerminalOwnershipSample::Stable(TerminalOwnership::Released),
+        );
+        assert_eq!(
+            identity
+                .checked_terminal_ownership_sample_with(
+                    || Ok(TraceeGenerationState::GoneOrReplaced),
+                    |_| panic!("absent generation must not inspect tracer ownership"),
+                )
+                .expect("absent generation is stably released"),
+            TerminalOwnershipSample::Stable(TerminalOwnership::Released),
+        );
+    }
+
+    #[test]
+    fn checked_terminal_ownership_preserves_changed_would_block_contract() {
+        let tid = Pid::from_raw(51);
+        let error = require_stable_terminal_ownership(tid, TerminalOwnershipSample::Changed)
+            .expect_err("changed sample must remain refused for authority callers");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(
+            error.to_string(),
+            "tracee 51 ownership changed while sampled"
+        );
+        for ownership in [
+            TerminalOwnership::TracerOwned,
+            TerminalOwnership::CapturedParentOwned,
+            TerminalOwnership::Released,
+        ] {
+            assert_eq!(
+                require_stable_terminal_ownership(tid, TerminalOwnershipSample::Stable(ownership),)
+                    .expect("stable ownership must remain exact"),
+                ownership,
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_cleanup_actions_require_stable_ownership_proof() {
+        for (sample, released, continuation) in [
+            (TerminalOwnershipSample::Changed, false, false),
+            (
+                TerminalOwnershipSample::Stable(TerminalOwnership::TracerOwned),
+                false,
+                true,
+            ),
+            (
+                TerminalOwnershipSample::Stable(TerminalOwnership::CapturedParentOwned),
+                false,
+                false,
+            ),
+            (
+                TerminalOwnershipSample::Stable(TerminalOwnership::Released),
+                true,
+                false,
+            ),
+        ] {
+            assert_eq!(terminal_descendant_stably_released(sample), released);
+            assert_eq!(
+                terminal_ownership_permits_continuation(sample),
+                continuation
+            );
+        }
+    }
+
+    #[test]
+    fn parent_scan_error_resolution_is_exhaustive_and_fail_closed() {
+        let active = TraceeSnapshot {
+            tgid: Pid::from_raw(51),
+            ppid: Pid::from_raw(52),
+            tracer_pid: Pid::from_raw(53),
+            start_time: 54,
+        };
+
+        let active_error = resolve_parent_scan_error(
+            QueuedParentCheck::Active(active),
+            std::io::Error::from_raw_os_error(libc::EIO),
+        )
+        .expect_err("an active parent must propagate its scan error");
+        assert_eq!(active_error.raw_os_error(), Some(libc::EIO));
+
+        assert_eq!(
+            resolve_parent_scan_error(
+                QueuedParentCheck::Unavailable,
+                std::io::Error::from_raw_os_error(libc::EIO),
+            )
+            .expect("an unavailable parent invalidates its stale child list"),
+            ParentScanErrorResolution::DiscardParent,
+        );
+
+        let changed_error = resolve_parent_scan_error(
+            QueuedParentCheck::LiveTracerChanged,
+            std::io::Error::from_raw_os_error(libc::ENOENT),
+        )
+        .expect_err("a different live tracer must fail closed");
+        assert_eq!(changed_error.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(changed_error.raw_os_error(), None);
+        assert_eq!(
+            changed_error.to_string(),
+            "parent generation changed live tracer authority during descendant discovery"
         );
     }
 

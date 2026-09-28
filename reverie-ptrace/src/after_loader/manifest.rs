@@ -27,11 +27,13 @@ use super::LiteinstLoaderPolicy;
 use super::file_stamp;
 use super::loader_image_contract;
 use super::valid_loader_name;
+use super::validate_provider_interpreter_contract;
 
 const MAX_REVIEWED_MANIFEST: usize = 64 * 1024;
 const DYNAMIC_X86_64_ET_EXEC_V2: &str = "DynamicX86_64EtExecV2";
 const DYNAMIC_X86_64_ET_EXEC_V2_PROVIDER: &str = "libc.so.6";
 const LOADER_SEARCH_POLICY: &str = "loader_search=sealed-bundle-only";
+const PROFILED_REAL_ALIAS_SEARCH_POLICY: &str = "loader_search=profiled-stable-real-file-alias";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LiteinstAfterLoaderProfileKind {
@@ -118,7 +120,7 @@ impl LiteinstAfterLoaderProfile {
     /// profile=DynamicX86_64EtExecV2
     /// loader_cache=<lowercase hex canonical absolute path bytes><TAB><lowercase SHA-256>
     /// system_preload=<lowercase hex canonical absolute path bytes><TAB>absent
-    /// loader_search=sealed-bundle-only
+    /// loader_search=<sealed-bundle-only|profiled-stable-real-file-alias>
     /// executable=<lowercase hex canonical absolute path bytes><TAB><lowercase SHA-256>
     /// interpreter=<DT_SONAME><TAB><lowercase hex path bytes><TAB><lowercase SHA-256>
     /// runtime=<lowercase hex canonical absolute path bytes><TAB><lowercase SHA-256>
@@ -134,7 +136,9 @@ impl LiteinstAfterLoaderProfile {
     /// fields, aliases, duplicate roles/nodes, or extra lines are accepted, and
     /// the document has exactly one final newline. Cache and preload paths are
     /// profile data so patched loaders are representable without hard-coded
-    /// conventional filenames. The exact cache is sealed like every other
+    /// conventional filenames. `profiled-stable-real-file-alias` is accepted
+    /// only for the exact reviewed libgcc cache-alias profile; otherwise the
+    /// line is `sealed-bundle-only`. The exact cache is sealed like every other
     /// artifact. The loader policy is retained for phase-2 enforcement;
     /// schema-3 binding alone does not claim that the kernel or loader consumes
     /// the sealed bundle or observes the declared absent path.
@@ -209,11 +213,29 @@ impl ReviewedManifest {
         let loader_cache = required_file(&mut lines, "loader_cache=", "manifest loader cache")?;
         let system_preload =
             required_absent_path(&mut lines, "system_preload=", "manifest system preload")?;
-        require_exact_line(&mut lines, LOADER_SEARCH_POLICY, "loader search policy")?;
-        let loader_policy = LiteinstLoaderPolicy::exact_cache_and_absent_preload(
-            loader_cache.path.clone(),
-            system_preload,
-        );
+        let loader_search = required_value(
+            &mut lines,
+            "loader_search=",
+            "manifest loader search policy",
+        )?;
+        let loader_policy = match loader_search {
+            value if Some(value) == LOADER_SEARCH_POLICY.strip_prefix("loader_search=") => {
+                LiteinstLoaderPolicy::exact_cache_and_absent_preload(
+                    loader_cache.path.clone(),
+                    system_preload,
+                )
+            }
+            value
+                if Some(value)
+                    == PROFILED_REAL_ALIAS_SEARCH_POLICY.strip_prefix("loader_search=") =>
+            {
+                LiteinstLoaderPolicy::exact_cache_absent_preload_and_profiled_real_alias(
+                    loader_cache.path.clone(),
+                    system_preload,
+                )
+            }
+            _ => return Err(io::Error::other("manifest loader search policy differs")),
+        };
         let executable = required_file(&mut lines, "executable=", "manifest executable")?;
         let interpreter = required_image(&mut lines, "interpreter=", "manifest interpreter")?;
         let runtime = required_file(&mut lines, "runtime=", "manifest runtime")?;
@@ -407,12 +429,21 @@ impl ReviewedManifest {
             ));
         }
 
-        let interpreter =
-            bind_manifest_image(interpreter_file, "manifest interpreter", &mut identities)?;
-        let provider = bind_manifest_image(provider_file, "manifest provider", &mut identities)?;
+        let interpreter = bind_manifest_image(
+            interpreter_file,
+            "manifest interpreter",
+            &mut identities,
+            None,
+        )?;
+        let provider = bind_manifest_image(
+            provider_file,
+            "manifest provider",
+            &mut identities,
+            Some(&interpreter),
+        )?;
         let dependencies = images
             .into_iter()
-            .map(|image| bind_manifest_image(image, "manifest dependency", &mut identities))
+            .map(|image| bind_manifest_image(image, "manifest dependency", &mut identities, None))
             .collect::<io::Result<Vec<_>>>()?;
 
         // This private constructor deliberately repeats the environment, graph,
@@ -444,6 +475,7 @@ fn bind_manifest_image(
     image: ManifestImage,
     label: &str,
     identities: &mut BTreeSet<FileIdentity>,
+    provider_interpreter: Option<&LiteinstCallerImage>,
 ) -> io::Result<LiteinstCallerImage> {
     let caller_image = LiteinstCallerImage::read(&image.file.path)?;
     if caller_image.path != image.file.path {
@@ -458,12 +490,17 @@ fn bind_manifest_image(
         )));
     }
     let contract = loader_image_contract(&caller_image, header::ET_DYN)?;
-    if pt_interp_count(&caller_image.bytes)? != 0
-        || contract.soname.as_deref() != Some(image.soname.as_str())
-    {
-        return Err(io::Error::other(format!(
-            "{label} SONAME or PT_INTERP differs from ELF"
-        )));
+    if contract.soname.as_deref() != Some(image.soname.as_str()) {
+        return Err(io::Error::other(format!("{label} SONAME differs from ELF")));
+    }
+    match provider_interpreter {
+        Some(interpreter) => validate_provider_interpreter_contract(&contract, interpreter)?,
+        None if contract.interpreter.is_some() => {
+            return Err(io::Error::other(format!(
+                "{label} unexpectedly has PT_INTERP"
+            )));
+        }
+        None => {}
     }
     Ok(caller_image)
 }
@@ -885,6 +922,16 @@ mod tests {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
 
+    fn synthetic_empty_glibc_cache() -> Vec<u8> {
+        let mut bytes = vec![0_u8; super::super::GLIBC_CACHE_HEADER_SIZE];
+        bytes[..super::super::GLIBC_CACHE_MAGIC.len()]
+            .copy_from_slice(super::super::GLIBC_CACHE_MAGIC);
+        put32(&mut bytes, 20, 0);
+        put32(&mut bytes, 24, 0);
+        bytes[28] = super::super::GLIBC_CACHE_LITTLE_ENDIAN;
+        bytes
+    }
+
     fn loader_elf(
         elf_type: u16,
         soname: Option<&str>,
@@ -1173,7 +1220,6 @@ mod tests {
             let marker = directory.join("runtime.marker");
             let manifest = directory.join("reviewed.manifest");
 
-            std::fs::write(&cache, b"synthetic reviewed loader cache\n").unwrap();
             std::fs::write(
                 &loader,
                 loader_elf(header::ET_DYN, Some("ld-review.so"), &[], None),
@@ -1194,6 +1240,7 @@ mod tests {
                 loader_elf(header::ET_DYN, Some("libzzextra.so"), &[], None),
             )
             .unwrap();
+            std::fs::write(&cache, b"synthetic reviewed loader cache\n").unwrap();
             std::fs::write(
                 &executable,
                 loader_elf(
@@ -1311,6 +1358,16 @@ mod tests {
         }
         assert!(found, "manifest lacks line prefix {prefix:?}");
         result
+    }
+
+    fn bind_with_provider_bytes(
+        fixture: &Fixture,
+        provider: &[u8],
+    ) -> io::Result<LiteinstAfterLoaderConfig> {
+        std::fs::write(&fixture.provider, provider)?;
+        set_executable(&fixture.provider);
+        let manifest = fixture.canonical_manifest();
+        fixture.bind_reapproved(&manifest)
     }
 
     fn pt_interp_header(bytes: &[u8]) -> usize {
@@ -1566,6 +1623,62 @@ mod tests {
     fn schema3_requires_exact_cache_absent_system_preload_and_sealed_bundle_search() {
         let fixture = Fixture::new();
         let manifest = fixture.canonical_manifest();
+        let legacy = fixture
+            .bind_reapproved(&manifest)
+            .expect("legacy sealed-bundle policy no longer binds backward-compatibly");
+        assert_eq!(
+            legacy.loader_cache_aliases().count(),
+            0,
+            "legacy sealed-bundle policy unexpectedly admitted a real-file alias",
+        );
+        assert_eq!(
+            legacy.loader_policy().diagnostic(),
+            "loader_cache=sealed-exact system_preload=absent loader_search=sealed-bundle-only",
+        );
+        assert_eq!(
+            legacy
+                .diagnostics()
+                .observations()
+                .into_iter()
+                .find(|observation| observation.operation == "immutable reviewed bundle retained")
+                .unwrap()
+                .detail,
+            "artifact_count=7 loader_cache=sealed-exact system_preload=absent loader_search=sealed-bundle-only consumption=phase-2-unenforced",
+        );
+        assert!(
+            !ReviewedManifest::parse(manifest.as_bytes())
+                .unwrap()
+                .loader_policy
+                .admits_profiled_real_file_alias()
+        );
+        let profiled_without_alias =
+            manifest.replacen(LOADER_SEARCH_POLICY, PROFILED_REAL_ALIAS_SEARCH_POLICY, 1);
+        let profiled_policy = ReviewedManifest::parse(profiled_without_alias.as_bytes())
+            .unwrap()
+            .loader_policy;
+        assert!(
+            profiled_policy.admits_profiled_real_file_alias(),
+            "explicit profiled real-alias policy was not retained",
+        );
+        assert_eq!(
+            profiled_policy.diagnostic(),
+            "loader_cache=sealed-exact system_preload=absent loader_search=profiled-stable-real-file-alias",
+        );
+        let profiled_fixture = Fixture::new();
+        std::fs::write(&profiled_fixture.cache, synthetic_empty_glibc_cache()).unwrap();
+        let profiled_manifest = profiled_fixture.canonical_manifest().replacen(
+            LOADER_SEARCH_POLICY,
+            PROFILED_REAL_ALIAS_SEARCH_POLICY,
+            1,
+        );
+        assert_eq!(
+            profiled_fixture
+                .bind_reapproved(&profiled_manifest)
+                .unwrap_err()
+                .to_string(),
+            "loader cache aliases differ from the one exact reviewed libgcc profile",
+            "profiled policy did not reach the exact real-alias binding gate",
+        );
         let cache_line = manifest
             .lines()
             .find(|line| line.starts_with("loader_cache="))
@@ -1754,7 +1867,7 @@ mod tests {
         );
         let config = fixture.bind_reapproved(&manifest).unwrap();
         assert_eq!(
-            config.interpreter.path.as_os_str().as_bytes(),
+            config._interpreter.path.as_os_str().as_bytes(),
             interpreter.as_os_str().as_bytes()
         );
         assert!(require_exact_pt_interp(&executable, &interpreter).is_ok());
@@ -2050,6 +2163,236 @@ mod tests {
             assert_eq!(config.deferred_dependencies.len(), 1);
             assert_eq!(config.deferred_dependencies[0].path, fixture.extra);
         }
+    }
+
+    #[test]
+    fn reviewed_manifest_admits_only_exact_provider_interpreter_alias() {
+        let zero_interp = Fixture::new();
+        let zero_manifest = zero_interp.canonical_manifest();
+        zero_interp
+            .bind_reapproved(&zero_manifest)
+            .expect("provider without PT_INTERP remains supported");
+
+        let fixture = Fixture::new();
+        let alias_directory = fixture.directory.join("compat-alias");
+        std::os::unix::fs::symlink(fixture.interpreter.parent().unwrap(), &alias_directory)
+            .unwrap();
+        let alias = alias_directory.join("ld-review.so");
+        let provider = loader_elf(header::ET_DYN, Some("libc.so.6"), &[], Some(&alias));
+        let config = bind_with_provider_bytes(&fixture, &provider)
+            .expect("provider's clean symlink alias did not bind exact interpreter");
+        assert_eq!(config.provider.path, fixture.provider);
+
+        for label in [
+            "wrong target",
+            "missing target",
+            "relative target",
+            "repeated separator",
+            "dot component",
+            "parent component",
+            "trailing separator",
+        ] {
+            let candidate = Fixture::new();
+            let provider_interpreter = match label {
+                "wrong target" => candidate.extra.clone(),
+                "missing target" => candidate.directory.join("missing-ld.so"),
+                "relative target" => PathBuf::from("compat/ld-review.so"),
+                "repeated separator" => PathBuf::from(format!(
+                    "{}//compat/ld-review.so",
+                    candidate.directory.display()
+                )),
+                "dot component" => PathBuf::from(format!(
+                    "{}/compat/./ld-review.so",
+                    candidate.directory.display()
+                )),
+                "parent component" => PathBuf::from(format!(
+                    "{}/compat/../compat/ld-review.so",
+                    candidate.directory.display()
+                )),
+                "trailing separator" => PathBuf::from(format!(
+                    "{}/compat/ld-review.so/",
+                    candidate.directory.display()
+                )),
+                _ => unreachable!(),
+            };
+            let provider = loader_elf(
+                header::ET_DYN,
+                Some("libc.so.6"),
+                &[],
+                Some(provider_interpreter.as_path()),
+            );
+            assert!(
+                bind_with_provider_bytes(&candidate, &provider).is_err(),
+                "provider PT_INTERP accepted {label}"
+            );
+        }
+
+        let hard_link = Fixture::new();
+        let hard_link_alias = hard_link.directory.join("ld-review-hard-link.so");
+        std::fs::hard_link(&hard_link.interpreter, &hard_link_alias).unwrap();
+        let provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&hard_link_alias),
+        );
+        assert!(
+            bind_with_provider_bytes(&hard_link, &provider).is_err(),
+            "provider PT_INTERP accepted a hard link with a different canonical path"
+        );
+    }
+
+    #[test]
+    fn provider_interpreter_refuses_malformed_raced_and_dependency_cases() {
+        let fixture = Fixture::new();
+        let mut provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&fixture.interpreter),
+        );
+        set_pt_interp_payload(&mut provider, fixture.interpreter.as_os_str().as_bytes());
+        assert!(
+            bind_with_provider_bytes(&fixture, &provider).is_err(),
+            "provider PT_INTERP without a final NUL was accepted"
+        );
+
+        let fixture = Fixture::new();
+        let mut provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&fixture.interpreter),
+        );
+        let mut ignored_suffix = fixture.interpreter.as_os_str().as_bytes().to_vec();
+        ignored_suffix.extend_from_slice(b"\0ignored\0");
+        set_pt_interp_payload(&mut provider, &ignored_suffix);
+        assert!(
+            bind_with_provider_bytes(&fixture, &provider).is_err(),
+            "provider PT_INTERP with an embedded NUL and ignored suffix was accepted"
+        );
+
+        let fixture = Fixture::new();
+        let mut provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&fixture.interpreter),
+        );
+        let interpreter_header = pt_interp_header(&provider);
+        let program_header_offset =
+            usize::try_from(elf_u64(&provider, 32, "test phoff").unwrap()).unwrap();
+        let program_header_size = usize::from(elf_u16(&provider, 54, "test phentsize").unwrap());
+        let program_header_count = usize::from(elf_u16(&provider, 56, "test phnum").unwrap());
+        let duplicate_at = program_header_offset + program_header_count * program_header_size;
+        let duplicate =
+            provider[interpreter_header..interpreter_header + program_header_size].to_vec();
+        provider[duplicate_at..duplicate_at + program_header_size].copy_from_slice(&duplicate);
+        put16(
+            &mut provider,
+            56,
+            u16::try_from(program_header_count + 1).unwrap(),
+        );
+        assert!(
+            bind_with_provider_bytes(&fixture, &provider).is_err(),
+            "provider with multiple PT_INTERP segments was accepted"
+        );
+
+        let dependency = Fixture::new();
+        std::fs::write(
+            &dependency.unused,
+            loader_elf(
+                header::ET_DYN,
+                Some("libunused.so"),
+                &[],
+                Some(&dependency.interpreter),
+            ),
+        )
+        .unwrap();
+        set_executable(&dependency.unused);
+        let manifest = dependency.canonical_manifest();
+        assert!(
+            dependency.bind_reapproved(&manifest).is_err(),
+            "ordinary dependency inherited the provider PT_INTERP allowance"
+        );
+        let direct = LiteinstAfterLoaderConfig::new(LiteinstAfterLoaderInputs {
+            executable: LiteinstCallerImage::read(&dependency.executable).unwrap(),
+            interpreter: LiteinstCallerImage::read(&dependency.interpreter).unwrap(),
+            provider: LiteinstCallerImage::read(&dependency.provider).unwrap(),
+            runtime: LiteinstCallerImage::read_runtime(&dependency.runtime, &dependency.marker)
+                .unwrap(),
+            loader_cache: LiteinstLoaderCache::read(&dependency.cache).unwrap(),
+            dependencies: vec![LiteinstCallerImage::read(&dependency.unused).unwrap()],
+            loader_policy: LiteinstLoaderPolicy::exact_cache_and_absent_preload(
+                dependency.cache.clone(),
+                dependency.preload.clone(),
+            ),
+            environment: BTreeMap::from([
+                (
+                    OsString::from("LITEINST_CALLER_SENTINEL"),
+                    OsString::from("preserved"),
+                ),
+                (
+                    OsString::from("PATH"),
+                    OsString::from("/definitely/unusable/tool/path"),
+                ),
+            ]),
+        });
+        assert!(
+            direct.is_err(),
+            "direct config construction inherited the provider PT_INTERP allowance"
+        );
+
+        let raced = Fixture::new();
+        let retained_interpreter = LiteinstCallerImage::read(&raced.interpreter).unwrap();
+        let provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&raced.interpreter),
+        );
+        std::fs::write(&raced.provider, &provider).unwrap();
+        set_executable(&raced.provider);
+        let provider = LiteinstCallerImage::read(&raced.provider).unwrap();
+        let contract = loader_image_contract(&provider, header::ET_DYN).unwrap();
+        let replacement = raced.directory.join("replacement-ld.so");
+        std::fs::rename(&raced.interpreter, &replacement).unwrap();
+        std::fs::copy(&replacement, &raced.interpreter).unwrap();
+        set_executable(&raced.interpreter);
+        assert!(
+            validate_provider_interpreter_contract(&contract, &retained_interpreter).is_err(),
+            "provider PT_INTERP accepted a replaced interpreter identity"
+        );
+
+        let fifo = Fixture::new();
+        let retained_interpreter = LiteinstCallerImage::read(&fifo.interpreter).unwrap();
+        let original_interpreter = fifo.directory.join("original-interpreter.so");
+        std::fs::rename(&fifo.interpreter, original_interpreter).unwrap();
+        let fifo_c_path = std::ffi::CString::new(fifo.interpreter.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `fifo_c_path` is a live, NUL-terminated pathname and the
+        // fixed mode argument has no pointer or lifetime requirements.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c_path.as_ptr(), 0o600) }, 0);
+        let provider = loader_elf(
+            header::ET_DYN,
+            Some("libc.so.6"),
+            &[],
+            Some(&fifo.interpreter),
+        );
+        std::fs::write(&fifo.provider, provider).unwrap();
+        set_executable(&fifo.provider);
+        let provider = LiteinstCallerImage::read(&fifo.provider).unwrap();
+        let contract = loader_image_contract(&provider, header::ET_DYN).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(validate_provider_interpreter_contract(
+                &contract,
+                &retained_interpreter,
+            ));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("provider PT_INTERP validation blocked while opening a FIFO");
+        assert!(result.is_err(), "provider PT_INTERP accepted a FIFO");
     }
 
     #[test]

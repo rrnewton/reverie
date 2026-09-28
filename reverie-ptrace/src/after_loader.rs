@@ -1,6 +1,7 @@
 //! Inputs and retained diagnostics for the experimental one-task host caller.
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::Read;
 use std::io::Seek;
@@ -11,6 +12,7 @@ use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,18 +44,42 @@ pub(crate) const IMMUTABLE_FILE_SEALS: i32 =
     libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 pub(crate) const RUNTIME_SEALS: i32 = IMMUTABLE_FILE_SEALS;
 
+const GLIBC_CACHE_MAGIC: &[u8; 20] = b"glibc-ld.so.cache1.1";
+const GLIBC_CACHE_HEADER_SIZE: usize = 48;
+const GLIBC_CACHE_ENTRY_SIZE: usize = 24;
+const GLIBC_CACHE_LITTLE_ENDIAN: u8 = 2;
+const GLIBC_CACHE_ENTRY_FLAGS_X86_64: u32 = 0x303;
+const MAX_GLIBC_CACHE_ENTRIES: usize = 16_384;
+const MAX_GLIBC_CACHE_STRING: usize = 4095;
+const GLIBC_CACHE_EXTENSION_HEADER_SIZE: usize = 8;
+const GLIBC_CACHE_EXTENSION_MAGIC: u32 = 0xeaa4_2174;
+const GLIBC_CACHE_EXTENSION_SECTION_SIZE: usize = 16;
+const MAX_GLIBC_CACHE_EXTENSION_SECTIONS: usize = 2;
+const PROFILED_LOADER_CACHE_ALIAS_SONAME: &str = "libgcc_s.so.1";
+const PROFILED_LOADER_CACHE_ALIAS_RAW_PATH: &str = "/lib64/libgcc_s.so.1";
+const PROFILED_LOADER_CACHE_ALIAS_DEPENDENCY_PATH: &str = "/usr/lib64/libgcc_s-11-20240719.so.1";
+
 /// Exact loader-input policy declared by a schema-3 manifest.
 ///
 /// The paths are profile data, not conventional glibc names: patched loaders
 /// may probe different cache and preload paths. The eventual launch path must
 /// expose the bundle's exact sealed cache at `loader_cache_path`, make
-/// `system_preload_path` absent (not merely empty or unreadable), and resolve
-/// every requested image exclusively to its immutable bundle artifact. Phase 1
-/// retains this contract; it does not claim to enforce consumption.
+/// `system_preload_path` absent (not merely empty or unreadable), and retain
+/// immutable evidence for every requested image. Only the explicit
+/// `ProfiledStableRealFileAlias` variant retains the reviewed deferred libgcc
+/// cache alias as an authenticated real file so its kernel mapping pathname
+/// retains native glibc semantics; `SealedBundleOnly` admits no such alias.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LiteinstLoaderPolicy {
     loader_cache_path: PathBuf,
     system_preload_path: PathBuf,
+    loader_search: LiteinstLoaderSearchPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LiteinstLoaderSearchPolicy {
+    SealedBundleOnly,
+    ProfiledStableRealFileAlias,
 }
 
 impl LiteinstLoaderPolicy {
@@ -64,6 +90,18 @@ impl LiteinstLoaderPolicy {
         Self {
             loader_cache_path,
             system_preload_path,
+            loader_search: LiteinstLoaderSearchPolicy::SealedBundleOnly,
+        }
+    }
+
+    pub(crate) fn exact_cache_absent_preload_and_profiled_real_alias(
+        loader_cache_path: PathBuf,
+        system_preload_path: PathBuf,
+    ) -> Self {
+        Self {
+            loader_cache_path,
+            system_preload_path,
+            loader_search: LiteinstLoaderSearchPolicy::ProfiledStableRealFileAlias,
         }
     }
 
@@ -76,9 +114,22 @@ impl LiteinstLoaderPolicy {
     }
 
     fn diagnostic(&self) -> &'static str {
-        "loader_cache=exact system_preload=absent loader_search=sealed-bundle-only"
+        match self.loader_search {
+            LiteinstLoaderSearchPolicy::SealedBundleOnly => {
+                "loader_cache=sealed-exact system_preload=absent loader_search=sealed-bundle-only"
+            }
+            LiteinstLoaderSearchPolicy::ProfiledStableRealFileAlias => {
+                "loader_cache=sealed-exact system_preload=absent loader_search=profiled-stable-real-file-alias"
+            }
+        }
+    }
+
+    fn admits_profiled_real_file_alias(&self) -> bool {
+        self.loader_search == LiteinstLoaderSearchPolicy::ProfiledStableRealFileAlias
     }
 }
+
+pub(crate) type StableFileStamp = (u64, u64, u64, i64, i64, i64, i64);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FileIdentity {
@@ -126,6 +177,576 @@ impl LiteinstLoaderCache {
             file_identity: FileIdentity::from_metadata(&before),
         })
     }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn file_identity(&self) -> FileIdentity {
+        self.file_identity
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GlibcLoaderCacheEntry<'a> {
+    flags: u32,
+    key: &'a [u8],
+    value: &'a [u8],
+    osversion: u32,
+    hwcap: u64,
+}
+
+fn glibc_cache_u32(bytes: &[u8], offset: usize, label: &str) -> io::Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| io::Error::other(format!("glibc loader cache {label} offset overflow")))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| io::Error::other(format!("glibc loader cache {label} is truncated")))?;
+    Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn glibc_cache_u64(bytes: &[u8], offset: usize, label: &str) -> io::Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| io::Error::other(format!("glibc loader cache {label} offset overflow")))?;
+    let value = bytes
+        .get(offset..end)
+        .ok_or_else(|| io::Error::other(format!("glibc loader cache {label} is truncated")))?;
+    Ok(u64::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn glibc_cache_string<'a>(
+    bytes: &'a [u8],
+    offset: u32,
+    string_table: (usize, usize),
+    label: &str,
+) -> io::Result<&'a [u8]> {
+    let offset = usize::try_from(offset).map_err(|_| {
+        io::Error::other(format!("glibc loader cache {label} is not representable"))
+    })?;
+    if offset < string_table.0 || offset >= string_table.1 {
+        return Err(io::Error::other(format!(
+            "glibc loader cache {label} is outside the declared string table"
+        )));
+    }
+    let tail = bytes
+        .get(offset..string_table.1)
+        .ok_or_else(|| io::Error::other(format!("glibc loader cache {label} range differs")))?;
+    let search_length = tail.len().min(MAX_GLIBC_CACHE_STRING + 1);
+    let length = tail[..search_length]
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "glibc loader cache {label} lacks a bounded NUL inside the declared string table"
+            ))
+        })?;
+    let value = &tail[..length];
+    if value.is_empty() || value.len() > MAX_GLIBC_CACHE_STRING {
+        return Err(io::Error::other(format!(
+            "glibc loader cache {label} is empty or exceeds its bound"
+        )));
+    }
+    Ok(value)
+}
+
+fn glibc_cache_alias_path(bytes: &[u8]) -> io::Result<PathBuf> {
+    if bytes.len() > MAX_GLIBC_CACHE_STRING
+        || bytes.first() != Some(&b'/')
+        || bytes.last() == Some(&b'/')
+        || bytes.iter().any(|byte| byte.is_ascii_control())
+        || bytes.windows(2).any(|pair| pair == b"//")
+        || bytes
+            .split(|byte| *byte == b'/')
+            .any(|component| component == b"." || component == b"..")
+    {
+        return Err(io::Error::other(
+            "glibc loader cache value is not one bounded absolute Unix path",
+        ));
+    }
+    Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+}
+
+fn validate_glibc_cache_extension(bytes: &[u8], extension_offset: usize) -> io::Result<()> {
+    if glibc_cache_u32(bytes, extension_offset, "extension magic")? != GLIBC_CACHE_EXTENSION_MAGIC {
+        return Err(io::Error::other(
+            "glibc loader cache extension magic differs",
+        ));
+    }
+    let section_count = usize::try_from(glibc_cache_u32(
+        bytes,
+        extension_offset + 4,
+        "extension section count",
+    )?)
+    .map_err(|_| io::Error::other("glibc loader cache extension count is not representable"))?;
+    if section_count == 0 || section_count > MAX_GLIBC_CACHE_EXTENSION_SECTIONS {
+        return Err(io::Error::other(
+            "glibc loader cache extension count is outside its bound",
+        ));
+    }
+    let section_bytes = section_count
+        .checked_mul(GLIBC_CACHE_EXTENSION_SECTION_SIZE)
+        .ok_or_else(|| io::Error::other("glibc loader cache extension table size overflow"))?;
+    let section_table = extension_offset
+        .checked_add(GLIBC_CACHE_EXTENSION_HEADER_SIZE)
+        .ok_or_else(|| io::Error::other("glibc loader cache extension table offset overflow"))?;
+    let section_table_end = section_table
+        .checked_add(section_bytes)
+        .ok_or_else(|| io::Error::other("glibc loader cache extension table range overflow"))?;
+    if section_table_end > bytes.len() {
+        return Err(io::Error::other(
+            "glibc loader cache extension table is truncated",
+        ));
+    }
+
+    let mut tags = BTreeSet::new();
+    let mut ranges = Vec::with_capacity(section_count);
+    for index in 0..section_count {
+        let at = section_table
+            .checked_add(
+                index
+                    .checked_mul(GLIBC_CACHE_EXTENSION_SECTION_SIZE)
+                    .ok_or_else(|| {
+                        io::Error::other("glibc loader cache extension section index overflow")
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::other("glibc loader cache extension section offset overflow")
+            })?;
+        let tag = glibc_cache_u32(bytes, at, "extension section tag")?;
+        let flags = glibc_cache_u32(bytes, at + 4, "extension section flags")?;
+        if tag >= MAX_GLIBC_CACHE_EXTENSION_SECTIONS as u32 || flags != 0 || !tags.insert(tag) {
+            return Err(io::Error::other(
+                "glibc loader cache extension section metadata differs",
+            ));
+        }
+        let start = usize::try_from(glibc_cache_u32(bytes, at + 8, "extension section offset")?)
+            .map_err(|_| {
+                io::Error::other("glibc loader cache extension section offset is not representable")
+            })?;
+        let length = usize::try_from(glibc_cache_u32(bytes, at + 12, "extension section size")?)
+            .map_err(|_| {
+                io::Error::other("glibc loader cache extension section size is not representable")
+            })?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("glibc loader cache extension section overflow"))?;
+        if length == 0 || start < section_table_end || end > bytes.len() {
+            return Err(io::Error::other(
+                "glibc loader cache extension section range differs",
+            ));
+        }
+        ranges.push((start, end));
+    }
+    ranges.sort_unstable();
+    let mut cursor = section_table_end;
+    for (start, end) in ranges {
+        if start < cursor || bytes[cursor..start].iter().any(|byte| *byte != 0) {
+            return Err(io::Error::other(
+                "glibc loader cache extension sections overlap or have nonzero padding",
+            ));
+        }
+        cursor = end;
+    }
+    if cursor != bytes.len() {
+        return Err(io::Error::other(
+            "glibc loader cache extension has undeclared trailing bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_glibc_loader_cache(bytes: &[u8]) -> io::Result<Vec<GlibcLoaderCacheEntry<'_>>> {
+    if bytes.len() > MAX_LOADER_CACHE_FILE {
+        return Err(io::Error::other(
+            "glibc loader cache exceeds its byte bound",
+        ));
+    }
+    if bytes.len() < GLIBC_CACHE_HEADER_SIZE
+        || bytes.get(..GLIBC_CACHE_MAGIC.len()) != Some(GLIBC_CACHE_MAGIC)
+    {
+        return Err(io::Error::other(
+            "loader cache is not exact glibc new-format 1.1",
+        ));
+    }
+    if bytes[28] != GLIBC_CACHE_LITTLE_ENDIAN || bytes[29..32] != [0; 3] || bytes[36..48] != [0; 12]
+    {
+        return Err(io::Error::other(
+            "glibc loader cache header is not fixed little-endian",
+        ));
+    }
+
+    let entry_count = usize::try_from(glibc_cache_u32(bytes, 20, "entry count")?)
+        .map_err(|_| io::Error::other("glibc loader cache entry count is not representable"))?;
+    if entry_count > MAX_GLIBC_CACHE_ENTRIES {
+        return Err(io::Error::other(
+            "glibc loader cache entry count exceeds its bound",
+        ));
+    }
+    let entry_bytes = entry_count
+        .checked_mul(GLIBC_CACHE_ENTRY_SIZE)
+        .ok_or_else(|| io::Error::other("glibc loader cache entry table size overflow"))?;
+    let string_start = GLIBC_CACHE_HEADER_SIZE
+        .checked_add(entry_bytes)
+        .ok_or_else(|| io::Error::other("glibc loader cache entry table range overflow"))?;
+    let string_length = usize::try_from(glibc_cache_u32(bytes, 24, "string-table length")?)
+        .map_err(|_| io::Error::other("glibc loader cache string length is not representable"))?;
+    let string_end = string_start
+        .checked_add(string_length)
+        .ok_or_else(|| io::Error::other("glibc loader cache string table range overflow"))?;
+    if string_end > bytes.len() {
+        return Err(io::Error::other(
+            "glibc loader cache declared string table is truncated",
+        ));
+    }
+
+    let extension_offset = usize::try_from(glibc_cache_u32(bytes, 32, "extension offset")?)
+        .map_err(|_| {
+            io::Error::other("glibc loader cache extension offset is not representable")
+        })?;
+    if extension_offset == 0 {
+        if string_end != bytes.len() {
+            return Err(io::Error::other(
+                "glibc loader cache has undeclared trailing bytes",
+            ));
+        }
+    } else {
+        // New-format caches may carry a digest-bound extension after their
+        // declared string table. Alias authority never comes from that opaque
+        // extension: every admitted target has one unique ordinary entry and
+        // that entry must carry an exact zero hwcap selector below.
+        let extension_header_end = extension_offset
+            .checked_add(GLIBC_CACHE_EXTENSION_HEADER_SIZE)
+            .ok_or_else(|| io::Error::other("glibc loader cache extension range overflow"))?;
+        if extension_offset < string_end
+            || extension_offset % 4 != 0
+            || extension_header_end > bytes.len()
+            || bytes[string_end..extension_offset]
+                .iter()
+                .any(|byte| *byte != 0)
+        {
+            return Err(io::Error::other(
+                "glibc loader cache extension boundary is not exact",
+            ));
+        }
+        validate_glibc_cache_extension(bytes, extension_offset)?;
+    }
+
+    let mut entries = Vec::with_capacity(entry_count);
+    for index in 0..entry_count {
+        let offset = GLIBC_CACHE_HEADER_SIZE
+            .checked_add(
+                index
+                    .checked_mul(GLIBC_CACHE_ENTRY_SIZE)
+                    .ok_or_else(|| io::Error::other("glibc loader cache entry index overflow"))?,
+            )
+            .ok_or_else(|| io::Error::other("glibc loader cache entry offset overflow"))?;
+        let key = glibc_cache_string(
+            bytes,
+            glibc_cache_u32(bytes, offset + 4, "key offset")?,
+            (string_start, string_end),
+            "key",
+        )?;
+        let key = std::str::from_utf8(key)
+            .ok()
+            .filter(|key| valid_loader_name(key))
+            .ok_or_else(|| io::Error::other("glibc loader cache key is not an exact SONAME"))?;
+        let value = glibc_cache_string(
+            bytes,
+            glibc_cache_u32(bytes, offset + 8, "value offset")?,
+            (string_start, string_end),
+            "value",
+        )?;
+        glibc_cache_alias_path(value)?;
+        entries.push(GlibcLoaderCacheEntry {
+            flags: glibc_cache_u32(bytes, offset, "entry flags")?,
+            key: key.as_bytes(),
+            value,
+            osversion: glibc_cache_u32(bytes, offset + 12, "entry OS version")?,
+            hwcap: glibc_cache_u64(bytes, offset + 16, "entry hwcap")?,
+        });
+    }
+    Ok(entries)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LiteinstLoaderCacheAlias {
+    soname: String,
+    raw_path: PathBuf,
+    raw_link: PathBuf,
+    raw_link_stamp: StableFileStamp,
+    dependency_stamp: StableFileStamp,
+    dependency: LiteinstCallerImage,
+}
+
+impl LiteinstLoaderCacheAlias {
+    pub(crate) fn soname(&self) -> &str {
+        &self.soname
+    }
+
+    pub(crate) fn raw_path(&self) -> &Path {
+        &self.raw_path
+    }
+
+    pub(crate) fn raw_link(&self) -> &Path {
+        &self.raw_link
+    }
+
+    pub(crate) fn raw_link_stamp(&self) -> StableFileStamp {
+        self.raw_link_stamp
+    }
+
+    pub(crate) fn dependency_stamp(&self) -> StableFileStamp {
+        self.dependency_stamp
+    }
+
+    pub(crate) fn dependency(&self) -> &LiteinstCallerImage {
+        &self.dependency
+    }
+
+    pub(crate) fn revalidate(&self) -> io::Result<()> {
+        let observed =
+            observe_glibc_loader_cache_alias(&self.raw_path, &self.dependency, &self.soname)?;
+        if observed.raw_link != self.raw_link
+            || observed.raw_link_stamp != self.raw_link_stamp
+            || observed.dependency_stamp != self.dependency_stamp
+        {
+            return Err(io::Error::other(format!(
+                "loader cache alias symlink or dependency stable stamp changed for {}",
+                self.soname
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoaderCacheAliasEvidence {
+    raw_link: PathBuf,
+    raw_link_stamp: StableFileStamp,
+    dependency_stamp: StableFileStamp,
+}
+
+#[cfg(test)]
+fn bind_glibc_loader_cache_alias_targets(
+    cache: &LiteinstLoaderCache,
+    targets: &[(String, LiteinstCallerImage)],
+) -> io::Result<BTreeMap<PathBuf, LiteinstLoaderCacheAlias>> {
+    bind_glibc_loader_cache_alias_targets_with_profile(cache, targets, false)
+}
+
+fn bind_glibc_loader_cache_alias_targets_with_profile(
+    cache: &LiteinstLoaderCache,
+    targets: &[(String, LiteinstCallerImage)],
+    require_exact_profile: bool,
+) -> io::Result<BTreeMap<PathBuf, LiteinstLoaderCacheAlias>> {
+    if require_exact_profile && !loader_cache_alias_target_profile_is_exact(targets) {
+        return Err(io::Error::other(
+            "loader cache targets differ from the zero-or-one reviewed libgcc profile",
+        ));
+    }
+    let entries = parse_glibc_loader_cache(&cache.bytes)?;
+    let mut target_names = BTreeSet::new();
+    let mut aliases = BTreeMap::new();
+    for (soname, dependency) in targets {
+        if !valid_loader_name(soname) || !target_names.insert(soname.as_str()) {
+            return Err(io::Error::other(
+                "deferred loader cache target SONAME is invalid or duplicated",
+            ));
+        }
+        let mut matching = entries
+            .iter()
+            .filter(|entry| entry.key == soname.as_bytes());
+        let entry = matching.next().ok_or_else(|| {
+            io::Error::other(format!(
+                "loader cache lacks exact deferred dependency {soname}"
+            ))
+        })?;
+        if matching.next().is_some() {
+            return Err(io::Error::other(format!(
+                "loader cache has duplicate or alternative entries for {soname}"
+            )));
+        }
+        if entries
+            .iter()
+            .filter(|candidate| candidate.value == entry.value)
+            .count()
+            != 1
+        {
+            return Err(io::Error::other(format!(
+                "loader cache raw alias is shared by another SONAME for {soname}"
+            )));
+        }
+        if entry.flags != GLIBC_CACHE_ENTRY_FLAGS_X86_64 || entry.osversion != 0 || entry.hwcap != 0
+        {
+            return Err(io::Error::other(format!(
+                "loader cache metadata differs for deferred dependency {soname}"
+            )));
+        }
+        let raw_path = glibc_cache_alias_path(entry.value)?;
+        if require_exact_profile && raw_path != Path::new(PROFILED_LOADER_CACHE_ALIAS_RAW_PATH) {
+            return Err(io::Error::other(
+                "loader cache raw alias differs from the reviewed libgcc profile",
+            ));
+        }
+        let evidence = observe_glibc_loader_cache_alias(&raw_path, dependency, soname)?;
+        let alias = LiteinstLoaderCacheAlias {
+            soname: soname.clone(),
+            raw_path: raw_path.clone(),
+            raw_link: evidence.raw_link,
+            raw_link_stamp: evidence.raw_link_stamp,
+            dependency_stamp: evidence.dependency_stamp,
+            dependency: dependency.clone(),
+        };
+        alias.revalidate()?;
+        if aliases.insert(raw_path, alias).is_some() {
+            return Err(io::Error::other(
+                "loader cache reuses one raw alias for multiple deferred dependencies",
+            ));
+        }
+    }
+    Ok(aliases)
+}
+
+fn observe_glibc_loader_cache_alias(
+    raw_path: &Path,
+    dependency: &LiteinstCallerImage,
+    soname: &str,
+) -> io::Result<LoaderCacheAliasEvidence> {
+    let raw_link_before = std::fs::read_link(raw_path)?;
+    let raw_metadata_before = std::fs::symlink_metadata(raw_path)?;
+    if !raw_metadata_before.file_type().is_symlink() {
+        return Err(io::Error::other(format!(
+            "loader cache alias is not a symlink for {soname}"
+        )));
+    }
+    let canonical_before = raw_path.canonicalize()?;
+    if canonical_before != dependency.path {
+        return Err(io::Error::other(format!(
+            "loader cache alias canonical path differs for {soname}"
+        )));
+    }
+
+    // O_PATH obtains only a path reference, so a cache-selected FIFO or device
+    // cannot block or perform ordinary open side effects before fstat proves
+    // that the object reached through the raw alias is the exact bound regular
+    // file. Opening the raw alias, rather than its earlier canonical spelling,
+    // pins the resolution that is actually being authorized.
+    let pinned = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(raw_path)?;
+    let before = pinned.metadata()?;
+    let dependency_before = std::fs::metadata(&dependency.path)?;
+    if !before.is_file()
+        || before.len() != dependency.bytes.len() as u64
+        || FileIdentity::from_metadata(&before) != dependency.file_identity
+        || file_stamp(&before) != file_stamp(&dependency_before)
+    {
+        return Err(io::Error::other(format!(
+            "loader cache alias file identity differs for {soname}"
+        )));
+    }
+
+    let proc_path = format!("/proc/self/fd/{}", pinned.as_raw_fd());
+    let mut file = std::fs::File::open(proc_path)?;
+    let opened = file.metadata()?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(
+            (dependency.bytes.len() as u64)
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("loader cache alias byte bound overflow"))?,
+        )
+        .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    let pinned_after = pinned.metadata()?;
+    let alias_after = std::fs::metadata(raw_path)?;
+    let dependency_after = std::fs::metadata(&dependency.path)?;
+    let raw_metadata_after = std::fs::symlink_metadata(raw_path)?;
+    let raw_link_after = std::fs::read_link(raw_path)?;
+    let canonical_after = raw_path.canonicalize()?;
+    if bytes.as_slice() != dependency.bytes.as_ref()
+        || canonical_after != dependency.path
+        || raw_link_after != raw_link_before
+        || file_stamp(&raw_metadata_after) != file_stamp(&raw_metadata_before)
+        || file_stamp(&before) != file_stamp(&opened)
+        || file_stamp(&before) != file_stamp(&after)
+        || file_stamp(&before) != file_stamp(&pinned_after)
+        || file_stamp(&before) != file_stamp(&alias_after)
+        || file_stamp(&before) != file_stamp(&dependency_after)
+    {
+        return Err(io::Error::other(format!(
+            "loader cache alias complete bytes or stable identity differ for {soname}"
+        )));
+    }
+    Ok(LoaderCacheAliasEvidence {
+        raw_link: raw_link_before,
+        raw_link_stamp: file_stamp(&raw_metadata_before),
+        dependency_stamp: file_stamp(&dependency_before),
+    })
+}
+
+fn bind_glibc_loader_cache_aliases(
+    cache: &LiteinstLoaderCache,
+    deferred_dependencies: &[LiteinstCallerImage],
+    require_exact_profile: bool,
+) -> io::Result<BTreeMap<PathBuf, LiteinstLoaderCacheAlias>> {
+    if !require_exact_profile {
+        return Ok(BTreeMap::new());
+    }
+    let targets = deferred_dependencies
+        .iter()
+        .map(|dependency| {
+            dependency
+                .dynamic_soname()
+                .map(|soname| (soname, dependency.clone()))
+                .ok_or_else(|| io::Error::other("deferred loader cache target lacks DT_SONAME"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let aliases =
+        bind_glibc_loader_cache_alias_targets_with_profile(cache, &targets, require_exact_profile)?;
+    if require_exact_profile
+        && (aliases.len() != 1 || !loader_cache_alias_profile_is_exact(&aliases))
+    {
+        return Err(io::Error::other(
+            "loader cache aliases differ from the one exact reviewed libgcc profile",
+        ));
+    }
+    Ok(aliases)
+}
+
+fn loader_cache_alias_target_profile_is_exact(targets: &[(String, LiteinstCallerImage)]) -> bool {
+    match targets {
+        [] => true,
+        [(soname, dependency)] => {
+            soname == PROFILED_LOADER_CACHE_ALIAS_SONAME
+                && dependency.path.as_path()
+                    == Path::new(PROFILED_LOADER_CACHE_ALIAS_DEPENDENCY_PATH)
+        }
+        _ => false,
+    }
+}
+
+fn loader_cache_alias_profile_is_exact(
+    aliases: &BTreeMap<PathBuf, LiteinstLoaderCacheAlias>,
+) -> bool {
+    match aliases.len() {
+        0 => true,
+        1 => aliases.first_key_value().is_some_and(|(raw_path, alias)| {
+            raw_path == Path::new(PROFILED_LOADER_CACHE_ALIAS_RAW_PATH)
+                && alias.soname() == PROFILED_LOADER_CACHE_ALIAS_SONAME
+                && alias.raw_path() == raw_path
+                && alias.dependency().path.as_path()
+                    == Path::new(PROFILED_LOADER_CACHE_ALIAS_DEPENDENCY_PATH)
+        }),
+        _ => false,
+    }
 }
 
 /// Exact role of one immutable schema-3 input.
@@ -152,8 +773,8 @@ pub(crate) struct ImmutableAfterLoaderArtifact {
     source_identity: FileIdentity,
     sealed_source: PathBuf,
     sealed_identity: FileIdentity,
-    sha256: [u8; 32],
-    bytes: Arc<[u8]>,
+    _sha256: [u8; 32],
+    _bytes: Arc<[u8]>,
     file: Arc<std::fs::File>,
 }
 
@@ -227,12 +848,13 @@ impl ImmutableAfterLoaderArtifact {
             source_identity,
             sealed_source,
             sealed_identity,
-            sha256: expected_digest,
-            bytes,
+            _sha256: expected_digest,
+            _bytes: bytes,
             file: Arc::new(file),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn role(&self) -> &ImmutableAfterLoaderRole {
         &self.role
     }
@@ -249,20 +871,26 @@ impl ImmutableAfterLoaderArtifact {
         &self.sealed_source
     }
 
+    #[cfg(test)]
     pub(crate) fn raw_fd(&self) -> i32 {
         self.file.as_raw_fd()
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self._bytes
     }
 
     pub(crate) fn sealed_identity(&self) -> FileIdentity {
         self.sealed_identity
     }
 
+    pub(crate) fn seals(&self) -> i32 {
+        IMMUTABLE_FILE_SEALS
+    }
+
+    #[cfg(test)]
     pub(crate) fn sha256(&self) -> [u8; 32] {
-        self.sha256
+        self._sha256
     }
 }
 
@@ -292,6 +920,7 @@ impl ImmutableAfterLoaderBundle {
         Ok(Arc::new(Self { artifacts: by_role }))
     }
 
+    #[cfg(test)]
     pub(crate) fn artifact(
         &self,
         role: &ImmutableAfterLoaderRole,
@@ -1019,12 +1648,14 @@ impl LiteinstCallerDiagnostics {
 #[derive(Clone, Debug)]
 pub struct LiteinstAfterLoaderConfig {
     pub(crate) executable: LiteinstCallerImage,
-    pub(crate) interpreter: LiteinstCallerImage,
+    pub(crate) _interpreter: LiteinstCallerImage,
     pub(crate) provider: LiteinstCallerImage,
     pub(crate) runtime: LiteinstCallerImage,
     pub(crate) sealed_runtime: Arc<SealedRuntime>,
-    pub(crate) immutable_bundle: Arc<ImmutableAfterLoaderBundle>,
-    loader_policy: LiteinstLoaderPolicy,
+    pub(crate) _immutable_bundle: Arc<ImmutableAfterLoaderBundle>,
+    _loader_policy: LiteinstLoaderPolicy,
+    loader_cache: LiteinstLoaderCache,
+    loader_cache_aliases: BTreeMap<PathBuf, LiteinstLoaderCacheAlias>,
     pub(crate) dependencies: Vec<LiteinstCallerImage>,
     /// Members of `dependencies` that must already be mapped at executable
     /// entry. This is the exact DT_NEEDED/PT_INTERP closure of `executable`,
@@ -1127,6 +1758,11 @@ impl LiteinstAfterLoaderConfig {
             &runtime,
             &dependencies,
         )?;
+        let loader_cache_aliases = bind_glibc_loader_cache_aliases(
+            &loader_cache,
+            &deferred_dependencies,
+            loader_policy.admits_profiled_real_file_alias(),
+        )?;
         let immutable_bundle = prepare_immutable_bundle(ImmutableBundleInputs {
             loader_cache: &loader_cache,
             executable: &executable,
@@ -1182,12 +1818,14 @@ impl LiteinstAfterLoaderConfig {
         )?;
         Ok(Self {
             executable,
-            interpreter,
+            _interpreter: interpreter,
             provider,
             runtime,
             sealed_runtime,
-            immutable_bundle,
-            loader_policy,
+            _immutable_bundle: immutable_bundle,
+            _loader_policy: loader_policy,
+            loader_cache,
+            loader_cache_aliases,
             dependencies,
             initial_dependencies,
             deferred_dependencies,
@@ -1222,12 +1860,44 @@ impl LiteinstAfterLoaderConfig {
             .path
     }
 
-    pub(crate) fn immutable_bundle(&self) -> &Arc<ImmutableAfterLoaderBundle> {
-        &self.immutable_bundle
+    pub(crate) fn loader_cache(&self) -> &LiteinstLoaderCache {
+        &self.loader_cache
     }
 
+    pub(crate) fn loader_cache_alias_for_path(
+        &self,
+        raw_path: &[u8],
+    ) -> Option<&LiteinstLoaderCacheAlias> {
+        self._loader_policy
+            .admits_profiled_real_file_alias()
+            .then(|| {
+                self.loader_cache_aliases
+                    .get(Path::new(OsStr::from_bytes(raw_path)))
+            })
+            .flatten()
+    }
+
+    pub(crate) fn loader_cache_aliases(&self) -> impl Iterator<Item = &LiteinstLoaderCacheAlias> {
+        self.loader_cache_aliases
+            .values()
+            .filter(|_| self._loader_policy.admits_profiled_real_file_alias())
+    }
+
+    pub(crate) fn immutable_loader_cache(&self) -> &ImmutableAfterLoaderArtifact {
+        self._immutable_bundle
+            .artifacts
+            .get(&ImmutableAfterLoaderRole::LoaderCache)
+            .expect("bound after-loader bundle always retains its loader cache")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn immutable_bundle(&self) -> &Arc<ImmutableAfterLoaderBundle> {
+        &self._immutable_bundle
+    }
+
+    #[cfg(test)]
     pub(crate) fn loader_policy(&self) -> &LiteinstLoaderPolicy {
-        &self.loader_policy
+        &self._loader_policy
     }
 }
 
@@ -1402,6 +2072,61 @@ fn loader_image_contract(
     })
 }
 
+/// Admit an interpreter declaration on the provider only when it is an inert,
+/// lexically clean alias for the exact explicit interpreter already bound by
+/// the manifest. Linux consults `PT_INTERP` for the main executable; it ignores
+/// this segment when libc is mapped as a `DT_NEEDED` provider. Some modern
+/// glibc builds nevertheless retain the segment so libc can be executed
+/// directly. Every other loader dependency remains forbidden from carrying it.
+fn validate_provider_interpreter_contract(
+    provider: &LoaderImageContract,
+    interpreter: &LiteinstCallerImage,
+) -> io::Result<()> {
+    let Some(path) = provider.interpreter.as_ref() else {
+        return Ok(());
+    };
+    let raw = path.as_os_str().as_bytes();
+    if raw.len() < 2
+        || raw.first() != Some(&b'/')
+        || raw.last() == Some(&b'/')
+        || raw.windows(2).any(|window| window == b"//")
+        || raw
+            .split(|byte| *byte == b'/')
+            .any(|component| component == b"." || component == b"..")
+    {
+        return Err(io::Error::other(
+            "bound provider PT_INTERP path is not lexically canonical",
+        ));
+    }
+
+    let canonical_before = path.canonicalize()?;
+    if canonical_before.as_os_str().as_bytes() != interpreter.path.as_os_str().as_bytes() {
+        return Err(io::Error::other(
+            "bound provider PT_INTERP does not resolve to the exact interpreter role",
+        ));
+    }
+    // `O_PATH` follows the named alias and gives us an fstat-capable identity
+    // handle without consuming a FIFO or invoking a device's ordinary open
+    // behavior if the path is swapped between the two canonicalization probes.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(path)?;
+    let opened = file.metadata()?;
+    let canonical_after = path.canonicalize()?;
+    let expected_now = std::fs::metadata(&interpreter.path)?;
+    if !opened.is_file()
+        || canonical_after.as_os_str().as_bytes() != interpreter.path.as_os_str().as_bytes()
+        || FileIdentity::from_metadata(&opened) != interpreter.file_identity
+        || FileIdentity::from_metadata(&expected_now) != interpreter.file_identity
+    {
+        return Err(io::Error::other(
+            "bound provider PT_INTERP does not resolve to the exact interpreter role",
+        ));
+    }
+    Ok(())
+}
+
 fn loader_dependency_closure(
     roots: &BTreeSet<String>,
     graph: &BTreeMap<String, BTreeSet<String>>,
@@ -1465,6 +2190,11 @@ fn partition_loader_images(
         .chain(dependencies.iter())
     {
         let contract = loader_image_contract(image, header::ET_DYN)?;
+        if !std::ptr::eq(image, provider) && contract.interpreter.is_some() {
+            return Err(io::Error::other(
+                "bound non-provider loader dependency unexpectedly has PT_INTERP",
+            ));
+        }
         let soname = contract
             .soname
             .clone()
@@ -1487,6 +2217,7 @@ fn partition_loader_images(
         .iter()
         .find_map(|(name, (image, _))| std::ptr::eq(*image, provider).then(|| name.clone()))
         .ok_or_else(|| io::Error::other("provider is absent from the bound loader graph"))?;
+    validate_provider_interpreter_contract(&images[&provider_name].1, interpreter)?;
     let graph = images
         .iter()
         .map(|(name, (_, contract))| (name.clone(), contract.needed.clone()))

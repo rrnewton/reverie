@@ -1,19 +1,32 @@
 //! Real stopped-task adapter for the explicitly selected one-task experiment.
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::{self};
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::FileExt;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use goblin::elf::Elf;
 use goblin::elf::header;
 use goblin::elf::program_header as ph;
+use goblin::elf::sym;
+use iced_x86::Decoder;
+use iced_x86::DecoderOptions;
+use iced_x86::FlowControl;
+use iced_x86::OpKind;
+use sha2::Digest;
+use sha2::Sha256;
 
 use super::*;
 use crate::LiteinstAfterLoaderConfig;
@@ -29,6 +42,11 @@ const PAGE: u64 = 4096;
 const MAX_STACK_SNAPSHOT: usize = 1024 * 1024;
 const MAX_PRIVATE_READ: u64 = 1024 * 1024;
 const MAX_PRIVATE_MMAP_EFFECT: u64 = crate::after_loader::MAX_RUNTIME_LOAD_SPAN;
+const MAX_PRIVATE_BRK_GROWTH: u64 = 1024 * 1024;
+const PROC_FD_GETDENTS_BYTES: u64 = 8192;
+const PROC_FD_READLINK_BYTES: u64 = 128;
+const PROC_SELF_FD_DIRECTORY: &[u8] = b"/proc/self/fd";
+const PROC_SELF_FD_PREFIX: &[u8] = b"/proc/self/fd/";
 // Before the v12 handshake is readable, admit only the finite set of exact
 // page-rounded usable lengths that its FXSAVE/XSAVE reserve contract can
 // produce. The retained mapping is bound byte-for-byte to the handshake after
@@ -40,14 +58,564 @@ const CALLBACK_STACK_MAX_USABLE_BYTES: u64 = LITEINST_CALLBACK_EXECUTION_HEADROO
 const RETURN_MARKER: u64 = 0x4c49_4341_4c4c_0001;
 const TRAMPOLINE_ARENA_SIZE: u64 = 128 * PAGE;
 const KERNEL_O_LARGEFILE: u64 = 0o100000;
+const PRIVATE_SIGNAL_ACTIONS_OFFSET: u64 = 512;
+const PRIVATE_SIGNAL_ACTION_BYTES: u64 = 32;
+const PRIVATE_SIGNAL_ACTION_COUNT: u64 = 64;
+const PRIVATE_SIGNAL_ACTIONS_END_OFFSET: u64 =
+    PRIVATE_SIGNAL_ACTIONS_OFFSET + PRIVATE_SIGNAL_ACTION_BYTES * PRIVATE_SIGNAL_ACTION_COUNT;
 const PRIVATE_POLICY_SCRATCH_OFFSET: u64 = 2560;
 const PRIVATE_POLICY_SCRATCH_BYTES: usize = 8;
+const LOADER_CACHE_SCRATCH_OFFSET: u64 =
+    PRIVATE_POLICY_SCRATCH_OFFSET + PRIVATE_POLICY_SCRATCH_BYTES as u64;
+const PRIVATE_HOST_CONFIG_OFFSET: u64 = 3072;
+const LOADER_CACHE_SCRATCH_END_OFFSET: u64 = PRIVATE_HOST_CONFIG_OFFSET;
+const LOADER_CACHE_SCRATCH_BYTES: usize =
+    (LOADER_CACHE_SCRATCH_END_OFFSET - LOADER_CACHE_SCRATCH_OFFSET) as usize;
+const _: () = {
+    assert!(PRIVATE_SIGNAL_ACTIONS_END_OFFSET == PRIVATE_POLICY_SCRATCH_OFFSET);
+    assert!(
+        LOADER_CACHE_SCRATCH_OFFSET
+            == PRIVATE_POLICY_SCRATCH_OFFSET + PRIVATE_POLICY_SCRATCH_BYTES as u64
+    );
+    assert!(LOADER_CACHE_SCRATCH_END_OFFSET == PRIVATE_HOST_CONFIG_OFFSET);
+};
 const ARCH_SHSTK_STATUS: u64 = 0x5005;
 const STATX_OUTPUT_BYTES: usize = std::mem::size_of::<libc::statx>();
 const PRIVATE_STATX_MASK: u32 = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
 const MFD_ALLOW_SEALING: u64 = 0x0002;
 const TRAMPOLINE_SEALS: i32 =
     libc::F_SEAL_FUTURE_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+
+// One exact glibc interpreter whose private loader-cache lifecycle is consumed
+// below. A digest match is only the first gate: every cache syscall renews the
+// complete mapped geometry, backing identity and live nonwritable bytes before
+// accepting its exact wrapper site.
+const LOADER_CACHE_INTERPRETER_SHA256: [u8; 32] = [
+    0x3a, 0x47, 0xec, 0x2c, 0x0e, 0x2b, 0x0f, 0x09, 0x48, 0xea, 0x0c, 0xae, 0xfb, 0x77, 0xd2, 0x98,
+    0x67, 0x9d, 0xf3, 0xb8, 0x47, 0x46, 0x31, 0xc7, 0xbe, 0x79, 0x89, 0xf1, 0x1b, 0x76, 0x2c, 0x5a,
+];
+const LOADER_CACHE_PATH: &[u8] = b"/etc/ld.so.cache";
+const LOADER_CACHE_PATH_RVA: u64 = 0x2d266;
+const LOADER_CACHE_OPENAT_SYSCALL_RVA: u64 = 0x257b6;
+const LOADER_CACHE_FSTAT_SYSCALL_RVA: u64 = 0x25529;
+const LOADER_CACHE_MMAP_SYSCALL_RVA: u64 = 0x25964;
+const LOADER_CACHE_CLOSE_SYSCALL_RVA: u64 = 0x25679;
+const LOADER_CACHE_MUNMAP_SYSCALL_RVA: u64 = 0x259f9;
+const LOADER_CACHE_MEMFD_LINK: &[u8] = b"/memfd:reverie-after-loader-immutable (deleted)";
+const LOADER_CACHE_ALIAS_READ_SYSCALL_RVA: u64 = 0x25806;
+const LOADER_CACHE_ALIAS_RELRO_MPROTECT_SYSCALL_RVA: u64 = 0x25a29;
+const LOADER_CACHE_ALIAS_HEADER_BYTES: u64 = 0x340;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_IN_ROOT: u64 = 0x10;
+
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+type StableBackingStamp = (u64, u64, u64, i64, i64, i64, i64);
+
+// One exact glibc provider whose lazy ptmalloc bootstrap performs a raw
+// getrandom(tcache_key, 8, GRND_NONBLOCK) while the controller's private
+// dlopen is active. The complete provider digest and complete function bytes
+// are both required; this is not a structural instruction-pattern admission.
+const PTMALLOC_BOOTSTRAP_PROVIDER_SHA256: [u8; 32] = [
+    0x1b, 0xb4, 0x75, 0x60, 0x7d, 0xfd, 0xce, 0xc1, 0xcf, 0x8b, 0x1a, 0x88, 0x5e, 0x2c, 0x71, 0xa3,
+    0x67, 0x97, 0xe7, 0x86, 0xe4, 0x12, 0x48, 0xde, 0xb5, 0x0a, 0xb5, 0x43, 0x97, 0xd5, 0x6a, 0xac,
+];
+const PTMALLOC_BOOTSTRAP_FUNCTION_RVA: u64 = 0x985f0;
+const PTMALLOC_BOOTSTRAP_SYSCALL_RVA: u64 = 0x98623;
+const PTMALLOC_BRK_SYSCALL_RVA: u64 = 0x104f59;
+const PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA: u64 = 0x2034f8;
+const PTMALLOC_BOOTSTRAP_INITIALIZED_RVA: u64 = 0x203508;
+const PTMALLOC_BOOTSTRAP_FUNCTION: &[u8] = &[
+    0x55, 0xba, 0x01, 0x00, 0x00, 0x00, 0xbe, 0x08, 0x00, 0x00, 0x00, 0x48, 0x8d, 0x3d, 0xf6, 0xae,
+    0x16, 0x00, 0x53, 0x48, 0x83, 0xec, 0x28, 0x64, 0x48, 0x8b, 0x04, 0x25, 0x28, 0x00, 0x00, 0x00,
+    0x48, 0x89, 0x44, 0x24, 0x18, 0x31, 0xc0, 0xc6, 0x05, 0xea, 0xae, 0x16, 0x00, 0x01, 0xb8, 0x3e,
+    0x01, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x89, 0xe5, 0x83, 0xf8, 0x08, 0x74, 0x4d, 0x48, 0x89, 0xee,
+    0xbf, 0x01, 0x00, 0x00, 0x00, 0xe8, 0x26, 0xd4, 0x03, 0x00, 0x48, 0x8b, 0x1c, 0x24, 0x33, 0x5c,
+    0x24, 0x08, 0x48, 0x89, 0xee, 0x89, 0xd8, 0xbf, 0x01, 0x00, 0x00, 0x00, 0xc1, 0xc8, 0x08, 0x31,
+    0xc3, 0x48, 0x89, 0x1d, 0xa0, 0xae, 0x16, 0x00, 0x48, 0xc1, 0xe3, 0x20, 0xe8, 0xff, 0xd3, 0x03,
+    0x00, 0x48, 0x8b, 0x04, 0x24, 0x33, 0x44, 0x24, 0x08, 0x89, 0xc2, 0xc1, 0xca, 0x08, 0x31, 0xd0,
+    0x48, 0x09, 0xc3, 0x48, 0x89, 0x1d, 0x7e, 0xae, 0x16, 0x00, 0x80, 0x3d, 0x4d, 0x29, 0x17, 0x00,
+    0x00, 0x75, 0x07, 0xc6, 0x05, 0x9e, 0xae, 0x16, 0x00, 0x01, 0x48, 0x8b, 0x05, 0xff, 0x36, 0x16,
+    0x00, 0x48, 0x8d, 0x0d, 0x08, 0x46, 0x16, 0x00, 0x64, 0x48, 0x89, 0x08, 0x48, 0x83, 0xc1, 0x60,
+    0x48, 0x89, 0xc8, 0x48, 0x8d, 0x91, 0xf0, 0x07, 0x00, 0x00, 0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,
+    0x48, 0x89, 0x40, 0x18, 0x48, 0x89, 0x40, 0x10, 0x48, 0x83, 0xc0, 0x10, 0x48, 0x39, 0xc2, 0x75,
+    0xef, 0x48, 0x8d, 0x15, 0x08, 0xef, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x0d, 0x00, 0x00, 0x00,
+    0x48, 0xc7, 0x05, 0x45, 0xae, 0x16, 0x00, 0x80, 0x00, 0x00, 0x00, 0xc7, 0x05, 0xc3, 0x45, 0x16,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x0d, 0x14, 0x46, 0x16, 0x00, 0xe8, 0xbf, 0x0f, 0xf9,
+    0xff, 0x48, 0x8d, 0x15, 0x48, 0xef, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x03, 0x00, 0x00, 0x00,
+    0xe8, 0xab, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15, 0xe4, 0xee, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf,
+    0x1a, 0x00, 0x00, 0x00, 0xe8, 0x97, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15, 0x90, 0xee, 0xff, 0xff,
+    0x48, 0x89, 0xee, 0xbf, 0x02, 0x00, 0x00, 0x00, 0xe8, 0x83, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15,
+    0xec, 0xee, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x13, 0x00, 0x00, 0x00, 0xe8, 0x6f, 0x0f, 0xf9,
+    0xff, 0x48, 0x8d, 0x15, 0x68, 0xec, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x19, 0x00, 0x00, 0x00,
+    0xe8, 0x5b, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15, 0x64, 0xec, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf,
+    0x1d, 0x00, 0x00, 0x00, 0xe8, 0x47, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15, 0x60, 0xec, 0xff, 0xff,
+    0x48, 0x89, 0xee, 0xbf, 0x20, 0x00, 0x00, 0x00, 0xe8, 0x33, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15,
+    0x8c, 0xec, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x1c, 0x00, 0x00, 0x00, 0xe8, 0x1f, 0x0f, 0xf9,
+    0xff, 0x48, 0x8d, 0x15, 0x98, 0xec, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf, 0x15, 0x00, 0x00, 0x00,
+    0xe8, 0x0b, 0x0f, 0xf9, 0xff, 0x48, 0x8d, 0x15, 0xd4, 0xed, 0xff, 0xff, 0x48, 0x89, 0xee, 0xbf,
+    0x0a, 0x00, 0x00, 0x00, 0xe8, 0xf7, 0x0e, 0xf9, 0xff, 0x48, 0x8b, 0x44, 0x24, 0x18, 0x64, 0x48,
+    0x2b, 0x04, 0x25, 0x28, 0x00, 0x00, 0x00, 0x75, 0x07, 0x48, 0x83, 0xc4, 0x28, 0x5b, 0x5d, 0xc3,
+    0xe8, 0xdb, 0x62, 0x08, 0x00,
+];
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn classify_procfs_absence<T>(observed: io::Result<T>) -> io::Result<bool> {
+    match observed {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn procfs_path_is_absent(path: impl AsRef<Path>) -> io::Result<bool> {
+    classify_procfs_absence(std::fs::symlink_metadata(path))
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PtmallocBootstrapObservation {
+    initialized: u8,
+    tcache_key: [u8; 8],
+}
+
+impl fmt::Debug for PtmallocBootstrapObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PtmallocBootstrapObservation")
+            .field("initialized", &self.initialized)
+            .field("tcache_key_sha256", &sha256_hex(&self.tcache_key))
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PtmallocBootstrapState {
+    load_bias: u64,
+    entry: PtmallocBootstrapObservation,
+    pre_dlopen_verified: bool,
+    entropy_consumed: bool,
+    injected_key: Option<[u8; 8]>,
+}
+
+impl fmt::Debug for PtmallocBootstrapState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PtmallocBootstrapState")
+            .field("load_bias", &format_args!("{:#x}", self.load_bias))
+            .field("entry", &self.entry)
+            .field("pre_dlopen_verified", &self.pre_dlopen_verified)
+            .field("entropy_consumed", &self.entropy_consumed)
+            .field(
+                "injected_key_sha256",
+                &self.injected_key.map(|key| sha256_hex(&key)),
+            )
+            .finish()
+    }
+}
+
+fn ptmalloc_bootstrap_profile_matches(provider: &[u8]) -> Result<bool, &'static str> {
+    let digest: [u8; 32] = Sha256::digest(provider).into();
+    if digest != PTMALLOC_BOOTSTRAP_PROVIDER_SHA256 {
+        return Ok(false);
+    }
+    let elf = Elf::parse(provider).map_err(|_| "profiled ptmalloc provider is not ELF")?;
+    if !elf.is_64
+        || !elf.little_endian
+        || elf.header.e_machine != header::EM_X86_64
+        || elf.header.e_type != header::ET_DYN
+    {
+        return Err("profiled ptmalloc provider has a different ELF identity");
+    }
+    let function_end = PTMALLOC_BOOTSTRAP_FUNCTION_RVA
+        .checked_add(PTMALLOC_BOOTSTRAP_FUNCTION.len() as u64)
+        .ok_or("profiled ptmalloc function range overflowed")?;
+    let executable = elf
+        .program_headers
+        .iter()
+        .filter(|load| {
+            load.p_type == ph::PT_LOAD
+                && load.p_flags == (ph::PF_R | ph::PF_X)
+                && load.p_vaddr <= PTMALLOC_BOOTSTRAP_FUNCTION_RVA
+                && load
+                    .p_vaddr
+                    .checked_add(load.p_filesz)
+                    .is_some_and(|end| function_end <= end)
+        })
+        .collect::<Vec<_>>();
+    let [executable] = executable.as_slice() else {
+        return Err("profiled ptmalloc function lacks one exact executable PT_LOAD");
+    };
+    let file_offset = executable
+        .p_offset
+        .checked_add(
+            PTMALLOC_BOOTSTRAP_FUNCTION_RVA
+                .checked_sub(executable.p_vaddr)
+                .ok_or("profiled ptmalloc function precedes its PT_LOAD")?,
+        )
+        .ok_or("profiled ptmalloc function file offset overflowed")?;
+    let start = usize::try_from(file_offset)
+        .map_err(|_| "profiled ptmalloc function file offset is too large")?;
+    let end = start
+        .checked_add(PTMALLOC_BOOTSTRAP_FUNCTION.len())
+        .ok_or("profiled ptmalloc function file range overflowed")?;
+    if provider.get(start..end) != Some(PTMALLOC_BOOTSTRAP_FUNCTION) {
+        return Err("profiled ptmalloc function bytes differ");
+    }
+    let syscall_offset = usize::try_from(
+        PTMALLOC_BOOTSTRAP_SYSCALL_RVA
+            .checked_sub(PTMALLOC_BOOTSTRAP_FUNCTION_RVA)
+            .ok_or("profiled ptmalloc syscall precedes its function")?,
+    )
+    .map_err(|_| "profiled ptmalloc syscall offset is too large")?;
+    if PTMALLOC_BOOTSTRAP_FUNCTION.get(syscall_offset..syscall_offset + 2) != Some(&[0x0f, 0x05]) {
+        return Err("profiled ptmalloc syscall bytes differ");
+    }
+    let tcache_end = PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA
+        .checked_add(8)
+        .ok_or("profiled tcache-key range overflowed")?;
+    let initialized_end = PTMALLOC_BOOTSTRAP_INITIALIZED_RVA
+        .checked_add(1)
+        .ok_or("profiled ptmalloc-initialized range overflowed")?;
+    let writable_bss = elf
+        .program_headers
+        .iter()
+        .filter(|load| {
+            let Some(file_end) = load.p_vaddr.checked_add(load.p_filesz) else {
+                return false;
+            };
+            let Some(memory_end) = load.p_vaddr.checked_add(load.p_memsz) else {
+                return false;
+            };
+            load.p_type == ph::PT_LOAD
+                && load.p_flags == (ph::PF_R | ph::PF_W)
+                && file_end <= PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA
+                && tcache_end <= memory_end
+                && file_end <= PTMALLOC_BOOTSTRAP_INITIALIZED_RVA
+                && initialized_end <= memory_end
+        })
+        .count();
+    if writable_bss != 1 {
+        return Err("profiled ptmalloc state lacks one exact writable BSS PT_LOAD");
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcFdAuditProfile {
+    function_start: u64,
+    function_end: u64,
+    raw_syscall_start: u64,
+    raw_syscall_end: u64,
+    audit_call_returns: [u64; 6],
+    raw_call_return: u64,
+    trusted_gate: u64,
+    trusted_gate_end: u64,
+    trusted_syscall: u64,
+}
+
+fn elf_rx_file_bytes<'a>(
+    elf: &Elf<'_>,
+    bytes: &'a [u8],
+    address: u64,
+    length: u64,
+) -> Option<&'a [u8]> {
+    let end = address.checked_add(length)?;
+    let load = elf.program_headers.iter().find(|load| {
+        load.p_type == ph::PT_LOAD
+            && load.p_flags == (ph::PF_R | ph::PF_X)
+            && load.p_vaddr <= address
+            && end <= load.p_vaddr.checked_add(load.p_filesz).unwrap_or(0)
+    })?;
+    let offset = load
+        .p_offset
+        .checked_add(address.checked_sub(load.p_vaddr)?)?;
+    let file_end = offset.checked_add(length)?;
+    bytes.get(usize::try_from(offset).ok()?..usize::try_from(file_end).ok()?)
+}
+
+fn proc_fd_audit_profile(runtime: &[u8]) -> Result<ProcFdAuditProfile, &'static str> {
+    const AUDIT: &str = "reverie_liteinst_proc_fd_audit";
+    const TRUSTED_GATE: &str = "reverie_preload_trusted_syscall";
+    const TRUSTED_SYSCALL: &str = "reverie_preload_trusted_syscall_ip";
+    const TRUSTED_GATE_BYTES: &[u8; 26] = &[
+        0x48, 0x89, 0xf8, 0x48, 0x89, 0xf7, 0x48, 0x89, 0xd6, 0x48, 0x89, 0xca, 0x4d, 0x89, 0xc2,
+        0x4d, 0x89, 0xc8, 0x4c, 0x8b, 0x4c, 0x24, 0x08, 0x0f, 0x05, 0xc3,
+    ];
+    let elf = Elf::parse(runtime).map_err(|_| "proc-fd runtime is not ELF")?;
+    if !elf.is_64
+        || !elf.little_endian
+        || elf.header.e_machine != header::EM_X86_64
+        || elf.header.e_type != header::ET_DYN
+        || elf.syms.len() > 1_000_000
+    {
+        return Err("proc-fd runtime ELF identity differs");
+    }
+    if elf.dynsyms.iter().any(|symbol| {
+        elf.dynstrtab
+            .get_at(symbol.st_name)
+            .is_some_and(|name| name == AUDIT || name == "reverie_preload_raw_syscall6")
+    }) {
+        return Err("proc-fd private control symbol is dynamically exported");
+    }
+    let mut audit = None;
+    let mut trusted_gate = None;
+    let mut trusted = None;
+    for symbol in &elf.syms {
+        let Some(name) = elf.strtab.get_at(symbol.st_name) else {
+            continue;
+        };
+        if name == AUDIT {
+            if symbol.st_type() != sym::STT_FUNC
+                || symbol.st_bind() != sym::STB_LOCAL
+                || symbol.st_visibility() != sym::STV_HIDDEN
+                || symbol.st_shndx == 0
+                || symbol.st_size == 0
+                || symbol.st_size > 1024 * 1024
+                || elf_rx_file_bytes(&elf, runtime, symbol.st_value, symbol.st_size).is_none()
+                || audit.replace((symbol.st_value, symbol.st_size)).is_some()
+            {
+                return Err("proc-fd audit function symbol differs");
+            }
+        } else if name == TRUSTED_GATE {
+            if symbol.st_type() != sym::STT_FUNC
+                || symbol.st_bind() != sym::STB_LOCAL
+                || symbol.st_visibility() != sym::STV_HIDDEN
+                || symbol.st_shndx == 0
+                || symbol.st_size != TRUSTED_GATE_BYTES.len() as u64
+                || elf_rx_file_bytes(&elf, runtime, symbol.st_value, symbol.st_size)
+                    != Some(TRUSTED_GATE_BYTES)
+                || trusted_gate
+                    .replace((symbol.st_value, symbol.st_size))
+                    .is_some()
+            {
+                return Err("proc-fd trusted-gate function symbol differs");
+            }
+        } else if name == TRUSTED_SYSCALL {
+            if symbol.st_type() != sym::STT_NOTYPE
+                || symbol.st_bind() != sym::STB_LOCAL
+                || symbol.st_visibility() != sym::STV_HIDDEN
+                || symbol.st_shndx == 0
+                || elf_rx_file_bytes(&elf, runtime, symbol.st_value, 2) != Some(&[0x0f, 0x05])
+                || trusted.replace(symbol.st_value).is_some()
+            {
+                return Err("proc-fd trusted-syscall symbol differs");
+            }
+        }
+    }
+    let (function_start, function_size) = audit.ok_or("proc-fd audit function symbol is absent")?;
+    let (trusted_gate_start, trusted_gate_size) =
+        trusted_gate.ok_or("proc-fd trusted-gate function symbol is absent")?;
+    let trusted_syscall = trusted.ok_or("proc-fd trusted-syscall symbol is absent")?;
+    let trusted_gate_end = trusted_gate_start
+        .checked_add(trusted_gate_size)
+        .ok_or("proc-fd trusted-gate function range overflowed")?;
+    if trusted_syscall
+        != trusted_gate_start
+            .checked_add(23)
+            .ok_or("proc-fd trusted syscall offset overflowed")?
+        || trusted_gate_end
+            != trusted_gate_start
+                .checked_add(26)
+                .ok_or("proc-fd trusted gate range overflowed")?
+    {
+        return Err("proc-fd trusted syscall is outside its exact gate");
+    }
+    let function_end = function_start
+        .checked_add(function_size)
+        .ok_or("proc-fd audit function range overflowed")?;
+    let function = elf_rx_file_bytes(&elf, runtime, function_start, function_size)
+        .ok_or("proc-fd audit function bytes are absent")?;
+    let mut decoder = Decoder::with_ip(64, function, function_start, DecoderOptions::NONE);
+    let mut direct_calls = Vec::new();
+    while decoder.can_decode() {
+        let instruction = decoder.decode();
+        if instruction.is_invalid() || instruction.next_ip() > function_end {
+            return Err("proc-fd audit function does not decode exactly");
+        }
+        if instruction.flow_control() == FlowControl::Call
+            && matches!(
+                instruction.op0_kind(),
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+            )
+        {
+            if instruction.len() != 5 {
+                return Err("proc-fd audit contains a non-rel32 direct call");
+            }
+            direct_calls.push((instruction.next_ip(), instruction.near_branch_target()));
+        }
+    }
+    let shim_matches = |target: u64| {
+        let Some(bytes) = elf_rx_file_bytes(&elf, runtime, target, 14) else {
+            return false;
+        };
+        if bytes[..4] != [0xff, 0x74, 0x24, 0x08]
+            || bytes[4] != 0xe8
+            || bytes[9..] != [0x48, 0x83, 0xc4, 0x08, 0xc3]
+        {
+            return false;
+        }
+        let displacement = i32::from_le_bytes(bytes[5..9].try_into().unwrap());
+        target
+            .checked_add(9)
+            .and_then(|return_address| return_address.checked_add_signed(i64::from(displacement)))
+            == Some(trusted_gate_start)
+    };
+    let shim_calls = direct_calls
+        .into_iter()
+        .filter(|(_, target)| shim_matches(*target))
+        .collect::<Vec<_>>();
+    let [first, second, third, fourth, fifth, sixth] = shim_calls.as_slice() else {
+        return Err("proc-fd audit does not contain exactly six direct raw-syscall calls");
+    };
+    if !shim_calls.iter().all(|(_, target)| *target == first.1) {
+        return Err("proc-fd audit direct calls do not share one exact raw-syscall shim");
+    }
+    let raw_syscall_start = first.1;
+    let raw_symbols = elf
+        .syms
+        .iter()
+        .filter(|symbol| {
+            symbol.st_value == raw_syscall_start
+                && symbol.st_type() == sym::STT_FUNC
+                && symbol.st_shndx != 0
+        })
+        .collect::<Vec<_>>();
+    let [raw_symbol] = raw_symbols.as_slice() else {
+        return Err("proc-fd raw-syscall shim symbol is not unique");
+    };
+    if raw_symbol.st_size != 14
+        || raw_symbol.st_bind() != sym::STB_LOCAL
+        || raw_symbol.st_visibility() != sym::STV_HIDDEN
+    {
+        return Err("proc-fd raw-syscall shim symbol provenance differs");
+    }
+    Ok(ProcFdAuditProfile {
+        function_start,
+        function_end,
+        raw_syscall_start,
+        raw_syscall_end: raw_syscall_start
+            .checked_add(14)
+            .ok_or("proc-fd raw-syscall function range overflowed")?,
+        audit_call_returns: [first.0, second.0, third.0, fourth.0, fifth.0, sixth.0],
+        raw_call_return: raw_syscall_start
+            .checked_add(9)
+            .ok_or("proc-fd raw-syscall return overflowed")?,
+        trusted_gate: trusted_gate_start,
+        trusted_gate_end,
+        trusted_syscall,
+    })
+}
+
+fn rel32_call_target(return_address: u64, instruction: [u8; 5]) -> Option<u64> {
+    if instruction[0] != 0xe8 {
+        return None;
+    }
+    let displacement = i32::from_le_bytes(instruction[1..].try_into().ok()?);
+    return_address.checked_add_signed(i64::from(displacement))
+}
+
+fn proc_fd_audit_site_is_exact(
+    profile: ProcFdAuditProfile,
+    load_bias: u64,
+    permit: &AfterLoaderSyscallPermit,
+    registers: &libc::user_regs_struct,
+    controller_stack: GuestRange,
+    controller_return_slot: u64,
+    controller_return_address: u64,
+    expected_controller_return: u64,
+    return_address: u64,
+    call_instruction: [u8; 5],
+    raw_return_address: u64,
+    raw_call_instruction: [u8; 5],
+    copied_arg5: u64,
+    original_arg5: u64,
+    data_spans: &[(u64, u64)],
+) -> bool {
+    let Some(syscall) = load_bias.checked_add(profile.trusted_syscall) else {
+        return false;
+    };
+    let Some(function_start) = load_bias.checked_add(profile.function_start) else {
+        return false;
+    };
+    let Some(function_end) = load_bias.checked_add(profile.function_end) else {
+        return false;
+    };
+    let Some(raw_start) = load_bias.checked_add(profile.raw_syscall_start) else {
+        return false;
+    };
+    let Some(raw_end) = load_bias.checked_add(profile.raw_syscall_end) else {
+        return false;
+    };
+    let Some(trusted_gate) = load_bias.checked_add(profile.trusted_gate) else {
+        return false;
+    };
+    let Some(trusted_gate_end) = load_bias.checked_add(profile.trusted_gate_end) else {
+        return false;
+    };
+    let Some(resume) = syscall.checked_add(2) else {
+        return false;
+    };
+    let Some(call_chain_end) = registers.rsp.checked_add(32) else {
+        return false;
+    };
+    let Some(call_start) = return_address.checked_sub(5) else {
+        return false;
+    };
+    let Some(raw_call_start) = raw_return_address.checked_sub(5) else {
+        return false;
+    };
+    let Some(controller_return_end) = controller_return_slot.checked_add(8) else {
+        return false;
+    };
+    let call_chain = (registers.rsp, call_chain_end);
+    let controller_return = (controller_return_slot, controller_return_end);
+    permit.instruction_pointer == syscall
+        && permit.resume_pointer == resume
+        && permit.instruction_length == 2
+        && permit.instruction[..2] == [0x0f, 0x05]
+        && after_loader_syscall_registers_match(permit.number, permit.args, registers)
+        && registers.rsp & 15 == 8
+        && controller_stack.start <= call_chain.0
+        && call_chain.1 <= controller_stack.end
+        && controller_stack.start <= controller_return.0
+        && controller_return.1 == controller_stack.end
+        && controller_return_address == expected_controller_return
+        && function_start <= call_start
+        && return_address < function_end
+        && profile
+            .audit_call_returns
+            .iter()
+            .any(|candidate| load_bias.checked_add(*candidate) == Some(return_address))
+        && raw_start <= raw_call_start
+        && raw_return_address < raw_end
+        && load_bias.checked_add(profile.raw_call_return) == Some(raw_return_address)
+        && trusted_gate < syscall
+        && syscall < trusted_gate_end
+        && rel32_call_target(return_address, call_instruction) == Some(raw_start)
+        && rel32_call_target(raw_return_address, raw_call_instruction) == Some(trusted_gate)
+        && copied_arg5 == permit.args[5]
+        && original_arg5 == permit.args[5]
+        && data_spans.iter().copied().enumerate().all(|(index, span)| {
+            span.0 < span.1
+                && controller_stack.start <= span.0
+                && span.1 <= controller_stack.end
+                && !ranges_overlap(span, call_chain)
+                && !ranges_overlap(span, controller_return)
+                && data_spans[..index]
+                    .iter()
+                    .copied()
+                    .all(|prior| !ranges_overlap(prior, span))
+        })
+}
 
 /// Decode the two canonical register representations of a C `int` argument.
 ///
@@ -116,11 +684,339 @@ fn after_loader_syscall_registers_match(
         ] == args
 }
 
+fn ptmalloc_bootstrap_completion_registers_match(
+    admission: &libc::user_regs_struct,
+    completed: &libc::user_regs_struct,
+) -> bool {
+    let mut expected = register_words(admission);
+    expected[10] = 8;
+    register_words(completed) == expected
+}
+
+fn loader_cache_redirect_register_words_match(
+    admission: [u64; 27],
+    executed_path: u64,
+    observed: [u64; 27],
+) -> bool {
+    let mut expected = admission;
+    expected[13] = executed_path;
+    observed == expected
+}
+
+fn loader_cache_completion_register_words_match(
+    admission: [u64; 27],
+    path: u64,
+    raw_result: i64,
+    observed: [u64; 27],
+) -> bool {
+    let mut expected = admission;
+    expected[10] = raw_result as u64;
+    expected[13] = path;
+    observed == expected
+}
+
+fn loader_cache_admission_register_words_match(
+    number: i64,
+    args: [u64; 6],
+    resume_pointer: u64,
+    admission: [u64; 27],
+) -> bool {
+    admission[15] as i64 == number
+        && [
+            admission[14],
+            admission[13],
+            admission[12],
+            admission[7],
+            admission[9],
+            admission[8],
+        ] == args
+        && admission[16] == resume_pointer
+}
+
 fn exact_readonly_openat_arguments(args: &[u64; 6]) -> bool {
     canonical_c_int_argument_is(args[0], libc::AT_FDCWD)
         && canonical_c_int_argument(args[2])
             == Some(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE)
         && args[3] == 0
+}
+
+fn exact_proc_fd_directory_openat_arguments(args: &[u64; 6]) -> bool {
+    canonical_c_int_argument_is(args[0], libc::AT_FDCWD)
+        && args[1] != 0
+        && canonical_c_int_argument(args[2])
+            == Some(libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC)
+        && args[3..] == [0, 0, 0]
+}
+
+fn exact_proc_fd_getdents_arguments(args: &[u64; 6]) -> bool {
+    args[1] != 0 && args[2] == PROC_FD_GETDENTS_BYTES && args[3..] == [0, 0, 0]
+}
+
+fn exact_proc_fd_readlink_arguments(args: &[u64; 6]) -> bool {
+    canonical_c_int_argument_is(args[0], libc::AT_FDCWD)
+        && args[1] != 0
+        && args[2] != 0
+        && args[3] == PROC_FD_READLINK_BYTES
+        && args[4..] == [0, 0]
+}
+
+fn proc_self_fd_number(path: &[u8]) -> Option<u64> {
+    let digits = path.strip_prefix(PROC_SELF_FD_PREFIX)?;
+    if digits.is_empty()
+        || digits.len() > 10
+        || digits.len() > 1 && digits[0] == b'0'
+        || !digits.iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let descriptor = std::str::from_utf8(digits).ok()?.parse::<u64>().ok()?;
+    (descriptor <= libc::c_int::MAX as u64).then_some(descriptor)
+}
+
+fn proc_fd_dirent_descriptors(bytes: &[u8]) -> Result<BTreeSet<u64>, &'static str> {
+    let mut cursor = 0;
+    let mut descriptors = BTreeSet::new();
+    while cursor < bytes.len() {
+        if bytes.len() - cursor < 24 {
+            return Err("truncated proc-fd directory record");
+        }
+        let record_length = u16::from_ne_bytes(
+            bytes[cursor + 16..cursor + 18]
+                .try_into()
+                .map_err(|_| "truncated proc-fd directory record length")?,
+        ) as usize;
+        let end = cursor
+            .checked_add(record_length)
+            .ok_or("proc-fd directory record length overflow")?;
+        if record_length < 24 || !record_length.is_multiple_of(8) || end > bytes.len() {
+            return Err("malformed proc-fd directory record length");
+        }
+        let kind = bytes[cursor + 18];
+        let name_field = &bytes[cursor + 19..end];
+        let name_end = name_field
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("unterminated proc-fd directory name")?;
+        let name = &name_field[..name_end];
+        if matches!(name, b"." | b"..") {
+            if kind != libc::DT_DIR {
+                return Err("proc-fd dot entry is not a directory");
+            }
+        } else {
+            if kind != libc::DT_LNK
+                || name.is_empty()
+                || name.len() > 10
+                || name.len() > 1 && name[0] == b'0'
+                || !name.iter().all(u8::is_ascii_digit)
+            {
+                return Err("proc-fd entry is not one canonical descriptor symlink");
+            }
+            let descriptor = std::str::from_utf8(name)
+                .map_err(|_| "nontext proc-fd descriptor")?
+                .parse::<u64>()
+                .map_err(|_| "invalid proc-fd descriptor")?;
+            if descriptor > libc::c_int::MAX as u64 || !descriptors.insert(descriptor) {
+                return Err("duplicate or out-of-range proc-fd descriptor");
+            }
+        }
+        cursor = end;
+    }
+    Ok(descriptors)
+}
+
+fn private_brk_growth_range(previous: u64, requested: u64) -> Result<Option<(u64, u64)>, Errno> {
+    let growth = requested.checked_sub(previous).ok_or(Errno::EINVAL)?;
+    if growth == 0 || growth > MAX_PRIVATE_BRK_GROWTH {
+        return Err(Errno::EINVAL);
+    }
+    let start = page_up(previous)?;
+    let end = page_up(requested)?;
+    Ok((start < end).then_some((start, end)))
+}
+
+fn exact_private_heap_mapping(mapping: &GuestMap) -> bool {
+    mapping.start < mapping.end
+        && mapping.offset == 0
+        && mapping.device_major == 0
+        && mapping.device_minor == 0
+        && mapping.readable
+        && mapping.writable
+        && !mapping.executable
+        && !mapping.shared
+        && mapping.inode == 0
+        && mapping
+            .path
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().as_encoded_bytes() == b"[heap]")
+}
+
+fn controller_call_stack_maps_are_exact(maps: &[GuestMap], usable: GuestRange) -> bool {
+    let Some(allocation_start) = usable.start.checked_sub(PAGE) else {
+        return false;
+    };
+    let Some(allocation_end) = usable.end.checked_add(PAGE) else {
+        return false;
+    };
+    if usable.end.checked_sub(usable.start) != Some(STACK_SIZE) {
+        return false;
+    }
+    let matching = maps
+        .iter()
+        .filter(|mapping| {
+            ranges_overlap(
+                (mapping.start, mapping.end),
+                (allocation_start, allocation_end),
+            )
+        })
+        .collect::<Vec<_>>();
+    let [lower, middle, upper] = matching.as_slice() else {
+        return false;
+    };
+    let anonymous_private = |mapping: &GuestMap| {
+        !mapping.shared
+            && mapping.offset == 0
+            && mapping.device_major == 0
+            && mapping.device_minor == 0
+            && mapping.inode == 0
+            && mapping.path.is_none()
+    };
+    anonymous_private(lower)
+        && anonymous_private(middle)
+        && anonymous_private(upper)
+        && lower.start == allocation_start
+        && lower.end == usable.start
+        && !lower.readable
+        && !lower.writable
+        && !lower.executable
+        && middle.start == usable.start
+        && middle.end == usable.end
+        && middle.readable
+        && middle.writable
+        && !middle.executable
+        && upper.start == usable.end
+        && upper.end == allocation_end
+        && !upper.readable
+        && !upper.writable
+        && !upper.executable
+}
+
+fn private_brk_maps_advance_exactly(
+    before: &[GuestMap],
+    after: &[GuestMap],
+    previous: u64,
+    requested: u64,
+) -> bool {
+    let (Ok(previous_end), Ok(requested_end)) = (page_up(previous), page_up(requested)) else {
+        return false;
+    };
+    if previous_end == requested_end {
+        return before == after;
+    }
+    let before_heaps = before
+        .iter()
+        .enumerate()
+        .filter(|(_, mapping)| exact_private_heap_mapping(mapping))
+        .collect::<Vec<_>>();
+    let after_heaps = after
+        .iter()
+        .enumerate()
+        .filter(|(_, mapping)| exact_private_heap_mapping(mapping))
+        .collect::<Vec<_>>();
+    let [(after_index, after_heap)] = after_heaps.as_slice() else {
+        return false;
+    };
+    if after_heap.end != requested_end {
+        return false;
+    }
+    let before_index = match before_heaps.as_slice() {
+        [] if after_heap.start == previous_end => None,
+        [(index, before_heap)]
+            if before_heap.end == previous_end
+                && after_heap
+                    == &&GuestMap {
+                        end: requested_end,
+                        ..(*before_heap).clone()
+                    } =>
+        {
+            Some(*index)
+        }
+        _ => return false,
+    };
+    before
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != before_index)
+        .map(|(_, mapping)| mapping)
+        .eq(after
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != *after_index)
+            .map(|(_, mapping)| mapping))
+}
+
+fn complete_private_brk_growth_state(
+    current: &mut Option<u64>,
+    consumed: &mut bool,
+    previous: u64,
+    requested: u64,
+    raw_result: i64,
+) -> bool {
+    if raw_result < 0 || raw_result as u64 != requested || *current != Some(previous) || *consumed {
+        return false;
+    }
+    *current = Some(requested);
+    *consumed = true;
+    true
+}
+
+fn exact_loader_cache_openat_arguments(args: &[u64; 6], logical_path: u64) -> bool {
+    let flags = (libc::O_RDONLY | libc::O_CLOEXEC) as u64;
+    args[0] == u64::from(libc::AT_FDCWD as u32)
+        && args[1] == logical_path
+        && args[2] == flags
+        && args[3] == 0
+        && args[4] == flags
+        && args[5] == logical_path
+}
+
+fn loader_cache_mmap_arguments_match(args: [u64; 6], descriptor: u64, length: u64) -> bool {
+    args == [
+        0,
+        length,
+        libc::PROT_READ as u64,
+        libc::MAP_PRIVATE as u64,
+        descriptor,
+        0,
+    ]
+}
+
+fn loader_cache_redirect_arguments(
+    logical: [u64; 6],
+    redirect: &LoaderCacheRedirect,
+) -> Option<[u64; 6]> {
+    let mut executed = logical;
+    executed[1] = redirect.scratch.0;
+    (redirect.scratch.1.checked_sub(redirect.scratch.0) == Some(LOADER_CACHE_SCRATCH_BYTES as u64)
+        && redirect.preimage.len() == LOADER_CACHE_SCRATCH_BYTES
+        && !redirect.path.is_empty()
+        && redirect.path.last() == Some(&0)
+        && redirect.path.len() <= redirect.preimage.len())
+    .then_some(executed)
+}
+
+fn after_loader_permit_argument_binding_is_exact(permit: &AfterLoaderSyscallPermit) -> bool {
+    match &permit.effect {
+        AfterLoaderSyscallEffect::OpenLoaderCache { redirect, .. } => {
+            loader_cache_admission_register_words_match(
+                permit.number,
+                permit.args,
+                permit.resume_pointer,
+                redirect.admission_registers,
+            ) && loader_cache_redirect_arguments(permit.args, redirect)
+                == Some(permit.executed_args)
+        }
+        _ => permit.args == permit.executed_args,
+    }
 }
 
 fn canonical_anonymous_mmap_descriptor(raw: u64) -> bool {
@@ -319,6 +1215,12 @@ enum ImageGeometryMismatch {
     NonwritableBytes { file_offset: u64 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageRelroState {
+    WritableBeforeProtection,
+    Protected,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AfterLoaderOwnedDescriptor {
     SealedRuntime {
@@ -330,10 +1232,32 @@ enum AfterLoaderOwnedDescriptor {
         bytes: Arc<[u8]>,
         position: u64,
     },
+    LoaderCacheAlias {
+        image: AfterLoaderImageId,
+        soname: String,
+        raw_path: PathBuf,
+        canonical_path: PathBuf,
+        file: crate::after_loader::FileIdentity,
+        bytes: Arc<[u8]>,
+        stamp: StableBackingStamp,
+        position: u64,
+    },
     ProcMaps {
         device: u64,
         inode: u64,
         bytes: Arc<[u8]>,
+        position: u64,
+    },
+    ProcFdDirectory {
+        expected: BTreeMap<u64, Vec<u8>>,
+        seen: BTreeSet<u64>,
+        linked: BTreeSet<u64>,
+        eof: bool,
+    },
+    LoaderCache {
+        file: crate::after_loader::FileIdentity,
+        mapping: MappingIdentity,
+        length: u64,
         position: u64,
     },
     Trampoline {
@@ -354,7 +1278,11 @@ impl AfterLoaderOwnedDescriptor {
                 bytes: bytes.clone(),
                 position: 0,
             }),
-            Self::ProcMaps { .. } | Self::Trampoline { .. } => None,
+            Self::LoaderCacheAlias { .. }
+            | Self::ProcMaps { .. }
+            | Self::ProcFdDirectory { .. }
+            | Self::LoaderCache { .. }
+            | Self::Trampoline { .. } => None,
         }
     }
 
@@ -364,10 +1292,15 @@ impl AfterLoaderOwnedDescriptor {
             | Self::BoundImage {
                 bytes, position, ..
             }
+            | Self::LoaderCacheAlias {
+                bytes, position, ..
+            }
             | Self::ProcMaps {
                 bytes, position, ..
             } => Some((bytes, *position)),
-            Self::Trampoline { .. } => None,
+            Self::ProcFdDirectory { .. } | Self::LoaderCache { .. } | Self::Trampoline { .. } => {
+                None
+            }
         }
     }
 
@@ -379,15 +1312,856 @@ impl AfterLoaderOwnedDescriptor {
             | Self::BoundImage {
                 position: current, ..
             }
+            | Self::LoaderCacheAlias {
+                position: current, ..
+            }
             | Self::ProcMaps {
                 position: current, ..
             } => {
                 *current = position;
                 true
             }
-            Self::Trampoline { .. } => false,
+            Self::ProcFdDirectory { .. } | Self::LoaderCache { .. } | Self::Trampoline { .. } => {
+                false
+            }
         }
     }
+
+    fn proc_fd_scan_is_complete(&self) -> bool {
+        matches!(
+            self,
+            Self::ProcFdDirectory {
+                expected,
+                seen,
+                linked,
+                eof: true,
+            } if seen.len() == expected.len()
+                && expected.keys().all(|descriptor| seen.contains(descriptor))
+                && linked == seen
+        )
+    }
+
+    fn record_proc_fd_dirents(&mut self, descriptors: BTreeSet<u64>, eof_observed: bool) -> bool {
+        let Self::ProcFdDirectory {
+            expected,
+            seen,
+            linked,
+            eof,
+        } = self
+        else {
+            return false;
+        };
+        if *eof
+            || linked != seen
+            || descriptors
+                .iter()
+                .any(|descriptor| !expected.contains_key(descriptor) || seen.contains(descriptor))
+        {
+            return false;
+        }
+        if eof_observed {
+            if !descriptors.is_empty()
+                || seen.len() != expected.len()
+                || !expected.keys().all(|descriptor| seen.contains(descriptor))
+            {
+                return false;
+            }
+            *eof = true;
+        } else {
+            seen.extend(descriptors);
+        }
+        true
+    }
+
+    fn record_proc_fd_readlink(&mut self, descriptor: u64) -> bool {
+        let Self::ProcFdDirectory {
+            expected,
+            seen,
+            linked,
+            eof,
+        } = self
+        else {
+            return false;
+        };
+        !*eof
+            && expected.contains_key(&descriptor)
+            && seen.contains(&descriptor)
+            && linked.insert(descriptor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoaderCacheMapping {
+    start: u64,
+    raw_length: u64,
+    end: u64,
+    identity: MappingIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoaderCacheLifecycle {
+    AwaitingOpen,
+    Open {
+        descriptor: u64,
+    },
+    Statted {
+        descriptor: u64,
+    },
+    MappedOpen {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+    MappedClosed {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+    Retired {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+    ScratchReleaseArmed {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+    Released {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+}
+
+impl LoaderCacheLifecycle {
+    fn complete_open(&mut self, descriptor: u64) -> bool {
+        if *self != Self::AwaitingOpen {
+            return false;
+        }
+        *self = Self::Open { descriptor };
+        true
+    }
+
+    fn complete_stat(&mut self, descriptor: u64) -> bool {
+        if *self != (Self::Open { descriptor }) {
+            return false;
+        }
+        *self = Self::Statted { descriptor };
+        true
+    }
+
+    fn complete_map(
+        &mut self,
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+        expected_raw_length: u64,
+        expected_identity: MappingIdentity,
+    ) -> bool {
+        if *self != (Self::Statted { descriptor })
+            || mapping.raw_length != expected_raw_length
+            || mapping.identity != expected_identity
+        {
+            return false;
+        }
+        *self = Self::MappedOpen {
+            descriptor,
+            mapping,
+        };
+        true
+    }
+
+    fn complete_close(&mut self, descriptor: u64, mapping: LoaderCacheMapping) -> bool {
+        if *self
+            != (Self::MappedOpen {
+                descriptor,
+                mapping,
+            })
+        {
+            return false;
+        }
+        *self = Self::MappedClosed {
+            descriptor,
+            mapping,
+        };
+        true
+    }
+
+    fn complete_retire(&mut self, descriptor: u64, mapping: LoaderCacheMapping) -> bool {
+        if *self
+            != (Self::MappedClosed {
+                descriptor,
+                mapping,
+            })
+        {
+            return false;
+        }
+        *self = Self::Retired {
+            descriptor,
+            mapping,
+        };
+        true
+    }
+
+    fn arm_scratch_release(&mut self, descriptor: u64, mapping: LoaderCacheMapping) -> bool {
+        if *self
+            != (Self::Retired {
+                descriptor,
+                mapping,
+            })
+        {
+            return false;
+        }
+        *self = Self::ScratchReleaseArmed {
+            descriptor,
+            mapping,
+        };
+        true
+    }
+
+    fn complete_scratch_release(&mut self, descriptor: u64, mapping: LoaderCacheMapping) -> bool {
+        if *self
+            != (Self::ScratchReleaseArmed {
+                descriptor,
+                mapping,
+            })
+        {
+            return false;
+        }
+        *self = Self::Released {
+            descriptor,
+            mapping,
+        };
+        true
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoaderCacheState {
+    scratch_reservation: (u64, u64),
+    scratch: (u64, u64),
+    scratch_owner: AfterLoaderOwnedMapping,
+    scratch_preimage: Vec<u8>,
+    lifecycle: LoaderCacheLifecycle,
+    aliases: BTreeMap<PathBuf, LoaderCacheAliasLifecycle>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoaderCacheAliasMapping {
+    owned: AfterLoaderOwnedMapping,
+    identity: MappingIdentity,
+    raw_length: u64,
+    fixed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoaderCacheAliasFileMapStep {
+    relative_start: u64,
+    raw_length: u64,
+    protection: i32,
+    offset: u64,
+    fixed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoaderCacheAliasZeroFillStep {
+    relative_start: u64,
+    raw_length: u64,
+    protection: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoaderCacheAliasMmapPlan {
+    file_maps: Vec<LoaderCacheAliasFileMapStep>,
+    zero_fill: LoaderCacheAliasZeroFillStep,
+}
+
+fn loader_cache_alias_load_protection(flags: u32) -> Option<i32> {
+    (flags & !(ph::PF_R | ph::PF_W | ph::PF_X) == 0
+        && flags & (ph::PF_W | ph::PF_X) != (ph::PF_W | ph::PF_X))
+        .then_some(
+            (if flags & ph::PF_R != 0 {
+                libc::PROT_READ
+            } else {
+                0
+            }) | (if flags & ph::PF_W != 0 {
+                libc::PROT_WRITE
+            } else {
+                0
+            }) | (if flags & ph::PF_X != 0 {
+                libc::PROT_EXEC
+            } else {
+                0
+            }),
+        )
+}
+
+fn loader_cache_alias_mmap_plan(bytes: &[u8]) -> Result<LoaderCacheAliasMmapPlan, &'static str> {
+    let elf = Elf::parse(bytes).map_err(|_| "profiled alias ELF parse failed")?;
+    if !elf.is_64
+        || !elf.little_endian
+        || elf.header.e_machine != header::EM_X86_64
+        || elf.header.e_type != header::ET_DYN
+        || elf.program_headers.len() > 128
+    {
+        return Err("profiled alias ELF header differs");
+    }
+    let loads = elf
+        .program_headers
+        .iter()
+        .filter(|program| program.p_type == ph::PT_LOAD)
+        .collect::<Vec<_>>();
+    if loads.len() < 2 {
+        return Err("profiled alias lacks multiple PT_LOAD mappings");
+    }
+    if loads
+        .windows(2)
+        .any(|pair| page_down(pair[0].p_vaddr) >= page_down(pair[1].p_vaddr))
+    {
+        return Err("profiled alias PT_LOAD headers are out of order");
+    }
+    let file_length = bytes.len() as u64;
+    for (index, load) in loads.iter().enumerate() {
+        let data_end = load
+            .p_vaddr
+            .checked_add(load.p_filesz)
+            .ok_or("profiled alias PT_LOAD data range overflow")?;
+        let allocation_end = load
+            .p_vaddr
+            .checked_add(load.p_memsz)
+            .ok_or("profiled alias PT_LOAD allocation range overflow")?;
+        let file_end = load
+            .p_offset
+            .checked_add(load.p_filesz)
+            .ok_or("profiled alias PT_LOAD file range overflow")?;
+        let map_start = page_down(load.p_vaddr);
+        let map_end = page_up(data_end).map_err(|_| "profiled alias PT_LOAD map overflow")?;
+        if load.p_filesz == 0
+            || load.p_filesz > load.p_memsz
+            || file_end > file_length
+            || load.p_vaddr % PAGE != load.p_offset % PAGE
+            || load.p_align > 1
+                && (!load.p_align.is_power_of_two()
+                    || load.p_vaddr % load.p_align != load.p_offset % load.p_align)
+            || loader_cache_alias_load_protection(load.p_flags).is_none()
+            || map_start >= map_end
+            || index + 1 < loads.len() && load.p_memsz != load.p_filesz
+        {
+            return Err("profiled alias PT_LOAD geometry differs");
+        }
+        if let Some(prior) = index.checked_sub(1).and_then(|prior| loads.get(prior)) {
+            let prior_data_end = prior
+                .p_vaddr
+                .checked_add(prior.p_filesz)
+                .ok_or("profiled alias prior PT_LOAD data range overflow")?;
+            let prior_map_end =
+                page_up(prior_data_end).map_err(|_| "profiled alias prior map overflow")?;
+            let prior_allocation_end = prior
+                .p_vaddr
+                .checked_add(prior.p_memsz)
+                .ok_or("profiled alias prior allocation range overflow")?;
+            if prior_map_end != map_start
+                || prior_allocation_end > load.p_vaddr
+                || page_up(prior_data_end).map_err(|_| "profiled alias prior BSS overflow")?
+                    < prior_allocation_end
+            {
+                return Err("profiled alias PT_LOAD sequence has a hole, overlap or early BSS map");
+            }
+        }
+        if allocation_end < data_end {
+            return Err("profiled alias PT_LOAD allocation precedes its file data");
+        }
+    }
+
+    let first = loads[0];
+    let last = *loads.last().ok_or("profiled alias lacks a final PT_LOAD")?;
+    let first_start = page_down(first.p_vaddr);
+    let last_allocation_end = last
+        .p_vaddr
+        .checked_add(last.p_memsz)
+        .ok_or("profiled alias final allocation range overflow")?;
+    let initial_length = last_allocation_end
+        .checked_sub(first_start)
+        .ok_or("profiled alias initial reservation underflow")?;
+    let mut file_maps = vec![LoaderCacheAliasFileMapStep {
+        relative_start: 0,
+        raw_length: initial_length,
+        protection: loader_cache_alias_load_protection(first.p_flags)
+            .ok_or("profiled alias first PT_LOAD protection differs")?,
+        offset: page_down(first.p_offset),
+        fixed: false,
+    }];
+    for load in loads.iter().skip(1) {
+        let start = page_down(load.p_vaddr);
+        let data_end = load
+            .p_vaddr
+            .checked_add(load.p_filesz)
+            .ok_or("profiled alias PT_LOAD data range overflow")?;
+        let end = page_up(data_end).map_err(|_| "profiled alias PT_LOAD map overflow")?;
+        file_maps.push(LoaderCacheAliasFileMapStep {
+            relative_start: start
+                .checked_sub(first_start)
+                .ok_or("profiled alias fixed map precedes its reservation")?,
+            raw_length: end
+                .checked_sub(start)
+                .ok_or("profiled alias fixed map length underflow")?,
+            protection: loader_cache_alias_load_protection(load.p_flags)
+                .ok_or("profiled alias PT_LOAD protection differs")?,
+            offset: page_down(load.p_offset),
+            fixed: true,
+        });
+    }
+    let final_data_end = last
+        .p_vaddr
+        .checked_add(last.p_filesz)
+        .ok_or("profiled alias final data range overflow")?;
+    if final_data_end % PAGE != 0 {
+        return Err("profiled alias final file data requires unrepresented partial-page zeroing");
+    }
+    let zero_start = page_up(final_data_end).map_err(|_| "profiled alias BSS start overflow")?;
+    let zero_length = last_allocation_end
+        .checked_sub(zero_start)
+        .ok_or("profiled alias final BSS does not require one anonymous map")?;
+    if zero_length == 0 {
+        return Err("profiled alias final BSS does not require one anonymous map");
+    }
+    Ok(LoaderCacheAliasMmapPlan {
+        file_maps,
+        zero_fill: LoaderCacheAliasZeroFillStep {
+            relative_start: zero_start
+                .checked_sub(first_start)
+                .ok_or("profiled alias BSS precedes its reservation")?,
+            raw_length: zero_length,
+            protection: loader_cache_alias_load_protection(last.p_flags)
+                .ok_or("profiled alias BSS protection differs")?,
+        },
+    })
+}
+
+impl LoaderCacheAliasMmapPlan {
+    fn file_request_is_exact(
+        &self,
+        index: usize,
+        base: Option<u64>,
+        descriptor: u64,
+        args: [u64; 6],
+    ) -> bool {
+        let Some(step) = self.file_maps.get(index) else {
+            return false;
+        };
+        let address = if step.fixed {
+            let Some(address) = base.and_then(|base| base.checked_add(step.relative_start)) else {
+                return false;
+            };
+            address
+        } else {
+            if index != 0 || base.is_some() {
+                return false;
+            }
+            0
+        };
+        let flags =
+            libc::MAP_PRIVATE | libc::MAP_DENYWRITE | if step.fixed { libc::MAP_FIXED } else { 0 };
+        args[0] == address
+            && args[1] == step.raw_length
+            && canonical_c_int_argument_is(args[2], step.protection)
+            && canonical_c_int_argument_is(args[3], flags)
+            && args[4] == descriptor
+            && args[5] == step.offset
+    }
+
+    fn zero_fill_request_is_exact(&self, base: Option<u64>, args: [u64; 6]) -> bool {
+        let Some(address) = base.and_then(|base| base.checked_add(self.zero_fill.relative_start))
+        else {
+            return false;
+        };
+        args[0] == address
+            && args[1] == self.zero_fill.raw_length
+            && canonical_c_int_argument_is(args[2], self.zero_fill.protection)
+            && canonical_c_int_argument_is(
+                args[3],
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+            )
+            && args[4] == u64::from(u32::MAX)
+            && args[5] == 0
+    }
+
+    fn file_completion_is_exact(
+        &self,
+        index: usize,
+        descriptor: u64,
+        image: AfterLoaderImageId,
+        prior: &[LoaderCacheAliasMapping],
+        mapping: LoaderCacheAliasMapping,
+    ) -> bool {
+        let Some(step) = self.file_maps.get(index) else {
+            return false;
+        };
+        let start = if step.fixed {
+            let Some(start) = prior
+                .first()
+                .and_then(|first| first.owned.start.checked_add(step.relative_start))
+            else {
+                return false;
+            };
+            start
+        } else {
+            if index != 0 || !prior.is_empty() {
+                return false;
+            }
+            mapping.owned.start
+        };
+        let Some((expected_start, expected_end)) =
+            checked_page_effect_range(start, step.raw_length).ok()
+        else {
+            return false;
+        };
+        mapping.raw_length == step.raw_length
+            && mapping.fixed == step.fixed
+            && mapping.owned.start == expected_start
+            && mapping.owned.end == expected_end
+            && mapping.owned.readable == (step.protection & libc::PROT_READ != 0)
+            && mapping.owned.writable == (step.protection & libc::PROT_WRITE != 0)
+            && mapping.owned.executable == (step.protection & libc::PROT_EXEC != 0)
+            && !mapping.owned.shared
+            && mapping.owned.descriptor == Some(descriptor)
+            && mapping.owned.offset == step.offset
+            && mapping.owned.purpose == (AfterLoaderMappingPurpose::Image { image })
+            && prior
+                .first()
+                .is_none_or(|first| first.identity == mapping.identity)
+    }
+
+    fn zero_fill_completion_is_exact(
+        &self,
+        image: AfterLoaderImageId,
+        file_maps: &[LoaderCacheAliasMapping],
+        raw_length: u64,
+        mapping: AfterLoaderOwnedMapping,
+    ) -> bool {
+        let Some(start) = file_maps
+            .first()
+            .and_then(|first| first.owned.start.checked_add(self.zero_fill.relative_start))
+        else {
+            return false;
+        };
+        let Some((expected_start, expected_end)) =
+            checked_page_effect_range(start, self.zero_fill.raw_length).ok()
+        else {
+            return false;
+        };
+        file_maps.len() == self.file_maps.len()
+            && raw_length == self.zero_fill.raw_length
+            && mapping.start == expected_start
+            && mapping.end == expected_end
+            && mapping.readable == (self.zero_fill.protection & libc::PROT_READ != 0)
+            && mapping.writable == (self.zero_fill.protection & libc::PROT_WRITE != 0)
+            && mapping.executable == (self.zero_fill.protection & libc::PROT_EXEC != 0)
+            && !mapping.shared
+            && mapping.descriptor.is_none()
+            && mapping.offset == 0
+            && mapping.purpose == (AfterLoaderMappingPurpose::ImageZeroFill { image })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LoaderCacheAliasLifecycle {
+    AwaitingOpen {
+        image: AfterLoaderImageId,
+    },
+    Open {
+        descriptor: u64,
+        image: AfterLoaderImageId,
+        read_end: u64,
+    },
+    Statted {
+        descriptor: u64,
+        image: AfterLoaderImageId,
+    },
+    Mapped {
+        descriptor: u64,
+        image: AfterLoaderImageId,
+        mappings: Vec<LoaderCacheAliasMapping>,
+        zero_fills: Vec<AfterLoaderOwnedMapping>,
+    },
+    MappedClosed {
+        image: AfterLoaderImageId,
+        mappings: Vec<LoaderCacheAliasMapping>,
+        zero_fills: Vec<AfterLoaderOwnedMapping>,
+        geometry: ResolvedImageGeometry,
+    },
+    Consumed {
+        image: AfterLoaderImageId,
+        mappings: Vec<LoaderCacheAliasMapping>,
+        zero_fills: Vec<AfterLoaderOwnedMapping>,
+        geometry: ResolvedImageGeometry,
+    },
+}
+
+impl LoaderCacheAliasLifecycle {
+    fn complete_open(&mut self, descriptor: u64, image: AfterLoaderImageId) -> bool {
+        if *self != (Self::AwaitingOpen { image }) {
+            return false;
+        }
+        *self = Self::Open {
+            descriptor,
+            image,
+            read_end: 0,
+        };
+        true
+    }
+
+    fn complete_read(&mut self, descriptor: u64, start: u64, end: u64) -> bool {
+        let Self::Open {
+            descriptor: expected_descriptor,
+            read_end,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        if *expected_descriptor != descriptor
+            || *read_end != 0
+            || start != 0
+            || end != LOADER_CACHE_ALIAS_HEADER_BYTES
+        {
+            return false;
+        }
+        *read_end = end;
+        true
+    }
+
+    fn complete_stat(&mut self, descriptor: u64) -> bool {
+        let Self::Open {
+            descriptor: expected_descriptor,
+            image,
+            read_end,
+        } = self
+        else {
+            return false;
+        };
+        if *expected_descriptor != descriptor || *read_end != LOADER_CACHE_ALIAS_HEADER_BYTES {
+            return false;
+        }
+        *self = Self::Statted {
+            descriptor,
+            image: *image,
+        };
+        true
+    }
+
+    fn complete_map(
+        &mut self,
+        plan: &LoaderCacheAliasMmapPlan,
+        descriptor: u64,
+        image: AfterLoaderImageId,
+        mapping: LoaderCacheAliasMapping,
+    ) -> bool {
+        match self {
+            Self::Statted {
+                descriptor: expected_descriptor,
+                image: expected_image,
+            } if *expected_descriptor == descriptor
+                && *expected_image == image
+                && plan.file_completion_is_exact(0, descriptor, image, &[], mapping) =>
+            {
+                *self = Self::Mapped {
+                    descriptor,
+                    image,
+                    mappings: vec![mapping],
+                    zero_fills: Vec::new(),
+                };
+                true
+            }
+            Self::Mapped {
+                descriptor: expected_descriptor,
+                image: expected_image,
+                mappings,
+                ..
+            } if *expected_descriptor == descriptor
+                && *expected_image == image
+                && plan.file_completion_is_exact(
+                    mappings.len(),
+                    descriptor,
+                    image,
+                    mappings,
+                    mapping,
+                ) =>
+            {
+                mappings.push(mapping);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn complete_zero_fill(
+        &mut self,
+        plan: &LoaderCacheAliasMmapPlan,
+        image: AfterLoaderImageId,
+        raw_length: u64,
+        mapping: AfterLoaderOwnedMapping,
+    ) -> bool {
+        let Self::Mapped {
+            image: expected_image,
+            mappings,
+            zero_fills,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        if *expected_image != image
+            || !zero_fills.is_empty()
+            || !plan.zero_fill_completion_is_exact(image, mappings, raw_length, mapping)
+        {
+            return false;
+        }
+        zero_fills.push(mapping);
+        true
+    }
+
+    fn complete_close(
+        &mut self,
+        plan: &LoaderCacheAliasMmapPlan,
+        descriptor: u64,
+        image: AfterLoaderImageId,
+        geometry: ResolvedImageGeometry,
+    ) -> bool {
+        let Self::Mapped {
+            descriptor: expected_descriptor,
+            image: expected_image,
+            mappings,
+            zero_fills,
+        } = self
+        else {
+            return false;
+        };
+        if *expected_descriptor != descriptor
+            || *expected_image != image
+            || geometry.image != image
+            || mappings.len() != plan.file_maps.len()
+            || zero_fills.len() != 1
+            || mappings
+                .iter()
+                .any(|mapping| mapping.identity != geometry.mapping)
+        {
+            return false;
+        }
+        *self = Self::MappedClosed {
+            image,
+            mappings: mappings.clone(),
+            zero_fills: zero_fills.clone(),
+            geometry,
+        };
+        true
+    }
+
+    fn complete_relro(
+        &mut self,
+        image: AfterLoaderImageId,
+        geometry: ResolvedImageGeometry,
+    ) -> bool {
+        let Self::MappedClosed {
+            image: expected_image,
+            mappings,
+            zero_fills,
+            geometry: pre_relro_geometry,
+        } = self
+        else {
+            return false;
+        };
+        if *expected_image != image
+            || geometry.image != image
+            || *pre_relro_geometry != geometry
+            || mappings.is_empty()
+            || mappings
+                .iter()
+                .any(|mapping| mapping.identity != geometry.mapping)
+        {
+            return false;
+        }
+        *self = Self::Consumed {
+            image,
+            mappings: mappings.clone(),
+            zero_fills: zero_fills.clone(),
+            geometry,
+        };
+        true
+    }
+
+    fn is_consumed(&self) -> bool {
+        matches!(self, Self::Consumed { .. })
+    }
+}
+
+fn loader_cache_alias_next_step_is_exact(
+    plan: &LoaderCacheAliasMmapPlan,
+    lifecycle: &LoaderCacheAliasLifecycle,
+    number: i64,
+    args: [u64; 6],
+) -> bool {
+    match lifecycle {
+        LoaderCacheAliasLifecycle::AwaitingOpen { .. }
+        | LoaderCacheAliasLifecycle::Consumed { .. } => true,
+        LoaderCacheAliasLifecycle::Open {
+            descriptor,
+            read_end: 0,
+            ..
+        } => number == libc::SYS_read && args[0] == *descriptor,
+        LoaderCacheAliasLifecycle::Open {
+            descriptor,
+            read_end: LOADER_CACHE_ALIAS_HEADER_BYTES,
+            ..
+        } => number == libc::SYS_fstat && args[0] == *descriptor,
+        LoaderCacheAliasLifecycle::Open { .. } => false,
+        LoaderCacheAliasLifecycle::Statted { descriptor, .. } => {
+            number == libc::SYS_mmap && plan.file_request_is_exact(0, None, *descriptor, args)
+        }
+        LoaderCacheAliasLifecycle::Mapped {
+            descriptor,
+            mappings,
+            zero_fills,
+            ..
+        } if mappings.len() < plan.file_maps.len() => {
+            number == libc::SYS_mmap
+                && zero_fills.is_empty()
+                && plan.file_request_is_exact(
+                    mappings.len(),
+                    mappings.first().map(|mapping| mapping.owned.start),
+                    *descriptor,
+                    args,
+                )
+        }
+        LoaderCacheAliasLifecycle::Mapped {
+            descriptor: _,
+            mappings,
+            zero_fills,
+            ..
+        } if mappings.len() == plan.file_maps.len() && zero_fills.is_empty() => {
+            number == libc::SYS_mmap
+                && plan.zero_fill_request_is_exact(
+                    mappings.first().map(|mapping| mapping.owned.start),
+                    args,
+                )
+        }
+        LoaderCacheAliasLifecycle::Mapped {
+            descriptor,
+            mappings,
+            zero_fills,
+            ..
+        } => {
+            number == libc::SYS_close
+                && args[0] == *descriptor
+                && mappings.len() == plan.file_maps.len()
+                && zero_fills.len() == 1
+        }
+        LoaderCacheAliasLifecycle::MappedClosed { .. } => number == libc::SYS_mprotect,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoaderCacheRedirect {
+    scratch: (u64, u64),
+    preimage: Vec<u8>,
+    path: Vec<u8>,
+    admission_registers: [u64; 27],
+    admission_xstate: safeptrace::X86ExtendedState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -398,6 +2172,7 @@ enum AfterLoaderMappingPurpose {
     ImageZeroFill { image: AfterLoaderImageId },
     SharedReservation { trampoline: AfterLoaderTrampolineId },
     Trampoline { trampoline: AfterLoaderTrampolineId },
+    LoaderCache,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -413,14 +2188,221 @@ struct AfterLoaderOwnedMapping {
     purpose: AfterLoaderMappingPurpose,
 }
 
+fn loader_cache_scratch_owner_shape_is_exact(
+    scratch: (u64, u64),
+    owner: AfterLoaderOwnedMapping,
+) -> bool {
+    scratch.0 < scratch.1
+        && owner.start % PAGE == 0
+        && owner.end.checked_sub(owner.start) == Some(PAGE)
+        && owner.start <= scratch.0
+        && scratch.1 <= owner.end
+        && scratch.1.checked_sub(scratch.0) == Some(LOADER_CACHE_SCRATCH_BYTES as u64)
+        && owner.readable
+        && owner.writable
+        && !owner.executable
+        && !owner.shared
+        && owner.descriptor.is_none()
+        && owner.offset == PAGE
+        && owner.purpose == AfterLoaderMappingPurpose::Controller
+}
+
+fn loader_cache_scratch_metadata_is_exact(
+    reservation: (u64, u64),
+    scratch: (u64, u64),
+    owner: AfterLoaderOwnedMapping,
+) -> bool {
+    let Some(lower_end) = reservation.0.checked_add(PAGE) else {
+        return false;
+    };
+    let Some(middle_end) = lower_end.checked_add(PAGE) else {
+        return false;
+    };
+    let Some(expected_end) = middle_end.checked_add(PAGE) else {
+        return false;
+    };
+    let expected_scratch = (
+        owner.start.checked_add(LOADER_CACHE_SCRATCH_OFFSET),
+        owner.start.checked_add(LOADER_CACHE_SCRATCH_END_OFFSET),
+    );
+    reservation.1 == expected_end
+        && owner.start == lower_end
+        && owner.end == middle_end
+        && expected_scratch == (Some(scratch.0), Some(scratch.1))
+        && loader_cache_scratch_owner_shape_is_exact(scratch, owner)
+}
+
+fn loader_cache_scratch_logical_reservation_is_exact(
+    reservation: (u64, u64),
+    scratch: (u64, u64),
+    owner: AfterLoaderOwnedMapping,
+    mappings: &[AfterLoaderOwnedMapping],
+) -> bool {
+    if !loader_cache_scratch_metadata_is_exact(reservation, scratch, owner) {
+        return false;
+    }
+    let lower_end = owner.start;
+    let middle_end = owner.end;
+    let lower = AfterLoaderOwnedMapping {
+        start: reservation.0,
+        end: lower_end,
+        readable: false,
+        writable: false,
+        executable: false,
+        shared: false,
+        descriptor: None,
+        offset: 0,
+        purpose: AfterLoaderMappingPurpose::Controller,
+    };
+    let upper = AfterLoaderOwnedMapping {
+        start: middle_end,
+        end: reservation.1,
+        offset: 2 * PAGE,
+        ..lower
+    };
+    let mut overlapping = mappings
+        .iter()
+        .filter(|mapping| ranges_overlap((mapping.start, mapping.end), reservation))
+        .copied()
+        .collect::<Vec<_>>();
+    overlapping.sort_by_key(|mapping| mapping.start);
+    overlapping.as_slice() == &[lower, owner, upper]
+}
+
+fn loader_cache_scratch_physical_map_is_exact(
+    owner: AfterLoaderOwnedMapping,
+    mapping: &GuestMap,
+    attributes: Option<GuestHookMappingAttributes>,
+) -> bool {
+    mapping.start == owner.start
+        && mapping.end == owner.end
+        && mapping.readable
+        && mapping.writable
+        && !mapping.executable
+        && !mapping.shared
+        && mapping.offset == 0
+        && mapping.device_major == 0
+        && mapping.device_minor == 0
+        && mapping.inode == 0
+        && mapping.path.is_none()
+        && attributes
+            .is_some_and(|attributes| attributes.fork_safe && attributes.protection_key == 0)
+}
+
+fn loader_cache_scratch_physical_guard_is_exact(
+    guard: (u64, u64),
+    lower: bool,
+    mapping: &GuestMap,
+    attributes: Option<GuestHookMappingAttributes>,
+) -> bool {
+    (if lower {
+        mapping.start <= guard.0 && mapping.end == guard.1
+    } else {
+        mapping.start == guard.0 && guard.1 <= mapping.end
+    }) && !mapping.readable
+        && !mapping.writable
+        && !mapping.executable
+        && !mapping.shared
+        && mapping.offset == 0
+        && mapping.device_major == 0
+        && mapping.device_minor == 0
+        && mapping.inode == 0
+        && mapping.path.is_none()
+        && attributes
+            .is_some_and(|attributes| attributes.fork_safe && attributes.protection_key == 0)
+}
+
+fn loader_cache_scratch_physical_reservation_is_exact(
+    pid: Pid,
+    reservation: (u64, u64),
+    owner: AfterLoaderOwnedMapping,
+    maps: &[GuestMap],
+) -> bool {
+    let lower = (reservation.0, owner.start);
+    let upper = (owner.end, reservation.1);
+    let covering = |range: (u64, u64)| {
+        maps.iter()
+            .filter(|mapping| mapping.start <= range.0 && range.1 <= mapping.end)
+            .collect::<Vec<_>>()
+    };
+    let lower_maps = covering(lower);
+    let middle_maps = covering((owner.start, owner.end));
+    let upper_maps = covering(upper);
+    lower_maps.len() == 1
+        && middle_maps.len() == 1
+        && upper_maps.len() == 1
+        && loader_cache_scratch_physical_guard_is_exact(
+            lower,
+            true,
+            lower_maps[0],
+            guest_hook_mapping_attributes(pid, lower_maps[0]),
+        )
+        && loader_cache_scratch_physical_map_is_exact(
+            owner,
+            middle_maps[0],
+            guest_hook_mapping_attributes(pid, middle_maps[0]),
+        )
+        && loader_cache_scratch_physical_guard_is_exact(
+            upper,
+            false,
+            upper_maps[0],
+            guest_hook_mapping_attributes(pid, upper_maps[0]),
+        )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AfterLoaderSyscallEffect {
     None,
+    PtmallocBootstrapEntropy {
+        destination: u64,
+        before: [u8; 8],
+    },
     CetStatus {
         destination: u64,
         before: [u8; 8],
     },
     Open(AfterLoaderOwnedDescriptor),
+    OpenLoaderCacheAlias(AfterLoaderOwnedDescriptor),
+    OpenLoaderCache {
+        descriptor: AfterLoaderOwnedDescriptor,
+        redirect: LoaderCacheRedirect,
+    },
+    OpenProcFdDirectory {
+        expected: BTreeMap<u64, Vec<u8>>,
+    },
+    ReadProcFdDirectory {
+        descriptor: u64,
+        destination: u64,
+        capacity: u64,
+    },
+    ReadProcFdLink {
+        directory: u64,
+        descriptor: u64,
+        destination: u64,
+        expected: Vec<u8>,
+    },
+    CloseProcFdDirectory {
+        descriptor: u64,
+        remaining: BTreeMap<u64, Vec<u8>>,
+    },
+    StatLoaderCache {
+        descriptor: u64,
+        destination: u64,
+        fields: AfterLoaderStatFields,
+    },
+    MapLoaderCache {
+        descriptor: u64,
+        raw_length: u64,
+        identity: MappingIdentity,
+    },
+    CloseLoaderCache {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
+    RetireLoaderCache {
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    },
     Close(u64),
     Map {
         requested: u64,
@@ -435,6 +2417,7 @@ enum AfterLoaderSyscallEffect {
         start: u64,
         raw_length: u64,
         protection: i32,
+        loader_cache_alias: Option<(PathBuf, AfterLoaderImageId, ResolvedImageGeometry)>,
     },
     Remove {
         start: u64,
@@ -461,12 +2444,22 @@ enum AfterLoaderSyscallEffect {
     },
     RecordBreak,
     CheckBreak(u64),
+    AdvanceBreak {
+        previous: u64,
+        requested: u64,
+        before_maps: Vec<GuestMap>,
+    },
     ExpectedResult(i64),
     FutexWake {
         address: u64,
         word: [u8; 4],
     },
     Stat {
+        descriptor: u64,
+        destination: u64,
+        fields: AfterLoaderStatFields,
+    },
+    StatLoaderCacheAlias {
         descriptor: u64,
         destination: u64,
         fields: AfterLoaderStatFields,
@@ -485,10 +2478,19 @@ fn private_memory_effect_result_is_exact(effect: &AfterLoaderSyscallEffect, resu
     ) || result == 0
 }
 
+fn private_close_result_is_exact(result: i64) -> bool {
+    result == 0
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AfterLoaderSyscallCompletion {
     KernelResult(i64),
     UnsupportedCetStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AfterLoaderEmulatedCompletion {
+    PtmallocBootstrapEntropy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -571,6 +2573,47 @@ impl AfterLoaderStatFields {
             change_nanoseconds: metadata.ctime_nsec(),
         }
     }
+
+    fn deterministic_loader_cache_alias(metadata: &std::fs::Metadata) -> Self {
+        Self::from_metadata(metadata).with_deterministic_access_time()
+    }
+
+    /// The profiled real-file alias has an explicit private-loader ABI: its
+    /// `fstat` reports `st_atime == st_mtime`. The backing mount is `relatime`
+    /// and the mandatory header read can otherwise inject wall time into the
+    /// loader's private result without changing the authenticated stamp. This
+    /// is deterministic syscall virtualization, not a claim that ambient Linux
+    /// metadata is byte-identical or a relaxation of later guest comparators.
+    fn with_deterministic_access_time(mut self) -> Self {
+        self.access_seconds = self.modify_seconds;
+        self.access_nanoseconds = self.modify_nanoseconds;
+        self
+    }
+
+    fn exact_x86_64_output(self) -> [u8; 144] {
+        let mut bytes = [0_u8; 144];
+        bytes[0..8].copy_from_slice(&self.device.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&self.inode.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&self.links.to_ne_bytes());
+        bytes[24..28].copy_from_slice(&self.mode.to_ne_bytes());
+        bytes[28..32].copy_from_slice(&self.uid.to_ne_bytes());
+        bytes[32..36].copy_from_slice(&self.gid.to_ne_bytes());
+        bytes[40..48].copy_from_slice(&self.rdev.to_ne_bytes());
+        bytes[48..56].copy_from_slice(&self.size.to_ne_bytes());
+        bytes[56..64].copy_from_slice(&self.block_size.to_ne_bytes());
+        bytes[64..72].copy_from_slice(&self.blocks.to_ne_bytes());
+        bytes[72..80].copy_from_slice(&self.access_seconds.to_ne_bytes());
+        bytes[80..88].copy_from_slice(&self.access_nanoseconds.to_ne_bytes());
+        bytes[88..96].copy_from_slice(&self.modify_seconds.to_ne_bytes());
+        bytes[96..104].copy_from_slice(&self.modify_nanoseconds.to_ne_bytes());
+        bytes[104..112].copy_from_slice(&self.change_seconds.to_ne_bytes());
+        bytes[112..120].copy_from_slice(&self.change_nanoseconds.to_ne_bytes());
+        bytes
+    }
+}
+
+fn stat_output_matches(fields: AfterLoaderStatFields, bytes: &[u8; 144]) -> bool {
+    *bytes == fields.exact_x86_64_output()
 }
 
 #[derive(Debug)]
@@ -579,8 +2622,10 @@ pub(super) struct AfterLoaderPrivateState {
     original_mappings: Vec<(u64, u64)>,
     original_descriptors: BTreeSet<u64>,
     owned_descriptors: BTreeMap<u64, AfterLoaderOwnedDescriptor>,
+    proc_fd_audit: ProcFdAuditLifecycle,
     owned_mappings: Vec<AfterLoaderOwnedMapping>,
     current_break: Option<u64>,
+    private_brk_growth_consumed: bool,
     shared_reservations: BTreeMap<AfterLoaderTrampolineId, ((u64, u64), SharedReservationIdentity)>,
     protected_ranges: Vec<(u64, u64)>,
     image_mappings: BTreeMap<AfterLoaderImageId, MappingIdentity>,
@@ -589,7 +2634,16 @@ pub(super) struct AfterLoaderPrivateState {
     trampoline_seals_added: BTreeSet<u64>,
     sealed_trampolines: BTreeSet<AfterLoaderTrampolineId>,
     next_trampoline_serial: u64,
+    ptmalloc_bootstrap: Option<PtmallocBootstrapState>,
+    loader_cache: Option<LoaderCacheState>,
     timer_suspension: Option<PrivateExecutionTimerSuspension>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcFdAuditLifecycle {
+    AwaitingOpen,
+    Scanning { descriptor: u64 },
+    Complete,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -631,8 +2685,10 @@ impl Clone for AfterLoaderPrivateState {
             original_mappings: self.original_mappings.clone(),
             original_descriptors: self.original_descriptors.clone(),
             owned_descriptors: self.owned_descriptors.clone(),
+            proc_fd_audit: self.proc_fd_audit,
             owned_mappings: self.owned_mappings.clone(),
             current_break: self.current_break,
+            private_brk_growth_consumed: self.private_brk_growth_consumed,
             shared_reservations: self.shared_reservations.clone(),
             protected_ranges: self.protected_ranges.clone(),
             image_mappings: self.image_mappings.clone(),
@@ -641,6 +2697,8 @@ impl Clone for AfterLoaderPrivateState {
             trampoline_seals_added: self.trampoline_seals_added.clone(),
             sealed_trampolines: self.sealed_trampolines.clone(),
             next_trampoline_serial: self.next_trampoline_serial,
+            ptmalloc_bootstrap: self.ptmalloc_bootstrap,
+            loader_cache: self.loader_cache.clone(),
             timer_suspension: None,
         }
     }
@@ -661,11 +2719,16 @@ pub(super) struct AfterLoaderSyscallPermit {
     image: Option<ImageIdentity>,
     tid: Pid,
     generation: u64,
+    physical_generation: Option<safeptrace::PhysicalEventGenerationId>,
     origin_status: Option<safeptrace::PhysicalStatusId>,
     admission_status: Option<safeptrace::PhysicalStatusId>,
     pub(super) purpose: AfterLoaderSyscallPurpose,
     pub(super) number: i64,
+    /// Exact arguments presented by the profiled guest at seccomp admission.
     pub(super) args: [u64; 6],
+    /// Exact arguments presented to the kernel. These differ from `args` only
+    /// for the one authenticated loader-cache pathname redirection.
+    executed_args: [u64; 6],
     instruction_pointer: u64,
     resume_pointer: u64,
     instruction: [u8; 4],
@@ -731,9 +2794,10 @@ fn checked_output_span(address: u64, length: u64) -> Result<Option<(u64, u64)>, 
 
 fn syscall_output_spans(number: i64, args: [u64; 6]) -> Result<Vec<(u64, u64)>, Errno> {
     let span = match number {
-        libc::SYS_read | libc::SYS_pread64 | libc::SYS_getrandom => {
-            checked_output_span(args[1], args[2])?
-        }
+        libc::SYS_read | libc::SYS_pread64 => checked_output_span(args[1], args[2])?,
+        libc::SYS_getdents64 => checked_output_span(args[1], args[2])?,
+        libc::SYS_readlinkat => checked_output_span(args[2], args[3])?,
+        libc::SYS_getrandom => checked_output_span(args[0], args[1])?,
         libc::SYS_fstat => checked_output_span(args[1], 144)?,
         libc::SYS_newfstatat => checked_output_span(args[2], 144)?,
         libc::SYS_statx => checked_output_span(args[4], STATX_OUTPUT_BYTES as u64)?,
@@ -753,6 +2817,8 @@ fn private_syscall_allowed(number: i64) -> bool {
             | libc::SYS_close
             | libc::SYS_read
             | libc::SYS_pread64
+            | libc::SYS_getdents64
+            | libc::SYS_readlinkat
             | libc::SYS_fstat
             | libc::SYS_newfstatat
             | libc::SYS_statx
@@ -767,6 +2833,80 @@ fn private_syscall_allowed(number: i64) -> bool {
             | libc::SYS_gettid
             | libc::SYS_fcntl
     )
+}
+
+fn exact_ptmalloc_bootstrap_request(
+    load_bias: u64,
+    admission_rax: u64,
+    permit: &AfterLoaderSyscallPermit,
+) -> bool {
+    let Some(destination) = load_bias.checked_add(PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA) else {
+        return false;
+    };
+    let Some(syscall) = load_bias.checked_add(PTMALLOC_BOOTSTRAP_SYSCALL_RVA) else {
+        return false;
+    };
+    let Some(resume) = syscall.checked_add(2) else {
+        return false;
+    };
+    let Some(output_end) = destination.checked_add(8) else {
+        return false;
+    };
+    admission_rax as i64 == -(libc::ENOSYS as i64)
+        && permit.number == libc::SYS_getrandom
+        && permit.args[0] == destination
+        && permit.args[1] == 8
+        && permit.args[2] == libc::GRND_NONBLOCK as u64
+        && permit.instruction_pointer == syscall
+        && permit.resume_pointer == resume
+        && permit.instruction_length == 2
+        && permit.instruction[..2] == [0x0f, 0x05]
+        && permit.output_spans == [(destination, output_end)]
+}
+
+fn exact_ptmalloc_bootstrap_admission_state(
+    profile: PtmallocBootstrapState,
+    observed_load_bias: u64,
+    observed: PtmallocBootstrapObservation,
+) -> bool {
+    profile.pre_dlopen_verified
+        && profile.entry
+            == (PtmallocBootstrapObservation {
+                initialized: 0,
+                tcache_key: [0; 8],
+            })
+        && !profile.entropy_consumed
+        && profile.injected_key.is_none()
+        && observed_load_bias == profile.load_bias
+        && observed.initialized == 1
+        && observed.tcache_key == [0; 8]
+}
+
+fn exact_ptmalloc_brk_growth_request(
+    profile: PtmallocBootstrapState,
+    observed_load_bias: u64,
+    observed: PtmallocBootstrapObservation,
+    permit: &AfterLoaderSyscallPermit,
+) -> bool {
+    let Some(syscall) = profile.load_bias.checked_add(PTMALLOC_BRK_SYSCALL_RVA) else {
+        return false;
+    };
+    let Some(resume) = syscall.checked_add(2) else {
+        return false;
+    };
+    profile.pre_dlopen_verified
+        && profile.entry.initialized == 0
+        && profile.entropy_consumed
+        && profile.injected_key.is_some()
+        && observed_load_bias == profile.load_bias
+        && observed.initialized == 1
+        && Some(observed.tcache_key) == profile.injected_key
+        && permit.number == libc::SYS_brk
+        && permit.instruction_pointer == syscall
+        && permit.resume_pointer == resume
+        && permit.instruction_length == 2
+        && permit.instruction[..2] == [0x0f, 0x05]
+        && permit.output_spans.is_empty()
 }
 
 fn checked_range(start: u64, length: u64) -> Result<(u64, u64), Errno> {
@@ -797,8 +2937,10 @@ impl AfterLoaderPrivateState {
             original_mappings,
             original_descriptors,
             owned_descriptors: BTreeMap::new(),
+            proc_fd_audit: ProcFdAuditLifecycle::AwaitingOpen,
             owned_mappings: Vec::new(),
             current_break: None,
+            private_brk_growth_consumed: false,
             shared_reservations: BTreeMap::new(),
             protected_ranges: Vec::new(),
             image_mappings: BTreeMap::new(),
@@ -807,6 +2949,8 @@ impl AfterLoaderPrivateState {
             trampoline_seals_added: BTreeSet::new(),
             sealed_trampolines: BTreeSet::new(),
             next_trampoline_serial: 0,
+            ptmalloc_bootstrap: None,
+            loader_cache: None,
             timer_suspension: None,
         })
     }
@@ -969,6 +3113,24 @@ impl AfterLoaderPrivateState {
         })
     }
 
+    fn loader_cache_scratch_overlaps(&self, range: (u64, u64)) -> bool {
+        self.loader_cache.as_ref().is_some_and(|cache| {
+            !matches!(cache.lifecycle, LoaderCacheLifecycle::Released { .. })
+                && ranges_overlap(cache.scratch_reservation, range)
+        })
+    }
+
+    fn loader_cache_scratch_release_is_armed_for(&self, args: [u64; 6], range: (u64, u64)) -> bool {
+        self.loader_cache.as_ref().is_some_and(|cache| {
+            range == cache.scratch_reservation
+                && args == [cache.scratch_reservation.0, 3 * PAGE, 0, 0, 0, 0]
+                && matches!(
+                    cache.lifecycle,
+                    LoaderCacheLifecycle::ScratchReleaseArmed { .. }
+                )
+        })
+    }
+
     fn callback_stack_overlaps(&self, range: (u64, u64)) -> bool {
         self.owned_mappings.iter().any(|mapping| {
             mapping.purpose == AfterLoaderMappingPurpose::CallbackStack
@@ -1082,6 +3244,49 @@ impl AfterLoaderPrivateState {
             && usable.end == upper.start)
             .then(|| GuestRange::new(usable.start, usable_len))
             .flatten()
+    }
+
+    fn controller_call_stack_range(&self) -> Option<GuestRange> {
+        let mut mappings = self
+            .owned_mappings
+            .iter()
+            .filter(|mapping| mapping.purpose == AfterLoaderMappingPurpose::Controller)
+            .collect::<Vec<_>>();
+        mappings.sort_by_key(|mapping| mapping.start);
+        let candidates = mappings
+            .windows(3)
+            .filter_map(|window| {
+                let [lower, usable, upper] = window else {
+                    return None;
+                };
+                let anonymous_private = |mapping: &AfterLoaderOwnedMapping| {
+                    !mapping.executable && !mapping.shared && mapping.descriptor.is_none()
+                };
+                (anonymous_private(lower)
+                    && anonymous_private(usable)
+                    && anonymous_private(upper)
+                    && !lower.readable
+                    && !lower.writable
+                    && lower.end.checked_sub(lower.start) == Some(PAGE)
+                    && lower.offset == 0
+                    && usable.readable
+                    && usable.writable
+                    && usable.end.checked_sub(usable.start) == Some(STACK_SIZE)
+                    && usable.offset == PAGE
+                    && !upper.readable
+                    && !upper.writable
+                    && upper.end.checked_sub(upper.start) == Some(PAGE)
+                    && upper.offset == PAGE + STACK_SIZE
+                    && lower.end == usable.start
+                    && usable.end == upper.start)
+                    .then(|| GuestRange::new(usable.start, STACK_SIZE))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let [range] = candidates.as_slice() else {
+            return None;
+        };
+        Some(*range)
     }
 
     fn owns_same_image_range(&self, range: (u64, u64), image: AfterLoaderImageId) -> bool {
@@ -1746,6 +3951,172 @@ fn stable_backing_stamp(metadata: &std::fs::Metadata) -> (u64, u64, u64, i64, i6
     )
 }
 
+fn open_path_with_root(root: &std::fs::File, path: &Path, flags: i32) -> io::Result<std::fs::File> {
+    if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {
+        return Err(io::Error::other(
+            "target-root path is not one absolute Unix path",
+        ));
+    }
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: 0,
+        resolve: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS,
+    };
+    // SAFETY: root and path are live, how has the Linux UAPI layout, and Linux
+    // validates the flags, descriptor and structure size.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful openat2 returned a new owned descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor as libc::c_int) })
+}
+
+fn open_target_root(pid: Pid) -> io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(format!("/proc/{pid}/root"))
+}
+
+fn read_link_from_path_descriptor(file: &std::fs::File) -> io::Result<PathBuf> {
+    let mut bytes = vec![0_u8; 4096];
+    // SAFETY: file is live, the empty C string requests the O_PATH symlink
+    // itself, and bytes is a writable buffer with the supplied length.
+    let amount = unsafe {
+        libc::readlinkat(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
+        )
+    };
+    if amount < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let amount = usize::try_from(amount).map_err(io::Error::other)?;
+    if amount == bytes.len() {
+        return Err(io::Error::other(
+            "target-root symlink payload exceeds its bound",
+        ));
+    }
+    bytes.truncate(amount);
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+fn complete_file_bytes_and_stamp(
+    file: &mut std::fs::File,
+    expected: &[u8],
+    stamp: StableBackingStamp,
+) -> io::Result<bool> {
+    let before = file.metadata()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(
+        (expected.len() as u64)
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("alias byte bound overflow"))?,
+    )
+    .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    Ok(before.is_file()
+        && stable_backing_stamp(&before) == stamp
+        && stable_backing_stamp(&after) == stamp
+        && bytes.as_slice() == expected)
+}
+
+fn target_loader_cache_alias_matches(
+    pid: Pid,
+    alias: &crate::after_loader::LiteinstLoaderCacheAlias,
+) -> io::Result<bool> {
+    let root = open_target_root(pid)?;
+    let raw = open_path_with_root(&root, alias.raw_path(), libc::O_PATH | libc::O_CLOEXEC)?;
+    let raw_symlink = open_path_with_root(
+        &root,
+        alias.raw_path(),
+        libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+    )?;
+    let canonical = open_path_with_root(
+        &root,
+        &alias.dependency().path,
+        libc::O_PATH | libc::O_CLOEXEC,
+    )?;
+    let raw_metadata = raw.metadata()?;
+    let canonical_metadata = canonical.metadata()?;
+    let expected = alias.dependency();
+    let expected_stamp = alias.dependency_stamp();
+    // This exact reviewed profile launches the target in the controller's
+    // mount root. Retaining literal fd-link spelling is intentional here: a
+    // future chroot or distinct mount namespace needs a separately reviewed
+    // target-domain pathname bridge rather than silently broadening this one.
+    let raw_link = std::fs::read_link(format!("/proc/self/fd/{}", raw.as_raw_fd()))?;
+    let canonical_link = std::fs::read_link(format!("/proc/self/fd/{}", canonical.as_raw_fd()))?;
+    if !raw_metadata.is_file()
+        || !canonical_metadata.is_file()
+        || crate::after_loader::FileIdentity::from_metadata(&raw_metadata) != expected.file_identity
+        || crate::after_loader::FileIdentity::from_metadata(&canonical_metadata)
+            != expected.file_identity
+        || stable_backing_stamp(&raw_metadata) != expected_stamp
+        || stable_backing_stamp(&canonical_metadata) != expected_stamp
+        || raw_link != expected.path
+        || canonical_link != expected.path
+    {
+        return Ok(false);
+    }
+
+    let link_metadata = raw_symlink.metadata()?;
+    if !link_metadata.file_type().is_symlink()
+        || stable_backing_stamp(&link_metadata) != alias.raw_link_stamp()
+        || read_link_from_path_descriptor(&raw_symlink)? != alias.raw_link()
+    {
+        return Ok(false);
+    }
+
+    let mut raw_file = std::fs::File::open(format!("/proc/self/fd/{}", raw.as_raw_fd()))?;
+    let mut canonical_file =
+        std::fs::File::open(format!("/proc/self/fd/{}", canonical.as_raw_fd()))?;
+    if !complete_file_bytes_and_stamp(&mut raw_file, &expected.bytes, expected_stamp)?
+        || !complete_file_bytes_and_stamp(&mut canonical_file, &expected.bytes, expected_stamp)?
+        || mapping_identity_for_open_file(&raw_file)?
+            != mapping_identity_for_open_file(&canonical_file)?
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn loader_cache_alias_descriptor_matches(
+    pid: Pid,
+    descriptor: u64,
+    canonical_path: &Path,
+    file_identity: crate::after_loader::FileIdentity,
+    bytes: &[u8],
+    stamp: StableBackingStamp,
+) -> io::Result<Option<MappingIdentity>> {
+    let descriptor_path = format!("/proc/{pid}/fd/{descriptor}");
+    let link = std::fs::read_link(&descriptor_path)?;
+    let metadata = std::fs::metadata(&descriptor_path)?;
+    let mut opened = std::fs::File::open(&descriptor_path)?;
+    let matches = link == canonical_path
+        && metadata.is_file()
+        && crate::after_loader::FileIdentity::from_metadata(&metadata) == file_identity
+        && stable_backing_stamp(&metadata) == stamp
+        && complete_file_bytes_and_stamp(&mut opened, bytes, stamp)?;
+    if !matches {
+        return Ok(None);
+    }
+    mapping_identity_for_open_file(&opened).map(Some)
+}
+
 /// Observe the `/proc/maps` identity produced by mapping one exact open file.
 /// The file-domain metadata is deliberately not converted into a maps device.
 fn mapping_identity_for_open_file(file: &std::fs::File) -> io::Result<MappingIdentity> {
@@ -1791,11 +4162,26 @@ fn mapping_identity_for_open_file(file: &std::fs::File) -> io::Result<MappingIde
     result
 }
 
-fn exact_open_backing_identity(
-    file: &mut std::fs::File,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoaderCacheArtifactEvidence {
+    file: crate::after_loader::FileIdentity,
+    mapping: MappingIdentity,
+    length: u64,
+}
+
+fn open_loader_cache_without_atime(path: impl AsRef<Path>) -> io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOATIME | libc::O_CLOEXEC)
+        .open(path)
+}
+
+fn exact_open_backing_identity_in_root(
+    root: &std::fs::File,
     path: &Path,
     image: &LiteinstCallerImage,
 ) -> io::Result<Option<MappingIdentity>> {
+    let mut file = open_path_with_root(root, path, libc::O_RDONLY | libc::O_CLOEXEC)?;
     let before = file.metadata()?;
     if !before.is_file()
         || crate::after_loader::FileIdentity::from_metadata(&before) != image.file_identity
@@ -1804,38 +4190,37 @@ fn exact_open_backing_identity(
     }
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
-    file.take(
-        (image.bytes.len() as u64)
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("backing byte bound overflow"))?,
-    )
-    .read_to_end(&mut bytes)?;
+    (&mut file)
+        .take(
+            (image.bytes.len() as u64)
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("backing byte bound overflow"))?,
+        )
+        .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
-    let path_after = std::fs::metadata(path)?;
-    let mapping = mapping_identity_for_open_file(file)?;
+    let path_after = open_path_with_root(root, path, libc::O_PATH | libc::O_CLOEXEC)?.metadata()?;
+    let mapping = mapping_identity_for_open_file(&file)?;
     Ok((bytes.as_slice() == image.bytes.as_ref()
         && stable_backing_stamp(&before) == stable_backing_stamp(&after)
         && stable_backing_stamp(&before) == stable_backing_stamp(&path_after))
     .then_some(mapping))
 }
 
-fn exact_open_backing_matches(
-    file: &mut std::fs::File,
+fn exact_open_backing_matches_in_root(
+    root: &std::fs::File,
     path: &Path,
     image: &LiteinstCallerImage,
     expected_mapping: MappingIdentity,
 ) -> io::Result<bool> {
-    Ok(exact_open_backing_identity(file, path, image)? == Some(expected_mapping))
+    Ok(exact_open_backing_identity_in_root(root, path, image)? == Some(expected_mapping))
 }
 
 fn target_bound_image_mapping_identity(
     pid: Pid,
     image: &LiteinstCallerImage,
 ) -> io::Result<Option<MappingIdentity>> {
-    let relative = image.path.strip_prefix("/").map_err(io::Error::other)?;
-    let target_path = PathBuf::from(format!("/proc/{pid}/root")).join(relative);
-    let mut file = std::fs::File::open(&target_path)?;
-    exact_open_backing_identity(&mut file, &target_path, image)
+    let root = open_target_root(pid)?;
+    exact_open_backing_identity_in_root(&root, &image.path, image)
 }
 
 fn exact_image_backing_paths_match(
@@ -1844,6 +4229,7 @@ fn exact_image_backing_paths_match(
     geometry: ResolvedImageGeometry,
     maps: &[GuestMap],
 ) -> io::Result<bool> {
+    let root = open_target_root(pid)?;
     let relevant = maps
         .iter()
         .filter(|mapping| {
@@ -1863,14 +4249,63 @@ fn exact_image_backing_paths_match(
         .map(|mapping| mapping.path.as_ref().unwrap().clone())
         .collect::<BTreeSet<_>>();
     for guest_path in paths {
-        let relative = guest_path.strip_prefix("/").map_err(io::Error::other)?;
-        let target_path = PathBuf::from(format!("/proc/{pid}/root")).join(relative);
-        let mut file = std::fs::File::open(&target_path)?;
-        if !exact_open_backing_matches(&mut file, &target_path, image, geometry.mapping)? {
+        if !exact_open_backing_matches_in_root(&root, &guest_path, image, geometry.mapping)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn exact_image_mapping_paths_are_literal(
+    image: &LiteinstCallerImage,
+    geometry: ResolvedImageGeometry,
+    maps: &[GuestMap],
+) -> bool {
+    let relevant = maps
+        .iter()
+        .filter(|mapping| {
+            mapping.mapping_identity() == geometry.mapping
+                && ranges_overlap((mapping.start, mapping.end), geometry.span)
+                && mapping.inode != 0
+        })
+        .collect::<Vec<_>>();
+    !relevant.is_empty()
+        && relevant
+            .iter()
+            .all(|mapping| mapping.path.as_deref() == Some(image.path.as_path()))
+}
+
+fn exact_image_relro_range(
+    image: &LiteinstCallerImage,
+    geometry: ResolvedImageGeometry,
+) -> Result<(u64, u64), Errno> {
+    let elf = Elf::parse(&image.bytes).map_err(|_| Errno::EPROTO)?;
+    let ranges = elf
+        .program_headers
+        .iter()
+        .filter(|header| header.p_type == ph::PT_GNU_RELRO)
+        .map(|header| {
+            let start = geometry
+                .load_bias
+                .checked_add(page_down(header.p_vaddr))
+                .ok_or(Errno::EOVERFLOW)?;
+            let end = geometry
+                .load_bias
+                .checked_add(
+                    header
+                        .p_vaddr
+                        .checked_add(header.p_memsz)
+                        .ok_or(Errno::EOVERFLOW)
+                        .and_then(page_up)?,
+                )
+                .ok_or(Errno::EOVERFLOW)?;
+            (start < end).then_some((start, end)).ok_or(Errno::EPROTO)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let [range] = ranges.as_slice() else {
+        return Err(Errno::EPROTO);
+    };
+    Ok(*range)
 }
 
 fn altstack_fields(bytes: &[u8; 24]) -> (u64, u32, u64) {
@@ -1907,6 +4342,31 @@ fn descriptor_state(tid: Pid) -> io::Result<BTreeMap<u32, (u64, u64, Vec<u8>)>> 
         }
     }
     Ok(state)
+}
+
+fn proc_fd_link_snapshot(tid: Pid) -> io::Result<BTreeMap<u64, Vec<u8>>> {
+    let directory = format!("/proc/{tid}/fd");
+    let mut links = BTreeMap::new();
+    for entry in std::fs::read_dir(directory)? {
+        if links.len() >= 256 {
+            return Err(io::Error::other("descriptor count exceeds fixture bound"));
+        }
+        let entry = entry?;
+        let descriptor = entry
+            .file_name()
+            .to_str()
+            .ok_or_else(|| io::Error::other("nontext descriptor"))?
+            .parse::<u64>()
+            .map_err(io::Error::other)?;
+        let link = std::fs::read_link(entry.path())?;
+        if links
+            .insert(descriptor, link.as_os_str().as_encoded_bytes().to_vec())
+            .is_some()
+        {
+            return Err(io::Error::other("duplicate descriptor"));
+        }
+    }
+    Ok(links)
 }
 
 fn descriptor_flags(tid: Pid, descriptor: u64) -> io::Result<u64> {
@@ -2034,6 +4494,767 @@ impl<L: Tool + 'static> TracedTask<L> {
             "LiteInst after-loader call",
             message.to_string(),
         )
+    }
+
+    fn loader_cache_artifact_evidence(
+        &self,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<LoaderCacheArtifactEvidence, Error> {
+        let cache = config.loader_cache();
+        let artifact = config.immutable_loader_cache();
+        if cache.path().as_os_str().as_encoded_bytes() != LOADER_CACHE_PATH
+            || artifact.logical_path() != cache.path()
+            || artifact.source_identity() != cache.file_identity()
+            || artifact.bytes() != cache.bytes()
+            || artifact.seals() != crate::after_loader::IMMUTABLE_FILE_SEALS
+            || cache.bytes().is_empty()
+        {
+            return Err(self.caller_error(
+                "loader-cache logical identity, immutable bytes or seal policy differs",
+            ));
+        }
+
+        let source_before =
+            std::fs::metadata(cache.path()).map_err(|error| self.caller_error(error))?;
+        let source_bytes = bounded_proc(cache.path(), crate::after_loader::MAX_LOADER_CACHE_FILE)
+            .map_err(|error| self.caller_error(error))?;
+        let source_after =
+            std::fs::metadata(cache.path()).map_err(|error| self.caller_error(error))?;
+        if !source_before.is_file()
+            || crate::after_loader::FileIdentity::from_metadata(&source_before)
+                != cache.file_identity()
+            || stable_backing_stamp(&source_before) != stable_backing_stamp(&source_after)
+            || source_bytes.as_slice() != cache.bytes()
+        {
+            return Err(self.caller_error(
+                "loader-cache source identity or complete bytes changed after binding",
+            ));
+        }
+
+        let mut sealed = open_loader_cache_without_atime(artifact.sealed_source())
+            .map_err(|error| self.caller_error(error))?;
+        let sealed_before = sealed
+            .metadata()
+            .map_err(|error| self.caller_error(error))?;
+        let seals = unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_GET_SEALS) };
+        let status_flags = unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_GETFL) };
+        let mut sealed_bytes = Vec::new();
+        (&mut sealed)
+            .take(
+                (cache.bytes().len() as u64)
+                    .checked_add(1)
+                    .ok_or(Errno::EOVERFLOW)?,
+            )
+            .read_to_end(&mut sealed_bytes)
+            .map_err(|error| self.caller_error(error))?;
+        let sealed_after = sealed
+            .metadata()
+            .map_err(|error| self.caller_error(error))?;
+        if !sealed_before.is_file()
+            || crate::after_loader::FileIdentity::from_metadata(&sealed_before)
+                != artifact.sealed_identity()
+            || stable_backing_stamp(&sealed_before) != stable_backing_stamp(&sealed_after)
+            || sealed_bytes.as_slice() != cache.bytes()
+            || seals != artifact.seals()
+            || status_flags < 0
+            || status_flags & libc::O_ACCMODE != libc::O_RDONLY
+        {
+            return Err(self.caller_error(
+                "sealed loader-cache identity, complete bytes, flags or seals differ",
+            ));
+        }
+        sealed
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| self.caller_error(error))?;
+        let mapping =
+            mapping_identity_for_open_file(&sealed).map_err(|error| self.caller_error(error))?;
+        Ok(LoaderCacheArtifactEvidence {
+            file: artifact.sealed_identity(),
+            mapping,
+            length: cache.bytes().len() as u64,
+        })
+    }
+
+    fn initialize_loader_cache_consumption(
+        &mut self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        scratch_base: u64,
+    ) -> Result<(), Error> {
+        let _ = self.loader_cache_artifact_evidence(config)?;
+        let scratch_page = scratch_base.checked_add(PAGE).ok_or(Errno::EOVERFLOW)?;
+        let reservation_end = scratch_base.checked_add(3 * PAGE).ok_or(Errno::EOVERFLOW)?;
+        let reservation = (scratch_base, reservation_end);
+        let scratch_start = scratch_page
+            .checked_add(LOADER_CACHE_SCRATCH_OFFSET)
+            .ok_or(Errno::EOVERFLOW)?;
+        let scratch_end = scratch_page
+            .checked_add(LOADER_CACHE_SCRATCH_END_OFFSET)
+            .ok_or(Errno::EOVERFLOW)?;
+        let page_end = scratch_page.checked_add(PAGE).ok_or(Errno::EOVERFLOW)?;
+        let sealed_path = config
+            .immutable_loader_cache()
+            .sealed_source()
+            .as_os_str()
+            .as_encoded_bytes();
+        let state = self.after_loader_private_state()?;
+        let owner = state
+            .owned_mappings
+            .iter()
+            .find(|mapping| mapping.start == scratch_page && mapping.end == page_end)
+            .copied()
+            .ok_or_else(|| {
+                self.caller_error("loader-cache scratch has no exact middle-page owner")
+            })?;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        if state.loader_cache.is_some()
+            || !loader_cache_scratch_owner_shape_is_exact((scratch_start, scratch_end), owner)
+            || !loader_cache_scratch_logical_reservation_is_exact(
+                reservation,
+                (scratch_start, scratch_end),
+                owner,
+                &state.owned_mappings,
+            )
+            || !loader_cache_scratch_physical_reservation_is_exact(
+                task.pid(),
+                reservation,
+                owner,
+                &maps,
+            )
+            || sealed_path.contains(&0)
+            || sealed_path
+                .len()
+                .checked_add(1)
+                .is_none_or(|length| length == 0 || length > LOADER_CACHE_SCRATCH_BYTES)
+        {
+            return Err(self.caller_error(
+                "loader-cache redirect scratch is not one exact unused controller slice",
+            ));
+        }
+        let mut observed = vec![0_u8; LOADER_CACHE_SCRATCH_BYTES];
+        task.read_exact(scratch_start as usize, &mut observed)?;
+        let aliases = config
+            .loader_cache_aliases()
+            .map(|alias| {
+                (
+                    alias.raw_path().to_path_buf(),
+                    LoaderCacheAliasLifecycle::AwaitingOpen {
+                        image: state.image_id(alias.dependency()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        self.after_loader_private_state_mut()?.loader_cache = Some(LoaderCacheState {
+            scratch_reservation: reservation,
+            scratch: (scratch_start, scratch_end),
+            scratch_owner: owner,
+            scratch_preimage: observed.clone(),
+            lifecycle: LoaderCacheLifecycle::AwaitingOpen,
+            aliases,
+        });
+        self.caller_observe(
+            "loader-cache consumption armed",
+            format!(
+                "scratch={scratch_start:#x}-{scratch_end:#x} bytes={} lifecycle=AwaitingOpen",
+                observed.len(),
+            ),
+        )
+    }
+
+    fn authenticate_loader_cache_interpreter_site(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+        syscall_rva: u64,
+    ) -> Result<ResolvedImageGeometry, Error> {
+        let digest: [u8; 32] = Sha256::digest(config._interpreter.bytes.as_ref()).into();
+        if digest != LOADER_CACHE_INTERPRETER_SHA256 {
+            return Err(self.caller_error("loader-cache interpreter digest differs"));
+        }
+        let state = self.after_loader_private_state()?;
+        let image_id = state.image_id(&config._interpreter);
+        let geometry = state.image_geometry(&config._interpreter).ok_or_else(|| {
+            self.caller_error("loader-cache interpreter geometry was not bound at entry")
+        })?;
+        if geometry.image != image_id {
+            return Err(self.caller_error("loader-cache interpreter identity changed"));
+        }
+        let renewed = self.resolve_after_loader_image_geometry(
+            task,
+            &config._interpreter,
+            image_id,
+            "loader-cache-syscall-renewal",
+        )?;
+        if renewed != geometry {
+            return Err(self.caller_error("loader-cache interpreter geometry changed"));
+        }
+        self.authenticate_after_loader_image_backing(task, &config._interpreter, renewed)?;
+        let syscall = geometry
+            .load_bias
+            .checked_add(syscall_rva)
+            .ok_or(Errno::EOVERFLOW)?;
+        let resume = syscall.checked_add(2).ok_or(Errno::EOVERFLOW)?;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        let site = GuestRange::new(syscall, 2).ok_or(Errno::EOVERFLOW)?;
+        let exact_mapping_count = maps
+            .iter()
+            .filter(|mapping| {
+                mapping.readable
+                    && mapping.executable
+                    && !mapping.writable
+                    && !mapping.shared
+                    && mapping_identity_matches(geometry.mapping, mapping)
+                    && mapping.contains_range(site)
+            })
+            .count();
+        let mut instruction = [0_u8; 2];
+        task.read_exact(syscall as usize, &mut instruction)?;
+        if exact_mapping_count != 1
+            || permit.instruction_pointer != syscall
+            || permit.resume_pointer != resume
+            || permit.instruction_length != 2
+            || permit.instruction[..2] != [0x0f, 0x05]
+            || instruction != [0x0f, 0x05]
+        {
+            return Err(self.caller_error(
+                "loader-cache syscall left its exact authenticated interpreter site",
+            ));
+        }
+        Ok(geometry)
+    }
+
+    fn authenticate_loader_cache_scratch_owner(
+        &self,
+        task: &Stopped,
+    ) -> Result<LoaderCacheState, Error> {
+        let state = self
+            .after_loader_private_state()?
+            .loader_cache
+            .clone()
+            .ok_or_else(|| self.caller_error("loader-cache scratch was not initialized"))?;
+        let private = self.after_loader_private_state()?;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        if !loader_cache_scratch_owner_shape_is_exact(state.scratch, state.scratch_owner)
+            || !loader_cache_scratch_logical_reservation_is_exact(
+                state.scratch_reservation,
+                state.scratch,
+                state.scratch_owner,
+                &private.owned_mappings,
+            )
+            || !loader_cache_scratch_physical_reservation_is_exact(
+                task.pid(),
+                state.scratch_reservation,
+                state.scratch_owner,
+                &maps,
+            )
+        {
+            return Err(self.caller_error(
+                "loader-cache scratch lost its exact guarded logical or physical reservation",
+            ));
+        }
+        Ok(state)
+    }
+
+    fn authenticate_loader_cache_scratch(&self, task: &Stopped) -> Result<LoaderCacheState, Error> {
+        let state = self.authenticate_loader_cache_scratch_owner(task)?;
+        let mut actual = vec![0_u8; LOADER_CACHE_SCRATCH_BYTES];
+        task.read_exact(state.scratch.0 as usize, &mut actual)?;
+        if actual != state.scratch_preimage {
+            return Err(self.caller_error("loader-cache scratch preimage changed"));
+        }
+        Ok(state)
+    }
+
+    fn authenticate_loader_cache_descriptor(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        descriptor: u64,
+    ) -> Result<LoaderCacheArtifactEvidence, Error> {
+        let evidence = self.loader_cache_artifact_evidence(config)?;
+        if !matches!(
+            self.after_loader_private_state()?.owned_descriptors.get(&descriptor),
+            Some(AfterLoaderOwnedDescriptor::LoaderCache {
+                file,
+                mapping,
+                length,
+                position: 0,
+            }) if *file == evidence.file && *mapping == evidence.mapping && *length == evidence.length
+        ) {
+            return Err(self.caller_error("loader-cache descriptor authority changed"));
+        }
+        let path = format!("/proc/{}/fd/{descriptor}", task.pid());
+        let metadata = std::fs::metadata(&path).map_err(|error| self.caller_error(error))?;
+        let link = std::fs::read_link(&path).map_err(|error| self.caller_error(error))?;
+        let flags =
+            descriptor_flags(task.pid(), descriptor).map_err(|error| self.caller_error(error))?;
+        let position = descriptor_position(task.pid(), descriptor)
+            .map_err(|error| self.caller_error(error))?;
+        let mut file =
+            open_loader_cache_without_atime(&path).map_err(|error| self.caller_error(error))?;
+        let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(evidence.length.checked_add(1).ok_or(Errno::EOVERFLOW)?)
+            .read_to_end(&mut bytes)
+            .map_err(|error| self.caller_error(error))?;
+        let expected_flags = libc::O_RDONLY as u64 | libc::O_CLOEXEC as u64 | KERNEL_O_LARGEFILE;
+        if !metadata.is_file()
+            || crate::after_loader::FileIdentity::from_metadata(&metadata) != evidence.file
+            || metadata.len() != evidence.length
+            || link.as_os_str().as_encoded_bytes() != LOADER_CACHE_MEMFD_LINK
+            || flags != expected_flags
+            || position != 0
+            || seals != config.immutable_loader_cache().seals()
+            || bytes.as_slice() != config.loader_cache().bytes()
+        {
+            return Err(self.caller_error(
+                "live loader-cache descriptor identity, bytes, seals, flags or position differ",
+            ));
+        }
+        Ok(evidence)
+    }
+
+    fn authenticate_loader_cache_alias_owned_descriptor(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        descriptor: u64,
+        owned: &AfterLoaderOwnedDescriptor,
+    ) -> Result<(PathBuf, AfterLoaderImageId), Error> {
+        let AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+            image,
+            soname,
+            raw_path,
+            canonical_path,
+            file,
+            bytes,
+            stamp,
+            position,
+        } = owned
+        else {
+            return Err(self.caller_error("descriptor is not a typed loader-cache alias"));
+        };
+        let alias = config
+            .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+            .ok_or_else(|| self.caller_error("loader-cache alias left the bound cache profile"))?;
+        let expected_image = self
+            .after_loader_private_state()?
+            .image_id(alias.dependency());
+        let actual_mapping = loader_cache_alias_descriptor_matches(
+            task.pid(),
+            descriptor,
+            canonical_path,
+            *file,
+            bytes,
+            *stamp,
+        )
+        .map_err(|error| self.caller_error(error))?;
+        let canonical_mapping = target_bound_image_mapping_identity(task.pid(), alias.dependency())
+            .map_err(|error| self.caller_error(error))?;
+        let expected_flags = libc::O_RDONLY as u64 | libc::O_CLOEXEC as u64 | KERNEL_O_LARGEFILE;
+        if *image != expected_image
+            || soname != alias.soname()
+            || canonical_path != &alias.dependency().path
+            || *file != alias.dependency().file_identity
+            || bytes.as_ref() != alias.dependency().bytes.as_ref()
+            || *stamp != alias.dependency_stamp()
+            || descriptor_flags(task.pid(), descriptor).map_err(|error| self.caller_error(error))?
+                != expected_flags
+            || descriptor_position(task.pid(), descriptor)
+                .map_err(|error| self.caller_error(error))?
+                != *position
+            || actual_mapping.is_none()
+            || actual_mapping != canonical_mapping
+            || !target_loader_cache_alias_matches(task.pid(), alias)
+                .map_err(|error| self.caller_error(error))?
+        {
+            return Err(self.caller_error(
+                "loader-cache alias descriptor identity, path, bytes, stamp, flags, position or target-root binding differ",
+            ));
+        }
+        Ok((raw_path.clone(), *image))
+    }
+
+    fn authenticate_loader_cache_alias_descriptor(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        descriptor: u64,
+    ) -> Result<(PathBuf, AfterLoaderImageId), Error> {
+        let state = self.after_loader_private_state()?;
+        let owned = state.owned_descriptors.get(&descriptor).ok_or_else(|| {
+            self.caller_error("loader-cache alias descriptor ownership disappeared")
+        })?;
+        let (raw_path, image) =
+            self.authenticate_loader_cache_alias_owned_descriptor(task, config, descriptor, owned)?;
+        let lifecycle = state
+            .loader_cache
+            .as_ref()
+            .and_then(|cache| cache.aliases.get(&raw_path))
+            .ok_or_else(|| self.caller_error("loader-cache alias lifecycle disappeared"))?;
+        let live = match lifecycle {
+            LoaderCacheAliasLifecycle::Open {
+                descriptor: expected,
+                image: expected_image,
+                ..
+            }
+            | LoaderCacheAliasLifecycle::Statted {
+                descriptor: expected,
+                image: expected_image,
+            }
+            | LoaderCacheAliasLifecycle::Mapped {
+                descriptor: expected,
+                image: expected_image,
+                ..
+            } => *expected == descriptor && *expected_image == image,
+            LoaderCacheAliasLifecycle::AwaitingOpen { .. }
+            | LoaderCacheAliasLifecycle::MappedClosed { .. }
+            | LoaderCacheAliasLifecycle::Consumed { .. } => false,
+        };
+        if !live {
+            return Err(self.caller_error("loader-cache alias descriptor lifecycle differs"));
+        }
+        Ok((raw_path, image))
+    }
+
+    fn authenticate_loader_cache_mapping(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        expected: LoaderCacheMapping,
+    ) -> Result<(), Error> {
+        let evidence = self.loader_cache_artifact_evidence(config)?;
+        let state = self.after_loader_private_state()?;
+        let lifecycle_descriptor = match state.loader_cache.as_ref().map(|cache| cache.lifecycle) {
+            Some(LoaderCacheLifecycle::MappedOpen {
+                descriptor,
+                mapping,
+            })
+            | Some(LoaderCacheLifecycle::MappedClosed {
+                descriptor,
+                mapping,
+            }) if mapping == expected => descriptor,
+            _ => {
+                return Err(self.caller_error("loader-cache mapping lifecycle authority changed"));
+            }
+        };
+        let owned = state
+            .owned_mappings
+            .iter()
+            .filter(|mapping| mapping.purpose == AfterLoaderMappingPurpose::LoaderCache)
+            .collect::<Vec<_>>();
+        let [owned] = owned.as_slice() else {
+            return Err(self.caller_error("loader-cache mapping ownership is not unique"));
+        };
+        if expected.identity != evidence.mapping
+            || expected.raw_length != evidence.length
+            || owned.start != expected.start
+            || owned.end != expected.end
+            || !owned.readable
+            || owned.writable
+            || owned.executable
+            || owned.shared
+            || owned.descriptor != Some(lifecycle_descriptor)
+            || owned.offset != 0
+        {
+            return Err(self.caller_error("owned loader-cache mapping geometry differs"));
+        }
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        let physical = maps
+            .iter()
+            .filter(|mapping| {
+                mapping.start == expected.start
+                    && mapping.end == expected.end
+                    && mapping.readable
+                    && !mapping.writable
+                    && !mapping.executable
+                    && !mapping.shared
+                    && mapping.offset == 0
+                    && mapping.mapping_identity() == evidence.mapping
+                    && mapping.path.as_ref().is_some_and(|path| {
+                        path.as_os_str().as_encoded_bytes() == LOADER_CACHE_MEMFD_LINK
+                    })
+            })
+            .count();
+        if physical != 1 {
+            return Err(self.caller_error("physical loader-cache mapping identity differs"));
+        }
+        let length = usize::try_from(expected.raw_length).map_err(|_| Errno::EOVERFLOW)?;
+        let mut bytes = vec![0_u8; length];
+        task.read_exact(expected.start as usize, &mut bytes)?;
+        let raw_end = expected
+            .start
+            .checked_add(expected.raw_length)
+            .ok_or(Errno::EOVERFLOW)?;
+        if bytes.as_slice() != config.loader_cache().bytes()
+            || !target_range_is_zero(task, raw_end, expected.end - raw_end)?
+        {
+            return Err(self.caller_error("live loader-cache mapping bytes differ"));
+        }
+        Ok(())
+    }
+
+    fn observe_ptmalloc_bootstrap(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<Option<(u64, PtmallocBootstrapObservation)>, Error> {
+        if !ptmalloc_bootstrap_profile_matches(&config.provider.bytes)
+            .map_err(|message| self.caller_error(message))?
+        {
+            return Ok(None);
+        }
+        let state = self.after_loader_private_state()?;
+        let geometry = state
+            .image_geometry(&config.provider)
+            .ok_or_else(|| self.caller_error("profiled ptmalloc provider geometry is unbound"))?;
+        if geometry.image != state.image_id(&config.provider) {
+            return Err(self.caller_error("profiled ptmalloc provider identity changed"));
+        }
+        let renewed = self.resolve_after_loader_image_geometry(
+            task,
+            &config.provider,
+            state.image_id(&config.provider),
+            "ptmalloc-bootstrap-renewal",
+        )?;
+        if renewed != geometry {
+            return Err(self.caller_error("profiled ptmalloc provider geometry changed"));
+        }
+        self.authenticate_after_loader_image_backing(task, &config.provider, renewed)?;
+        let function = geometry
+            .load_bias
+            .checked_add(PTMALLOC_BOOTSTRAP_FUNCTION_RVA)
+            .ok_or(Errno::EOVERFLOW)?;
+        let function_end = function
+            .checked_add(PTMALLOC_BOOTSTRAP_FUNCTION.len() as u64)
+            .ok_or(Errno::EOVERFLOW)?;
+        let tcache_key = geometry
+            .load_bias
+            .checked_add(PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA)
+            .ok_or(Errno::EOVERFLOW)?;
+        let initialized = geometry
+            .load_bias
+            .checked_add(PTMALLOC_BOOTSTRAP_INITIALIZED_RVA)
+            .ok_or(Errno::EOVERFLOW)?;
+        if function < geometry.span.0
+            || geometry.span.1 < function_end
+            || tcache_key < geometry.span.0
+            || geometry.span.1 < tcache_key.checked_add(8).ok_or(Errno::EOVERFLOW)?
+            || initialized < geometry.span.0
+            || geometry.span.1 < initialized.checked_add(1).ok_or(Errno::EOVERFLOW)?
+        {
+            return Err(self.caller_error("profiled ptmalloc ranges left provider geometry"));
+        }
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        let function_range = GuestRange::new(function, PTMALLOC_BOOTSTRAP_FUNCTION.len() as u64)
+            .ok_or(Errno::EOVERFLOW)?;
+        let executable_maps = maps
+            .iter()
+            .filter(|mapping| {
+                mapping.readable
+                    && mapping.executable
+                    && !mapping.writable
+                    && !mapping.shared
+                    && mapping_identity_matches(geometry.mapping, mapping)
+                    && mapping.contains_range(function_range)
+            })
+            .count();
+        if executable_maps != 1 {
+            return Err(
+                self.caller_error("profiled ptmalloc function lacks one exact provider RX mapping")
+            );
+        }
+        let provider_elf = Elf::parse(&config.provider.bytes).map_err(|error| {
+            self.caller_error(format!("profiled provider parse failed: {error}"))
+        })?;
+        let writable = provider_elf
+            .program_headers
+            .iter()
+            .filter(|load| load.p_type == ph::PT_LOAD && load.p_flags == (ph::PF_R | ph::PF_W))
+            .collect::<Vec<_>>();
+        let [writable] = writable.as_slice() else {
+            return Err(self.caller_error("profiled provider writable PT_LOAD changed"));
+        };
+        let bss_start = geometry
+            .load_bias
+            .checked_add(page_up(
+                writable
+                    .p_vaddr
+                    .checked_add(writable.p_filesz)
+                    .ok_or(Errno::EOVERFLOW)?,
+            )?)
+            .ok_or(Errno::EOVERFLOW)?;
+        let bss_end = geometry
+            .load_bias
+            .checked_add(page_up(
+                writable
+                    .p_vaddr
+                    .checked_add(writable.p_memsz)
+                    .ok_or(Errno::EOVERFLOW)?,
+            )?)
+            .ok_or(Errno::EOVERFLOW)?;
+        let state_range = GuestRange::new(tcache_key, 8).ok_or(Errno::EOVERFLOW)?;
+        let initialized_range = GuestRange::new(initialized, 1).ok_or(Errno::EOVERFLOW)?;
+        let bss_maps = maps
+            .iter()
+            .filter(|mapping| {
+                mapping.start == bss_start
+                    && mapping.end == bss_end
+                    && mapping.offset == 0
+                    && mapping.readable
+                    && mapping.writable
+                    && !mapping.executable
+                    && !mapping.shared
+                    && mapping.inode == 0
+                    && mapping.path.is_none()
+                    && mapping.contains_range(state_range)
+                    && mapping.contains_range(initialized_range)
+                    && guest_hook_mapping_attributes(task.pid(), mapping).is_some_and(
+                        |attributes| attributes.fork_safe && attributes.protection_key == 0,
+                    )
+            })
+            .count();
+        if bss_maps != 1 {
+            return Err(self.caller_error(
+                "profiled ptmalloc state lacks one exact private anonymous BSS mapping",
+            ));
+        }
+        let mut live_function = vec![0_u8; PTMALLOC_BOOTSTRAP_FUNCTION.len()];
+        task.read_exact(function as usize, &mut live_function)?;
+        if live_function != PTMALLOC_BOOTSTRAP_FUNCTION {
+            return Err(self.caller_error("live profiled ptmalloc function bytes differ"));
+        }
+        let mut key = [0_u8; 8];
+        task.read_exact(tcache_key as usize, &mut key)?;
+        let mut initialized_byte = [0_u8; 1];
+        task.read_exact(initialized as usize, &mut initialized_byte)?;
+        Ok(Some((
+            geometry.load_bias,
+            PtmallocBootstrapObservation {
+                initialized: initialized_byte[0],
+                tcache_key: key,
+            },
+        )))
+    }
+
+    fn initialize_ptmalloc_bootstrap_state(
+        &mut self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<(), Error> {
+        let observed = self.observe_ptmalloc_bootstrap(task, config)?;
+        if self
+            .after_loader_private_state()?
+            .ptmalloc_bootstrap
+            .is_some()
+        {
+            return Err(self.caller_error("profiled ptmalloc entry observation was repeated"));
+        }
+        let Some((load_bias, entry)) = observed else {
+            return Ok(());
+        };
+        if !matches!(entry.initialized, 0 | 1)
+            || entry.initialized == 0 && entry.tcache_key != [0; 8]
+        {
+            return Err(self.caller_error("profiled ptmalloc entry state is not canonical"));
+        }
+        self.after_loader_private_state_mut()?.ptmalloc_bootstrap = Some(PtmallocBootstrapState {
+            load_bias,
+            entry,
+            pre_dlopen_verified: false,
+            entropy_consumed: false,
+            injected_key: None,
+        });
+        self.caller_observe(
+            "profiled ptmalloc entry state",
+            format!(
+                "initialized={} tcache_key_sha256={}",
+                entry.initialized,
+                sha256_hex(&entry.tcache_key),
+            ),
+        )
+    }
+
+    fn verify_ptmalloc_bootstrap_before_dlopen(
+        &mut self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<(), Error> {
+        let observed = self.observe_ptmalloc_bootstrap(task, config)?;
+        let Some(mut profile) = self.after_loader_private_state()?.ptmalloc_bootstrap else {
+            return if observed.is_none() {
+                Ok(())
+            } else {
+                Err(self.caller_error("profiled ptmalloc state appeared after entry"))
+            };
+        };
+        let Some((load_bias, current)) = observed else {
+            return Err(self.caller_error("profiled ptmalloc provider disappeared before dlopen"));
+        };
+        if profile.pre_dlopen_verified
+            || profile.entropy_consumed
+            || profile.injected_key.is_some()
+            || profile.load_bias != load_bias
+            || profile.entry != current
+        {
+            return Err(self.caller_error("profiled ptmalloc state changed before dlopen"));
+        }
+        profile.pre_dlopen_verified = true;
+        self.after_loader_private_state_mut()?.ptmalloc_bootstrap = Some(profile);
+        self.caller_observe(
+            "profiled ptmalloc pre-dlopen state",
+            format!(
+                "initialized={} tcache_key_sha256={}",
+                current.initialized,
+                sha256_hex(&current.tcache_key),
+            ),
+        )
+    }
+
+    fn verify_ptmalloc_bootstrap_retained(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<(), Error> {
+        let observed = self.observe_ptmalloc_bootstrap(task, config)?;
+        let Some(profile) = self.after_loader_private_state()?.ptmalloc_bootstrap else {
+            return if observed.is_none() {
+                Ok(())
+            } else {
+                Err(self.caller_error("profiled ptmalloc state appeared after dlopen"))
+            };
+        };
+        let Some((load_bias, current)) = observed else {
+            return Err(self.caller_error("profiled ptmalloc provider disappeared after dlopen"));
+        };
+        let exact = profile.pre_dlopen_verified
+            && profile.load_bias == load_bias
+            && match profile.entry.initialized {
+                0 => {
+                    profile.entropy_consumed
+                        && profile.injected_key.is_some()
+                        && self
+                            .after_loader_private_state()?
+                            .private_brk_growth_consumed
+                        && current.initialized == 1
+                        && current.tcache_key == profile.injected_key.unwrap()
+                }
+                1 => {
+                    !profile.entropy_consumed
+                        && profile.injected_key.is_none()
+                        && !self
+                            .after_loader_private_state()?
+                            .private_brk_growth_consumed
+                        && current == profile.entry
+                }
+                _ => false,
+            };
+        if !exact {
+            return Err(self.caller_error("profiled ptmalloc post-dlopen state differs"));
+        }
+        Ok(())
     }
 
     pub(super) fn caller_observe(
@@ -2171,10 +5392,124 @@ impl<L: Tool + 'static> TracedTask<L> {
         if spans
             .iter()
             .copied()
-            .any(|span| !state.owns_range(span, true))
+            .any(|span| !state.owns_range(span, true) || state.loader_cache_scratch_overlaps(span))
         {
             return Err(self.caller_error(
-                "private syscall output is outside controller-owned writable memory",
+                "private syscall output is outside writable ownership or overlaps cache scratch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn authenticate_proc_fd_audit_call(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+        data_spans: &[(u64, u64)],
+    ) -> Result<(), Error> {
+        let profile = proc_fd_audit_profile(&config.sealed_runtime.image.bytes)
+            .map_err(|reason| self.caller_error(reason))?;
+        let state = self.after_loader_private_state()?;
+        let active = self
+            .liteinst_after_loader_private_call
+            .as_ref()
+            .ok_or_else(|| self.caller_error("proc-fd audit has no active private call"))?;
+        if active.function != CallerFunction::Initializer {
+            return Err(self.caller_error("proc-fd audit is outside the active initializer call"));
+        }
+        let geometry = state
+            .image_geometry(&config.sealed_runtime.image)
+            .ok_or_else(|| self.caller_error("proc-fd audit runtime geometry is unbound"))?;
+        self.authenticate_after_loader_image_backing(task, &config.sealed_runtime.image, geometry)?;
+        let registers = task.getregs()?;
+        let controller_stack = state.controller_call_stack_range().ok_or_else(|| {
+            self.caller_error("proc-fd audit controller call stack is unavailable")
+        })?;
+        if controller_stack.end != active.call_stack_top
+            || active
+                .call_stack_top
+                .checked_sub(STACK_SIZE)
+                .is_none_or(|start| start != controller_stack.start)
+        {
+            return Err(self.caller_error(
+                "proc-fd audit stack differs from the active initializer call stack",
+            ));
+        }
+        if !controller_call_stack_maps_are_exact(
+            &guest_maps(task.pid()).ok_or(Errno::EPROTO)?,
+            controller_stack,
+        ) {
+            return Err(self.caller_error(
+                "proc-fd audit controller call stack guards or physical mapping differ",
+            ));
+        }
+        let mut call_chain = [0_u8; 32];
+        task.read_exact(registers.rsp as usize, &mut call_chain)?;
+        let stack_word =
+            |offset: usize| u64::from_ne_bytes(call_chain[offset..offset + 8].try_into().unwrap());
+        let raw_return_address = stack_word(0);
+        let copied_arg5 = stack_word(8);
+        let return_address = stack_word(16);
+        let original_arg5 = stack_word(24);
+        let controller_return_slot = active
+            .call_stack_top
+            .checked_sub(8)
+            .ok_or(Errno::EOVERFLOW)?;
+        let mut raw_controller_return = [0_u8; 8];
+        task.read_exact(controller_return_slot as usize, &mut raw_controller_return)?;
+        let controller_return_address = u64::from_ne_bytes(raw_controller_return);
+        let expected_controller_return = active.entry.checked_add(17).ok_or(Errno::EOVERFLOW)?;
+        let call_start = return_address.checked_sub(5).ok_or(Errno::EPROTO)?;
+        let mut call_instruction = [0_u8; 5];
+        task.read_exact(call_start as usize, &mut call_instruction)?;
+        let raw_call_start = raw_return_address.checked_sub(5).ok_or(Errno::EPROTO)?;
+        let mut raw_call_instruction = [0_u8; 5];
+        task.read_exact(raw_call_start as usize, &mut raw_call_instruction)?;
+        let raw_start = geometry
+            .load_bias
+            .checked_add(profile.raw_syscall_start)
+            .ok_or(Errno::EOVERFLOW)?;
+        let trusted_gate = geometry
+            .load_bias
+            .checked_add(profile.trusted_gate)
+            .ok_or(Errno::EOVERFLOW)?;
+        let mut shim = [0_u8; 14];
+        task.read_exact(raw_start as usize, &mut shim)?;
+        let mut gate = [0_u8; 26];
+        task.read_exact(trusted_gate as usize, &mut gate)?;
+        let shim_call = shim[4..9].try_into().unwrap();
+        if shim[..4] != [0xff, 0x74, 0x24, 0x08]
+            || shim[9..] != [0x48, 0x83, 0xc4, 0x08, 0xc3]
+            || rel32_call_target(raw_start.checked_add(9).ok_or(Errno::EOVERFLOW)?, shim_call)
+                != Some(trusted_gate)
+            || gate
+                != [
+                    0x48, 0x89, 0xf8, 0x48, 0x89, 0xf7, 0x48, 0x89, 0xd6, 0x48, 0x89, 0xca, 0x4d,
+                    0x89, 0xc2, 0x4d, 0x89, 0xc8, 0x4c, 0x8b, 0x4c, 0x24, 0x08, 0x0f, 0x05, 0xc3,
+                ]
+        {
+            return Err(self.caller_error("proc-fd raw syscall shim or trusted gate bytes differ"));
+        }
+        if !proc_fd_audit_site_is_exact(
+            profile,
+            geometry.load_bias,
+            permit,
+            &registers,
+            controller_stack,
+            controller_return_slot,
+            controller_return_address,
+            expected_controller_return,
+            return_address,
+            call_instruction,
+            raw_return_address,
+            raw_call_instruction,
+            copied_arg5,
+            original_arg5,
+            data_spans,
+        ) {
+            return Err(self.caller_error(
+                "proc-fd audit site, call chain or controller-stack data ranges differ",
             ));
         }
         Ok(())
@@ -2192,6 +5527,366 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(())
     }
 
+    fn after_loader_cache_open_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        let geometry = self.authenticate_loader_cache_interpreter_site(
+            task,
+            config,
+            permit,
+            LOADER_CACHE_OPENAT_SYSCALL_RVA,
+        )?;
+        let logical_path = geometry
+            .load_bias
+            .checked_add(LOADER_CACHE_PATH_RVA)
+            .ok_or(Errno::EOVERFLOW)?;
+        if !exact_loader_cache_openat_arguments(&permit.args, logical_path)
+            || self.caller_cstring(task, logical_path, LOADER_CACHE_PATH.len())?
+                != LOADER_CACHE_PATH
+        {
+            return Err(self.caller_error(
+                "loader-cache openat logical path, raw flags, mode or preserved wrapper registers differ",
+            ));
+        }
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        let state = self.after_loader_private_state()?;
+        if cache.lifecycle != LoaderCacheLifecycle::AwaitingOpen
+            || state.owned_descriptors.values().any(|descriptor| {
+                matches!(descriptor, AfterLoaderOwnedDescriptor::LoaderCache { .. })
+            })
+            || state
+                .owned_mappings
+                .iter()
+                .any(|mapping| mapping.purpose == AfterLoaderMappingPurpose::LoaderCache)
+        {
+            return Err(self.caller_error(
+                "loader-cache openat was duplicated or followed an earlier cache lifecycle step",
+            ));
+        }
+        let evidence = self.loader_cache_artifact_evidence(config)?;
+        let admission_regs = task.getregs()?;
+        if !after_loader_syscall_registers_match(permit.number, permit.args, &admission_regs)
+            || admission_regs.rip != permit.resume_pointer
+        {
+            return Err(self.caller_error(
+                "loader-cache admission registers differ from the bound logical syscall",
+            ));
+        }
+        let mut path = config
+            .immutable_loader_cache()
+            .sealed_source()
+            .as_os_str()
+            .as_encoded_bytes()
+            .to_vec();
+        path.push(0);
+        let redirect = LoaderCacheRedirect {
+            scratch: cache.scratch,
+            preimage: cache.scratch_preimage,
+            path,
+            admission_registers: register_words(&admission_regs),
+            admission_xstate: task.get_x86_extended_state()?,
+        };
+        if loader_cache_redirect_arguments(permit.args, &redirect).is_none() {
+            return Err(self.caller_error("sealed loader-cache redirect path exceeds its scratch"));
+        }
+        Ok(AfterLoaderSyscallEffect::OpenLoaderCache {
+            descriptor: AfterLoaderOwnedDescriptor::LoaderCache {
+                file: evidence.file,
+                mapping: evidence.mapping,
+                length: evidence.length,
+                position: 0,
+            },
+            redirect,
+        })
+    }
+
+    fn after_loader_cache_stat_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        self.authenticate_loader_cache_interpreter_site(
+            task,
+            config,
+            permit,
+            LOADER_CACHE_FSTAT_SYSCALL_RVA,
+        )?;
+        let descriptor = permit.args[0];
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        if cache.lifecycle != (LoaderCacheLifecycle::Open { descriptor }) {
+            return Err(self.caller_error("loader-cache fstat is duplicated or out of order"));
+        }
+        self.authenticate_loader_cache_descriptor(task, config, descriptor)?;
+        let metadata = std::fs::metadata(format!("/proc/{}/fd/{descriptor}", task.pid()))
+            .map_err(|error| self.caller_error(error))?;
+        Ok(AfterLoaderSyscallEffect::StatLoaderCache {
+            descriptor,
+            destination: permit.args[1],
+            fields: AfterLoaderStatFields::from_metadata(&metadata),
+        })
+    }
+
+    fn after_loader_cache_map_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        self.authenticate_loader_cache_interpreter_site(
+            task,
+            config,
+            permit,
+            LOADER_CACHE_MMAP_SYSCALL_RVA,
+        )?;
+        let descriptor = permit.args[4];
+        let evidence = self.authenticate_loader_cache_descriptor(task, config, descriptor)?;
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        if cache.lifecycle != (LoaderCacheLifecycle::Statted { descriptor })
+            || !loader_cache_mmap_arguments_match(permit.args, descriptor, evidence.length)
+        {
+            return Err(self.caller_error(
+                "loader-cache mmap is out of order or differs in address, length, protection, flags, descriptor or offset",
+            ));
+        }
+        Ok(AfterLoaderSyscallEffect::MapLoaderCache {
+            descriptor,
+            raw_length: evidence.length,
+            identity: evidence.mapping,
+        })
+    }
+
+    fn after_loader_cache_close_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        self.authenticate_loader_cache_interpreter_site(
+            task,
+            config,
+            permit,
+            LOADER_CACHE_CLOSE_SYSCALL_RVA,
+        )?;
+        let descriptor = permit.args[0];
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        let LoaderCacheLifecycle::MappedOpen {
+            descriptor: expected_descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Err(self.caller_error("loader-cache close is duplicated or out of order"));
+        };
+        if descriptor != expected_descriptor {
+            return Err(self.caller_error("loader-cache close names another descriptor"));
+        }
+        self.authenticate_loader_cache_descriptor(task, config, descriptor)?;
+        self.authenticate_loader_cache_mapping(task, config, mapping)?;
+        Ok(AfterLoaderSyscallEffect::CloseLoaderCache {
+            descriptor,
+            mapping,
+        })
+    }
+
+    fn after_loader_cache_retire_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<Option<AfterLoaderSyscallEffect>, Error> {
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        let LoaderCacheLifecycle::MappedClosed {
+            descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Ok(None);
+        };
+        if !cache
+            .aliases
+            .values()
+            .all(LoaderCacheAliasLifecycle::is_consumed)
+            || self
+                .after_loader_private_state()?
+                .owned_descriptors
+                .values()
+                .any(|owned| matches!(owned, AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. }))
+        {
+            return Err(self.caller_error(
+                "loader-cache munmap preceded exact consumption of every cache-derived alias",
+            ));
+        }
+        self.authenticate_loader_cache_scratch(task)?;
+        let requested = checked_page_effect_range(permit.args[0], permit.args[1])?;
+        if !ranges_overlap((mapping.start, mapping.end), requested) {
+            return Ok(None);
+        }
+        self.authenticate_loader_cache_interpreter_site(
+            task,
+            config,
+            permit,
+            LOADER_CACHE_MUNMAP_SYSCALL_RVA,
+        )?;
+        if permit.args[0] != mapping.start || permit.args[1] != mapping.raw_length {
+            return Err(self.caller_error(
+                "loader-cache munmap is partial or differs from its exact raw mapping range",
+            ));
+        }
+        if !procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+            .map_err(|error| self.caller_error(error))?
+        {
+            return Err(self.caller_error("closed loader-cache descriptor reappeared"));
+        }
+        self.authenticate_loader_cache_mapping(task, config, mapping)?;
+        Ok(Some(AfterLoaderSyscallEffect::RetireLoaderCache {
+            descriptor,
+            mapping,
+        }))
+    }
+
+    fn after_loader_proc_fd_directory_open_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        let args = permit.args;
+        let path_span = checked_range(args[1], (PROC_SELF_FD_DIRECTORY.len() + 1) as u64)?;
+        self.authenticate_proc_fd_audit_call(task, config, permit, &[path_span])?;
+        let state = self.after_loader_private_state()?;
+        if !exact_proc_fd_directory_openat_arguments(&args)
+            || self.caller_cstring(task, args[1], PROC_SELF_FD_DIRECTORY.len() + 1)?
+                != PROC_SELF_FD_DIRECTORY
+            || state.proc_fd_audit != ProcFdAuditLifecycle::AwaitingOpen
+            || state.owned_descriptors.values().any(|descriptor| {
+                matches!(
+                    descriptor,
+                    AfterLoaderOwnedDescriptor::ProcFdDirectory { .. }
+                )
+            })
+        {
+            return Err(self.caller_error(
+                "private proc-fd directory open differs in path, flags, phase or uniqueness",
+            ));
+        }
+        Ok(AfterLoaderSyscallEffect::OpenProcFdDirectory {
+            expected: proc_fd_link_snapshot(task.pid())
+                .map_err(|error| self.caller_error(error))?,
+        })
+    }
+
+    fn after_loader_proc_fd_getdents_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        let args = permit.args;
+        let output_span = checked_range(args[1], args[2])?;
+        self.authenticate_proc_fd_audit_call(task, config, permit, &[output_span])?;
+        let descriptor = self
+            .after_loader_private_state()?
+            .owned_descriptors
+            .get(&args[0])
+            .ok_or_else(|| self.caller_error("private getdents descriptor is not owned"))?;
+        let AfterLoaderOwnedDescriptor::ProcFdDirectory {
+            expected,
+            seen,
+            linked,
+            eof,
+        } = descriptor
+        else {
+            return Err(self.caller_error("private getdents descriptor is not the proc-fd audit"));
+        };
+        if !exact_proc_fd_getdents_arguments(&args)
+            || self.after_loader_private_state()?.proc_fd_audit
+                != (ProcFdAuditLifecycle::Scanning {
+                    descriptor: args[0],
+                })
+            || *eof
+            || linked != seen
+            || proc_fd_link_snapshot(task.pid()).map_err(|error| self.caller_error(error))?
+                != *expected
+        {
+            return Err(self.caller_error(
+                "private proc-fd getdents shape, lifecycle or live descriptor set differs",
+            ));
+        }
+        Ok(AfterLoaderSyscallEffect::ReadProcFdDirectory {
+            descriptor: args[0],
+            destination: args[1],
+            capacity: args[2],
+        })
+    }
+
+    fn after_loader_proc_fd_readlink_effect(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<AfterLoaderSyscallEffect, Error> {
+        let args = permit.args;
+        if !exact_proc_fd_readlink_arguments(&args) {
+            return Err(self.caller_error("private proc-fd readlink argument shape differs"));
+        }
+        let path = self.caller_cstring(task, args[1], 64)?;
+        let path_span = checked_range(
+            args[1],
+            u64::try_from(path.len() + 1).map_err(|_| Errno::EOVERFLOW)?,
+        )?;
+        let output_span = checked_range(args[2], args[3])?;
+        self.authenticate_proc_fd_audit_call(task, config, permit, &[path_span, output_span])?;
+        let descriptor = proc_self_fd_number(&path)
+            .ok_or_else(|| self.caller_error("private proc-fd readlink path is not canonical"))?;
+        let directories = self
+            .after_loader_private_state()?
+            .owned_descriptors
+            .iter()
+            .filter_map(|(directory, owned)| match owned {
+                AfterLoaderOwnedDescriptor::ProcFdDirectory {
+                    expected,
+                    seen,
+                    linked,
+                    eof,
+                } => Some((*directory, expected, seen, linked, *eof)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [(directory, expected, seen, linked, eof)] = directories.as_slice() else {
+            return Err(self.caller_error("private proc-fd readlink audit is not unique"));
+        };
+        if self.after_loader_private_state()?.proc_fd_audit
+            != (ProcFdAuditLifecycle::Scanning {
+                descriptor: *directory,
+            })
+        {
+            return Err(self.caller_error("private proc-fd readlink lifecycle is not scanning"));
+        }
+        let target = expected.get(&descriptor).ok_or_else(|| {
+            self.caller_error("private proc-fd readlink target is outside the bound descriptor set")
+        })?;
+        if *eof
+            || !seen.contains(&descriptor)
+            || linked.contains(&descriptor)
+            || target.len() >= PROC_FD_READLINK_BYTES as usize
+            || proc_fd_link_snapshot(task.pid()).map_err(|error| self.caller_error(error))?
+                != **expected
+        {
+            return Err(self.caller_error(
+                "private proc-fd readlink lifecycle, target length or live descriptor set differs",
+            ));
+        }
+        Ok(AfterLoaderSyscallEffect::ReadProcFdLink {
+            directory: *directory,
+            descriptor,
+            destination: args[2],
+            expected: target.clone(),
+        })
+    }
+
     fn after_loader_open_effect(
         &self,
         task: &Stopped,
@@ -2204,6 +5899,63 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
         }
         let path = self.caller_cstring(task, args[1], 4096)?;
+        if path == LOADER_CACHE_PATH {
+            return Err(self.caller_error(
+                "logical loader-cache open requires its exact interpreter-site redirect",
+            ));
+        }
+        if let Some(alias) = config.loader_cache_alias_for_path(&path) {
+            let cache = self.authenticate_loader_cache_scratch(task)?;
+            let LoaderCacheLifecycle::MappedClosed {
+                descriptor,
+                mapping,
+            } = cache.lifecycle
+            else {
+                return Err(self.caller_error(
+                    "bound loader-cache alias appeared before the exact cache mapping was closed",
+                ));
+            };
+            self.authenticate_loader_cache_mapping(task, config, mapping)?;
+            let descriptor_absent =
+                procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                    .map_err(|error| self.caller_error(error))?;
+            if !descriptor_absent
+                || alias.raw_path().as_os_str().as_encoded_bytes() != path
+                || alias.dependency().dynamic_soname().as_deref() != Some(alias.soname())
+                || !config.deferred_dependencies.iter().any(|dependency| {
+                    dependency.path == alias.dependency().path
+                        && dependency.file_identity == alias.dependency().file_identity
+                        && dependency.bytes == alias.dependency().bytes
+                })
+            {
+                return Err(self.caller_error(
+                    "bound loader-cache alias authority changed after cache consumption",
+                ));
+            }
+            let state = self.after_loader_private_state()?;
+            let image = state.image_id(alias.dependency());
+            if cache.aliases.get(alias.raw_path())
+                != Some(&LoaderCacheAliasLifecycle::AwaitingOpen { image })
+                || !target_loader_cache_alias_matches(task.pid(), alias)
+                    .map_err(|error| self.caller_error(error))?
+            {
+                return Err(self.caller_error(
+                    "bound loader-cache alias is duplicated or changed in the target mount namespace",
+                ));
+            }
+            return Ok(AfterLoaderSyscallEffect::OpenLoaderCacheAlias(
+                AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+                    image,
+                    soname: alias.soname().to_owned(),
+                    raw_path: alias.raw_path().to_path_buf(),
+                    canonical_path: alias.dependency().path.clone(),
+                    file: alias.dependency().file_identity,
+                    bytes: alias.dependency().bytes.clone(),
+                    stamp: alias.dependency_stamp(),
+                    position: 0,
+                },
+            ));
+        }
         if path
             == config
                 .sealed_runtime
@@ -2251,22 +6003,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             .ok_or_else(|| {
             self.caller_error("private openat path is outside the bound graph")
         })?;
-        let metadata =
-            std::fs::metadata(&expected.path).map_err(|error| self.caller_error(error))?;
-        let bytes = std::fs::read(&expected.path).map_err(|error| self.caller_error(error))?;
-        if metadata.dev() != expected.file_identity.device
-            || metadata.ino() != expected.file_identity.inode
-            || bytes.as_slice() != expected.bytes.as_ref()
-        {
-            return Err(self.caller_error("bound graph file changed before private openat"));
-        }
-        Ok(AfterLoaderSyscallEffect::Open(
-            AfterLoaderOwnedDescriptor::BoundImage {
-                image: self.after_loader_private_state()?.image_id(expected),
-                bytes: expected.bytes.clone(),
-                position: 0,
-            },
-        ))
+        Err(self.caller_error(format!(
+            "canonical bound-graph path {} is refused during private dlopen; only exact sealed inputs are admissible",
+            expected.path.display(),
+        )))
     }
 
     fn after_loader_read_effect(
@@ -2376,7 +6116,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.caller_error("private mprotect protection is not a canonical C int")
                 })?;
                 let range = checked_page_effect_range(args[0], args[1])?;
-                if !state.owns_range(range, false)
+                if state.loader_cache_scratch_overlaps(range)
+                    || !state.owns_range(range, false)
                     || state.callback_stack_overlaps(range)
                     || state.refuses_protected_overlap(range)
                     || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
@@ -2390,11 +6131,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                     start: args[0],
                     raw_length: args[1],
                     protection,
+                    loader_cache_alias: None,
                 })
             }
             libc::SYS_munmap => {
                 let range = checked_page_effect_range(args[0], args[1])?;
-                if !state.owns_range(range, false) || state.callback_stack_overlaps(range) {
+                let exact_scratch_release =
+                    state.loader_cache_scratch_release_is_armed_for(args, range);
+                if state.loader_cache_scratch_overlaps(range) && !exact_scratch_release {
+                    return Err(
+                        self.caller_error("private munmap overlaps armed loader-cache scratch")
+                    );
+                }
+                if (!exact_scratch_release && !state.owns_range(range, false))
+                    || state.callback_stack_overlaps(range)
+                {
                     return Err(self.caller_error("private munmap is outside an owned range"));
                 }
                 if !state.shared_reservation_unmap_is_exact(range) {
@@ -2488,6 +6239,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.caller_error("private mmap requests unsupported protection or W+X"));
         }
         let state = self.after_loader_private_state()?;
+        if args[0] != 0
+            && state.loader_cache_scratch_overlaps(checked_page_effect_range(args[0], length)?)
+        {
+            return Err(self.caller_error("private mmap overlaps armed loader-cache scratch"));
+        }
         let anonymous_descriptor = canonical_anonymous_mmap_descriptor(args[4]);
         let (descriptor, purpose) = match function {
             None => {
@@ -2513,6 +6269,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .image,
                     ),
                     AfterLoaderOwnedDescriptor::BoundImage { image, .. } => *image,
+                    AfterLoaderOwnedDescriptor::LoaderCacheAlias { image, .. } => *image,
                     _ => {
                         return Err(self.caller_error(
                             "private loader mmap descriptor is outside the bound image graph",
@@ -2702,7 +6459,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         function: CallerFunction,
         permit: &AfterLoaderSyscallPermit,
     ) -> Result<AfterLoaderSyscallEffect, Error> {
-        if function == CallerFunction::ErrnoLocation || !private_syscall_allowed(permit.number) {
+        if function == CallerFunction::ErrnoLocation {
             return Err(self.caller_error(format!(
                 "private function syscall {} is refused",
                 permit.number
@@ -2712,21 +6469,203 @@ impl<L: Tool + 'static> TracedTask<L> {
         if permit.image != Some(state.image) {
             return Err(self.caller_error("private function image changed"));
         }
+        if let Some(cache) = state.loader_cache.as_ref() {
+            let exact_next_step = match cache.lifecycle {
+                LoaderCacheLifecycle::Open { descriptor } => {
+                    permit.number == libc::SYS_fstat && permit.args[0] == descriptor
+                }
+                LoaderCacheLifecycle::Statted { descriptor } => {
+                    permit.number == libc::SYS_mmap && permit.args[4] == descriptor
+                }
+                LoaderCacheLifecycle::MappedOpen { descriptor, .. } => {
+                    permit.number == libc::SYS_close && permit.args[0] == descriptor
+                }
+                LoaderCacheLifecycle::AwaitingOpen
+                | LoaderCacheLifecycle::MappedClosed { .. }
+                | LoaderCacheLifecycle::Retired { .. } => true,
+                LoaderCacheLifecycle::ScratchReleaseArmed { .. }
+                | LoaderCacheLifecycle::Released { .. } => false,
+            };
+            if !exact_next_step {
+                return Err(self.caller_error(
+                    "private syscall interleaved with the exact loader-cache fstat/mmap/close sequence",
+                ));
+            }
+            let mut exact_alias_step = true;
+            for (raw_path, lifecycle) in &cache.aliases {
+                let alias = config
+                    .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                    .ok_or_else(|| {
+                        self.caller_error("loader-cache alias plan left its bound profile")
+                    })?;
+                let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                    .map_err(|reason| self.caller_error(reason))?;
+                exact_alias_step &= loader_cache_alias_next_step_is_exact(
+                    &plan,
+                    lifecycle,
+                    permit.number,
+                    permit.args,
+                );
+            }
+            if !exact_alias_step {
+                return Err(self.caller_error(
+                    "private syscall interleaved with the exact loader-cache alias sequence",
+                ));
+            }
+        }
+        if permit.number == libc::SYS_getrandom {
+            if function != CallerFunction::Dlopen {
+                return Err(self.caller_error(
+                    "private bootstrap entropy request has a different phase or ABI shape",
+                ));
+            }
+            let profile = state.ptmalloc_bootstrap.ok_or_else(|| {
+                self.caller_error("private bootstrap entropy has no exact provider profile")
+            })?;
+            let destination = profile
+                .load_bias
+                .checked_add(PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA)
+                .ok_or(Errno::EOVERFLOW)?;
+            let syscall = profile
+                .load_bias
+                .checked_add(PTMALLOC_BOOTSTRAP_SYSCALL_RVA)
+                .ok_or(Errno::EOVERFLOW)?;
+            if !exact_ptmalloc_bootstrap_request(profile.load_bias, task.getregs()?.rax, permit)
+                || permit.instruction_pointer != syscall
+                || permit.args[0] != destination
+            {
+                return Err(self.caller_error(
+                    "private bootstrap entropy request differs from the one-shot profile",
+                ));
+            }
+            let Some((load_bias, current)) = self.observe_ptmalloc_bootstrap(task, config)? else {
+                return Err(
+                    self.caller_error("private bootstrap entropy provider profile disappeared")
+                );
+            };
+            if !exact_ptmalloc_bootstrap_admission_state(profile, load_bias, current) {
+                return Err(self
+                    .caller_error("private bootstrap entropy target state differs at admission"));
+            }
+            return Ok(AfterLoaderSyscallEffect::PtmallocBootstrapEntropy {
+                destination,
+                before: current.tcache_key,
+            });
+        }
+        if !private_syscall_allowed(permit.number) {
+            return Err(self.caller_error(format!(
+                "private function syscall {} is refused",
+                permit.number
+            )));
+        }
         self.validate_after_loader_output_spans(&permit.output_spans)?;
         let args = permit.args;
+        if permit.number == libc::SYS_mprotect {
+            let pending = state
+                .loader_cache
+                .as_ref()
+                .into_iter()
+                .flat_map(|cache| cache.aliases.iter())
+                .filter_map(|(raw_path, lifecycle)| match lifecycle {
+                    LoaderCacheAliasLifecycle::MappedClosed {
+                        image, geometry, ..
+                    } => Some((raw_path.clone(), *image, *geometry)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if let [(raw_path, image, geometry)] = pending.as_slice() {
+                let alias = config
+                    .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                    .ok_or_else(|| {
+                        self.caller_error("pending loader-cache alias left its bound profile")
+                    })?;
+                let renewed = self.resolve_loader_cache_alias_pre_relro_geometry(
+                    task,
+                    alias.dependency(),
+                    *image,
+                )?;
+                let relro = exact_image_relro_range(alias.dependency(), renewed)?;
+                let protection = canonical_c_int_argument(args[2]).ok_or_else(|| {
+                    self.caller_error(
+                        "loader-cache alias RELRO protection is not a canonical C int",
+                    )
+                })?;
+                self.authenticate_loader_cache_interpreter_site(
+                    task,
+                    config,
+                    permit,
+                    LOADER_CACHE_ALIAS_RELRO_MPROTECT_SYSCALL_RVA,
+                )?;
+                self.authenticate_after_loader_image_backing(task, alias.dependency(), renewed)?;
+                let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                if renewed != *geometry
+                    || args[0] != relro.0
+                    || args[1] != relro.1 - relro.0
+                    || protection != libc::PROT_READ
+                    || state.loader_cache_scratch_overlaps(relro)
+                    || !state.owns_range(relro, false)
+                    || state.callback_stack_overlaps(relro)
+                    || state.refuses_protected_overlap(relro)
+                    || !target_loader_cache_alias_matches(task.pid(), alias)
+                        .map_err(|error| self.caller_error(error))?
+                    || !exact_image_mapping_paths_are_literal(alias.dependency(), renewed, &maps)
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias RELRO transition differs from its exact profiled state",
+                    ));
+                }
+                return Ok(AfterLoaderSyscallEffect::Protect {
+                    start: args[0],
+                    raw_length: args[1],
+                    protection,
+                    loader_cache_alias: Some((raw_path.clone(), *image, *geometry)),
+                });
+            }
+            if !pending.is_empty() {
+                return Err(self.caller_error("loader-cache alias RELRO authority is not unique"));
+            }
+        }
         match permit.number {
             libc::SYS_openat => {
-                let effect = self.after_loader_open_effect(task, config, args)?;
+                let path = self.caller_cstring(task, args[1], 4096)?;
+                let effect =
+                    if function == CallerFunction::Initializer && path == PROC_SELF_FD_DIRECTORY {
+                        self.after_loader_proc_fd_directory_open_effect(task, config, permit)?
+                    } else if function == CallerFunction::Dlopen && path == LOADER_CACHE_PATH {
+                        self.after_loader_cache_open_effect(task, config, permit)?
+                    } else {
+                        if function == CallerFunction::Dlopen
+                            && config.loader_cache_alias_for_path(&path).is_some()
+                        {
+                            self.authenticate_loader_cache_interpreter_site(
+                                task,
+                                config,
+                                permit,
+                                LOADER_CACHE_OPENAT_SYSCALL_RVA,
+                            )?;
+                        }
+                        self.after_loader_open_effect(task, config, args)?
+                    };
                 let admitted = matches!(
                     (&effect, function),
                     (
                         AfterLoaderSyscallEffect::Open(
                             AfterLoaderOwnedDescriptor::SealedRuntime { .. }
-                                | AfterLoaderOwnedDescriptor::BoundImage { .. }
                         ),
                         CallerFunction::Dlopen
                     ) | (
+                        AfterLoaderSyscallEffect::OpenLoaderCacheAlias(
+                            AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. }
+                        ),
+                        CallerFunction::Dlopen
+                    ) | (
+                        AfterLoaderSyscallEffect::OpenLoaderCache { .. },
+                        CallerFunction::Dlopen
+                    ) | (
                         AfterLoaderSyscallEffect::Open(AfterLoaderOwnedDescriptor::ProcMaps { .. }),
+                        CallerFunction::Initializer
+                    ) | (
+                        AfterLoaderSyscallEffect::OpenProcFdDirectory { .. },
                         CallerFunction::Initializer
                     )
                 );
@@ -2737,7 +6676,265 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Ok(effect)
             }
-            libc::SYS_close if state.owns_descriptor(args[0]) => {
+            libc::SYS_getdents64 if function == CallerFunction::Initializer => {
+                self.after_loader_proc_fd_getdents_effect(task, config, permit)
+            }
+            libc::SYS_readlinkat if function == CallerFunction::Initializer => {
+                self.after_loader_proc_fd_readlink_effect(task, config, permit)
+            }
+            libc::SYS_fstat
+                if function == CallerFunction::Dlopen
+                    && matches!(
+                        state.owned_descriptors.get(&args[0]),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    ) =>
+            {
+                self.after_loader_cache_stat_effect(task, config, permit)
+            }
+            libc::SYS_mmap
+                if function == CallerFunction::Dlopen
+                    && matches!(
+                        state.owned_descriptors.get(&args[4]),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    ) =>
+            {
+                self.after_loader_cache_map_effect(task, config, permit)
+            }
+            libc::SYS_close
+                if function == CallerFunction::Dlopen
+                    && matches!(
+                        state.owned_descriptors.get(&args[0]),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    ) =>
+            {
+                self.after_loader_cache_close_effect(task, config, permit)
+            }
+            libc::SYS_read
+                if matches!(
+                    state.owned_descriptors.get(&args[0]),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                ) =>
+            {
+                if function != CallerFunction::Dlopen || args[2] != LOADER_CACHE_ALIAS_HEADER_BYTES
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias header read has a different function or exact length",
+                    ));
+                }
+                self.authenticate_loader_cache_interpreter_site(
+                    task,
+                    config,
+                    permit,
+                    LOADER_CACHE_ALIAS_READ_SYSCALL_RVA,
+                )?;
+                let (raw_path, image) =
+                    self.authenticate_loader_cache_alias_descriptor(task, config, args[0])?;
+                if !matches!(
+                    self.after_loader_private_state()?
+                        .loader_cache
+                        .as_ref()
+                        .and_then(|cache| cache.aliases.get(&raw_path)),
+                    Some(LoaderCacheAliasLifecycle::Open {
+                        descriptor,
+                        image: expected_image,
+                        read_end: 0,
+                    }) if *descriptor == args[0] && *expected_image == image
+                ) {
+                    return Err(self.caller_error(
+                        "loader-cache alias header read is duplicated or out of order",
+                    ));
+                }
+                self.after_loader_read_effect(task, permit.number, args)
+            }
+            libc::SYS_pread64
+                if matches!(
+                    state.owned_descriptors.get(&args[0]),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                ) =>
+            {
+                Err(self
+                    .caller_error("profiled loader-cache alias does not admit a pread64 sequence"))
+            }
+            libc::SYS_fstat
+                if matches!(
+                    state.owned_descriptors.get(&args[0]),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                ) =>
+            {
+                if function != CallerFunction::Dlopen {
+                    return Err(
+                        self.caller_error("loader-cache alias fstat is outside private dlopen")
+                    );
+                }
+                self.authenticate_loader_cache_interpreter_site(
+                    task,
+                    config,
+                    permit,
+                    LOADER_CACHE_FSTAT_SYSCALL_RVA,
+                )?;
+                let (raw_path, image) =
+                    self.authenticate_loader_cache_alias_descriptor(task, config, args[0])?;
+                if !matches!(
+                    self.after_loader_private_state()?
+                        .loader_cache
+                        .as_ref()
+                        .and_then(|cache| cache.aliases.get(&raw_path)),
+                    Some(LoaderCacheAliasLifecycle::Open {
+                        descriptor,
+                        image: expected_image,
+                        read_end: LOADER_CACHE_ALIAS_HEADER_BYTES,
+                    }) if *descriptor == args[0] && *expected_image == image
+                ) {
+                    return Err(self
+                        .caller_error("loader-cache alias fstat preceded its exact header read"));
+                }
+                let metadata = std::fs::metadata(format!("/proc/{}/fd/{}", task.pid(), args[0]))
+                    .map_err(|error| self.caller_error(error))?;
+                if !metadata.is_file() {
+                    return Err(self.caller_error("loader-cache alias fstat target is not a file"));
+                }
+                Ok(AfterLoaderSyscallEffect::StatLoaderCacheAlias {
+                    descriptor: args[0],
+                    destination: args[1],
+                    fields: AfterLoaderStatFields::deterministic_loader_cache_alias(&metadata),
+                })
+            }
+            libc::SYS_mmap
+                if matches!(
+                    state.owned_descriptors.get(&args[4]),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                ) =>
+            {
+                if function != CallerFunction::Dlopen {
+                    return Err(
+                        self.caller_error("loader-cache alias mmap is outside private dlopen")
+                    );
+                }
+                self.authenticate_loader_cache_interpreter_site(
+                    task,
+                    config,
+                    permit,
+                    LOADER_CACHE_MMAP_SYSCALL_RVA,
+                )?;
+                let (raw_path, image) =
+                    self.authenticate_loader_cache_alias_descriptor(task, config, args[4])?;
+                let mapping_ready = matches!(
+                    self.after_loader_private_state()?
+                        .loader_cache
+                        .as_ref()
+                        .and_then(|cache| cache.aliases.get(&raw_path)),
+                    Some(LoaderCacheAliasLifecycle::Statted {
+                        descriptor,
+                        image: expected_image,
+                    } | LoaderCacheAliasLifecycle::Mapped {
+                        descriptor,
+                        image: expected_image,
+                        ..
+                    }) if *descriptor == args[4] && *expected_image == image
+                );
+                if !mapping_ready {
+                    return Err(self.caller_error(
+                        "loader-cache alias mmap preceded exact fstat or changed identity",
+                    ));
+                }
+                self.after_loader_map_effect(task, args, Some(function))
+            }
+            libc::SYS_close
+                if matches!(
+                    state.owned_descriptors.get(&args[0]),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                ) =>
+            {
+                if function != CallerFunction::Dlopen {
+                    return Err(
+                        self.caller_error("loader-cache alias close is outside private dlopen")
+                    );
+                }
+                self.authenticate_loader_cache_interpreter_site(
+                    task,
+                    config,
+                    permit,
+                    LOADER_CACHE_CLOSE_SYSCALL_RVA,
+                )?;
+                let (raw_path, image) =
+                    self.authenticate_loader_cache_alias_descriptor(task, config, args[0])?;
+                let alias = config
+                    .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                    .ok_or_else(|| {
+                        self.caller_error("loader-cache alias close left its bound profile")
+                    })?;
+                let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                    .map_err(|reason| self.caller_error(reason))?;
+                if !matches!(
+                    self.after_loader_private_state()?
+                        .loader_cache
+                        .as_ref()
+                        .and_then(|cache| cache.aliases.get(&raw_path)),
+                    Some(LoaderCacheAliasLifecycle::Mapped {
+                        descriptor,
+                        image: expected_image,
+                        mappings,
+                        zero_fills,
+                    }) if *descriptor == args[0]
+                        && *expected_image == image
+                        && mappings.len() == plan.file_maps.len()
+                        && zero_fills.len() == 1
+                ) {
+                    return Err(self.caller_error(
+                        "loader-cache alias close preceded its causal file mapping",
+                    ));
+                }
+                Ok(AfterLoaderSyscallEffect::Close(args[0]))
+            }
+            libc::SYS_close
+                if function == CallerFunction::Initializer
+                    && matches!(
+                        state.owned_descriptors.get(&args[0]),
+                        Some(AfterLoaderOwnedDescriptor::ProcFdDirectory { .. })
+                    ) =>
+            {
+                self.authenticate_proc_fd_audit_call(task, config, permit, &[])?;
+                let Some(directory) = state.owned_descriptors.get(&args[0]) else {
+                    return Err(Errno::EPROTO.into());
+                };
+                let AfterLoaderOwnedDescriptor::ProcFdDirectory { expected, .. } = directory else {
+                    return Err(Errno::EPROTO.into());
+                };
+                if args[1..] != [0, 0, 0, 0, 0]
+                    || state.proc_fd_audit
+                        != (ProcFdAuditLifecycle::Scanning {
+                            descriptor: args[0],
+                        })
+                    || !directory.proc_fd_scan_is_complete()
+                    || proc_fd_link_snapshot(task.pid())
+                        .map_err(|error| self.caller_error(error))?
+                        != *expected
+                {
+                    return Err(self.caller_error(
+                        "proc-fd audit close preceded exact EOF, links or live snapshot",
+                    ));
+                }
+                let mut remaining = expected.clone();
+                if remaining.remove(&args[0]).is_none() {
+                    return Err(Errno::EPROTO.into());
+                }
+                Ok(AfterLoaderSyscallEffect::CloseProcFdDirectory {
+                    descriptor: args[0],
+                    remaining,
+                })
+            }
+            libc::SYS_close
+                if state.owns_descriptor(args[0])
+                    && state
+                        .owned_descriptors
+                        .get(&args[0])
+                        .is_some_and(|descriptor| {
+                            !matches!(
+                                descriptor,
+                                AfterLoaderOwnedDescriptor::ProcFdDirectory { .. }
+                            )
+                        }) =>
+            {
                 Ok(AfterLoaderSyscallEffect::Close(args[0]))
             }
             libc::SYS_read | libc::SYS_pread64
@@ -2767,6 +6964,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             libc::SYS_newfstatat
                 if state.owns_descriptor(args[0])
                     && function == CallerFunction::Dlopen
+                    && !matches!(
+                        state.owned_descriptors.get(&args[0]),
+                        Some(
+                            AfterLoaderOwnedDescriptor::LoaderCache { .. }
+                                | AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. }
+                        )
+                    )
                     && self.caller_cstring(task, args[1], 1)?.is_empty()
                     && canonical_c_int_argument_is(args[3], libc::AT_EMPTY_PATH) =>
             {
@@ -2788,7 +6992,40 @@ impl<L: Tool + 'static> TracedTask<L> {
                         .map_err(|error| self.caller_error(error))?,
                 })
             }
-            libc::SYS_mmap => self.after_loader_map_effect(task, args, Some(function)),
+            libc::SYS_mmap => {
+                let effect = self.after_loader_map_effect(task, args, Some(function))?;
+                let active_aliases = state
+                    .loader_cache
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|cache| cache.aliases.values())
+                    .filter_map(|lifecycle| match lifecycle {
+                        LoaderCacheAliasLifecycle::Mapped { image, .. } => Some(*image),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if let [image] = active_aliases.as_slice()
+                    && !matches!(
+                        effect,
+                        AfterLoaderSyscallEffect::Map {
+                            purpose: AfterLoaderMappingPurpose::ImageZeroFill {
+                                image: mapped,
+                            },
+                            ..
+                        } if mapped == *image
+                    )
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias sequence admitted a non-causal anonymous mmap",
+                    ));
+                }
+                if active_aliases.len() > 1 {
+                    return Err(
+                        self.caller_error("loader-cache alias mmap authority is not unique")
+                    );
+                }
+                Ok(effect)
+            }
             libc::SYS_mprotect => {
                 let protection = canonical_c_int_argument(args[2]).ok_or_else(|| {
                     self.caller_error(
@@ -2798,6 +7035,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let range = checked_page_effect_range(args[0], args[1])?;
                 let exact_callback_transition = function == CallerFunction::Initializer
                     && state.callback_stack_protect_transition_is_exact(range, args[1], protection);
+                if state.loader_cache_scratch_overlaps(range) {
+                    return Err(
+                        self.caller_error("private mprotect overlaps armed loader-cache scratch")
+                    );
+                }
+                if state.owned_mappings.iter().any(|mapping| {
+                    mapping.purpose == AfterLoaderMappingPurpose::LoaderCache
+                        && ranges_overlap((mapping.start, mapping.end), range)
+                }) {
+                    return Err(self.caller_error(
+                        "private mprotect overlaps the immutable loader-cache mapping",
+                    ));
+                }
                 if !exact_callback_transition
                     && (!state.owns_range(range, false)
                         || state.callback_stack_overlaps(range)
@@ -2812,10 +7062,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                     start: args[0],
                     raw_length: args[1],
                     protection,
+                    loader_cache_alias: None,
                 })
             }
             libc::SYS_munmap => {
                 let range = checked_page_effect_range(args[0], args[1])?;
+                if state.loader_cache_scratch_overlaps(range) {
+                    return Err(
+                        self.caller_error("private munmap overlaps armed loader-cache scratch")
+                    );
+                }
+                if let Some(effect) = self.after_loader_cache_retire_effect(task, config, permit)? {
+                    return Ok(effect);
+                }
+                if state.owned_mappings.iter().any(|mapping| {
+                    mapping.purpose == AfterLoaderMappingPurpose::LoaderCache
+                        && ranges_overlap((mapping.start, mapping.end), range)
+                }) {
+                    return Err(self.caller_error(
+                        "private munmap partially or prematurely overlaps the loader cache",
+                    ));
+                }
                 if !state.owns_range(range, false) || state.callback_stack_overlaps(range) {
                     return Err(self.caller_error("private function munmap is unowned"));
                 }
@@ -2839,6 +7106,51 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.caller_error("private brk query has no preobserved value")
                 })?;
                 Ok(AfterLoaderSyscallEffect::CheckBreak(expected))
+            }
+            libc::SYS_brk
+                if function == CallerFunction::Dlopen && !state.private_brk_growth_consumed =>
+            {
+                let profile = state.ptmalloc_bootstrap.ok_or_else(|| {
+                    self.caller_error("private brk growth has no exact ptmalloc profile")
+                })?;
+                let Some((observed_bias, observed)) =
+                    self.observe_ptmalloc_bootstrap(task, config)?
+                else {
+                    return Err(
+                        self.caller_error("private brk growth provider profile disappeared")
+                    );
+                };
+                if !exact_ptmalloc_brk_growth_request(profile, observed_bias, observed, permit) {
+                    return Err(self.caller_error(
+                        "private brk growth is outside the consumed exact ptmalloc syscall site",
+                    ));
+                }
+                let previous = state.current_break.ok_or_else(|| {
+                    self.caller_error("private brk growth preceded the initial bound query")
+                })?;
+                let growth = private_brk_growth_range(previous, args[0]).map_err(|_| {
+                    self.caller_error("private brk growth is not monotonic or exceeds its bound")
+                })?;
+                let before_maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                if growth.is_some_and(|range| {
+                    state.refuses_protected_overlap(range)
+                        || state
+                            .owned_mappings
+                            .iter()
+                            .any(|mapping| ranges_overlap((mapping.start, mapping.end), range))
+                        || before_maps
+                            .iter()
+                            .any(|mapping| ranges_overlap((mapping.start, mapping.end), range))
+                }) {
+                    return Err(self.caller_error(
+                        "private brk growth overlaps an existing or protected mapping",
+                    ));
+                }
+                Ok(AfterLoaderSyscallEffect::AdvanceBreak {
+                    previous,
+                    requested: args[0],
+                    before_maps,
+                })
             }
             libc::SYS_futex if function == CallerFunction::Initializer => {
                 let range = checked_range(args[0], 4)?;
@@ -2948,6 +7260,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             libc::SYS_fcntl
                 if state.owns_descriptor(args[0])
                     && function == CallerFunction::Dlopen
+                    && !matches!(
+                        state.owned_descriptors.get(&args[0]),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    )
                     && matches!(
                         canonical_c_int_argument(args[1]),
                         Some(libc::F_GETFD | libc::F_GET_SEALS)
@@ -2981,11 +7297,19 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     fn complete_after_loader_private_syscall(
         &mut self,
-        task: &Stopped,
+        task: &mut Stopped,
         config: &LiteinstAfterLoaderConfig,
         permit: &AfterLoaderSyscallPermit,
         raw_result: i64,
     ) -> Result<AfterLoaderSyscallCompletion, Error> {
+        if matches!(
+            &permit.effect,
+            AfterLoaderSyscallEffect::PtmallocBootstrapEntropy { .. }
+        ) {
+            return Err(self.caller_error(
+                "profiled bootstrap entropy reached the real-kernel completion path",
+            ));
+        }
         if let AfterLoaderSyscallEffect::CetStatus { destination, .. } = &permit.effect {
             let mut after = [0; 8];
             task.read_exact(*destination as usize, &mut after)?;
@@ -3020,11 +7344,477 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         match &permit.effect {
             AfterLoaderSyscallEffect::None => {}
+            AfterLoaderSyscallEffect::PtmallocBootstrapEntropy { .. } => {
+                unreachable!("emulated bootstrap entropy returned before kernel effect handling")
+            }
             AfterLoaderSyscallEffect::CetStatus { .. } => {
                 unreachable!("CET completion returned before ordinary effect handling")
             }
-            AfterLoaderSyscallEffect::Open(kind) => {
+            AfterLoaderSyscallEffect::OpenProcFdDirectory { expected } => {
                 let descriptor = raw_result as u64;
+                let state = self.after_loader_private_state()?;
+                if state.original_descriptors.contains(&descriptor)
+                    || state.owned_descriptors.contains_key(&descriptor)
+                {
+                    return Err(self.caller_error("proc-fd audit open reused a live descriptor"));
+                }
+                let descriptor_path = format!("/proc/{}/fd/{descriptor}", task.pid());
+                let metadata = std::fs::metadata(&descriptor_path)
+                    .map_err(|error| self.caller_error(error))?;
+                let link = std::fs::read_link(&descriptor_path)
+                    .map_err(|error| self.caller_error(error))?;
+                let expected_link = format!("/proc/{}/fd", task.pid());
+                let expected_flags =
+                    libc::O_DIRECTORY as u64 | libc::O_CLOEXEC as u64 | KERNEL_O_LARGEFILE;
+                if !metadata.is_dir()
+                    || link.as_os_str().as_encoded_bytes() != expected_link.as_bytes()
+                    || descriptor_flags(task.pid(), descriptor)
+                        .map_err(|error| self.caller_error(error))?
+                        != expected_flags
+                    || descriptor_position(task.pid(), descriptor)
+                        .map_err(|error| self.caller_error(error))?
+                        != 0
+                {
+                    return Err(self.caller_error(
+                        "opened proc-fd audit directory identity, flags or position differ",
+                    ));
+                }
+                let mut expected = expected.clone();
+                if expected
+                    .insert(descriptor, expected_link.as_bytes().to_vec())
+                    .is_some()
+                    || proc_fd_link_snapshot(task.pid())
+                        .map_err(|error| self.caller_error(error))?
+                        != expected
+                {
+                    return Err(self
+                        .caller_error("proc-fd audit directory open changed another descriptor"));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                if state.proc_fd_audit != ProcFdAuditLifecycle::AwaitingOpen
+                    || state
+                        .owned_descriptors
+                        .insert(
+                            descriptor,
+                            AfterLoaderOwnedDescriptor::ProcFdDirectory {
+                                expected,
+                                seen: BTreeSet::new(),
+                                linked: BTreeSet::new(),
+                                eof: false,
+                            },
+                        )
+                        .is_some()
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                state.proc_fd_audit = ProcFdAuditLifecycle::Scanning { descriptor };
+            }
+            AfterLoaderSyscallEffect::ReadProcFdDirectory {
+                descriptor,
+                destination,
+                capacity,
+            } => {
+                let amount = u64::try_from(raw_result).map_err(|_| Errno::EPROTO)?;
+                if amount > *capacity {
+                    return Err(self.caller_error("proc-fd getdents exceeded its exact buffer"));
+                }
+                let expected = match self
+                    .after_loader_private_state()?
+                    .owned_descriptors
+                    .get(descriptor)
+                {
+                    Some(AfterLoaderOwnedDescriptor::ProcFdDirectory { expected, .. }) => {
+                        expected.clone()
+                    }
+                    _ => {
+                        return Err(
+                            self.caller_error("proc-fd getdents completion lost its directory")
+                        );
+                    }
+                };
+                if proc_fd_link_snapshot(task.pid()).map_err(|error| self.caller_error(error))?
+                    != expected
+                {
+                    return Err(
+                        self.caller_error("live descriptor set changed during proc-fd getdents")
+                    );
+                }
+                let mut descriptors = BTreeSet::new();
+                if amount != 0 {
+                    let mut bytes = vec![0_u8; usize::try_from(amount).map_err(|_| Errno::EPROTO)?];
+                    task.read_exact(*destination as usize, &mut bytes)?;
+                    descriptors = proc_fd_dirent_descriptors(&bytes)
+                        .map_err(|reason| self.caller_error(reason))?;
+                }
+                if !self
+                    .after_loader_private_state_mut()?
+                    .owned_descriptors
+                    .get_mut(descriptor)
+                    .is_some_and(|owned| owned.record_proc_fd_dirents(descriptors, amount == 0))
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            AfterLoaderSyscallEffect::ReadProcFdLink {
+                directory,
+                descriptor,
+                destination,
+                expected,
+            } => {
+                if raw_result != expected.len() as i64 {
+                    return Err(self.caller_error("proc-fd readlink returned a different length"));
+                }
+                let mut actual = vec![0_u8; expected.len()];
+                task.read_exact(*destination as usize, &mut actual)?;
+                let snapshot =
+                    proc_fd_link_snapshot(task.pid()).map_err(|error| self.caller_error(error))?;
+                if actual != *expected || snapshot.get(descriptor) != Some(expected) {
+                    return Err(self.caller_error(
+                        "proc-fd readlink bytes differ from the renewed physical link",
+                    ));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                if !matches!(
+                    state.owned_descriptors.get(directory),
+                    Some(AfterLoaderOwnedDescriptor::ProcFdDirectory { expected, .. })
+                        if expected == &snapshot
+                ) || !state
+                    .owned_descriptors
+                    .get_mut(directory)
+                    .is_some_and(|owned| owned.record_proc_fd_readlink(*descriptor))
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            AfterLoaderSyscallEffect::CloseProcFdDirectory {
+                descriptor,
+                remaining,
+            } => {
+                if !private_close_result_is_exact(raw_result)
+                    || !procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                        .map_err(|error| self.caller_error(error))?
+                    || proc_fd_link_snapshot(task.pid())
+                        .map_err(|error| self.caller_error(error))?
+                        != *remaining
+                {
+                    return Err(self.caller_error(
+                        "proc-fd audit close changed more than its exact directory descriptor",
+                    ));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                let removed = state.owned_descriptors.remove(descriptor);
+                if state.proc_fd_audit
+                    != (ProcFdAuditLifecycle::Scanning {
+                        descriptor: *descriptor,
+                    })
+                    || !matches!(
+                        removed,
+                        Some(AfterLoaderOwnedDescriptor::ProcFdDirectory { .. })
+                    )
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                state.proc_fd_audit = ProcFdAuditLifecycle::Complete;
+            }
+            AfterLoaderSyscallEffect::OpenLoaderCache {
+                descriptor: expected_descriptor,
+                redirect,
+            } => {
+                let descriptor = raw_result as u64;
+                let state = self.after_loader_private_state()?;
+                if state.original_descriptors.contains(&descriptor)
+                    || state.owned_descriptors.contains_key(&descriptor)
+                    || state.loader_cache.as_ref().is_none_or(|cache| {
+                        cache.lifecycle != LoaderCacheLifecycle::AwaitingOpen
+                            || cache.scratch != redirect.scratch
+                            || cache.scratch_preimage != redirect.preimage
+                    })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache open reused a descriptor or changed lifecycle authority",
+                    ));
+                }
+                let evidence = self.loader_cache_artifact_evidence(config)?;
+                if !matches!(
+                    expected_descriptor,
+                    AfterLoaderOwnedDescriptor::LoaderCache {
+                        file,
+                        mapping,
+                        length,
+                        position: 0,
+                    } if *file == evidence.file
+                        && *mapping == evidence.mapping
+                        && *length == evidence.length
+                ) {
+                    return Err(self.caller_error(
+                        "loader-cache open effect differs from the renewed sealed artifact",
+                    ));
+                }
+                let path = format!("/proc/{}/fd/{descriptor}", task.pid());
+                let metadata =
+                    std::fs::metadata(&path).map_err(|error| self.caller_error(error))?;
+                let link = std::fs::read_link(&path).map_err(|error| self.caller_error(error))?;
+                let flags = descriptor_flags(task.pid(), descriptor)
+                    .map_err(|error| self.caller_error(error))?;
+                let mut opened = open_loader_cache_without_atime(&path)
+                    .map_err(|error| self.caller_error(error))?;
+                let seals = unsafe { libc::fcntl(opened.as_raw_fd(), libc::F_GET_SEALS) };
+                let mut bytes = Vec::new();
+                (&mut opened)
+                    .take(evidence.length.checked_add(1).ok_or(Errno::EOVERFLOW)?)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| self.caller_error(error))?;
+                let expected_flags =
+                    libc::O_RDONLY as u64 | libc::O_CLOEXEC as u64 | KERNEL_O_LARGEFILE;
+                if !metadata.is_file()
+                    || crate::after_loader::FileIdentity::from_metadata(&metadata) != evidence.file
+                    || metadata.len() != evidence.length
+                    || link.as_os_str().as_encoded_bytes() != LOADER_CACHE_MEMFD_LINK
+                    || flags != expected_flags
+                    || descriptor_position(task.pid(), descriptor)
+                        .map_err(|error| self.caller_error(error))?
+                        != 0
+                    || seals != config.immutable_loader_cache().seals()
+                    || bytes.as_slice() != config.loader_cache().bytes()
+                {
+                    return Err(self.caller_error(
+                        "opened loader-cache identity, complete bytes, seals, flags or position differ",
+                    ));
+                }
+                let preimage = self.restore_loader_cache_redirect(task, permit, raw_result)?;
+                let state = self.after_loader_private_state_mut()?;
+                let cache = state.loader_cache.as_mut().ok_or(Errno::EPROTO)?;
+                if cache.scratch_preimage != preimage
+                    || !cache.lifecycle.complete_open(descriptor)
+                    || state
+                        .owned_descriptors
+                        .insert(descriptor, expected_descriptor.clone())
+                        .is_some()
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            AfterLoaderSyscallEffect::StatLoaderCache {
+                descriptor,
+                destination,
+                fields,
+            } => {
+                if raw_result != 0 {
+                    return Err(self.caller_error("loader-cache fstat did not return zero"));
+                }
+                self.authenticate_loader_cache_descriptor(task, config, *descriptor)?;
+                self.authenticate_loader_cache_scratch(task)?;
+                let metadata = std::fs::metadata(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                    .map_err(|error| self.caller_error(error))?;
+                let mut bytes = [0_u8; 144];
+                task.read_exact(*destination as usize, &mut bytes)?;
+                if AfterLoaderStatFields::from_metadata(&metadata) != *fields
+                    || !stat_output_matches(*fields, &bytes)
+                {
+                    return Err(
+                        self.caller_error("loader-cache fstat target or exact output changed")
+                    );
+                }
+                if !self
+                    .after_loader_private_state_mut()?
+                    .loader_cache
+                    .as_mut()
+                    .ok_or(Errno::EPROTO)?
+                    .lifecycle
+                    .complete_stat(*descriptor)
+                {
+                    return Err(
+                        self.caller_error("loader-cache fstat lifecycle changed before completion")
+                    );
+                }
+            }
+            AfterLoaderSyscallEffect::MapLoaderCache {
+                descriptor,
+                raw_length,
+                identity,
+            } => {
+                let evidence =
+                    self.authenticate_loader_cache_descriptor(task, config, *descriptor)?;
+                self.authenticate_loader_cache_scratch(task)?;
+                let start = raw_result as u64;
+                let (start, end) = checked_page_effect_range(start, *raw_length)?;
+                let state = self.after_loader_private_state()?;
+                if start % PAGE != 0
+                    || evidence.length != *raw_length
+                    || evidence.mapping != *identity
+                    || state.refuses_original_overlap((start, end))
+                    || state.refuses_protected_overlap((start, end))
+                    || state
+                        .owned_mappings
+                        .iter()
+                        .any(|mapping| ranges_overlap((mapping.start, mapping.end), (start, end)))
+                {
+                    return Err(self.caller_error(
+                        "loader-cache mmap result overlaps memory or changed artifact identity",
+                    ));
+                }
+                let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                let physical = maps
+                    .iter()
+                    .filter(|mapping| {
+                        mapping.start == start
+                            && mapping.end == end
+                            && mapping.readable
+                            && !mapping.writable
+                            && !mapping.executable
+                            && !mapping.shared
+                            && mapping.offset == 0
+                            && mapping.mapping_identity() == *identity
+                            && mapping.path.as_ref().is_some_and(|path| {
+                                path.as_os_str().as_encoded_bytes() == LOADER_CACHE_MEMFD_LINK
+                            })
+                    })
+                    .count();
+                let mut bytes =
+                    vec![0_u8; usize::try_from(*raw_length).map_err(|_| Errno::EOVERFLOW)?];
+                task.read_exact(start as usize, &mut bytes)?;
+                let raw_end = start.checked_add(*raw_length).ok_or(Errno::EOVERFLOW)?;
+                if physical != 1
+                    || bytes.as_slice() != config.loader_cache().bytes()
+                    || !target_range_is_zero(task, raw_end, end - raw_end)?
+                {
+                    return Err(self.caller_error(
+                        "loader-cache mmap physical identity or complete bytes differ",
+                    ));
+                }
+                let mapping = LoaderCacheMapping {
+                    start,
+                    raw_length: *raw_length,
+                    end,
+                    identity: *identity,
+                };
+                let state = self.after_loader_private_state_mut()?;
+                if !state
+                    .loader_cache
+                    .as_mut()
+                    .ok_or(Errno::EPROTO)?
+                    .lifecycle
+                    .complete_map(*descriptor, mapping, *raw_length, *identity)
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                state.owned_mappings.push(AfterLoaderOwnedMapping {
+                    start,
+                    end,
+                    readable: true,
+                    writable: false,
+                    executable: false,
+                    shared: false,
+                    descriptor: Some(*descriptor),
+                    offset: 0,
+                    purpose: AfterLoaderMappingPurpose::LoaderCache,
+                });
+            }
+            AfterLoaderSyscallEffect::CloseLoaderCache {
+                descriptor,
+                mapping,
+            } => {
+                if raw_result != 0 {
+                    return Err(self.caller_error("loader-cache close did not return zero"));
+                }
+                self.authenticate_loader_cache_scratch(task)?;
+                self.authenticate_loader_cache_mapping(task, config, *mapping)?;
+                let descriptor_absent =
+                    procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                        .map_err(|error| self.caller_error(error))?;
+                if !descriptor_absent
+                    || !matches!(
+                        self.after_loader_private_state()?
+                            .owned_descriptors
+                            .get(descriptor),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    )
+                {
+                    return Err(self.caller_error(
+                        "loader-cache descriptor survived close or lost typed ownership",
+                    ));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                if !state
+                    .loader_cache
+                    .as_mut()
+                    .ok_or(Errno::EPROTO)?
+                    .lifecycle
+                    .complete_close(*descriptor, *mapping)
+                    || state.owned_descriptors.remove(descriptor).is_none()
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            AfterLoaderSyscallEffect::RetireLoaderCache {
+                descriptor,
+                mapping,
+            } => {
+                if raw_result != 0 {
+                    return Err(self.caller_error("loader-cache munmap did not return zero"));
+                }
+                self.authenticate_loader_cache_scratch(task)?;
+                let evidence = self.loader_cache_artifact_evidence(config)?;
+                let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                let descriptor_absent =
+                    procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                        .map_err(|error| self.caller_error(error))?;
+                if mapping.identity != evidence.mapping
+                    || mapping.raw_length != evidence.length
+                    || !descriptor_absent
+                    || maps.iter().any(|candidate| {
+                        ranges_overlap(
+                            (candidate.start, candidate.end),
+                            (mapping.start, mapping.end),
+                        ) || candidate.mapping_identity() == mapping.identity
+                    })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache descriptor or mapping survived exact retirement",
+                    ));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                let owners = state
+                    .owned_mappings
+                    .iter()
+                    .filter(|owned| owned.purpose == AfterLoaderMappingPurpose::LoaderCache)
+                    .count();
+                if owners != 1
+                    || !state
+                        .loader_cache
+                        .as_mut()
+                        .ok_or(Errno::EPROTO)?
+                        .lifecycle
+                        .complete_retire(*descriptor, *mapping)
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                state.remove_owned_range((mapping.start, mapping.end));
+                if state
+                    .owned_mappings
+                    .iter()
+                    .any(|owned| owned.purpose == AfterLoaderMappingPurpose::LoaderCache)
+                    || state.owned_descriptors.values().any(|owned| {
+                        matches!(owned, AfterLoaderOwnedDescriptor::LoaderCache { .. })
+                    })
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            AfterLoaderSyscallEffect::Open(kind)
+            | AfterLoaderSyscallEffect::OpenLoaderCacheAlias(kind) => {
+                let descriptor = raw_result as u64;
+                let alias_effect = matches!(
+                    &permit.effect,
+                    AfterLoaderSyscallEffect::OpenLoaderCacheAlias(_)
+                );
+                if alias_effect
+                    != matches!(kind, AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias open effect lost its dedicated descriptor type",
+                    ));
+                }
                 let state = self.after_loader_private_state()?;
                 if state.original_descriptors.contains(&descriptor)
                     || state.owned_descriptors.contains_key(&descriptor)
@@ -3107,6 +7897,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                         kind.clone()
                     }
+                    AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. } => {
+                        self.authenticate_loader_cache_alias_owned_descriptor(
+                            task, config, descriptor, kind,
+                        )?;
+                        kind.clone()
+                    }
                     AfterLoaderOwnedDescriptor::ProcMaps {
                         device,
                         inode,
@@ -3131,6 +7927,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                             );
                         }
                         kind.clone()
+                    }
+                    AfterLoaderOwnedDescriptor::ProcFdDirectory { .. } => {
+                        return Err(self.caller_error(
+                            "proc-fd directory reached the generic open completion path",
+                        ));
+                    }
+                    AfterLoaderOwnedDescriptor::LoaderCache { .. } => {
+                        return Err(self.caller_error(
+                            "loader-cache descriptor reached the generic open completion path",
+                        ));
                     }
                     AfterLoaderOwnedDescriptor::Trampoline { id, size } => {
                         let link =
@@ -3161,11 +7967,32 @@ impl<L: Tool + 'static> TracedTask<L> {
                 {
                     return Err(self.caller_error("new private descriptor has a nonzero position"));
                 }
-                self.after_loader_private_state_mut()?
-                    .owned_descriptors
-                    .insert(descriptor, stored);
+                let alias_binding = match &stored {
+                    AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+                        image, raw_path, ..
+                    } => Some((raw_path.clone(), *image)),
+                    _ => None,
+                };
+                let state = self.after_loader_private_state_mut()?;
+                if state.owned_descriptors.insert(descriptor, stored).is_some() {
+                    return Err(Errno::EPROTO.into());
+                }
+                if let Some((raw_path, image)) = alias_binding
+                    && !state
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| lifecycle.complete_open(descriptor, image))
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias open lifecycle changed before completion",
+                    ));
+                }
             }
             AfterLoaderSyscallEffect::Close(descriptor) => {
+                if !private_close_result_is_exact(raw_result) {
+                    return Err(self.caller_error("private close did not return exact zero"));
+                }
                 let closing = self
                     .after_loader_private_state()?
                     .owned_descriptors
@@ -3295,12 +8122,60 @@ impl<L: Tool + 'static> TracedTask<L> {
                         "trampoline descriptor closed before exact aliases were bound",
                     ));
                 }
-                if std::fs::symlink_metadata(format!("/proc/{}/fd/{descriptor}", task.pid()))
-                    .is_ok()
+                if !procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                    .map_err(|error| self.caller_error(error))?
                 {
                     return Err(self
                         .caller_error("private descriptor remained live after successful close"));
                 }
+                let alias_completion = match &closing {
+                    AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+                        image, raw_path, ..
+                    } => {
+                        let alias = config
+                            .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                            .ok_or_else(|| {
+                                self.caller_error(
+                                    "closed loader-cache alias left the bound cache profile",
+                                )
+                            })?;
+                        if !target_loader_cache_alias_matches(task.pid(), alias)
+                            .map_err(|error| self.caller_error(error))?
+                        {
+                            return Err(self.caller_error(
+                                "loader-cache alias target-root binding changed during close",
+                            ));
+                        }
+                        let geometry = self.resolve_loader_cache_alias_pre_relro_geometry(
+                            task,
+                            alias.dependency(),
+                            *image,
+                        )?;
+                        self.authenticate_after_loader_image_backing(
+                            task,
+                            alias.dependency(),
+                            geometry,
+                        )?;
+                        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                        if !self
+                            .after_loader_private_state()?
+                            .has_causal_image_mapping(geometry)
+                            || !exact_image_mapping_paths_are_literal(
+                                alias.dependency(),
+                                geometry,
+                                &maps,
+                            )
+                        {
+                            return Err(self.caller_error(
+                                "loader-cache alias close lacks its causal canonical-path geometry",
+                            ));
+                        }
+                        let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                            .map_err(|reason| self.caller_error(reason))?;
+                        Some((raw_path.clone(), *image, geometry, plan))
+                    }
+                    _ => None,
+                };
                 if self
                     .after_loader_private_state_mut()?
                     .owned_descriptors
@@ -3312,6 +8187,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.after_loader_private_state_mut()?
                     .trampoline_seals_added
                     .remove(descriptor);
+                if let Some((raw_path, image, geometry, plan)) = alias_completion
+                    && !self
+                        .after_loader_private_state_mut()?
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| {
+                            lifecycle.complete_close(&plan, *descriptor, image, geometry)
+                        })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias close lifecycle changed before completion",
+                    ));
+                }
             }
             AfterLoaderSyscallEffect::Map {
                 requested,
@@ -3324,6 +8213,41 @@ impl<L: Tool + 'static> TracedTask<L> {
             } => {
                 let start = raw_result as u64;
                 let (start, end) = checked_page_effect_range(start, *raw_length)?;
+                let alias_owned = descriptor.and_then(|descriptor| {
+                    self.after_loader_private_state()
+                        .ok()?
+                        .owned_descriptors
+                        .get(&descriptor)
+                        .filter(|owned| {
+                            matches!(owned, AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                        })
+                        .cloned()
+                });
+                let alias_binding = match (descriptor, &alias_owned) {
+                    (
+                        Some(descriptor),
+                        Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+                            image,
+                            raw_path,
+                            canonical_path,
+                            bytes,
+                            ..
+                        }),
+                    ) => {
+                        self.authenticate_loader_cache_alias_descriptor(task, config, *descriptor)?;
+                        let plan = loader_cache_alias_mmap_plan(bytes)
+                            .map_err(|reason| self.caller_error(reason))?;
+                        Some((
+                            *descriptor,
+                            raw_path.clone(),
+                            *image,
+                            canonical_path.clone(),
+                            bytes.clone(),
+                            plan,
+                        ))
+                    }
+                    _ => None,
+                };
                 let state = self.after_loader_private_state()?;
                 if (*requested != 0 && start != *requested)
                     || start % PAGE != 0
@@ -3369,6 +8293,55 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if mapped.offset.checked_add(start - mapped.start) != Some(*offset) {
                     return Err(self.caller_error("private mmap result offset differs"));
                 }
+                if let Some((_, _, image, canonical_path, bytes, _)) = &alias_binding {
+                    let file_offset = usize::try_from(*offset).map_err(|_| Errno::EOVERFLOW)?;
+                    let raw_length = usize::try_from(*raw_length).map_err(|_| Errno::EOVERFLOW)?;
+                    let file_bytes = bytes.get(file_offset..).ok_or_else(|| {
+                        self.caller_error("loader-cache alias mmap begins beyond the bound file")
+                    })?;
+                    let amount = raw_length.min(file_bytes.len());
+                    if amount == 0
+                        || mapped.path.as_deref() != Some(canonical_path.as_path())
+                        || mapped.mapping_identity()
+                            != target_bound_image_mapping_identity(
+                                task.pid(),
+                                dlopen_graph_images(&config.provider, &config.dependencies)
+                                    .find(|candidate| {
+                                        self.after_loader_private_state()
+                                            .is_ok_and(|state| state.image_id(candidate) == *image)
+                                    })
+                                    .ok_or_else(|| {
+                                        self.caller_error(
+                                            "loader-cache alias image left the bound graph",
+                                        )
+                                    })?,
+                            )
+                            .map_err(|error| self.caller_error(error))?
+                            .ok_or_else(|| {
+                                self.caller_error(
+                                    "loader-cache alias canonical mapping identity disappeared",
+                                )
+                            })?
+                    {
+                        return Err(self.caller_error(
+                            "loader-cache alias mmap path, offset or mapping identity differs",
+                        ));
+                    }
+                    let mut observed = vec![0_u8; amount];
+                    task.read_exact(start as usize, &mut observed)?;
+                    if observed.as_slice() != &file_bytes[..amount]
+                        || raw_length > amount
+                            && !target_range_is_zero(
+                                task,
+                                start.checked_add(amount as u64).ok_or(Errno::EOVERFLOW)?,
+                                (raw_length - amount) as u64,
+                            )?
+                    {
+                        return Err(
+                            self.caller_error("loader-cache alias mmap complete file bytes differ")
+                        );
+                    }
+                }
                 if let Some(descriptor) = descriptor {
                     let owned = self
                         .after_loader_private_state()?
@@ -3396,6 +8369,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                         ) if owned == image
                             && metadata.dev() == image.file.device
                             && metadata.ino() == image.file.inode => {}
+                        (
+                            AfterLoaderOwnedDescriptor::LoaderCacheAlias {
+                                image: owned,
+                                stamp,
+                                ..
+                            },
+                            AfterLoaderMappingPurpose::Image { image },
+                        ) if owned == image
+                            && metadata.dev() == image.file.device
+                            && metadata.ino() == image.file.inode
+                            && stable_backing_stamp(&metadata) == *stamp => {}
                         (
                             AfterLoaderOwnedDescriptor::Trampoline {
                                 id: Some(owned),
@@ -3456,6 +8440,44 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .caller_error("shared reservation lost its unique trampoline owner"));
                     }
                 }
+                let alias_zero_fill =
+                    if let AfterLoaderMappingPurpose::ImageZeroFill { image } = purpose {
+                        let matching = self
+                            .after_loader_private_state()?
+                            .loader_cache
+                            .as_ref()
+                            .into_iter()
+                            .flat_map(|cache| cache.aliases.iter())
+                            .filter_map(|(raw_path, lifecycle)| match lifecycle {
+                                LoaderCacheAliasLifecycle::Mapped {
+                                    image: alias_image, ..
+                                } if alias_image == image => Some((raw_path.clone(), *image)),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+                        match matching.as_slice() {
+                            [] => None,
+                            [(raw_path, image)] => {
+                                let alias = config
+                                    .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                                    .ok_or_else(|| {
+                                        self.caller_error(
+                                            "loader-cache alias zero-fill left its bound profile",
+                                        )
+                                    })?;
+                                let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                                    .map_err(|reason| self.caller_error(reason))?;
+                                Some((raw_path.clone(), *image, plan))
+                            }
+                            _ => {
+                                return Err(self.caller_error(
+                                    "loader-cache alias zero-fill authority is not unique",
+                                ));
+                            }
+                        }
+                    } else {
+                        None
+                    };
                 let state = self.after_loader_private_state_mut()?;
                 match purpose {
                     AfterLoaderMappingPurpose::Image { image } => {
@@ -3488,6 +8510,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                     AfterLoaderMappingPurpose::Controller
                     | AfterLoaderMappingPurpose::CallbackStack
                     | AfterLoaderMappingPurpose::SharedReservation { .. } => {}
+                    AfterLoaderMappingPurpose::LoaderCache => {
+                        return Err(Error::runtime(
+                            task.pid(),
+                            "bind private mapping",
+                            "loader cache reached the generic mmap completion path",
+                        ));
+                    }
                 }
                 state.remove_owned_range((start, end));
                 if let AfterLoaderMappingPurpose::SharedReservation { trampoline } = purpose {
@@ -3510,7 +8539,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         ));
                     }
                 }
-                state.owned_mappings.push(AfterLoaderOwnedMapping {
+                let owned_mapping = AfterLoaderOwnedMapping {
                     start,
                     end,
                     readable: *protection & libc::PROT_READ != 0,
@@ -3520,22 +8549,105 @@ impl<L: Tool + 'static> TracedTask<L> {
                     descriptor: *descriptor,
                     offset: *offset,
                     purpose: *purpose,
-                });
+                };
+                state.owned_mappings.push(owned_mapping);
+                if let Some((descriptor, raw_path, image, _, _, plan)) = alias_binding
+                    && !state
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| {
+                            lifecycle.complete_map(
+                                &plan,
+                                descriptor,
+                                image,
+                                LoaderCacheAliasMapping {
+                                    owned: owned_mapping,
+                                    identity: mapped.mapping_identity(),
+                                    raw_length: *raw_length,
+                                    fixed: *flags & libc::MAP_FIXED != 0,
+                                },
+                            )
+                        })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias mmap lifecycle changed before completion",
+                    ));
+                }
+                if let Some((raw_path, image, plan)) = alias_zero_fill
+                    && !state
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| {
+                            lifecycle.complete_zero_fill(&plan, image, *raw_length, owned_mapping)
+                        })
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias zero-fill lifecycle changed before completion",
+                    ));
+                }
             }
             AfterLoaderSyscallEffect::Protect {
                 start,
                 raw_length,
                 protection,
+                loader_cache_alias,
             } => {
                 let range = checked_page_effect_range(*start, *raw_length)?;
-                let state = self.after_loader_private_state_mut()?;
-                if state.callback_stack_protect_transition_is_exact(range, *raw_length, *protection)
                 {
-                    if !state.protect_callback_stack(range) {
-                        return Err(Errno::EPROTO.into());
+                    let state = self.after_loader_private_state_mut()?;
+                    if state.callback_stack_protect_transition_is_exact(
+                        range,
+                        *raw_length,
+                        *protection,
+                    ) {
+                        if !state.protect_callback_stack(range) {
+                            return Err(Errno::EPROTO.into());
+                        }
+                    } else {
+                        state.protect_owned_range(range, *protection);
                     }
-                } else {
-                    state.protect_owned_range(range, *protection);
+                }
+                if let Some((raw_path, image, pre_relro_geometry)) = loader_cache_alias {
+                    let alias = config
+                        .loader_cache_alias_for_path(raw_path.as_os_str().as_bytes())
+                        .ok_or_else(|| {
+                            self.caller_error(
+                                "completed loader-cache alias RELRO left its bound profile",
+                            )
+                        })?;
+                    let geometry = self.resolve_after_loader_image_geometry(
+                        task,
+                        alias.dependency(),
+                        *image,
+                        "loader-cache-alias-post-relro",
+                    )?;
+                    self.authenticate_after_loader_image_backing(
+                        task,
+                        alias.dependency(),
+                        geometry,
+                    )?;
+                    let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                    if geometry != *pre_relro_geometry
+                        || !target_loader_cache_alias_matches(task.pid(), alias)
+                            .map_err(|error| self.caller_error(error))?
+                        || !exact_image_mapping_paths_are_literal(
+                            alias.dependency(),
+                            geometry,
+                            &maps,
+                        )
+                        || !self
+                            .after_loader_private_state_mut()?
+                            .loader_cache
+                            .as_mut()
+                            .and_then(|cache| cache.aliases.get_mut(raw_path))
+                            .is_some_and(|lifecycle| lifecycle.complete_relro(*image, geometry))
+                    {
+                        return Err(self.caller_error(
+                            "loader-cache alias RELRO completion changed its exact geometry",
+                        ));
+                    }
                 }
             }
             AfterLoaderSyscallEffect::Remove { start, raw_length } => {
@@ -3619,11 +8731,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 expected,
                 advances,
             } => {
+                let alias_read = matches!(
+                    self.after_loader_private_state()?
+                        .owned_descriptors
+                        .get(descriptor),
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. })
+                );
                 let amount = exact_read_prefix_length(raw_result, expected).ok_or_else(|| {
                     self.caller_error(
                         "private read returned zero before EOF or exceeded its exact bound",
                     )
                 })?;
+                if alias_read && (!*advances || amount != expected.len()) {
+                    return Err(self.caller_error(
+                        "loader-cache alias header read was short or did not advance exactly",
+                    ));
+                }
                 let expected = &expected[..amount];
                 let mut actual = vec![0_u8; amount];
                 task.read_exact(*destination as usize, &mut actual)?;
@@ -3661,6 +8784,23 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.caller_error("private read lost its tracked descriptor position")
                     );
                 }
+                if alias_read {
+                    let (raw_path, _) =
+                        self.authenticate_loader_cache_alias_descriptor(task, config, *descriptor)?;
+                    if !self
+                        .after_loader_private_state_mut()?
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| {
+                            lifecycle.complete_read(*descriptor, *offset, next)
+                        })
+                    {
+                        return Err(self.caller_error(
+                            "loader-cache alias read lifecycle changed before completion",
+                        ));
+                    }
+                }
             }
             AfterLoaderSyscallEffect::RecordBreak => {
                 if raw_result <= 0
@@ -3679,6 +8819,51 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(self.caller_error("private brk query changed its bound value"));
                 }
             }
+            AfterLoaderSyscallEffect::AdvanceBreak {
+                previous,
+                requested,
+                before_maps,
+            } => {
+                let after_maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+                if raw_result as u64 == *previous {
+                    if after_maps != *before_maps {
+                        return Err(
+                            self.caller_error("failed private brk growth changed the target maps")
+                        );
+                    }
+                    return Err(
+                        self.caller_error("private brk growth returned the unchanged break")
+                    );
+                }
+                if raw_result < 0 || raw_result as u64 != *requested {
+                    return Err(self.caller_error(
+                        "private brk growth failed instead of reaching its exact request",
+                    ));
+                }
+                if !private_brk_maps_advance_exactly(
+                    before_maps,
+                    &after_maps,
+                    *previous,
+                    *requested,
+                ) || !target_range_is_zero(task, *previous, *requested - *previous)?
+                {
+                    return Err(self.caller_error(
+                        "private brk growth changed another VMA or exposed nonzero new bytes",
+                    ));
+                }
+                let state = self.after_loader_private_state_mut()?;
+                if !complete_private_brk_growth_state(
+                    &mut state.current_break,
+                    &mut state.private_brk_growth_consumed,
+                    *previous,
+                    *requested,
+                    raw_result,
+                ) {
+                    return Err(self.caller_error(
+                        "private brk growth completion lost its one-shot prior state",
+                    ));
+                }
+            }
             AfterLoaderSyscallEffect::ExpectedResult(expected) => {
                 if raw_result != *expected {
                     return Err(self
@@ -3694,6 +8879,49 @@ impl<L: Tool + 'static> TracedTask<L> {
                     ));
                 }
             }
+            AfterLoaderSyscallEffect::StatLoaderCacheAlias {
+                descriptor,
+                destination,
+                fields,
+            } => {
+                if raw_result != 0 {
+                    return Err(self.caller_error("loader-cache alias fstat did not return zero"));
+                }
+                let (raw_path, _) =
+                    self.authenticate_loader_cache_alias_descriptor(task, config, *descriptor)?;
+                let metadata = std::fs::metadata(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                    .map_err(|error| self.caller_error(error))?;
+                if AfterLoaderStatFields::deterministic_loader_cache_alias(&metadata) != *fields {
+                    return Err(self.caller_error(
+                        "loader-cache alias fstat target changed while the syscall executed",
+                    ));
+                }
+                let expected = fields.exact_x86_64_output();
+                let mut observed = [0_u8; 144];
+                task.read_exact(*destination as usize, &mut observed)?;
+                observed[72..88].copy_from_slice(&expected[72..88]);
+                if observed != expected {
+                    return Err(self.caller_error(
+                        "loader-cache alias fstat non-atime output differs from exact metadata",
+                    ));
+                }
+                self.caller_write(task, *destination, &expected)?;
+                self.caller_observe(
+                    "loader-cache alias fstat virtualized",
+                    "policy=st_atime-equals-st_mtime kernel-non-atime-fields=byte-exact",
+                )?;
+                if !self
+                    .after_loader_private_state_mut()?
+                    .loader_cache
+                    .as_mut()
+                    .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                    .is_some_and(|lifecycle| lifecycle.complete_stat(*descriptor))
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias fstat lifecycle changed before completion",
+                    ));
+                }
+            }
             AfterLoaderSyscallEffect::Stat {
                 descriptor,
                 destination,
@@ -3702,6 +8930,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if raw_result != 0 {
                     return Err(self.caller_error("private stat did not return zero"));
                 }
+                let alias_binding = match self
+                    .after_loader_private_state()?
+                    .owned_descriptors
+                    .get(descriptor)
+                {
+                    Some(AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. }) => Some(
+                        self.authenticate_loader_cache_alias_descriptor(task, config, *descriptor)?,
+                    ),
+                    _ => None,
+                };
                 let metadata = std::fs::metadata(format!("/proc/{}/fd/{descriptor}", task.pid()))
                     .map_err(|error| self.caller_error(error))?;
                 if AfterLoaderStatFields::from_metadata(&metadata) != *fields {
@@ -3711,34 +8949,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 let mut bytes = [0_u8; 144];
                 task.read_exact(*destination as usize, &mut bytes)?;
-                let u64_at = |offset: usize| {
-                    u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
-                };
-                let i64_at = |offset: usize| {
-                    i64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
-                };
-                let u32_at = |offset: usize| {
-                    u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
-                };
-                if u64_at(0) != fields.device
-                    || u64_at(8) != fields.inode
-                    || u64_at(16) != fields.links
-                    || u32_at(24) != fields.mode
-                    || u32_at(28) != fields.uid
-                    || u32_at(32) != fields.gid
-                    || u64_at(40) != fields.rdev
-                    || i64_at(48) != fields.size
-                    || i64_at(56) != fields.block_size
-                    || i64_at(64) != fields.blocks
-                    || i64_at(72) != fields.access_seconds
-                    || i64_at(80) != fields.access_nanoseconds
-                    || i64_at(88) != fields.modify_seconds
-                    || i64_at(96) != fields.modify_nanoseconds
-                    || i64_at(104) != fields.change_seconds
-                    || i64_at(112) != fields.change_nanoseconds
-                {
+                if !stat_output_matches(*fields, &bytes) {
                     return Err(self.caller_error(
                         "private stat output differs from the exact owned descriptor metadata",
+                    ));
+                }
+                if let Some((raw_path, _)) = alias_binding
+                    && !self
+                        .after_loader_private_state_mut()?
+                        .loader_cache
+                        .as_mut()
+                        .and_then(|cache| cache.aliases.get_mut(&raw_path))
+                        .is_some_and(|lifecycle| lifecycle.complete_stat(*descriptor))
+                {
+                    return Err(self.caller_error(
+                        "loader-cache alias fstat lifecycle changed before completion",
                     ));
                 }
             }
@@ -3805,6 +9030,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         bias: u64,
         maps: &[GuestMap],
         isolation: Option<&AfterLoaderHelperIsolation>,
+        relro_state: ImageRelroState,
     ) -> Result<std::result::Result<(), ImageGeometryMismatch>, Error> {
         let isolation = isolation.filter(|isolation| isolation.applies_to(identity, bias));
         let loads = elf
@@ -3898,7 +9124,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .ok_or(Errno::EOVERFLOW)
                     .and_then(page_up)?;
                 let readable = owner.p_flags & ph::PF_R != 0;
-                let writable = owner.p_flags & ph::PF_W != 0 && !relro_page;
+                let writable = owner.p_flags & ph::PF_W != 0
+                    && (!relro_page || relro_state == ImageRelroState::WritableBeforeProtection);
                 let executable = owner.p_flags & ph::PF_X != 0;
                 let expected_offset = page_down(owner.p_offset)
                     .checked_add(page - owner_start)
@@ -4019,6 +9246,41 @@ impl<L: Tool + 'static> TracedTask<L> {
         phase: &'static str,
         isolation: Option<&AfterLoaderHelperIsolation>,
     ) -> Result<ResolvedImageGeometry, Error> {
+        self.resolve_after_loader_image_geometry_with_isolation_and_relro(
+            task,
+            image,
+            image_id,
+            phase,
+            isolation,
+            ImageRelroState::Protected,
+        )
+    }
+
+    fn resolve_loader_cache_alias_pre_relro_geometry(
+        &self,
+        task: &Stopped,
+        image: &LiteinstCallerImage,
+        image_id: AfterLoaderImageId,
+    ) -> Result<ResolvedImageGeometry, Error> {
+        self.resolve_after_loader_image_geometry_with_isolation_and_relro(
+            task,
+            image,
+            image_id,
+            "loader-cache-alias-pre-relro",
+            None,
+            ImageRelroState::WritableBeforeProtection,
+        )
+    }
+
+    fn resolve_after_loader_image_geometry_with_isolation_and_relro(
+        &self,
+        task: &Stopped,
+        image: &LiteinstCallerImage,
+        image_id: AfterLoaderImageId,
+        phase: &'static str,
+        isolation: Option<&AfterLoaderHelperIsolation>,
+        relro_state: ImageRelroState,
+    ) -> Result<ResolvedImageGeometry, Error> {
         let elf = Elf::parse(&image.bytes)
             .map_err(|error| self.caller_error(format!("bound ELF parse failed: {error}")))?;
         if elf.is_64 == false
@@ -4103,7 +9365,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let mut first_rejection = None;
         for (identity, bias) in candidates {
             match self.after_loader_image_geometry_matches(
-                task, image, identity, &elf, bias, &maps, isolation,
+                task,
+                image,
+                identity,
+                &elf,
+                bias,
+                &maps,
+                isolation,
+                relro_state,
             )? {
                 Ok(()) => accepted.push((identity, bias)),
                 Err(reason) if first_rejection.is_none() => {
@@ -4216,7 +9485,45 @@ impl<L: Tool + 'static> TracedTask<L> {
             "post-dlopen-deferred",
             "bound target image geometry",
             true,
-        )
+        )?;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        for alias in config.loader_cache_aliases() {
+            let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                .map_err(|reason| self.caller_error(reason))?;
+            let state = self.after_loader_private_state()?;
+            let image = state.image_id(alias.dependency());
+            let geometry = state.image_geometry(alias.dependency()).ok_or_else(|| {
+                self.caller_error("cache-derived deferred image geometry was not bound")
+            })?;
+            let consumed = state
+                .loader_cache
+                .as_ref()
+                .and_then(|cache| cache.aliases.get(alias.raw_path()))
+                .is_some_and(|lifecycle| {
+                    matches!(
+                        lifecycle,
+                        LoaderCacheAliasLifecycle::Consumed {
+                            image: consumed_image,
+                            geometry: consumed_geometry,
+                            mappings,
+                            zero_fills,
+                        } if *consumed_image == image
+                            && *consumed_geometry == geometry
+                            && mappings.len() == plan.file_maps.len()
+                            && zero_fills.len() == 1
+                    )
+                });
+            if !consumed
+                || !target_loader_cache_alias_matches(task.pid(), alias)
+                    .map_err(|error| self.caller_error(error))?
+                || !exact_image_mapping_paths_are_literal(alias.dependency(), geometry, &maps)
+            {
+                return Err(self.caller_error(
+                    "cache-derived deferred image lost its consumed canonical-path geometry",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn bind_after_loader_image_geometries<'a>(
@@ -4388,6 +9695,42 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .caller_error("retained callback stack differs from the authenticated handshake"));
         }
         let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        for alias in config.loader_cache_aliases() {
+            let plan = loader_cache_alias_mmap_plan(&alias.dependency().bytes)
+                .map_err(|reason| self.caller_error(reason))?;
+            let image = state.image_id(alias.dependency());
+            let geometry = state.image_geometry(alias.dependency()).ok_or_else(|| {
+                self.caller_error("retained cache-derived image geometry disappeared")
+            })?;
+            let consumed = state
+                .loader_cache
+                .as_ref()
+                .and_then(|cache| cache.aliases.get(alias.raw_path()))
+                .is_some_and(|lifecycle| {
+                    matches!(
+                        lifecycle,
+                        LoaderCacheAliasLifecycle::Consumed {
+                            image: consumed_image,
+                            geometry: consumed_geometry,
+                            mappings,
+                            zero_fills,
+                        } if *consumed_image == image
+                            && *consumed_geometry == geometry
+                            && mappings.len() == plan.file_maps.len()
+                            && zero_fills.len() == 1
+                    )
+                });
+            if !consumed
+                || !target_loader_cache_alias_matches(task.pid(), alias)
+                    .map_err(|error| self.caller_error(error))?
+                || !exact_image_mapping_paths_are_literal(alias.dependency(), geometry, &maps)
+            {
+                return Err(self.caller_error(
+                    "retained cache-derived image lost its exact source or canonical path",
+                ));
+            }
+            self.authenticate_after_loader_image_backing(task, alias.dependency(), geometry)?;
+        }
         for owned in &state.owned_mappings {
             let exact_boundaries = matches!(
                 owned.purpose,
@@ -4459,6 +9802,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                             "retained trampoline alias identity or geometry changed",
                         ));
                     }
+                }
+                AfterLoaderMappingPurpose::LoaderCache => {
+                    return Err(self.caller_error(
+                        "loader-cache mapping survived into retained runtime resources",
+                    ));
                 }
                 AfterLoaderMappingPurpose::Controller => unreachable!(),
             }
@@ -4635,11 +9983,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             image: Some(image),
             tid: task.pid(),
             generation: image.generation,
+            physical_generation: Some(task.physical_event_generation()),
             origin_status: task.physical_status_id(),
             admission_status: None,
             purpose,
             number,
             args,
+            executed_args: args,
             instruction_pointer,
             resume_pointer,
             instruction,
@@ -4685,10 +10035,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         if identity != permit.image
             || task.pid() != permit.tid
             || generation != permit.generation
+            || Some(task.physical_event_generation()) != permit.physical_generation
             || origin_status == admission_status
             || permit
                 .admission_status
                 .is_some_and(|expected| expected != admission_status)
+            || !after_loader_permit_argument_binding_is_exact(&permit)
             || !after_loader_syscall_registers_match(permit.number, permit.args, &regs)
             || regs.rip != permit.resume_pointer
             || instruction[..instruction_length] != permit.instruction[..instruction_length]
@@ -4701,7 +10053,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "private syscall permit consumed",
                 self.timer.diagnostic_clock(),
                 format!(
-                    "tid={} generation={} origin_status={:?} admission_status={:?} purpose={:?} nr={} args={:?} rip={:#x} outputs={:?}",
+                    "tid={} generation={} origin_status={:?} admission_status={:?} purpose={:?} nr={} logical_args={:?} executed_args={:?} rip={:#x} outputs={:?}",
                     task.pid(),
                     permit.generation,
                     permit.origin_status,
@@ -4709,6 +10061,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     permit.purpose,
                     permit.number,
                     permit.args,
+                    permit.executed_args,
                     permit.instruction_pointer,
                     permit.output_spans,
                 ),
@@ -4744,7 +10097,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             ),
             None => None,
         };
-        if task.pid() != permit.tid || generation != permit.generation || identity != permit.image {
+        if task.pid() != permit.tid
+            || generation != permit.generation
+            || Some(task.physical_event_generation()) != permit.physical_generation
+            || identity != permit.image
+        {
             return Err(Errno::EPROTO.into());
         }
         if syscall_completion {
@@ -4755,7 +10112,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 permit.instruction_pointer as usize,
                 &mut instruction[..instruction_length],
             )?;
-            if !after_loader_syscall_registers_match(permit.number, permit.args, &regs)
+            if !after_loader_permit_argument_binding_is_exact(&permit)
+                || !after_loader_syscall_registers_match(permit.number, permit.executed_args, &regs)
                 || regs.rip != permit.resume_pointer
                 || instruction[..instruction_length] != permit.instruction[..instruction_length]
             {
@@ -5343,7 +10701,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "private syscall completion",
             )
             .await?;
-        let task = match wait {
+        let mut task = match wait {
             Wait::Stopped(task, Event::Syscall) => task,
             other => {
                 return Err(self.caller_error(format!(
@@ -5375,7 +10733,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let value = completed.rax;
         let completion = self.complete_after_loader_private_syscall(
-            &task,
+            &mut task,
             &config,
             &completed_permit,
             value as i64,
@@ -5420,9 +10778,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         // x86-64 kernel sigaction is handler, flags, restorer and 64-bit mask:
         // four contiguous u64 values. Query every kernel signal, including
         // glibc's reserved realtime numbers. No libc wrapper or handler runs.
-        let mut actions = Vec::with_capacity(64);
-        for signal in 1..=64_u64 {
-            let destination = data + 512 + (signal - 1) * 32;
+        let mut actions = Vec::with_capacity(PRIVATE_SIGNAL_ACTION_COUNT as usize);
+        for signal in 1..=PRIVATE_SIGNAL_ACTION_COUNT {
+            let destination =
+                data + PRIVATE_SIGNAL_ACTIONS_OFFSET + (signal - 1) * PRIVATE_SIGNAL_ACTION_BYTES;
             let (next, _) = self
                 .caller_syscall(
                     task,
@@ -5558,7 +10917,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Authenticate the syscall instruction and its bound loader/runtime
         // image before the separate function-specific admission proves the
         // exact arguments and owned descriptor, mapping, futex or break state.
-        if !private_syscall_allowed(r.orig_rax as i64) {
+        let profiled_entropy = r.orig_rax as i64 == libc::SYS_getrandom;
+        if !private_syscall_allowed(r.orig_rax as i64) && !profiled_entropy {
             return Err(self.caller_error(format!("unexpected private syscall {}", r.orig_rax)));
         }
         let ip = r.rip.checked_sub(2).ok_or(Errno::EPROTO)?;
@@ -5586,6 +10946,23 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .is_some_and(|identity| mapping_identity_matches(identity, map))
             })
             .ok_or_else(|| self.caller_error("private syscall came from unbound or guest code"))?;
+        if profiled_entropy {
+            let provider_geometry = state
+                .image_geometry(&config.provider)
+                .ok_or_else(|| self.caller_error("bootstrap entropy provider is unbound"))?;
+            let expected_ip = provider_geometry
+                .load_bias
+                .checked_add(PTMALLOC_BOOTSTRAP_SYSCALL_RVA)
+                .ok_or(Errno::EOVERFLOW)?;
+            if state.image_id(expected) != state.image_id(&config.provider)
+                || expected.path != config.provider.path
+                || expected.bytes.as_ref() != config.provider.bytes.as_ref()
+                || ip != expected_ip
+            {
+                return Err(self
+                    .caller_error("bootstrap entropy syscall is outside the exact provider site"));
+            }
+        }
         let offset = map
             .offset
             .checked_add(ip - map.start)
@@ -5746,11 +11123,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             image: Some(image),
             tid: task.pid(),
             generation: image.generation,
+            physical_generation: Some(task.physical_event_generation()),
             origin_status: Some(active.origin_status),
             admission_status: Some(admission_status),
             purpose: AfterLoaderSyscallPurpose::PrivateSetup,
             number: regs.orig_rax as i64,
             args,
+            executed_args: args,
             instruction_pointer,
             resume_pointer: regs.rip,
             instruction,
@@ -5783,6 +11162,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         code.authenticate_return(trap, &active.code_bytes)
             .map_err(|error| self.caller_error(format!("{error:?}")))?;
+        if function == CallerFunction::Dlopen {
+            self.validate_loader_cache_retired(
+                task,
+                &self.after_loader_config().ok_or(Errno::EPROTO)?,
+            )?;
+        }
         let cleared = self
             .liteinst_after_loader_private_call
             .take()
@@ -5791,6 +11176,408 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.caller_error("private call authority changed while clearing return"));
         }
         Ok(())
+    }
+
+    fn validate_loader_cache_resources_absent(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        descriptor: u64,
+        mapping: LoaderCacheMapping,
+    ) -> Result<(), Error> {
+        let evidence = self.loader_cache_artifact_evidence(config)?;
+        let state = self.after_loader_private_state()?;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        let descriptor_absent =
+            procfs_path_is_absent(format!("/proc/{}/fd/{descriptor}", task.pid()))
+                .map_err(|error| self.caller_error(error))?;
+        if mapping.identity != evidence.mapping
+            || mapping.raw_length != evidence.length
+            || state.loader_cache.as_ref().is_none_or(|cache| {
+                !cache
+                    .aliases
+                    .values()
+                    .all(LoaderCacheAliasLifecycle::is_consumed)
+            })
+            || state.owned_descriptors.values().any(|owned| {
+                matches!(
+                    owned,
+                    AfterLoaderOwnedDescriptor::LoaderCache { .. }
+                        | AfterLoaderOwnedDescriptor::LoaderCacheAlias { .. }
+                )
+            })
+            || state
+                .owned_mappings
+                .iter()
+                .any(|owned| owned.purpose == AfterLoaderMappingPurpose::LoaderCache)
+            || !descriptor_absent
+            || maps.iter().any(|candidate| {
+                ranges_overlap(
+                    (candidate.start, candidate.end),
+                    (mapping.start, mapping.end),
+                ) || candidate.mapping_identity() == mapping.identity
+            })
+        {
+            return Err(
+                self.caller_error("retired loader-cache descriptor or physical mapping reappeared")
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_loader_cache_retired(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<(), Error> {
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        let LoaderCacheLifecycle::Retired {
+            descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Err(self.caller_error(
+                "private dlopen returned before the loader-cache lifecycle retired",
+            ));
+        };
+        self.validate_loader_cache_resources_absent(task, config, descriptor, mapping)
+    }
+
+    fn prepare_loader_cache_scratch_release(
+        &mut self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        scratch_base: u64,
+    ) -> Result<(), Error> {
+        self.validate_loader_cache_retired(task, config)?;
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        let LoaderCacheLifecycle::Retired {
+            descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Err(Errno::EPROTO.into());
+        };
+        if cache.scratch_reservation
+            != (
+                scratch_base,
+                scratch_base.checked_add(3 * PAGE).ok_or(Errno::EOVERFLOW)?,
+            )
+        {
+            return Err(self.caller_error("loader-cache scratch release names another reservation"));
+        }
+        if !self
+            .after_loader_private_state_mut()?
+            .loader_cache
+            .as_mut()
+            .ok_or(Errno::EPROTO)?
+            .lifecycle
+            .arm_scratch_release(descriptor, mapping)
+        {
+            return Err(self.caller_error(
+                "loader-cache scratch retirement attestation changed before release",
+            ));
+        }
+        Ok(())
+    }
+
+    fn complete_loader_cache_scratch_release(
+        &mut self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        scratch_base: u64,
+    ) -> Result<(), Error> {
+        let cache = self
+            .after_loader_private_state()?
+            .loader_cache
+            .clone()
+            .ok_or(Errno::EPROTO)?;
+        let LoaderCacheLifecycle::ScratchReleaseArmed {
+            descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Err(self.caller_error(
+                "loader-cache scratch release completed without exact retirement authority",
+            ));
+        };
+        let reservation = cache.scratch_reservation;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        if reservation
+            != (
+                scratch_base,
+                scratch_base.checked_add(3 * PAGE).ok_or(Errno::EOVERFLOW)?,
+            )
+            || self
+                .after_loader_private_state()?
+                .owned_mappings
+                .iter()
+                .any(|candidate| ranges_overlap((candidate.start, candidate.end), reservation))
+            || maps
+                .iter()
+                .any(|candidate| ranges_overlap((candidate.start, candidate.end), reservation))
+        {
+            return Err(self.caller_error(
+                "released loader-cache reservation retained a logical or physical owner",
+            ));
+        }
+        self.validate_loader_cache_resources_absent(task, config, descriptor, mapping)?;
+        if !self
+            .after_loader_private_state_mut()?
+            .loader_cache
+            .as_mut()
+            .ok_or(Errno::EPROTO)?
+            .lifecycle
+            .complete_scratch_release(descriptor, mapping)
+        {
+            return Err(Errno::EPROTO.into());
+        }
+        Ok(())
+    }
+
+    fn validate_loader_cache_released(
+        &self,
+        task: &Stopped,
+        config: &LiteinstAfterLoaderConfig,
+    ) -> Result<(), Error> {
+        let cache = self
+            .after_loader_private_state()?
+            .loader_cache
+            .clone()
+            .ok_or(Errno::EPROTO)?;
+        let LoaderCacheLifecycle::Released {
+            descriptor,
+            mapping,
+        } = cache.lifecycle
+        else {
+            return Err(
+                self.caller_error("Ready publication preceded exact loader-cache scratch release")
+            );
+        };
+        let reservation = cache.scratch_reservation;
+        let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
+        if !loader_cache_scratch_metadata_is_exact(reservation, cache.scratch, cache.scratch_owner)
+            || self
+                .after_loader_private_state()?
+                .owned_mappings
+                .iter()
+                .any(|candidate| ranges_overlap((candidate.start, candidate.end), reservation))
+            || maps
+                .iter()
+                .any(|candidate| ranges_overlap((candidate.start, candidate.end), reservation))
+        {
+            return Err(self.caller_error(
+                "released loader-cache scratch reservation reappeared before Ready publication",
+            ));
+        }
+        self.validate_loader_cache_resources_absent(task, config, descriptor, mapping)
+    }
+
+    fn prepare_loader_cache_redirect(
+        &self,
+        task: &mut Stopped,
+        permit: &AfterLoaderSyscallPermit,
+    ) -> Result<(), Error> {
+        let AfterLoaderSyscallEffect::OpenLoaderCache { redirect, .. } = &permit.effect else {
+            return Ok(());
+        };
+        let expected_executed = loader_cache_redirect_arguments(permit.args, redirect)
+            .ok_or_else(|| self.caller_error("loader-cache redirect binding is malformed"))?;
+        let cache = self.authenticate_loader_cache_scratch(task)?;
+        if permit.executed_args != expected_executed
+            || cache.scratch != redirect.scratch
+            || cache.scratch_preimage != redirect.preimage
+        {
+            return Err(self.caller_error("loader-cache executed arguments changed"));
+        }
+        let mut expected_scratch = redirect.preimage.clone();
+        expected_scratch[..redirect.path.len()].copy_from_slice(&redirect.path);
+        self.caller_write(task, redirect.scratch.0, &redirect.path)?;
+        let mut actual_scratch = vec![0_u8; LOADER_CACHE_SCRATCH_BYTES];
+        task.read_exact(redirect.scratch.0 as usize, &mut actual_scratch)?;
+        if actual_scratch != expected_scratch {
+            return Err(self.caller_error("loader-cache redirect scratch readback differs"));
+        }
+        let logical_regs = task.getregs()?;
+        if register_words(&logical_regs) != redirect.admission_registers
+            || task.get_x86_extended_state()? != redirect.admission_xstate
+        {
+            return Err(self
+                .caller_error("loader-cache logical registers or XSTATE changed before rewrite"));
+        }
+        let mut executed_regs = logical_regs;
+        executed_regs.rsi = permit.executed_args[1];
+        task.setregs(&executed_regs)?;
+        if !loader_cache_redirect_register_words_match(
+            redirect.admission_registers,
+            permit.executed_args[1],
+            register_words(&task.getregs()?),
+        ) || task.get_x86_extended_state()? != redirect.admission_xstate
+        {
+            return Err(
+                self.caller_error("loader-cache executed register or XSTATE rewrite differs")
+            );
+        }
+        Ok(())
+    }
+
+    fn restore_loader_cache_redirect(
+        &self,
+        task: &mut Stopped,
+        permit: &AfterLoaderSyscallPermit,
+        raw_result: i64,
+    ) -> Result<Vec<u8>, Error> {
+        let AfterLoaderSyscallEffect::OpenLoaderCache { redirect, .. } = &permit.effect else {
+            return Err(self.caller_error("non-cache effect reached cache redirect restoration"));
+        };
+        let cache = self.authenticate_loader_cache_scratch_owner(task)?;
+        if cache.scratch != redirect.scratch || cache.scratch_preimage != redirect.preimage {
+            return Err(
+                self.caller_error("loader-cache scratch authority changed while openat executed")
+            );
+        }
+        let mut expected_scratch = redirect.preimage.clone();
+        expected_scratch[..redirect.path.len()].copy_from_slice(&redirect.path);
+        let mut actual_scratch = vec![0_u8; LOADER_CACHE_SCRATCH_BYTES];
+        task.read_exact(redirect.scratch.0 as usize, &mut actual_scratch)?;
+        if actual_scratch != expected_scratch {
+            return Err(self.caller_error("loader-cache scratch changed while openat executed"));
+        }
+        let executed_regs = task.getregs()?;
+        if !loader_cache_completion_register_words_match(
+            redirect.admission_registers,
+            permit.executed_args[1],
+            raw_result,
+            register_words(&executed_regs),
+        ) || task.get_x86_extended_state()? != redirect.admission_xstate
+        {
+            return Err(
+                self.caller_error("loader-cache kernel completion registers or XSTATE changed")
+            );
+        }
+        self.caller_write(task, redirect.scratch.0, &redirect.preimage)?;
+        let mut restored_scratch = vec![0_u8; LOADER_CACHE_SCRATCH_BYTES];
+        task.read_exact(redirect.scratch.0 as usize, &mut restored_scratch)?;
+        if restored_scratch != redirect.preimage {
+            return Err(self.caller_error("loader-cache scratch restoration readback differs"));
+        }
+        let mut logical_regs = executed_regs;
+        logical_regs.rsi = permit.args[1];
+        task.setregs(&logical_regs)?;
+        if !loader_cache_completion_register_words_match(
+            redirect.admission_registers,
+            permit.args[1],
+            raw_result,
+            register_words(&task.getregs()?),
+        ) || task.get_x86_extended_state()? != redirect.admission_xstate
+        {
+            return Err(
+                self.caller_error("loader-cache logical register or XSTATE restoration differs")
+            );
+        }
+        Ok(redirect.preimage.clone())
+    }
+
+    fn complete_ptmalloc_bootstrap_entropy(
+        &mut self,
+        task: &mut Stopped,
+        config: &LiteinstAfterLoaderConfig,
+        permit: &AfterLoaderSyscallPermit,
+        admission_regs: &libc::user_regs_struct,
+        admission_xstate: &safeptrace::X86ExtendedState,
+    ) -> Result<AfterLoaderEmulatedCompletion, Error> {
+        let (destination, before) = match &permit.effect {
+            AfterLoaderSyscallEffect::PtmallocBootstrapEntropy {
+                destination,
+                before,
+            } => (*destination, *before),
+            _ => {
+                return Err(
+                    self.caller_error("non-entropy effect reached bootstrap entropy completion")
+                );
+            }
+        };
+        if admission_regs.rax as i64 != -(libc::ENOSYS as i64)
+            || register_words(&task.getregs()?) != register_words(admission_regs)
+            || task.get_x86_extended_state()? != *admission_xstate
+        {
+            return Err(self.caller_error("skipped bootstrap entropy changed registers or XSTATE"));
+        }
+        let mut instruction = [0_u8; 2];
+        task.read_exact(permit.instruction_pointer as usize, &mut instruction)?;
+        if instruction != permit.instruction[..2] {
+            return Err(self.caller_error("bootstrap entropy instruction changed before emulation"));
+        }
+        let profile = self
+            .after_loader_private_state()?
+            .ptmalloc_bootstrap
+            .ok_or_else(|| self.caller_error("bootstrap entropy profile disappeared"))?;
+        let Some((load_bias, current)) = self.observe_ptmalloc_bootstrap(task, config)? else {
+            return Err(self.caller_error("bootstrap entropy provider disappeared"));
+        };
+        if !exact_ptmalloc_bootstrap_admission_state(profile, load_bias, current)
+            || destination
+                != profile
+                    .load_bias
+                    .checked_add(PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA)
+                    .ok_or(Errno::EOVERFLOW)?
+            || current.tcache_key != before
+            || before != [0; 8]
+        {
+            return Err(self
+                .caller_error("bootstrap entropy state changed between admission and completion"));
+        }
+        let process_state = self.process_state.clone();
+        let entropy = process_state
+            .handle_backend_bootstrap_entropy(
+                &mut self.thread_state,
+                BackendBootstrapEntropy::PtmallocTcacheKey,
+            )
+            .map_err(|error| {
+                self.caller_error(format!(
+                    "Tool refused profiled ptmalloc bootstrap entropy: {error}"
+                ))
+            })?;
+        self.caller_write(task, destination, &entropy)?;
+        let mut completed_regs = *admission_regs;
+        completed_regs.rax = 8;
+        task.setregs(&completed_regs)?;
+        if !ptmalloc_bootstrap_completion_registers_match(admission_regs, &task.getregs()?)
+            || task.get_x86_extended_state()? != *admission_xstate
+        {
+            return Err(
+                self.caller_error("bootstrap entropy completion changed state other than RAX")
+            );
+        }
+        let Some((completed_bias, completed)) = self.observe_ptmalloc_bootstrap(task, config)?
+        else {
+            return Err(self.caller_error("bootstrap entropy provider disappeared after write"));
+        };
+        if completed_bias != profile.load_bias
+            || completed.initialized != 1
+            || completed.tcache_key != entropy
+        {
+            return Err(self.caller_error("bootstrap entropy writeback differs"));
+        }
+        if self.after_loader_private_state()?.ptmalloc_bootstrap != Some(profile) {
+            return Err(self.caller_error("bootstrap entropy profile changed before retirement"));
+        }
+        let retained = self
+            .after_loader_private_state_mut()?
+            .ptmalloc_bootstrap
+            .as_mut()
+            .ok_or(Errno::EPROTO)?;
+        retained.entropy_consumed = true;
+        retained.injected_key = Some(entropy);
+        self.caller_observe(
+            "profiled ptmalloc bootstrap entropy emulated",
+            format!(
+                "length=8 flags={} tcache_key_sha256={}",
+                libc::GRND_NONBLOCK,
+                sha256_hex(&entropy),
+            ),
+        )?;
+        Ok(AfterLoaderEmulatedCompletion::PtmallocBootstrapEntropy)
     }
 
     async fn caller_function(
@@ -5824,7 +11611,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await?;
         loop {
             match wait {
-                Wait::Stopped(stopped, Event::Seccomp) => {
+                Wait::Stopped(mut stopped, Event::Seccomp) => {
                     if function == CallerFunction::ErrnoLocation {
                         return Err(self.caller_error("errno accessor attempted a syscall"));
                     }
@@ -5836,6 +11623,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let effect = self
                         .admit_after_loader_function_syscall(&stopped, config, function, &permit)?;
                     permit.effect = effect;
+                    if let AfterLoaderSyscallEffect::OpenLoaderCache { redirect, .. } =
+                        &permit.effect
+                    {
+                        permit.executed_args =
+                            loader_cache_redirect_arguments(permit.args, redirect).ok_or_else(
+                                || {
+                                    self.caller_error(
+                                "loader-cache redirect did not produce exact executed arguments",
+                            )
+                                },
+                            )?;
+                    }
                     self.liteinst_after_loader_syscall_permit = Some(permit.clone());
                     let consumed = self
                         .consume_after_loader_syscall_permit(&stopped)?
@@ -5843,13 +11642,50 @@ impl<L: Tool + 'static> TracedTask<L> {
                     if consumed != permit {
                         return Err(self.caller_error("private function syscall permit changed"));
                     }
+                    self.prepare_loader_cache_redirect(&mut stopped, &permit)?;
+                    if matches!(
+                        &permit.effect,
+                        AfterLoaderSyscallEffect::PtmallocBootstrapEntropy { .. }
+                    ) {
+                        let admission_regs = stopped.getregs()?;
+                        let admission_xstate = stopped.get_x86_extended_state()?;
+                        let mut successor = self.skip_seccomp_syscall(stopped).await?;
+                        self.caller_quiescent(&successor, image)?;
+                        let completed_permit = self
+                            .complete_after_loader_syscall_successor(&successor)?
+                            .ok_or(Errno::EPROTO)?;
+                        if completed_permit != permit {
+                            return Err(
+                                self.caller_error("bootstrap entropy successor authority changed")
+                            );
+                        }
+                        let completion = self.complete_ptmalloc_bootstrap_entropy(
+                            &mut successor,
+                            config,
+                            &completed_permit,
+                            &admission_regs,
+                            &admission_xstate,
+                        )?;
+                        if completion != AfterLoaderEmulatedCompletion::PtmallocBootstrapEntropy {
+                            return Err(self.caller_error(
+                                "bootstrap entropy returned a different emulated completion",
+                            ));
+                        }
+                        wait = self
+                            .caller_wait(
+                                self.resume_stopped(successor, None)?,
+                                "private function stop",
+                            )
+                            .await?;
+                        continue;
+                    }
                     let exit = self
                         .caller_wait(
                             self.syscall_stopped(stopped, None)?,
                             "private loader syscall exit",
                         )
                         .await?;
-                    let stopped = match exit {
+                    let mut stopped = match exit {
                         Wait::Stopped(stopped, Event::Syscall) => stopped,
                         other => {
                             return Err(self.caller_error(format!(
@@ -5876,14 +11712,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                             completed.r10,
                             completed.r8,
                             completed.r9,
-                        ] != permit.args
+                        ] != permit.executed_args
                         || completed.rip != permit.resume_pointer
                     {
                         return Err(self
                             .caller_error("private function syscall completion identity changed"));
                     }
                     let completion = self.complete_after_loader_private_syscall(
-                        &stopped,
+                        &mut stopped,
                         config,
                         &completed_permit,
                         completed.rax as i64,
@@ -5896,8 +11732,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.caller_observe(
                         "private loader syscall result",
                         format!(
-                            "nr={} args={:?} result={:#x} outputs={:?}",
-                            permit.number, permit.args, completed.rax, permit.output_spans,
+                            "nr={} logical_args={:?} executed_args={:?} result={:#x} outputs={:?}",
+                            permit.number,
+                            permit.args,
+                            permit.executed_args,
+                            completed.rax,
+                            permit.output_spans,
                         ),
                     )?;
                     wait = self
@@ -5911,6 +11751,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let mut bytes = [0; 30];
                     stopped.read_exact(code.entry as usize, &mut bytes)?;
                     if trap.rip == code.return_rip {
+                        if function == CallerFunction::Initializer
+                            && self.after_loader_private_state()?.proc_fd_audit
+                                != ProcFdAuditLifecycle::Complete
+                        {
+                            return Err(self.caller_error(
+                                "initializer returned before the proc-fd audit completed",
+                            ));
+                        }
                         self.finish_after_loader_private_call(
                             &stopped, image, calls, code, function, &trap,
                         )?;
@@ -5935,7 +11783,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                         &stopped, image, calls, code, function,
                     )?;
                     match self.classify_liteinst_trap(&stopped, &regs) {
-                        Some(LiteinstTrap::HandshakeBegin) => calls.begin(),
+                        Some(LiteinstTrap::HandshakeBegin) => {
+                            if self.after_loader_private_state()?.proc_fd_audit
+                                != ProcFdAuditLifecycle::Complete
+                            {
+                                return Err(self.caller_error(
+                                    "initializer reached Begin before the proc-fd audit completed",
+                                ));
+                            }
+                            calls.begin()
+                        }
                         Some(LiteinstTrap::HandshakeReady) => calls.ready(),
                         _ => {
                             return Err(self.caller_error(
@@ -6225,6 +12082,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             authenticated_entry,
             |this, stopped| this.bind_after_loader_initial_image_geometries(stopped, &config),
         )?;
+        self.initialize_ptmalloc_bootstrap_state(&task, &config)?;
         let timer_suspension = match self.timer.begin_suspend_for_private_execution() {
             Ok(suspension) => suspension,
             Err(error) => {
@@ -6330,7 +12188,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ],
             )
             .await?;
-        let (mut task, code_base) = self
+        let (task, code_base) = self
             .caller_syscall(
                 task,
                 image,
@@ -6345,6 +12203,36 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ],
             )
             .await?;
+        // Keep the redirect scratch in one physically exact RW anonymous page.
+        // The two PROT_NONE guard pages prevent neighboring controller mappings
+        // from merging with it while the cache lifecycle is armed.
+        let (task, loader_cache_scratch_base) = self
+            .caller_syscall(
+                task,
+                image,
+                Sysno::mmap,
+                [0, 3 * PAGE, libc::PROT_NONE as u64, flags, u64::MAX, 0],
+            )
+            .await?;
+        let loader_cache_scratch_page = loader_cache_scratch_base
+            .checked_add(PAGE)
+            .ok_or(Errno::EOVERFLOW)?;
+        let (mut task, _) = self
+            .caller_syscall(
+                task,
+                image,
+                Sysno::mprotect,
+                [
+                    loader_cache_scratch_page,
+                    PAGE,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+            .await?;
+        self.initialize_loader_cache_consumption(&task, &config, loader_cache_scratch_base)?;
         let policy_scratch_address = data
             .checked_add(PRIVATE_POLICY_SCRATCH_OFFSET)
             .ok_or(Errno::EOVERFLOW)?;
@@ -6466,7 +12354,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         )?;
         let path = format!("/proc/self/fd/{runtime_fd}\0");
         self.caller_write(&mut task, data, path.as_bytes())?;
-        self.caller_write(&mut task, data + 3072, &crate::entry_call::host_config())?;
+        self.caller_write(
+            &mut task,
+            data + PRIVATE_HOST_CONFIG_OFFSET,
+            &crate::entry_call::host_config(),
+        )?;
 
         let errno_resolver =
             crate::target_loader::resolve_errno_location(&task, &config.provider.bytes)
@@ -6616,6 +12508,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.caller_error("dlopen coordinates changed during preparation"));
         }
         self.caller_sealed_runtime(&task, &config, runtime_fd)?;
+        self.verify_ptmalloc_bootstrap_before_dlopen(&task, &config)?;
         calls
             .start_dlopen()
             .map_err(|e| self.caller_error(format!("{e:?}")))?;
@@ -6631,6 +12524,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 CallerFunction::Dlopen,
             )
             .await?;
+        self.verify_ptmalloc_bootstrap_retained(&task, &config)?;
         self.bind_after_loader_deferred_image_geometries(&task, &config)?;
         let runtime_id = self
             .after_loader_private_state()?
@@ -6755,10 +12649,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                 &config,
                 &mut calls,
                 &code,
-                [data + 3072, 0],
+                [data + PRIVATE_HOST_CONFIG_OFFSET, 0],
                 CallerFunction::Initializer,
             )
             .await?;
+        self.verify_ptmalloc_bootstrap_retained(&task, &config)?;
         active_environment
             .compare_exact(
                 &crate::target_loader::observe_environment_after(
@@ -6896,7 +12791,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (task, _) = self
             .caller_syscall(task, image, Sysno::close, [runtime_fd, 0, 0, 0, 0, 0])
             .await?;
-        if std::fs::symlink_metadata(format!("/proc/{}/fd/{runtime_fd}", task.pid())).is_ok() {
+        if !procfs_path_is_absent(format!("/proc/{}/fd/{runtime_fd}", task.pid()))
+            .map_err(|error| self.caller_error(error))?
+        {
             return Err(self.caller_error("target runtime descriptor survived close"));
         }
         self.caller_observe(
@@ -6949,6 +12846,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             return Err(self.caller_error("initializer changed original environment bytes"));
         }
+        self.prepare_loader_cache_scratch_release(&task, &config, loader_cache_scratch_base)?;
+        let (task, _) = self
+            .caller_syscall(
+                task,
+                image,
+                Sysno::munmap,
+                [loader_cache_scratch_base, 3 * PAGE, 0, 0, 0, 0],
+            )
+            .await?;
+        self.complete_loader_cache_scratch_release(&task, &config, loader_cache_scratch_base)?;
         let (task, _) = self
             .caller_syscall(task, image, Sysno::munmap, [code_base, PAGE, 0, 0, 0, 0])
             .await?;
@@ -7132,6 +13039,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .protect_owned_range((arena.writable.start, arena.writable.end), libc::PROT_NONE);
         }
         self.validate_after_loader_retained_resources(&task, &config, Some(&helper_isolation))?;
+        self.verify_ptmalloc_bootstrap_retained(&task, &config)?;
         let projection = helper_isolation.target_loader_projection().ok_or_else(|| {
             self.caller_error("isolated helper page cannot form an exact target-loader projection")
         })?;
@@ -7202,6 +13110,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "deterministic clock changed across private after-loader execution",
             ));
         }
+        self.verify_ptmalloc_bootstrap_retained(&task, &config)?;
+        self.validate_loader_cache_released(&task, &config)?;
         let mut runtime = self.liteinst_runtime.lock().unwrap();
         if !after_loader_liteinst_ready_is_publishable(
             &runtime,
@@ -7249,6 +13159,12 @@ impl<L: Tool + 'static> TracedTask<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zeroed_test_xstate() -> safeptrace::X86ExtendedState {
+        // SAFETY: libc's x86 floating-point register type is an integer/array
+        // storage image, so the all-zero bit pattern is valid test data.
+        safeptrace::X86ExtendedState::Fxsave64(Box::new(unsafe { core::mem::zeroed() }))
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum PostRestoreFailure {
@@ -7304,8 +13220,10 @@ mod tests {
             original_mappings: Vec::new(),
             original_descriptors: BTreeSet::new(),
             owned_descriptors: BTreeMap::new(),
+            proc_fd_audit: ProcFdAuditLifecycle::AwaitingOpen,
             owned_mappings: Vec::new(),
             current_break: None,
+            private_brk_growth_consumed: false,
             shared_reservations: BTreeMap::new(),
             protected_ranges: Vec::new(),
             image_mappings: BTreeMap::new(),
@@ -7314,6 +13232,8 @@ mod tests {
             trampoline_seals_added: BTreeSet::new(),
             sealed_trampolines: BTreeSet::new(),
             next_trampoline_serial: 0,
+            ptmalloc_bootstrap: None,
+            loader_cache: None,
             timer_suspension: None,
         }
     }
@@ -7832,6 +13752,707 @@ mod tests {
     }
 
     #[test]
+    fn proc_fd_audit_argument_shapes_and_output_spans_are_exact() {
+        let directory_flags = (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64;
+        let open = [
+            libc::AT_FDCWD as i64 as u64,
+            0x70_1000,
+            directory_flags,
+            0,
+            0,
+            0,
+        ];
+        assert!(exact_proc_fd_directory_openat_arguments(&open));
+        let mut zero_extended = open;
+        zero_extended[0] = u64::from(libc::AT_FDCWD as u32);
+        assert!(exact_proc_fd_directory_openat_arguments(&zero_extended));
+        for index in [0, 2, 3, 4, 5] {
+            let mut changed = open;
+            changed[index] ^= 1;
+            assert!(
+                !exact_proc_fd_directory_openat_arguments(&changed),
+                "proc-fd open mutation {index} was admitted",
+            );
+        }
+        let mut null_path = open;
+        null_path[1] = 0;
+        assert!(!exact_proc_fd_directory_openat_arguments(&null_path));
+        for flags in [
+            directory_flags & !(libc::O_DIRECTORY as u64),
+            directory_flags & !(libc::O_CLOEXEC as u64),
+            directory_flags | libc::O_WRONLY as u64,
+            directory_flags | libc::O_CREAT as u64,
+            directory_flags | libc::O_PATH as u64,
+            directory_flags | (1_u64 << 32),
+        ] {
+            let mut changed = open;
+            changed[2] = flags;
+            assert!(!exact_proc_fd_directory_openat_arguments(&changed));
+        }
+
+        let getdents = [41, 0x70_2000, PROC_FD_GETDENTS_BYTES, 0, 0, 0];
+        assert!(exact_proc_fd_getdents_arguments(&getdents));
+        assert_eq!(
+            syscall_output_spans(libc::SYS_getdents64, getdents),
+            Ok(vec![(0x70_2000, 0x70_2000 + PROC_FD_GETDENTS_BYTES)])
+        );
+        for index in [2, 3, 4, 5] {
+            let mut changed = getdents;
+            changed[index] ^= 1;
+            assert!(
+                !exact_proc_fd_getdents_arguments(&changed),
+                "proc-fd getdents mutation {index} was admitted",
+            );
+        }
+        let mut null_buffer = getdents;
+        null_buffer[1] = 0;
+        assert!(!exact_proc_fd_getdents_arguments(&null_buffer));
+
+        let readlink = [
+            libc::AT_FDCWD as i64 as u64,
+            0x70_3000,
+            0x70_4000,
+            PROC_FD_READLINK_BYTES,
+            0,
+            0,
+        ];
+        assert!(exact_proc_fd_readlink_arguments(&readlink));
+        assert_eq!(
+            syscall_output_spans(libc::SYS_readlinkat, readlink),
+            Ok(vec![(0x70_4000, 0x70_4000 + PROC_FD_READLINK_BYTES)])
+        );
+        for index in [0, 3, 4, 5] {
+            let mut changed = readlink;
+            changed[index] ^= 1;
+            assert!(
+                !exact_proc_fd_readlink_arguments(&changed),
+                "proc-fd readlink mutation {index} was admitted",
+            );
+        }
+        for index in [1, 2] {
+            let mut changed = readlink;
+            changed[index] = 0;
+            assert!(!exact_proc_fd_readlink_arguments(&changed));
+        }
+        assert_eq!(proc_self_fd_number(b"/proc/self/fd/0"), Some(0));
+        assert_eq!(proc_self_fd_number(b"/proc/self/fd/73"), Some(73));
+        for path in [
+            b"/proc/self/fd/".as_slice(),
+            b"/proc/self/fd/00",
+            b"/proc/self/fd/+1",
+            b"/proc/17/fd/1",
+            b"/proc/self/fd/2147483648",
+        ] {
+            assert_eq!(proc_self_fd_number(path), None, "path={path:?}");
+        }
+    }
+
+    #[test]
+    fn proc_fd_audit_site_call_chain_and_stack_ranges_are_exact() {
+        let profile = ProcFdAuditProfile {
+            function_start: 0x1000,
+            function_end: 0x2000,
+            raw_syscall_start: 0x3000,
+            raw_syscall_end: 0x300e,
+            audit_call_returns: [0x1800, 0x1810, 0x1820, 0x1830, 0x1840, 0x1850],
+            raw_call_return: 0x3009,
+            trusted_gate: 0x4000,
+            trusted_gate_end: 0x401a,
+            trusted_syscall: 0x4017,
+        };
+        let load_bias = 0x7f00_0000_0000;
+        let args = [
+            libc::AT_FDCWD as i64 as u64,
+            0x7400,
+            0x7600,
+            PROC_FD_READLINK_BYTES,
+            0,
+            0,
+        ];
+        let permit = AfterLoaderSyscallPermit {
+            image: None,
+            tid: Pid::from_raw(17),
+            generation: 23,
+            physical_generation: None,
+            origin_status: None,
+            admission_status: None,
+            purpose: AfterLoaderSyscallPurpose::PrivateSetup,
+            number: libc::SYS_readlinkat,
+            args,
+            executed_args: args,
+            instruction_pointer: load_bias + profile.trusted_syscall,
+            resume_pointer: load_bias + profile.trusted_syscall + 2,
+            instruction: [0x0f, 0x05, 0, 0],
+            instruction_length: 2,
+            output_spans: vec![(0x7600, 0x7680)],
+            effect: AfterLoaderSyscallEffect::None,
+        };
+        let mut registers = libc::user_regs_struct {
+            orig_rax: permit.number as u64,
+            rdi: args[0],
+            rsi: args[1],
+            rdx: args[2],
+            r10: args[3],
+            r8: args[4],
+            r9: args[5],
+            rsp: 0x8008,
+            ..unsafe { core::mem::zeroed() }
+        };
+        let controller_stack = GuestRange::new(0x7000, 0x2000).unwrap();
+        let return_address = load_bias + 0x1800;
+        let call_target = load_bias + profile.raw_syscall_start;
+        let call_slot = call_target;
+        let indirect_call = |return_address: u64, target: u64| {
+            let displacement = i32::try_from(target as i128 - return_address as i128).unwrap();
+            let mut call = [0xe8, 0, 0, 0, 0];
+            call[1..].copy_from_slice(&displacement.to_le_bytes());
+            call
+        };
+        let call = indirect_call(return_address, call_slot);
+        let raw_return_address = load_bias + profile.raw_call_return;
+        let raw_call_target = load_bias + profile.trusted_gate;
+        let raw_call_slot = raw_call_target;
+        let raw_call = indirect_call(raw_return_address, raw_call_slot);
+        let spans = [(0x7400, 0x7411), (0x7600, 0x7680)];
+        let proc_fd_audit_site_is_exact =
+            |profile: ProcFdAuditProfile,
+             load_bias: u64,
+             permit: &AfterLoaderSyscallPermit,
+             registers: &libc::user_regs_struct,
+             controller_stack: GuestRange,
+             return_address: u64,
+             call_instruction: [u8; 5],
+             _call_slot: u64,
+             call_target: u64,
+             raw_return_address: u64,
+             raw_call_instruction: [u8; 5],
+             _raw_call_slot: u64,
+             raw_call_target: u64,
+             data_spans: &[(u64, u64)]| {
+                call_target == load_bias + profile.raw_syscall_start
+                    && raw_call_target == load_bias + profile.trusted_gate
+                    && super::proc_fd_audit_site_is_exact(
+                        profile,
+                        load_bias,
+                        permit,
+                        registers,
+                        controller_stack,
+                        controller_stack.end - 8,
+                        0x5000,
+                        0x5000,
+                        return_address,
+                        call_instruction,
+                        raw_return_address,
+                        raw_call_instruction,
+                        permit.args[5],
+                        permit.args[5],
+                        data_spans,
+                    )
+            };
+        assert!(proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &permit,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+
+        let mut changed = permit.clone();
+        changed.instruction_pointer += 1;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &changed,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+        let mut changed = permit.clone();
+        changed.resume_pointer += 1;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &changed,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+        let mut changed = permit.clone();
+        changed.instruction[0] ^= 1;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &changed,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+        registers.rdx ^= 1;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &permit,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+        registers.rdx ^= 1;
+        for bad_return in (0..6)
+            .map(|offset| load_bias + profile.function_start + offset)
+            .chain(core::iter::once(load_bias + profile.function_end))
+        {
+            let boundary_call = indirect_call(bad_return, call_slot);
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                bad_return,
+                boundary_call,
+                call_slot,
+                call_target,
+                raw_return_address,
+                raw_call,
+                raw_call_slot,
+                raw_call_target,
+                &spans,
+            ));
+        }
+        for index in 0..raw_call.len() {
+            let mut changed = raw_call;
+            changed[index] ^= 1;
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                return_address,
+                call,
+                call_slot,
+                call_target,
+                raw_return_address,
+                changed,
+                raw_call_slot,
+                raw_call_target,
+                &spans,
+            ));
+        }
+        for index in 0..call.len() {
+            let mut changed = call;
+            changed[index] ^= 1;
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                return_address,
+                changed,
+                call_slot,
+                call_target,
+                raw_return_address,
+                raw_call,
+                raw_call_slot,
+                raw_call_target,
+                &spans,
+            ));
+        }
+        for bad_raw_return in (0..6)
+            .map(|offset| load_bias + profile.raw_syscall_start + offset)
+            .chain(core::iter::once(load_bias + profile.raw_syscall_end))
+        {
+            let boundary_call = indirect_call(bad_raw_return, raw_call_slot);
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                return_address,
+                call,
+                call_slot,
+                call_target,
+                bad_raw_return,
+                boundary_call,
+                raw_call_slot,
+                raw_call_target,
+                &spans,
+            ));
+        }
+        for (bad_call_target, bad_raw_target) in [
+            (call_target + 1, raw_call_target),
+            (call_target, raw_call_target + 1),
+        ] {
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                return_address,
+                call,
+                call_slot,
+                bad_call_target,
+                raw_return_address,
+                raw_call,
+                raw_call_slot,
+                bad_raw_target,
+                &spans,
+            ));
+        }
+        for bad_spans in [
+            vec![(0x6fff, 0x7100)],
+            vec![(0x7ff8, 0x8010)],
+            vec![(0x7400, 0x7500), (0x7480, 0x7600)],
+        ] {
+            assert!(!proc_fd_audit_site_is_exact(
+                profile,
+                load_bias,
+                &permit,
+                &registers,
+                controller_stack,
+                return_address,
+                call,
+                call_slot,
+                call_target,
+                raw_return_address,
+                raw_call,
+                raw_call_slot,
+                raw_call_target,
+                &bad_spans,
+            ));
+        }
+        registers.rsp = 0x8000;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &permit,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+        registers.rsp = controller_stack.end - 8;
+        assert!(!proc_fd_audit_site_is_exact(
+            profile,
+            load_bias,
+            &permit,
+            &registers,
+            controller_stack,
+            return_address,
+            call,
+            call_slot,
+            call_target,
+            raw_return_address,
+            raw_call,
+            raw_call_slot,
+            raw_call_target,
+            &spans,
+        ));
+    }
+
+    fn append_test_dirent(bytes: &mut Vec<u8>, name: &[u8], kind: u8) {
+        let start = bytes.len();
+        let record_length = (20 + name.len() + 7) & !7;
+        bytes.resize(start + record_length, 0);
+        bytes[start..start + 8].copy_from_slice(&(start as u64 + 1).to_ne_bytes());
+        bytes[start + 8..start + 16].copy_from_slice(&(record_length as i64).to_ne_bytes());
+        bytes[start + 16..start + 18].copy_from_slice(&(record_length as u16).to_ne_bytes());
+        bytes[start + 18] = kind;
+        bytes[start + 19..start + 19 + name.len()].copy_from_slice(name);
+    }
+
+    #[test]
+    fn proc_fd_dirents_and_lifecycle_refuse_malformed_or_incomplete_scans() {
+        let mut bytes = Vec::new();
+        append_test_dirent(&mut bytes, b".", libc::DT_DIR);
+        append_test_dirent(&mut bytes, b"..", libc::DT_DIR);
+        append_test_dirent(&mut bytes, b"0", libc::DT_LNK);
+        append_test_dirent(&mut bytes, b"17", libc::DT_LNK);
+        assert_eq!(
+            proc_fd_dirent_descriptors(&bytes),
+            Ok(BTreeSet::from([0, 17]))
+        );
+
+        let mut truncated = bytes.clone();
+        truncated.pop();
+        assert!(proc_fd_dirent_descriptors(&truncated).is_err());
+        let mut bad_length = bytes.clone();
+        bad_length[16..18].copy_from_slice(&0_u16.to_ne_bytes());
+        assert!(proc_fd_dirent_descriptors(&bad_length).is_err());
+        let mut unterminated = vec![0_u8; 24];
+        unterminated[16..18].copy_from_slice(&24_u16.to_ne_bytes());
+        unterminated[18] = libc::DT_LNK;
+        unterminated[19..].fill(b'7');
+        assert!(proc_fd_dirent_descriptors(&unterminated).is_err());
+        let mut duplicate = Vec::new();
+        append_test_dirent(&mut duplicate, b"7", libc::DT_LNK);
+        append_test_dirent(&mut duplicate, b"7", libc::DT_LNK);
+        assert!(proc_fd_dirent_descriptors(&duplicate).is_err());
+        let mut noncanonical = Vec::new();
+        append_test_dirent(&mut noncanonical, b"07", libc::DT_LNK);
+        assert!(proc_fd_dirent_descriptors(&noncanonical).is_err());
+        let mut wrong_kind = Vec::new();
+        append_test_dirent(&mut wrong_kind, b"7", libc::DT_REG);
+        assert!(proc_fd_dirent_descriptors(&wrong_kind).is_err());
+
+        let expected = BTreeMap::from([(0, b"/dev/null".to_vec()), (17, b"pipe:[41]".to_vec())]);
+        let mut directory = AfterLoaderOwnedDescriptor::ProcFdDirectory {
+            expected,
+            seen: BTreeSet::new(),
+            linked: BTreeSet::new(),
+            eof: false,
+        };
+        assert!(!directory.proc_fd_scan_is_complete());
+        assert!(directory.record_proc_fd_dirents(BTreeSet::from([0]), false));
+        assert!(!directory.record_proc_fd_dirents(BTreeSet::from([17]), false));
+        assert!(directory.record_proc_fd_readlink(0));
+        assert!(!directory.record_proc_fd_readlink(0));
+        assert!(directory.record_proc_fd_dirents(BTreeSet::from([17]), false));
+        assert!(!directory.record_proc_fd_dirents(BTreeSet::new(), true));
+        assert!(directory.record_proc_fd_readlink(17));
+        assert!(directory.record_proc_fd_dirents(BTreeSet::new(), true));
+        assert!(directory.proc_fd_scan_is_complete());
+        assert!(!directory.record_proc_fd_dirents(BTreeSet::new(), true));
+        assert!(!directory.record_proc_fd_readlink(17));
+
+        let mut unknown = AfterLoaderOwnedDescriptor::ProcFdDirectory {
+            expected: BTreeMap::from([(0, Vec::new())]),
+            seen: BTreeSet::new(),
+            linked: BTreeSet::new(),
+            eof: false,
+        };
+        assert!(!unknown.record_proc_fd_dirents(BTreeSet::from([1]), false));
+        assert!(!unknown.record_proc_fd_dirents(BTreeSet::new(), true));
+    }
+
+    fn test_guest_map(start: u64, end: u64, path: Option<&str>) -> GuestMap {
+        GuestMap {
+            start,
+            end,
+            offset: 0,
+            device_major: 0,
+            device_minor: 0,
+            readable: true,
+            writable: true,
+            executable: false,
+            shared: false,
+            inode: 0,
+            path: path.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn private_brk_growth_is_bounded_one_shot_and_vma_exact() {
+        assert_eq!(
+            private_brk_growth_range(0x405000, 0x426000),
+            Ok(Some((0x405000, 0x426000)))
+        );
+        assert_eq!(private_brk_growth_range(0x405001, 0x405002), Ok(None));
+        assert_eq!(
+            private_brk_growth_range(0x405000, 0x405000),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            private_brk_growth_range(0x405000, 0x404fff),
+            Err(Errno::EINVAL)
+        );
+        assert!(private_brk_growth_range(0x405000, 0x405000 + MAX_PRIVATE_BRK_GROWTH).is_ok());
+        assert_eq!(
+            private_brk_growth_range(0x405000, 0x405000 + MAX_PRIVATE_BRK_GROWTH + 1),
+            Err(Errno::EINVAL)
+        );
+
+        let key = [0xa5; 8];
+        let profile = PtmallocBootstrapState {
+            load_bias: 0x7f00_0000_0000,
+            entry: PtmallocBootstrapObservation {
+                initialized: 0,
+                tcache_key: [0; 8],
+            },
+            pre_dlopen_verified: true,
+            entropy_consumed: true,
+            injected_key: Some(key),
+        };
+        let args = [0x426000, 135168, 0x7fff_1234, 4095, 3, 0];
+        let mut permit = AfterLoaderSyscallPermit {
+            image: None,
+            tid: Pid::from_raw(17),
+            generation: 23,
+            physical_generation: None,
+            origin_status: None,
+            admission_status: None,
+            purpose: AfterLoaderSyscallPurpose::PrivateSetup,
+            number: libc::SYS_brk,
+            args,
+            executed_args: args,
+            instruction_pointer: profile.load_bias + PTMALLOC_BRK_SYSCALL_RVA,
+            resume_pointer: profile.load_bias + PTMALLOC_BRK_SYSCALL_RVA + 2,
+            instruction: [0x0f, 0x05, 0, 0],
+            instruction_length: 2,
+            output_spans: Vec::new(),
+            effect: AfterLoaderSyscallEffect::None,
+        };
+        let observed = PtmallocBootstrapObservation {
+            initialized: 1,
+            tcache_key: key,
+        };
+        assert!(exact_ptmalloc_brk_growth_request(
+            profile,
+            profile.load_bias,
+            observed,
+            &permit,
+        ));
+        permit.instruction_pointer += 1;
+        assert!(!exact_ptmalloc_brk_growth_request(
+            profile,
+            profile.load_bias,
+            observed,
+            &permit,
+        ));
+        permit.instruction_pointer -= 1;
+        permit.output_spans.push((1, 2));
+        assert!(!exact_ptmalloc_brk_growth_request(
+            profile,
+            profile.load_bias,
+            observed,
+            &permit,
+        ));
+        permit.output_spans.clear();
+        let mut unconsumed = profile;
+        unconsumed.entropy_consumed = false;
+        assert!(!exact_ptmalloc_brk_growth_request(
+            unconsumed,
+            profile.load_bias,
+            observed,
+            &permit,
+        ));
+        let mut changed_observation = observed;
+        changed_observation.tcache_key[0] ^= 1;
+        assert!(!exact_ptmalloc_brk_growth_request(
+            profile,
+            profile.load_bias,
+            changed_observation,
+            &permit,
+        ));
+
+        let mut current = Some(0x405000);
+        let mut consumed = false;
+        assert!(!complete_private_brk_growth_state(
+            &mut current,
+            &mut consumed,
+            0x405000,
+            0x426000,
+            0x405000,
+        ));
+        assert_eq!(current, Some(0x405000));
+        assert!(!consumed);
+        assert!(complete_private_brk_growth_state(
+            &mut current,
+            &mut consumed,
+            0x405000,
+            0x426000,
+            0x426000,
+        ));
+        assert_eq!(current, Some(0x426000));
+        assert!(consumed);
+        assert!(!complete_private_brk_growth_state(
+            &mut current,
+            &mut consumed,
+            0x426000,
+            0x427000,
+            0x427000,
+        ));
+
+        let other = test_guest_map(0x10_0000, 0x11_0000, None);
+        let created = test_guest_map(0x405000, 0x426000, Some("[heap]"));
+        assert!(private_brk_maps_advance_exactly(
+            std::slice::from_ref(&other),
+            &[created.clone(), other.clone()],
+            0x405000,
+            0x426000,
+        ));
+        let prior = test_guest_map(0x400000, 0x405000, Some("[heap]"));
+        let extended = GuestMap {
+            end: 0x426000,
+            ..prior.clone()
+        };
+        assert!(private_brk_maps_advance_exactly(
+            &[prior.clone(), other.clone()],
+            &[extended.clone(), other.clone()],
+            0x405000,
+            0x426000,
+        ));
+        let mut unrelated_changed = other.clone();
+        unrelated_changed.end += PAGE;
+        assert!(!private_brk_maps_advance_exactly(
+            &[prior.clone(), other.clone()],
+            &[extended.clone(), unrelated_changed],
+            0x405000,
+            0x426000,
+        ));
+        let mut protected = extended;
+        protected.readable = false;
+        protected.writable = false;
+        assert!(!private_brk_maps_advance_exactly(
+            &[prior, other],
+            &[protected],
+            0x405000,
+            0x426000,
+        ));
+    }
+
+    #[test]
     fn anonymous_mmap_descriptor_accepts_only_canonical_minus_one() {
         assert!(canonical_anonymous_mmap_descriptor(0x0000_0000_ffff_ffff));
         assert!(canonical_anonymous_mmap_descriptor(u64::MAX));
@@ -7886,11 +14507,13 @@ mod tests {
             image: None,
             tid: Pid::from_raw(17),
             generation: 23,
+            physical_generation: None,
             origin_status: None,
             admission_status: None,
             purpose: AfterLoaderSyscallPurpose::PrivateSetup,
             number: libc::SYS_mmap,
             args,
+            executed_args: args,
             instruction_pointer: 0x401000,
             resume_pointer: 0x401002,
             instruction: [0x0f, 0x05, 0, 0],
@@ -8164,6 +14787,7 @@ mod tests {
             start: 0x80_0000,
             raw_length: 1,
             protection: libc::PROT_READ,
+            loader_cache_alias: None,
         };
         let remove = AfterLoaderSyscallEffect::Remove {
             start: 0x80_0000,
@@ -8185,6 +14809,14 @@ mod tests {
             purpose: AfterLoaderMappingPurpose::Controller,
         };
         assert!(private_memory_effect_result_is_exact(&map, 0x80_0000));
+    }
+
+    #[test]
+    fn close_completion_requires_exact_zero() {
+        assert!(private_close_result_is_exact(0));
+        for changed in [-1, 1, i64::MAX] {
+            assert!(!private_close_result_is_exact(changed));
+        }
     }
 
     #[test]
@@ -8813,6 +15445,118 @@ mod tests {
         assert_eq!(before, stable_backing_stamp(&file.metadata().unwrap()));
     }
 
+    #[test]
+    fn loader_cache_alias_openat2_keeps_absolute_and_relative_links_in_root() {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "liteinst-alias-root-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("target");
+        std::fs::write(&target, b"exact-target").unwrap();
+        std::os::unix::fs::symlink("/target", directory.join("absolute")).unwrap();
+        std::os::unix::fs::symlink("target", directory.join("relative")).unwrap();
+        std::fs::create_dir_all(directory.join("usr/lib")).unwrap();
+        std::fs::write(directory.join("usr/lib/target"), b"nested-target").unwrap();
+        std::os::unix::fs::symlink("/usr/lib", directory.join("lib64")).unwrap();
+        std::os::unix::fs::symlink("target", directory.join("usr/lib/alias")).unwrap();
+        let root = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(&directory)
+            .unwrap();
+        let expected =
+            crate::after_loader::FileIdentity::from_metadata(&std::fs::metadata(&target).unwrap());
+        for path in [Path::new("/absolute"), Path::new("/relative")] {
+            let opened = open_path_with_root(&root, path, libc::O_PATH | libc::O_CLOEXEC).unwrap();
+            assert_eq!(
+                crate::after_loader::FileIdentity::from_metadata(&opened.metadata().unwrap()),
+                expected,
+                "openat2 path escaped or resolved a different target for {}",
+                path.display(),
+            );
+        }
+        let nested = open_path_with_root(
+            &root,
+            Path::new("/lib64/alias"),
+            libc::O_PATH | libc::O_CLOEXEC,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::after_loader::FileIdentity::from_metadata(&nested.metadata().unwrap()),
+            crate::after_loader::FileIdentity::from_metadata(
+                &std::fs::metadata(directory.join("usr/lib/target")).unwrap(),
+            ),
+            "absolute intermediate symlink escaped the supplied target root",
+        );
+        let nested_link = open_path_with_root(
+            &root,
+            Path::new("/lib64/alias"),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+        .unwrap();
+        assert!(nested_link.metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            read_link_from_path_descriptor(&nested_link).unwrap(),
+            Path::new("target"),
+        );
+        std::fs::remove_file(directory.join("usr/lib/alias")).unwrap();
+        std::os::unix::fs::symlink("/target", directory.join("usr/lib/alias")).unwrap();
+        assert_eq!(
+            read_link_from_path_descriptor(&nested_link).unwrap(),
+            Path::new("target"),
+            "pinned no-follow descriptor followed a replacement symlink",
+        );
+        let replacement_link = open_path_with_root(
+            &root,
+            Path::new("/lib64/alias"),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+        .unwrap();
+        assert_eq!(
+            read_link_from_path_descriptor(&replacement_link).unwrap(),
+            Path::new("/target"),
+        );
+        assert!(
+            open_path_with_root(&root, Path::new("relative"), libc::O_PATH | libc::O_CLOEXEC,)
+                .is_err(),
+            "accepted a non-absolute target-root path",
+        );
+        let retained_root = directory.with_extension("pinned-root");
+        std::fs::rename(&directory, &retained_root).unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("target"), b"replacement-target").unwrap();
+        let mut pinned_target = open_path_with_root(
+            &root,
+            Path::new("/target"),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+        .unwrap();
+        let mut pinned_bytes = Vec::new();
+        pinned_target.read_to_end(&mut pinned_bytes).unwrap();
+        assert_eq!(pinned_bytes, b"exact-target");
+        let replacement_root = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(&directory)
+            .unwrap();
+        let mut replacement_target = open_path_with_root(
+            &replacement_root,
+            Path::new("/target"),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+        .unwrap();
+        let mut replacement_bytes = Vec::new();
+        replacement_target
+            .read_to_end(&mut replacement_bytes)
+            .unwrap();
+        assert_eq!(replacement_bytes, b"replacement-target");
+        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::remove_dir_all(retained_root).unwrap();
+    }
+
     fn map_test_image(
         file: &std::fs::File,
         image: &LiteinstCallerImage,
@@ -8885,6 +15629,17 @@ mod tests {
         );
         assert!(
             exact_image_backing_paths_match(pid, &first_image, first_geometry, &maps,).unwrap()
+        );
+        assert!(exact_image_mapping_paths_are_literal(
+            &first_image,
+            first_geometry,
+            &maps,
+        ));
+        let mut alternate_spelling = first_image.clone();
+        alternate_spelling.path = second_path.clone();
+        assert!(
+            !exact_image_mapping_paths_are_literal(&alternate_spelling, first_geometry, &maps,),
+            "accepted an alternate pathname spelling for the exact same mapping",
         );
 
         let mut wrong_mapping = first_geometry;
@@ -9315,6 +16070,1431 @@ mod tests {
         }
         assert!(private_syscall_allowed(libc::SYS_mmap));
         assert!(private_syscall_allowed(libc::SYS_close));
+        assert!(private_syscall_allowed(libc::SYS_getdents64));
+        assert!(private_syscall_allowed(libc::SYS_readlinkat));
+    }
+
+    #[test]
+    fn getrandom_output_span_uses_buffer_and_length_without_widening_admission() {
+        let args = [0x40_0000, 8, libc::GRND_NONBLOCK as u64, 0x44, 0x55, 0x66];
+        assert_eq!(
+            syscall_output_spans(libc::SYS_getrandom, args),
+            Ok(vec![(0x40_0000, 0x40_0008)])
+        );
+        assert_eq!(
+            syscall_output_spans(libc::SYS_read, args),
+            Ok(vec![(8, 8 + libc::GRND_NONBLOCK as u64)])
+        );
+        let mut null = args;
+        null[0] = 0;
+        assert_eq!(
+            syscall_output_spans(libc::SYS_getrandom, null),
+            Err(Errno::EFAULT)
+        );
+        null[1] = 0;
+        assert_eq!(
+            syscall_output_spans(libc::SYS_getrandom, null),
+            Ok(Vec::new())
+        );
+        let mut overflow = args;
+        overflow[0] = u64::MAX - 3;
+        assert_eq!(
+            syscall_output_spans(libc::SYS_getrandom, overflow),
+            Err(Errno::EOVERFLOW)
+        );
+        assert!(!private_syscall_allowed(libc::SYS_getrandom));
+    }
+
+    fn exact_ptmalloc_test_permit(load_bias: u64) -> AfterLoaderSyscallPermit {
+        let destination = load_bias + PTMALLOC_BOOTSTRAP_TCACHE_KEY_RVA;
+        let syscall = load_bias + PTMALLOC_BOOTSTRAP_SYSCALL_RVA;
+        let args = [
+            destination,
+            8,
+            libc::GRND_NONBLOCK as u64,
+            0x4444,
+            0x5555,
+            0x6666,
+        ];
+        AfterLoaderSyscallPermit {
+            image: None,
+            tid: Pid::from_raw(17),
+            generation: 23,
+            physical_generation: None,
+            origin_status: None,
+            admission_status: None,
+            purpose: AfterLoaderSyscallPurpose::PrivateSetup,
+            number: libc::SYS_getrandom,
+            args,
+            executed_args: args,
+            instruction_pointer: syscall,
+            resume_pointer: syscall + 2,
+            instruction: [0x0f, 0x05, 0, 0],
+            instruction_length: 2,
+            output_spans: vec![(destination, destination + 8)],
+            effect: AfterLoaderSyscallEffect::None,
+        }
+    }
+
+    #[test]
+    fn loader_cache_open_and_mmap_require_one_exact_raw_shape() {
+        let logical_path = 0x7f00_0002_d266;
+        let flags = (libc::O_RDONLY | libc::O_CLOEXEC) as u64;
+        let open = [
+            u64::from(libc::AT_FDCWD as u32),
+            logical_path,
+            flags,
+            0,
+            flags,
+            logical_path,
+        ];
+        assert!(exact_loader_cache_openat_arguments(&open, logical_path));
+        for index in 0..open.len() {
+            let mut changed = open;
+            changed[index] ^= 1;
+            assert!(
+                !exact_loader_cache_openat_arguments(&changed, logical_path),
+                "loader-cache open mutation {index} was admitted",
+            );
+        }
+        assert!(!exact_loader_cache_openat_arguments(
+            &open,
+            logical_path + 1
+        ));
+
+        let descriptor = 41;
+        let length = 0x7d6_f702;
+        let mmap = [
+            0,
+            length,
+            libc::PROT_READ as u64,
+            libc::MAP_PRIVATE as u64,
+            descriptor,
+            0,
+        ];
+        assert!(loader_cache_mmap_arguments_match(mmap, descriptor, length));
+        for index in 0..mmap.len() {
+            let mut changed = mmap;
+            changed[index] ^= 1;
+            assert!(
+                !loader_cache_mmap_arguments_match(changed, descriptor, length),
+                "loader-cache mmap mutation {index} was admitted",
+            );
+        }
+    }
+
+    #[test]
+    fn loader_cache_lifecycle_rejects_duplicates_and_out_of_order_steps() {
+        let descriptor = 41;
+        let mapping = LoaderCacheMapping {
+            start: 0x7000_0000,
+            raw_length: 0x12345,
+            end: 0x7001_3000,
+            identity: MappingIdentity {
+                device_major: 0,
+                device_minor: 1,
+                inode: 43,
+            },
+        };
+        let mut lifecycle = LoaderCacheLifecycle::AwaitingOpen;
+        assert!(!lifecycle.complete_stat(descriptor));
+        assert!(
+            !lifecycle.complete_map(descriptor, mapping, mapping.raw_length, mapping.identity,)
+        );
+        assert!(!lifecycle.complete_close(descriptor, mapping));
+        assert!(!lifecycle.complete_retire(descriptor, mapping));
+        assert!(lifecycle.complete_open(descriptor));
+        assert!(!lifecycle.complete_open(descriptor));
+        assert!(!lifecycle.complete_stat(descriptor + 1));
+        assert!(lifecycle.complete_stat(descriptor));
+        assert!(!lifecycle.complete_map(
+            descriptor + 1,
+            mapping,
+            mapping.raw_length,
+            mapping.identity,
+        ));
+        assert!(!lifecycle.complete_map(
+            descriptor,
+            LoaderCacheMapping {
+                raw_length: mapping.raw_length + 1,
+                ..mapping
+            },
+            mapping.raw_length,
+            mapping.identity,
+        ));
+        assert!(!lifecycle.complete_map(
+            descriptor,
+            LoaderCacheMapping {
+                identity: MappingIdentity {
+                    inode: mapping.identity.inode + 1,
+                    ..mapping.identity
+                },
+                ..mapping
+            },
+            mapping.raw_length,
+            mapping.identity,
+        ));
+        assert!(lifecycle.complete_map(descriptor, mapping, mapping.raw_length, mapping.identity,));
+        assert!(!lifecycle.complete_close(descriptor + 1, mapping));
+        assert!(lifecycle.complete_close(descriptor, mapping));
+        assert!(!lifecycle.complete_retire(
+            descriptor,
+            LoaderCacheMapping {
+                start: mapping.start + PAGE,
+                ..mapping
+            },
+        ));
+        assert!(lifecycle.complete_retire(descriptor, mapping));
+        assert!(!lifecycle.complete_retire(descriptor, mapping));
+        assert!(!lifecycle.complete_scratch_release(descriptor, mapping));
+        assert!(lifecycle.arm_scratch_release(descriptor, mapping));
+        assert!(!lifecycle.arm_scratch_release(descriptor, mapping));
+        assert!(lifecycle.complete_scratch_release(descriptor, mapping));
+        assert!(!lifecycle.complete_scratch_release(descriptor, mapping));
+    }
+
+    fn profiled_alias_mmap_plan_for_test() -> LoaderCacheAliasMmapPlan {
+        LoaderCacheAliasMmapPlan {
+            file_maps: vec![
+                LoaderCacheAliasFileMapStep {
+                    relative_start: 0,
+                    raw_length: 0x1c1c8,
+                    protection: libc::PROT_READ,
+                    offset: 0,
+                    fixed: false,
+                },
+                LoaderCacheAliasFileMapStep {
+                    relative_start: 0x3000,
+                    raw_length: 0x14000,
+                    protection: libc::PROT_READ | libc::PROT_EXEC,
+                    offset: 0x3000,
+                    fixed: true,
+                },
+                LoaderCacheAliasFileMapStep {
+                    relative_start: 0x17000,
+                    raw_length: 0x4000,
+                    protection: libc::PROT_READ,
+                    offset: 0x17000,
+                    fixed: true,
+                },
+                LoaderCacheAliasFileMapStep {
+                    relative_start: 0x1b000,
+                    raw_length: 0x1000,
+                    protection: libc::PROT_READ | libc::PROT_WRITE,
+                    offset: 0x1a000,
+                    fixed: true,
+                },
+            ],
+            zero_fill: LoaderCacheAliasZeroFillStep {
+                relative_start: 0x1c000,
+                raw_length: 0x1c8,
+                protection: libc::PROT_READ | libc::PROT_WRITE,
+            },
+        }
+    }
+
+    fn synthetic_profiled_alias_elf() -> Vec<u8> {
+        fn put16(bytes: &mut [u8], at: usize, value: u16) {
+            bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        fn put32(bytes: &mut [u8], at: usize, value: u32) {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        fn put64(bytes: &mut [u8], at: usize, value: u64) {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let mut bytes = vec![0_u8; 0x1b000];
+        bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        put16(&mut bytes, 16, header::ET_DYN);
+        put16(&mut bytes, 18, header::EM_X86_64);
+        put32(&mut bytes, 20, 1);
+        put64(&mut bytes, 32, 64);
+        put16(&mut bytes, 52, 64);
+        put16(&mut bytes, 54, 56);
+        put16(&mut bytes, 56, 4);
+        for (index, (offset, address, file_size, memory_size, flags)) in [
+            (0, 0, 0x2a90, 0x2a90, ph::PF_R),
+            (0x3000, 0x3000, 0x133a5, 0x133a5, ph::PF_R | ph::PF_X),
+            (0x17000, 0x17000, 0x3064, 0x3064, ph::PF_R),
+            (0x1abf0, 0x1bbf0, 0x410, 0x5d8, ph::PF_R | ph::PF_W),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = 64 + index * 56;
+            put32(&mut bytes, at, ph::PT_LOAD);
+            put32(&mut bytes, at + 4, flags);
+            put64(&mut bytes, at + 8, offset);
+            put64(&mut bytes, at + 16, address);
+            put64(&mut bytes, at + 24, address);
+            put64(&mut bytes, at + 32, file_size);
+            put64(&mut bytes, at + 40, memory_size);
+            put64(&mut bytes, at + 48, PAGE);
+        }
+        bytes
+    }
+
+    #[test]
+    fn loader_cache_alias_mmap_plan_is_exactly_derived_from_pt_loads() {
+        let expected = profiled_alias_mmap_plan_for_test();
+        let bytes = synthetic_profiled_alias_elf();
+        assert_eq!(loader_cache_alias_mmap_plan(&bytes).unwrap(), expected);
+
+        let mut no_anonymous_bss = bytes.clone();
+        let last_program_header = 64 + 3 * 56;
+        no_anonymous_bss[last_program_header + 40..last_program_header + 48]
+            .copy_from_slice(&0x410_u64.to_le_bytes());
+        assert!(loader_cache_alias_mmap_plan(&no_anonymous_bss).is_err());
+
+        let mut reordered = bytes.clone();
+        let first = <[u8; 56]>::try_from(&reordered[64..120]).unwrap();
+        let second = <[u8; 56]>::try_from(&reordered[120..176]).unwrap();
+        reordered[64..120].copy_from_slice(&second);
+        reordered[120..176].copy_from_slice(&first);
+        assert!(loader_cache_alias_mmap_plan(&reordered).is_err());
+
+        let mut nonfinal_bss = bytes.clone();
+        nonfinal_bss[64 + 40..64 + 48].copy_from_slice(&0x2a91_u64.to_le_bytes());
+        assert!(loader_cache_alias_mmap_plan(&nonfinal_bss).is_err());
+
+        let mut unaligned_final_data = bytes.clone();
+        unaligned_final_data[last_program_header + 32..last_program_header + 40]
+            .copy_from_slice(&0x400_u64.to_le_bytes());
+        assert!(loader_cache_alias_mmap_plan(&unaligned_final_data).is_err());
+
+        let mut hole = bytes;
+        let second_program_header = 64 + 56;
+        hole[second_program_header + 16..second_program_header + 24]
+            .copy_from_slice(&0x4000_u64.to_le_bytes());
+        assert!(loader_cache_alias_mmap_plan(&hole).is_err());
+    }
+
+    #[test]
+    fn loader_cache_alias_mmap_plan_refuses_every_argument_mutation() {
+        let descriptor = 47;
+        let base = 0x7100_0000;
+        let plan = profiled_alias_mmap_plan_for_test();
+        let requests = [
+            [
+                0,
+                0x1c1c8,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE) as u64,
+                descriptor,
+                0,
+            ],
+            [
+                base + 0x3000,
+                0x14000,
+                (libc::PROT_READ | libc::PROT_EXEC) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+                descriptor,
+                0x3000,
+            ],
+            [
+                base + 0x17000,
+                0x4000,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+                descriptor,
+                0x17000,
+            ],
+            [
+                base + 0x1b000,
+                0x1000,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+                descriptor,
+                0x1a000,
+            ],
+        ];
+        for (index, request) in requests.into_iter().enumerate() {
+            let request_base = (index != 0).then_some(base);
+            assert!(plan.file_request_is_exact(index, request_base, descriptor, request));
+            for argument in 0..request.len() {
+                let mut changed = request;
+                changed[argument] ^= 1;
+                assert!(
+                    !plan.file_request_is_exact(index, request_base, descriptor, changed),
+                    "file mmap step {index} accepted changed argument {argument}",
+                );
+            }
+        }
+
+        let anonymous = [
+            base + 0x1c000,
+            0x1c8,
+            (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+            u64::from(u32::MAX),
+            0,
+        ];
+        assert!(plan.zero_fill_request_is_exact(Some(base), anonymous));
+        for argument in 0..anonymous.len() {
+            let mut changed = anonymous;
+            changed[argument] ^= 1;
+            assert!(
+                !plan.zero_fill_request_is_exact(Some(base), changed),
+                "anonymous mmap accepted changed argument {argument}",
+            );
+        }
+    }
+
+    #[test]
+    fn loader_cache_alias_lifecycle_requires_exact_read_stat_map_close_sequence() {
+        let descriptor = 47;
+        let plan = profiled_alias_mmap_plan_for_test();
+        let image = AfterLoaderImageId {
+            generation: 3,
+            file: crate::after_loader::FileIdentity {
+                device: 0x21,
+                inode: 110_440,
+            },
+        };
+        let identity = MappingIdentity {
+            device_major: 0,
+            device_minor: 0x21,
+            inode: 110_440,
+        };
+        let first = LoaderCacheAliasMapping {
+            owned: AfterLoaderOwnedMapping {
+                start: 0x7100_0000,
+                end: 0x7101_d000,
+                readable: true,
+                writable: false,
+                executable: false,
+                shared: false,
+                descriptor: Some(descriptor),
+                offset: 0,
+                purpose: AfterLoaderMappingPurpose::Image { image },
+            },
+            identity,
+            raw_length: 0x1c1c8,
+            fixed: false,
+        };
+        let second = LoaderCacheAliasMapping {
+            owned: AfterLoaderOwnedMapping {
+                start: 0x7100_3000,
+                end: 0x7101_7000,
+                readable: true,
+                writable: false,
+                executable: true,
+                shared: false,
+                descriptor: Some(descriptor),
+                offset: 0x3000,
+                purpose: AfterLoaderMappingPurpose::Image { image },
+            },
+            identity,
+            raw_length: 0x14000,
+            fixed: true,
+        };
+        let third = LoaderCacheAliasMapping {
+            owned: AfterLoaderOwnedMapping {
+                start: 0x7101_7000,
+                end: 0x7101_b000,
+                readable: true,
+                writable: false,
+                executable: false,
+                shared: false,
+                descriptor: Some(descriptor),
+                offset: 0x17000,
+                purpose: AfterLoaderMappingPurpose::Image { image },
+            },
+            identity,
+            raw_length: 0x4000,
+            fixed: true,
+        };
+        let fourth = LoaderCacheAliasMapping {
+            owned: AfterLoaderOwnedMapping {
+                start: 0x7101_b000,
+                end: 0x7101_c000,
+                readable: true,
+                writable: true,
+                executable: false,
+                shared: false,
+                descriptor: Some(descriptor),
+                offset: 0x1a000,
+                purpose: AfterLoaderMappingPurpose::Image { image },
+            },
+            identity,
+            raw_length: 0x1000,
+            fixed: true,
+        };
+        let geometry = ResolvedImageGeometry {
+            image,
+            mapping: identity,
+            load_bias: 0x7100_0000,
+            span: (0x7100_0000, 0x7101_d000),
+        };
+        let zero_fill = AfterLoaderOwnedMapping {
+            start: 0x7101_c000,
+            end: 0x7101_d000,
+            readable: true,
+            writable: true,
+            executable: false,
+            shared: false,
+            descriptor: None,
+            offset: 0,
+            purpose: AfterLoaderMappingPurpose::ImageZeroFill { image },
+        };
+
+        let mut lifecycle = LoaderCacheAliasLifecycle::AwaitingOpen { image };
+        let wrong_image = AfterLoaderImageId {
+            generation: image.generation + 1,
+            ..image
+        };
+        assert!(!lifecycle.complete_read(descriptor, 0, LOADER_CACHE_ALIAS_HEADER_BYTES));
+        assert!(!lifecycle.complete_stat(descriptor));
+        assert!(!lifecycle.complete_map(&plan, descriptor, image, first));
+        assert!(!lifecycle.complete_close(&plan, descriptor, image, geometry));
+        assert!(!lifecycle.complete_open(descriptor, wrong_image));
+        assert!(lifecycle.complete_open(descriptor, image));
+        assert!(!lifecycle.complete_open(descriptor, image));
+        let read = [
+            descriptor,
+            0x7200_0000,
+            LOADER_CACHE_ALIAS_HEADER_BYTES,
+            0,
+            0,
+            0,
+        ];
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_read,
+            read,
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_getpid,
+            [0; 6],
+        ));
+        let mut wrong_read = read;
+        wrong_read[0] += 1;
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_read,
+            wrong_read,
+        ));
+        assert!(!lifecycle.complete_read(descriptor + 1, 0, LOADER_CACHE_ALIAS_HEADER_BYTES));
+        assert!(!lifecycle.complete_read(descriptor, 1, LOADER_CACHE_ALIAS_HEADER_BYTES));
+        assert!(lifecycle.complete_read(descriptor, 0, LOADER_CACHE_ALIAS_HEADER_BYTES));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_fstat,
+            [descriptor, 0x7200_1000, 0, 0, 0, 0],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_read,
+            read,
+        ));
+        assert!(!lifecycle.complete_read(
+            descriptor,
+            LOADER_CACHE_ALIAS_HEADER_BYTES,
+            LOADER_CACHE_ALIAS_HEADER_BYTES + 1,
+        ));
+        assert!(!lifecycle.complete_stat(descriptor + 1));
+        assert!(lifecycle.complete_stat(descriptor));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            [
+                0,
+                0x1c1c8,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE) as u64,
+                descriptor,
+                0,
+            ],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_close,
+            [descriptor, 0, 0, 0, 0, 0],
+        ));
+        assert!(!lifecycle.complete_map(&plan, descriptor + 1, image, first));
+        assert!(!lifecycle.complete_map(&plan, descriptor, wrong_image, first));
+        assert!(lifecycle.complete_map(&plan, descriptor, image, first));
+        let wrong_fixed_args = [
+            0x7100_3000,
+            0x14000,
+            libc::PROT_READ as u64,
+            (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+            descriptor,
+            0x3000,
+        ];
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            wrong_fixed_args,
+        ));
+        assert!(!lifecycle.complete_map(
+            &plan,
+            descriptor,
+            image,
+            LoaderCacheAliasMapping {
+                owned: AfterLoaderOwnedMapping {
+                    readable: true,
+                    executable: false,
+                    ..second.owned
+                },
+                ..second
+            },
+        ));
+        assert!(!lifecycle.complete_map(&plan, descriptor, image, first));
+        assert!(!lifecycle.complete_map(
+            &plan,
+            descriptor,
+            image,
+            LoaderCacheAliasMapping {
+                identity: MappingIdentity {
+                    inode: identity.inode + 1,
+                    ..identity
+                },
+                ..second
+            },
+        ));
+        assert!(!lifecycle.complete_map(
+            &plan,
+            descriptor,
+            image,
+            LoaderCacheAliasMapping {
+                owned: AfterLoaderOwnedMapping {
+                    offset: 0x4000,
+                    ..second.owned
+                },
+                ..second
+            },
+        ));
+        assert!(lifecycle.complete_map(&plan, descriptor, image, second));
+        assert!(!lifecycle.complete_map(&plan, descriptor, image, second));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            [
+                0x7101_7000,
+                0x4000,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+                descriptor,
+                0x17000,
+            ],
+        ));
+        assert!(lifecycle.complete_map(&plan, descriptor, image, third));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            [
+                0x7101_b000,
+                0x1000,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_DENYWRITE | libc::MAP_FIXED) as u64,
+                descriptor,
+                0x1a000,
+            ],
+        ));
+        assert!(lifecycle.complete_map(&plan, descriptor, image, fourth));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            [
+                0x7101_c000,
+                0x1c8,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                u64::from(u32::MAX),
+                0,
+            ],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mmap,
+            [
+                0x7101_c000,
+                0x1c8,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                u64::MAX,
+                0,
+            ],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_close,
+            [descriptor, 0, 0, 0, 0, 0],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_getpid,
+            [0; 6],
+        ));
+        assert!(!lifecycle.complete_close(&plan, descriptor, image, geometry));
+        assert!(!lifecycle.complete_zero_fill(&plan, wrong_image, 0x1c8, zero_fill,));
+        assert!(!lifecycle.complete_zero_fill(
+            &plan,
+            image,
+            0x1c8,
+            AfterLoaderOwnedMapping {
+                descriptor: Some(descriptor),
+                ..zero_fill
+            },
+        ));
+        assert!(!lifecycle.complete_zero_fill(
+            &plan,
+            image,
+            0x1c8,
+            AfterLoaderOwnedMapping {
+                purpose: AfterLoaderMappingPurpose::Controller,
+                ..zero_fill
+            },
+        ));
+        assert!(!lifecycle.complete_zero_fill(
+            &plan,
+            image,
+            0x1c8,
+            AfterLoaderOwnedMapping {
+                start: zero_fill.start + PAGE,
+                end: zero_fill.end + PAGE,
+                ..zero_fill
+            },
+        ));
+        assert!(lifecycle.complete_zero_fill(&plan, image, 0x1c8, zero_fill));
+        assert!(!lifecycle.complete_zero_fill(&plan, image, 0x1c8, zero_fill));
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_close,
+            [descriptor, 0, 0, 0, 0, 0],
+        ));
+        assert!(!lifecycle.complete_close(
+            &plan,
+            descriptor,
+            image,
+            ResolvedImageGeometry {
+                mapping: MappingIdentity {
+                    inode: identity.inode + 1,
+                    ..identity
+                },
+                ..geometry
+            },
+        ));
+        assert!(!lifecycle.complete_close(&plan, descriptor + 1, image, geometry));
+        assert!(!lifecycle.complete_close(&plan, descriptor, wrong_image, geometry));
+        assert!(lifecycle.complete_close(&plan, descriptor, image, geometry));
+        assert!(!lifecycle.complete_close(&plan, descriptor, image, geometry));
+        assert!(!lifecycle.is_consumed());
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_mprotect,
+            [0x7101_b000, PAGE, libc::PROT_READ as u64, 0, 0, 0],
+        ));
+        assert!(!loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_munmap,
+            [0x7101_b000, PAGE, 0, 0, 0, 0],
+        ));
+        assert!(!lifecycle.complete_relro(
+            image,
+            ResolvedImageGeometry {
+                load_bias: geometry.load_bias + PAGE,
+                ..geometry
+            },
+        ));
+        assert!(lifecycle.complete_relro(image, geometry));
+        assert!(lifecycle.is_consumed());
+        assert!(loader_cache_alias_next_step_is_exact(
+            &plan,
+            &lifecycle,
+            libc::SYS_getpid,
+            [0; 6],
+        ));
+        assert!(!lifecycle.complete_relro(image, geometry));
+    }
+
+    #[test]
+    fn loader_cache_procfs_absence_requires_exact_not_found() {
+        assert!(!classify_procfs_absence(Ok(())).unwrap());
+        assert!(
+            classify_procfs_absence::<()>(Err(io::Error::from(io::ErrorKind::NotFound,))).unwrap()
+        );
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Other,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            assert_eq!(
+                classify_procfs_absence::<()>(Err(io::Error::from(kind)))
+                    .unwrap_err()
+                    .kind(),
+                kind,
+            );
+        }
+    }
+
+    #[test]
+    fn loader_cache_scratch_requires_the_production_guard_rw_guard_transition() {
+        let base = 0x6000_0000;
+        let reservation = (base, base + 3 * PAGE);
+        let page = base + PAGE;
+        let mut state = mapping_state(1);
+        let mut initial = controller_mapping(base, reservation.1);
+        initial.readable = false;
+        initial.writable = false;
+        state.owned_mappings.push(initial);
+        state.protect_owned_range((page, page + PAGE), libc::PROT_READ | libc::PROT_WRITE);
+        let owner = *state
+            .owned_mappings
+            .iter()
+            .find(|mapping| mapping.start == page && mapping.end == page + PAGE)
+            .unwrap();
+        assert_eq!(owner.offset, PAGE);
+        let scratch = (
+            page + LOADER_CACHE_SCRATCH_OFFSET,
+            page + LOADER_CACHE_SCRATCH_END_OFFSET,
+        );
+        assert!(loader_cache_scratch_metadata_is_exact(
+            reservation,
+            scratch,
+            owner,
+        ));
+        assert!(loader_cache_scratch_logical_reservation_is_exact(
+            reservation,
+            scratch,
+            owner,
+            &state.owned_mappings,
+        ));
+
+        for changed in [
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed.remove(0);
+                changed
+            },
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed.pop();
+                changed
+            },
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed[0].readable = true;
+                changed
+            },
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed[2].writable = true;
+                changed
+            },
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed[1].offset = 0;
+                changed
+            },
+            {
+                let mut changed = state.owned_mappings.clone();
+                changed.push(owner);
+                changed
+            },
+        ] {
+            assert!(!loader_cache_scratch_logical_reservation_is_exact(
+                reservation,
+                scratch,
+                owner,
+                &changed,
+            ));
+        }
+        assert!(!loader_cache_scratch_metadata_is_exact(
+            (base, base + 2 * PAGE),
+            scratch,
+            owner,
+        ));
+        assert!(!loader_cache_scratch_owner_shape_is_exact(
+            scratch,
+            AfterLoaderOwnedMapping {
+                writable: false,
+                ..owner
+            },
+        ));
+
+        let middle = GuestMap {
+            start: page,
+            end: page + PAGE,
+            offset: 0,
+            device_major: 0,
+            device_minor: 0,
+            readable: true,
+            writable: true,
+            executable: false,
+            shared: false,
+            inode: 0,
+            path: None,
+        };
+        let attributes = Some(GuestHookMappingAttributes {
+            fork_safe: true,
+            protection_key: 0,
+        });
+        assert!(loader_cache_scratch_physical_map_is_exact(
+            owner, &middle, attributes,
+        ));
+        for changed in [
+            GuestMap {
+                end: middle.end + PAGE,
+                ..middle.clone()
+            },
+            GuestMap {
+                end: middle.end - 1,
+                ..middle.clone()
+            },
+            GuestMap {
+                writable: false,
+                ..middle.clone()
+            },
+            GuestMap {
+                inode: 17,
+                path: Some(PathBuf::from("/remapped")),
+                ..middle.clone()
+            },
+        ] {
+            assert!(!loader_cache_scratch_physical_map_is_exact(
+                owner, &changed, attributes,
+            ));
+        }
+        assert!(!loader_cache_scratch_physical_map_is_exact(
+            owner,
+            &middle,
+            Some(GuestHookMappingAttributes {
+                fork_safe: false,
+                protection_key: 0,
+            }),
+        ));
+        assert!(!loader_cache_scratch_physical_map_is_exact(
+            owner,
+            &middle,
+            Some(GuestHookMappingAttributes {
+                fork_safe: true,
+                protection_key: 1,
+            }),
+        ));
+
+        let lower = GuestMap {
+            start: base,
+            end: page,
+            readable: false,
+            writable: false,
+            ..middle.clone()
+        };
+        let upper = GuestMap {
+            start: page + PAGE,
+            end: reservation.1,
+            ..lower.clone()
+        };
+        assert!(loader_cache_scratch_physical_guard_is_exact(
+            (base, page),
+            true,
+            &lower,
+            attributes,
+        ));
+        assert!(loader_cache_scratch_physical_guard_is_exact(
+            (page + PAGE, reservation.1),
+            false,
+            &upper,
+            attributes,
+        ));
+        assert!(!loader_cache_scratch_physical_guard_is_exact(
+            (base, page),
+            true,
+            &GuestMap {
+                readable: true,
+                ..lower.clone()
+            },
+            attributes,
+        ));
+        assert!(!loader_cache_scratch_physical_guard_is_exact(
+            (page + PAGE, reservation.1),
+            false,
+            &GuestMap {
+                start: page + PAGE + 1,
+                ..upper
+            },
+            attributes,
+        ));
+
+        let lifecycle_mapping = LoaderCacheMapping {
+            start: 0x7000_0000,
+            raw_length: PAGE,
+            end: 0x7000_1000,
+            identity: MappingIdentity {
+                device_major: 0,
+                device_minor: 1,
+                inode: 43,
+            },
+        };
+        state.loader_cache = Some(LoaderCacheState {
+            scratch_reservation: reservation,
+            scratch,
+            scratch_owner: owner,
+            scratch_preimage: vec![0; LOADER_CACHE_SCRATCH_BYTES],
+            lifecycle: LoaderCacheLifecycle::Retired {
+                descriptor: 41,
+                mapping: lifecycle_mapping,
+            },
+            aliases: BTreeMap::new(),
+        });
+        assert!(state.loader_cache_scratch_overlaps((base, base + PAGE)));
+        assert!(state.loader_cache_scratch_overlaps((base + 2 * PAGE, reservation.1)));
+        let exact_release = [base, 3 * PAGE, 0, 0, 0, 0];
+        assert!(!state.loader_cache_scratch_release_is_armed_for(exact_release, reservation,));
+        state.loader_cache.as_mut().unwrap().lifecycle =
+            LoaderCacheLifecycle::ScratchReleaseArmed {
+                descriptor: 41,
+                mapping: lifecycle_mapping,
+            };
+        assert!(state.loader_cache_scratch_release_is_armed_for(exact_release, reservation,));
+        for changed in [
+            [base + PAGE, 3 * PAGE, 0, 0, 0, 0],
+            [base, 3 * PAGE - 1, 0, 0, 0, 0],
+            [base, 3 * PAGE + 1, 0, 0, 0, 0],
+            [base, 2 * PAGE + 1, 0, 0, 0, 0],
+            [base, 3 * PAGE, 1, 0, 0, 0],
+        ] {
+            assert!(!state.loader_cache_scratch_release_is_armed_for(changed, reservation,));
+        }
+        assert!(
+            !state.loader_cache_scratch_release_is_armed_for(exact_release, (page, page + PAGE),)
+        );
+        state.remove_owned_range(reservation);
+        assert!(
+            state
+                .owned_mappings
+                .iter()
+                .all(|mapping| !ranges_overlap((mapping.start, mapping.end), reservation))
+        );
+        assert!(
+            state
+                .loader_cache
+                .as_mut()
+                .unwrap()
+                .lifecycle
+                .complete_scratch_release(41, lifecycle_mapping)
+        );
+        assert!(!state.loader_cache_scratch_overlaps(reservation));
+    }
+
+    #[test]
+    fn loader_cache_redirect_binds_every_register_word_and_xstate() {
+        let admission = core::array::from_fn(|index| 0x1000 + index as u64);
+        let executed_path = 0x6000_1a08;
+        let logical_path = admission[13];
+        let result = 41_i64;
+
+        let mut executed = admission;
+        executed[13] = executed_path;
+        assert!(loader_cache_redirect_register_words_match(
+            admission,
+            executed_path,
+            executed,
+        ));
+        for index in 0..executed.len() {
+            let mut changed = executed;
+            changed[index] ^= 1;
+            assert!(
+                !loader_cache_redirect_register_words_match(admission, executed_path, changed,),
+                "redirect register word {index} was not bound",
+            );
+        }
+
+        let mut completed = admission;
+        completed[10] = result as u64;
+        completed[13] = executed_path;
+        assert!(loader_cache_completion_register_words_match(
+            admission,
+            executed_path,
+            result,
+            completed,
+        ));
+        for index in 0..completed.len() {
+            let mut changed = completed;
+            changed[index] ^= 1;
+            assert!(
+                !loader_cache_completion_register_words_match(
+                    admission,
+                    executed_path,
+                    result,
+                    changed,
+                ),
+                "completion register word {index} was not bound",
+            );
+        }
+        completed[13] = logical_path;
+        assert!(loader_cache_completion_register_words_match(
+            admission,
+            logical_path,
+            result,
+            completed,
+        ));
+
+        let xstate = zeroed_test_xstate();
+        let mut changed_fpregs = unsafe { core::mem::zeroed::<safeptrace::FpRegs>() };
+        changed_fpregs.cwd = 1;
+        let changed_xstate = safeptrace::X86ExtendedState::Fxsave64(Box::new(changed_fpregs));
+        assert_eq!(xstate, xstate.clone());
+        assert_ne!(xstate, changed_xstate);
+    }
+
+    #[test]
+    fn loader_cache_stat_output_is_byte_exact_including_padding() {
+        let fields = AfterLoaderStatFields {
+            device: 1,
+            inode: 2,
+            mode: 0o100444,
+            links: 3,
+            uid: 4,
+            gid: 5,
+            rdev: 6,
+            size: 7,
+            block_size: 8,
+            blocks: 9,
+            access_seconds: 10,
+            access_nanoseconds: 11,
+            modify_seconds: 12,
+            modify_nanoseconds: 13,
+            change_seconds: 14,
+            change_nanoseconds: 15,
+        };
+        let exact = fields.exact_x86_64_output();
+        assert!(stat_output_matches(fields, &exact));
+        for index in 0..exact.len() {
+            let mut changed = exact;
+            changed[index] ^= 1;
+            assert!(
+                !stat_output_matches(fields, &changed),
+                "loader-cache stat mutation {index} was admitted",
+            );
+        }
+        let mut later_access = fields;
+        later_access.access_seconds += 86_400;
+        later_access.access_nanoseconds ^= 1;
+        assert_ne!(
+            fields.exact_x86_64_output(),
+            later_access.exact_x86_64_output()
+        );
+        assert_eq!(
+            fields
+                .with_deterministic_access_time()
+                .exact_x86_64_output(),
+            later_access
+                .with_deterministic_access_time()
+                .exact_x86_64_output(),
+            "guest-visible alias fstat retained ambient access time",
+        );
+    }
+
+    #[test]
+    fn loader_cache_permit_keeps_logical_and_executed_arguments_distinct() {
+        let logical_path = 0x7f00_0002_d266;
+        let scratch = (0x6000_0a08, 0x6000_0c00);
+        let flags = (libc::O_RDONLY | libc::O_CLOEXEC) as u64;
+        let logical = [
+            u64::from(libc::AT_FDCWD as u32),
+            logical_path,
+            flags,
+            0,
+            flags,
+            logical_path,
+        ];
+        let number = libc::SYS_openat;
+        let instruction_pointer = 0x7f00_0002_57b6;
+        let resume_pointer = instruction_pointer + 2;
+        let mut admission_registers = [0; 27];
+        admission_registers[7] = logical[3];
+        admission_registers[8] = logical[5];
+        admission_registers[9] = logical[4];
+        admission_registers[12] = logical[2];
+        admission_registers[13] = logical[1];
+        admission_registers[14] = logical[0];
+        admission_registers[15] = number as u64;
+        admission_registers[16] = resume_pointer;
+        let redirect = LoaderCacheRedirect {
+            scratch,
+            preimage: vec![0xa5; LOADER_CACHE_SCRATCH_BYTES],
+            path: b"/proc/17/fd/41\0".to_vec(),
+            admission_registers,
+            admission_xstate: zeroed_test_xstate(),
+        };
+        let executed = loader_cache_redirect_arguments(logical, &redirect).unwrap();
+        assert_eq!(executed[1], scratch.0);
+        assert_eq!(executed[5], logical_path);
+        let mut permit = AfterLoaderSyscallPermit {
+            image: None,
+            tid: Pid::from_raw(17),
+            generation: 23,
+            physical_generation: None,
+            origin_status: None,
+            admission_status: None,
+            purpose: AfterLoaderSyscallPurpose::PrivateSetup,
+            number,
+            args: logical,
+            executed_args: executed,
+            instruction_pointer,
+            resume_pointer,
+            instruction: [0x0f, 0x05, 0, 0],
+            instruction_length: 2,
+            output_spans: Vec::new(),
+            effect: AfterLoaderSyscallEffect::OpenLoaderCache {
+                descriptor: AfterLoaderOwnedDescriptor::LoaderCache {
+                    file: crate::after_loader::FileIdentity {
+                        device: 1,
+                        inode: 41,
+                    },
+                    mapping: MappingIdentity {
+                        device_major: 0,
+                        device_minor: 1,
+                        inode: 41,
+                    },
+                    length: 0x12345,
+                    position: 0,
+                },
+                redirect,
+            },
+        };
+        assert!(after_loader_permit_argument_binding_is_exact(&permit));
+        permit.executed_args[5] = scratch.0;
+        assert!(!after_loader_permit_argument_binding_is_exact(&permit));
+        permit.executed_args = executed;
+        permit.args[1] += 1;
+        assert!(!after_loader_permit_argument_binding_is_exact(&permit));
+
+        let mut malformed = match permit.effect.clone() {
+            AfterLoaderSyscallEffect::OpenLoaderCache { redirect, .. } => redirect,
+            _ => unreachable!(),
+        };
+        malformed.path.pop();
+        assert!(loader_cache_redirect_arguments(logical, &malformed).is_none());
+        malformed.path = vec![b'x'; LOADER_CACHE_SCRATCH_BYTES + 1];
+        malformed.path.push(0);
+        assert!(loader_cache_redirect_arguments(logical, &malformed).is_none());
+        malformed.path = b"/proc/17/fd/41\0".to_vec();
+        malformed.preimage.pop();
+        assert!(loader_cache_redirect_arguments(logical, &malformed).is_none());
+
+        let mut ordinary = permit;
+        ordinary.args = logical;
+        ordinary.executed_args = logical;
+        ordinary.effect = AfterLoaderSyscallEffect::None;
+        assert!(after_loader_permit_argument_binding_is_exact(&ordinary));
+        ordinary.executed_args[1] = scratch.0;
+        assert!(!after_loader_permit_argument_binding_is_exact(&ordinary));
+    }
+
+    #[test]
+    fn ptmalloc_bootstrap_request_is_one_exact_raw_shape() {
+        let load_bias = 0x7f00_0000_0000;
+        let permit = exact_ptmalloc_test_permit(load_bias);
+        let admission_rax = -(libc::ENOSYS as i64) as u64;
+        assert!(exact_ptmalloc_bootstrap_request(
+            load_bias,
+            admission_rax,
+            &permit
+        ));
+
+        let mut mutations = Vec::new();
+        let mut changed = permit.clone();
+        changed.number = libc::SYS_read;
+        mutations.push(changed);
+        for (index, value) in [
+            (0, permit.args[0] - 1),
+            (0, permit.args[0] + 1),
+            (1, 0),
+            (1, 7),
+            (1, 9),
+            (1, u64::MAX),
+            (2, 0),
+            (2, libc::GRND_RANDOM as u64),
+            (2, 1_u64 << 63),
+        ] {
+            let mut changed = permit.clone();
+            changed.args[index] = value;
+            mutations.push(changed);
+        }
+        let mut changed = permit.clone();
+        changed.instruction_pointer += 1;
+        mutations.push(changed);
+        let mut changed = permit.clone();
+        changed.resume_pointer += 1;
+        mutations.push(changed);
+        let mut changed = permit.clone();
+        changed.instruction[0] ^= 1;
+        mutations.push(changed);
+        let mut changed = permit.clone();
+        changed.instruction_length = 4;
+        mutations.push(changed);
+        let mut changed = permit.clone();
+        changed.output_spans[0].0 += 1;
+        mutations.push(changed);
+        let mut changed = permit.clone();
+        changed.output_spans.push((0x10, 0x18));
+        mutations.push(changed);
+
+        for (index, changed) in mutations.iter().enumerate() {
+            assert!(
+                !exact_ptmalloc_bootstrap_request(load_bias, admission_rax, changed),
+                "mutation {index} was accepted: {changed:?}"
+            );
+        }
+        for changed_rax in [0, 8, libc::SYS_getrandom as u64, u64::MAX] {
+            assert!(
+                !exact_ptmalloc_bootstrap_request(load_bias, changed_rax, &permit),
+                "alternate admission RAX {changed_rax:#x} was accepted"
+            );
+        }
+        assert!(!exact_ptmalloc_bootstrap_request(
+            load_bias + 1,
+            admission_rax,
+            &permit
+        ));
+        assert!(!exact_ptmalloc_bootstrap_request(
+            u64::MAX,
+            admission_rax,
+            &permit
+        ));
+    }
+
+    #[test]
+    fn ptmalloc_bootstrap_admission_state_is_one_shot_and_zero_preimage() {
+        let load_bias = 0x7f00_0000_0000;
+        let entry = PtmallocBootstrapObservation {
+            initialized: 0,
+            tcache_key: [0; 8],
+        };
+        let profile = PtmallocBootstrapState {
+            load_bias,
+            entry,
+            pre_dlopen_verified: true,
+            entropy_consumed: false,
+            injected_key: None,
+        };
+        let observed = PtmallocBootstrapObservation {
+            initialized: 1,
+            tcache_key: [0; 8],
+        };
+        assert!(exact_ptmalloc_bootstrap_admission_state(
+            profile, load_bias, observed
+        ));
+
+        let mut changed = profile;
+        changed.pre_dlopen_verified = false;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            changed, load_bias, observed
+        ));
+        let mut changed = profile;
+        changed.entry.initialized = 1;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            changed, load_bias, observed
+        ));
+        let mut changed = profile;
+        changed.entry.tcache_key[0] = 1;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            changed, load_bias, observed
+        ));
+        let mut changed = profile;
+        changed.entropy_consumed = true;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            changed, load_bias, observed
+        ));
+        let mut changed = profile;
+        changed.injected_key = Some([1; 8]);
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            changed, load_bias, observed
+        ));
+        let mut changed_observed = observed;
+        changed_observed.initialized = 0;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            profile,
+            load_bias,
+            changed_observed
+        ));
+        let mut changed_observed = observed;
+        changed_observed.tcache_key[7] = 1;
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            profile,
+            load_bias,
+            changed_observed
+        ));
+        assert!(!exact_ptmalloc_bootstrap_admission_state(
+            profile,
+            load_bias + 1,
+            observed
+        ));
+    }
+
+    #[test]
+    fn ptmalloc_bootstrap_profile_constants_are_byte_exact() {
+        assert_eq!(PTMALLOC_BOOTSTRAP_FUNCTION.len(), 485);
+        let digest: [u8; 32] = Sha256::digest(PTMALLOC_BOOTSTRAP_FUNCTION).into();
+        assert_eq!(
+            digest,
+            [
+                0x31, 0xbc, 0xaf, 0x2b, 0xee, 0x7c, 0xc7, 0x6a, 0xe3, 0x96, 0x03, 0xc1, 0x22, 0xf1,
+                0x31, 0x23, 0xff, 0x72, 0x08, 0xa4, 0x74, 0xdf, 0xd6, 0xaf, 0x1c, 0x98, 0x2d, 0xe8,
+                0xb6, 0xac, 0xdd, 0x62,
+            ]
+        );
+        let syscall_offset =
+            usize::try_from(PTMALLOC_BOOTSTRAP_SYSCALL_RVA - PTMALLOC_BOOTSTRAP_FUNCTION_RVA)
+                .unwrap();
+        assert_eq!(
+            &PTMALLOC_BOOTSTRAP_FUNCTION[syscall_offset..syscall_offset + 2],
+            &[0x0f, 0x05]
+        );
+        assert_eq!(ptmalloc_bootstrap_profile_matches(&[]), Ok(false));
+        assert_eq!(
+            ptmalloc_bootstrap_profile_matches(PTMALLOC_BOOTSTRAP_FUNCTION),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn ptmalloc_bootstrap_completion_changes_only_rax() {
+        let admission: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        let mut completed = admission;
+        completed.rax = 8;
+        assert!(ptmalloc_bootstrap_completion_registers_match(
+            &admission, &completed
+        ));
+        macro_rules! reject_field_mutations {
+            ($($field:ident),+ $(,)?) => {
+                $(
+                    let mut changed = completed;
+                    changed.$field ^= 1;
+                    assert!(
+                        !ptmalloc_bootstrap_completion_registers_match(&admission, &changed),
+                        "register {} mutation was accepted",
+                        stringify!($field),
+                    );
+                )+
+            };
+        }
+        reject_field_mutations!(
+            r15, r14, r13, r12, rbp, rbx, r11, r10, r9, r8, rax, rcx, rdx, rsi, rdi, orig_rax, rip,
+            cs, eflags, rsp, ss, fs_base, gs_base, ds, es, fs, gs,
+        );
     }
 
     #[test]

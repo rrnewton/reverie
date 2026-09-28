@@ -239,7 +239,13 @@ impl Tool for StopTool {
         assert!(mode.emulates());
         assert_eq!(request, Rdtsc::Tsc);
         assert_eq!(*guest.thread_state(), 1);
-        let rip = guest.regs().await.rip;
+        let entry_regs = guest.regs().await;
+        let rip = entry_regs.rip;
+        assert_ne!(
+            entry_regs.eflags & (1 << 16),
+            0,
+            "RDTSC fault stop must carry RF for this restoration regression",
+        );
         assert_eq!(rip, guest.config().timestamp_rip);
         assert_eq!(word(guest, WORD), 1);
         let expected = if mode == Mode::EmulateErrno {
@@ -251,7 +257,12 @@ impl Tool for StopTool {
         // Getppid differs from the previously emulated Getpid. A stale Some
         // must not send this actual instruction-trap stop through syscall skip.
         assert!(guest.inject(Getppid::default()).await? > 0);
-        assert_eq!(guest.regs().await.rip, rip);
+        let restored_regs = guest.regs().await;
+        assert_eq!(restored_regs.rip, rip);
+        assert_eq!(
+            restored_regs.eflags, entry_regs.eflags,
+            "private injection changed the guest's fault-restart flags",
+        );
         assert_eq!(word(guest, WORD), 1);
         assert_eq!(word(guest, EMULATED_RESULT), expected as u64);
         guest.send_rpc(Observation::Timestamp).await;

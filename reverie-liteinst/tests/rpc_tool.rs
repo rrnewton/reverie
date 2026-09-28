@@ -1,4 +1,9 @@
+use std::io;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
+use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -338,18 +343,143 @@ fn fallback_refusal_is_counted_separately_from_tool_errors() {
     }
 }
 
-fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + timeout;
+fn child_exited_without_reaping(child: &Child) -> io::Result<bool> {
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
     loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &raw mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn terminate_process_group(process_group: i32) -> io::Result<()> {
+    let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn wait_for_child_exit_until(child: &Child, deadline: Instant) -> io::Result<bool> {
+    loop {
+        if child_exited_without_reaping(child)? {
+            return Ok(true);
         }
         if Instant::now() >= deadline {
-            child.kill().unwrap();
-            let output = child.wait_with_output().unwrap();
-            panic!("child exceeded {timeout:?}: {output:?}");
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn nonblocking(fd: libc::c_int) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn drain_pipe(reader: &mut impl Read, bytes: &mut Vec<u8>) -> io::Result<bool> {
+    let mut buffer = [0_u8; 4096];
+    // Bound each pass so continuous output cannot hide the lifecycle deadline.
+    for _ in 0..16 {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(length) => bytes.extend_from_slice(&buffer[..length]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
+    command.process_group(0);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let process_group = i32::try_from(child.id()).expect("child pid fits process-group id");
+    let mut stdout = child.stdout.take().expect("bounded child stdout");
+    let mut stderr = child.stderr.take().expect("bounded child stderr");
+    nonblocking(stdout.as_raw_fd()).unwrap();
+    nonblocking(stderr.as_raw_fd()).unwrap();
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_closed = false;
+    let mut stderr_closed = false;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !stdout_closed {
+            stdout_closed = drain_pipe(&mut stdout, &mut stdout_bytes).unwrap();
+        }
+        if !stderr_closed {
+            stderr_closed = drain_pipe(&mut stderr, &mut stderr_bytes).unwrap();
+        }
+        if child_exited_without_reaping(&child).unwrap() {
+            // The unreaped leader still owns this numeric PID/PGID, so this
+            // cannot signal a newly reused process group. Killing the group
+            // also closes pipes retained by an unexpected descendant.
+            terminate_process_group(process_group).unwrap();
+            let drain_deadline = Instant::now() + Duration::from_secs(1);
+            while (!stdout_closed || !stderr_closed) && Instant::now() < drain_deadline {
+                if !stdout_closed {
+                    stdout_closed = drain_pipe(&mut stdout, &mut stdout_bytes).unwrap();
+                }
+                if !stderr_closed {
+                    stderr_closed = drain_pipe(&mut stderr, &mut stderr_bytes).unwrap();
+                }
+                if !stdout_closed || !stderr_closed {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let status = child.wait().unwrap();
+            assert!(
+                stdout_closed && stderr_closed,
+                "subprocess descendants retained output pipes after group termination"
+            );
+            return Output {
+                status,
+                stdout: stdout_bytes,
+                stderr: stderr_bytes,
+            };
+        }
+        if Instant::now() >= deadline {
+            // Do not collect output after the deadline: an executor that
+            // retained either pipe must not extend the timeout indefinitely.
+            drop(stdout);
+            drop(stderr);
+            let group_result = terminate_process_group(process_group);
+            let exited = wait_for_child_exit_until(&child, Instant::now() + Duration::from_secs(1));
+            let status = match exited {
+                Ok(true) => child.wait().ok(),
+                Ok(false) | Err(_) => {
+                    // Retain ownership until the kernel makes the killed
+                    // leader waitable, without blocking this test's deadline.
+                    thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    None
+                }
+            };
+            panic!("child exceeded {timeout:?}: group_cleanup={group_result:?} status={status:?}");
         }
         thread::sleep(Duration::from_millis(10));
     }

@@ -19,12 +19,12 @@ use super::ControllerLaunch;
 use super::ControllerLaunchId;
 use super::ControllerSpawnError;
 use super::ControllerSpawnFailure;
+use super::ControllerSpawnToken;
 use super::ControllerStartupPublisher;
 use super::PendingControllerLaunch;
-use super::clone::ClonePidfdResult;
+use super::clone::child_stack;
 use super::clone::clone;
-use super::clone::clone_with_pidfd;
-use super::clone::probe_clone_pidfd_support;
+use super::clone::clone_with_stack_owned;
 use super::container::ChildContext;
 use super::controller_launch::ControllerStartupRecord;
 use super::controller_launch::decode_startup_record;
@@ -79,7 +79,19 @@ impl Command {
     /// kernel which implements all probed pidfd operations while silently
     /// ignoring legacy `clone(CLONE_PIDFD)` is contained behind the pre-exec
     /// gate and reported as an unsupported-kernel contract violation.
-    pub fn spawn_controller_with<F>(
+    ///
+    /// # Safety
+    ///
+    /// `controller_init` runs in the child after a clone with fork-like memory
+    /// semantics and before `execve`. It must use only operations that are safe
+    /// in that context: in particular, it must not allocate or deallocate,
+    /// acquire locks that another parent thread may hold, unwind, or violate
+    /// invariants of duplicated file descriptors or memory mappings. Captured
+    /// state must remain valid in the child's copy of the address space. The
+    /// closure must establish controller ownership before publishing READY,
+    /// publish READY immediately before its initial stop, and return `Ok(())`
+    /// only after that stop has been resumed by the controller.
+    pub unsafe fn spawn_controller_with<F>(
         &mut self,
         mut controller_init: F,
     ) -> Result<ControllerLaunch, ControllerSpawnError>
@@ -91,7 +103,6 @@ impl Command {
         if self.container.seccomp_notify {
             return Err(before_clone(Errno::EINVAL, Context::Seccomp));
         }
-        probe_clone_pidfd_support().map_err(|error| before_clone(error, Context::Clone))?;
         let launch = ControllerLaunchId::allocate().map_err(ControllerSpawnError::BeforeClone)?;
         let env = self.container.env.array();
 
@@ -139,11 +150,15 @@ impl Command {
         let startup_writer = Fd::new(startup_writer_fd);
         let (mut gate_reader, gate_writer) =
             pipe().map_err(|error| before_clone(error, Context::Stdio))?;
+        let (mut liveness_reader, liveness_writer) =
+            pipe().map_err(|error| before_clone(error, Context::Stdio))?;
         let gate_writer_fd = gate_writer.as_raw_fd();
+        let liveness_reader_fd = liveness_reader.as_raw_fd();
+        let liveness_writer_fd = liveness_writer.as_raw_fd();
         let startup_writer_fd = startup_writer.as_raw_fd();
-        let original_parent_tgid = launch.controller_tgid().as_raw();
 
-        let clone_flags = self.container.namespace.bits() | libc::SIGCHLD;
+        let mut stack = child_stack();
+        let namespaces = self.container.namespace;
         let uid_map = &make_id_map(&self.container.uid_map);
         let gid_map = &make_id_map(&self.container.gid_map);
         let context = ChildContext {
@@ -160,13 +175,34 @@ impl Command {
                 publisher.publish_error(Error::new(Errno::last(), Context::PreExec));
                 return 1;
             }
-            if unsafe { libc::getppid() } != original_parent_tgid {
-                publisher.publish_error(Error::new(Errno::ECHILD, Context::PreExec));
-                return 1;
-            }
             // The child inherited the write end through clone. Close that copy
             // before reading so a parent-side containment close produces EOF.
             let _ = unsafe { libc::close(gate_writer_fd) };
+            // A PID-namespace init sees getppid()==0 while its real parent is
+            // outside the namespace, so parent identity cannot be validated by
+            // numeric PID. Instead, close the child's copy of the acknowledgment
+            // reader and publish one byte only after PDEATHSIG is armed. If the
+            // parent died before the prctl, no reader remains and this write
+            // cannot succeed; if it dies afterward, PDEATHSIG terminates us.
+            let _ = unsafe { libc::close(liveness_reader_fd) };
+            let armed = [1u8; 1];
+            let (armed_written, armed_error) = loop {
+                let written =
+                    unsafe { libc::write(liveness_writer_fd, armed.as_ptr().cast(), armed.len()) };
+                let error = (written == -1).then(Errno::last);
+                if error == Some(Errno::EINTR) {
+                    continue;
+                }
+                break (written, error);
+            };
+            let _ = unsafe { libc::close(liveness_writer_fd) };
+            if armed_written != 1 {
+                publisher.publish_error(Error::new(
+                    armed_error.unwrap_or(Errno::EIO),
+                    Context::PreExec,
+                ));
+                return 1;
+            }
             let mut release = [0u8; 1];
             loop {
                 match gate_reader.read(&mut release) {
@@ -185,11 +221,13 @@ impl Command {
             unsafe { libc::_exit(code) }
         };
 
-        let token = match clone_with_pidfd(child_main, clone_flags, launch)
-            .map_err(|error| before_clone(error, Context::Clone))?
-        {
-            ClonePidfdResult::Created(token) => token,
-            ClonePidfdResult::UnsupportedKernelContract(pid) => {
+        let owned = clone_with_stack_owned(child_main, namespaces, &mut stack)
+            .map_err(|error| before_clone(error, Context::Clone))?;
+        // The child is the only writer whose byte proves PDEATHSIG is armed.
+        drop(liveness_writer);
+        let pidfd = match owned.pidfd {
+            Some(pidfd) => pidfd,
+            None => {
                 // The callback is still blocked on `gate_reader`. Closing the
                 // writer makes that exact, unreaped direct child exit without
                 // calling do_exec. Its numeric PID cannot be reused until this
@@ -200,40 +238,40 @@ impl Command {
                 drop(child_stdin);
                 drop(child_stdout);
                 drop(child_stderr);
-                reap_unsupported_gated_child(pid);
+                reap_unsupported_gated_child(owned.pid);
                 return Err(ControllerSpawnError::UnsupportedKernelContract(Error::new(
                     Errno::EOPNOTSUPP,
                     Context::Clone,
                 )));
             }
-            ClonePidfdResult::PidfdValidationFailed { token, error } => {
-                // A nonnegative clone result always becomes a linear token
-                // before descriptor validation. Keep the child gated and move
-                // that exact token into the normal post-clone authority path.
-                let pending = PendingControllerLaunch::new(
-                    token,
-                    stdin,
-                    stdout,
-                    stderr,
-                    gate_writer,
-                    startup_reader,
-                );
-                drop(startup_writer);
-                drop(child_stdin);
-                drop(child_stdout);
-                drop(child_stderr);
-                drop(self.container.pty.take());
-                return Err(ControllerSpawnError::AfterClone {
-                    source: ControllerSpawnFailure::PidfdValidation(error),
-                    authority: Box::new(pending),
-                });
-            }
         };
+        // `OwnedClone` retains the exact clone-time pidfd across callback-box
+        // teardown. Convert it immediately into the controller's linear token
+        // before performing descriptor validation or releasing the child.
+        let token = ControllerSpawnToken::new(launch, owned.pid, pidfd);
+        if let Err(error) = token.validate_pidfd_cloexec() {
+            let pending = PendingControllerLaunch::new(
+                token,
+                stdin,
+                stdout,
+                stderr,
+                gate_writer,
+                startup_reader,
+            );
+            drop(startup_writer);
+            drop(child_stdin);
+            drop(child_stdout);
+            drop(child_stderr);
+            drop(self.container.pty.take());
+            return Err(ControllerSpawnError::AfterClone {
+                source: ControllerSpawnFailure::PidfdValidation(error),
+                authority: Box::new(pending),
+            });
+        }
 
-        // clone_with_pidfd creates `token` immediately after the successful
-        // syscall, before its stack/callback allocations unwind. No fallible
-        // operation, allocation, conversion, or child release occurs between
-        // that exact authority owner and this fixed pending owner.
+        // No fallible operation, allocation, conversion, or child release
+        // occurs between the validated exact authority and this fixed pending
+        // owner.
         let mut pending =
             PendingControllerLaunch::new(token, stdin, stdout, stderr, gate_writer, startup_reader);
 
@@ -241,6 +279,27 @@ impl Command {
         drop(child_stdout);
         drop(child_stderr);
         drop(self.container.pty.take());
+        let mut armed = [0u8; 1];
+        loop {
+            match liveness_reader.read(&mut armed) {
+                Ok(1) if armed[0] == 1 => break,
+                Ok(bytes) => {
+                    drop(startup_writer);
+                    return Err(ControllerSpawnError::AfterClone {
+                        source: ControllerSpawnFailure::LivenessHandshakeShortRead(bytes),
+                        authority: Box::new(pending),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    drop(startup_writer);
+                    return Err(ControllerSpawnError::AfterClone {
+                        source: ControllerSpawnFailure::LivenessHandshakeRead(error),
+                        authority: Box::new(pending),
+                    });
+                }
+            }
+        }
         if let Err(error) = pending.release_gate() {
             drop(startup_writer);
             return Err(ControllerSpawnError::AfterClone {
@@ -461,5 +520,211 @@ pub fn recv_error(mut fd: Fd) -> Result<(), Error> {
                 panic!("execve pipe: read returned unexpected error {}", err);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::AsRawFd;
+    use std::os::fd::OwnedFd;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::ControllerLaunchParts;
+    use crate::ControllerLaunchPhase;
+    use crate::Namespace;
+    use crate::Pid;
+
+    struct ExactTestChild {
+        pid: Pid,
+        pidfd: OwnedFd,
+        reaped: bool,
+    }
+
+    impl ExactTestChild {
+        fn from_parts(parts: ControllerLaunchParts) -> (ControllerLaunchPhase, Self) {
+            let ControllerLaunchParts {
+                token,
+                stdin,
+                stdout,
+                stderr,
+                phase,
+            } = parts;
+            drop((stdin, stdout, stderr));
+            let (_, pid, pidfd) = token.into_parts();
+            (
+                phase,
+                Self {
+                    pid,
+                    pidfd,
+                    reaped: false,
+                },
+            )
+        }
+
+        fn next_status(&mut self, deadline: Instant) -> Result<i32, String> {
+            loop {
+                let mut status = 0;
+                match Errno::result(unsafe {
+                    libc::waitpid(self.pid.as_raw(), &mut status, libc::WNOHANG)
+                }) {
+                    Ok(0) => {}
+                    Ok(reaped) if reaped == self.pid.as_raw() => {
+                        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                            self.reaped = true;
+                        }
+                        return Ok(status);
+                    }
+                    Ok(other) => {
+                        return Err(format!(
+                            "waitpid returned unexpected child {other} for {}",
+                            self.pid.as_raw()
+                        ));
+                    }
+                    Err(Errno::EINTR) => continue,
+                    Err(error) => return Err(format!("waitpid failed: {error}")),
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "timed out waiting for controller child {}",
+                        self.pid.as_raw()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn continue_tracee(&self) -> Result<(), Errno> {
+            Errno::result(unsafe {
+                libc::ptrace(
+                    libc::PTRACE_CONT,
+                    self.pid.as_raw(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                )
+            })
+            .map(drop)
+        }
+    }
+
+    impl Drop for ExactTestChild {
+        fn drop(&mut self) {
+            if self.reaped {
+                return;
+            }
+            let signal = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if signal == -1 && Errno::last() != Errno::ESRCH {
+                std::process::abort();
+            }
+            loop {
+                let mut status = 0;
+                match Errno::result(unsafe { libc::waitpid(self.pid.as_raw(), &mut status, 0) }) {
+                    Ok(reaped)
+                        if reaped == self.pid.as_raw()
+                            && (libc::WIFEXITED(status) || libc::WIFSIGNALED(status)) =>
+                    {
+                        self.reaped = true;
+                        return;
+                    }
+                    Err(Errno::EINTR) => continue,
+                    Ok(_) | Err(_) => std::process::abort(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn controller_ready_and_cleanup_work_in_user_pid_namespace() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("test \"$$\" -eq 1")
+            .map_root()
+            .unshare(Namespace::USER | Namespace::PID);
+        // SAFETY: this child callback uses only raw syscalls and the fixed
+        // allocation-free publisher. It publishes READY immediately after
+        // TRACEME and before its initial stop, then clears PDEATHSIG only after
+        // the parent has resumed that stop.
+        let launched = unsafe {
+            command.spawn_controller_with(|publisher| {
+                Errno::result(libc::ptrace(
+                    libc::PTRACE_TRACEME,
+                    0,
+                    std::ptr::null_mut::<libc::c_void>(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                ))?;
+                publisher.publish_ready()?;
+                Errno::result(libc::kill(libc::getpid(), libc::SIGSTOP))?;
+                Errno::result(libc::prctl(libc::PR_SET_PDEATHSIG, 0, 0, 0, 0))?;
+                Ok(())
+            })
+        };
+
+        let launch = match launched {
+            Ok(launch) => launch,
+            Err(ControllerSpawnError::BeforeClone(error))
+                if error.errno() == Errno::EPERM && error.context() == Context::Clone =>
+            {
+                eprintln!("skipping USER|PID controller test: clone returned EPERM");
+                return;
+            }
+            Err(ControllerSpawnError::AfterClone {
+                source: ControllerSpawnFailure::ChildStartup(error),
+                authority,
+            }) if error.errno() == Errno::EPERM
+                && matches!(error.context(), Context::MapUid | Context::MapGid) =>
+            {
+                let (_, mut child) = ExactTestChild::from_parts((*authority).into_parts());
+                let status = child
+                    .next_status(Instant::now() + Duration::from_secs(2))
+                    .unwrap_or_else(|failure| panic!("namespace skip cleanup failed: {failure}"));
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 1);
+                eprintln!(
+                    "skipping USER|PID controller test: {} returned EPERM",
+                    error.context()
+                );
+                return;
+            }
+            Err(ControllerSpawnError::AfterClone { source, authority }) => {
+                let (_, _child) = ExactTestChild::from_parts((*authority).into_parts());
+                panic!("unexpected post-clone controller failure: {source}");
+            }
+            Err(error) => panic!("unexpected controller launch failure: {error}"),
+        };
+
+        let (phase, mut child) = ExactTestChild::from_parts(launch.into_parts());
+        assert_eq!(phase, ControllerLaunchPhase::TracerOwnershipReady);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let initial = child
+            .next_status(deadline)
+            .unwrap_or_else(|failure| panic!("initial controller stop failed: {failure}"));
+        assert!(libc::WIFSTOPPED(initial));
+        assert_eq!(libc::WSTOPSIG(initial), libc::SIGSTOP);
+        child
+            .continue_tracee()
+            .unwrap_or_else(|error| panic!("continue initial controller stop: {error}"));
+        let exec = child
+            .next_status(deadline)
+            .unwrap_or_else(|failure| panic!("controller exec stop failed: {failure}"));
+        assert!(libc::WIFSTOPPED(exec));
+        assert_eq!(libc::WSTOPSIG(exec), libc::SIGTRAP);
+        child
+            .continue_tracee()
+            .unwrap_or_else(|error| panic!("continue controller exec stop: {error}"));
+        let exited = child
+            .next_status(deadline)
+            .unwrap_or_else(|failure| panic!("controller completion failed: {failure}"));
+        assert!(libc::WIFEXITED(exited));
+        assert_eq!(libc::WEXITSTATUS(exited), 0);
     }
 }

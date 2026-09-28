@@ -17,9 +17,13 @@
 #![cfg(all(
     target_os = "linux",
     target_arch = "x86_64",
-    feature = "liteinst-after-loader-experiment",
-    not(feature = "preload-constructor")
+    feature = "liteinst-after-loader-experiment"
 ))]
+
+#[cfg(feature = "preload-constructor")]
+compile_error!(
+    "after_loader requires --no-default-features --features liteinst-after-loader-experiment"
+);
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -30,6 +34,7 @@ use std::io::SeekFrom;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -38,15 +43,19 @@ use goblin::elf::Elf;
 use goblin::elf::program_header;
 use liteinst2::scanner::InstructionScanner;
 use liteinst2::scanner::ScanError;
+use reverie::BackendBootstrapEntropy;
+use reverie::Errno;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Subscription;
 use reverie::Tid;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::process::Command;
 use reverie::process::Stdio;
+use reverie::syscalls::Gettid;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -59,6 +68,8 @@ use reverie_ptrace::LiteinstAfterLoaderConfig;
 use reverie_ptrace::LiteinstAfterLoaderProfile;
 use reverie_ptrace::LiteinstCallerDiagnostics;
 use reverie_ptrace::LiteinstCallerObservation;
+use serde::Deserialize;
+use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -75,10 +86,20 @@ const UNPATCHABLE_MANIFEST_SHA256_ENV: &str =
     "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_UNPATCHABLE_SHA256";
 const MAX_REVIEWED_MANIFEST_BYTES: usize = 64 * 1024;
 const GETPID_SENTINEL: i64 = 0x4c49_5445;
+// Mechanism-only input for the after-loader test Tools. This fixed value is
+// not a ptrace-parity oracle and must not be used by a production Tool.
+const TEST_PTMALLOC_TCACHE_KEY: [u8; 8] = *b"liteinst";
 const CANONICAL_STDOUT: &[u8] = b"guest-entered-v1\n\
 restoration=preinit-constructor-main-ok\n\
 environment=sentinel-preserved-loader-selectors-absent\n\
 getpid=4c495445 calls=4 stages=3\n";
+
+fn test_backend_bootstrap_entropy(request: BackendBootstrapEntropy) -> Result<[u8; 8], Errno> {
+    match request {
+        BackendBootstrapEntropy::PtmallocTcacheKey => Ok(TEST_PTMALLOC_TCACHE_KEY),
+        _ => Err(Errno::ENOSYS),
+    }
+}
 
 #[derive(Debug, Default)]
 struct GetpidCallbacks(AtomicU64);
@@ -106,6 +127,14 @@ impl Tool for CountRawGetpid {
         [Sysno::getpid].into_iter().collect()
     }
 
+    fn handle_backend_bootstrap_entropy(
+        &self,
+        _thread_state: &mut Self::ThreadState,
+        request: BackendBootstrapEntropy,
+    ) -> Result<[u8; 8], Errno> {
+        test_backend_bootstrap_entropy(request)
+    }
+
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -114,6 +143,235 @@ impl Tool for CountRawGetpid {
         assert_eq!(syscall.number(), Sysno::getpid);
         guest.send_rpc(()).await;
         Ok(GETPID_SENTINEL)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct TimerDeoptConfig {
+    logical_syscall_rip: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+enum TimerDeoptObservation {
+    Syscall {
+        ordinal: u8,
+        clock: u64,
+        rip: u64,
+        clock_after_timer_request: Option<u64>,
+        clock_after_injection: Option<u64>,
+    },
+    Timer {
+        ordinal: u8,
+        clock: u64,
+        rip: u64,
+        clock_after_rearm: Option<u64>,
+        clock_after_injection: Option<u64>,
+    },
+}
+
+impl TimerDeoptObservation {
+    fn clock(&self) -> u64 {
+        match self {
+            Self::Syscall { clock, .. } | Self::Timer { clock, .. } => *clock,
+        }
+    }
+
+    fn rip(&self) -> u64 {
+        match self {
+            Self::Syscall { rip, .. } | Self::Timer { rip, .. } => *rip,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TimerDeoptLog(Mutex<Vec<TimerDeoptObservation>>);
+
+#[reverie::global_tool]
+impl GlobalTool for TimerDeoptLog {
+    type Request = TimerDeoptObservation;
+    type Response = ();
+    type Config = TimerDeoptConfig;
+
+    async fn receive_rpc(&self, _from: Tid, observation: TimerDeoptObservation) {
+        self.0.lock().unwrap().push(observation);
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct TimerDeoptThreadState {
+    syscall_callbacks: u8,
+    timer_callbacks: u8,
+}
+
+#[derive(Default)]
+struct TimerDeoptGetpid;
+
+#[reverie::tool]
+impl Tool for TimerDeoptGetpid {
+    type GlobalState = TimerDeoptLog;
+    type ThreadState = TimerDeoptThreadState;
+
+    fn subscriptions(_config: &TimerDeoptConfig) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    fn handle_backend_bootstrap_entropy(
+        &self,
+        _thread_state: &mut Self::ThreadState,
+        request: BackendBootstrapEntropy,
+    ) -> Result<[u8; 8], Errno> {
+        test_backend_bootstrap_entropy(request)
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        let ordinal = {
+            let state = guest.thread_state_mut();
+            state.syscall_callbacks += 1;
+            state.syscall_callbacks
+        };
+        assert!(
+            (1..=4).contains(&ordinal),
+            "fixture produced an extra getpid callback"
+        );
+        let expected_rip = guest.config().logical_syscall_rip;
+        let rip = guest.regs().await.rip;
+        assert_eq!(
+            rip, expected_rip,
+            "getpid callback did not expose the logical post-syscall RIP"
+        );
+        let clock = guest.read_clock()?;
+        let mut clock_after_timer_request = None;
+        let mut clock_after_injection = None;
+
+        match ordinal {
+            2 => {
+                guest.set_timer_precise(TimerSchedule::Rcbs(20_000_000))?;
+                assert_eq!(
+                    guest.regs().await.rip,
+                    rip,
+                    "arming the transport changed the installed callback RIP"
+                );
+                clock_after_timer_request = Some(guest.read_clock()?);
+                assert_eq!(
+                    clock_after_timer_request,
+                    Some(clock),
+                    "arming the transport retired guest work"
+                );
+                assert!(guest.inject(Gettid::default()).await? > 0);
+                assert_eq!(
+                    guest.regs().await.rip,
+                    rip,
+                    "injection changed the installed callback RIP"
+                );
+                clock_after_injection = Some(guest.read_clock()?);
+                assert_eq!(
+                    clock_after_injection,
+                    Some(clock),
+                    "installed-callback injection retired guest work"
+                );
+            }
+            3 => {
+                guest.set_timer_precise(TimerSchedule::Rcbs(1))?;
+                assert_eq!(
+                    guest.regs().await.rip,
+                    rip,
+                    "replacing the transport request changed the fallback callback RIP"
+                );
+                clock_after_timer_request = Some(guest.read_clock()?);
+                assert_eq!(
+                    clock_after_timer_request,
+                    Some(clock),
+                    "replacing the transport request retired guest work"
+                );
+            }
+            1 | 4 => {}
+            _ => unreachable!(),
+        }
+
+        guest
+            .send_rpc(TimerDeoptObservation::Syscall {
+                ordinal,
+                clock,
+                rip,
+                clock_after_timer_request,
+                clock_after_injection,
+            })
+            .await;
+        Ok(GETPID_SENTINEL)
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        let (ordinal, syscall_callbacks) = {
+            let state = guest.thread_state_mut();
+            state.timer_callbacks += 1;
+            (state.timer_callbacks, state.syscall_callbacks)
+        };
+        assert_eq!(
+            syscall_callbacks, 3,
+            "timer fired outside the interval between fixture calls three and four"
+        );
+        assert!(
+            (1..=2).contains(&ordinal),
+            "transport delivered an extra timer callback"
+        );
+        let rip = guest.regs().await.rip;
+        let clock = guest.read_clock().expect("read timer callback clock");
+        let mut clock_after_rearm = None;
+        let mut clock_after_injection = None;
+
+        if ordinal == 1 {
+            guest
+                .set_timer_precise(TimerSchedule::Rcbs(1))
+                .expect("rearm one-RCB timer from its callback");
+            assert_eq!(
+                guest.regs().await.rip,
+                rip,
+                "timer rearm changed the interrupted guest RIP"
+            );
+            clock_after_rearm = Some(guest.read_clock().expect("read clock after timer rearm"));
+            assert_eq!(
+                clock_after_rearm,
+                Some(clock),
+                "timer rearm retired guest work"
+            );
+            assert!(
+                guest
+                    .inject(Gettid::default())
+                    .await
+                    .expect("inject gettid from timer callback")
+                    > 0
+            );
+            assert_eq!(
+                guest.regs().await.rip,
+                rip,
+                "timer-callback injection changed the interrupted guest RIP"
+            );
+            clock_after_injection = Some(
+                guest
+                    .read_clock()
+                    .expect("read clock after timer-callback injection"),
+            );
+            assert_eq!(
+                clock_after_injection,
+                Some(clock),
+                "timer-callback injection retired guest work"
+            );
+        }
+
+        guest
+            .send_rpc(TimerDeoptObservation::Timer {
+                ordinal,
+                clock,
+                rip,
+                clock_after_rearm,
+                clock_after_injection,
+            })
+            .await;
     }
 }
 
@@ -850,6 +1108,565 @@ fn assert_restoration_diagnostics(diagnostics: &LiteinstCallerDiagnostics) {
         bounded_diagnostics(diagnostics)
     );
     assert_eq!(seccomp_callbacks + installed_callbacks, 4);
+    assert_ptmalloc_bootstrap_entropy_emulations(diagnostics, 1);
+}
+
+fn assert_ptmalloc_bootstrap_entropy_emulations(
+    diagnostics: &LiteinstCallerDiagnostics,
+    expected: usize,
+) {
+    let observations = diagnostics.observations();
+    let matched = observations
+        .iter()
+        .filter(|observation| {
+            observation.operation == "profiled ptmalloc bootstrap entropy emulated"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matched.len(),
+        expected,
+        "profiled ptmalloc bootstrap entropy count changed: {}",
+        bounded_diagnostics(diagnostics)
+    );
+    let expected_digest = Sha256::digest(TEST_PTMALLOC_TCACHE_KEY)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let expected_detail = format!("length=8 flags=1 tcache_key_sha256={expected_digest}");
+    for observation in matched {
+        assert_eq!(
+            observation.detail, expected_detail,
+            "profiled ptmalloc entropy receipt is not exact: {observation:?}"
+        );
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ClockTrajectorySample {
+    operation: String,
+    raw_clock: Option<u64>,
+}
+
+const ENTRY_CLOCK_PREFIX: [&str; 6] = [
+    "entry held",
+    "entry registers and XSTATE",
+    "entry original stack",
+    "entry random and canary",
+    "entry signals and descriptors",
+    "entry maps",
+];
+
+const FOUR_CALL_CLOCK_MILESTONES: [&str; 8] = [
+    "entry held",
+    "guest machine state restored and helper/arena writers isolated",
+    "first ordinary guest event after restoration",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "Tool callback: Tool::handle_syscall_event(installed completion)",
+    "Tool callback: Tool::handle_syscall_event(installed completion)",
+    "Tool callback: Tool::handle_syscall_event(installed completion)",
+    "physical event partition validated",
+];
+
+fn exact_four_call_clock_trajectory(
+    diagnostics: &LiteinstCallerDiagnostics,
+) -> Vec<ClockTrajectorySample> {
+    let observations = diagnostics.observations();
+    let (entry_index, entry) = one_observation(&observations, "entry held", diagnostics);
+    let (restored_index, _) = one_observation(
+        &observations,
+        "guest machine state restored and helper/arena writers isolated",
+        diagnostics,
+    );
+    assert!(entry_index < restored_index);
+    let entry_clock = entry
+        .raw_clock
+        .expect("entry diagnostic lacks the persistent ptrace clock");
+    let trajectory = observations[entry_index..]
+        .iter()
+        .map(|observation| ClockTrajectorySample {
+            operation: observation.operation.clone(),
+            raw_clock: observation.raw_clock,
+        })
+        .collect::<Vec<_>>();
+    let (terminal, timed_trajectory) = trajectory
+        .split_last()
+        .expect("entry-to-terminal trajectory is empty");
+    assert_eq!(
+        terminal,
+        &ClockTrajectorySample {
+            operation: "physical event partition validated".to_owned(),
+            raw_clock: None,
+        },
+        "only the final physical-partition receipt may omit the persistent ptrace clock: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .iter()
+            .all(|sample| sample.raw_clock.is_some()),
+        "a nonterminal retained trajectory observation lacks the persistent ptrace clock: {trajectory:?}"
+    );
+    let activation_len = restored_index - entry_index + 1;
+    assert!(
+        timed_trajectory.len() > activation_len,
+        "clock trajectory ends at restoration: {}",
+        bounded_diagnostics(diagnostics)
+    );
+    assert!(
+        timed_trajectory[..activation_len]
+            .iter()
+            .all(|sample| sample.raw_clock == Some(entry_clock)),
+        "private activation changed the persistent clock: {trajectory:?}"
+    );
+    assert_eq!(
+        timed_trajectory
+            .get(..ENTRY_CLOCK_PREFIX.len())
+            .expect("entry clock trajectory is shorter than its fixed prefix")
+            .iter()
+            .map(|sample| sample.operation.as_str())
+            .collect::<Vec<_>>(),
+        ENTRY_CLOCK_PREFIX,
+        "clock trajectory did not begin with the exact fixed-fixture entry snapshot: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .windows(2)
+            .all(|pair| pair[0].raw_clock.unwrap() <= pair[1].raw_clock.unwrap()),
+        "post-restoration clock trajectory moved backwards: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .last()
+            .is_some_and(|sample| sample.raw_clock.is_some_and(|clock| clock > entry_clock)),
+        "post-restoration trajectory never advanced: {trajectory:?}"
+    );
+
+    let required_operations = trajectory
+        .iter()
+        .filter(|sample| {
+            matches!(
+                sample.operation.as_str(),
+                "entry held"
+                    | "guest machine state restored and helper/arena writers isolated"
+                    | "first ordinary guest event after restoration"
+                    | "Tool callback: Tool::handle_syscall_event(seccomp)"
+                    | "Tool callback: Tool::handle_syscall_event(installed completion)"
+                    | "physical event partition validated"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        required_operations
+            .iter()
+            .map(|sample| sample.operation.as_str())
+            .collect::<Vec<_>>(),
+        FOUR_CALL_CLOCK_MILESTONES,
+        "clock trajectory did not contain the independently specified fixed-fixture milestones exactly once and in order: {trajectory:?}"
+    );
+    let callbacks = &required_operations[3..7];
+    assert!(
+        callbacks
+            .windows(2)
+            .all(|pair| pair[0].raw_clock.unwrap() < pair[1].raw_clock.unwrap()),
+        "successive syscall callbacks did not make strict fine-grained clock progress: {callbacks:?}"
+    );
+    trajectory
+}
+
+fn exact_clock_trajectories_match(
+    left: &[ClockTrajectorySample],
+    right: &[ClockTrajectorySample],
+) -> bool {
+    left == right
+}
+
+const TIMER_DEOPT_CLOCK_MILESTONES: [&str; 11] = [
+    "entry held",
+    "guest machine state restored and helper/arena writers isolated",
+    "first ordinary guest event after restoration",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "Tool callback: Tool::handle_syscall_event(installed completion)",
+    "timer transport deoptimized installed tail",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "Tool callback: Tool::handle_timer_event",
+    "Tool callback: Tool::handle_timer_event",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "physical event partition validated",
+];
+
+const TIMER_DEOPT_CALLBACKS: [&str; 6] = [
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "Tool callback: Tool::handle_syscall_event(installed completion)",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+    "Tool callback: Tool::handle_timer_event",
+    "Tool callback: Tool::handle_timer_event",
+    "Tool callback: Tool::handle_syscall_event(seccomp)",
+];
+
+fn exact_timer_deopt_clock_trajectory(
+    diagnostics: &LiteinstCallerDiagnostics,
+    expected_logical_rip: u64,
+) -> (Vec<ClockTrajectorySample>, Vec<u64>) {
+    let observations = diagnostics.observations();
+    let (entry_index, entry) = one_observation(&observations, "entry held", diagnostics);
+    let (restored_index, _) = one_observation(
+        &observations,
+        "guest machine state restored and helper/arena writers isolated",
+        diagnostics,
+    );
+    assert!(entry_index < restored_index);
+    let entry_clock = entry
+        .raw_clock
+        .expect("entry diagnostic lacks the persistent ptrace clock");
+    let trajectory = observations[entry_index..]
+        .iter()
+        .map(|observation| ClockTrajectorySample {
+            operation: observation.operation.clone(),
+            raw_clock: observation.raw_clock,
+        })
+        .collect::<Vec<_>>();
+    let (terminal, timed_trajectory) = trajectory
+        .split_last()
+        .expect("timer-deopt entry-to-terminal trajectory is empty");
+    assert_eq!(
+        terminal,
+        &ClockTrajectorySample {
+            operation: "physical event partition validated".to_owned(),
+            raw_clock: None,
+        },
+        "only the final physical-partition receipt may omit the persistent ptrace clock: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .iter()
+            .all(|sample| sample.raw_clock.is_some()),
+        "a nonterminal timer-deopt observation lacks the persistent ptrace clock: {trajectory:?}"
+    );
+    let activation_len = restored_index - entry_index + 1;
+    assert!(
+        timed_trajectory[..activation_len]
+            .iter()
+            .all(|sample| sample.raw_clock == Some(entry_clock)),
+        "private activation changed the persistent clock: {trajectory:?}"
+    );
+    assert_eq!(
+        timed_trajectory
+            .get(..ENTRY_CLOCK_PREFIX.len())
+            .expect("timer-deopt trajectory is shorter than its fixed entry prefix")
+            .iter()
+            .map(|sample| sample.operation.as_str())
+            .collect::<Vec<_>>(),
+        ENTRY_CLOCK_PREFIX,
+        "timer-deopt trajectory did not begin with the fixed entry snapshot: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .windows(2)
+            .all(|pair| pair[0].raw_clock.unwrap() <= pair[1].raw_clock.unwrap()),
+        "timer-deopt trajectory moved backwards: {trajectory:?}"
+    );
+    assert!(
+        timed_trajectory
+            .last()
+            .is_some_and(|sample| sample.raw_clock.is_some_and(|clock| clock > entry_clock)),
+        "timer-deopt trajectory never advanced: {trajectory:?}"
+    );
+
+    let required_operations = trajectory
+        .iter()
+        .filter(|sample| {
+            TIMER_DEOPT_CLOCK_MILESTONES
+                .iter()
+                .any(|operation| sample.operation == *operation)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        required_operations
+            .iter()
+            .map(|sample| sample.operation.as_str())
+            .collect::<Vec<_>>(),
+        TIMER_DEOPT_CLOCK_MILESTONES,
+        "timer-deopt milestones are missing, duplicated, or reordered: {trajectory:?}"
+    );
+
+    let callbacks = trajectory
+        .iter()
+        .filter(|sample| sample.operation.starts_with("Tool callback: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        callbacks
+            .iter()
+            .map(|sample| sample.operation.as_str())
+            .collect::<Vec<_>>(),
+        TIMER_DEOPT_CALLBACKS,
+        "timer-deopt Tool callback sequence differs from the fixed six-event schedule: {trajectory:?}"
+    );
+    let callback_clocks = callbacks
+        .iter()
+        .map(|sample| {
+            sample
+                .raw_clock
+                .expect("timer-deopt Tool callback lacks its persistent clock")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        callback_clocks.windows(2).all(|pair| pair[0] < pair[1]),
+        "successive timer-deopt callbacks did not make strict clock progress: {callbacks:?}"
+    );
+    assert_eq!(
+        callback_clocks[3],
+        callback_clocks[2] + 1,
+        "the first precise timer callback did not occur exactly one RCB after replacement"
+    );
+    assert_eq!(
+        callback_clocks[4],
+        callback_clocks[3] + 1,
+        "the rearmed precise timer callback did not occur exactly one RCB later"
+    );
+
+    let (tail_index, tail) = one_observation(
+        &observations,
+        "timer transport deoptimized installed tail",
+        diagnostics,
+    );
+    let installed_index = observations
+        .iter()
+        .position(|observation| {
+            observation.operation
+                == "Tool callback: Tool::handle_syscall_event(installed completion)"
+        })
+        .expect("installed callback diagnostic is absent");
+    let third_syscall_index = observations
+        .iter()
+        .enumerate()
+        .filter(|(_, observation)| {
+            observation.operation == "Tool callback: Tool::handle_syscall_event(seccomp)"
+        })
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("third fixture syscall diagnostic is absent");
+    assert!(
+        installed_index < tail_index && tail_index < third_syscall_index,
+        "installed-tail deoptimization receipt is outside its exact callback interval"
+    );
+    assert_eq!(
+        tail.raw_clock,
+        Some(callback_clocks[1]),
+        "installed-tail deoptimization changed the logical callback clock"
+    );
+    let observed_rip = parse_hex_word(
+        diagnostic_field(&tail.detail, "observed_rip="),
+        "deoptimized installed-tail observed RIP",
+    );
+    let relocated_tail = parse_hex_word(
+        diagnostic_field(&tail.detail, "relocated_tail="),
+        "deoptimized installed-tail relocated RIP",
+    );
+    assert_eq!(
+        observed_rip, expected_logical_rip,
+        "installed-tail deoptimization did not preserve the logical post-syscall RIP"
+    );
+    assert_ne!(
+        relocated_tail, observed_rip,
+        "installed-tail deoptimization left the Tool-visible generated RIP in place"
+    );
+
+    (trajectory, callback_clocks)
+}
+
+fn assert_timer_deopt_observations(
+    observations: &[TimerDeoptObservation],
+    expected_logical_rip: u64,
+) -> Vec<u64> {
+    assert_eq!(
+        observations.len(),
+        6,
+        "timer-deopt Tool did not report the fixed six-event schedule: {observations:?}"
+    );
+    let expected = [
+        ("syscall", 1_u8),
+        ("syscall", 2),
+        ("syscall", 3),
+        ("timer", 1),
+        ("timer", 2),
+        ("syscall", 4),
+    ];
+    for (observation, (kind, ordinal)) in observations.iter().zip(expected) {
+        assert_ne!(
+            observation.rip(),
+            0,
+            "callback did not retain a concrete Tool-visible program counter"
+        );
+        match (observation, kind) {
+            (
+                TimerDeoptObservation::Syscall {
+                    ordinal: actual, ..
+                },
+                "syscall",
+            )
+            | (
+                TimerDeoptObservation::Timer {
+                    ordinal: actual, ..
+                },
+                "timer",
+            ) => {
+                assert_eq!(*actual, ordinal, "callback ordinal changed")
+            }
+            _ => panic!("callback kind changed in fixed schedule: {observations:?}"),
+        }
+    }
+    for observation in [
+        &observations[0],
+        &observations[1],
+        &observations[2],
+        &observations[5],
+    ] {
+        let TimerDeoptObservation::Syscall { rip, .. } = observation else {
+            unreachable!()
+        };
+        assert_eq!(
+            *rip, expected_logical_rip,
+            "a syscall callback exposed a generated or displaced RIP"
+        );
+    }
+
+    match &observations[0] {
+        TimerDeoptObservation::Syscall {
+            clock_after_timer_request,
+            clock_after_injection,
+            ..
+        } => {
+            assert_eq!(*clock_after_timer_request, None);
+            assert_eq!(*clock_after_injection, None);
+        }
+        _ => unreachable!(),
+    }
+    match &observations[1] {
+        TimerDeoptObservation::Syscall {
+            clock,
+            clock_after_timer_request,
+            clock_after_injection,
+            ..
+        } => {
+            assert_eq!(*clock_after_timer_request, Some(*clock));
+            assert_eq!(*clock_after_injection, Some(*clock));
+        }
+        _ => unreachable!(),
+    }
+    match &observations[2] {
+        TimerDeoptObservation::Syscall {
+            clock,
+            clock_after_timer_request,
+            clock_after_injection,
+            ..
+        } => {
+            assert_eq!(*clock_after_timer_request, Some(*clock));
+            assert_eq!(*clock_after_injection, None);
+        }
+        _ => unreachable!(),
+    }
+    match &observations[3] {
+        TimerDeoptObservation::Timer {
+            clock,
+            clock_after_rearm,
+            clock_after_injection,
+            ..
+        } => {
+            assert_eq!(*clock_after_rearm, Some(*clock));
+            assert_eq!(*clock_after_injection, Some(*clock));
+        }
+        _ => unreachable!(),
+    }
+    for observation in [&observations[4], &observations[5]] {
+        match observation {
+            TimerDeoptObservation::Timer {
+                clock_after_rearm,
+                clock_after_injection,
+                ..
+            } => {
+                assert_eq!(*clock_after_rearm, None);
+                assert_eq!(*clock_after_injection, None);
+            }
+            TimerDeoptObservation::Syscall {
+                clock_after_timer_request,
+                clock_after_injection,
+                ..
+            } => {
+                assert_eq!(*clock_after_timer_request, None);
+                assert_eq!(*clock_after_injection, None);
+            }
+        }
+    }
+
+    let clocks = observations
+        .iter()
+        .map(TimerDeoptObservation::clock)
+        .collect::<Vec<_>>();
+    assert!(
+        clocks.windows(2).all(|pair| pair[0] < pair[1]),
+        "Tool-observed timer-deopt callback clocks did not strictly advance: {observations:?}"
+    );
+    assert_eq!(
+        clocks[3],
+        clocks[2] + 1,
+        "Tool did not observe the first replacement timer at exactly one RCB"
+    );
+    assert_eq!(
+        clocks[4],
+        clocks[3] + 1,
+        "Tool did not observe the rearmed timer at exactly one RCB"
+    );
+    clocks
+}
+
+#[test]
+fn exact_clock_trajectory_comparator_refuses_mutation_loss_duplication_and_reordering() {
+    let expected = vec![
+        ClockTrajectorySample {
+            operation: "entry held".to_owned(),
+            raw_clock: Some(19_807),
+        },
+        ClockTrajectorySample {
+            operation: "first ordinary guest event after restoration".to_owned(),
+            raw_clock: Some(19_824),
+        },
+        ClockTrajectorySample {
+            operation: "Tool callback: installed completion".to_owned(),
+            raw_clock: Some(19_836),
+        },
+        ClockTrajectorySample {
+            operation: "physical event partition validated".to_owned(),
+            raw_clock: None,
+        },
+    ];
+    assert!(exact_clock_trajectories_match(&expected, &expected));
+
+    let mut mutated = expected.clone();
+    *mutated[1].raw_clock.as_mut().unwrap() += 1;
+    assert!(!exact_clock_trajectories_match(&expected, &mutated));
+
+    let mut shifted = expected.clone();
+    for sample in &mut shifted {
+        if let Some(clock) = &mut sample.raw_clock {
+            *clock += 1;
+        }
+    }
+    assert!(!exact_clock_trajectories_match(&expected, &shifted));
+
+    let mut missing_clock = expected.clone();
+    missing_clock[1].raw_clock = None;
+    assert!(!exact_clock_trajectories_match(&expected, &missing_clock));
+
+    let mut lost = expected.clone();
+    lost.remove(1);
+    assert!(!exact_clock_trajectories_match(&expected, &lost));
+
+    let mut duplicated = expected.clone();
+    duplicated.insert(1, duplicated[1].clone());
+    assert!(!exact_clock_trajectories_match(&expected, &duplicated));
+
+    let mut reordered = expected.clone();
+    reordered.swap(1, 2);
+    assert!(!exact_clock_trajectories_match(&expected, &reordered));
 }
 
 fn bounded_diagnostics(diagnostics: &LiteinstCallerDiagnostics) -> String {
@@ -1075,6 +1892,114 @@ async fn stats_output_api_matches_old_api_raw_bytes_for_four_calls() {
     assert_one_installed_site(&stats);
     assert_restoration_diagnostics(&old_diagnostics);
     assert_restoration_diagnostics(&stats_diagnostics);
+    let old_trajectory = exact_four_call_clock_trajectory(&old_diagnostics);
+    let stats_trajectory = exact_four_call_clock_trajectory(&stats_diagnostics);
+    assert!(
+        exact_clock_trajectories_match(&old_trajectory, &stats_trajectory),
+        "old and stats APIs produced different retained absolute PMU-clock observation trajectories:\nold={old_trajectory:?}\nstats={stats_trajectory:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn installed_hook_timer_transport_deopts_to_exact_ptrace_trajectory() {
+    let staged = staged_inputs();
+    assert_stack_getpid_prefix(&staged.fixture);
+    let (syscall_site, _) =
+        elf_symbol_prefix(&staged.fixture, "reverie_liteinst_stack_getpid_site", 8);
+    let logical_syscall_rip = syscall_site
+        .checked_add(2)
+        .expect("fixed fixture syscall RIP overflows");
+    let mut retained_trajectories = Vec::new();
+    let mut tool_runs = Vec::new();
+
+    for run in 0..2 {
+        let caller = bind_reviewed_profile(&staged.four_canonical, &staged.marker);
+        let diagnostics = caller.diagnostics();
+        let mut command = Command::new(&staged.fixture);
+        command.env_clear().envs(four_canonical_environment());
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            LiteinstBackend::run_host_with_output_after_loader_and_stats::<TimerDeoptGetpid>(
+                command,
+                TimerDeoptConfig {
+                    logical_syscall_rip,
+                },
+                &staged.runtime,
+                caller,
+            ),
+        )
+        .await;
+        let (output, global, stats) = match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => panic!(
+                "timer-deopt after-loader run {run} failed: {error}; {}",
+                bounded_diagnostics(&diagnostics)
+            ),
+            Err(_) => panic!(
+                "timer-deopt after-loader run {run} timed out; {}",
+                bounded_diagnostics(&diagnostics)
+            ),
+        };
+
+        assert_eq!(
+            output.status,
+            ExitStatus::Exited(0),
+            "run {run}: {output:?}"
+        );
+        assert_eq!(
+            output.stdout.as_slice(),
+            CANONICAL_STDOUT,
+            "timer-deopt run {run} changed fixed fixture stdout"
+        );
+        assert_eq!(
+            output.stderr.as_slice(),
+            b"",
+            "timer-deopt run {run} produced stderr"
+        );
+        assert_dispatch_stats(&stats, 1, 1, 1, 2);
+        assert_one_installed_site(&stats);
+        assert_eq!(
+            stats.deoptimized_fallback_hits(),
+            2,
+            "both post-deoptimization fixture calls must use the typed fallback"
+        );
+        assert_tool_callback_counts(&diagnostics, 3, 1);
+        assert_ptmalloc_bootstrap_entropy_emulations(&diagnostics, 1);
+        assert_eq!(
+            diagnostics
+                .observations()
+                .iter()
+                .filter(|observation| {
+                    observation.operation == "Tool callback: Tool::handle_timer_event"
+                })
+                .count(),
+            2,
+            "transport did not deliver exactly two timer callbacks: {}",
+            bounded_diagnostics(&diagnostics)
+        );
+
+        let tool_observations = global.0.lock().unwrap().clone();
+        let tool_clocks = assert_timer_deopt_observations(&tool_observations, logical_syscall_rip);
+        let (trajectory, diagnostic_clocks) =
+            exact_timer_deopt_clock_trajectory(&diagnostics, logical_syscall_rip);
+        assert_eq!(
+            diagnostic_clocks, tool_clocks,
+            "retained callback diagnostics and Tool clock observations diverged"
+        );
+        retained_trajectories.push(trajectory);
+        tool_runs.push(tool_observations);
+    }
+
+    assert!(
+        exact_clock_trajectories_match(&retained_trajectories[0], &retained_trajectories[1]),
+        "repeated timer-deopt runs produced different retained absolute PMU-clock trajectories:\nfirst={:?}\nsecond={:?}",
+        retained_trajectories[0],
+        retained_trajectories[1]
+    );
+    assert_eq!(
+        tool_runs[0], tool_runs[1],
+        "repeated timer-deopt runs produced different Tool-visible clocks or program counters"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1163,6 +2088,7 @@ async fn one_getpid_call_has_no_direct_hook_or_fallback_dispatch() {
     assert_dispatch_stats(&stats, 1, 1, 0, 0);
     assert_one_installed_site(&stats);
     assert_tool_callback_counts(&diagnostics, 1, 0);
+    assert_ptmalloc_bootstrap_entropy_emulations(&diagnostics, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1210,4 +2136,5 @@ async fn unpatchable_getpid_refuses_installation_and_uses_one_retained_fallback(
     assert_eq!(stats.distinct_rips(), 0);
     assert_eq!(stats.classified_candidates(), 0);
     assert_tool_callback_counts(&diagnostics, 1, 0);
+    assert_ptmalloc_bootstrap_entropy_emulations(&diagnostics, 0);
 }

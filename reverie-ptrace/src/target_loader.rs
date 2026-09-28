@@ -25,19 +25,13 @@ use goblin::elf::sym;
 use reverie::syscalls::MemoryAccess;
 use safeptrace::Stopped;
 
-#[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 mod environment;
 mod errno;
 mod ordinary;
-#[allow(unused_imports)]
-pub(crate) use environment::TargetEnvironmentAfter;
-#[allow(unused_imports)]
-pub(crate) use environment::TargetEnvironmentBefore;
-#[allow(unused_imports)]
-pub(crate) use environment::TargetEnvironmentGraph;
-#[allow(unused_imports)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) use environment::observe_environment_after;
-#[allow(unused_imports)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) use environment::observe_environment_before;
 pub(crate) use errno::resolve_errno_location;
 pub use ordinary::TargetHostInitializer;

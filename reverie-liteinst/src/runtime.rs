@@ -47,7 +47,7 @@ pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
-const HOST_HANDSHAKE_VERSION: u64 = 12;
+const HOST_HANDSHAKE_VERSION: u64 = crate::HOST_RUNTIME_HANDSHAKE_VERSION;
 const HOST_INSTALL_REQUEST_VERSION: u64 = 1;
 const HOST_INSTALL_RESULT_VERSION: u64 = 6;
 const HOST_INSTALL_PC_MAPPINGS: usize = 16;
@@ -64,6 +64,11 @@ const PR_SET_MM_MAP: u64 = 14;
 
 global_asm!(
     r#"
+    // The after-loader controller resolves this stable name from `.symtab`.
+    // It must not be discoverable through guest `dlsym`.
+    .hidden reverie_liteinst_proc_fd_audit
+    .hidden reverie_liteinst_proc_fd_raw_syscall
+
     .pushsection .liteinst_helper,"ax",@progbits
     .p2align 12
     .popsection
@@ -94,13 +99,8 @@ reverie_liteinst_host_ready_rip:
     .p2align 4
     .global reverie_liteinst_host_install_helper
     .type reverie_liteinst_host_install_helper,@function
+    .set reverie_liteinst_host_install_helper, reverie_liteinst_install_site_for_ptrace
     .hidden reverie_liteinst_install_site_for_ptrace_body
-reverie_liteinst_host_install_helper:
-    int3
-    .global reverie_liteinst_host_install_helper_rip
-reverie_liteinst_host_install_helper_rip:
-    jmp reverie_liteinst_install_site_for_ptrace_body
-    .size reverie_liteinst_host_install_helper, .-reverie_liteinst_host_install_helper
 
     .p2align 4
     .global reverie_liteinst_host_helper_return
@@ -187,6 +187,28 @@ reverie_liteinst_native_rdtscp:
     .size reverie_liteinst_native_rdtscp, .-reverie_liteinst_native_rdtscp
 "#
 );
+
+/// Legacy exported address of the authenticated stopped-tracee install entry.
+///
+/// The symbol remains available for host ABI discovery, but direct calls stop
+/// at `INT3`; only the controller that observed and authenticated that entry
+/// trap may resume at `reverie_liteinst_host_install_helper_rip` and enter the
+/// hidden patch body.
+///
+/// # Safety
+///
+/// The caller must be the stopped-tracee controller for the active v12 host
+/// handshake and must own the exact install request and all-task quiescence.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(_address: u64) -> i64 {
+    core::arch::naked_asm!(
+        "int3",
+        ".global reverie_liteinst_host_install_helper_rip",
+        "reverie_liteinst_host_install_helper_rip:",
+        "jmp reverie_liteinst_install_site_for_ptrace_body",
+    );
+}
 
 unsafe extern "C" {
     static __reverie_liteinst_helper_page_start: u8;
@@ -620,6 +642,11 @@ const SITE_ACTIVE: u8 = 2;
 const SITE_FALLBACK: u8 = 3;
 const SITE_STALE: u8 = 4;
 const SITE_EXHAUSTED: u8 = 5;
+const GUARD_MASK_UNUSED: u8 = 0;
+const GUARD_MASK_INSTALLING: u8 = 1;
+const GUARD_MASK_HELD: u8 = 2;
+const GUARD_MASK_RESTORING: u8 = 3;
+const GUARD_MASK_CONSUMED: u8 = 4;
 const INSTRUCTION_CPUID: u8 = 1;
 const INSTRUCTION_RDTSC: u8 = 2;
 const MAX_LIFETIME_PATCH_ATTEMPTS: usize = MAX_PATCH_SITES;
@@ -644,6 +671,9 @@ static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
 static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
 static LIFETIME_PATCH_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static GUARD_MASK_STATE: AtomicU8 = AtomicU8::new(GUARD_MASK_UNUSED);
+static GUARD_PRIOR_MASK: AtomicU64 = AtomicU64::new(0);
+static GUARD_MASK_OWNER_TID: AtomicI32 = AtomicI32::new(0);
 thread_local! {
     static CURRENT_EVENT: Cell<*mut SyscallEvent> = const { Cell::new(ptr::null_mut()) };
     // Reentry is a property of Tool execution, not of syscall-event storage:
@@ -1468,25 +1498,23 @@ fn initialize_host_runtime_with(
     {
         return Err(io::Error::from_raw_os_error(libc::EALREADY));
     }
-    // The explicit after-loader controller keeps every other task stopped.
-    // Enter the non-TLS preparation allocator before even allocating preflight
-    // work so the first allocator action preserves the entry disassembly
-    // contract; the scope remains live through Ready.
-    let _preparation_scope = if explicit_quiescent {
-        Some(
-            crate::patch_alloc::enter_preparation()
-                .ok_or_else(|| io::Error::from_raw_os_error(libc::EALREADY))?,
-        )
-    } else {
-        None
-    };
-    // This scan must precede straddler/live-patching initialization, OnceLock
-    // publication, and the Begin trap. Returning an error after any of those
-    // process-global transitions would leave a partially installed runtime.
-    refuse_preexisting_async_mapping_engines()?;
+    // Preserve the public one-shot contract for every valid attempt. Even a
+    // reversible preflight refusal consumes this process-global initializer;
+    // callers must not infer that retrying after environmental changes is safe.
     HOST_INITIALIZATION_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| io::Error::from_raw_os_error(libc::EALREADY))?;
+    // The explicit after-loader controller keeps every other task stopped, and
+    // the loader-constructor path runs before application threads exist. Enter
+    // the non-TLS preparation allocator before even allocating preflight work
+    // in either case, so Rust planning cannot grow or otherwise mutate a
+    // baseline guest heap mapping; the scope remains live through Ready.
+    let _preparation_scope = crate::patch_alloc::enter_preparation()
+        .ok_or_else(|| io::Error::from_raw_os_error(libc::EALREADY))?;
+    // This scan must precede straddler/live-patching initialization, OnceLock
+    // publication, and the Begin trap. Returning an error after any of those
+    // process-global transitions would leave a partially installed runtime.
+    reverie_liteinst_proc_fd_audit()?;
     if explicit_quiescent {
         EXPLICIT_HOST_QUIESCENT.store(true, Ordering::Release);
         PATCH_PUBLICATION.store(PatchPublication::Quiescent as u8, Ordering::Release);
@@ -2337,29 +2365,51 @@ fn mmap_imports_async_mapping_engine_with(
     if fd < 0 {
         return false;
     }
-    match resolve(fd) {
-        Ok(is_async) => is_async,
-        // A concurrently closed/replaced descriptor will receive the kernel's
-        // native EBADF/ENOENT outcome. Any other authentication failure closes
-        // the asynchronous-mapping hole rather than forwarding an unknown fd.
-        Err(Errno::EBADF | Errno::ENOENT) => false,
-        Err(_) => true,
-    }
+    // Any lookup failure is indistinguishable from a concurrent close/reuse of
+    // the descriptor number. Refuse instead of forwarding an mmap whose kernel
+    // object could differ from the one this check observed.
+    resolve(fd).unwrap_or(true)
 }
 
-fn refuse_preexisting_async_mapping_engines() -> io::Result<()> {
-    const DIRECTORY: &[u8] = b"/proc/self/fd\0";
+#[unsafe(naked)]
+#[unsafe(export_name = "reverie_liteinst_proc_fd_raw_syscall")]
+unsafe extern "C" fn proc_fd_audit_raw_syscall(
+    _number: i64,
+    _arg0: u64,
+    _arg1: u64,
+    _arg2: u64,
+    _arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+) -> i64 {
+    core::arch::naked_asm!(
+        "push qword ptr [rsp + 8]",
+        "call reverie_preload_trusted_syscall",
+        "add rsp, 8",
+        "ret",
+    );
+}
+
+// Keep this symbol stable for the after-loader controller. The controller
+// resolves its exact sealed-image extent and requires every proc-fd audit
+// syscall's authenticated call-chain return to land inside this function.
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn reverie_liteinst_proc_fd_audit() -> io::Result<()> {
+    // The after-loader controller authenticates every audit pointer as part of
+    // this controller-call-stack frame. Keep even the fixed directory name in the
+    // frame instead of passing a promoted read-only static.
+    let mut directory_path = *b"/proc/self/fd\0";
+    std::hint::black_box(&mut directory_path);
     let directory = unsafe {
-        raw_syscall6(
+        proc_fd_audit_raw_syscall(
             libc::SYS_openat,
-            [
-                libc::AT_FDCWD as i64 as u64,
-                DIRECTORY.as_ptr() as u64,
-                (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
-                0,
-                0,
-                0,
-            ],
+            libc::AT_FDCWD as i64 as u64,
+            directory_path.as_ptr() as u64,
+            (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+            0,
+            0,
+            0,
         )
     };
     if directory < 0 {
@@ -2369,16 +2419,14 @@ fn refuse_preexisting_async_mapping_engines() -> io::Result<()> {
         let mut entries = [0_u8; 8192];
         loop {
             let amount = unsafe {
-                raw_syscall6(
+                proc_fd_audit_raw_syscall(
                     libc::SYS_getdents64,
-                    [
-                        directory as u64,
-                        entries.as_mut_ptr() as u64,
-                        entries.len() as u64,
-                        0,
-                        0,
-                        0,
-                    ],
+                    directory as u64,
+                    entries.as_mut_ptr() as u64,
+                    entries.len() as u64,
+                    0,
+                    0,
+                    0,
                 )
             };
             if amount < 0 {
@@ -2422,39 +2470,37 @@ fn refuse_preexisting_async_mapping_engines() -> io::Result<()> {
                     path[prefix.len()..path_len].copy_from_slice(name);
                     let mut target = [0_u8; 128];
                     let target_len = unsafe {
-                        raw_syscall6(
+                        proc_fd_audit_raw_syscall(
                             libc::SYS_readlinkat,
-                            [
-                                libc::AT_FDCWD as i64 as u64,
-                                path.as_ptr() as u64,
-                                target.as_mut_ptr() as u64,
-                                target.len() as u64,
-                                0,
-                                0,
-                            ],
+                            libc::AT_FDCWD as i64 as u64,
+                            path.as_ptr() as u64,
+                            target.as_mut_ptr() as u64,
+                            target.len() as u64,
+                            0,
+                            0,
                         )
                     };
-                    if target_len >= 0 {
-                        if target_len as usize == target.len() {
-                            return Err(io::Error::other(
-                                "preexisting fd target exceeds its authentication bound",
-                            ));
-                        }
-                        let target = &target[..target_len as usize];
-                        if is_async_mapping_engine_target(target) {
-                            return Err(io::Error::other(
-                                "preexisting io_uring or userfaultfd can mutate LiteInst mappings asynchronously",
-                            ));
-                        }
-                    } else if target_len != -i64::from(libc::ENOENT) {
+                    if target_len < 0 {
                         return Err(io::Error::from_raw_os_error((-target_len) as i32));
+                    }
+                    if target_len as usize == target.len() {
+                        return Err(io::Error::other(
+                            "preexisting fd target exceeds its authentication bound",
+                        ));
+                    }
+                    let target = &target[..target_len as usize];
+                    if is_async_mapping_engine_target(target) {
+                        return Err(io::Error::other(
+                            "preexisting io_uring or userfaultfd can mutate LiteInst mappings asynchronously",
+                        ));
                     }
                 }
                 cursor += record_len;
             }
         }
     })();
-    let close = unsafe { raw_syscall6(libc::SYS_close, [directory as u64, 0, 0, 0, 0, 0]) };
+    let close =
+        unsafe { proc_fd_audit_raw_syscall(libc::SYS_close, directory as u64, 0, 0, 0, 0, 0) };
     match (result, close) {
         (Err(error), _) => Err(error),
         (Ok(()), result) if result < 0 => Err(io::Error::from_raw_os_error((-result) as i32)),
@@ -2490,7 +2536,13 @@ fn bind_program_break_geometry() -> io::Result<(u64, u64)> {
 }
 
 fn prepare_instrumentation() -> io::Result<()> {
-    refuse_preexisting_async_mapping_engines()?;
+    // Legacy strace/compatibility callers enter here before application
+    // threads exist. Keep every allocation made by preflight and runtime
+    // preparation out of the guest heap for the same reason as the host
+    // initializer: preparation must not invalidate its own mapping baseline.
+    let _preparation_scope = crate::patch_alloc::enter_preparation()
+        .ok_or_else(|| io::Error::from_raw_os_error(libc::EALREADY))?;
+    reverie_liteinst_proc_fd_audit()?;
     bind_program_break_geometry()?;
     prepare_instrumentation_after_preflight()
 }
@@ -2509,21 +2561,13 @@ fn guard_prior_signal_action_is_admitted(action: &GuardSignalAction) -> bool {
     matches!(action.handler, libc::SIG_DFL | libc::SIG_IGN)
 }
 
-unsafe fn install_guard_signal_handler(
-    signal: libc::c_int,
-    handler: GuardSignalHandler,
-    flags: libc::c_int,
-    previous: *mut GuardSignalAction,
-) -> Result<(), i32> {
-    if previous.is_null() {
-        return Err(libc::EFAULT);
-    }
-    let queried = unsafe {
+fn set_guard_signal_mask(how: libc::c_int, mask: &u64, previous: *mut u64) -> Result<(), i32> {
+    let result = unsafe {
         raw_syscall6(
-            libc::SYS_rt_sigaction,
+            libc::SYS_rt_sigprocmask,
             [
-                signal as u64,
-                0,
+                how as u64,
+                mask as *const u64 as u64,
                 previous as u64,
                 core::mem::size_of::<u64>() as u64,
                 0,
@@ -2531,21 +2575,129 @@ unsafe fn install_guard_signal_handler(
             ],
         )
     };
-    exact_signal_syscall_result(queried)?;
-    if !guard_prior_signal_action_is_admitted(unsafe { &*previous }) {
-        return Err(libc::EPERM);
+    exact_signal_syscall_result(result)
+}
+
+fn rollback_guard_signal_mask(prior_mask: &u64, error: i32) -> Result<(), i32> {
+    if set_guard_signal_mask(libc::SIG_SETMASK, prior_mask, ptr::null_mut()).is_err() {
+        // Continuing with an unexpectedly blocked signal would violate the
+        // install callback's unchanged-on-error contract.
+        unsafe { exit_now(126) };
     }
-    unsafe {
+    GUARD_PRIOR_MASK.store(0, Ordering::Relaxed);
+    GUARD_MASK_OWNER_TID.store(0, Ordering::Relaxed);
+    GUARD_MASK_STATE.store(GUARD_MASK_UNUSED, Ordering::Release);
+    Err(error)
+}
+
+unsafe fn install_guard_signal_handler_blocked(
+    signal: libc::c_int,
+    handler: GuardSignalHandler,
+    flags: libc::c_int,
+    previous: *mut GuardSignalAction,
+) -> Result<(), i32> {
+    if signal != libc::SIGTRAP || flags != (libc::SA_SIGINFO | libc::SA_RESTART) {
+        return Err(libc::EINVAL);
+    }
+    if previous.is_null() {
+        return Err(libc::EFAULT);
+    }
+    GUARD_MASK_STATE
+        .compare_exchange(
+            GUARD_MASK_UNUSED,
+            GUARD_MASK_INSTALLING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| libc::EALREADY)?;
+
+    let blocked_mask = 1_u64 << (libc::SIGTRAP - 1);
+    let mut prior_mask = 0_u64;
+    if let Err(error) = set_guard_signal_mask(libc::SIG_BLOCK, &blocked_mask, &mut prior_mask) {
+        GUARD_MASK_STATE.store(GUARD_MASK_UNUSED, Ordering::Release);
+        return Err(error);
+    }
+    let owner_tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    if owner_tid <= 0 || owner_tid > i64::from(i32::MAX) {
+        return rollback_guard_signal_mask(&prior_mask, libc::EPROTO);
+    }
+
+    let mut prior_action = core::mem::MaybeUninit::<GuardSignalAction>::uninit();
+    let queried = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigaction,
+            [
+                signal as u64,
+                0,
+                prior_action.as_mut_ptr() as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if let Err(error) = exact_signal_syscall_result(queried) {
+        return rollback_guard_signal_mask(&prior_mask, error);
+    }
+    // SAFETY: the successful raw rt_sigaction query initialized every field.
+    let prior_action = unsafe { prior_action.assume_init() };
+    if !guard_prior_signal_action_is_admitted(&prior_action) {
+        return rollback_guard_signal_mask(&prior_mask, libc::EPERM);
+    }
+    if let Err(error) = unsafe {
         reverie_preload::signal::install_runtime_siginfo_handler_with_flags(signal, handler, flags)
     }
     .map_err(|error| error.raw_os_error().unwrap_or(libc::EIO))
+    {
+        return rollback_guard_signal_mask(&prior_mask, error);
+    }
+
+    GUARD_PRIOR_MASK.store(prior_mask, Ordering::Relaxed);
+    GUARD_MASK_OWNER_TID.store(owner_tid as i32, Ordering::Relaxed);
+    // SAFETY: the callback contract supplies a valid writable output pointer;
+    // all refusal paths above leave it untouched.
+    unsafe { previous.write(prior_action) };
+    GUARD_MASK_STATE.store(GUARD_MASK_HELD, Ordering::Release);
+    Ok(())
+}
+
+unsafe fn restore_guard_signal_mask(signal: libc::c_int) -> Result<(), i32> {
+    if signal != libc::SIGTRAP {
+        return Err(libc::EINVAL);
+    }
+    if GUARD_MASK_STATE.load(Ordering::Acquire) != GUARD_MASK_HELD {
+        return Err(libc::EALREADY);
+    }
+    let owner_tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    if owner_tid <= 0 || owner_tid > i64::from(i32::MAX) {
+        return Err(libc::EPROTO);
+    }
+    if GUARD_MASK_OWNER_TID.load(Ordering::Relaxed) != owner_tid as i32 {
+        return Err(libc::EPERM);
+    }
+    GUARD_MASK_STATE
+        .compare_exchange(
+            GUARD_MASK_HELD,
+            GUARD_MASK_RESTORING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| libc::EALREADY)?;
+    let prior_mask = GUARD_PRIOR_MASK.load(Ordering::Relaxed);
+    // Publish consumption before a pending SIGTRAP can run. LiteInst2 has
+    // already published the prior action before invoking this callback.
+    GUARD_MASK_STATE.store(GUARD_MASK_CONSUMED, Ordering::Release);
+    if set_guard_signal_mask(libc::SIG_SETMASK, &prior_mask, ptr::null_mut()).is_err() {
+        unsafe { exit_now(126) };
+    }
+    Ok(())
 }
 
 unsafe fn restore_default_guard_signal(
     signal: libc::c_int,
     previous: &GuardSignalAction,
 ) -> Result<(), i32> {
-    if previous.handler != libc::SIG_DFL {
+    if signal != libc::SIGTRAP || previous.handler != libc::SIG_DFL {
         return Err(libc::EINVAL);
     }
     let restored = unsafe {
@@ -2579,10 +2731,17 @@ unsafe fn restore_default_guard_signal(
 
 fn prepare_instrumentation_after_preflight() -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
-    prepare_live_patching_with_signal_runtime(GuardSignalRuntime {
-        install: install_guard_signal_handler,
-        restore_default: restore_default_guard_signal,
-    })
+    // SAFETY: runtime initialization reaches this path before application
+    // threads and before seccomp. The callbacks retain the exact calling-thread
+    // mask until prior-action publication, use only raw trusted signal syscalls
+    // after filtering, never unwind, and fail-stop if exact restoration fails.
+    unsafe {
+        prepare_live_patching_with_signal_runtime(GuardSignalRuntime {
+            install_blocked: install_guard_signal_handler_blocked,
+            restore_mask: restore_guard_signal_mask,
+            restore_default: restore_default_guard_signal,
+        })
+    }
     .map_err(|error| io::Error::other(error.to_string()))?;
     prepare_instrumentation_state()?;
     bind_program_break_geometry()?;
@@ -3738,6 +3897,15 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
     Ok(())
 }
 
+unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::Result<()> {
+    let result =
+        unsafe { raw_syscall6(libc::SYS_mprotect, [start, len, protection as u64, 0, 0, 0]) };
+    if result < 0 {
+        return Err(io::Error::from_raw_os_error((-result) as i32));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum InstallSiteError {
     Exhausted(&'static str),
@@ -3848,8 +4016,77 @@ fn close_activated_install_with(
     Err(InstallProtectionTransitionFailure::Primary(primary))
 }
 
-unsafe fn restore_install_source_or_exit(address: u64, stage: InstallProtectionRestoreStage) {
-    let result = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstallSourceProtection {
+    CallerManaged,
+    PatchPages,
+    Mapping { start: u64, len: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstallCallbackTransport {
+    InGuest,
+    ControllerPtraceStops,
+}
+
+impl InstallSourceProtection {
+    fn is_managed(self) -> bool {
+        self != Self::CallerManaged
+    }
+
+    fn contains_patch_word(self, address: u64) -> bool {
+        match self {
+            Self::CallerManaged | Self::PatchPages => true,
+            Self::Mapping { start, len } => start
+                .checked_add(len)
+                .zip(address.checked_add(liteinst2::patcher::WORD_PATCH_BYTES as u64))
+                .is_some_and(|(end, patch_end)| len != 0 && start <= address && patch_end <= end),
+        }
+    }
+
+    unsafe fn set(self, address: u64, protection: i32) -> io::Result<()> {
+        match self {
+            Self::CallerManaged => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+            Self::PatchPages => unsafe { set_text_protection(address, protection) },
+            Self::Mapping { start, len } => unsafe {
+                set_mapping_protection(start, len, protection)
+            },
+        }
+    }
+}
+
+fn validate_install_source_protection(
+    source_protection: InstallSourceProtection,
+    address: u64,
+) -> Result<(), InstallSiteError> {
+    if !source_protection.contains_patch_word(address) {
+        return Err(InstallSiteError::Failed(
+            "source-protection range does not contain the complete patch word",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_install_callback_transport(
+    publication: PatchPublication,
+    callback_transport: InstallCallbackTransport,
+) -> Result<(), InstallSiteError> {
+    if callback_transport == InstallCallbackTransport::ControllerPtraceStops
+        && publication != PatchPublication::Quiescent
+    {
+        return Err(InstallSiteError::Failed(
+            "controller ptrace-stop callbacks require quiescent publication",
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn restore_install_source_or_exit(
+    source_protection: InstallSourceProtection,
+    address: u64,
+    stage: InstallProtectionRestoreStage,
+) {
+    let result = unsafe { source_protection.set(address, libc::PROT_READ | libc::PROT_EXEC) };
     if let Err(failure) = classify_install_protection_restore(stage, result) {
         terminate_install_protection_restore(failure);
     }
@@ -3955,8 +4192,9 @@ unsafe fn install_site_hook(
     slot: &'static SiteSlot,
     callback: liteinst2::trampoline::HookCallback,
     publication: PatchPublication,
+    callback_transport: InstallCallbackTransport,
     expected_instruction: &[u8],
-    manage_protection: bool,
+    source_protection: InstallSourceProtection,
     source_snapshot: Option<InstallSourceSnapshot<'_>>,
 ) -> Result<HostInstallResult, InstallSiteError> {
     if let Err(error) =
@@ -4011,8 +4249,9 @@ unsafe fn install_site_hook(
             slot,
             callback,
             publication,
+            callback_transport,
             expected_instruction,
-            manage_protection,
+            source_protection,
             source_snapshot,
         )
     };
@@ -4031,10 +4270,15 @@ unsafe fn install_site_hook_inner(
     slot: &'static SiteSlot,
     callback: liteinst2::trampoline::HookCallback,
     publication: PatchPublication,
+    callback_transport: InstallCallbackTransport,
     expected_instruction: &[u8],
-    manage_protection: bool,
+    source_protection: InstallSourceProtection,
     source_snapshot: Option<InstallSourceSnapshot<'_>>,
 ) -> Result<HostInstallResult, InstallSiteError> {
+    // These pure checks deliberately precede every capacity lookup, arena
+    // mutation, source read, and protection transition.
+    validate_install_source_protection(source_protection, address)?;
+    validate_install_callback_transport(publication, callback_transport)?;
     if !crate::patch_alloc::patch_install_capacity_available() {
         return Err(exhausted_site_install(
             "reusable patch heap lacks one complete install headroom",
@@ -4133,9 +4377,9 @@ unsafe fn install_site_hook_inner(
     };
     let code = scan.snapshot();
 
-    if manage_protection {
+    if source_protection.is_managed() {
         match open_install_source_with(|protection| unsafe {
-            set_text_protection(address, protection)
+            source_protection.set(address, protection)
         }) {
             Ok(()) => {}
             Err(InstallProtectionTransitionFailure::Primary(error)) => {
@@ -4159,15 +4403,22 @@ unsafe fn install_site_hook_inner(
             address,
             address as usize as *mut u8,
         );
-        match publication {
-            PatchPublication::Quiescent => unsafe {
+        match (publication, callback_transport) {
+            (PatchPublication::Quiescent, InstallCallbackTransport::ControllerPtraceStops) => unsafe {
                 InstalledHook::install_replacing_first_in_arena_quiescent_with_ptrace_stops(
                     site,
                     callback,
                     &arena.arena,
                 )
             },
-            PatchPublication::Concurrent => unsafe {
+            (PatchPublication::Quiescent, InstallCallbackTransport::InGuest) => unsafe {
+                InstalledHook::install_replacing_first_in_arena_quiescent(
+                    site,
+                    callback,
+                    &arena.arena,
+                )
+            },
+            (PatchPublication::Concurrent, InstallCallbackTransport::InGuest) => unsafe {
                 InstalledHook::install_replacing_first_in_arena(
                     site,
                     callback,
@@ -4175,14 +4426,18 @@ unsafe fn install_site_hook_inner(
                     &arena.arena,
                 )
             },
+            (PatchPublication::Concurrent, InstallCallbackTransport::ControllerPtraceStops) => {
+                unreachable!("controller ptrace-stop transport was rejected before planning")
+            }
         }
     });
     let installed = match installed {
         Ok(installed) => installed,
         Err(error) => {
-            if manage_protection {
+            if source_protection.is_managed() {
                 unsafe {
                     restore_install_source_or_exit(
+                        source_protection,
                         address,
                         InstallProtectionRestoreStage::PlanningFailure,
                     );
@@ -4191,14 +4446,15 @@ unsafe fn install_site_hook_inner(
             return Err(error);
         }
     };
-    if publication == PatchPublication::Quiescent
+    if callback_transport == InstallCallbackTransport::ControllerPtraceStops
         && let Err(error) = validate_host_callback_saved_state_layout(
             installed.trampoline().layout().saved_extended_state,
         )
     {
-        if manage_protection {
+        if source_protection.is_managed() {
             unsafe {
                 restore_install_source_or_exit(
+                    source_protection,
                     address,
                     InstallProtectionRestoreStage::PlanningFailure,
                 );
@@ -4212,13 +4468,14 @@ unsafe fn install_site_hook_inner(
         arena,
         instruction_len as u64,
         straddle_prefix as u64,
-        publication,
+        callback_transport,
     ) {
         Ok(result) => result,
         Err(error) => {
-            if manage_protection {
+            if source_protection.is_managed() {
                 unsafe {
                     restore_install_source_or_exit(
+                        source_protection,
                         address,
                         InstallProtectionRestoreStage::PlanningFailure,
                     );
@@ -4229,15 +4486,19 @@ unsafe fn install_site_hook_inner(
     };
     let activation = match publication {
         PatchPublication::Concurrent => installed.activate(),
-        // SAFETY: the ptrace controller serializes this helper while every
-        // other tracee thread is stopped. Hermit likewise schedules only one
-        // guest thread at a time, so no other thread can fetch the site.
+        // SAFETY: controller-transport installs run while ptrace has stopped
+        // every other tracee thread. In-guest quiescent installs run during
+        // loader initialization before application threads exist, during
+        // controller-owned after-loader initialization with all peers stopped,
+        // or under Hermit's single-guest-thread scheduler. In every case no
+        // other thread can fetch the site.
         PatchPublication::Quiescent => unsafe { installed.activate_quiescent() },
     };
     if activation.is_err() {
-        if manage_protection {
+        if source_protection.is_managed() {
             unsafe {
                 restore_install_source_or_exit(
+                    source_protection,
                     address,
                     InstallProtectionRestoreStage::ActivationFailure,
                 );
@@ -4245,9 +4506,9 @@ unsafe fn install_site_hook_inner(
         }
         return Err(InstallSiteError::Failed("trampoline activation failed"));
     }
-    if manage_protection {
+    if source_protection.is_managed() {
         let closed = close_activated_install_with(
-            |protection| unsafe { set_text_protection(address, protection) },
+            |protection| unsafe { source_protection.set(address, protection) },
             || {
                 let result = match publication {
                     PatchPublication::Concurrent => installed.deactivate(),
@@ -4337,41 +4598,44 @@ fn host_saved_xstate_publication(layout: SavedExtendedStateLayout) -> HostSavedX
     }
 }
 
+fn validate_install_callback_stops(
+    callback_transport: InstallCallbackTransport,
+    ptrace_entry_stop_rip: Option<u64>,
+    ptrace_completion_stop_rip: Option<u64>,
+) -> Result<(u64, u64), InstallSiteError> {
+    match callback_transport {
+        InstallCallbackTransport::ControllerPtraceStops => Ok((
+            ptrace_entry_stop_rip.ok_or(InstallSiteError::Failed(
+                "quiescent trampoline omitted its entry stop",
+            ))?,
+            ptrace_completion_stop_rip.ok_or(InstallSiteError::Failed(
+                "quiescent trampoline omitted its completion stop",
+            ))?,
+        )),
+        InstallCallbackTransport::InGuest => {
+            if ptrace_entry_stop_rip.is_some() || ptrace_completion_stop_rip.is_some() {
+                return Err(InstallSiteError::Failed(
+                    "in-guest trampoline unexpectedly emitted ptrace stops",
+                ));
+            }
+            Ok((0, 0))
+        }
+    }
+}
+
 fn complete_host_install_result(
     address: u64,
     installed: &InstalledHook,
     arena: &RuntimeArena,
     instruction_len: u64,
     straddle_prefix: u64,
-    publication: PatchPublication,
+    callback_transport: InstallCallbackTransport,
 ) -> Result<HostInstallResult, InstallSiteError> {
-    let (ptrace_entry_stop_rip, ptrace_completion_stop_rip) =
-        match publication {
-            PatchPublication::Quiescent => (
-                installed
-                    .trampoline()
-                    .ptrace_entry_stop_rip()
-                    .ok_or(InstallSiteError::Failed(
-                        "quiescent trampoline omitted its entry stop",
-                    ))?,
-                installed.trampoline().ptrace_completion_stop_rip().ok_or(
-                    InstallSiteError::Failed("quiescent trampoline omitted its completion stop"),
-                )?,
-            ),
-            PatchPublication::Concurrent => {
-                if installed.trampoline().ptrace_entry_stop_rip().is_some()
-                    || installed
-                        .trampoline()
-                        .ptrace_completion_stop_rip()
-                        .is_some()
-                {
-                    return Err(InstallSiteError::Failed(
-                        "concurrent trampoline unexpectedly emitted ptrace stops",
-                    ));
-                }
-                (0, 0)
-            }
-        };
+    let (ptrace_entry_stop_rip, ptrace_completion_stop_rip) = validate_install_callback_stops(
+        callback_transport,
+        installed.trampoline().ptrace_entry_stop_rip(),
+        installed.trampoline().ptrace_completion_stop_rip(),
+    )?;
     let (program_counter_count, program_counters) = host_program_counter_mappings(installed)?;
     let saved_xstate =
         host_saved_xstate_publication(installed.trampoline().layout().saved_extended_state);
@@ -4431,8 +4695,12 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
                 site,
                 callback,
                 PatchPublication::Quiescent,
+                InstallCallbackTransport::InGuest,
                 &[0x0f, 0x05],
-                true,
+                InstallSourceProtection::Mapping {
+                    start: site_info.mapping_start,
+                    len: site_info.mapping_len,
+                },
                 None,
             )
         };
@@ -4530,8 +4798,9 @@ unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace_body(address: u64)
                 site,
                 host_syscall_hook,
                 PatchPublication::Quiescent,
+                InstallCallbackTransport::ControllerPtraceStops,
                 &[0x0f, 0x05],
-                false,
+                InstallSourceProtection::CallerManaged,
                 Some(InstallSourceSnapshot {
                     mapping_end: request.mapping_end,
                     bytes: &request.source[..source_len],
@@ -4559,7 +4828,7 @@ unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace_body(address: u64)
                 arena,
                 u64::from(site.instruction_len.load(Ordering::Acquire)),
                 u64::from(site.straddle_prefix.load(Ordering::Acquire)),
-                PatchPublication::Quiescent,
+                InstallCallbackTransport::ControllerPtraceStops,
             )
             .ok()
         });
@@ -4694,7 +4963,7 @@ pub(crate) fn prepare_guest_signal_state(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review fault-safe guest signal-action decoding.
-pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
+fn signal_action_target_is_admitted(number: i64, args: [u64; 6]) -> bool {
     if number != libc::SYS_rt_sigaction || args[1] == 0 {
         return true;
     }
@@ -4711,14 +4980,23 @@ pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
         return false;
     }
 
-    let mut handler = 0_u64;
+    true
+}
+
+fn signal_action_is_admitted(number: i64, args: [u64; 6], handler: u64) -> bool {
+    signal_action_target_is_admitted(number, args)
+        && matches!(handler, value if value == libc::SIG_DFL as u64 || value == libc::SIG_IGN as u64)
+}
+
+fn copy_guest_signal_action(address: u64) -> Option<KernelSigaction> {
+    let mut action = KernelSigaction::default();
     let local = libc::iovec {
-        iov_base: (&raw mut handler).cast(),
-        iov_len: core::mem::size_of::<u64>(),
+        iov_base: (&raw mut action).cast(),
+        iov_len: core::mem::size_of::<KernelSigaction>(),
     };
     let remote = libc::iovec {
-        iov_base: args[1] as usize as *mut libc::c_void,
-        iov_len: core::mem::size_of::<u64>(),
+        iov_base: address as usize as *mut libc::c_void,
+        iov_len: core::mem::size_of::<KernelSigaction>(),
     };
     let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
     let read = unsafe {
@@ -4734,8 +5012,48 @@ pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
             ],
         )
     };
-    read == core::mem::size_of::<u64>() as i64
-        && matches!(handler, value if value == libc::SIG_DFL as u64 || value == libc::SIG_IGN as u64)
+    (read == core::mem::size_of::<KernelSigaction>() as i64).then_some(action)
+}
+
+pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
+    if number != libc::SYS_rt_sigaction || args[1] == 0 {
+        return true;
+    }
+    if !signal_action_target_is_admitted(number, args) {
+        return false;
+    }
+    copy_guest_signal_action(args[1])
+        .is_some_and(|action| signal_action_is_admitted(number, args, action.handler))
+}
+
+/// Forward a legacy-mode DFL/IGN update from an immutable runtime-owned copy.
+///
+/// The initial `process_vm_readv` is intentionally not followed by a forward
+/// from the caller's pointer: another guest thread could otherwise replace the
+/// admitted handler between validation and the physical syscall. The kernel
+/// sees the copied action while retaining the caller's `oldact` destination and
+/// all scalar arguments, so native errors and old-action output are preserved.
+unsafe fn forward_legacy_signal_action_snapshot(event: &mut SyscallEvent) {
+    if !signal_action_target_is_admitted(event.number, event.args) {
+        event.result = -i64::from(libc::EPERM);
+        return;
+    }
+    let Some(action) = copy_guest_signal_action(event.args[1]) else {
+        event.result = -i64::from(libc::EPERM);
+        return;
+    };
+    if !signal_action_is_admitted(event.number, event.args, action.handler) {
+        event.result = -i64::from(libc::EPERM);
+        return;
+    }
+
+    let mut copied_args = event.args;
+    copied_args[1] = (&raw const action) as u64;
+    // The replacement pointer names runtime-owned stack memory, so it must use
+    // the private raw gate rather than `SyscallEvent::forward`, whose guest-PKRU
+    // transition is reserved for caller-owned syscall buffers. rt_sigaction
+    // cannot itself change PKRU; `oldact` remains the caller's original pointer.
+    event.result = unsafe { raw_syscall6(event.number, copied_args) };
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -5096,8 +5414,9 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 site,
                 instruction_callback(kind),
                 publication,
+                InstallCallbackTransport::InGuest,
                 expected,
-                true,
+                InstallSourceProtection::PatchPages,
                 None,
             )
         } {
@@ -5559,8 +5878,9 @@ impl LiteinstDispatcher {
                             site,
                             installed_syscall_hook,
                             self.publication,
+                            InstallCallbackTransport::InGuest,
                             &[0x0f, 0x05],
-                            true,
+                            InstallSourceProtection::PatchPages,
                             None,
                         )
                     },
@@ -5705,12 +6025,12 @@ pub(crate) fn observe_injected_mapping_result(number: i64, args: [u64; 6], resul
 // after all patch-allocation and install guards have been cleared. A user
 // handler that allocates or performs a nonlocal exit cannot safely run in that
 // boundary. ToolHost admits only race-free DFL/IGN updates under its no-thread
-// contract. Legacy modes reject every non-query action update because
-// forwarding a caller-owned sigaction after inspecting it would permit a write
-// race. Every mode also keeps the runtime signal mask and alt stack immutable
-// across supported guest syscall/control-flow paths. As with the pre-existing
-// trusted syscall gates, a crafted control transfer into a runtime-private gate
-// is outside the documented trusted-guest boundary.
+// contract. Legacy modes admit DFL/IGN-only updates by forwarding an immutable
+// runtime-owned snapshot; every other non-query action is rejected. Every mode
+// also keeps the runtime signal mask and alt stack immutable across supported
+// guest syscall/control-flow paths. As with the pre-existing trusted syscall
+// gates, a crafted control transfer into a runtime-private gate is outside the
+// documented trusted-guest boundary.
 fn protect_concurrent_signal_control(event: &mut SyscallEvent, tool_mode: u8) -> bool {
     let protected = match event.number {
         // An ordinary guest rt_sigreturn entry is trapped before the syscall
@@ -5751,6 +6071,13 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
             unsafe {
                 trace_event(event, Some(event.result));
             }
+        }
+        return;
+    }
+    if tool_mode != TOOL_REVERIE && event.number == libc::SYS_rt_sigaction && event.args[1] != 0 {
+        unsafe { forward_legacy_signal_action_snapshot(event) };
+        unsafe {
+            trace_event(event, Some(event.result));
         }
         return;
     }
@@ -6476,6 +6803,190 @@ mod tests {
     }
 
     #[test]
+    fn install_source_mapping_validation_rejects_malformed_ranges_before_transition() {
+        use super::InstallSiteError;
+        use super::InstallSourceProtection;
+        use super::validate_install_source_protection;
+
+        let site = 0x4000_u64;
+        let word = liteinst2::patcher::WORD_PATCH_BYTES as u64;
+        let rejects = [
+            (
+                "zero-length mapping",
+                InstallSourceProtection::Mapping {
+                    start: site,
+                    len: 0,
+                },
+                site,
+            ),
+            (
+                "mapping shorter than one patch word",
+                InstallSourceProtection::Mapping {
+                    start: site,
+                    len: word - 1,
+                },
+                site,
+            ),
+            (
+                "mapping-end overflow",
+                InstallSourceProtection::Mapping {
+                    start: site,
+                    len: u64::MAX - site + 1,
+                },
+                site,
+            ),
+            (
+                "patch-end overflow",
+                InstallSourceProtection::Mapping {
+                    start: 0,
+                    len: u64::MAX,
+                },
+                u64::MAX - (word - 2),
+            ),
+            (
+                "mapping starts after the patch",
+                InstallSourceProtection::Mapping {
+                    start: site + 1,
+                    len: word,
+                },
+                site,
+            ),
+        ];
+
+        for (case, protection, address) in rejects {
+            match validate_install_source_protection(protection, address) {
+                Err(InstallSiteError::Failed(message)) => assert_eq!(
+                    message, "source-protection range does not contain the complete patch word",
+                    "{case}"
+                ),
+                result => panic!("{case} was not rejected exactly: {result:?}"),
+            }
+        }
+
+        assert!(
+            validate_install_source_protection(
+                InstallSourceProtection::Mapping {
+                    start: site,
+                    len: word,
+                },
+                site,
+            )
+            .is_ok(),
+            "an exact one-word mapping must remain valid"
+        );
+    }
+
+    #[test]
+    fn install_callback_transport_validation_is_exact() {
+        use super::InstallCallbackTransport;
+        use super::InstallSiteError;
+        use super::PatchPublication;
+        use super::validate_install_callback_transport;
+
+        assert!(
+            validate_install_callback_transport(
+                PatchPublication::Quiescent,
+                InstallCallbackTransport::ControllerPtraceStops,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_install_callback_transport(
+                PatchPublication::Quiescent,
+                InstallCallbackTransport::InGuest,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_install_callback_transport(
+                PatchPublication::Concurrent,
+                InstallCallbackTransport::InGuest,
+            )
+            .is_ok()
+        );
+        match validate_install_callback_transport(
+            PatchPublication::Concurrent,
+            InstallCallbackTransport::ControllerPtraceStops,
+        ) {
+            Err(InstallSiteError::Failed(message)) => assert_eq!(
+                message,
+                "controller ptrace-stop callbacks require quiescent publication"
+            ),
+            result => panic!("concurrent controller transport was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn install_callback_stop_validation_matches_transport() {
+        use super::InstallCallbackTransport;
+        use super::InstallSiteError;
+        use super::validate_install_callback_stops;
+
+        assert_eq!(
+            validate_install_callback_stops(InstallCallbackTransport::InGuest, None, None).unwrap(),
+            (0, 0),
+            "in-guest callbacks must publish no physical stop addresses"
+        );
+        for (entry, completion) in [
+            (Some(0x1000), None),
+            (None, Some(0x2000)),
+            (Some(0x1000), Some(0x2000)),
+        ] {
+            match validate_install_callback_stops(
+                InstallCallbackTransport::InGuest,
+                entry,
+                completion,
+            ) {
+                Err(InstallSiteError::Failed(message)) => assert_eq!(
+                    message,
+                    "in-guest trampoline unexpectedly emitted ptrace stops"
+                ),
+                result => panic!("in-guest physical stops were not rejected: {result:?}"),
+            }
+        }
+
+        assert_eq!(
+            validate_install_callback_stops(
+                InstallCallbackTransport::ControllerPtraceStops,
+                Some(0x1000),
+                Some(0x2000),
+            )
+            .unwrap(),
+            (0x1000, 0x2000)
+        );
+        match validate_install_callback_stops(
+            InstallCallbackTransport::ControllerPtraceStops,
+            None,
+            Some(0x2000),
+        ) {
+            Err(InstallSiteError::Failed(message)) => {
+                assert_eq!(message, "quiescent trampoline omitted its entry stop")
+            }
+            result => panic!("missing controller entry stop was not rejected: {result:?}"),
+        }
+        match validate_install_callback_stops(
+            InstallCallbackTransport::ControllerPtraceStops,
+            None,
+            None,
+        ) {
+            Err(InstallSiteError::Failed(message)) => {
+                assert_eq!(message, "quiescent trampoline omitted its entry stop")
+            }
+            result => panic!("missing controller stops were not rejected: {result:?}"),
+        }
+        match validate_install_callback_stops(
+            InstallCallbackTransport::ControllerPtraceStops,
+            Some(0x1000),
+            None,
+        ) {
+            Err(InstallSiteError::Failed(message)) => {
+                assert_eq!(message, "quiescent trampoline omitted its completion stop")
+            }
+            result => panic!("missing controller completion stop was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
     fn ptrace_install_request_validation_is_exact_and_bounded() {
         let site = 0x4000_u64;
         let mut source = [0_u8; super::PATCH_SNAPSHOT_BYTES];
@@ -6525,6 +7036,8 @@ mod tests {
     use core::sync::atomic::Ordering;
     use std::cell::Cell;
     use std::ffi::OsStr;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use liteinst2::trampoline::TrampolineError;
     use reverie_preload::BuiltinTool;
@@ -6617,6 +7130,369 @@ mod tests {
     use super::syscall_number_requires_enosys;
     use super::validate_prepared_control_maps;
     use super::wait_for_translated_vfork_child;
+
+    static SIGNAL_TEST_PUBLISHED: AtomicUsize = AtomicUsize::new(0);
+    static SIGNAL_TEST_DELIVERY: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn signal_test_handler(
+        _signal: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _context: *mut core::ffi::c_void,
+    ) {
+        let published = SIGNAL_TEST_PUBLISHED.load(Ordering::Acquire);
+        SIGNAL_TEST_DELIVERY.store(if published == 1 { 2 } else { 1 }, Ordering::Release);
+    }
+
+    fn raw_signal_mask() -> Result<u64, i32> {
+        let mut mask = 0_u64;
+        let result = unsafe {
+            super::raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    0,
+                    core::ptr::from_mut(&mut mask) as u64,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        super::exact_signal_syscall_result(result).map(|()| mask)
+    }
+
+    fn raw_signal_action(signal: libc::c_int) -> Result<super::GuardSignalAction, i32> {
+        let mut action = core::mem::MaybeUninit::<super::GuardSignalAction>::uninit();
+        let result = unsafe {
+            super::raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [
+                    signal as u64,
+                    0,
+                    action.as_mut_ptr() as u64,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        super::exact_signal_syscall_result(result)?;
+        // SAFETY: a successful raw query initialized the exact kernel layout.
+        Ok(unsafe { action.assume_init() })
+    }
+
+    fn install_raw_signal_action(
+        signal: libc::c_int,
+        action: &super::GuardSignalAction,
+    ) -> Result<(), i32> {
+        let result = unsafe {
+            super::raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [
+                    signal as u64,
+                    core::ptr::from_ref(action) as u64,
+                    0,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        super::exact_signal_syscall_result(result)
+    }
+
+    fn poll_signal_test_child(child: libc::pid_t) -> Result<Option<i32>, i32> {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+        if waited == child {
+            return Ok(Some(status));
+        }
+        if waited == 0 {
+            return Ok(None);
+        }
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
+        if error == libc::EINTR {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    }
+
+    fn wait_signal_test_child_until(
+        child: libc::pid_t,
+        deadline: Instant,
+    ) -> Result<Option<i32>, i32> {
+        loop {
+            if let Some(status) = poll_signal_test_child(child)? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn terminate_signal_test_child(child: libc::pid_t) -> Result<i32, i32> {
+        if unsafe { libc::kill(child, libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO);
+            if error != libc::ESRCH {
+                return Err(error);
+            }
+        }
+        wait_signal_test_child_until(child, Instant::now() + Duration::from_secs(1))?
+            .ok_or(libc::ETIMEDOUT)
+    }
+
+    fn bounded_signal_test_child_status(child: libc::pid_t) -> Result<i32, i32> {
+        match wait_signal_test_child_until(child, Instant::now() + Duration::from_secs(5))? {
+            Some(status) => Ok(status),
+            None => terminate_signal_test_child(child),
+        }
+    }
+
+    unsafe fn bind_signal_test_child_to_parent(parent: libc::pid_t) -> bool {
+        (unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }) == 0
+            && unsafe { libc::getppid() } == parent
+    }
+
+    fn run_isolated_signal_case(case: unsafe fn() -> i32) {
+        let parent = unsafe { libc::getpid() };
+        let child = unsafe { libc::fork() };
+        assert!(
+            child >= 0,
+            "fork isolated signal test: {}",
+            std::io::Error::last_os_error()
+        );
+        if child == 0 {
+            if !unsafe { bind_signal_test_child_to_parent(parent) } {
+                unsafe { libc::_exit(125) };
+            }
+            let status = unsafe { case() };
+            unsafe { libc::_exit(status) };
+        }
+        let status = bounded_signal_test_child_status(child)
+            .unwrap_or_else(|error| panic!("wait isolated signal test: errno {error}"));
+        assert!(
+            libc::WIFEXITED(status),
+            "signal-test child status {status:#x}"
+        );
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "isolated signal case failed at checkpoint {}",
+            libc::WEXITSTATUS(status)
+        );
+    }
+
+    unsafe fn custom_action_rollback_case() -> i32 {
+        let original_mask = 1_u64 << (libc::SIGUSR1 - 1);
+        if super::set_guard_signal_mask(libc::SIG_SETMASK, &original_mask, core::ptr::null_mut())
+            .is_err()
+        {
+            return 1;
+        }
+        if unsafe {
+            reverie_preload::signal::install_runtime_siginfo_handler_with_flags(
+                libc::SIGTRAP,
+                signal_test_handler,
+                libc::SA_SIGINFO | libc::SA_RESTART,
+            )
+        }
+        .is_err()
+        {
+            return 2;
+        }
+        let Ok(before_action) = raw_signal_action(libc::SIGTRAP) else {
+            return 3;
+        };
+        let mut output = super::GuardSignalAction {
+            handler: usize::MAX,
+            flags: libc::c_ulong::MAX,
+            restorer: usize::MAX - 1,
+            mask: u64::MAX,
+        };
+        if unsafe {
+            super::install_guard_signal_handler_blocked(
+                libc::SIGTRAP,
+                signal_test_handler,
+                libc::SA_SIGINFO | libc::SA_RESTART,
+                &mut output,
+            )
+        } != Err(libc::EPERM)
+        {
+            return 4;
+        }
+        if output.handler != usize::MAX
+            || output.flags != libc::c_ulong::MAX
+            || output.restorer != usize::MAX - 1
+            || output.mask != u64::MAX
+        {
+            return 5;
+        }
+        if raw_signal_action(libc::SIGTRAP) != Ok(before_action) {
+            return 6;
+        }
+        if raw_signal_mask() != Ok(original_mask) {
+            return 7;
+        }
+        if super::GUARD_MASK_STATE.load(Ordering::Acquire) != super::GUARD_MASK_UNUSED {
+            return 8;
+        }
+        0
+    }
+
+    unsafe fn exact_mask_restore_case(initially_blocked: bool) -> i32 {
+        let default = super::GuardSignalAction::default();
+        if install_raw_signal_action(libc::SIGTRAP, &default).is_err() {
+            return 1;
+        }
+        let trap = 1_u64 << (libc::SIGTRAP - 1);
+        let original_mask =
+            (1_u64 << (libc::SIGUSR1 - 1)) | if initially_blocked { trap } else { 0 };
+        if super::set_guard_signal_mask(libc::SIG_SETMASK, &original_mask, core::ptr::null_mut())
+            .is_err()
+        {
+            return 2;
+        }
+        let mut previous = super::GuardSignalAction {
+            handler: usize::MAX,
+            flags: 0,
+            restorer: 0,
+            mask: 0,
+        };
+        if unsafe {
+            super::install_guard_signal_handler_blocked(
+                libc::SIGTRAP,
+                signal_test_handler,
+                libc::SA_SIGINFO | libc::SA_RESTART,
+                &mut previous,
+            )
+        }
+        .is_err()
+        {
+            return 3;
+        }
+        if previous.handler != libc::SIG_DFL || raw_signal_mask() != Ok(original_mask | trap) {
+            return 4;
+        }
+        if unsafe { super::restore_guard_signal_mask(libc::SIGUSR1) } != Err(libc::EINVAL) {
+            return 5;
+        }
+
+        let owner = unsafe { libc::getpid() };
+        let grandchild = unsafe { libc::fork() };
+        if grandchild < 0 {
+            return 6;
+        }
+        if grandchild == 0 {
+            if !unsafe { bind_signal_test_child_to_parent(owner) } {
+                unsafe { libc::_exit(2) };
+            }
+            let result = unsafe { super::restore_guard_signal_mask(libc::SIGTRAP) };
+            unsafe { libc::_exit(i32::from(result != Err(libc::EPERM))) };
+        }
+        let Ok(grandchild_status) = bounded_signal_test_child_status(grandchild) else {
+            return 7;
+        };
+        if !libc::WIFEXITED(grandchild_status) || libc::WEXITSTATUS(grandchild_status) != 0 {
+            return 7;
+        }
+        if unsafe { super::restore_guard_signal_mask(libc::SIGTRAP) }.is_err() {
+            return 8;
+        }
+        if raw_signal_mask() != Ok(original_mask) {
+            return 9;
+        }
+        if unsafe { super::restore_guard_signal_mask(libc::SIGTRAP) } != Err(libc::EALREADY) {
+            return 10;
+        }
+        0
+    }
+
+    unsafe fn initially_unblocked_mask_restore_case() -> i32 {
+        unsafe { exact_mask_restore_case(false) }
+    }
+
+    unsafe fn initially_blocked_mask_restore_case() -> i32 {
+        unsafe { exact_mask_restore_case(true) }
+    }
+
+    unsafe fn pending_delivery_after_publication_case() -> i32 {
+        SIGNAL_TEST_PUBLISHED.store(0, Ordering::Release);
+        SIGNAL_TEST_DELIVERY.store(0, Ordering::Release);
+        if install_raw_signal_action(libc::SIGTRAP, &super::GuardSignalAction::default()).is_err() {
+            return 1;
+        }
+        let original_mask = 1_u64 << (libc::SIGUSR2 - 1);
+        if super::set_guard_signal_mask(libc::SIG_SETMASK, &original_mask, core::ptr::null_mut())
+            .is_err()
+        {
+            return 2;
+        }
+        let mut previous = super::GuardSignalAction::default();
+        if unsafe {
+            super::install_guard_signal_handler_blocked(
+                libc::SIGTRAP,
+                signal_test_handler,
+                libc::SA_SIGINFO | libc::SA_RESTART,
+                &mut previous,
+            )
+        }
+        .is_err()
+        {
+            return 3;
+        }
+        let pid = unsafe { super::raw_syscall6(libc::SYS_getpid, [0; 6]) };
+        let tid = unsafe { super::raw_syscall6(libc::SYS_gettid, [0; 6]) };
+        if pid <= 0 || tid <= 0 {
+            return 4;
+        }
+        if super::exact_signal_syscall_result(unsafe {
+            super::raw_syscall6(
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGTRAP as u64, 0, 0, 0],
+            )
+        })
+        .is_err()
+        {
+            return 5;
+        }
+        if SIGNAL_TEST_DELIVERY.load(Ordering::Acquire) != 0 {
+            return 6;
+        }
+        SIGNAL_TEST_PUBLISHED.store(1, Ordering::Release);
+        if unsafe { super::restore_guard_signal_mask(libc::SIGTRAP) }.is_err() {
+            return 7;
+        }
+        if SIGNAL_TEST_DELIVERY.load(Ordering::Acquire) != 2 {
+            return 8;
+        }
+        if raw_signal_mask() != Ok(original_mask) {
+            return 9;
+        }
+        0
+    }
+
+    #[test]
+    fn guard_signal_custom_action_rejection_rolls_back_exactly() {
+        run_isolated_signal_case(custom_action_rollback_case);
+    }
+
+    #[test]
+    fn guard_signal_mask_restores_exact_initial_state_and_refuses_reuse() {
+        run_isolated_signal_case(initially_unblocked_mask_restore_case);
+        run_isolated_signal_case(initially_blocked_mask_restore_case);
+    }
+
+    #[test]
+    fn pending_guard_signal_runs_only_after_publication_and_unmask() {
+        run_isolated_signal_case(pending_delivery_after_publication_case);
+    }
 
     #[test]
     fn guard_router_admits_only_default_or_ignored_prior_sigtrap() {
@@ -6778,7 +7654,7 @@ mod tests {
             imported_ring,
             |_| Err(reverie::Errno::EIO),
         ));
-        assert!(!mmap_imports_async_mapping_engine_with(
+        assert!(mmap_imports_async_mapping_engine_with(
             libc::SYS_mmap,
             imported_ring,
             |_| Err(reverie::Errno::EBADF),
@@ -7339,7 +8215,7 @@ mod tests {
         ));
         assert_eq!(event.result, -i64::from(libc::EPERM));
 
-        // signal_action_supported reads this guest-owned word through
+        // signal_action_supported reads this guest-owned action through
         // process_vm_readv, so keep the test mutation externally observable.
         unsafe {
             core::ptr::addr_of_mut!(action.handler).write_volatile(libc::SIG_IGN as u64);
@@ -7422,6 +8298,177 @@ mod tests {
             assert!(protect_concurrent_signal_control(&mut event, mode));
             assert_eq!(event.result, -i64::from(libc::EPERM));
         }
+    }
+
+    #[test]
+    fn legacy_signal_action_snapshot_refuses_untrusted_inputs() {
+        let mut action = super::KernelSigaction {
+            handler: 0x1234,
+            ..super::KernelSigaction::default()
+        };
+        let mut event = SyscallEvent {
+            number: libc::SYS_rt_sigaction,
+            args: [
+                libc::SIGUSR1 as u64,
+                (&raw mut action) as u64,
+                0,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+            instruction_pointer: 0,
+            result: UNSET_RESULT,
+            context: 0,
+            dispatch: SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let caller_action = event.args[1];
+        unsafe { super::forward_legacy_signal_action_snapshot(&mut event) };
+        assert_eq!(event.result, -i64::from(libc::EPERM));
+        assert_eq!(event.args[1], caller_action);
+
+        // The production snapshot reads this guest-owned field through
+        // process_vm_readv, which is opaque to Rust's ordinary dataflow.
+        unsafe {
+            core::ptr::addr_of_mut!(action.handler).write_volatile(libc::SIG_IGN as u64);
+        }
+        for signal in [libc::SIGSYS as u64, libc::SIGTRAP as u64] {
+            event.args[0] = signal;
+            event.result = UNSET_RESULT;
+            unsafe { super::forward_legacy_signal_action_snapshot(&mut event) };
+            assert_eq!(event.result, -i64::from(libc::EPERM));
+            assert_eq!(event.args[1], caller_action);
+        }
+
+        event.args[0] = libc::SIGUSR1 as u64 | (1_u64 << 32);
+        event.result = UNSET_RESULT;
+        unsafe { super::forward_legacy_signal_action_snapshot(&mut event) };
+        assert_eq!(event.result, -i64::from(libc::EPERM));
+        assert_eq!(event.args[1], caller_action);
+
+        event.args[0] = libc::SIGUSR1 as u64;
+        event.args[1] = 1;
+        event.result = UNSET_RESULT;
+        unsafe { super::forward_legacy_signal_action_snapshot(&mut event) };
+        assert_eq!(event.result, -i64::from(libc::EPERM));
+        assert_eq!(event.args[1], 1);
+    }
+
+    fn legacy_signal_action_snapshot_child() -> bool {
+        let mut prior = super::KernelSigaction::default();
+        let queried = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [
+                    libc::SIGUSR2 as u64,
+                    0,
+                    (&raw mut prior) as u64,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if queried != 0 {
+            return false;
+        }
+
+        let action = super::KernelSigaction {
+            handler: libc::SIG_IGN as u64,
+            ..super::KernelSigaction::default()
+        };
+        let mut old_action = super::KernelSigaction::default();
+        let mut event = SyscallEvent {
+            number: libc::SYS_rt_sigaction,
+            args: [
+                libc::SIGUSR2 as u64,
+                (&raw const action) as u64,
+                (&raw mut old_action) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+            instruction_pointer: 0,
+            result: UNSET_RESULT,
+            context: 0,
+            dispatch: SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let caller_action = event.args[1];
+        unsafe { super::forward_legacy_signal_action_snapshot(&mut event) };
+        let installed = event.result;
+
+        let mut observed = super::KernelSigaction::default();
+        let observed_result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [
+                    libc::SIGUSR2 as u64,
+                    0,
+                    (&raw mut observed) as u64,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        let restored = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [
+                    libc::SIGUSR2 as u64,
+                    (&raw const prior) as u64,
+                    0,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+
+        let same_action = |left: &super::KernelSigaction, right: &super::KernelSigaction| {
+            left.handler == right.handler
+                && left.flags == right.flags
+                && left.restorer == right.restorer
+                && left.mask == right.mask
+        };
+        installed == 0
+            && event.args[1] == caller_action
+            && observed_result == 0
+            && restored == 0
+            && same_action(&old_action, &prior)
+            && same_action(&observed, &action)
+    }
+
+    #[test]
+    fn legacy_signal_action_snapshot_forwards_safe_action_and_oldact() {
+        let child = unsafe { raw_syscall6(libc::SYS_fork, [0; 6]) };
+        assert!(child >= 0, "fork isolated legacy signal-action control");
+        if child == 0 {
+            let code = if legacy_signal_action_snapshot_child() {
+                0
+            } else {
+                74
+            };
+            unsafe { raw_syscall6(libc::SYS_exit_group, [code, 0, 0, 0, 0, 0]) };
+            unreachable!();
+        }
+
+        let mut status = 0_i32;
+        loop {
+            let waited = unsafe {
+                raw_syscall6(
+                    libc::SYS_wait4,
+                    [child as u64, (&raw mut status) as u64, 0, 0, 0, 0],
+                )
+            };
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, child);
+            break;
+        }
+        assert_eq!(status, 0, "legacy signal-action snapshot child failed");
     }
 
     #[test]

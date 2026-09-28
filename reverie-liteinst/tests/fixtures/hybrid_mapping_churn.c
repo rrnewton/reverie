@@ -12,8 +12,8 @@ typedef long (*guest_fn)(void);
 typedef uint64_t (*count_fn)(uint64_t);
 
 static const unsigned char guest_code[] = {
-    0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x90, 0x90, 0x90, 0x90,
-    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xc3,
+    0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05, 0xeb, 0x0c, 0x0f, 0x04,
+    0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04, 0xc3,
 };
 
 static void write_guest(void *mapping) {
@@ -33,12 +33,15 @@ static count_fn load_count(const char *name) {
 int main(void) {
   size_t page = (size_t)sysconf(_SC_PAGESIZE);
   void *requested = (void *)(uintptr_t)UINT64_C(0x20000000);
-  void *mapping = mmap(requested, page, PROT_READ | PROT_WRITE | PROT_EXEC,
+  void *mapping = mmap(requested, page, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
   if (mapping == MAP_FAILED) {
     return 10;
   }
   write_guest(mapping);
+  if (mprotect(mapping, page, PROT_READ | PROT_EXEC) != 0) {
+    return 12;
+  }
   guest_fn function = (guest_fn)mapping;
   long expected = function();
   if (function() != expected) {
@@ -49,12 +52,15 @@ int main(void) {
   if (munmap(mapping, page) != 0) {
     return 15;
   }
-  mapping = mmap(mapping, page, PROT_READ | PROT_WRITE | PROT_EXEC,
+  mapping = mmap(mapping, page, PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
   if (mapping == MAP_FAILED) {
     return 16;
   }
   write_guest(mapping);
+  if (mprotect(mapping, page, PROT_READ | PROT_EXEC) != 0) {
+    return 18;
+  }
   function = (guest_fn)mapping;
   if (function() != expected || function() != expected) {
     return 17;

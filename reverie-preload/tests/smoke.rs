@@ -16,9 +16,18 @@
 //! behaves normally); `spoof-getpid` proves the trap can *mutate* a result; and
 //! a `fork` guest proves the filter is inherited by children.
 
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Output;
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use reverie_preload::BuiltinTool;
 use reverie_preload::SPOOF_PID;
@@ -45,6 +54,21 @@ fn run(program: &str, args: &[&str], tool: BuiltinTool) -> Output {
     }
     configure_command(&mut command, tool).unwrap();
     command.output().unwrap()
+}
+
+fn wait_bounded(child: &mut std::process::Child, timeout: Duration) -> ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("preload signal guest did not exit within {timeout:?}");
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -88,6 +112,75 @@ fn passthrough_probe_reports_real_pid() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_ne!(stdout.trim(), format!("getpid={SPOOF_PID}"));
     assert!(stdout.trim().starts_with("getpid="));
+}
+
+#[test]
+fn libc_signal_handler_returns_through_its_exact_restorer() {
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "trap 'echo signal; exit 0' USR1; echo ready; while :; do :; done",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    unsafe {
+        std::env::set_var("REVERIE_PRELOAD_LIB", preload_path());
+    }
+    configure_command(&mut command, BuiltinTool::Passthrough).unwrap();
+    let mut child = command.spawn().unwrap();
+    let child_pid = child.id();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let stdout_reader = thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut bytes = Vec::new();
+        let ready = reader.read_until(b'\n', &mut bytes).map(|_| bytes.clone());
+        let _ = ready_tx.send(ready);
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = BufReader::new(stderr).read_to_end(&mut bytes);
+        result.map(|_| bytes)
+    });
+
+    let ready = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(ready)) => ready,
+        result => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            panic!("preload signal guest did not become ready: {result:?}");
+        }
+    };
+    if ready != b"ready\n" {
+        let _ = child.kill();
+        let _ = child.wait();
+        let stdout = stdout_reader.join().unwrap().unwrap();
+        let stderr = stderr_reader.join().unwrap().unwrap();
+        panic!("unexpected readiness {ready:?}: stdout={stdout:?} stderr={stderr:?}");
+    }
+
+    if unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGUSR1) } != 0 {
+        let error = std::io::Error::last_os_error();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
+        panic!("send external SIGUSR1: {error}");
+    }
+    let status = wait_bounded(&mut child, Duration::from_secs(5));
+    let stdout = stdout_reader.join().unwrap().unwrap();
+    let stderr = stderr_reader.join().unwrap().unwrap();
+    assert!(
+        status.success(),
+        "status={status:?}\nstderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(stdout, b"ready\nsignal\n");
 }
 
 #[test]

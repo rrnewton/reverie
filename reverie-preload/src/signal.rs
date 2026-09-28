@@ -35,7 +35,7 @@ const SUPPORTED_RUNTIME_HANDLER_FLAGS: libc::c_int =
 /// userspace `sigaction`, whose field order and 1024-bit mask are incompatible
 /// with a raw `rt_sigaction` syscall.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct KernelSigaction {
     handler: usize,
     flags: libc::c_ulong,
@@ -82,6 +82,139 @@ fn runtime_sigaction(
         restorer: crate::trap::rt_sigreturn_restorer_address(),
         mask: 0,
     })
+}
+
+fn query_kernel_sigaction(signal: libc::c_int) -> io::Result<KernelSigaction> {
+    let mut action = core::mem::MaybeUninit::<KernelSigaction>::uninit();
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            signal,
+            ptr::null::<KernelSigaction>(),
+            action.as_mut_ptr(),
+            KERNEL_SIGSET_SIZE,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful raw query initialized the exact kernel structure.
+    Ok(unsafe { action.assume_init() })
+}
+
+fn set_kernel_sigaction(signal: libc::c_int, action: &KernelSigaction) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            signal,
+            ptr::from_ref(action),
+            ptr::null_mut::<KernelSigaction>(),
+            KERNEL_SIGSET_SIZE,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn set_kernel_signal_mask(how: libc::c_int, set: &u64, old: Option<&mut u64>) -> io::Result<()> {
+    let old = old.map_or(ptr::null_mut(), ptr::from_mut);
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            how,
+            ptr::from_ref(set),
+            old,
+            KERNEL_SIGSET_SIZE,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn query_kernel_signal_mask() -> io::Result<u64> {
+    let mut mask = 0_u64;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_SETMASK,
+            ptr::null::<u64>(),
+            ptr::from_mut(&mut mask),
+            KERNEL_SIGSET_SIZE,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(mask)
+}
+
+/// Ask the process libc for its standard signal restorer without leaving any
+/// probe disposition or mask behind. The runtime installation contract is
+/// single-threaded, so blocking the probe signal closes its only delivery
+/// window; every exit after the block attempts both restorations.
+fn discover_libc_restorer_with_post_install<F>(
+    handler: unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void),
+    post_install: F,
+) -> io::Result<usize>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    const PROBE_SIGNAL: libc::c_int = libc::SIGUSR2;
+    let probe_mask = 1_u64 << (PROBE_SIGNAL - 1);
+    let mut original_mask = 0_u64;
+    set_kernel_signal_mask(libc::SIG_BLOCK, &probe_mask, Some(&mut original_mask))?;
+
+    let mut original_action = None;
+    let discovery = (|| {
+        let action = query_kernel_sigaction(PROBE_SIGNAL)?;
+        original_action = Some(action);
+
+        let mut probe: libc::sigaction = unsafe { core::mem::zeroed() };
+        probe.sa_flags = libc::SA_SIGINFO;
+        probe.sa_sigaction = handler as *const () as usize;
+        if unsafe { libc::sigemptyset(&mut probe.sa_mask) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::sigaction(PROBE_SIGNAL, &probe, ptr::null_mut()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        post_install()?;
+
+        let installed = query_kernel_sigaction(PROBE_SIGNAL)?;
+        if installed.handler != handler as *const () as usize
+            || installed.flags & SA_RESTORER == 0
+            || installed.restorer == 0
+        {
+            return Err(io::Error::other(
+                "libc installed an invalid signal restorer",
+            ));
+        }
+        Ok(installed.restorer)
+    })();
+
+    let action_restore = original_action
+        .as_ref()
+        .map_or(Ok(()), |action| set_kernel_sigaction(PROBE_SIGNAL, action));
+    let mask_restore = set_kernel_signal_mask(libc::SIG_SETMASK, &original_mask, None);
+
+    if action_restore.is_err() || mask_restore.is_err() {
+        // Both restorations were attempted above. Continuing after either
+        // failure could expose the temporary handler or mask to application
+        // code, so this irreversible initialization boundary must fail closed.
+        unsafe { libc::_exit(126) }
+    }
+    discovery
+}
+
+pub(crate) fn discover_libc_restorer(
+    handler: unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void),
+) -> io::Result<usize> {
+    discover_libc_restorer_with_post_install(handler, || Ok(()))
 }
 
 /// Install a runtime-owned handler through raw `rt_sigaction` with exact flags.
@@ -140,7 +273,8 @@ pub unsafe fn install_runtime_siginfo_handler(
     unsafe { install_runtime_siginfo_handler_with_flags(signal, handler, flags) }
 }
 
-/// Install `handler` for the runtime-reserved `SIGSYS` signal.
+/// Install `handler` for the runtime-reserved `SIGSYS` signal with the
+/// runtime-owned exact restorer.
 ///
 /// # Safety
 ///
@@ -241,5 +375,56 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn libc_restorer_probe_restores_exact_action_and_mask_on_success_and_failure() {
+        const CHILD: &str = "REVERIE_TEST_LIBC_RESTORER_PROBE";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            let mut original_action =
+                runtime_sigaction(test_handler, libc::SA_SIGINFO | libc::SA_RESTART).unwrap();
+            original_action.mask = 1_u64 << (libc::SIGINT - 1);
+            set_kernel_sigaction(libc::SIGUSR2, &original_action).unwrap();
+            let original_mask = (1_u64 << (libc::SIGUSR1 - 1)) | (1_u64 << (libc::SIGTERM - 1));
+            set_kernel_signal_mask(libc::SIG_SETMASK, &original_mask, None).unwrap();
+
+            let before_action = query_kernel_sigaction(libc::SIGUSR2).unwrap();
+            let before_mask = query_kernel_signal_mask().unwrap();
+            let result = if mode == "success" {
+                discover_libc_restorer_with_post_install(test_handler, || Ok(()))
+            } else {
+                discover_libc_restorer_with_post_install(test_handler, || {
+                    Err(io::Error::other("injected post-install failure"))
+                })
+            };
+            if mode == "success" {
+                assert_ne!(result.unwrap(), 0);
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "injected post-install failure"
+                );
+            }
+            assert_eq!(
+                query_kernel_sigaction(libc::SIGUSR2).unwrap(),
+                before_action
+            );
+            assert_eq!(query_kernel_signal_mask().unwrap(), before_mask);
+            return;
+        }
+
+        for mode in ["success", "failure"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "signal::tests::libc_restorer_probe_restores_exact_action_and_mask_on_success_and_failure",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{mode}: {output:?}");
+            assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+        }
     }
 }

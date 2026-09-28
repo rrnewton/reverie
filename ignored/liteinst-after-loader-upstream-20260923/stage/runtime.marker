@@ -1,0 +1,6 @@
+schema=1
+dso_bytes=1881736
+dso_sha256=462609264749a591d93efdff6f596d6337d6930b960c948545250ed16016205f
+default_features=false
+features=[liteinst-after-loader-experiment]
+preload_constructor=false

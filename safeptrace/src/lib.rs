@@ -255,13 +255,6 @@ impl TraceeToken {
     }
 
     #[cfg(feature = "notifier")]
-    fn into_observed_stopped(mut self, physical_status: PhysicalStatusId) -> Self {
-        self.physical_status = Some(physical_status);
-        self.owns_claimed_exit_stop = false;
-        self
-    }
-
-    #[cfg(feature = "notifier")]
     fn into_stopped(mut self) -> Self {
         if self.logical_stop.is_none() {
             self.logical_stop = Some(self.event.allocate_logical_stop());
@@ -1001,32 +994,6 @@ impl Stopped {
     /// state via other methods such as `Running::wait`.
     pub fn new_unchecked(pid: Pid) -> Self {
         Self::from_token(pid, TraceeToken::current_or_error(pid))
-    }
-
-    /// Creates an unchecked stopped state carrying an externally observed
-    /// physical status.
-    ///
-    /// This is the pre-notifier counterpart of [`Stopped::new_unchecked`]. The
-    /// caller must prove that `status` was returned for this exact unreaped
-    /// child and that no other stopped capability exists. The new Event is not
-    /// registered until the returned state is resumed and waited again.
-    #[cfg(feature = "notifier")]
-    pub fn new_observed_unchecked(
-        pid: Pid,
-        observer: &PhysicalEventObserver,
-        status: PhysicalStatusId,
-    ) -> Result<Self, PhysicalObserverAttachError> {
-        let mut token = TraceeToken::new();
-        token.event().attach_physical_observer(observer)?;
-        token.physical_status = Some(status);
-        let generation = token.event().physical_generation();
-        observer.link_pre_registration_task(PhysicalTaskIdentity::direct_child(pid), generation);
-        observer.record_status_published(
-            generation,
-            status,
-            PhysicalStatusPublication::DirectStopped,
-        );
-        Ok(Self::from_token(pid, token))
     }
 
     /// Creates an unchecked stopped state joined to the currently registered
@@ -2022,32 +1989,6 @@ impl Running {
     #[cfg(feature = "notifier")]
     pub unsafe fn unregistered_terminal_cleanup(&self) -> TerminalCleanup {
         TerminalCleanup::new_unregistered(self.0, &self.1)
-    }
-
-    /// Converts an externally observed stop into the stopped capability for
-    /// this exact generation.
-    ///
-    /// The caller must prove that `status` came from a successful kernel wait
-    /// for this unreaped child and that this [`Running`] value is the sole
-    /// typed capability for it. The observer must already have been attached
-    /// before that wait was attempted.
-    #[cfg(feature = "notifier")]
-    pub fn into_observed_stopped_unchecked(
-        self,
-        observer: &PhysicalEventObserver,
-        status: PhysicalStatusId,
-    ) -> Result<Stopped, PhysicalObserverAttachError> {
-        self.1.event().attach_physical_observer(observer)?;
-        let generation = self.1.event().physical_generation();
-        observer.record_status_published(
-            generation,
-            status,
-            PhysicalStatusPublication::DirectStopped,
-        );
-        Ok(Stopped::from_token(
-            self.0,
-            self.1.into_observed_stopped(status),
-        ))
     }
 
     /// Blocks until a state change occurs. This may transition the process to

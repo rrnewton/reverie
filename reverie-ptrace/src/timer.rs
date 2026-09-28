@@ -665,6 +665,20 @@ impl Timer {
         }
     }
 
+    /// Returns whether this task has ever activated the asynchronous timer
+    /// notification transport after its initial exec.
+    ///
+    /// The current `SIGSTKFLT` transport has no generation-bearing drain: a
+    /// notification from an older arm can remain blocked and later coalesce
+    /// with another standard signal.  Consequently, once an ordinary request
+    /// reaches notification preparation, absence of stale transport debt can
+    /// no longer be proved.  LiteInst must keep subsequent guest execution on
+    /// the ptrace-observed path for the lifetime of this timer.
+    pub(crate) fn notification_transport_activated(&self) -> bool {
+        self.inner_noinit()
+            .is_some_and(|timer| timer.notification_transport_activated)
+    }
+
     /// When a signal is received, this method drives the timer event to
     /// completion via single stepping, after checking that the signal was meant
     /// for this specific timer. This *must* be called when a timer signal is
@@ -727,6 +741,13 @@ struct TimerImpl {
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
 
+    /// Monotonic witness that an ordinary (post-exec) request reached physical
+    /// notification preparation.  This deliberately does not clear when the
+    /// current counter is disabled or a signal is consumed: the standard-signal
+    /// transport cannot prove that no notification from an older arm remains
+    /// blocked or coalesced.
+    notification_transport_activated: bool,
+
     initial_command: InitialCommand,
 
     /// Requests made before the first post-exec callback have no physical
@@ -763,6 +784,7 @@ struct RetainedTimerState {
     event: ActiveEvent,
     timer_status: EventStatus,
     send_artificial_signal: bool,
+    notification_transport_activated: bool,
     timer_enabled: CounterEnableState,
     clock_enabled: CounterEnableState,
     timer_notification_threshold: Option<u64>,
@@ -778,6 +800,9 @@ impl RetainedTimerState {
             Some("event status")
         } else if self.send_artificial_signal != current.send_artificial_signal {
             Some("artificial-signal state")
+        } else if self.notification_transport_activated != current.notification_transport_activated
+        {
+            Some("notification-transport activation state")
         } else if self.timer_enabled != current.timer_enabled {
             Some("sampling-counter enable state")
         } else if self.clock_enabled != current.clock_enabled {
@@ -1064,6 +1089,7 @@ impl TimerImpl {
             },
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
+            notification_transport_activated: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -1084,6 +1110,7 @@ impl TimerImpl {
             event: self.event,
             timer_status: self.timer_status,
             send_artificial_signal: self.send_artificial_signal,
+            notification_transport_activated: self.notification_transport_activated,
             timer_enabled: self.timer_enabled,
             clock_enabled: self.clock_enabled,
             timer_notification_threshold: self.timer_notification_threshold,
@@ -1528,6 +1555,10 @@ impl TimerImpl {
             debug_assert!(!self.send_artificial_signal);
             return Ok(());
         }
+        // Latch before the first fallible notification operation. Even a
+        // partially failed reset/period/enable sequence cannot prove that no
+        // older or concurrent standard-signal notification debt exists.
+        self.notification_transport_activated = true;
         self.prepare_notification(notification)?;
         self.event = Self::event_at(evt, self.read_clock() + delivery);
         self.timer_status = EventStatus::Scheduled;
@@ -1897,6 +1928,7 @@ mod tests {
         let pid = Pid::from_raw(unsafe { libc::getpid() });
         let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
         let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
+        assert!(!timer.notification_transport_activated);
         timer.fail_next_notification = Some(Errno::EIO);
         for (request, expected) in [
             (
@@ -1924,6 +1956,7 @@ mod tests {
             assert_eq!(timer.held_initial_event, Some(expected));
             assert_eq!(timer.event, expected);
             assert_eq!(timer.timer_status, EventStatus::Scheduled);
+            assert!(!timer.notification_transport_activated);
             timer.finalize_requests();
             assert!(!timer.send_artificial_signal);
             assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
@@ -1954,6 +1987,7 @@ mod tests {
         assert_eq!(timer.held_initial_event, None);
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
         assert!(!timer.send_artificial_signal);
+        assert!(!timer.notification_transport_activated);
         assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
         assert_eq!(
             timer.request_event(TimerEventRequest::Precise(1)),
@@ -1961,6 +1995,7 @@ mod tests {
         );
         assert_eq!(timer.fail_next_notification, None);
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert!(timer.notification_transport_activated);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -2116,6 +2151,7 @@ mod tests {
             },
             timer_status: EventStatus::Armed,
             send_artificial_signal: false,
+            notification_transport_activated: true,
             timer_enabled: CounterEnableState::Enabled,
             clock_enabled: CounterEnableState::Enabled,
             timer_notification_threshold: Some(31),
@@ -2145,6 +2181,13 @@ mod tests {
                     ..retained
                 },
                 "artificial-signal state",
+            ),
+            (
+                RetainedTimerState {
+                    notification_transport_activated: false,
+                    ..retained
+                },
+                "notification-transport activation state",
             ),
             (
                 RetainedTimerState {
@@ -2196,6 +2239,7 @@ mod tests {
             },
             timer_status: EventStatus::Armed,
             send_artificial_signal: false,
+            notification_transport_activated: true,
             timer_enabled: CounterEnableState::Enabled,
             clock_enabled: CounterEnableState::Enabled,
             timer_notification_threshold: Some(397),

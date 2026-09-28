@@ -1,7 +1,12 @@
+use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use super::*;
+
+const FIFO_CHILD: &str = "REVERIE_LOADER_CACHE_FIFO_CHILD";
+const FIFO_CHILD_CACHE: &str = "REVERIE_LOADER_CACHE_FIFO_CHILD_CACHE";
+const FIFO_CHILD_DEFERRED: &str = "REVERIE_LOADER_CACHE_FIFO_CHILD_DEFERRED";
 
 fn put16(bytes: &mut [u8], at: usize, value: u16) {
     bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
@@ -11,6 +16,162 @@ fn put32(bytes: &mut [u8], at: usize, value: u32) {
 }
 fn put64(bytes: &mut [u8], at: usize, value: u64) {
     bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticCacheEntry {
+    flags: u32,
+    key: Vec<u8>,
+    value: Vec<u8>,
+    osversion: u32,
+    hwcap: u64,
+}
+
+impl SyntheticCacheEntry {
+    fn x86_64(key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Self {
+        Self {
+            flags: GLIBC_CACHE_ENTRY_FLAGS_X86_64,
+            key: key.as_ref().to_vec(),
+            value: value.as_ref().to_vec(),
+            osversion: 0,
+            hwcap: 0,
+        }
+    }
+}
+
+fn synthetic_glibc_cache(entries: &[SyntheticCacheEntry]) -> Vec<u8> {
+    let entry_bytes = entries.len() * GLIBC_CACHE_ENTRY_SIZE;
+    let string_start = GLIBC_CACHE_HEADER_SIZE + entry_bytes;
+    let mut strings = Vec::new();
+    let mut offsets = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let key = string_start + strings.len();
+        strings.extend_from_slice(&entry.key);
+        strings.push(0);
+        let value = string_start + strings.len();
+        strings.extend_from_slice(&entry.value);
+        strings.push(0);
+        offsets.push((key, value));
+    }
+
+    let mut bytes = vec![0; string_start + strings.len()];
+    bytes[..GLIBC_CACHE_MAGIC.len()].copy_from_slice(GLIBC_CACHE_MAGIC);
+    put32(&mut bytes, 20, u32::try_from(entries.len()).unwrap());
+    put32(&mut bytes, 24, u32::try_from(strings.len()).unwrap());
+    bytes[28] = GLIBC_CACHE_LITTLE_ENDIAN;
+    for (index, entry) in entries.iter().enumerate() {
+        let at = GLIBC_CACHE_HEADER_SIZE + index * GLIBC_CACHE_ENTRY_SIZE;
+        put32(&mut bytes, at, entry.flags);
+        put32(&mut bytes, at + 4, u32::try_from(offsets[index].0).unwrap());
+        put32(&mut bytes, at + 8, u32::try_from(offsets[index].1).unwrap());
+        put32(&mut bytes, at + 12, entry.osversion);
+        put64(&mut bytes, at + 16, entry.hwcap);
+    }
+    bytes[string_start..].copy_from_slice(&strings);
+    bytes
+}
+
+fn synthetic_glibc_cache_with_extension(mut bytes: Vec<u8>, extra_padding: usize) -> Vec<u8> {
+    assert_eq!(extra_padding % 4, 0);
+    let extension = ((bytes.len() + 3) & !3) + extra_padding;
+    let section = extension + GLIBC_CACHE_EXTENSION_HEADER_SIZE;
+    let data = section + GLIBC_CACHE_EXTENSION_SECTION_SIZE;
+    bytes.resize(data + 1, 0);
+    put32(&mut bytes, 32, u32::try_from(extension).unwrap());
+    put32(&mut bytes, extension, GLIBC_CACHE_EXTENSION_MAGIC);
+    put32(&mut bytes, extension + 4, 1);
+    put32(&mut bytes, section, 0);
+    put32(&mut bytes, section + 4, 0);
+    put32(&mut bytes, section + 8, u32::try_from(data).unwrap());
+    put32(&mut bytes, section + 12, 1);
+    bytes[data] = b'g';
+    bytes
+}
+
+struct CacheAliasInput {
+    directory: PathBuf,
+    cache: PathBuf,
+    deferred: PathBuf,
+    alias: PathBuf,
+    initial: PathBuf,
+    unbound: PathBuf,
+}
+
+impl CacheAliasInput {
+    fn new() -> Self {
+        let directory = std::env::temp_dir().join(format!(
+            "liteinst-cache-alias-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        let cache = directory.join("ld.so.cache");
+        let deferred = directory.join("libdeferred-real.so.1");
+        let alias = directory.join("libdeferred.so.1");
+        let initial = directory.join("libinitial.so.1");
+        let unbound = directory.join("libunbound.so.1");
+        std::fs::write(&deferred, b"\x7fELFdeferred-v1").unwrap();
+        std::fs::write(&initial, b"\x7fELFinitial-v1").unwrap();
+        std::fs::write(&unbound, b"\x7fELFunbound-v1").unwrap();
+        std::os::unix::fs::symlink(&deferred, &alias).unwrap();
+        Self {
+            directory,
+            cache,
+            deferred,
+            alias,
+            initial,
+            unbound,
+        }
+    }
+
+    fn deferred_image(&self) -> LiteinstCallerImage {
+        LiteinstCallerImage::read(&self.deferred).unwrap()
+    }
+
+    fn entry(&self) -> SyntheticCacheEntry {
+        SyntheticCacheEntry::x86_64(
+            b"libdeferred.so.1",
+            self.alias.as_os_str().as_encoded_bytes(),
+        )
+    }
+
+    fn bind(
+        &self,
+        bytes: &[u8],
+        dependency: &LiteinstCallerImage,
+    ) -> io::Result<BTreeMap<PathBuf, LiteinstLoaderCacheAlias>> {
+        std::fs::write(&self.cache, bytes)?;
+        let cache = LiteinstLoaderCache::read(&self.cache)?;
+        bind_glibc_loader_cache_alias_targets(
+            &cache,
+            &[("libdeferred.so.1".to_owned(), dependency.clone())],
+        )
+    }
+
+    fn retarget_alias(&self, target: &Path) {
+        std::fs::remove_file(&self.alias).unwrap();
+        std::os::unix::fs::symlink(target, &self.alias).unwrap();
+    }
+}
+
+impl Drop for CacheAliasInput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.alias);
+        let _ = std::fs::remove_file(&self.cache);
+        let _ = std::fs::remove_file(&self.deferred);
+        let _ = std::fs::remove_file(&self.initial);
+        let _ = std::fs::remove_file(&self.unbound);
+        let _ = std::fs::remove_file(self.directory.join("deferred-old"));
+        let _ = std::fs::remove_file(self.directory.join("same-bytes-copy"));
+        let _ = std::fs::remove_dir(&self.directory);
+    }
+}
+
+fn make_fifo(path: &Path) {
+    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    let result = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+    assert_eq!(result, 0, "mkfifo failed: {}", io::Error::last_os_error());
 }
 fn runtime() -> Vec<u8> {
     let mut bytes = vec![0; 0x3000];
@@ -640,4 +801,565 @@ fn loader_phase_partition_refuses_missing_and_unreachable_images() {
         BTreeSet::from(["loader".to_owned(), "libc".to_owned()])
     );
     assert_eq!(cyclic_deferred, BTreeSet::from(["runtime-only".to_owned()]));
+}
+
+fn assert_cache_parse_rejected(label: &str, bytes: &[u8]) {
+    assert!(
+        parse_glibc_loader_cache(bytes).is_err(),
+        "accepted malformed glibc cache: {label}"
+    );
+}
+
+#[test]
+fn glibc_cache_binds_one_exact_deferred_alias() {
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let cache_bytes = synthetic_glibc_cache(&[input.entry()]);
+    std::fs::write(&input.cache, &cache_bytes).unwrap();
+    let cache = LiteinstLoaderCache::read(&input.cache).unwrap();
+    let aliases = bind_glibc_loader_cache_alias_targets(
+        &cache,
+        &[("libdeferred.so.1".to_owned(), dependency.clone())],
+    )
+    .unwrap();
+    let alias = aliases.get(&input.alias).unwrap();
+    assert_eq!(alias.soname(), "libdeferred.so.1");
+    assert_eq!(alias.raw_path(), input.alias);
+    assert_eq!(alias.raw_link(), input.deferred);
+    assert_eq!(
+        alias.raw_link_stamp(),
+        file_stamp(&std::fs::symlink_metadata(&input.alias).unwrap())
+    );
+    assert_eq!(
+        alias.dependency_stamp(),
+        file_stamp(&std::fs::metadata(&input.deferred).unwrap())
+    );
+    assert_eq!(alias.dependency().path, dependency.path);
+    assert_eq!(alias.dependency().file_identity, dependency.file_identity);
+    assert_eq!(alias.dependency().bytes, dependency.bytes);
+    assert_eq!(cache.path(), input.cache);
+    assert_eq!(cache.bytes(), cache_bytes);
+    assert_eq!(
+        cache.file_identity(),
+        FileIdentity::from_metadata(&std::fs::metadata(&input.cache).unwrap())
+    );
+    alias.revalidate().unwrap();
+}
+
+#[test]
+fn glibc_cache_alias_revalidation_binds_link_spelling_and_stable_dependency_stamp() {
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let aliases = input
+        .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+        .unwrap();
+    let alias = aliases.get(&input.alias).unwrap().clone();
+
+    std::fs::remove_file(&input.alias).unwrap();
+    std::os::unix::fs::symlink(input.deferred.file_name().unwrap(), &input.alias).unwrap();
+    assert_eq!(input.alias.canonicalize().unwrap(), input.deferred);
+    assert!(
+        alias.revalidate().is_err(),
+        "accepted a different raw symlink payload reaching the same dependency"
+    );
+
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let aliases = input
+        .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+        .unwrap();
+    let alias = aliases.get(&input.alias).unwrap().clone();
+    let metadata = std::fs::metadata(&input.deferred).unwrap();
+    let changed_mode = metadata.permissions().mode() ^ 0o100;
+    std::fs::set_permissions(
+        &input.deferred,
+        std::fs::Permissions::from_mode(changed_mode),
+    )
+    .unwrap();
+    assert_eq!(
+        FileIdentity::from_metadata(&std::fs::metadata(&input.deferred).unwrap()),
+        dependency.file_identity
+    );
+    assert_eq!(
+        std::fs::read(&input.deferred).unwrap(),
+        dependency.bytes.as_ref()
+    );
+    assert!(
+        alias.revalidate().is_err(),
+        "accepted a same-inode, same-byte dependency with a changed stable stamp"
+    );
+}
+
+#[test]
+fn loader_cache_alias_profile_is_zero_or_one_exact_libgcc_alias() {
+    assert!(loader_cache_alias_profile_is_exact(&BTreeMap::new()));
+    assert!(loader_cache_alias_target_profile_is_exact(&[]));
+
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let aliases = input
+        .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+        .unwrap();
+    let mut exact = aliases.values().next().unwrap().clone();
+    exact.soname = PROFILED_LOADER_CACHE_ALIAS_SONAME.to_owned();
+    exact.raw_path = PathBuf::from(PROFILED_LOADER_CACHE_ALIAS_RAW_PATH);
+    exact.dependency.path = PathBuf::from(PROFILED_LOADER_CACHE_ALIAS_DEPENDENCY_PATH);
+    assert!(loader_cache_alias_target_profile_is_exact(&[(
+        exact.soname.clone(),
+        exact.dependency.clone(),
+    )]));
+    let exact = BTreeMap::from([(exact.raw_path.clone(), exact)]);
+    assert!(loader_cache_alias_profile_is_exact(&exact));
+
+    for mutation in ["soname", "raw path", "dependency path"] {
+        let mut changed = exact.clone();
+        let alias = changed.values_mut().next().unwrap();
+        match mutation {
+            "soname" => alias.soname.push_str(".changed"),
+            "raw path" => alias.raw_path.push("changed"),
+            "dependency path" => alias.dependency.path.push("changed"),
+            _ => unreachable!(),
+        }
+        assert!(
+            !loader_cache_alias_profile_is_exact(&changed),
+            "accepted changed profile field: {mutation}"
+        );
+        let alias = changed.values().next().unwrap();
+        if mutation != "raw path" {
+            assert!(
+                !loader_cache_alias_target_profile_is_exact(&[(
+                    alias.soname.clone(),
+                    alias.dependency.clone(),
+                )]),
+                "accepted changed target profile field: {mutation}"
+            );
+        }
+    }
+
+    let alias = exact.values().next().unwrap().clone();
+    let changed_key = BTreeMap::from([(PathBuf::from("/lib64/changed.so.1"), alias)]);
+    assert!(
+        !loader_cache_alias_profile_is_exact(&changed_key),
+        "accepted a changed raw-path map key"
+    );
+
+    let mut duplicated = exact;
+    let mut second = duplicated.values().next().unwrap().clone();
+    second.raw_path = PathBuf::from("/lib64/libgcc_s-second.so.1");
+    duplicated.insert(second.raw_path.clone(), second);
+    assert!(!loader_cache_alias_profile_is_exact(&duplicated));
+}
+
+#[test]
+fn glibc_cache_header_count_and_extension_boundaries_are_exact() {
+    let input = CacheAliasInput::new();
+    let valid = synthetic_glibc_cache(&[input.entry()]);
+    assert_eq!(parse_glibc_loader_cache(&valid).unwrap().len(), 1);
+
+    assert_cache_parse_rejected("truncated header", &valid[..GLIBC_CACHE_HEADER_SIZE - 1]);
+
+    let mut changed = valid.clone();
+    changed[0] ^= 1;
+    assert_cache_parse_rejected("magic", &changed);
+
+    let mut changed = valid.clone();
+    changed[28] = 0;
+    assert_cache_parse_rejected("endianness flag", &changed);
+
+    let mut changed = valid.clone();
+    changed[29] = 1;
+    assert_cache_parse_rejected("endianness padding", &changed);
+
+    let mut changed = valid.clone();
+    changed[36] = 1;
+    assert_cache_parse_rejected("reserved header", &changed);
+
+    let mut changed = valid.clone();
+    put32(
+        &mut changed,
+        20,
+        u32::try_from(MAX_GLIBC_CACHE_ENTRIES + 1).unwrap(),
+    );
+    assert_cache_parse_rejected("entry count bound", &changed);
+
+    let mut changed = valid.clone();
+    put32(&mut changed, 20, 2);
+    assert_cache_parse_rejected("entry count/table disagreement", &changed);
+
+    let mut changed = valid.clone();
+    put32(&mut changed, 20, 0);
+    assert_cache_parse_rejected("zero count with retained entry", &changed);
+
+    let mut changed = valid.clone();
+    put32(&mut changed, 24, u32::MAX);
+    assert_cache_parse_rejected("string table length", &changed);
+
+    let declared_strings = u32::from_le_bytes(valid[24..28].try_into().unwrap());
+    for (label, length) in [
+        ("short string table", declared_strings - 1),
+        ("long string table", declared_strings + 1),
+    ] {
+        let mut changed = valid.clone();
+        put32(&mut changed, 24, length);
+        assert_cache_parse_rejected(label, &changed);
+    }
+
+    let mut changed = valid.clone();
+    changed.push(0);
+    assert_cache_parse_rejected("undeclared trailing byte", &changed);
+
+    let mut changed = valid.clone();
+    let string_start = GLIBC_CACHE_HEADER_SIZE + GLIBC_CACHE_ENTRY_SIZE;
+    put32(&mut changed, 32, u32::try_from(string_start).unwrap());
+    assert_cache_parse_rejected("extension overlaps string table", &changed);
+
+    let mut changed = valid.clone();
+    let outside = changed.len() + 16;
+    put32(&mut changed, 32, u32::try_from(outside).unwrap());
+    assert_cache_parse_rejected("extension outside bytes", &changed);
+
+    let changed = synthetic_glibc_cache_with_extension(valid.clone(), 0);
+    assert_eq!(parse_glibc_loader_cache(&changed).unwrap().len(), 1);
+
+    let mut unaligned = changed.clone();
+    unaligned.push(0);
+    let extension =
+        usize::try_from(u32::from_le_bytes(changed[32..36].try_into().unwrap())).unwrap();
+    let unaligned_offset = extension + 1;
+    put32(&mut unaligned, 32, u32::try_from(unaligned_offset).unwrap());
+    assert_cache_parse_rejected("unaligned extension", &unaligned);
+
+    let mut nonzero_gap = synthetic_glibc_cache_with_extension(valid.clone(), 4);
+    nonzero_gap[valid.len()] = 1;
+    assert_cache_parse_rejected("nonzero extension padding", &nonzero_gap);
+
+    let mut changed = synthetic_glibc_cache_with_extension(valid.clone(), 0);
+    let extension =
+        usize::try_from(u32::from_le_bytes(changed[32..36].try_into().unwrap())).unwrap();
+    put32(&mut changed, extension, 0);
+    assert_cache_parse_rejected("extension magic", &changed);
+
+    let mut changed = synthetic_glibc_cache_with_extension(valid.clone(), 0);
+    let extension =
+        usize::try_from(u32::from_le_bytes(changed[32..36].try_into().unwrap())).unwrap();
+    put32(&mut changed, extension + 4, 0);
+    assert_cache_parse_rejected("zero extension section count", &changed);
+
+    let mut changed = synthetic_glibc_cache_with_extension(valid, 0);
+    let extension =
+        usize::try_from(u32::from_le_bytes(changed[32..36].try_into().unwrap())).unwrap();
+    put32(
+        &mut changed,
+        extension + 4,
+        u32::try_from(MAX_GLIBC_CACHE_EXTENSION_SECTIONS + 1).unwrap(),
+    );
+    assert_cache_parse_rejected("extension section count bound", &changed);
+}
+
+#[test]
+fn glibc_cache_offsets_terminators_and_strings_stay_inside_exact_bounds() {
+    let input = CacheAliasInput::new();
+    let valid = synthetic_glibc_cache(&[input.entry()]);
+    let string_start = GLIBC_CACHE_HEADER_SIZE + GLIBC_CACHE_ENTRY_SIZE;
+    let string_end = valid.len();
+    let key_length = b"libdeferred.so.1".len();
+    let value_length = input.alias.as_os_str().as_encoded_bytes().len();
+
+    for (label, field, offset) in [
+        ("key before string table", 4, string_start - 1),
+        ("key at string-table end", 4, string_end),
+        ("value before string table", 8, string_start - 1),
+        ("value at string-table end", 8, string_end),
+    ] {
+        let mut changed = valid.clone();
+        put32(
+            &mut changed,
+            GLIBC_CACHE_HEADER_SIZE + field,
+            u32::try_from(offset).unwrap(),
+        );
+        assert_cache_parse_rejected(label, &changed);
+    }
+    for (label, field) in [("key offset overflow", 4), ("value offset overflow", 8)] {
+        let mut changed = valid.clone();
+        put32(&mut changed, GLIBC_CACHE_HEADER_SIZE + field, u32::MAX);
+        assert_cache_parse_rejected(label, &changed);
+    }
+
+    let mut changed = valid.clone();
+    put32(
+        &mut changed,
+        GLIBC_CACHE_HEADER_SIZE + 4,
+        u32::try_from(string_start + key_length).unwrap(),
+    );
+    assert_cache_parse_rejected("empty key", &changed);
+
+    let value_start = string_start + key_length + 1;
+    let mut changed = valid.clone();
+    put32(
+        &mut changed,
+        GLIBC_CACHE_HEADER_SIZE + 8,
+        u32::try_from(value_start + value_length).unwrap(),
+    );
+    assert_cache_parse_rejected("empty value", &changed);
+
+    let mut changed = valid.clone();
+    changed[string_start + key_length] = b'x';
+    assert_cache_parse_rejected("missing key terminator", &changed);
+
+    let mut changed = valid.clone();
+    changed[value_start + value_length] = b'x';
+    assert_cache_parse_rejected("missing value terminator", &changed);
+
+    let mut changed = valid.clone();
+    changed[string_start..].iter_mut().for_each(|byte| {
+        if *byte == 0 {
+            *byte = b'x';
+        }
+    });
+    assert_cache_parse_rejected("unterminated strings", &changed);
+
+    for (label, entry) in [
+        (
+            "control byte in key",
+            SyntheticCacheEntry::x86_64(
+                b"libdeferred\n.so.1",
+                input.alias.as_os_str().as_encoded_bytes(),
+            ),
+        ),
+        (
+            "control byte in path",
+            SyntheticCacheEntry::x86_64(b"libdeferred.so.1", b"/tmp/lib\n.so"),
+        ),
+        (
+            "relative path",
+            SyntheticCacheEntry::x86_64(b"libdeferred.so.1", b"libdeferred.so.1"),
+        ),
+        (
+            "double-slash path",
+            SyntheticCacheEntry::x86_64(b"libdeferred.so.1", b"/tmp//libdeferred.so.1"),
+        ),
+        (
+            "parent-component path",
+            SyntheticCacheEntry::x86_64(b"libdeferred.so.1", b"/tmp/../libdeferred.so.1"),
+        ),
+    ] {
+        assert_cache_parse_rejected(label, &synthetic_glibc_cache(&[entry]));
+    }
+
+    let oversized = [b"/".as_slice(), &vec![b'a'; MAX_GLIBC_CACHE_STRING]].concat();
+    assert_cache_parse_rejected(
+        "oversized absolute path",
+        &synthetic_glibc_cache(&[SyntheticCacheEntry::x86_64(b"libdeferred.so.1", oversized)]),
+    );
+}
+
+#[test]
+fn glibc_cache_deferred_entry_metadata_and_uniqueness_are_exact() {
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+
+    for (label, entry) in [
+        ("flags", {
+            let mut entry = input.entry();
+            entry.flags ^= 1;
+            entry
+        }),
+        ("OS version", {
+            let mut entry = input.entry();
+            entry.osversion = 1;
+            entry
+        }),
+        ("hwcap", {
+            let mut entry = input.entry();
+            entry.hwcap = 1;
+            entry
+        }),
+    ] {
+        assert!(
+            input
+                .bind(&synthetic_glibc_cache(&[entry]), &dependency)
+                .is_err(),
+            "accepted changed deferred cache {label}"
+        );
+    }
+
+    let entry = input.entry();
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[entry.clone(), entry]), &dependency,)
+            .is_err(),
+        "accepted duplicate deferred SONAME"
+    );
+
+    let entry = input.entry();
+    let mut alternative = entry.clone();
+    alternative.hwcap = 1;
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[entry, alternative]), &dependency,)
+            .is_err(),
+        "accepted alternate hwcap record"
+    );
+
+    let missing =
+        SyntheticCacheEntry::x86_64(b"libother.so.1", input.alias.as_os_str().as_encoded_bytes());
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[missing]), &dependency)
+            .is_err(),
+        "accepted cache without the deferred SONAME"
+    );
+
+    std::fs::write(&input.cache, synthetic_glibc_cache(&[input.entry()])).unwrap();
+    let cache = LiteinstLoaderCache::read(&input.cache).unwrap();
+    assert!(
+        bind_glibc_loader_cache_alias_targets(
+            &cache,
+            &[
+                ("libdeferred.so.1".to_owned(), dependency.clone()),
+                ("libdeferred.so.1".to_owned(), dependency),
+            ],
+        )
+        .is_err(),
+        "accepted duplicate target SONAME"
+    );
+}
+
+#[test]
+fn glibc_cache_model_excludes_initial_and_unbound_sonames() {
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let entries = [
+        input.entry(),
+        SyntheticCacheEntry::x86_64(
+            b"libinitial.so.1",
+            input.initial.as_os_str().as_encoded_bytes(),
+        ),
+        SyntheticCacheEntry::x86_64(
+            b"libunbound.so.1",
+            input.unbound.as_os_str().as_encoded_bytes(),
+        ),
+    ];
+    let aliases = input
+        .bind(&synthetic_glibc_cache(&entries), &dependency)
+        .unwrap();
+    assert_eq!(aliases.len(), 1);
+    assert!(aliases.contains_key(&input.alias));
+    assert!(!aliases.contains_key(&input.initial));
+    assert!(!aliases.contains_key(&input.unbound));
+
+    for soname in [b"libinitial.so.1".as_slice(), b"libunbound.so.1".as_slice()] {
+        let collision =
+            SyntheticCacheEntry::x86_64(soname, input.alias.as_os_str().as_encoded_bytes());
+        assert!(
+            input
+                .bind(
+                    &synthetic_glibc_cache(&[input.entry(), collision]),
+                    &dependency,
+                )
+                .is_err(),
+            "accepted a deferred raw alias shared by another SONAME"
+        );
+    }
+}
+
+#[test]
+fn glibc_cache_alias_must_rebind_exact_path_bytes_and_identity() {
+    for target in ["initial", "unbound"] {
+        let input = CacheAliasInput::new();
+        let dependency = input.deferred_image();
+        let target_path = match target {
+            "initial" => input.initial.clone(),
+            "unbound" => input.unbound.clone(),
+            _ => unreachable!(),
+        };
+        input.retarget_alias(&target_path);
+        assert!(
+            input
+                .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+                .is_err(),
+            "accepted alias retargeted to {target} image"
+        );
+    }
+
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    std::fs::write(&input.deferred, b"\x7fELFdeferred-v2").unwrap();
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+            .is_err(),
+        "accepted changed dependency bytes"
+    );
+
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let old = input.directory.join("deferred-old");
+    std::fs::rename(&input.deferred, &old).unwrap();
+    std::fs::write(&input.deferred, dependency.bytes.as_ref()).unwrap();
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+            .is_err(),
+        "accepted replacement inode at the same path with the same bytes"
+    );
+
+    let input = CacheAliasInput::new();
+    let dependency = input.deferred_image();
+    let copy = input.directory.join("same-bytes-copy");
+    std::fs::write(&copy, dependency.bytes.as_ref()).unwrap();
+    input.retarget_alias(&copy);
+    assert!(
+        input
+            .bind(&synthetic_glibc_cache(&[input.entry()]), &dependency)
+            .is_err(),
+        "accepted same bytes at a different canonical path and identity"
+    );
+}
+
+#[test]
+fn glibc_cache_alias_fifo_is_refused_without_blocking() {
+    if std::env::var_os(FIFO_CHILD).is_some() {
+        let cache_path = PathBuf::from(std::env::var_os(FIFO_CHILD_CACHE).unwrap());
+        let deferred_path = PathBuf::from(std::env::var_os(FIFO_CHILD_DEFERRED).unwrap());
+        let dependency = LiteinstCallerImage::read(&deferred_path).unwrap();
+        std::fs::remove_file(&deferred_path).unwrap();
+        make_fifo(&deferred_path);
+        let cache = LiteinstLoaderCache::read(&cache_path).unwrap();
+        assert!(
+            bind_glibc_loader_cache_alias_targets(
+                &cache,
+                &[("libdeferred.so.1".to_owned(), dependency)],
+            )
+            .is_err(),
+            "accepted a cache alias retargeted to a FIFO"
+        );
+        return;
+    }
+
+    let input = CacheAliasInput::new();
+    std::fs::write(&input.cache, synthetic_glibc_cache(&[input.entry()])).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("glibc_cache_alias_fifo_is_refused_without_blocking")
+        .arg("--nocapture")
+        .env(FIFO_CHILD, "1")
+        .env(FIFO_CHILD_CACHE, &input.cache)
+        .env(FIFO_CHILD_DEFERRED, &input.deferred)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!("FIFO cache-alias refusal child exceeded five-second bound");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success(), "FIFO cache-alias refusal child failed");
 }

@@ -89,5 +89,9 @@ pub use tracer::Tracer;
 pub use tracer::TracerBuilder;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
+#[cfg(target_arch = "x86_64")]
+pub use vdso::CurrentVdsoPatch;
 pub use vdso::VdsoSyscallSite;
 pub use vdso::patch_current_vdso;
+#[cfg(target_arch = "x86_64")]
+pub use vdso::patch_current_vdso_transaction;

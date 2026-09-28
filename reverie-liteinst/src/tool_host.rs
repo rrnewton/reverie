@@ -167,7 +167,7 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_patch = reverie_ptrace::patch_current_vdso(&subscriptions)
+    let vdso_patch = reverie_ptrace::patch_current_vdso_transaction(&subscriptions)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();

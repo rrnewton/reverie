@@ -67,6 +67,7 @@ impl LiteinstSavedXstateFormat {
         Self(raw)
     }
 
+    #[cfg(test)]
     pub(crate) const fn raw(self) -> u64 {
         self.0
     }
@@ -100,6 +101,7 @@ impl LiteinstSavedXstateComponent {
         size: 0,
     };
 
+    #[cfg(test)]
     pub(crate) const fn from_raw(xfeature: u64, offset: u64, size: u64) -> Self {
         Self {
             xfeature,
@@ -283,6 +285,7 @@ pub(crate) struct LiteinstSavedXstateDescriptor {
 }
 
 impl LiteinstSavedXstateDescriptor {
+    #[cfg(test)]
     pub(crate) const UNAVAILABLE: Self = Self {
         address: 0,
         len: 0,
@@ -300,14 +303,6 @@ impl LiteinstSavedXstateDescriptor {
 
     pub(crate) const fn is_empty(self) -> bool {
         self.len == 0
-    }
-
-    pub(crate) const fn mask(self) -> u64 {
-        self.mask
-    }
-
-    pub(crate) const fn format(self) -> LiteinstSavedXstateFormat {
-        self.format
     }
 
     /// Requires both the authenticated hook layout and the live R12 geometry.
@@ -336,6 +331,7 @@ impl LiteinstInjectedSyscallEnvelope {
         &self.frame
     }
 
+    #[cfg(test)]
     pub(crate) fn frame_mut(&mut self) -> &mut InjectedSyscallFrame {
         &mut self.frame
     }

@@ -1324,108 +1324,262 @@ fn reviewed_direct_getenv_rejects_an_out_of_line_call() {
 }
 
 #[test]
-fn counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping() {
-    assert!(
-        validate_getenv_data_accesses(
-            COUNTER_GUARDED_LIBC_SHA256,
-            COUNTER_GUARDED_GETENV_CODE,
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(COUNTER_GUARDED_BOOKKEEPING),
-            &[],
-        )
-        .is_ok()
+fn counter_guarded_getenv_profiles_require_exact_provider_code_metadata_and_bookkeeping() {
+    let expected_profiles = [
+        COUNTER_GUARDED_GETENV_PROFILE,
+        COUNTER_GUARDED_V2_GETENV_PROFILE,
+    ];
+    assert_eq!(
+        REVIEWED_GETENV_PROFILES,
+        expected_profiles.as_slice(),
+        "production getenv allowlist differs from the two explicitly reviewed profiles"
     );
 
-    assert!(
-        validate_getenv_data_accesses(
-            [0; 32],
-            COUNTER_GUARDED_GETENV_CODE,
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(COUNTER_GUARDED_BOOKKEEPING),
-            &[],
-        )
-        .is_err()
-    );
-
-    for index in 0..COUNTER_GUARDED_GETENV_CODE.len() {
-        let mut mutated = COUNTER_GUARDED_GETENV_CODE.to_vec();
-        mutated[index] ^= 1;
+    for profile in &expected_profiles {
         assert!(
             validate_getenv_data_accesses(
-                COUNTER_GUARDED_LIBC_SHA256,
-                &mutated,
-                COUNTER_GUARDED_GETENV_RVA,
-                COUNTER_GUARDED_GETENV_GOT_RVA,
-                COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-                Some(COUNTER_GUARDED_BOOKKEEPING),
+                profile.provider_sha256,
+                profile.code,
+                profile.address,
+                profile.got,
+                profile.object,
+                profile.bookkeeping,
                 &[],
             )
-            .is_err(),
-            "mutated getenv byte {index} was accepted"
+            .is_ok()
         );
-    }
 
-    for (address, got, object, bookkeeping) in [
-        (
-            COUNTER_GUARDED_GETENV_RVA + 1,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(COUNTER_GUARDED_BOOKKEEPING),
-        ),
-        (
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA + 1,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(COUNTER_GUARDED_BOOKKEEPING),
-        ),
-        (
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA + 1,
-            Some(COUNTER_GUARDED_BOOKKEEPING),
-        ),
-        (
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            None,
-        ),
-        (
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(StaticBookkeeping {
-                counter_rva: COUNTER_GUARDED_BOOKKEEPING.counter_rva + 1,
-                ..COUNTER_GUARDED_BOOKKEEPING
-            }),
-        ),
-        (
-            COUNTER_GUARDED_GETENV_RVA,
-            COUNTER_GUARDED_GETENV_GOT_RVA,
-            COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
-            Some(StaticBookkeeping {
-                allocation_list_rva: COUNTER_GUARDED_BOOKKEEPING.allocation_list_rva + 1,
-                ..COUNTER_GUARDED_BOOKKEEPING
-            }),
-        ),
-    ] {
         assert!(
             validate_getenv_data_accesses(
-                COUNTER_GUARDED_LIBC_SHA256,
-                COUNTER_GUARDED_GETENV_CODE,
-                address,
-                got,
-                object,
-                bookkeeping,
+                [0; 32],
+                profile.code,
+                profile.address,
+                profile.got,
+                profile.object,
+                profile.bookkeeping,
                 &[],
             )
             .is_err()
         );
+
+        for index in [25, 32, 140] {
+            let mut mutated = profile.code.to_vec();
+            mutated[index] ^= 1;
+            assert!(
+                validate_getenv_data_accesses(
+                    profile.provider_sha256,
+                    &mutated,
+                    profile.address,
+                    profile.got,
+                    profile.object,
+                    profile.bookkeeping,
+                    &[],
+                )
+                .is_err(),
+                "mutated getenv displacement byte {index} was accepted"
+            );
+        }
+
+        for index in 0..profile.code.len() {
+            let mut mutated = profile.code.to_vec();
+            mutated[index] ^= 1;
+            assert!(
+                validate_getenv_data_accesses(
+                    profile.provider_sha256,
+                    &mutated,
+                    profile.address,
+                    profile.got,
+                    profile.object,
+                    profile.bookkeeping,
+                    &[],
+                )
+                .is_err(),
+                "mutated getenv byte {index} was accepted"
+            );
+        }
+
+        for (address, got, object, bookkeeping) in [
+            (
+                profile.address + 1,
+                profile.got,
+                profile.object,
+                profile.bookkeeping,
+            ),
+            (
+                profile.address,
+                profile.got + 1,
+                profile.object,
+                profile.bookkeeping,
+            ),
+            (
+                profile.address,
+                profile.got,
+                profile.object + 1,
+                profile.bookkeeping,
+            ),
+            (profile.address, profile.got, profile.object, None),
+            (
+                profile.address,
+                profile.got,
+                profile.object,
+                profile.bookkeeping.map(|bookkeeping| StaticBookkeeping {
+                    counter_rva: bookkeeping.counter_rva + 1,
+                    ..bookkeeping
+                }),
+            ),
+            (
+                profile.address,
+                profile.got,
+                profile.object,
+                profile.bookkeeping.map(|bookkeeping| StaticBookkeeping {
+                    allocation_list_rva: bookkeeping.allocation_list_rva + 1,
+                    ..bookkeeping
+                }),
+            ),
+        ] {
+            assert!(
+                validate_getenv_data_accesses(
+                    profile.provider_sha256,
+                    profile.code,
+                    address,
+                    got,
+                    object,
+                    bookkeeping,
+                    &[],
+                )
+                .is_err()
+            );
+        }
     }
+
+    for (selected, other) in [
+        (
+            COUNTER_GUARDED_GETENV_PROFILE,
+            COUNTER_GUARDED_V2_GETENV_PROFILE,
+        ),
+        (
+            COUNTER_GUARDED_V2_GETENV_PROFILE,
+            COUNTER_GUARDED_GETENV_PROFILE,
+        ),
+    ] {
+        assert_ne!(selected.provider_sha256, other.provider_sha256);
+        assert_ne!(selected.code, other.code);
+        assert_eq!(selected.address, other.address);
+        assert_ne!(selected.got, other.got);
+        assert_ne!(selected.object, other.object);
+        let selected_bookkeeping = selected.bookkeeping.unwrap();
+        let other_bookkeeping = other.bookkeeping.unwrap();
+        assert_ne!(
+            selected_bookkeeping.counter_rva,
+            other_bookkeeping.counter_rva
+        );
+        assert_ne!(
+            selected_bookkeeping.allocation_list_rva,
+            other_bookkeeping.allocation_list_rva
+        );
+
+        // Each cross-profile field is varied in isolation so a future
+        // comparator cannot normalize one family difference while another
+        // exact mismatch happens to make the negative test pass.
+        assert!(
+            validate_getenv_data_accesses(
+                other.provider_sha256,
+                selected.code,
+                selected.address,
+                selected.got,
+                selected.object,
+                selected.bookkeeping,
+                &[],
+            )
+            .is_err(),
+            "other profile's provider digest was accepted with selected shape"
+        );
+        assert!(
+            validate_getenv_data_accesses(
+                selected.provider_sha256,
+                other.code,
+                selected.address,
+                selected.got,
+                selected.object,
+                selected.bookkeeping,
+                &[],
+            )
+            .is_err(),
+            "other profile's code was accepted with selected metadata"
+        );
+        assert!(
+            validate_getenv_data_accesses(
+                selected.provider_sha256,
+                selected.code,
+                selected.address,
+                other.got,
+                selected.object,
+                selected.bookkeeping,
+                &[],
+            )
+            .is_err(),
+            "other profile's GOT was accepted with selected code and metadata"
+        );
+        assert!(
+            validate_getenv_data_accesses(
+                selected.provider_sha256,
+                selected.code,
+                selected.address,
+                selected.got,
+                other.object,
+                selected.bookkeeping,
+                &[],
+            )
+            .is_err(),
+            "other profile's object was accepted with selected code and metadata"
+        );
+        assert!(
+            validate_getenv_data_accesses(
+                selected.provider_sha256,
+                selected.code,
+                selected.address,
+                selected.got,
+                selected.object,
+                Some(StaticBookkeeping {
+                    counter_rva: other_bookkeeping.counter_rva,
+                    ..selected_bookkeeping
+                }),
+                &[],
+            )
+            .is_err(),
+            "other profile's counter was accepted with selected code and metadata"
+        );
+        assert!(
+            validate_getenv_data_accesses(
+                selected.provider_sha256,
+                selected.code,
+                selected.address,
+                selected.got,
+                selected.object,
+                Some(StaticBookkeeping {
+                    allocation_list_rva: other_bookkeeping.allocation_list_rva,
+                    ..selected_bookkeeping
+                }),
+                &[],
+            )
+            .is_err(),
+            "other profile's allocation list was accepted with selected code and metadata"
+        );
+    }
+
+    assert!(
+        validate_getenv_data_accesses(
+            COUNTER_GUARDED_V2_GETENV_PROFILE.provider_sha256,
+            COUNTER_GUARDED_V2_GETENV_PROFILE.code,
+            COUNTER_GUARDED_V2_GETENV_PROFILE.address,
+            COUNTER_GUARDED_V2_GETENV_PROFILE.got,
+            COUNTER_GUARDED_V2_GETENV_PROFILE.object,
+            COUNTER_GUARDED_V2_GETENV_PROFILE.bookkeeping,
+            &[COUNTER_GUARDED_V2_GETENV_PROFILE],
+        )
+        .is_err(),
+        "duplicate reviewed provider profile was not rejected as ambiguous"
+    );
 }
 
 #[test]

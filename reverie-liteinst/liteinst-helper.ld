@@ -19,6 +19,13 @@ ASSERT(
 );
 ASSERT(
   !DEFINED(reverie_liteinst_host_install_helper) ||
+    (DEFINED(reverie_liteinst_install_site_for_ptrace) &&
+      reverie_liteinst_host_install_helper ==
+        reverie_liteinst_install_site_for_ptrace),
+  "legacy LiteInst install symbol differs from authenticated helper entry"
+);
+ASSERT(
+  !DEFINED(reverie_liteinst_host_install_helper) ||
     __reverie_liteinst_helper_code_end > __reverie_liteinst_helper_page_start,
   "LiteInst ptrace helper section is empty"
 );

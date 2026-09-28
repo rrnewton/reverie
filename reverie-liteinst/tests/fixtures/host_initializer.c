@@ -20,16 +20,31 @@ struct host_config { uint64_t version, straddler_staleness_ticks; };
 struct host_frame {
     uint64_t version, begin_rip, ready_rip, install_helper, install_helper_rip;
     uint64_t install_helper_page_start, install_helper_page_len, helper_stack_top;
+    uint64_t callback_stack_start, callback_stack_len, callback_stack_top;
     uint64_t helper_return, helper_return_rip, syscall_trap_rip;
     uint64_t syscall_trap_return_rip, install_request, install_result;
     uint64_t start_program_break, initial_program_break;
+    uint64_t callback_execution_headroom_len, saved_xstate_reserve_len;
+    uint64_t saved_xstate_alignment;
 };
+_Static_assert(offsetof(struct host_frame, initial_program_break) == 18 * 8,
+               "host-frame initial-program-break offset");
+_Static_assert(offsetof(struct host_frame, callback_execution_headroom_len) == 19 * 8,
+               "host-frame callback-headroom offset");
+_Static_assert(offsetof(struct host_frame, saved_xstate_reserve_len) == 20 * 8,
+               "host-frame saved-XSTATE reserve offset");
+_Static_assert(offsetof(struct host_frame, saved_xstate_alignment) == 21 * 8,
+               "host-frame saved-XSTATE alignment offset");
+_Static_assert(sizeof(struct host_frame) == 22 * 8, "host-frame ABI size");
 struct install_request {
     uint64_t version, site_start, mapping_end, source_len;
     unsigned char source[64];
 };
 struct program_counter_mapping {
     uint64_t generated_start, generated_end, logical_address;
+};
+struct saved_xstate_component {
+    uint64_t xfeature, offset, size;
 };
 struct install_result {
     uint64_t version, site_start, site_len;
@@ -40,6 +55,9 @@ struct install_result {
     uint64_t instruction_len, straddle_prefix, program_counter_count;
     struct program_counter_mapping program_counters[16];
     uint64_t complete;
+    uint64_t saved_xstate_len, saved_xstate_mask, saved_xstate_format;
+    uint64_t saved_xstate_image_len, saved_xstate_component_count;
+    struct saved_xstate_component saved_xstate_components[8];
 };
 _Static_assert(sizeof(struct program_counter_mapping) == 24,
                "program-counter mapping ABI size");
@@ -47,7 +65,13 @@ _Static_assert(offsetof(struct install_result, program_counters) == 128,
                "install-result mapping offset");
 _Static_assert(offsetof(struct install_result, complete) == 512,
                "install-result completion offset");
-_Static_assert(sizeof(struct install_result) == 520,
+_Static_assert(sizeof(struct saved_xstate_component) == 24,
+               "saved-XSTATE component ABI size");
+_Static_assert(offsetof(struct install_result, saved_xstate_len) == 520,
+               "install-result saved-XSTATE length offset");
+_Static_assert(offsetof(struct install_result, saved_xstate_components) == 560,
+               "install-result saved-XSTATE component offset");
+_Static_assert(sizeof(struct install_result) == 752,
                "install-result ABI size");
 static int (*initialize)(const struct host_config *);
 static struct host_config config = {1, 0};
@@ -75,7 +99,7 @@ static void trap(int sig, siginfo_t *info, void *opaque) {
     }
     const struct host_frame *frame =
         (const void *)(uintptr_t)context->uc_mcontext.gregs[REG_RDI];
-    if (!frame || frame->version != 8) _exit(80);
+    if (!frame || frame->version != 12) _exit(80);
     if (marker == UINT64_C(0x7265766c69000001)) {
         if (begins || readies || rip != frame->begin_rip) _exit(81);
         saved_frame = *frame;
@@ -155,6 +179,17 @@ int main(int argc, char **argv) {
     require(argc == 2, "mode");
     initialize = dlsym(RTLD_DEFAULT, "reverie_liteinst_initialize_host");
     require(initialize != NULL, "missing explicit host initializer");
+    int64_t (*legacy_install)(uint64_t) =
+        dlsym(RTLD_DEFAULT, "reverie_liteinst_install_site_for_ptrace");
+    require(legacy_install != NULL, "missing legacy install entry symbol");
+    require(dlsym(RTLD_DEFAULT, "reverie_liteinst_install_site_for_ptrace_body") == NULL,
+            "hidden install body is dynamically exported");
+    require(dlsym(RTLD_DEFAULT, "reverie_preload_raw_syscall6") == NULL,
+            "private raw syscall gate is dynamically exported");
+    require(dlsym(RTLD_DEFAULT, "reverie_liteinst_proc_fd_audit") == NULL,
+            "private proc-fd audit is dynamically exported");
+    require(dlsym(RTLD_DEFAULT, "reverie_liteinst_proc_fd_raw_syscall") == NULL,
+            "private proc-fd raw syscall shim is dynamically exported");
     struct sigaction action = {.sa_sigaction = trap, .sa_flags = SA_SIGINFO};
     require(sigemptyset(&action.sa_mask) == 0, "sigemptyset");
     require(sigaction(SIGTRAP, &action, NULL) == 0, "sigaction");
@@ -190,15 +225,27 @@ int main(int argc, char **argv) {
     if (failure) {
         require(result == -EPERM && begins == 0 && readies == 0 && reentry_result == 0,
                 "reversible preflight failure crossed Begin");
-        require(initialize(&config) == -EPERM,
-                "reversible preflight retry changed its exact failure");
+        require(initialize(&config) == -EALREADY,
+                "failed valid initialization accepted a retry");
         require(begins == 0 && readies == 0 && reentry_result == 0,
                 "preflight retry emitted a handshake");
     } else {
         require(begins == 1 && reentry_result == -EALREADY,
                 "missing Begin or reentry guard");
         require(result == 0 && readies == 1, "actual initialization did not finish");
+        require(saved_frame.callback_stack_start && saved_frame.callback_stack_len &&
+                saved_frame.callback_stack_start <= saved_frame.callback_stack_top &&
+                saved_frame.callback_stack_top - saved_frame.callback_stack_start ==
+                    saved_frame.callback_stack_len &&
+                saved_frame.callback_execution_headroom_len &&
+                saved_frame.saved_xstate_reserve_len &&
+                saved_frame.saved_xstate_alignment &&
+                !(saved_frame.saved_xstate_alignment &
+                  (saved_frame.saved_xstate_alignment - 1)),
+                "invalid callback-stack/XSTATE handshake geometry");
         int64_t (*install)(uint64_t) = (void *)(uintptr_t)saved_frame.install_helper;
+        require(install == legacy_install,
+                "legacy install symbol differs from authenticated helper entry");
         struct install_request *request = (void *)(uintptr_t)saved_frame.install_request;
         memset(request, 0, sizeof(*request));
         request->version = 1;
@@ -235,7 +282,7 @@ int main(int argc, char **argv) {
         require(mprotect(site_page, (size_t)page_size, PROT_READ | PROT_EXEC) == 0,
                 "restore positive helper source page");
         require(tail > 0, "actual patch helper failed");
-        require(installed->version == 4 && installed->complete == 1 &&
+        require(installed->version == 6 && installed->complete == 1 &&
                 installed->site_start == (uintptr_t)test_syscall_site &&
                 installed->instruction_len == 2 && installed->site_len == 8 &&
                 installed->ptrace_entry_stop_rip == installed->trampoline_start + 1 &&
@@ -245,7 +292,14 @@ int main(int argc, char **argv) {
                 installed->arena_writable_start && installed->arena_executable_start &&
                 installed->arena_writable_len && installed->arena_executable_len &&
                 installed->program_counter_count > 0 &&
-                installed->program_counter_count <= 16,
+                installed->program_counter_count <= 16 &&
+                installed->saved_xstate_len == saved_frame.saved_xstate_reserve_len &&
+                installed->saved_xstate_image_len > 0 &&
+                installed->saved_xstate_image_len <= installed->saved_xstate_len &&
+                installed->saved_xstate_mask &&
+                (installed->saved_xstate_format == 1 ||
+                 installed->saved_xstate_format == 2) &&
+                installed->saved_xstate_component_count <= 8,
                 "missing initialized site/arena/result ABI");
         int tail_mapped = 0;
         for (uint64_t i = 0; i < installed->program_counter_count; ++i) {
@@ -258,6 +312,24 @@ int main(int argc, char **argv) {
                 tail_mapped = 1;
         }
         require(tail_mapped, "relocated tail lacks logical program-counter mapping");
+        for (uint64_t i = 0; i < 8; ++i) {
+            const struct saved_xstate_component *component =
+                &installed->saved_xstate_components[i];
+            if (i < installed->saved_xstate_component_count) {
+                require(component->xfeature &&
+                        !(component->xfeature & (component->xfeature - 1)) &&
+                        (installed->saved_xstate_mask & component->xfeature) &&
+                        component->size &&
+                        component->offset <= installed->saved_xstate_image_len &&
+                        component->size <=
+                            installed->saved_xstate_image_len - component->offset,
+                        "invalid saved-XSTATE component");
+            } else {
+                require(component->xfeature == 0 && component->offset == 0 &&
+                        component->size == 0,
+                        "noncanonical unused saved-XSTATE component");
+            }
+        }
         require((unsigned char)test_syscall_site[0] != 0x0f, "helper did not patch site");
         require_same_dispositions();
         require(initialize(&config) == -EALREADY, "host initialization ran twice");
