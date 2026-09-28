@@ -11,28 +11,43 @@
 
 extern void handle_syscall(void);
 extern void handle_syscall_loader(void);
-extern void frame_probe(uint64_t *) __attribute__((returns_twice));
+extern void frame_probe(uint64_t*) __attribute__((returns_twice));
 extern void probe_scratch(void);
 extern void probe_after(void);
-extern void *get_syscall_return_address(void *);
+extern void* get_syscall_return_address(void*);
 extern size_t get_offsetof_syscall_return_address(void);
-extern long vfork_return_from_child(void *);
+extern long vfork_return_from_child(void*);
 void (*probe_handler)(void);
-static uint64_t *active;
+static uint64_t* active;
 static int mode;
-typedef long (*rust_router_fn)(int, void *, uint64_t *);
+typedef long (*rust_router_fn)(int, void*, uint64_t*);
 static rust_router_fn rust_router;
 
-long runtime_syscall_router(long sc, long a, long b, long c, long d, long e,
-                            long f, void *frame) {
-  (void)sc; (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+long runtime_syscall_router(
+    long sc,
+    long a,
+    long b,
+    long c,
+    long d,
+    long e,
+    long f,
+    void* frame) {
+  (void)sc;
+  (void)a;
+  (void)b;
+  (void)c;
+  (void)d;
+  (void)e;
+  (void)f;
   active[FRAME_BASE] = (uintptr_t)frame;
   active[FRAME_RETURN] = (uintptr_t)get_syscall_return_address(frame);
   active[FRAME_RETURN_OFFSET] = get_offsetof_syscall_return_address();
-  if (rust_router != NULL) return rust_router(mode, frame, active);
+  if (rust_router != NULL)
+    return rust_router(mode, frame, active);
   if (mode == 1) {
     long child = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
-    if (child != 0) return child;
+    if (child != 0)
+      return child;
   } else if (mode == 0) {
     return 0x55;
   }
@@ -40,12 +55,19 @@ long runtime_syscall_router(long sc, long a, long b, long c, long d, long e,
   _exit(98);
 }
 
-long ld_sc_handler(long sc, long a, long b, long c, long d, long e, long f,
-                   void *frame) {
+long ld_sc_handler(
+    long sc,
+    long a,
+    long b,
+    long c,
+    long d,
+    long e,
+    long f,
+    void* frame) {
   return runtime_syscall_router(sc, a, b, c, d, e, f, frame);
 }
 
-static unsigned check(const uint64_t *p, int child) {
+static unsigned check(const uint64_t* p, int child) {
   unsigned failures = 0;
   failures |= p[RETURNED_RSP] != p[ORIGINAL_RSP] ? 1 : 0;
   failures |= p[FRAME_RETURN] != (uintptr_t)probe_scratch ? 2 : 0;
@@ -67,22 +89,28 @@ static unsigned check(const uint64_t *p, int child) {
   return failures;
 }
 
-static int transfer(int fd, void *buffer, size_t length, int sending) {
+static int transfer(int fd, void* buffer, size_t length, int sending) {
   size_t done = 0;
   while (done < length) {
-    ssize_t n = sending ? write(fd, (char *)buffer + done, length - done)
-                        : read(fd, (char *)buffer + done, length - done);
-    if (n < 0 && errno == EINTR) continue;
-    if (n <= 0) return -1;
+    ssize_t n = sending ? write(fd, (char*)buffer + done, length - done)
+                        : read(fd, (char*)buffer + done, length - done);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      return -1;
     done += (size_t)n;
   }
   return 0;
 }
 
-int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
-                    rust_router_fn callback) {
+int frame_probe_run(
+    int requested_mode,
+    int loader_entry,
+    unsigned long flags,
+    rust_router_fn callback) {
   if (requested_mode < 0 || requested_mode > 2 ||
-      (flags != 0x647 && flags != 0xa96)) return 2;
+      (flags != 0x647 && flags != 0xa96))
+    return 2;
   mode = requested_mode;
   rust_router = callback;
   probe_handler = loader_entry ? handle_syscall_loader : handle_syscall;
@@ -90,7 +118,8 @@ int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
   active = result;
   result[EXPECTED_FLAGS] = flags;
   int pipefd[2];
-  if (pipe(pipefd) != 0) return 2;
+  if (pipe(pipefd) != 0)
+    return 2;
   frame_probe(result);
   if (mode == 1 && result[RESULT_RAX] == 0) {
     close(pipefd[0]);
@@ -103,22 +132,30 @@ int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
   uint64_t child[PROBE_WORDS] = {0};
   if (mode == 1) {
     pid_t pid = (pid_t)result[RESULT_RAX];
-    if (pid <= 0) return 2;
+    if (pid <= 0)
+      return 2;
     int captured = transfer(pipefd[0], child, sizeof(child), 0);
     pid_t reaped;
-    do { reaped = waitpid(pid, &child_status, 0); } while (reaped < 0 && errno == EINTR);
-    if (reaped != pid) return 2;
+    do {
+      reaped = waitpid(pid, &child_status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped != pid)
+      return 2;
     // A failed capture must still reap this exact child and retain its status.
     failures |= captured != 0 ? 65536 : 0;
     failures |= check(child, 1);
-    failures |= !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0
-                    ? 2048 : 0;
-  } else if (mode == 0 && result[RESULT_RAX] != 0x55) failures |= 4096;
+    failures |=
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0 ? 2048 : 0;
+  } else if (mode == 0 && result[RESULT_RAX] != 0x55)
+    failures |= 4096;
   close(pipefd[0]);
-  printf("{\"mode\":\"%s\",\"entry\":\"%s\",\"failures\":%u,"
-         "\"child_status\":%d,\"parent\":[", mode == 0 ? "normal" : (mode == 1 ? "fork" : "restore"),
-         loader_entry ? "loader" : "guest", failures,
-         child_status);
+  printf(
+      "{\"mode\":\"%s\",\"entry\":\"%s\",\"failures\":%u,"
+      "\"child_status\":%d,\"parent\":[",
+      mode == 0 ? "normal" : (mode == 1 ? "fork" : "restore"),
+      loader_entry ? "loader" : "guest",
+      failures,
+      child_status);
   for (size_t i = 0; i < PROBE_WORDS; ++i)
     printf("%s%lu", i ? "," : "", result[i]);
   printf("],\"child\":[");
@@ -130,20 +167,29 @@ int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
 }
 
 #ifndef FRAME_PROBE_LIBRARY
-int main(int argc, char **argv) {
-  if (argc != 4) return 2;
+int main(int argc, char** argv) {
+  if (argc != 4)
+    return 2;
   int requested_mode;
-  if (strcmp(argv[1], "normal") == 0) requested_mode = 0;
-  else if (strcmp(argv[1], "fork") == 0) requested_mode = 1;
-  else if (strcmp(argv[1], "restore") == 0) requested_mode = 2;
-  else return 2;
+  if (strcmp(argv[1], "normal") == 0)
+    requested_mode = 0;
+  else if (strcmp(argv[1], "fork") == 0)
+    requested_mode = 1;
+  else if (strcmp(argv[1], "restore") == 0)
+    requested_mode = 2;
+  else
+    return 2;
   int loader_entry;
-  if (strcmp(argv[2], "guest") == 0) loader_entry = 0;
-  else if (strcmp(argv[2], "loader") == 0) loader_entry = 1;
-  else return 2;
-  char *end = NULL;
+  if (strcmp(argv[2], "guest") == 0)
+    loader_entry = 0;
+  else if (strcmp(argv[2], "loader") == 0)
+    loader_entry = 1;
+  else
+    return 2;
+  char* end = NULL;
   unsigned long flags = strtoul(argv[3], &end, 16);
-  if (*end) return 2;
+  if (*end)
+    return 2;
   return frame_probe_run(requested_mode, loader_entry, flags, NULL);
 }
 #endif

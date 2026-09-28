@@ -25,17 +25,18 @@ typedef struct {
   int32_t virtual_pid;
 } translated_child_wait_t;
 
-static inline void clear_translated_child_wait(translated_child_wait_t *wait) {
+static inline void clear_translated_child_wait(translated_child_wait_t* wait) {
   wait->pending = false;
   wait->sysnum = 0;
   wait->physical_pid = 0;
   wait->virtual_pid = 0;
 }
 
-static inline bool consume_translated_child_wait(translated_child_wait_t *wait,
-                                                 int32_t sysnum,
-                                                 int32_t physical_pid,
-                                                 int32_t *virtual_pid) {
+static inline bool consume_translated_child_wait(
+    translated_child_wait_t* wait,
+    int32_t sysnum,
+    int32_t physical_pid,
+    int32_t* virtual_pid) {
   if (!wait->pending || wait->sysnum != sysnum ||
       wait->physical_pid != physical_pid)
     return false;
@@ -46,7 +47,9 @@ static inline bool consume_translated_child_wait(translated_child_wait_t *wait,
 }
 
 static inline int32_t host_identity_for_guest_entries(
-    const virtual_identity_t *identities, size_t count, int32_t identity) {
+    const virtual_identity_t* identities,
+    size_t count,
+    int32_t identity) {
   size_t i;
 
   if (identity <= 0)

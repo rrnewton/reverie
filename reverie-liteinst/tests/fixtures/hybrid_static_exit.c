@@ -9,10 +9,7 @@ static long raw_syscall0(long number) {
 static long raw_syscall1(long number, long arg0) {
   register long rax __asm__("rax") = number;
   register long rdi __asm__("rdi") = arg0;
-  __asm__ volatile("syscall"
-                   : "+a"(rax)
-                   : "D"(rdi)
-                   : "rcx", "r11", "memory");
+  __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi) : "rcx", "r11", "memory");
   return rax;
 }
 
@@ -28,8 +25,8 @@ static long raw_syscall3(long number, long arg0, long arg1, long arg2) {
   return rax;
 }
 
-static long raw_syscall4(long number, long arg0, long arg1, long arg2,
-                         long arg3) {
+static long
+raw_syscall4(long number, long arg0, long arg1, long arg2, long arg3) {
   register long rax __asm__("rax") = number;
   register long rdi __asm__("rdi") = arg0;
   register long rsi __asm__("rsi") = arg1;
@@ -42,14 +39,14 @@ static long raw_syscall4(long number, long arg0, long arg1, long arg2,
   return rax;
 }
 
-__attribute__((used, noinline, noreturn)) static void
-start_from_stack(uintptr_t *stack) {
+__attribute__((used, noinline, noreturn)) static void start_from_stack(
+    uintptr_t* stack) {
   if (stack[0] != 2) {
     raw_syscall1(60, 9);
     __builtin_unreachable();
   }
 
-  const char *pid_path = (const char *)stack[2];
+  const char* pid_path = (const char*)stack[2];
   long fd = raw_syscall4(257, -100, (long)pid_path, 1 | 64 | 512, 0600);
   if (fd < 0) {
     raw_syscall1(60, 10);
@@ -74,10 +71,11 @@ start_from_stack(uintptr_t *stack) {
   __builtin_unreachable();
 }
 
-__asm__(".global _start\n"
-        ".type _start,@function\n"
-        "_start:\n"
-        "mov %rsp, %rdi\n"
-        "and $-16, %rsp\n"
-        "call start_from_stack\n"
-        ".size _start, .-_start\n");
+__asm__(
+    ".global _start\n"
+    ".type _start,@function\n"
+    "_start:\n"
+    "mov %rsp, %rdi\n"
+    "and $-16, %rsp\n"
+    "call start_from_stack\n"
+    ".size _start, .-_start\n");

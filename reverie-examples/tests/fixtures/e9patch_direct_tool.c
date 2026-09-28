@@ -3,10 +3,10 @@
 #include <string.h>
 #include <unistd.h>
 
-extern char **environ;
+extern char** environ;
 
-static int has_environment_entry(const char *expected) {
-  for (char **entry = environ; *entry != 0; ++entry) {
+static int has_environment_entry(const char* expected) {
+  for (char** entry = environ; *entry != 0; ++entry) {
     if (strcmp(*entry, expected) == 0) {
       return 1;
     }
@@ -27,10 +27,10 @@ __attribute__((noreturn)) static void raw_exit_group(int status) {
   __builtin_unreachable();
 }
 
-static long raw_write(int fd, const void *buffer, unsigned long size) {
+static long raw_write(int fd, const void* buffer, unsigned long size) {
   register long rax __asm__("rax") = 1;
   register long rdi __asm__("rdi") = fd;
-  register const void *rsi __asm__("rsi") = buffer;
+  register const void* rsi __asm__("rsi") = buffer;
   register unsigned long rdx __asm__("rdx") = size;
   __asm__ volatile("syscall"
                    : "+a"(rax)
@@ -42,12 +42,12 @@ static long raw_write(int fd, const void *buffer, unsigned long size) {
 /* fork-equivalent clone (SIGCHLD, copy parent stack). The direct AOT host must
  * fail this closed rather than spawn an untooled child. */
 static long raw_clone_fork(void) {
-  register long rax __asm__("rax") = 56;  /* SYS_clone */
-  register long rdi __asm__("rdi") = 17;  /* CLONE flags == SIGCHLD (fork) */
-  register long rsi __asm__("rsi") = 0;   /* child stack (0 => copy parent) */
-  register long rdx __asm__("rdx") = 0;   /* parent_tid */
-  register long r10 __asm__("r10") = 0;   /* child_tid */
-  register long r8 __asm__("r8") = 0;     /* tls */
+  register long rax __asm__("rax") = 56; /* SYS_clone */
+  register long rdi __asm__("rdi") = 17; /* CLONE flags == SIGCHLD (fork) */
+  register long rsi __asm__("rsi") = 0; /* child stack (0 => copy parent) */
+  register long rdx __asm__("rdx") = 0; /* parent_tid */
+  register long r10 __asm__("r10") = 0; /* child_tid */
+  register long r8 __asm__("r8") = 0; /* tls */
   __asm__ volatile("syscall"
                    : "+a"(rax)
                    : "D"(rdi), "S"(rsi), "d"(rdx), "r"(r10), "r"(r8)
@@ -59,9 +59,9 @@ static long raw_clone_fork(void) {
  * let the guest replace its tooled image with an untooled one. */
 static long raw_execve_self(void) {
   static char path[] = "/proc/self/exe";
-  static char *const argv[] = {path, 0};
-  static char *const envp[] = {0};
-  register long rax __asm__("rax") = 59;  /* SYS_execve */
+  static char* const argv[] = {path, 0};
+  static char* const envp[] = {0};
+  register long rax __asm__("rax") = 59; /* SYS_execve */
   register long rdi __asm__("rdi") = (long)path;
   register long rsi __asm__("rsi") = (long)argv;
   register long rdx __asm__("rdx") = (long)envp;
@@ -84,7 +84,8 @@ static void write_burst(void) {
 }
 
 int main(void) {
-  if (has_environment_entry("REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL=1")) {
+  if (has_environment_entry(
+          "REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL=1")) {
     static const char byte = 'x';
     errno = 0;
     long result = write(1, &byte, 1);

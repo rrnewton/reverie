@@ -3,7 +3,6 @@
  * transport sentinels, and the child must observe them at the real boundary.
  */
 #define _GNU_SOURCE
-#include "bootstrap.h"
 #include <assert.h>
 #include <elf.h>
 #include <errno.h>
@@ -19,12 +18,13 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "bootstrap.h"
 
 extern const unsigned char sbr_bootstrap_syscall_v1[];
 static unsigned char aux_random[16];
 static uintptr_t stack_words[13];
 static char private_option[] = SBR_BOOTSTRAP_ENV "=1";
-static char *option_string;
+static char* option_string;
 static bool raw_environment;
 static sbr_bootstrap_take_fn continuation_take;
 static unsigned installer_calls;
@@ -32,7 +32,7 @@ static bool concurrent_take_probe;
 static int start_take[2];
 static int completed_take[2];
 
-static void *competing_take(void *unused) {
+static void* competing_take(void* unused) {
   (void)unused;
   unsigned char output[32];
   memset(output, 0x5a, sizeof(output));
@@ -41,7 +41,9 @@ static void *competing_take(void *unused) {
   long result = continuation_take(output, sizeof(output));
   for (size_t i = 0; i < sizeof(output); ++i)
     assert(output[i] == 0x5a);
-  assert(write(completed_take[1], &result, sizeof(result)) == (ssize_t)sizeof(result));
+  assert(
+      write(completed_take[1], &result, sizeof(result)) ==
+      (ssize_t)sizeof(result));
   return NULL;
 }
 
@@ -69,13 +71,17 @@ static int accept_continuation(sbr_bootstrap_take_fn take) {
 
 static void check_raw_environment(bool present) {
   unsigned char bytes[1024];
-  FILE *file = fopen("/proc/self/environ", "rb");
+  FILE* file = fopen("/proc/self/environ", "rb");
   assert(file != NULL);
   size_t length = fread(bytes, 1, sizeof(bytes), file);
   assert(length < sizeof(bytes) && feof(file) && !ferror(file));
   assert(fclose(file) == 0);
-  assert((memmem(bytes, length, SBR_BOOTSTRAP_ENV "=1",
-                 sizeof(SBR_BOOTSTRAP_ENV "=1") - 1) != NULL) == present);
+  assert(
+      (memmem(
+           bytes,
+           length,
+           SBR_BOOTSTRAP_ENV "=1",
+           sizeof(SBR_BOOTSTRAP_ENV "=1") - 1) != NULL) == present);
   assert(memmem(bytes, length, "BEFORE=unchanged", 16) != NULL);
   assert(memmem(bytes, length, "AFTER=unchanged", 15) != NULL);
 }
@@ -84,17 +90,26 @@ static void prepare_stack(void) {
   memcpy(private_option, SBR_BOOTSTRAP_ENV "=1", sizeof(private_option));
   option_string = private_option;
   if (raw_environment) {
-    char *value = getenv(SBR_BOOTSTRAP_ENV);
+    char* value = getenv(SBR_BOOTSTRAP_ENV);
     assert(value != NULL && strcmp(value, "1") == 0);
     option_string = value - sizeof(SBR_BOOTSTRAP_ENV);
     assert(strcmp(option_string, SBR_BOOTSTRAP_ENV "=1") == 0);
     check_raw_environment(true);
   }
   uintptr_t initial[] = {
-      1, (uintptr_t)"native-client", 0, (uintptr_t)"BEFORE=unchanged",
-      (uintptr_t)option_string, (uintptr_t)"AFTER=unchanged", 0,
-      AT_RANDOM, (uintptr_t)aux_random, AT_ENTRY, (uintptr_t)prepare_stack,
-      AT_NULL, 0};
+      1,
+      (uintptr_t)"native-client",
+      0,
+      (uintptr_t)"BEFORE=unchanged",
+      (uintptr_t)option_string,
+      (uintptr_t)"AFTER=unchanged",
+      0,
+      AT_RANDOM,
+      (uintptr_t)aux_random,
+      AT_ENTRY,
+      (uintptr_t)prepare_stack,
+      AT_NULL,
+      0};
   memcpy(stack_words, initial, sizeof(initial));
   memset(aux_random, 0x55, sizeof(aux_random));
 }
@@ -112,8 +127,8 @@ static void child_body(bool fail_after_take) {
   assert(raise(SIGSTOP) == 0);
   sbr_bootstrap_image(stack_words, prepare_stack);
   assert(stack_words[0] == 1 && stack_words[2] == 0);
-  assert(strcmp((char *)stack_words[3], "BEFORE=unchanged") == 0);
-  assert(strcmp((char *)stack_words[4], "AFTER=unchanged") == 0);
+  assert(strcmp((char*)stack_words[3], "BEFORE=unchanged") == 0);
+  assert(strcmp((char*)stack_words[4], "AFTER=unchanged") == 0);
   assert(stack_words[5] == 0 && stack_words[6] == AT_RANDOM);
   assert(stack_words[7] == (uintptr_t)aux_random);
   assert(stack_words[8] == AT_ENTRY && stack_words[10] == AT_NULL);
@@ -127,8 +142,9 @@ static void child_body(bool fail_after_take) {
   unsigned char output[32];
   memset(output, 0x5a, sizeof(output));
   uintptr_t wrapper = 0x12345678;
-  assert(sbr_bootstrap_getrandom((long)output, 16, 0x80000001, &wrapper) ==
-         -EINVAL);
+  assert(
+      sbr_bootstrap_getrandom((long)output, 16, 0x80000001, &wrapper) ==
+      -EINVAL);
   for (size_t i = 0; i < sizeof(output); ++i)
     assert(output[i] == 0x5a);
   assert(sbr_bootstrap_getrandom((long)output, 8, 1, &wrapper) == 8);
@@ -146,14 +162,15 @@ static void child_body(bool fail_after_take) {
   _exit(0);
 }
 
-static void read_memory(pid_t child, uintptr_t remote, void *local, size_t len) {
-  struct iovec here = {local, len}, there = {(void *)remote, len};
+static void
+read_memory(pid_t child, uintptr_t remote, void* local, size_t len) {
+  struct iovec here = {local, len}, there = {(void*)remote, len};
   assert(process_vm_readv(child, &here, 1, &there, 1, 0) == (ssize_t)len);
 }
 
-static void write_memory(pid_t child, uintptr_t remote, const void *local,
-                         size_t len) {
-  struct iovec here = {(void *)local, len}, there = {(void *)remote, len};
+static void
+write_memory(pid_t child, uintptr_t remote, const void* local, size_t len) {
+  struct iovec here = {(void*)local, len}, there = {(void*)remote, len};
   assert(process_vm_writev(child, &here, 1, &there, 1, 0) == (ssize_t)len);
 }
 
@@ -214,8 +231,12 @@ static void supervised_control(bool fail_after_take, bool continuation) {
   int status;
   assert(waitpid(child, &status, 0) == child);
   assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
-  assert(ptrace(PTRACE_SETOPTIONS, child, NULL,
-                PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD) == 0);
+  assert(
+      ptrace(
+          PTRACE_SETOPTIONS,
+          child,
+          NULL,
+          PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD) == 0);
   unsigned requests = 0;
   long pending = 0;
   int entering = 1;
@@ -240,8 +261,9 @@ static void supervised_control(bool fail_after_take, bool continuation) {
     if (entering && regs.orig_rax == SYS_prctl &&
         regs.rdi == SBR_BOOTSTRAP_OPTION) {
       assert(regs.rip == (uintptr_t)sbr_bootstrap_syscall_v1 + 2);
-      assert(sbr_bootstrap_syscall_v1[0] == 0x0f &&
-             sbr_bootstrap_syscall_v1[1] == 0x05);
+      assert(
+          sbr_bootstrap_syscall_v1[0] == 0x0f &&
+          sbr_bootstrap_syscall_v1[1] == 0x05);
       ++requests;
       if (continuation) {
         /* This checks actual loader transport, not the consumer's proof of
@@ -256,8 +278,9 @@ static void supervised_control(bool fail_after_take, bool continuation) {
              */
             assert(write(start_take[1], "!", 1) == 1);
             long result;
-            assert(read(completed_take[0], &result, sizeof(result)) ==
-                   (ssize_t)sizeof(result));
+            assert(
+                read(completed_take[0], &result, sizeof(result)) ==
+                (ssize_t)sizeof(result));
             assert(result == -EPROTO);
           }
           pending = -ESTALE;
@@ -293,9 +316,11 @@ static void supervised_control(bool fail_after_take, bool continuation) {
         } else {
           assert(regs.r10 == (requests == 3 ? 8 : 16));
           assert(regs.r8 == (requests == 3 ? 1 : 0));
-          write_memory(child, regs.rdx,
-                       requests == 3 ? "12345678" : "abcdefghijklmnop",
-                       regs.r10);
+          write_memory(
+              child,
+              regs.rdx,
+              requests == 3 ? "12345678" : "abcdefghijklmnop",
+              regs.r10);
           pending = regs.r10;
         }
       } else {
@@ -381,9 +406,9 @@ static void raw_environment_control(void) {
   pid_t child = fork();
   assert(child >= 0);
   if (child == 0) {
-    char *args[] = {"loader-bootstrap-control", "raw-environment", NULL};
-    char *env[] = {"BEFORE=unchanged", SBR_BOOTSTRAP_ENV "=1",
-                   "AFTER=unchanged", NULL};
+    char* args[] = {"loader-bootstrap-control", "raw-environment", NULL};
+    char* env[] = {
+        "BEFORE=unchanged", SBR_BOOTSTRAP_ENV "=1", "AFTER=unchanged", NULL};
     /* exec makes these the kernel's actual raw environment bytes. The
      * ordinary supervised control then checks them before and after IMAGE.
      */
@@ -395,7 +420,7 @@ static void raw_environment_control(void) {
   assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   alarm(10);
   if (argc == 2 && strcmp(argv[1], "raw-environment") == 0) {
     raw_environment = true;
@@ -418,10 +443,15 @@ int main(int argc, char **argv) {
   absent_supervisor_control();
   absent_continuation_supervisor_control();
   raw_environment_control();
-  printf("protocol=%lu version=%lu ops=%u,%u,%u max=%lu\n",
-         SBR_BOOTSTRAP_OPTION, SBR_BOOTSTRAP_VERSION, SBR_BOOTSTRAP_IMAGE,
-         SBR_BOOTSTRAP_GETRANDOM, SBR_BOOTSTRAP_TAKE_STATE,
-         SBR_BOOTSTRAP_MAX_STATE);
-  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed; continuation concurrency and absent supervisor");
+  printf(
+      "protocol=%lu version=%lu ops=%u,%u,%u max=%lu\n",
+      SBR_BOOTSTRAP_OPTION,
+      SBR_BOOTSTRAP_VERSION,
+      SBR_BOOTSTRAP_IMAGE,
+      SBR_BOOTSTRAP_GETRANDOM,
+      SBR_BOOTSTRAP_TAKE_STATE,
+      SBR_BOOTSTRAP_MAX_STATE);
+  puts(
+      "PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed; continuation concurrency and absent supervisor");
   return 0;
 }

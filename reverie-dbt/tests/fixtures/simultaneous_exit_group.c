@@ -13,7 +13,7 @@
 
 static pthread_barrier_t exit_barrier;
 
-static void *exit_worker(void *argument) {
+static void* exit_worker(void* argument) {
   (void)argument;
   (void)pthread_barrier_wait(&exit_barrier);
   (void)syscall(SYS_exit_group, 0);

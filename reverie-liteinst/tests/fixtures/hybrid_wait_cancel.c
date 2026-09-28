@@ -2,11 +2,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 2) {
     return 9;
   }
-  FILE *file = fopen(argv[1], "w");
+  FILE* file = fopen(argv[1], "w");
   if (file == NULL) {
     return 10;
   }

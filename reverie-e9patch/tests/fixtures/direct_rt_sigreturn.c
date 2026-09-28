@@ -24,13 +24,15 @@ static void handler(int signal) {
 }
 
 __attribute__((naked)) static void restorer(void) {
-  __asm__ volatile("mov $15, %rax\n\t"
-                   "syscall\n\t"
-                   "ud2");
+  __asm__ volatile(
+      "mov $15, %rax\n\t"
+      "syscall\n\t"
+      "ud2");
 }
 
-__attribute__((noinline)) static long
-direct_rt_sigaction(int signal, const struct kernel_sigaction *action) {
+__attribute__((noinline)) static long direct_rt_sigaction(
+    int signal,
+    const struct kernel_sigaction* action) {
   register long rax __asm__("rax") = SYS_rt_sigaction;
   register long r10 __asm__("r10") = sizeof(uint64_t);
   __asm__ volatile("syscall"

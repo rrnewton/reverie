@@ -20,7 +20,7 @@ static int invalid_process_clone(void) {
   return result == -1 && errno == EINVAL;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 2)
     return 2;
 

@@ -22,29 +22,29 @@ typedef struct {
   pid_t nested_tid;
 } race_state_t;
 
-static void *nested_main(void *argument) {
-  race_state_t *state = argument;
+static void* nested_main(void* argument) {
+  race_state_t* state = argument;
   state->nested_pid = (pid_t)syscall(SYS_getpid);
   state->nested_tid = (pid_t)syscall(SYS_gettid);
   return NULL;
 }
 
-static void *creator_main(void *argument) {
-  race_state_t *state = argument;
+static void* creator_main(void* argument) {
+  race_state_t* state = argument;
   pthread_t nested;
 
   (void)pthread_barrier_wait(&state->start);
   if (pthread_create(&nested, NULL, nested_main, state) != 0)
-    return (void *)1;
+    return (void*)1;
   if (pthread_join(nested, NULL) != 0)
-    return (void *)2;
+    return (void*)2;
   return NULL;
 }
 
 static int run_nested_race(pid_t expected_pid) {
   race_state_t state = {.nested_pid = 0, .nested_tid = 0};
   pthread_t creator;
-  void *thread_result = NULL;
+  void* thread_result = NULL;
   int status = 0;
 
   if (pthread_barrier_init(&state.start, NULL, 2) != 0)
@@ -71,12 +71,13 @@ static int run_nested_race(pid_t expected_pid) {
   return 0;
 }
 
-// TODO-HUMAN-REVIEW(PR-154): Review process-clone/pthread identity handoff race.
+// TODO-HUMAN-REVIEW(PR-154): Review process-clone/pthread identity handoff
+// race.
 int main(void) {
   for (int iteration = 0; iteration < ITERATIONS; ++iteration) {
     race_state_t state = {.nested_pid = 0, .nested_tid = 0};
     pthread_t creator;
-    void *thread_result = NULL;
+    void* thread_result = NULL;
     int status = 0;
 
     if (pthread_barrier_init(&state.start, NULL, 2) != 0)

@@ -6,7 +6,7 @@
 
 /* ELF preinit runs before the preload DSO's constructors. This is a real
    second exec while the first image is waiting for its runtime handshake. */
-static void replace_before_constructors(int argc, char **argv, char **envp) {
+static void replace_before_constructors(int argc, char** argv, char** envp) {
   if (argc != 4 || strcmp(argv[1], "start") != 0) {
     return;
   }
@@ -17,16 +17,17 @@ static void replace_before_constructors(int argc, char **argv, char **envp) {
       close(ids) != 0) {
     _exit(10);
   }
-  char *next[] = {argv[0], "after", argv[2], argv[3], NULL};
+  char* next[] = {argv[0], "after", argv[2], argv[3], NULL};
   execve(next[0], next, envp);
   _exit(11);
 }
 
-__attribute__((section(".preinit_array"), used))
-static void (*const before_constructors)(int, char **, char **) =
+__attribute__((
+    section(".preinit_array"),
+    used)) static void (*const before_constructors)(int, char**, char**) =
     replace_before_constructors;
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 4 || strcmp(argv[1], "after") != 0) {
     return 12;
   }

@@ -21,7 +21,7 @@ static volatile sig_atomic_t bad_signal;
 static pid_t expected_sender;
 static int ack_fd = -1;
 
-static void receive_signal(int signal, siginfo_t *info, void *context) {
+static void receive_signal(int signal, siginfo_t* info, void* context) {
   (void)context;
   int next = received + 1;
   if (signal != SIGUSR1 || info->si_code != SI_QUEUE ||
@@ -57,7 +57,7 @@ static int send_queued(int call, pid_t pid, pid_t tid, int value) {
 }
 
 static pid_t host_pid(void) {
-  FILE *file = fopen("/proc/self/stat", "re");
+  FILE* file = fopen("/proc/self/stat", "re");
   long value = -1;
   if (file == NULL)
     return -1;
@@ -82,20 +82,32 @@ static void print_errno_matrix(pid_t pid, pid_t tid) {
             info.si_pid = pid;
             info.si_uid = getuid();
             errno = 0;
-            long result =
-                call ? syscall(SYS_rt_tgsigqueueinfo, pids[process],
-                               tids[thread], signals[signal],
-                               pointer ? &info : NULL)
-                     : syscall(SYS_rt_sigqueueinfo, pids[process],
-                               signals[signal], pointer ? &info : NULL);
+            long result = call ? syscall(
+                                     SYS_rt_tgsigqueueinfo,
+                                     pids[process],
+                                     tids[thread],
+                                     signals[signal],
+                                     pointer ? &info : NULL)
+                               : syscall(
+                                     SYS_rt_sigqueueinfo,
+                                     pids[process],
+                                     signals[signal],
+                                     pointer ? &info : NULL);
             int error = errno;
-            printf("call=%d process=%d thread=%d info=%d signal=%d result=%ld "
-                   "errno=%d\n",
-                   call, process, thread, pointer, signal, result, error);
+            printf(
+                "call=%d process=%d thread=%d info=%d signal=%d result=%ld "
+                "errno=%d\n",
+                call,
+                process,
+                thread,
+                pointer,
+                signal,
+                result,
+                error);
           }
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 2)
     return 1;
   int dbt = strcmp(argv[1], "dbt") == 0;

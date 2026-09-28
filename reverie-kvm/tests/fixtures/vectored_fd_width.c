@@ -17,16 +17,16 @@ struct observation {
   unsigned char file[64];
 };
 
-static const long operations[] = {
-    SYS_readv, SYS_writev, SYS_preadv, SYS_pwritev, SYS_preadv2, SYS_pwritev2};
+static const long operations[] =
+    {SYS_readv, SYS_writev, SYS_preadv, SYS_pwritev, SYS_preadv2, SYS_pwritev2};
 
-static void print_bytes(const unsigned char *bytes, size_t length) {
+static void print_bytes(const unsigned char* bytes, size_t length) {
   for (size_t i = 0; i < length; ++i)
     printf("%02x", bytes[i]);
 }
 
-static struct observation exercise(int fd, size_t operation, uint64_t high,
-                                   uint64_t flags, int invalid) {
+static struct observation
+exercise(int fd, size_t operation, uint64_t high, uint64_t flags, int invalid) {
   unsigned char initial[64];
   for (size_t i = 0; i < sizeof(initial); ++i)
     initial[i] = (unsigned char)('0' + i);
@@ -45,8 +45,8 @@ static struct observation exercise(int fd, size_t operation, uint64_t high,
   memcpy(saved_vectors, vectors, sizeof(vectors));
   const uint64_t raw_fd = high | (invalid ? UINT32_MAX : (uint32_t)fd);
   errno = 0;
-  result.result = syscall(operations[operation], raw_fd, vectors, 2UL, 4UL,
-                          0UL, flags);
+  result.result =
+      syscall(operations[operation], raw_fd, vectors, 2UL, 4UL, 0UL, flags);
   result.error = errno;
   result.position = lseek(fd, 0, SEEK_CUR);
   assert(pread(fd, result.file, sizeof(result.file), 0) == sizeof(result.file));
@@ -72,10 +72,16 @@ static struct observation exercise(int fd, size_t operation, uint64_t high,
     assert(memcmp(result.file, initial, sizeof(initial)) == 0);
   }
 
-  printf("syscall=%ld high=%016lx flags=%016lx invalid=%d result=%ld/%d "
-         "position=%ld buffer=",
-         operations[operation], (unsigned long)high, (unsigned long)flags,
-         invalid, result.result, result.error, (long)result.position);
+  printf(
+      "syscall=%ld high=%016lx flags=%016lx invalid=%d result=%ld/%d "
+      "position=%ld buffer=",
+      operations[operation],
+      (unsigned long)high,
+      (unsigned long)flags,
+      invalid,
+      result.result,
+      result.error,
+      (long)result.position);
   print_bytes(result.buffer, sizeof(result.buffer));
   printf(" file=");
   print_bytes(result.file, sizeof(result.file));
@@ -91,25 +97,26 @@ static void assert_same(struct observation left, struct observation right) {
   assert(memcmp(left.file, right.file, sizeof(left.file)) == 0);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   assert(argc == 2);
   int fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR, 0600);
   assert(fd >= 0);
   for (size_t operation = 0; operation < 6; ++operation) {
     struct observation ordinary = exercise(fd, operation, 0, 0, 0);
     assert_same(ordinary, exercise(fd, operation, UINT64_C(1) << 32, 0, 0));
-    assert_same(ordinary,
-                exercise(fd, operation, UINT64_C(0xffffffff00000000), 0, 0));
+    assert_same(
+        ordinary, exercise(fd, operation, UINT64_C(0xffffffff00000000), 0, 0));
     struct observation bad_fd = exercise(fd, operation, 0, 0, 1);
     assert_same(bad_fd, exercise(fd, operation, UINT64_C(1) << 32, 0, 1));
     if (operation >= 4) {
       assert_same(ordinary, exercise(fd, operation, 0, UINT64_C(1) << 32, 0));
-      assert_same(ordinary,
-                  exercise(fd, operation, 0, UINT64_C(0xffffffff00000000), 0));
+      assert_same(
+          ordinary,
+          exercise(fd, operation, 0, UINT64_C(0xffffffff00000000), 0));
       struct observation bad_flags =
           exercise(fd, operation, 0, UINT64_C(0x80000000), 0);
-      assert_same(bad_flags,
-                  exercise(fd, operation, 0, UINT64_C(0x180000000), 0));
+      assert_same(
+          bad_flags, exercise(fd, operation, 0, UINT64_C(0x180000000), 0));
     }
   }
   assert(close(fd) == 0);

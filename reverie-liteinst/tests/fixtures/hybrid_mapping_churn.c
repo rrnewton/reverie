@@ -16,12 +16,12 @@ static const unsigned char guest_code[] = {
     0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xc3,
 };
 
-static void write_guest(void *mapping) {
+static void write_guest(void* mapping) {
   memcpy(mapping, guest_code, sizeof(guest_code));
-  __builtin___clear_cache(mapping, (char *)mapping + sizeof(guest_code));
+  __builtin___clear_cache(mapping, (char*)mapping + sizeof(guest_code));
 }
 
-static count_fn load_count(const char *name) {
+static count_fn load_count(const char* name) {
   count_fn function = (count_fn)dlsym(RTLD_DEFAULT, name);
   if (function == NULL) {
     fprintf(stderr, "missing %s: %s\n", name, dlerror());
@@ -32,9 +32,14 @@ static count_fn load_count(const char *name) {
 
 int main(void) {
   size_t page = (size_t)sysconf(_SC_PAGESIZE);
-  void *requested = (void *)(uintptr_t)UINT64_C(0x20000000);
-  void *mapping = mmap(requested, page, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  void* requested = (void*)(uintptr_t)UINT64_C(0x20000000);
+  void* mapping = mmap(
+      requested,
+      page,
+      PROT_READ | PROT_WRITE | PROT_EXEC,
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+      -1,
+      0);
   if (mapping == MAP_FAILED) {
     return 10;
   }
@@ -45,12 +50,17 @@ int main(void) {
     return 11;
   }
 
-  uint64_t old_site = (uint64_t)(uintptr_t)((unsigned char *)mapping + 5);
+  uint64_t old_site = (uint64_t)(uintptr_t)((unsigned char*)mapping + 5);
   if (munmap(mapping, page) != 0) {
     return 15;
   }
-  mapping = mmap(mapping, page, PROT_READ | PROT_WRITE | PROT_EXEC,
-                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  mapping = mmap(
+      mapping,
+      page,
+      PROT_READ | PROT_WRITE | PROT_EXEC,
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+      -1,
+      0);
   if (mapping == MAP_FAILED) {
     return 16;
   }

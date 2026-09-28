@@ -22,9 +22,15 @@
 static _Thread_local bool from_plugin
     __attribute__((tls_model("initial-exec"))) = false;
 
-bool calling_from_plugin() { return from_plugin; }
-void enter_plugin() { from_plugin = true; }
-void exit_plugin() { from_plugin = false; }
+bool calling_from_plugin() {
+  return from_plugin;
+}
+void enter_plugin() {
+  from_plugin = true;
+}
+void exit_plugin() {
+  from_plugin = false;
+}
 
 // vDSO cannot be used in preinit: https://reviews.llvm.org/D40679. So when a
 // SaBRe plugin makes a vDSO call, it instantly crashes.
@@ -48,11 +54,15 @@ static _Thread_local bool vdso_ready
     __attribute__((tls_model("initial-exec"))) = false;
 
 void vdso_are_ready() __attribute__((constructor));
-void vdso_are_ready() { vdso_ready = true; }
+void vdso_are_ready() {
+  vdso_ready = true;
+}
 
-bool is_vdso_ready() { return vdso_ready; }
+bool is_vdso_ready() {
+  return vdso_ready;
+}
 
-__attribute__((weak)) void post_clone_hook(void *ctx) {
+__attribute__((weak)) void post_clone_hook(void* ctx) {
   (void)ctx; // unused
   return;
 }

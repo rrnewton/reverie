@@ -60,32 +60,33 @@ struct rvk_read_snapshot {
 /* The fd and the exact numeric staging address remain caller-owned until a
  * successful finish (or no-thread create failure). No fd is duplicated or
  * closed here. count must be zero. All failures are backend control errors. */
-struct rvk_read *rvk_read_new(int fd, uintptr_t address, size_t count, int *error);
+struct rvk_read*
+rvk_read_new(int fd, uintptr_t address, size_t count, int* error);
 
 /* One owner calls start at most once, then finish. request_cancel, snapshot and
  * wake may run concurrently; no caller may be pthread_cancel'ed. The new C
  * reader is the ONLY cancellation target. */
-int rvk_read_start(struct rvk_read *op);
-int rvk_read_request_cancel(struct rvk_read *op);
-int rvk_read_snapshot(struct rvk_read *op, struct rvk_read_snapshot *snapshot);
+int rvk_read_start(struct rvk_read* op);
+int rvk_read_request_cancel(struct rvk_read* op);
+int rvk_read_snapshot(struct rvk_read* op, struct rvk_read_snapshot* snapshot);
 
 /* Arm/recheck wait: read epoch, inspect outcome/terminal futures, then wait on
  * that epoch. Every outcome publication and explicit wake changes the epoch.
  * A wake is not a terminal cause and does not alter the native outcome. */
-uint64_t rvk_read_epoch(struct rvk_read *op);
-int rvk_read_wake(struct rvk_read *op);
-int rvk_read_wait(struct rvk_read *op, uint64_t observed_epoch);
+uint64_t rvk_read_epoch(struct rvk_read* op);
+int rvk_read_wake(struct rvk_read* op);
+int rvk_read_wait(struct rvk_read* op, uint64_t observed_epoch);
 
 /* Refuses Pending with EBUSY. After outcome: revoke send admission, drain ALL
  * admitted senders through actual pthread_cancel return, then join exactly
  * once outside locks. A join failure is permanent: keep the operation, fd and
  * storage owned, never retry join, detach, or re-enable send admission. The
  * return describes this finish; snapshot retains the first control error. */
-int rvk_read_finish(struct rvk_read *op);
+int rvk_read_finish(struct rvk_read* op);
 
 /* Only after every concurrent user (including wakers) is gone. Returns EBUSY
  * and retains storage unless no thread was created or finish joined it. */
-int rvk_read_destroy(struct rvk_read *op);
+int rvk_read_destroy(struct rvk_read* op);
 
 #ifdef RVK_READ_TEST
 /* State gates are C-only and absent from production. Hooks executed between
@@ -103,9 +104,11 @@ enum rvk_read_test_event {
   RVK_READ_TEST_BEFORE_JOIN = 10,
   RVK_READ_TEST_AFTER_JOIN = 11,
 };
-void rvk_read_test_hook(struct rvk_read *op, enum rvk_read_test_event event);
-void rvk_read_test_fail(struct rvk_read *op, enum rvk_read_error_phase phase,
-                        int error);
+void rvk_read_test_hook(struct rvk_read* op, enum rvk_read_test_event event);
+void rvk_read_test_fail(
+    struct rvk_read* op,
+    enum rvk_read_error_phase phase,
+    int error);
 #endif
 
 #endif

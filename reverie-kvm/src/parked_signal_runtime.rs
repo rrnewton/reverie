@@ -265,9 +265,7 @@ async fn drive_signal_cleanup<T>(
 /// explicit. Detect and recover it here without joining: `CancelAfterFailure`
 /// is a terminal command, so the finalized parent error must be published
 /// before any child receives it.
-fn signal_cleanup_child_start_violation(
-    pending_children: &SharedChildStarts,
-) -> Option<Error> {
+fn signal_cleanup_child_start_violation(pending_children: &SharedChildStarts) -> Option<Error> {
     let poisoned = pending_children.is_poisoned();
     let has_children = !pending_children
         .lock()
@@ -304,11 +302,7 @@ fn finish_signal_cleanup<T>(
     raw: Option<i64>,
 ) -> Result<()> {
     let violation = signal_cleanup_child_start_violation(pending_children);
-    let outcome = backend.finish_handler_completion(
-        completion,
-        Ok(()),
-        std::convert::identity,
-    );
+    let outcome = backend.finish_handler_completion(completion, Ok(()), std::convert::identity);
     let result = match outcome {
         Err(error) => Err(error),
         Ok(HandlerOutcome::Returned(result)) => result.map(|_| ()),
@@ -337,14 +331,13 @@ fn finish_signal_cleanup<T>(
     };
     let error = executor.with_signal_effects(error, raw);
     let error = backend.report_tool_failure("Tool callback", error);
-    let error = match backend
-        .settle_unstarted_tool_children_after_failure(executor, pending_children)
-    {
-        Ok(()) => error,
-        Err(cleanup) => error.with_cleanup(vec![
-            cleanup.cleanup("signal-cleanup child retirement failed")
-        ]),
-    };
+    let error =
+        match backend.settle_unstarted_tool_children_after_failure(executor, pending_children) {
+            Ok(()) => error,
+            Err(cleanup) => error.with_cleanup(vec![
+                cleanup.cleanup("signal-cleanup child retirement failed"),
+            ]),
+        };
     Err(error)
 }
 

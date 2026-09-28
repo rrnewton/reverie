@@ -54,73 +54,80 @@ struct rvk_read {
 #define TEST_HOOK(op, event) ((void)0)
 #endif
 
-static int remember_error(struct rvk_read *op, unsigned phase, int error) {
+static int remember_error(struct rvk_read* op, unsigned phase, int error) {
   if (error != 0) {
     uint64_t empty = 0;
     uint64_t value = ((uint64_t)phase << 32) | (uint32_t)error;
-    atomic_compare_exchange_strong_explicit(&op->first_error, &empty, value,
-                                           memory_order_release,
-                                           memory_order_relaxed);
+    atomic_compare_exchange_strong_explicit(
+        &op->first_error,
+        &empty,
+        value,
+        memory_order_release,
+        memory_order_relaxed);
   }
   return error;
 }
 
-static int lock(struct rvk_read *op, pthread_mutex_t *mutex) {
+static int lock(struct rvk_read* op, pthread_mutex_t* mutex) {
   return remember_error(op, RVK_READ_ERROR_SYNC, pthread_mutex_lock(mutex));
 }
 
-static int unlock(struct rvk_read *op, pthread_mutex_t *mutex) {
+static int unlock(struct rvk_read* op, pthread_mutex_t* mutex) {
   return remember_error(op, RVK_READ_ERROR_SYNC, pthread_mutex_unlock(mutex));
 }
 
-uint64_t rvk_read_epoch(struct rvk_read *op) {
+uint64_t rvk_read_epoch(struct rvk_read* op) {
   return atomic_load_explicit(&op->epoch, memory_order_acquire);
 }
 
-int rvk_read_wake(struct rvk_read *op) {
+int rvk_read_wake(struct rvk_read* op) {
   int error = lock(op, &op->event_mutex);
   if (error != 0) {
     return error;
   }
   atomic_fetch_add_explicit(&op->epoch, 1, memory_order_release);
-  error = remember_error(op, RVK_READ_ERROR_SYNC,
-                         pthread_cond_broadcast(&op->event));
+  error = remember_error(
+      op, RVK_READ_ERROR_SYNC, pthread_cond_broadcast(&op->event));
   int unlock_error = unlock(op, &op->event_mutex);
   return error != 0 ? error : unlock_error;
 }
 
-int rvk_read_wait(struct rvk_read *op, uint64_t observed_epoch) {
+int rvk_read_wait(struct rvk_read* op, uint64_t observed_epoch) {
   int error = lock(op, &op->event_mutex);
   if (error != 0) {
     return error;
   }
   while (rvk_read_epoch(op) == observed_epoch && error == 0) {
-    error = remember_error(op, RVK_READ_ERROR_SYNC,
-                           pthread_cond_wait(&op->event, &op->event_mutex));
+    error = remember_error(
+        op,
+        RVK_READ_ERROR_SYNC,
+        pthread_cond_wait(&op->event, &op->event_mutex));
   }
   int unlock_error = unlock(op, &op->event_mutex);
   return error != 0 ? error : unlock_error;
 }
 
-static void publish(struct rvk_read *op, enum rvk_read_outcome outcome) {
+static void publish(struct rvk_read* op, enum rvk_read_outcome outcome) {
   atomic_store_explicit(&op->outcome, outcome, memory_order_release);
   rvk_read_wake(op);
   TEST_HOOK(op, RVK_READ_TEST_AFTER_OUTCOME);
 }
 
-static void canceled(void *opaque) {
-  struct rvk_read *op = opaque;
-  remember_error(op, RVK_READ_ERROR_CANCEL_STATE,
-                 pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL));
+static void canceled(void* opaque) {
+  struct rvk_read* op = opaque;
+  remember_error(
+      op,
+      RVK_READ_ERROR_CANCEL_STATE,
+      pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL));
   /* No errno, retry, or claim about kernel progress is derived from this. */
   publish(op, RVK_READ_CANCELED);
 }
 
-static void *reader(void *opaque) {
+static void* reader(void* opaque) {
   /* Newly created pthreads start with deferred cancellation. Before the first
    * cancellation point, disable it and install a C-only cleanup stack. */
   int error = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
-  struct rvk_read *op = opaque;
+  struct rvk_read* op = opaque;
   if (error != 0) {
     remember_error(op, RVK_READ_ERROR_CANCEL_STATE, error);
     publish(op, RVK_READ_NOT_STARTED);
@@ -128,23 +135,29 @@ static void *reader(void *opaque) {
   }
 
   pthread_cleanup_push(canceled, op);
-  error = remember_error(op, RVK_READ_ERROR_CANCEL_TYPE,
-                         pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL));
+  error = remember_error(
+      op,
+      RVK_READ_ERROR_CANCEL_TYPE,
+      pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL));
   if (error == 0) {
     TEST_HOOK(op, RVK_READ_TEST_BEFORE_ENABLE);
-    error = remember_error(op, RVK_READ_ERROR_CANCEL_STATE,
-                           pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL));
+    error = remember_error(
+        op,
+        RVK_READ_ERROR_CANCEL_STATE,
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL));
   }
   if (error == 0) {
     TEST_HOOK(op, RVK_READ_TEST_BEFORE_READ);
-    ssize_t result = read(op->fd, (void *)op->address, op->count);
+    ssize_t result = read(op->fd, (void*)op->address, op->count);
     int read_errno = errno;
     /* The test hook uses only atomics/pause here, never a cancellation point.
      * Production has no hook or intervening call before cancellation disable.
      * A public read return survives a late deferred cancellation request. */
     TEST_HOOK(op, RVK_READ_TEST_AFTER_READ);
-    remember_error(op, RVK_READ_ERROR_CANCEL_STATE,
-                   pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL));
+    remember_error(
+        op,
+        RVK_READ_ERROR_CANCEL_STATE,
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL));
     op->result = result;
     op->read_errno = read_errno;
     publish(op, RVK_READ_RETURNED);
@@ -155,14 +168,14 @@ static void *reader(void *opaque) {
   return NULL;
 }
 
-struct rvk_read *rvk_read_new(int fd, uintptr_t address, size_t count,
-                             int *error) {
+struct rvk_read*
+rvk_read_new(int fd, uintptr_t address, size_t count, int* error) {
   *error = 0;
   if (count != 0) {
     *error = EINVAL;
     return NULL;
   }
-  struct rvk_read *op = calloc(1, sizeof(*op));
+  struct rvk_read* op = calloc(1, sizeof(*op));
   if (op == NULL) {
     *error = ENOMEM;
     return NULL;
@@ -208,7 +221,7 @@ struct rvk_read *rvk_read_new(int fd, uintptr_t address, size_t count,
   return op;
 }
 
-int rvk_read_start(struct rvk_read *op) {
+int rvk_read_start(struct rvk_read* op) {
   int error = lock(op, &op->send_mutex);
   if (error != 0) {
     return error;
@@ -260,8 +273,8 @@ int rvk_read_start(struct rvk_read *op) {
   op->handle_published = true;
   op->state = RVK_READ_CALLABLE;
   bool cancel = op->terminal &&
-                atomic_load_explicit(&op->outcome, memory_order_acquire) ==
-                    RVK_READ_PENDING;
+      atomic_load_explicit(&op->outcome, memory_order_acquire) ==
+          RVK_READ_PENDING;
   error = unlock(op, &op->send_mutex);
   if (error != 0) {
     return error;
@@ -271,15 +284,15 @@ int rvk_read_start(struct rvk_read *op) {
   return cancel ? rvk_read_request_cancel(op) : 0;
 }
 
-int rvk_read_request_cancel(struct rvk_read *op) {
+int rvk_read_request_cancel(struct rvk_read* op) {
   int error = lock(op, &op->send_mutex);
   if (error != 0) {
     return error;
   }
   op->terminal = true;
   bool send = op->state == RVK_READ_CALLABLE && op->handle_published &&
-              atomic_load_explicit(&op->outcome, memory_order_acquire) ==
-                  RVK_READ_PENDING;
+      atomic_load_explicit(&op->outcome, memory_order_acquire) ==
+          RVK_READ_PENDING;
   pthread_t thread;
   if (send) {
     ++op->senders;
@@ -307,17 +320,17 @@ int rvk_read_request_cancel(struct rvk_read *op) {
     return lock_error;
   }
   --op->senders;
-  int signal_error = remember_error(op, RVK_READ_ERROR_SYNC,
-                                    pthread_cond_broadcast(&op->send_drained));
+  int signal_error = remember_error(
+      op, RVK_READ_ERROR_SYNC, pthread_cond_broadcast(&op->send_drained));
   int unlock_error = unlock(op, &op->send_mutex);
   int wake_error = rvk_read_wake(op);
-  return error != 0          ? error
-         : signal_error != 0 ? signal_error
-         : unlock_error != 0 ? unlock_error
-                             : wake_error;
+  return error != 0       ? error
+      : signal_error != 0 ? signal_error
+      : unlock_error != 0 ? unlock_error
+                          : wake_error;
 }
 
-int rvk_read_snapshot(struct rvk_read *op, struct rvk_read_snapshot *snapshot) {
+int rvk_read_snapshot(struct rvk_read* op, struct rvk_read_snapshot* snapshot) {
   int error = lock(op, &op->send_mutex);
   if (error != 0) {
     return error;
@@ -337,7 +350,7 @@ int rvk_read_snapshot(struct rvk_read *op, struct rvk_read_snapshot *snapshot) {
   return unlock(op, &op->send_mutex);
 }
 
-int rvk_read_finish(struct rvk_read *op) {
+int rvk_read_finish(struct rvk_read* op) {
   int error = lock(op, &op->send_mutex);
   if (error != 0) {
     return error;
@@ -374,8 +387,10 @@ int rvk_read_finish(struct rvk_read *op) {
     return error;
   }
   while (op->senders != 0 && error == 0) {
-    error = remember_error(op, RVK_READ_ERROR_SYNC,
-                           pthread_cond_wait(&op->send_drained, &op->send_mutex));
+    error = remember_error(
+        op,
+        RVK_READ_ERROR_SYNC,
+        pthread_cond_wait(&op->send_drained, &op->send_mutex));
   }
   if (error != 0) {
     unlock(op, &op->send_mutex);
@@ -406,32 +421,33 @@ int rvk_read_finish(struct rvk_read *op) {
   return error != 0 ? error : unlock_error;
 }
 
-int rvk_read_destroy(struct rvk_read *op) {
+int rvk_read_destroy(struct rvk_read* op) {
   int error = lock(op, &op->send_mutex);
   if (error != 0) {
     return error;
   }
   bool safe = op->senders == 0 &&
-              (op->state == RVK_READ_PREPARED ||
-               op->state == RVK_READ_NO_THREAD || op->state == RVK_READ_JOINED);
+      (op->state == RVK_READ_PREPARED || op->state == RVK_READ_NO_THREAD ||
+       op->state == RVK_READ_JOINED);
   error = unlock(op, &op->send_mutex);
   if (error != 0 || !safe) {
     return error != 0 ? error : EBUSY;
   }
   /* The caller has retired all users, not only cancel senders. On any destroy
    * error, retain the allocation; it must never be used or freed thereafter. */
-  error = remember_error(op, RVK_READ_ERROR_SYNC, pthread_cond_destroy(&op->event));
+  error =
+      remember_error(op, RVK_READ_ERROR_SYNC, pthread_cond_destroy(&op->event));
   if (error == 0) {
-    error = remember_error(op, RVK_READ_ERROR_SYNC,
-                           pthread_cond_destroy(&op->send_drained));
+    error = remember_error(
+        op, RVK_READ_ERROR_SYNC, pthread_cond_destroy(&op->send_drained));
   }
   if (error == 0) {
-    error = remember_error(op, RVK_READ_ERROR_SYNC,
-                           pthread_mutex_destroy(&op->event_mutex));
+    error = remember_error(
+        op, RVK_READ_ERROR_SYNC, pthread_mutex_destroy(&op->event_mutex));
   }
   if (error == 0) {
-    error = remember_error(op, RVK_READ_ERROR_SYNC,
-                           pthread_mutex_destroy(&op->send_mutex));
+    error = remember_error(
+        op, RVK_READ_ERROR_SYNC, pthread_mutex_destroy(&op->send_mutex));
   }
   if (error == 0) {
     free(op);
@@ -440,20 +456,22 @@ int rvk_read_destroy(struct rvk_read *op) {
 }
 
 #ifdef RVK_READ_TEST
-void rvk_read_test_fail(struct rvk_read *op, enum rvk_read_error_phase phase,
-                        int error) {
+void rvk_read_test_fail(
+    struct rvk_read* op,
+    enum rvk_read_error_phase phase,
+    int error) {
   switch (phase) {
-  case RVK_READ_ERROR_CREATE:
-    atomic_store(&op->fail_create, error);
-    break;
-  case RVK_READ_ERROR_CANCEL:
-    atomic_store(&op->fail_cancel, error);
-    break;
-  case RVK_READ_ERROR_JOIN:
-    atomic_store(&op->fail_join, error);
-    break;
-  default:
-    abort();
+    case RVK_READ_ERROR_CREATE:
+      atomic_store(&op->fail_create, error);
+      break;
+    case RVK_READ_ERROR_CANCEL:
+      atomic_store(&op->fail_cancel, error);
+      break;
+    case RVK_READ_ERROR_JOIN:
+      atomic_store(&op->fail_join, error);
+      break;
+    default:
+      abort();
   }
 }
 #endif

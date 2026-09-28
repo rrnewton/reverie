@@ -14,7 +14,7 @@
 
 static long observed;
 
-static void *observe_identity(void *unused) {
+static void* observe_identity(void* unused) {
   (void)unused;
   observed = syscall(SYS_gettid);
   return NULL;

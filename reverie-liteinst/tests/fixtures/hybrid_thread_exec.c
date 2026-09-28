@@ -9,12 +9,12 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static char **arguments;
+static char** arguments;
 static int blocked[2];
 static _Atomic int worker_ready;
 
 static void replace_image(void) {
-  char *next[] = {arguments[0], "after", arguments[2], arguments[3], NULL};
+  char* next[] = {arguments[0], "after", arguments[2], arguments[3], NULL};
   if (strcmp(arguments[1], "worker-execveat") == 0) {
     syscall(SYS_execveat, AT_FDCWD, next[0], next, environ, 0);
     _exit(19);
@@ -23,9 +23,9 @@ static void replace_image(void) {
   _exit(20);
 }
 
-static void *worker(void *unused) {
+static void* worker(void* unused) {
   (void)unused;
-  FILE *ids = fopen(arguments[2], "w");
+  FILE* ids = fopen(arguments[2], "w");
   if (ids == NULL ||
       fprintf(ids, "%ld %ld\n", (long)getpid(), syscall(SYS_gettid)) < 0 ||
       fclose(ids) != 0) {
@@ -39,7 +39,7 @@ static void *worker(void *unused) {
   if (strcmp(arguments[1], "failed") == 0) {
     char missing[4096];
     int length = snprintf(missing, sizeof(missing), "%s.absent", arguments[0]);
-    char *next[] = {missing, NULL};
+    char* next[] = {missing, NULL};
     if (length <= 0 || (size_t)length >= sizeof(missing) ||
         syscall(SYS_getpid, 0x6e786578, 4, 0) != 0x4242) {
       _exit(24);
@@ -63,16 +63,18 @@ static void *worker(void *unused) {
   _exit(23);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 4) {
     return 10;
   }
   if (strcmp(argv[1], "after") == 0) {
     int marker = open(argv[3], O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (marker < 0 || write(marker, "entered\n", 8) != 8 || close(marker) != 0) {
+    if (marker < 0 || write(marker, "entered\n", 8) != 8 ||
+        close(marker) != 0) {
       return 11;
     }
-    /* This must still reach the actual Tool after replacing a threaded image. */
+    /* This must still reach the actual Tool after replacing a threaded image.
+     */
     if (syscall(SYS_getpid, 0x6e786578, 4, 0) != 0x4242) {
       return 12;
     }

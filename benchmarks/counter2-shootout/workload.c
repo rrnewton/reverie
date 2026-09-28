@@ -36,10 +36,7 @@ static long raw_syscall0(long number) {
 static long raw_syscall1(long number, long arg0) {
   register long rax __asm__("rax") = number;
   register long rdi __asm__("rdi") = arg0;
-  __asm__ volatile("syscall"
-                   : "+a"(rax)
-                   : "D"(rdi)
-                   : "rcx", "r11", "memory");
+  __asm__ volatile("syscall" : "+a"(rax) : "D"(rdi) : "rcx", "r11", "memory");
   return rax;
 }
 
@@ -60,7 +57,7 @@ __attribute__((noreturn)) static void raw_exit(int status) {
   __builtin_unreachable();
 }
 
-static int text_equal(const char *left, const char *right) {
+static int text_equal(const char* left, const char* right) {
   while (*left != '\0' && *left == *right) {
     ++left;
     ++right;
@@ -69,7 +66,7 @@ static int text_equal(const char *left, const char *right) {
 }
 
 #ifdef SHOOTOUT_FREESTANDING
-static uint64_t parse_digits(const char *text) {
+static uint64_t parse_digits(const char* text) {
   uint64_t value = 0;
   if (*text == '\0') {
     return 0;
@@ -85,8 +82,8 @@ static uint64_t parse_digits(const char *text) {
 #endif
 
 #ifndef SHOOTOUT_FREESTANDING
-static uint64_t parse_u64(const char *text, const char *name) {
-  char *end = NULL;
+static uint64_t parse_u64(const char* text, const char* name) {
+  char* end = NULL;
   errno = 0;
   unsigned long long value = strtoull(text, &end, 10);
   if (errno != 0 || end == text || *end != '\0' || value == 0) {
@@ -114,10 +111,11 @@ static uint64_t execute(uint64_t iterations, uint64_t syscall_stride) {
 }
 
 #ifndef SHOOTOUT_FREESTANDING
-static double elapsed_ms(const struct timespec *start,
-                         const struct timespec *end) {
+static double elapsed_ms(
+    const struct timespec* start,
+    const struct timespec* end) {
   return (double)(end->tv_sec - start->tv_sec) * 1000.0 +
-         (double)(end->tv_nsec - start->tv_nsec) / 1000000.0;
+      (double)(end->tv_nsec - start->tv_nsec) / 1000000.0;
 }
 
 static int calibrate(uint64_t target_ms, uint64_t syscall_stride) {
@@ -142,28 +140,31 @@ static int calibrate(uint64_t target_ms, uint64_t syscall_stride) {
     }
   } while (duration < 100.0);
 
-  long double scaled = (long double)iterations * (long double)target_ms /
-                       (long double)duration;
+  long double scaled =
+      (long double)iterations * (long double)target_ms / (long double)duration;
   uint64_t recommendation = (uint64_t)scaled;
   if (recommendation == 0) {
     recommendation = 1;
   }
-  fprintf(stderr, "pilot_ms=%.3f pilot_iterations=%" PRIu64
-                  " checksum=%" PRIu64 "\n",
-          duration, iterations, checksum);
+  fprintf(
+      stderr,
+      "pilot_ms=%.3f pilot_iterations=%" PRIu64 " checksum=%" PRIu64 "\n",
+      duration,
+      iterations,
+      checksum);
   printf("iterations=%" PRIu64 "\n", recommendation);
   return 0;
 }
 #endif
 
-static size_t append_text(char *output, size_t offset, const char *text) {
+static size_t append_text(char* output, size_t offset, const char* text) {
   while (*text != '\0') {
     output[offset++] = *text++;
   }
   return offset;
 }
 
-static size_t append_u64(char *output, size_t offset, uint64_t value) {
+static size_t append_u64(char* output, size_t offset, uint64_t value) {
   char reversed[32];
   size_t length = 0;
   do {
@@ -176,8 +177,9 @@ static size_t append_u64(char *output, size_t offset, uint64_t value) {
   return offset;
 }
 
-__attribute__((noreturn)) static void run_measured(uint64_t iterations,
-                                                   uint64_t syscall_stride) {
+__attribute__((noreturn)) static void run_measured(
+    uint64_t iterations,
+    uint64_t syscall_stride) {
   uint64_t checksum = execute(iterations, syscall_stride);
   char output[192];
   size_t length = append_text(output, 0, "checksum=");
@@ -194,14 +196,16 @@ __attribute__((noreturn)) static void run_measured(uint64_t iterations,
 }
 
 #ifndef SHOOTOUT_FREESTANDING
-static void usage(const char *program) {
-  fprintf(stderr,
-          "usage: %s --calibrate-ms MS --stride N\n"
-          "       %s --iterations N --stride N\n",
-          program, program);
+static void usage(const char* program) {
+  fprintf(
+      stderr,
+      "usage: %s --calibrate-ms MS --stride N\n"
+      "       %s --iterations N --stride N\n",
+      program,
+      program);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   uint64_t calibration_ms = 0;
   uint64_t iterations = 0;
   uint64_t syscall_stride = 0;
@@ -232,8 +236,9 @@ int main(int argc, char **argv) {
   run_measured(iterations, syscall_stride);
 }
 #else
-__attribute__((used, noreturn)) static void freestanding_main(long argc,
-                                                               char **argv) {
+__attribute__((used, noreturn)) static void freestanding_main(
+    long argc,
+    char** argv) {
   uint64_t iterations = 0;
   uint64_t syscall_stride = 0;
   for (long index = 1; index + 1 < argc; index += 2) {
@@ -251,10 +256,11 @@ __attribute__((used, noreturn)) static void freestanding_main(long argc,
   run_measured(iterations, syscall_stride);
 }
 
-__asm__(".global _start\n"
-        "_start:\n"
-        "mov (%rsp), %rdi\n"
-        "lea 8(%rsp), %rsi\n"
-        "andq $-16, %rsp\n"
-        "call freestanding_main\n");
+__asm__(
+    ".global _start\n"
+    "_start:\n"
+    "mov (%rsp), %rdi\n"
+    "lea 8(%rsp), %rsi\n"
+    "andq $-16, %rsp\n"
+    "call freestanding_main\n");
 #endif

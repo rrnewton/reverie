@@ -66,7 +66,7 @@
 /* Counts how many planted words still hold the marker pattern. `volatile` so
  * the compiler cannot decide the region is dead and skip the reads: that
  * memory is precisely what is under test. */
-static int surviving_marker_words(volatile const unsigned char *marker) {
+static int surviving_marker_words(volatile const unsigned char* marker) {
   int intact = 0;
   for (int word = 0; word < MARKER_WORDS; ++word) {
     bool whole = true;
@@ -89,8 +89,8 @@ int main(void) {
     fprintf(stderr, "stack-scrub-marker: implausible stack address\n");
     return HARNESS_FAILURE;
   }
-  volatile unsigned char *marker =
-      (volatile unsigned char *)(anchor - MARKER_DEPTH_BYTES);
+  volatile unsigned char* marker =
+      (volatile unsigned char*)(anchor - MARKER_DEPTH_BYTES);
 
   for (size_t at = 0; at < (size_t)MARKER_WORDS * sizeof(uintptr_t); ++at)
     marker[at] = MARKER_BYTE;
@@ -121,8 +121,11 @@ int main(void) {
   (void)getpid();
   int after_clone = surviving_marker_words(marker);
 
-  printf("stack-scrub-marker before=%d after_plain=%d after_clone=%d\n", before,
-         after_plain, after_clone);
+  printf(
+      "stack-scrub-marker before=%d after_plain=%d after_clone=%d\n",
+      before,
+      after_plain,
+      after_clone);
 
   if (before != MARKER_WORDS || after_plain != MARKER_WORDS ||
       after_clone != MARKER_WORDS)

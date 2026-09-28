@@ -2007,7 +2007,7 @@ mod tests {
         );
 
         let thread_init = source
-            .split_once("static void thread_init(void *drcontext) {")
+            .split_once("static void thread_init(void* drcontext) {")
             .unwrap()
             .1
             .split_once("static void thread_exit")
@@ -2090,7 +2090,7 @@ mod tests {
         assert!(!source.contains("syscall_exits_process"));
 
         let invoke_syscall = source
-            .split_once("static int64_t invoke_syscall(")
+            .split_once("static int64_t\ninvoke_syscall(")
             .unwrap()
             .1
             .split_once("static int32_t read_registers")
@@ -2138,7 +2138,7 @@ mod tests {
             .unwrap()
             .0;
         let background = source
-            .split_once("static void runtime_background_init(void *argument) {")
+            .split_once("static void runtime_background_init(void* argument) {")
             .unwrap()
             .1
             .split_once("static void ensure_runtime_background(void)")
@@ -2225,7 +2225,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(evidence_flush.contains(
-            "sender->backend_failure |= atomic_load_explicit(\n          &runtime_backend_failure"
+            "sender->backend_failure |=\n          atomic_load_explicit(&runtime_backend_failure"
         ));
 
         let exit_runtime_tree = source
@@ -2272,7 +2272,7 @@ mod tests {
     fn process_clone_result_callback_runs_after_the_kernel_result() {
         let source = include_str!("../native/client.c");
         let invoke = source
-            .rsplit_once("static int64_t invoke_syscall(uintptr_t context")
+            .rsplit_once("static int64_t\ninvoke_syscall(uintptr_t context")
             .unwrap()
             .1
             .split_once("static int32_t read_registers")
@@ -2295,7 +2295,7 @@ mod tests {
         assert!(original.contains("CLONE_SYSCALL_ORIGINAL"));
 
         let post = source
-            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .split_once("static void post_syscall(void* drcontext, int sysnum) {")
             .unwrap()
             .1
             .split_once("static bool pre_syscall")
@@ -2306,7 +2306,7 @@ mod tests {
             .find("if (!is_clone_syscall(sysnum) &&\n      counters->pending_process_clone_result != 0)")
             .unwrap();
         let guard = post
-            .find("if (is_clone_syscall(sysnum) &&\n      counters->pending_process_clone_result != 0)")
+            .find("if (is_clone_syscall(sysnum) && counters->pending_process_clone_result != 0)")
             .unwrap();
         let consumed = post
             .find("counters->pending_process_clone_result = 0;")
@@ -2328,7 +2328,7 @@ mod tests {
         assert!(callback < identity);
 
         let pre = source
-            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .split_once("static bool pre_syscall(void* drcontext, int sysnum) {")
             .unwrap()
             .1
             .split_once("static void thread_init")
@@ -2378,7 +2378,7 @@ mod tests {
         ));
         assert!(!source.contains("static runtime_callbacks_t runtime_callbacks ="));
         assert!(source.contains(
-            "range_overlaps_page(address, length, &runtime_callbacks_page,\n                             sizeof(runtime_callbacks_page))"
+            "range_overlaps_page(\n             address,\n             length,\n             &runtime_callbacks_page,\n             sizeof(runtime_callbacks_page))"
         ));
         assert!(
             source
@@ -2393,7 +2393,7 @@ mod tests {
             .find("runtime_callbacks_page.value.unsupported_report_fd =")
             .unwrap();
         let seal = main
-            .find("dr_memory_protect(&runtime_callbacks_page")
+            .find("dr_memory_protect(\n      &runtime_callbacks_page")
             .unwrap();
         let client_registration = main.find("dr_set_client_name(").unwrap();
         assert!(final_write < seal);

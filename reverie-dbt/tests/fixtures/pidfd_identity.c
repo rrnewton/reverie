@@ -50,10 +50,10 @@ static int install_signal_handler(void) {
   return sigaction(SIGUSR1, &action, NULL) == 0;
 }
 
-static int read_exact(int fd, void *buffer, size_t length) {
+static int read_exact(int fd, void* buffer, size_t length) {
   size_t offset = 0;
   while (offset != length) {
-    ssize_t count = read(fd, (char *)buffer + offset, length - offset);
+    ssize_t count = read(fd, (char*)buffer + offset, length - offset);
     if (count > 0) {
       offset += (size_t)count;
     } else if (count < 0 && errno == EINTR) {
@@ -65,10 +65,10 @@ static int read_exact(int fd, void *buffer, size_t length) {
   return 1;
 }
 
-static int write_exact(int fd, const void *buffer, size_t length) {
+static int write_exact(int fd, const void* buffer, size_t length) {
   size_t offset = 0;
   while (offset != length) {
-    ssize_t count = write(fd, (const char *)buffer + offset, length - offset);
+    ssize_t count = write(fd, (const char*)buffer + offset, length - offset);
     if (count > 0) {
       offset += (size_t)count;
     } else if (count < 0 && errno == EINTR) {
@@ -81,7 +81,7 @@ static int write_exact(int fd, const void *buffer, size_t length) {
 }
 
 static pid_t proc_self_pid(void) {
-  FILE *file = fopen("/proc/self/stat", "re");
+  FILE* file = fopen("/proc/self/stat", "re");
   long value = -1;
   if (file == NULL)
     return -1;
@@ -96,7 +96,7 @@ static pid_t pidfd_target_pid(int fd) {
   long value = -1;
   if (snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd) <= 0)
     return -1;
-  FILE *file = fopen(path, "re");
+  FILE* file = fopen(path, "re");
   if (file == NULL)
     return -1;
   while (fgets(line, sizeof(line), file) != NULL) {
@@ -151,7 +151,8 @@ int main(void) {
   if (!signal_seen || close(self_pidfd) != 0)
     return 7;
 
-  if (pipe(child_ready) != 0 || pipe(child_ack) != 0 || pipe(child_release) != 0)
+  if (pipe(child_ready) != 0 || pipe(child_ack) != 0 ||
+      pipe(child_release) != 0)
     return 8;
 
   pid_t virtual_child = fork();
@@ -186,7 +187,8 @@ int main(void) {
   }
 
   int child_pidfd = (int)syscall(SYS_pidfd_open, virtual_child, 0);
-  if (child_pidfd < 0 || pidfd_target_pid(child_pidfd) != child_identity.host_pid) {
+  if (child_pidfd < 0 ||
+      pidfd_target_pid(child_pidfd) != child_identity.host_pid) {
     (void)write_exact(child_release[1], &byte, sizeof(byte));
     return 12;
   }

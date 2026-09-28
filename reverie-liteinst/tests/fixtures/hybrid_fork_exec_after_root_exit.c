@@ -9,11 +9,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if ((argc != 3 && argc != 4) || prctl(PR_SET_NAME, argv[1], 0, 0, 0) != 0) {
     return 9;
   }
-  FILE *pid_file = fopen(argv[2], "w");
+  FILE* pid_file = fopen(argv[2], "w");
   if (pid_file == NULL) {
     return 8;
   }
@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
         unsetenv("LD_PRELOAD") != 0) {
       _exit(126);
     }
-    execl("/bin/true", "true", (char *)NULL);
+    execl("/bin/true", "true", (char*)NULL);
     _exit(127);
   }
 

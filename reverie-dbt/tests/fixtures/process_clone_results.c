@@ -8,8 +8,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <linux/sched.h>
-#include <signal.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdio.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -17,7 +17,7 @@
 
 static unsigned char clone_vm_stack[64 * 1024];
 
-static int clone_vm_child(void *unused) {
+static int clone_vm_child(void* unused) {
   (void)unused;
   (void)getuid();
   return 0;
@@ -26,7 +26,7 @@ static int clone_vm_child(void *unused) {
 static int wait_ok(pid_t child) {
   int status = 0;
   return waitpid(child, &status, 0) == child && WIFEXITED(status) &&
-         WEXITSTATUS(status) == 0;
+      WEXITSTATUS(status) == 0;
 }
 
 static int finish_child(pid_t child) {
@@ -60,9 +60,11 @@ int main(void) {
   if (!finish_child((pid_t)syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0)))
     return 3;
 
-  pid_t clone_vm_child_pid =
-      clone(clone_vm_child, clone_vm_stack + sizeof(clone_vm_stack),
-            CLONE_VM | SIGCHLD, NULL);
+  pid_t clone_vm_child_pid = clone(
+      clone_vm_child,
+      clone_vm_stack + sizeof(clone_vm_stack),
+      CLONE_VM | SIGCHLD,
+      NULL);
   if (clone_vm_child_pid < 0 || !wait_ok(clone_vm_child_pid))
     return 6;
 
