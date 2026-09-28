@@ -12,17 +12,27 @@ Event ``emitted_at`` is the wrong clock: a historical event can be imported
 today and is not evidence that today's publisher has been stuck since the
 historical run.  In-flight ``*.tmp`` batches are ignored because the producer
 has not atomically admitted them to the publishable spool yet.
+
+``--store series-quarantine`` measures the refused series inputs. A validate
+run that appends its valid rows exits 0 even when it quarantined others, so a
+quarantine must raise an alarm somewhere else: this gate fails while any
+refusal was observed within ``--recent-seconds`` (read from this host's
+quarantine files and from the records published in the test ledger), while
+``held/`` keeps exact records whose content could not be published, and when
+unpublished refusals are older than the backlog bound.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import os
 import stat
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -31,9 +41,18 @@ LEDGER_LIB = ROOT / "ci-hub" / "ledger"
 sys.path.insert(0, str(LEDGER_LIB))
 from validate_rows import live_spool_dir  # noqa: E402
 sys.path.insert(0, str(ROOT / "ci-hub" / "series"))
+import series  # noqa: E402
 from series import spool_dir as series_spool_dir  # noqa: E402
 
 DEFAULT_MAX_AGE_SECONDS = 3600
+#: How long one observed refusal keeps the quarantine gate failing.
+DEFAULT_QUARANTINE_RECENT_SECONDS = 86400
+STORES = ("ledger", "series", "series-quarantine")
+STORE_LABELS = {
+    "ledger": "validation ledger",
+    "series": "per-test series",
+    "series-quarantine": "series quarantine",
+}
 
 
 class SpoolUnavailable(RuntimeError):
@@ -166,12 +185,134 @@ def measure(
     )
 
 
+@dataclass(frozen=True)
+class QuarantineState:
+    """Refusals observed recently and exact records withheld from publication."""
+
+    recent_records: int
+    held_records: int
+    recent_seconds: float
+    #: Parents whose test ledger has no ``refs/remotes/origin/main`` to read.
+    ledger_unread: int = 0
+    recent_parent: str | None = None
+    held_parent: str | None = None
+
+
+def _emitted_epoch(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+def _published_quarantine(parent: Path) -> list[dict] | None:
+    """Records published in this parent's test ledger; None when unreadable.
+
+    ``None`` means there is no ledger checkout or no fetched main to read, which
+    is reported as ``ledger_unread``. A ledger that exists but holds invalid
+    quarantine records is unavailable, never clean.
+    """
+    try:
+        ledger = series.ledger_root(parent)
+    except series.SeriesError:
+        return None
+    ref = subprocess.run(
+        ["git", "-C", str(ledger), "rev-parse", "--verify", "--quiet",
+         "refs/remotes/origin/main^{commit}"],
+        capture_output=True, text=True, check=False,
+    )
+    if ref.returncode != 0:
+        return None
+    try:
+        return series.published_quarantine_at_repo(ledger, "refs/remotes/origin/main")[1]
+    except (series.LedgerError, OSError, subprocess.SubprocessError) as exc:
+        raise SpoolUnavailable(f"cannot read published quarantine in {ledger}: {exc}") from exc
+
+
+def measure_quarantine(
+    parents: list[Path], *, now: float | None = None, recent_seconds: float,
+) -> QuarantineState:
+    """Count distinct refusals seen within the window and records held back.
+
+    A local file's mtime is when this host last appended a refusal to it;
+    a published record's ``emitted_at`` is when its run observed it. Both are
+    read because a published file is reaped from this host once the ledger
+    holds it. An unparseable ``emitted_at`` counts as recent: unknown is never
+    clean.
+    """
+    now = time.time() if now is None else now
+    since = now - recent_seconds
+    recent: set = set()
+    held: set = set()
+    unread = 0
+    recent_parent = held_parent = None
+    for parent in parents:
+        directory = series.quarantine_dir(parent)
+        held_dir = directory / series.QUARANTINE_HELD_SUBDIR
+        for folder in (directory, directory / "published", held_dir):
+            try:
+                paths = sorted(folder.glob("*.jsonl"))
+                for path in paths:
+                    mtime = path.stat().st_mtime
+                    identities = {series.quarantine_identity(record)
+                                  for record in series._read_quarantine_file(path)}
+                    if folder == held_dir and identities - held:
+                        held |= identities
+                        held_parent = held_parent or str(parent)
+                    if mtime >= since and identities - recent:
+                        recent |= identities
+                        recent_parent = recent_parent or str(parent)
+            except FileNotFoundError:
+                # A concurrent publisher moved or reaped the file after listing.
+                continue
+            except (OSError, series.LedgerError) as exc:
+                raise SpoolUnavailable(f"cannot read quarantine files in {folder}: {exc}") from exc
+        published = _published_quarantine(parent)
+        if published is None:
+            unread += 1
+            continue
+        for record in published:
+            emitted = _emitted_epoch(record.get("emitted_at"))
+            if (emitted is None or emitted >= since) and record["event_id"] not in recent:
+                recent.add(record["event_id"])
+                recent_parent = recent_parent or str(parent)
+    return QuarantineState(len(recent), len(held), recent_seconds, unread,
+                           recent_parent, held_parent)
+
+
+def render_quarantine(
+    backlog: SpoolBacklog, quarantine: QuarantineState,
+) -> tuple[str, str]:
+    state, summary = render(backlog, store="series-quarantine")
+    window = round(quarantine.recent_seconds, 1)
+    counts = (f"recent_records={quarantine.recent_records} within {window}s; "
+              f"held_records={quarantine.held_records}; "
+              f"ledger_unread_parents={quarantine.ledger_unread}")
+    if state == "stalled":
+        return state, f"{summary}; {counts}"
+    if quarantine.held_records:
+        return ("withheld",
+                f"series quarantine holds {quarantine.held_records} exact record(s) whose "
+                f"content could not be published portably, in {quarantine.held_parent}; "
+                f"{counts}")
+    if quarantine.recent_records:
+        return ("quarantined",
+                f"series writer refused {quarantine.recent_records} input record(s) within "
+                f"{window}s (first seen in {quarantine.recent_parent}); {counts}")
+    return state, f"{summary}; {counts}"
+
+
 def render(backlog: SpoolBacklog, *, store: str = "ledger") -> tuple[str, str]:
     age = round(backlog.oldest_age_seconds, 1)
     bound = round(backlog.max_age_seconds, 1)
     scope = f"parents_scanned={backlog.parents_scanned}"
     owner = f"; oldest_parent={backlog.oldest_parent}" if backlog.oldest_parent else ""
-    label = "validation ledger" if store == "ledger" else "per-test series"
+    label = STORE_LABELS[store]
     if backlog.stalled:
         return (
             "stalled",
@@ -191,7 +332,9 @@ def render(backlog: SpoolBacklog, *, store: str = "ledger") -> tuple[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--gate", action="store_true", help="exit 1 when backlog is too old"
+        "--gate", action="store_true",
+        help="exit 1 when backlog is too old (series-quarantine: also when a "
+             "refusal is recent or an exact record is held)",
     )
     parser.add_argument("--json", action="store_true", help="emit one JSON report")
     parser.add_argument(
@@ -211,9 +354,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--store",
-        choices=("ledger", "series"),
+        choices=STORES,
         default="ledger",
-        help="measure the validation ledger or per-test series spool",
+        help="measure the validation ledger, per-test series or series quarantine spool",
+    )
+    parser.add_argument(
+        "--recent-seconds",
+        type=float,
+        default=DEFAULT_QUARANTINE_RECENT_SECONDS,
+        help=("series-quarantine only: how long one refusal keeps the gate failing "
+              f"(default: {DEFAULT_QUARANTINE_RECENT_SECONDS}s)"),
     )
     parser.add_argument(
         "--max-age-seconds",
@@ -222,24 +372,35 @@ def main(argv: list[str] | None = None) -> int:
         help=f"oldest allowed unpublished age (default: {DEFAULT_MAX_AGE_SECONDS}s)",
     )
     args = parser.parse_args(argv)
-    if args.max_age_seconds < 0:
-        parser.error("--max-age-seconds must be non-negative")
+    if args.max_age_seconds < 0 or args.recent_seconds < 0:
+        parser.error("--max-age-seconds and --recent-seconds must be non-negative")
+    if args.store == "series-quarantine" and args.spool_dir is not None:
+        parser.error("--store series-quarantine discovers parents; --spool-dir is not supported")
 
+    parents: list[Path] = []
     if args.spool_dir is not None:
         spool_dirs = [args.spool_dir]
     else:
-        locate = live_spool_dir if args.store == "ledger" else series_spool_dir
-        spool_dirs = [locate(parent) for parent in producing_parents(args.root.resolve())]
+        locate = {"ledger": live_spool_dir, "series": series_spool_dir,
+                  "series-quarantine": series.quarantine_dir}[args.store]
+        parents = producing_parents(args.root.resolve())
+        spool_dirs = [locate(parent) for parent in parents]
 
+    label = STORE_LABELS[args.store]
+    quarantine = None
     try:
         backlog = measure_parents(spool_dirs, max_age_seconds=args.max_age_seconds)
+        if args.store == "series-quarantine":
+            quarantine = measure_quarantine(parents, recent_seconds=args.recent_seconds)
     except SpoolUnavailable as exc:
-        label = "validation ledger" if args.store == "ledger" else "per-test series"
         print("state=unknown")
         print(f"summary={label} spool backlog unavailable: {exc}")
         return 2
 
-    state, summary = render(backlog, store=args.store)
+    if quarantine is None:
+        state, summary = render(backlog, store=args.store)
+    else:
+        state, summary = render_quarantine(backlog, quarantine)
     report = {
         "state": state,
         "summary": summary,
@@ -248,12 +409,20 @@ def main(argv: list[str] | None = None) -> int:
         "max_age_seconds": round(backlog.max_age_seconds, 1),
         "oldest_entry": backlog.oldest_entry or "none",
     }
+    if quarantine is not None:
+        report.update({
+            "quarantine_recent_records": quarantine.recent_records,
+            "quarantine_held_records": quarantine.held_records,
+            "quarantine_recent_seconds": round(quarantine.recent_seconds, 1),
+            "quarantine_ledger_unread_parents": quarantine.ledger_unread,
+        })
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
         for key, value in report.items():
             print(f"{key}={value}")
-    return 1 if args.gate and backlog.stalled else 0
+    failing = backlog.stalled or state in {"withheld", "quarantined"}
+    return 1 if args.gate and failing else 0
 
 
 if __name__ == "__main__":

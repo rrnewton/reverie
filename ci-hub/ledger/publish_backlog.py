@@ -5,7 +5,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Drain every producing parent's validation-ledger and per-test series spools.
+"""Drain every producing parent's validation-ledger, per-test series and series quarantine spools.
 
 WHY THIS EXISTS. Publication was a manual command. Nothing ran it, so a receipt
 or per-test run was readable only by the parent that produced it and invisible
@@ -50,6 +50,7 @@ from check_commit_attribution import AttributionError, detect_machine  # noqa: E
 from ledger_spool_backlog import SpoolUnavailable, producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
 sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "series"))
+from series import quarantine_dir as series_quarantine_dir  # noqa: E402
 from series import spool_dir as series_spool_dir  # noqa: E402
 sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "lib"))
 import bounded_capture  # noqa: E402
@@ -59,6 +60,9 @@ import bounded_capture  # noqa: E402
 #: a repo that shares no root commit with it.
 CLONE_RELATIVE = Path("ignored/ci-hub/ledger-publisher-clone")
 ORIGIN = "https://github.com/rrnewton/dev-hermit.git"
+#: Stores published by ``ci-hub/series/mirror.py --publish-only`` into the test
+#: ledger rather than by the parent-main writer.
+MIRROR_STORES = frozenset({"series", "series-quarantine"})
 
 
 def pending_batches(spool_dir: Path) -> int:
@@ -100,6 +104,10 @@ def pending_stores(parent: Path) -> dict[str, Path]:
     candidates = {
         "ledger": live_spool_dir(parent),
         "series": series_spool_dir(parent),
+        # Refused series inputs. They publish through the same series mirror
+        # after its rows, so a batch whose rows were refused is not stranded
+        # on this host when no new rows arrive to trigger a series publish.
+        "series-quarantine": series_quarantine_dir(parent),
     }
     return {
         name: spool
@@ -110,7 +118,7 @@ def pending_stores(parent: Path) -> dict[str, Path]:
 
 def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
                    timeout: float, attribution: str, net_wrapper: str = "with-proxy") -> dict:
-    if store == "series":
+    if store in MIRROR_STORES:
         command = [
             sys.executable, str(TOOL_ROOT / "ci-hub/series/mirror.py"),
             "--parent", str(parent), "--publish-only", "--net-wrapper", net_wrapper,
@@ -138,7 +146,26 @@ def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
         report.update(json.loads(result.stdout.strip().splitlines()[-1]))
     except (ValueError, IndexError):
         report["error"] = (result.stderr or result.stdout).strip()[-400:]
+    if store == "series-quarantine" and not report["rc"] and "error" not in report:
+        report.update(quarantine_outcome(report))
     return report
+
+
+def quarantine_outcome(report: dict) -> dict:
+    """Judge the quarantine store by its own sub-report, not the mirror's exit.
+
+    The mirror exits 0 once the series rows publish and records a quarantine
+    publication failure under ``raw_publication.quarantine.error`` without
+    raising. Taking that exit status here would call a stranded quarantine
+    published.
+    """
+    quarantine = (report.get("raw_publication") or {}).get("quarantine")
+    if not isinstance(quarantine, dict):
+        return {"rc": 1, "published": 0,
+                "error": "mirror report carries no raw_publication.quarantine"}
+    if quarantine.get("error"):
+        return {"rc": 1, "published": 0, "error": str(quarantine["error"])[-400:]}
+    return {"published": quarantine.get("published", 0) or 0}
 
 
 def main(argv: list[str] | None = None) -> int:

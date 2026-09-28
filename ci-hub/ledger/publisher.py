@@ -64,7 +64,10 @@ DEFAULT_BRANCH = "main"
 #: Bounded so a genuinely wedged remote surfaces as a failure with the spool
 #: intact, instead of spinning forever and looking healthy.
 DEFAULT_ATTEMPTS = 5
-STORES = ("ledger", "series")
+#: ``series-quarantine`` publishes refused series inputs to
+#: ``quarantine/series/<team>/<host>/<YYYY-MM>.jsonl``, outside the
+#: ``series/`` tree every series reader globs.
+STORES = ("ledger", "series", "series-quarantine")
 CHECKOUT_LOCK_TIMEOUT_SECONDS = 60.0
 
 
@@ -280,6 +283,17 @@ def _series_spool_snapshot(
     return ({key: union_events(value) for key, value in pending.items()}, files)
 
 
+def _quarantine_spool_snapshot(
+    spool_dir: str | os.PathLike[str],
+) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
+    """Group pending refused inputs by the quarantine shard they publish into."""
+    series_store = _series_store()
+    try:
+        return series_store.quarantine_publication_snapshot(spool_dir)
+    except series_store.LedgerError as error:
+        raise PublishRefused(f"{spool_dir}: quarantine spool is invalid: {error}") from error
+
+
 def _store_snapshot(
     store: str, spool_dir: str | os.PathLike[str]
 ) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
@@ -287,6 +301,8 @@ def _store_snapshot(
         return _spool_snapshot(spool_dir)
     if store == "series":
         return _series_spool_snapshot(spool_dir)
+    if store == "series-quarantine":
+        return _quarantine_spool_snapshot(spool_dir)
     raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
 
 
@@ -295,6 +311,8 @@ def _store_shard(store: str, team: str, host: str, month: str) -> str:
         return f"ledger/{team}/{host}/{month}.jsonl"
     if store == "series":
         return _series_store().shard_path(team, host, month)
+    if store == "series-quarantine":
+        return _series_store().quarantine_shard_path(team, host, month)
     raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
 
 
@@ -321,7 +339,28 @@ def _validate_store_events(
                 f"{relative}: series event batch is invalid: {error}"
             ) from error
         return
+    if store == "series-quarantine":
+        series_store = _series_store()
+        try:
+            series_store.validate_quarantine_records(events, public=True)
+        except series_store.SeriesError as error:
+            raise PublishRefused(
+                f"{relative}: quarantine batch is invalid: {error}"
+            ) from error
+        return
     raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
+
+
+def _published_quarantine_ids(repo: Path, ref: str) -> set[str]:
+    """Identities of every refusal already published at ``ref``, in any shard."""
+    series_store = _series_store()
+    try:
+        return {
+            record["event_id"]
+            for record in series_store.published_quarantine_at_repo(repo, ref)[1]
+        }
+    except series_store.LedgerError as error:
+        raise PublishRefused(f"cannot read published quarantine at {ref}: {error}") from error
 
 
 #: Batches proven published but not yet durable in the PRODUCING checkout.
@@ -695,8 +734,23 @@ def _publish(
                 f"cannot prepare published branch; spool retained: {_failure_detail(error)}"
             ) from error
 
+        attempt_pending = pending
+        already_published = 0
+        if store == "series-quarantine":
+            # A refusal's identity excludes when it was observed, so a replayed
+            # run can carry an identity already published (possibly in another
+            # month's shard) with a later emitted_at. The first published body
+            # stands; appending the replay would put one identity in two shards.
+            published_ids = _published_quarantine_ids(repo, f"{remote}/{branch}")
+            attempt_pending = {}
+            for key, events in pending.items():
+                fresh = [event for event in events if event["event_id"] not in published_ids]
+                already_published += len(events) - len(fresh)
+                if fresh:
+                    attempt_pending[key] = fresh
+
         written: list[str] = []
-        for (team, host, month), events in sorted(pending.items()):
+        for (team, host, month), events in sorted(attempt_pending.items()):
             rel = _store_shard(store, team, host, month)
             target = repo / rel
             # The PUBLISHED content, read from the remote ref -- never from the
@@ -726,10 +780,12 @@ def _publish(
         if not written:
             _drain(snapshot_files)
             return {"published": 0, "commit": None, "attempts": attempt,
-                    "shards": [], "note": "all events already published"}
+                    "shards": [], "note": "all events already published",
+                    "already_published": already_published,
+                    "reaped_retained": reaped}
 
         _git(repo, "add", "--", *written)
-        subject = f"{store}: append {sum(len(v) for v in pending.values())} event(s)"
+        subject = f"{store}: append {sum(len(v) for v in attempt_pending.values())} event(s)"
         message = subject if attribution is None else f"{subject}\n\n{attribution}"
         _git(repo, "commit", "-q", "-m", message, "--", *written)
         commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -754,7 +810,8 @@ def _publish(
                             f"{remote}/{branch}", check=False)
             if ancestry.returncode == 0:
                 _drain(snapshot_files)
-                return {"published": sum(len(v) for v in pending.values()),
+                return {"published": sum(len(v) for v in attempt_pending.values()),
+                        "already_published": already_published,
                         "commit": commit, "attempts": attempt, "shards": written,
                         "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
                         "reaped_retained": reaped,
@@ -824,6 +881,8 @@ def reap_retained(
     directory = retained_dir(spool_dir)
     if not directory.is_dir():
         return 0
+    if store == "series-quarantine":
+        return _reap_retained_quarantine(Path(spool_dir), Path(source_root))
     if store == "series":
         # The pinned submodule worktree may lag its fetched history. Only full
         # matching bodies at a named published commit justify dropping a copy.
@@ -852,6 +911,53 @@ def reap_retained(
         if not identifiers or not identifiers <= durable:
             continue
         path.unlink(missing_ok=True)
+        reaped += 1
+    return reaped
+
+
+def _reap_retained_quarantine(spool_dir: Path, source_root: Path) -> int:
+    """Forget a published quarantine file only once the source root reads it.
+
+    A file is done when every record's identity is published at the source
+    root's ``refs/remotes/origin/main``. A file holding any record whose
+    public form was withheld (an owner path that cannot be replaced
+    reversibly) is MOVED into ``held/`` instead of deleted: the published
+    stub proves the refusal happened but carries none of its bytes, so this
+    host keeps the only exact copy, and ``ledger_spool_backlog --store
+    series-quarantine`` alarms while ``held/`` is not empty.
+    """
+    series_store = _series_store()
+    directory = retained_dir(spool_dir)
+    try:
+        published = _published_quarantine_ids(source_root, "refs/remotes/origin/main")
+        host = series_store._writer_host()
+    except series_store.SeriesError as error:
+        raise PublishRefused(f"cannot reap retained quarantine: {error}") from error
+    held = spool_dir / series_store.QUARANTINE_HELD_SUBDIR
+    reaped = 0
+    for path in sorted(directory.glob("*.jsonl")):
+        try:
+            records = series_store._read_quarantine_file(path)
+            forms = [series_store._published_form(record, host=host) for record in records]
+        except series_store.LedgerError as error:
+            raise PublishRefused(f"{path}: retained quarantine is invalid: {error}") from error
+        if not forms or not all(form["event_id"] in published for form in forms):
+            continue
+        if any(form["withheld"] is not None for form in forms):
+            held.mkdir(parents=True, exist_ok=True)
+            target = held / path.name
+            present = series_store._local_quarantine_ids(target)
+            lines = [
+                json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+                for record, form in zip(records, forms)
+                if form["withheld"] is not None and form["event_id"] not in present
+            ]
+            if lines:
+                with open(target, "a", encoding="ascii") as handle:
+                    handle.write("".join(lines))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        path.unlink()
         reaped += 1
     return reaped
 

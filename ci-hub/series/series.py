@@ -44,6 +44,7 @@ published.
 
 from __future__ import annotations
 
+import base64
 import copy
 import contextlib
 import ctypes
@@ -56,6 +57,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -90,6 +92,9 @@ LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
 PARENT_REPOSITORY = "https://github.com/rrnewton/dev-hermit.git"
 LEDGER_ROOT_ENV = "DEV_HERMIT_TEST_LEDGER_ROOT"
 SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
+#: Retaining a refused input waits longer than a row append: the alternative to
+#: waiting out a concurrent quarantine publication is losing the input's bytes.
+QUARANTINE_LOCK_TIMEOUT_SECONDS = 120.0
 SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES = 4096
 SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS = 1.0
 SCORECARD_SNAPSHOT_USAGE = """usage:
@@ -140,7 +145,18 @@ PRESSURE_PROMOTION_REPETITIONS = 10
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PROJECTION_RESULTS_SCHEMA_VERSION = 1
 _WRITE_RESULTS_SCHEMA_VERSION = 1
-QUARANTINE_SCHEMA = "series-quarantine/v1"
+QUARANTINE_SCHEMA = "series-quarantine/v2"
+# Written by series.py from f44dd42e0d until v2 replaced it. It stored the
+# PARSED object and a digest of its canonical re-serialization, never the
+# received bytes, so it is upgraded on publication and labelled as such.
+LEGACY_QUARANTINE_SCHEMA = "series-quarantine/v1"
+QUARANTINE_EVENT_TYPE = "series.quarantine"
+QUARANTINE_SUMMARY_SCHEMA = "series-quarantine-summary/v1"
+QUARANTINE_STAGES = frozenset({
+    "parse", "projection", "shared-checker", "spool-conflict", "batch", "writer-error",
+})
+#: Exact records whose content cannot be published without an owner path.
+QUARANTINE_HELD_SUBDIR = "held"
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -244,14 +260,39 @@ def spool_dir(parent: Any) -> Path:
 
 
 def quarantine_dir(parent: Any) -> Path:
-    """Retained cell results that no series row could be written for.
+    """The live, UNPUBLISHED spool of refused series inputs.
 
-    A cell result the writer refuses is kept here verbatim, with the exact
-    reason, instead of being discarded or taking its valid siblings with it.
-    This directory is never read as series evidence: its records are typed
-    ``series-quarantine/v1``, not ``SeriesRow``.
+    A cell result the writer refuses is kept here with its exact received bytes
+    and a typed reason, instead of being discarded or taking its valid siblings
+    with it. The ledger publisher (``publisher.py --store series-quarantine``,
+    run by ``mirror.py`` beside every series publication) appends these records
+    to ``quarantine/series/<team>/<host>/<YYYY-MM>.jsonl`` in the test ledger,
+    outside the ``series/`` tree that every series reader globs. Its records are
+    typed ``series-quarantine/v2``, never ``SeriesRow``.
     """
     return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-quarantine"
+
+
+def quarantine_held_dir(parent: Any) -> Path:
+    """Exact refused inputs whose content cannot be published portably.
+
+    The test ledger is public and carries no owner path. A record whose owner
+    paths cannot be replaced reversibly is published as a content-free stub
+    (digest, length, reason) and its exact bytes stay here. Nothing deletes
+    this directory, and ``ledger_spool_backlog --store series-quarantine``
+    alarms while it holds anything.
+    """
+    return quarantine_dir(parent) / QUARANTINE_HELD_SUBDIR
+
+
+def quarantine_shard_path(team: str, host: str, month: str) -> str:
+    """`quarantine/series/<team>/<host>/<YYYY>-<MM>.jsonl` in the test ledger.
+
+    Deliberately outside `series/`: the scorecard, the website, and the
+    published-snapshot reader all read `series/*/*/*.jsonl` (the scorecard
+    recursively), and a quarantine record is not a `SeriesRow`.
+    """
+    return "quarantine/" + shard_path(team, host, month)
 
 
 def ledger_root(parent: Any) -> Path:
@@ -1022,90 +1063,613 @@ def _quarantine_cell(raw: Any) -> str | None:
     return None
 
 
-def quarantine_record(
-    *, stage: str, run_id: str, producer: str, tree: str, emitted_at: str,
-    reason: str, raw: Any, input_row: int | None = None, event_id: str | None = None,
-) -> dict:
-    """Describe one refused input exactly, keeping its original content.
+class MalformedQuarantine(SeriesError):
+    """A quarantine record that cannot be retained or published as evidence."""
 
-    ``raw`` is the retained cell result (or series row, for a refusal after
-    projection) exactly as it was received. Its canonical SHA-256 and length
-    identify it; the record identity binds the stage, run, input position,
-    event id, and that digest so replaying the same run is idempotent.
+
+_QUARANTINE_KEYS = frozenset({
+    "schema", "event_id", "event_type", "team", "host", "emitted_at", "run_id",
+    "producer", "tree", "stage", "error", "reason", "cell", "row_event_id",
+    "inputs", "row", "owner_paths", "withheld", "legacy",
+})
+_QUARANTINE_INPUT_KEYS = frozenset({"input_row", "raw", "raw_base64", "raw_sha256", "raw_bytes"})
+_QUARANTINE_LEGACY_KEYS = frozenset({
+    "schema", "quarantine_id", "input_row", "raw", "raw_sha256", "raw_bytes",
+})
+_QUARANTINE_ID_RE = re.compile(r"series-quarantine-[0-9a-f]{64}")
+_QUARANTINE_EMITTED_AT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\S+")
+#: A reversible stand-in for one owner-home prefix in a published record.
+_OWNER_HOME_TOKEN_RE = re.compile(r"\{\{OWNER_HOME_[0-9]+\}\}")
+#: One owner-home prefix: the needle plus the account segment that follows it.
+#: The segment stops at any character that JSON escapes or that delimits a path,
+#: so the same substring appears identically in the encoded and decoded record.
+_OWNER_HOME_PREFIX_RE = re.compile(
+    re.escape(_OWNER_PATH_NEEDLE) + r"[^/\\\"'\s=,:;()\[\]{}<>]+"
+)
+_QUARANTINE_REDACTED = "[withheld: contained an owner path]"
+
+
+def _writer_host() -> str:
+    """This machine's short name: the shard a refused input is published under."""
+    host = socket.gethostname().split(".")[0]
+    if not host or "/" in host or host in (".", "..") or "\0" in host:
+        raise MalformedQuarantine(f"cannot derive a host path segment from {socket.gethostname()!r}")
+    return host
+
+
+def quarantine_input(input_row: int | None, raw: bytes) -> dict:
+    """Describe one received input by its exact bytes.
+
+    ``raw`` holds the bytes as UTF-8 text when they decode strictly (so they
+    re-encode to the same bytes), otherwise ``raw_base64`` holds them. The
+    digest and length are always over the exact received bytes.
     """
-    raw_json = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    raw_bytes = raw_json.encode()
-    raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-    host = None
-    if isinstance(raw, dict):
-        for name in ("machine_shortname", "host"):
-            if isinstance(raw.get(name), str) and raw[name]:
-                host = raw[name]
-                break
-    identity = json.dumps(
-        {
-            "event_id": event_id,
-            "input_row": input_row,
-            "producer": producer,
-            "raw_sha256": raw_sha256,
-            "run_id": run_id,
-            "stage": stage,
-            "tree": tree,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    if not isinstance(raw, (bytes, bytearray)):
+        raise MalformedQuarantine(
+            f"a quarantine input must be the received bytes, got {type(raw).__name__}"
+        )
+    raw = bytes(raw)
+    try:
+        text: str | None = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
     return {
-        "schema": QUARANTINE_SCHEMA,
-        "quarantine_id": "series-quarantine-" + hashlib.sha256(identity.encode()).hexdigest(),
-        "emitted_at": emitted_at,
-        "stage": stage,
-        "run_id": run_id,
-        "producer": producer,
-        "tree": tree,
-        "host": host,
         "input_row": input_row,
-        "event_id": event_id,
-        "cell": _quarantine_cell(raw),
-        "reason": reason,
-        "raw_sha256": raw_sha256,
-        "raw_bytes": len(raw_bytes),
-        "raw": raw,
+        "raw": text,
+        "raw_base64": None if text is not None else base64.b64encode(raw).decode("ascii"),
+        "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        "raw_bytes": len(raw),
     }
 
 
-def append_quarantine(parent: Any, run_id: str, records: Sequence[dict]) -> tuple[Path, int]:
-    """Retain refused inputs once per quarantine identity; return (path, written)."""
-    directory = quarantine_dir(parent)
-    path = directory / _quarantine_name(run_id)
-    if not records:
-        return path, 0
-    directory.mkdir(parents=True, exist_ok=True)
-    with series_spool_transition_lock(directory, exclusive=True):
-        known = set()
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
+def _quarantine_event_id(record: Mapping[str, Any]) -> str:
+    """Identity of one refusal: what was refused, where, and at which stage.
+
+    It binds the exact input digests, not the observation time, so replaying
+    one run's inputs is a no-op rather than a second record.
+    """
+    legacy = record.get("legacy")
+    if legacy is not None:
+        identity: dict[str, Any] = {
+            "event_id": record.get("row_event_id"),
+            "input_row": legacy.get("input_row"),
+            "producer": record.get("producer"),
+            "raw_sha256": legacy.get("raw_sha256"),
+            "run_id": record.get("run_id"),
+            "stage": record.get("stage"),
+            "tree": record.get("tree"),
+        }
+    else:
+        identity = {
+            "inputs": [[item.get("input_row"), item.get("raw_sha256")]
+                       for item in record.get("inputs") or []],
+            "producer": record.get("producer"),
+            "row_event_id": record.get("row_event_id"),
+            "run_id": record.get("run_id"),
+            "stage": record.get("stage"),
+            "tree": record.get("tree"),
+        }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return "series-quarantine-" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def quarantine_record(
+    *, stage: str, run_id: str, producer: str, tree: str, emitted_at: str,
+    error: str, reason: str, inputs: Sequence[dict], row: dict | None = None,
+    row_event_id: str | None = None, cell: str | None = None, host: str | None = None,
+) -> dict:
+    """Describe one refusal with the exact inputs it refused.
+
+    ``inputs`` come from :func:`quarantine_input`, so each carries the input
+    exactly as received, byte for byte. ``row`` is the projected series row
+    for a refusal made after projection (shared checker or spool conflict);
+    it is derived, never a substitute for the inputs. The local record keeps
+    every byte, owner paths included; :func:`portable_quarantine_record` makes
+    the published form.
+    """
+    record = {
+        "schema": QUARANTINE_SCHEMA,
+        "event_id": "",
+        "event_type": QUARANTINE_EVENT_TYPE,
+        "team": "hermit",
+        "host": host if host is not None else _writer_host(),
+        "emitted_at": emitted_at,
+        "run_id": run_id,
+        "producer": producer,
+        "tree": tree,
+        "stage": stage,
+        "error": error,
+        "reason": reason,
+        "cell": cell,
+        "row_event_id": row_event_id,
+        "inputs": [dict(item) for item in inputs],
+        "row": copy.deepcopy(row) if row is not None else None,
+        "owner_paths": [],
+        "withheld": None,
+        "legacy": None,
+    }
+    record["event_id"] = _quarantine_event_id(record)
+    validate_quarantine_records([record], public=False)
+    return record
+
+
+def upgrade_legacy_quarantine(record: Mapping[str, Any], *, host: str) -> dict:
+    """Carry a ``series-quarantine/v1`` record into the published v2 type.
+
+    v1 stored the parsed object and a digest of its canonical re-serialization,
+    never the received bytes, so the upgraded record has no ``inputs``. The v1
+    content is kept verbatim under ``legacy`` and labelled as such; it is not
+    presented as the received bytes. Its identity is the v1 ``quarantine_id``.
+    """
+    if not isinstance(record, Mapping) or record.get("schema") != LEGACY_QUARANTINE_SCHEMA:
+        raise MalformedQuarantine("not a series-quarantine/v1 record")
+    recorded_host = record.get("host")
+    if not (isinstance(recorded_host, str) and recorded_host and "/" not in recorded_host
+            and recorded_host not in (".", "..")):
+        recorded_host = host
+    upgraded = {
+        "schema": QUARANTINE_SCHEMA,
+        "event_id": record.get("quarantine_id"),
+        "event_type": QUARANTINE_EVENT_TYPE,
+        "team": "hermit",
+        "host": recorded_host,
+        "emitted_at": record.get("emitted_at"),
+        "run_id": record.get("run_id"),
+        "producer": record.get("producer"),
+        "tree": record.get("tree"),
+        "stage": record.get("stage"),
+        "error": "legacy-v1-unrecorded",
+        "reason": record.get("reason"),
+        "cell": record.get("cell"),
+        "row_event_id": record.get("event_id"),
+        "inputs": [],
+        "row": None,
+        "owner_paths": [],
+        "withheld": None,
+        "legacy": {
+            "schema": LEGACY_QUARANTINE_SCHEMA,
+            "quarantine_id": record.get("quarantine_id"),
+            "input_row": record.get("input_row"),
+            "raw": copy.deepcopy(record.get("raw")),
+            "raw_sha256": record.get("raw_sha256"),
+            "raw_bytes": record.get("raw_bytes"),
+        },
+    }
+    validate_quarantine_records([upgraded], public=False)
+    return upgraded
+
+
+def _quarantine_text(record: Mapping[str, Any]) -> str:
+    return json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def quarantine_exposes_owner_path(record: Mapping[str, Any]) -> bool:
+    """True when any published form of ``record`` would carry an owner path.
+
+    Stricter than the series row guard: it also reads keys, the decoded
+    content of each JSON input line, and base64-held bytes.
+    """
+    try:
+        text = _quarantine_text(record)
+    except (TypeError, ValueError, RecursionError):
+        return True
+    if _OWNER_PATH_NEEDLE in text:
+        return True
+    needle = _OWNER_PATH_NEEDLE.encode()
+    for item in record.get("inputs") or []:
+        if not isinstance(item, Mapping):
+            continue
+        raw = item.get("raw")
+        if isinstance(raw, str):
+            try:
+                decoded = json.dumps(json.loads(raw), ensure_ascii=False)
+            except (ValueError, RecursionError):
+                decoded = ""
+            if _OWNER_PATH_NEEDLE in decoded:
+                return True
+        encoded = item.get("raw_base64")
+        if isinstance(encoded, str):
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except ValueError:
+                return True
+            if needle in content:
+                return True
+    return False
+
+
+def _withheld_quarantine_stub(record: Mapping[str, Any], detail: str) -> dict:
+    """A content-free public stand-in; the exact record stays in ``held/``."""
+    stub = copy.deepcopy(dict(record))
+    stub["inputs"] = [
+        {
+            "input_row": item.get("input_row"),
+            "raw": None,
+            "raw_base64": None,
+            "raw_sha256": item.get("raw_sha256"),
+            "raw_bytes": item.get("raw_bytes"),
+        }
+        for item in record.get("inputs") or []
+    ]
+    stub["row"] = None
+    stub["owner_paths"] = []
+    stub["withheld"] = {"reason": "owner-path", "detail": detail}
+    if stub.get("legacy") is not None:
+        stub["legacy"]["raw"] = None
+    for name in ("reason", "cell", "tree", "run_id", "error", "row_event_id", "host"):
+        value = stub.get(name)
+        if isinstance(value, str) and _OWNER_PATH_NEEDLE in value:
+            stub[name] = _QUARANTINE_REDACTED
+    if quarantine_exposes_owner_path(stub):
+        raise MalformedQuarantine(
+            f"quarantine record {record.get('event_id')!r} still exposes an owner path "
+            "after withholding its content"
+        )
+    return stub
+
+
+def portable_quarantine_record(record: Mapping[str, Any]) -> dict:
+    """The deterministic form of ``record`` published to the public test ledger.
+
+    Each distinct owner-home prefix (the needle plus its account segment) is
+    replaced by ``{{OWNER_HOME_<n>}}`` and listed in ``owner_paths`` with its
+    byte length. Replacing each token by that prefix restores the exact
+    received bytes, which ``raw_sha256`` then proves. A record whose owner
+    paths cannot be replaced that way (a token already in the content, a path
+    the prefix pattern does not cover, or base64-held bytes) is published as a
+    stub with ``withheld`` set and no content. Idempotent.
+    """
+    text = _quarantine_text(record)
+    prefixes: list[str] = []
+    for match in _OWNER_HOME_PREFIX_RE.finditer(text):
+        if match.group(0) not in prefixes:
+            prefixes.append(match.group(0))
+    if not prefixes:
+        portable = json.loads(text)
+    elif _OWNER_HOME_TOKEN_RE.search(text) is not None:
+        return _withheld_quarantine_stub(
+            record, "the content already contains an owner-home token, so replacing "
+            "owner paths would not be reversible",
+        )
+    else:
+        tokens = {prefix: "{{OWNER_HOME_%d}}" % ordinal
+                  for ordinal, prefix in enumerate(prefixes, 1)}
+        replaced = _OWNER_HOME_PREFIX_RE.sub(lambda match: tokens[match.group(0)], text)
+        restored = replaced
+        for prefix, token in tokens.items():
+            restored = restored.replace(token, prefix)
+        if restored != text:
+            return _withheld_quarantine_stub(
+                record, "replacing owner paths did not round-trip exactly",
+            )
+        portable = json.loads(replaced)
+        portable["owner_paths"] = [
+            *(record.get("owner_paths") or []),
+            *({"token": token, "bytes": len(prefix.encode())}
+              for prefix, token in tokens.items()),
+        ]
+    if quarantine_exposes_owner_path(portable):
+        return _withheld_quarantine_stub(
+            record, "an owner path remains that the owner-home pattern does not "
+            "replace reversibly",
+        )
+    return portable
+
+
+def _require(condition: bool, index: int, message: str) -> None:
+    if not condition:
+        raise MalformedQuarantine(f"quarantine record {index}: {message}")
+
+
+def validate_quarantine_records(records: Iterable[Any], *, public: bool = True) -> list[dict]:
+    """Refuse a quarantine record that is not complete, exact evidence.
+
+    Every received input must be present with a digest and length that its
+    content proves (base64 always; text whenever no owner-home token stands in
+    it). ``public`` additionally refuses any record that would publish an
+    owner path.
+    """
+    checked = []
+    for index, record in enumerate(records, 1):
+        _require(isinstance(record, dict), index, "must be an object")
+        _require(set(record) == _QUARANTINE_KEYS, index,
+                 f"keys differ from the v2 type: {sorted(set(record) ^ _QUARANTINE_KEYS)}")
+        _require(record["schema"] == QUARANTINE_SCHEMA, index, f"schema {record['schema']!r}")
+        _require(record["event_type"] == QUARANTINE_EVENT_TYPE, index, "wrong event_type")
+        _require(record["team"] == "hermit", index, "team must be hermit")
+        host = record["host"]
+        _require(isinstance(host, str) and bool(host) and "/" not in host
+                 and host not in (".", "..") and "\0" not in host, index, f"host {host!r}")
+        emitted_at = record["emitted_at"]
+        _require(isinstance(emitted_at, str)
+                 and _QUARANTINE_EMITTED_AT_RE.fullmatch(emitted_at) is not None,
+                 index, f"emitted_at {emitted_at!r}")
+        for name in ("run_id", "producer", "tree", "reason"):
+            _require(isinstance(record[name], str), index, f"{name} must be a string")
+        _require(isinstance(record["error"], str) and bool(record["error"].strip()),
+                 index, "error must name the refusal type")
+        _require(record["stage"] in QUARANTINE_STAGES, index, f"stage {record['stage']!r}")
+        for name in ("cell", "row_event_id"):
+            _require(record[name] is None or isinstance(record[name], str), index,
+                     f"{name} must be a string or null")
+        _require(record["row"] is None or isinstance(record["row"], dict), index,
+                 "row must be an object or null")
+        event_id = record["event_id"]
+        _require(isinstance(event_id, str) and _QUARANTINE_ID_RE.fullmatch(event_id) is not None,
+                 index, f"event_id {event_id!r}")
+        withheld = record["withheld"]
+        _require(withheld is None or (
+            isinstance(withheld, dict) and set(withheld) == {"reason", "detail"}
+            and withheld["reason"] == "owner-path" and isinstance(withheld["detail"], str)
+        ), index, "withheld must be null or {reason: owner-path, detail}")
+        owner_paths = record["owner_paths"]
+        _require(isinstance(owner_paths, list), index, "owner_paths must be an array")
+        # The content a token must appear in: everything but the token list itself.
+        text = _quarantine_text({name: value for name, value in record.items()
+                                 if name != "owner_paths"})
+        growth = {}
+        for ordinal, entry in enumerate(owner_paths, 1):
+            _require(isinstance(entry, dict) and set(entry) == {"token", "bytes"}, index,
+                     "owner_paths entries are {token, bytes}")
+            _require(entry["token"] == "{{OWNER_HOME_%d}}" % ordinal, index,
+                     f"owner_paths token {ordinal} is {entry['token']!r}")
+            size = entry["bytes"]
+            _require(type(size) is int and size > len(_OWNER_PATH_NEEDLE), index,
+                     "owner_paths bytes must exceed the needle length")
+            _require(entry["token"] in text, index, f"{entry['token']} is listed but unused")
+            growth[entry["token"]] = size - len(entry["token"].encode())
+        _require(not (withheld is not None and owner_paths), index,
+                 "a withheld record carries no owner-home tokens")
+        inputs = record["inputs"]
+        legacy = record["legacy"]
+        _require(isinstance(inputs, list), index, "inputs must be an array")
+        _require(bool(inputs) or legacy is not None, index,
+                 "a v2 refusal must carry the inputs it refused")
+        for item in inputs:
+            _require(isinstance(item, dict) and set(item) == _QUARANTINE_INPUT_KEYS, index,
+                     "inputs entries are {input_row, raw, raw_base64, raw_sha256, raw_bytes}")
+            row_number = item["input_row"]
+            _require(row_number is None or (type(row_number) is int and row_number >= 1),
+                     index, "input_row must be a positive int or null")
+            digest, size = item["raw_sha256"], item["raw_bytes"]
+            _require(isinstance(digest, str) and _SHA256_RE.fullmatch(digest) is not None,
+                     index, "raw_sha256 must be 64-hex")
+            _require(type(size) is int and size >= 0, index, "raw_bytes must be a count")
+            raw, encoded = item["raw"], item["raw_base64"]
+            if withheld is not None:
+                _require(raw is None and encoded is None, index,
+                         "a withheld record publishes no input content")
+                continue
+            _require((raw is None) != (encoded is None), index,
+                     "exactly one of raw and raw_base64 holds the input")
+            if encoded is not None:
                 try:
-                    known.add(json.loads(line).get("quarantine_id"))
-                except (json.JSONDecodeError, AttributeError):
-                    continue
+                    content = base64.b64decode(encoded, validate=True) if isinstance(encoded, str) else None
+                except ValueError:
+                    content = None
+                _require(content is not None, index, "raw_base64 is not base64")
+                _require(hashlib.sha256(content).hexdigest() == digest and len(content) == size,
+                         index, "raw_base64 does not match raw_sha256/raw_bytes")
+                continue
+            _require(isinstance(raw, str), index, "raw must be text")
+            if not owner_paths:
+                content = raw.encode("utf-8")
+                _require(hashlib.sha256(content).hexdigest() == digest and len(content) == size,
+                         index, "raw does not match raw_sha256/raw_bytes")
+            else:
+                restored = len(raw.encode("utf-8")) + sum(
+                    raw.count(token) * delta for token, delta in growth.items()
+                )
+                _require(restored == size, index,
+                         "raw with owner-home tokens restored does not match raw_bytes")
+        if withheld is not None:
+            _require(record["row"] is None, index, "a withheld record publishes no row")
+        if record["stage"] in {"shared-checker", "spool-conflict"} and legacy is None:
+            _require(isinstance(record["row_event_id"], str), index,
+                     "a post-projection refusal names its row event id")
+            _require(record["row"] is not None or withheld is not None, index,
+                     "a post-projection refusal keeps its projected row")
+        elif legacy is None:
+            _require(record["row"] is None, index, "only a post-projection refusal has a row")
+        if legacy is not None:
+            _require(isinstance(legacy, dict) and set(legacy) == _QUARANTINE_LEGACY_KEYS, index,
+                     "legacy has the v1 fields")
+            _require(legacy["schema"] == LEGACY_QUARANTINE_SCHEMA, index, "legacy schema")
+            _require(legacy["quarantine_id"] == event_id, index,
+                     "an upgraded record keeps its v1 identity")
+            _require(not inputs, index, "v1 never recorded the received bytes")
+            _require(isinstance(legacy["raw_sha256"], str)
+                     and _SHA256_RE.fullmatch(legacy["raw_sha256"]) is not None,
+                     index, "legacy raw_sha256 must be 64-hex")
+            if withheld is None and not owner_paths:
+                canonical = json.dumps(
+                    legacy["raw"], sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                ).encode()
+                _require(hashlib.sha256(canonical).hexdigest() == legacy["raw_sha256"]
+                         and len(canonical) == legacy["raw_bytes"],
+                         index, "legacy raw does not match its v1 digest")
+        _require(_quarantine_event_id(record) == event_id, index,
+                 "event_id does not bind the recorded identity")
+        if public:
+            _require(not quarantine_exposes_owner_path(record), index,
+                     "would publish an owner path")
+        checked.append(record)
+    return checked
+
+
+def _read_quarantine_file(path: Path) -> list[dict]:
+    """Every record in one local quarantine file, strictly parsed.
+
+    Lines are split on ``\\n`` only: v1 files were written without ASCII
+    escaping, and ``str.splitlines`` would also split inside a string at
+    U+2028 and other Unicode line boundaries.
+    """
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise MalformedEvent(f"{path}: quarantine file is not UTF-8: {error}") from error
+    if text and not text.endswith("\n"):
+        raise MalformedEvent(
+            f"{path}: final line has no newline terminator; a writer died mid-append"
+        )
+    return [parse_line(line) for line in text.split("\n") if line.strip()]
+
+
+def quarantine_identity(record: Mapping[str, Any]) -> Any:
+    """The identity of one local quarantine line.
+
+    A v2 record is named by its ``event_id``. A v1 line's own ``event_id``
+    names the ROW it refused; its refusal identity is ``quarantine_id``.
+    """
+    if record.get("schema") == LEGACY_QUARANTINE_SCHEMA:
+        return record.get("quarantine_id")
+    return record.get("event_id")
+
+
+def _local_quarantine_ids(path: Path) -> set[str]:
+    known = set()
+    for record in _read_quarantine_file(path):
+        for name in ("event_id", "quarantine_id"):
+            value = record.get(name)
+            if isinstance(value, str) and value:
+                known.add(value)
+    return known
+
+
+def append_quarantine(parent: Any, run_id: str, records: Sequence[dict]) -> dict:
+    """Retain refused inputs once per identity, exactly, with fsync.
+
+    The local file keeps every received byte. It is deduplicated against this
+    run's live, publication-retained and held files and against the records
+    already published in the test ledger, so a replayed run adds nothing.
+    Returns ``{"path", "written", "duplicates", "published_check_error"}``.
+    """
+    directory = quarantine_dir(parent)
+    name = _quarantine_name(run_id)
+    path = directory / name
+    result: dict[str, Any] = {
+        "path": path, "written": 0, "duplicates": 0, "published_check_error": None,
+    }
+    if not records:
+        return result
+    validate_quarantine_records(records, public=False)
+    published: set[str] = set()
+    try:
+        published = {
+            record["event_id"]
+            for record in published_quarantine_at(parent, "refs/remotes/origin/main")[1]
+        }
+    except (LedgerError, OSError, subprocess.SubprocessError) as error:
+        # Retaining the refusal matters more than deduplicating it. A duplicate
+        # of a published identity is dropped again at publication.
+        result["published_check_error"] = str(error)
+    directory.mkdir(parents=True, exist_ok=True)
+    with series_spool_transition_lock(
+        directory, exclusive=True, timeout_seconds=QUARANTINE_LOCK_TIMEOUT_SECONDS,
+    ):
+        known = set(published)
+        for candidate in (path, directory / "published" / name,
+                          directory / QUARANTINE_HELD_SUBDIR / name):
+            known |= _local_quarantine_ids(candidate)
         pending = []
         for record in records:
-            if record["quarantine_id"] in known:
+            if record["event_id"] in known:
+                result["duplicates"] += 1
                 continue
-            known.add(record["quarantine_id"])
-            pending.append(
-                json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-                + "\n"
-            )
+            known.add(record["event_id"])
+            pending.append(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
         if pending:
-            with open(path, "a", encoding="utf-8") as handle:
+            with open(path, "a", encoding="ascii") as handle:
                 handle.write("".join(pending))
                 handle.flush()
                 os.fsync(handle.fileno())
-    return path, len(pending)
+    result["written"] = len(pending)
+    return result
+
+
+def _published_form(record: Mapping[str, Any], *, host: str) -> dict:
+    """The exact public record a local quarantine line publishes as."""
+    if record.get("schema") == LEGACY_QUARANTINE_SCHEMA:
+        record = upgrade_legacy_quarantine(record, host=host)
+    else:
+        validate_quarantine_records([record], public=False)
+    return portable_quarantine_record(record)
+
+
+def quarantine_publication_snapshot(
+    directory: Any, *, host: str | None = None,
+) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
+    """Group pending local quarantine files by the ledger shard they publish into.
+
+    Only top-level ``*.jsonl`` files are pending; ``published/`` (proven
+    published, awaiting durability) and ``held/`` are never republished.
+    Every record is converted to its portable form and validated as public.
+    An identity is published once: its identity excludes the observation
+    time, so a later line with the same identity is the same refusal seen
+    again and the first one (in file, then line, order) stands.
+    """
+    root = Path(directory)
+    pending: dict[tuple[str, str, str], list[dict]] = {}
+    files: list[Path] = []
+    if not root.is_dir():
+        return pending, files
+    fallback = host if host is not None else _writer_host()
+    seen: set[str] = set()
+    for path in sorted(root.glob("*.jsonl")):
+        for record in _read_quarantine_file(path):
+            portable = _published_form(record, host=fallback)
+            validate_quarantine_records([portable], public=True)
+            if portable["event_id"] in seen:
+                continue
+            seen.add(portable["event_id"])
+            key = ("hermit", portable["host"], portable["emitted_at"][:7])
+            quarantine_shard_path(*key)
+            pending.setdefault(key, []).append(portable)
+        files.append(path)
+    return {key: union_events(value) for key, value in pending.items()}, files
+
+
+def published_quarantine_at_repo(repo: Any, published_ref: str) -> tuple[str, list[dict]]:
+    """Every published quarantine record at one resolved ledger commit."""
+    repo = Path(repo)
+    resolved = _git(repo, ["--no-replace-objects", "rev-parse", "--verify",
+                           f"{published_ref}^{{commit}}"])
+    commit = resolved.stdout.strip()
+    if resolved.returncode != 0 or _SHA_RE.fullmatch(commit) is None:
+        raise SeriesError(
+            f"cannot resolve published quarantine revision {published_ref}: "
+            + (resolved.stderr.strip() or "no output")
+        )
+    listed = _git(repo, ["--no-replace-objects", "ls-tree", "-r", "--name-only", commit,
+                         "--", "quarantine/series"])
+    if listed.returncode != 0:
+        raise SeriesError(
+            f"cannot list quarantine shards at {commit}: "
+            + (listed.stderr.strip() or "no output")
+        )
+    records: list[dict] = []
+    for relative in listed.stdout.splitlines():
+        parts = Path(relative).parts
+        if (len(parts) != 5 or parts[:2] != ("quarantine", "series")
+                or not relative.endswith(".jsonl")):
+            continue
+        shown = _git(repo, ["--no-replace-objects", "show", f"{commit}:{relative}"])
+        if shown.returncode != 0:
+            raise SeriesError(
+                f"cannot read {commit}:{relative}: " + (shown.stderr.strip() or "no output")
+            )
+        if shown.stdout and not shown.stdout.endswith("\n"):
+            raise MalformedEvent(f"{commit}:{relative}: final line has no newline terminator")
+        records.extend(parse_line(line) for line in shown.stdout.split("\n") if line.strip())
+    return commit, union_events(validate_quarantine_records(records, public=True))
+
+
+def published_quarantine_at(parent: Any, published_ref: str) -> tuple[str, list[dict]]:
+    return published_quarantine_at_repo(
+        published_repository(parent, LEDGER_REPOSITORY), published_ref,
+    )
 
 
 def store_paths(parent: Any) -> list[Path]:
@@ -2990,7 +3554,9 @@ def _typed_comparison_attempt(
         raise MalformedRow(f"cell attempt {index} verification report must be an object")
 
     verdict = report.get("verdict")
-    if verdict in {"matched", "diverged"}:
+    # A tuple, not a set: a JSON array or object here is malformed data and
+    # must reach the MalformedRow below, not raise TypeError as unhashable.
+    if verdict in ("matched", "diverged"):
         if (
             report.get("no_result_reason") is not None
             or report.get("infrastructure_error") is not None
@@ -3061,7 +3627,7 @@ def _typed_comparison_attempt(
             and comparison.get("compare_io_buffers") is True
             and comparison.get("log_scope") == "info"
             and comparison.get("record_envelope")
-            in {"all_records_v1", "dbt_evidence_transport_v1"}
+            in ("all_records_v1", "dbt_evidence_transport_v1")  # tuple: data may be unhashable
             and comparison.get("virtualize_time") is expected_virtualize_time
             and comparison.get("strip_lines") is False
             and comparison.get("canonicalize_addresses") is True
@@ -3129,7 +3695,8 @@ def _typed_comparison_attempt(
             or (reason is not None and not isinstance(reason, dict))
             or any(report.get(field) is not None for field in contradiction_fields)
             or any(attempt.get(field) is not None for field in contradiction_fields[:-1])
-            or attempt.get("outcome") not in {"FAIL", "ERROR"}
+            # A tuple, not a set: membership must not hash a malformed value.
+            or attempt.get("outcome") not in ("FAIL", "ERROR")
         ):
             raise MalformedRow(
                 f"cell attempt {index} no_result report is internally inconsistent"
@@ -3534,7 +4101,9 @@ def _cell_outcome(row: dict) -> str:
             f"result={result!r} failure_class={failure_class!r}"
         ) from error
     outcome = row.get("outcome")
-    if outcome not in allowed_cell_outcomes:
+    # Checked as a string first: a list or object here is malformed data, and
+    # set membership would otherwise raise TypeError on the unhashable value.
+    if not isinstance(outcome, str) or outcome not in allowed_cell_outcomes:
         raise MalformedRow(
             "cell result outcome disagrees with its recorded classification: "
             f"outcome={outcome!r} result={result!r} failure_class={failure_class!r}"
@@ -4194,17 +4763,32 @@ def _last_run_index(payload: dict) -> int:
 
 def collapse_rows(rows: Sequence[dict]) -> list[dict]:
     """Fold exact equal executions while preserving retry rows and first-seen order."""
-    ordered = sorted(
-        rows,
-        key=lambda row: (
-            str((row.get("series") or {}).get("cell", "")),
-            int((row.get("series") or {}).get("run_index", -1)),
-            int((row.get("series") or {}).get("attempt", 1)),
+    return collapse_rows_with_sources(rows, [[index] for index in range(len(rows))])[0]
+
+
+def collapse_rows_with_sources(
+    rows: Sequence[dict], sources: Sequence[Sequence[int]],
+) -> tuple[list[dict], list[list[int]]]:
+    """:func:`collapse_rows`, also returning which ``sources`` each output folds.
+
+    ``sources[i]`` names the inputs behind ``rows[i]``; the second result
+    names, for each collapsed row, the union of its folded rows' sources.
+    """
+    if len(sources) != len(rows):
+        raise SeriesError("collapse_rows_with_sources needs one source list per row")
+    order = sorted(
+        range(len(rows)),
+        key=lambda index: (
+            str((rows[index].get("series") or {}).get("cell", "")),
+            int((rows[index].get("series") or {}).get("run_index", -1)),
+            int((rows[index].get("series") or {}).get("attempt", 1)),
         ),
     )
     collapsed: list[dict] = []
+    merged: list[list[int]] = []
     collapsible: dict[tuple[str, str], int] = {}
-    for row in ordered:
+    for index in order:
+        row = rows[index]
         payload = row["series"]
         key = (str(row.get("run_id", "")), _compression_key(payload))
         previous_index = None if "attempt" in payload else collapsible.get(key)
@@ -4234,32 +4818,46 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
                 previous_runtime["wall_time_min_ms"] = min(walls)
                 previous_runtime["wall_time_max_ms"] = max(walls)
                 previous_payload["runtime"] = previous_runtime
+            merged[previous_index].extend(sources[index])
             continue
         collapsed.append(json.loads(json.dumps(row)))
+        merged.append(list(sources[index]))
         if "attempt" not in payload:
             collapsible[key] = len(collapsed) - 1
-    return collapsed
+    return collapsed, merged
 
 
 def _rows_from_cell_results(
     cell_results: Sequence[dict], *, parent: Any, producer: str, run_id: str,
     tree: str, emitted_at: str, hermit_checkout: Any | None = None,
     quarantine: list[dict] | None, input_numbers: Sequence[int] | None = None,
+    raw_inputs: Sequence[bytes] | None = None, provenance: list[list[int]] | None = None,
 ) -> list[dict]:
     """Convert typed harness results into validated, compressed series rows.
 
     With ``quarantine=None`` any refused cell result refuses the batch. With a
-    list, each cell result is judged on its own: a refused one is recorded in
-    ``quarantine`` as a typed record with its exact reason and content, and
-    the independent valid results are still returned. Refusals that concern
-    the invocation rather than any one row (producer, run id, tree, source
-    ancestry and depth, the recorded Detcore tree, or a checker that cannot
-    run) still raise, because no row could be written correctly.
-    ``input_numbers`` names each cell result's original input line for the
-    quarantine records; by default it is the 1-based position in the batch.
+    list, each cell result is judged on its own: one the projection refuses as
+    malformed data (:class:`MalformedRow`) is recorded in ``quarantine`` with
+    its typed reason and its exact received bytes (``raw_inputs``, required
+    then), and the independent valid results are still returned. Any other
+    exception is a defect in this code, not in the data, and propagates.
+    Refusals that concern the invocation rather than any one row (producer,
+    run id, tree, source ancestry and depth, the recorded Detcore tree, or a
+    checker that cannot run) still raise, because no row could be written
+    correctly. ``input_numbers`` names each cell result's original input line;
+    by default it is the 1-based position in the batch. ``provenance``, when
+    given, receives for each returned row the indices of the cell results it
+    folds.
     """
     if input_numbers is not None and len(input_numbers) != len(cell_results):
         raise SeriesError("input_numbers must name every cell result")
+    if quarantine is not None and (raw_inputs is None or len(raw_inputs) != len(cell_results)):
+        raise SeriesError("quarantining needs the exact received bytes of every cell result")
+
+    def received(index: int) -> dict:
+        number = input_numbers[index] if input_numbers is not None else index + 1
+        assert raw_inputs is not None
+        return quarantine_input(number, raw_inputs[index])
     if producer not in {"validate", "pressure-test", "hermit-repeat"}:
         raise SeriesError(
             "producer must be validate, pressure-test, or hermit-repeat, "
@@ -4277,6 +4875,7 @@ def _rows_from_cell_results(
     recorded_detcore_tree = None
 
     rows = []
+    row_sources: list[list[int]] = []
     pressure_counts: dict[tuple[str, int], int] = {}
     if producer in {"pressure-test", "hermit-repeat"}:
         for cell_result in cell_results:
@@ -4296,7 +4895,6 @@ def _rows_from_cell_results(
                 key = (cell, run_index)
                 pressure_counts[key] = pressure_counts.get(key, 0) + 1
     for position, cell_result in enumerate(cell_results, 1):
-        input_row = input_numbers[position - 1] if input_numbers is not None else position
         # An unmet prerequisite is recorded by the validate-level ledger. It
         # produced no execution and therefore produces no cell observation.
         if isinstance(cell_result, dict) and cell_result.get("outcome") == "HOST-INAPPLICABLE":
@@ -4444,24 +5042,26 @@ def _rows_from_cell_results(
                 "series": payload,
             }
             rows.append(envelope)
-        except (MalformedRow, TypeError, AttributeError, KeyError, ValueError) as error:
+            row_sources.append([position - 1])
+        except MalformedRow as error:
+            # Only the typed data refusal is quarantined. A TypeError, KeyError,
+            # AttributeError or ValueError escaping the projection is a defect
+            # in this code; catching it here would file the bug as bad data.
             if quarantine is None:
                 raise
-            reason = str(error) if isinstance(error, MalformedRow) else (
-                f"cell result could not be projected: {type(error).__name__}: {error}"
-            )
             quarantine.append(quarantine_record(
                 stage="projection",
                 run_id=run_id,
                 producer=producer,
                 tree=tree,
                 emitted_at=emitted_at,
-                reason=reason,
-                raw=cell_result,
-                input_row=input_row,
+                error=type(error).__name__,
+                reason=str(error),
+                inputs=[received(position - 1)],
+                cell=_quarantine_cell(cell_result),
             ))
 
-    collapsed = collapse_rows(rows)
+    collapsed, collapsed_sources = collapse_rows_with_sources(rows, row_sources)
     for row in collapsed:
         payload = row["series"]
         identity = json.dumps(
@@ -4479,11 +5079,15 @@ def _rows_from_cell_results(
         row["event_id"] = "series-" + hashlib.sha256(identity.encode()).hexdigest()
     if quarantine is None:
         validate_rows(collapsed)
+        if provenance is not None:
+            provenance.extend(collapsed_sources)
         return collapsed
     admitted = []
-    for row, verdict in zip(collapsed, write_admission(collapsed)):
+    for row, sources, verdict in zip(collapsed, collapsed_sources, write_admission(collapsed)):
         if verdict is None:
             admitted.append(row)
+            if provenance is not None:
+                provenance.append(list(sources))
             continue
         quarantine.append(quarantine_record(
             stage="shared-checker",
@@ -4491,9 +5095,12 @@ def _rows_from_cell_results(
             producer=producer,
             tree=tree,
             emitted_at=emitted_at,
+            error="SharedCheckerRefusal",
             reason=verdict,
-            raw=row,
-            event_id=str(row.get("event_id", "")),
+            inputs=[received(index) for index in sources],
+            row=row,
+            row_event_id=str(row.get("event_id", "")),
+            cell=_quarantine_cell(row),
         ))
     return admitted
 
@@ -4609,32 +5216,54 @@ def _stdin_rows() -> tuple[list[dict] | None, int]:
     return rows, 0
 
 
-def _stdin_cell_results() -> tuple[list[tuple[int, Any]], list[tuple[int, str, str]]]:
-    """Read stdin, separating parsed lines from lines that are not JSON.
+def _stdin_cell_results() -> tuple[
+    list[tuple[int, Any, bytes]], list[tuple[int, bytes, str, str]]
+]:
+    """Read stdin as bytes, separating parsed lines from lines that are not JSON.
 
-    Returns ``(parsed, failures)``: ``parsed`` holds ``(line_number, value)``
-    and ``failures`` holds ``(line_number, raw_line, reason)``. Blank lines
-    are skipped. Nothing is refused here; the caller quarantines failures.
+    Returns ``(parsed, failures)``: ``parsed`` holds ``(line_number, value,
+    raw)`` and ``failures`` holds ``(line_number, raw, error_type, reason)``.
+    ``raw`` is the exact received line, without only its ``\\n`` terminator.
+    Lines are split on ``\\n`` alone: ``str.splitlines`` would also split a
+    JSON string at U+2028, U+0085 or a form feed, which a JSON writer may emit
+    unescaped. Lines of ASCII whitespace are skipped. Nothing is refused here;
+    the caller quarantines failures.
     """
-    parsed: list[tuple[int, Any]] = []
-    failures: list[tuple[int, str, str]] = []
-    for number, line in enumerate(sys.stdin.read().splitlines(), 1):
-        if not line.strip():
+    buffer = getattr(sys.stdin, "buffer", None)
+    data = buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    parsed: list[tuple[int, Any, bytes]] = []
+    failures: list[tuple[int, bytes, str, str]] = []
+    for number, raw in enumerate(lines, 1):
+        if not raw.strip():
             continue
         try:
+            line = raw.decode("utf-8")
             row = json.loads(line)
             if isinstance(row, dict) and "backend_parity" in row:
                 row = json.loads(line, object_pairs_hook=_parity_unique_fields,
                                  parse_constant=_parity_nonfinite_constant)
-        except (json.JSONDecodeError, RecursionError, MalformedRow) as error:
-            failures.append((number, line, f"stdin line {number} is not JSON: {error}"))
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, MalformedRow) as error:
+            failures.append((
+                number, raw, type(error).__name__, f"stdin line {number} is not JSON: {error}",
+            ))
             continue
-        parsed.append((number, row))
+        parsed.append((number, row, raw))
     return parsed, failures
 
 
 def _quarantine_summary(record: dict) -> str:
-    summary = {key: value for key, value in record.items() if key != "raw"}
+    """One refusal without its content: identity, reason, and input digests."""
+    summary = {
+        key: value for key, value in record.items()
+        if key not in {"inputs", "row", "legacy"}
+    }
+    summary["inputs"] = [
+        {name: item.get(name) for name in ("input_row", "raw_sha256", "raw_bytes")}
+        for item in record.get("inputs") or []
+    ]
     return json.dumps(summary, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -4711,6 +5340,13 @@ def _cmd_append_cells(argv: list[str]) -> int:
     if missing:
         return _usage(f"append-cells requires {', '.join(missing)}")
     producer, run_id, tree = str(producer), str(run_id), str(tree)
+    if emitted_at is not None and _QUARANTINE_EMITTED_AT_RE.fullmatch(emitted_at) is None:
+        return _usage(f"append-cells --emitted-at must be a UTC timestamp, got {emitted_at!r}")
+    try:
+        host = _writer_host()
+    except MalformedQuarantine as error:
+        print(f"series: REFUSED the cell batch, nothing was written: {error}", file=sys.stderr)
+        return 2
     parsed, failures = _stdin_cell_results()
     if not parsed and not failures:
         print("series: no cell results on stdin; nothing appended", file=sys.stderr)
@@ -4718,23 +5354,28 @@ def _cmd_append_cells(argv: list[str]) -> int:
     emitted_at = emitted_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     total = len(parsed) + len(failures)
 
-    def record(stage: str, reason: str, raw: Any, *, input_row: int | None = None,
-               event_id: str | None = None) -> dict:
+    def record(stage: str, error: str, reason: str, inputs: list[dict], *,
+               row: dict | None = None) -> dict:
         return quarantine_record(
             stage=stage, run_id=run_id, producer=producer, tree=tree,
-            emitted_at=emitted_at, reason=reason, raw=raw,
-            input_row=input_row, event_id=event_id,
+            emitted_at=emitted_at, error=error, reason=reason, inputs=inputs,
+            row=row, row_event_id=None if row is None else str(row.get("event_id", "")),
+            cell=_quarantine_cell(row), host=host,
         )
 
+    def parse_records() -> list[dict]:
+        return [
+            record("parse", error_type, reason, [quarantine_input(number, raw)])
+            for number, raw, error_type, reason in failures
+        ]
+
     # Each cell result is judged on its own. A refused one is quarantined with
-    # its exact reason and content; the independent valid results beside it
-    # are still appended. Only a refusal about the invocation itself (not any
-    # one row) keeps every row out, and then every row is quarantined too.
-    quarantined = [
-        record("parse", reason, raw_line, input_row=number)
-        for number, raw_line, reason in failures
-    ]
+    # its exact reason and received bytes; the independent valid results beside
+    # it are still appended. Only a refusal about the invocation itself (not
+    # any one row) keeps every row out, and then every row is quarantined too.
+    quarantined = parse_records()
     series_rows: list[dict] = []
+    provenance: list[list[int]] = []
     written = 0
     target = None
     batch_error = None
@@ -4742,7 +5383,7 @@ def _cmd_append_cells(argv: list[str]) -> int:
     try:
         if parsed:
             series_rows = _rows_from_cell_results(
-                [value for _, value in parsed],
+                [value for _, value, _ in parsed],
                 parent=parent,
                 producer=producer,
                 run_id=run_id,
@@ -4750,7 +5391,9 @@ def _cmd_append_cells(argv: list[str]) -> int:
                 emitted_at=emitted_at,
                 hermit_checkout=hermit_checkout,
                 quarantine=quarantined,
-                input_numbers=[number for number, _ in parsed],
+                input_numbers=[number for number, _, _ in parsed],
+                raw_inputs=[raw for _, _, raw in parsed],
+                provenance=provenance,
             )
         if series_rows:
             conflicts: list[tuple[int, dict, str]] = []
@@ -4758,35 +5401,67 @@ def _cmd_append_cells(argv: list[str]) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             written = append_cell_rows(parent, target, series_rows, conflicts=conflicts)
             conflicted = {position for position, _, _ in conflicts}
-            for _position, row, reason in conflicts:
+            for position, row, reason in conflicts:
                 quarantined.append(record(
-                    "spool-conflict", reason, row, event_id=str(row.get("event_id", "")),
+                    "spool-conflict", "SpoolConflict", reason,
+                    [quarantine_input(parsed[index][0], parsed[index][2])
+                     for index in provenance[position]],
+                    row=row,
                 ))
             series_rows = [
                 row for position, row in enumerate(series_rows) if position not in conflicted
             ]
     except (MalformedEvent, SeriesError) as error:
         batch_error = f"series: REFUSED the cell batch, nothing was written: {error}"
+        batch_error_type = type(error).__name__
     except OSError as error:
         batch_error = f"series: cannot write the spool: {error}"
+        batch_error_type = type(error).__name__
         exit_on_error = 2
+    except Exception as error:
+        # A defect in this writer, not a refusal of the data. Retain every
+        # received input exactly, so the run's cells survive the bug, and then
+        # let the exception propagate with its traceback and a nonzero exit.
+        detail = (
+            f"series writer failed with {type(error).__name__}: {error}; "
+            f"{written} row(s) had been appended to {target}"
+        )
+        retained = parse_records() + [
+            record("writer-error", type(error).__name__, detail,
+                   [quarantine_input(number, raw)])
+            for number, _, raw in parsed
+        ]
+        try:
+            outcome = append_quarantine(parent, run_id, retained)
+            print(
+                f"series: WRITER ERROR; retained {len(retained)} input(s) at "
+                f"{outcome['path']}: {detail}",
+                file=sys.stderr,
+            )
+        except (OSError, LedgerError) as retention_error:
+            print(
+                f"series: WRITER ERROR and FAILED to retain {len(retained)} input(s): "
+                f"{retention_error}; {detail}",
+                file=sys.stderr,
+            )
+        raise
     if batch_error is not None:
         series_rows = []
         written = 0
-        quarantined = [
-            record("parse", reason, raw_line, input_row=number)
-            for number, raw_line, reason in failures
-        ] + [
-            record("batch", batch_error.removeprefix("series: "), value, input_row=number)
-            for number, value in parsed
+        quarantined = parse_records() + [
+            record("batch", batch_error_type, batch_error.removeprefix("series: "),
+                   [quarantine_input(number, raw)])
+            for number, _, raw in parsed
         ]
 
-    quarantine_path = None
+    retention: dict[str, Any] = {
+        "path": None, "written": 0, "duplicates": 0, "published_check_error": None,
+    }
     quarantine_error = None
     if quarantined:
         try:
-            quarantine_path, _new = append_quarantine(parent, run_id, quarantined)
-        except (OSError, SeriesError) as error:
+            retention = append_quarantine(parent, run_id, quarantined)
+        except (OSError, LedgerError) as error:
             quarantine_error = error
 
     if batch_error is not None:
@@ -4800,8 +5475,13 @@ def _cmd_append_cells(argv: list[str]) -> int:
         # must not read as a successful append.
         exit_code = 1
     elif producer == "validate":
-        # The valid rows were appended and every refused row is retained with
-        # its reason. The validate's own verdict stands on its tests.
+        # The valid rows are appended and every refused input is retained,
+        # byte for byte, in the quarantine spool (fsynced above). That spool
+        # is published to the test ledger beside the series at finalize, its
+        # count is recorded in the run's ledger_mirror.raw_publication, and
+        # ledger_spool_backlog --store series-quarantine alarms while any
+        # recent refusal exists. Failing the validate here would instead make
+        # a data refusal in one cell fail the tests of every other cell.
         exit_code = 0
     else:
         exit_code = 1
@@ -4822,17 +5502,41 @@ def _cmd_append_cells(argv: list[str]) -> int:
             file=sys.stderr,
         )
     if quarantined:
-        where = str(quarantine_path) if quarantine_path is not None else "NOWHERE"
+        where = str(retention["path"]) if quarantine_error is None else "NOWHERE"
         print(
-            f"series: quarantined {len(quarantined)} of {total} input(s) to {where}",
+            f"series: quarantined {len(quarantined)} record(s) covering "
+            f"{len({item['input_row'] for record_ in quarantined for item in record_['inputs']})}"
+            f" of {total} input(s) to {where}",
             file=stream,
         )
     if quarantine_error is not None:
         print(
-            f"series: FAILED to retain {len(quarantined)} quarantined input(s): "
+            f"series: FAILED to retain {len(quarantined)} quarantined record(s): "
             f"{quarantine_error}",
             file=sys.stderr,
         )
+    stages: dict[str, int] = {}
+    for item in quarantined:
+        stages[item["stage"]] = stages.get(item["stage"], 0) + 1
+    print("series: QUARANTINE_SUMMARY " + json.dumps({
+        "schema": QUARANTINE_SUMMARY_SCHEMA,
+        "run_id": run_id,
+        "producer": producer,
+        "inputs": total,
+        "rows_appended": written,
+        "rows_admitted": len(series_rows),
+        "quarantined_records": len(quarantined),
+        "quarantined_inputs": len({
+            item["input_row"] for record_ in quarantined for item in record_["inputs"]
+        }),
+        "stages": stages,
+        "retained": quarantine_error is None,
+        "written": retention["written"],
+        "duplicates": retention["duplicates"],
+        "published_check_error": retention["published_check_error"],
+        "retention_error": None if quarantine_error is None else str(quarantine_error),
+        "exit_code": exit_code,
+    }, sort_keys=True), file=stream)
     return exit_code
 
 

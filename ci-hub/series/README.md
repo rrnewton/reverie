@@ -353,36 +353,120 @@ Every production consumer of the row shape reaches one of these checks:
   rows as scorecard evidence.
 
 `append-cells` judges each cell result on its own. A cell result that cannot
-be written (not JSON, malformed provenance, an undeclared failing verify
-report, a comparison cell with no typed attempts, or a row the shared type's
-`validate_for_write` refuses) is **quarantined** and the independent valid
-results beside it are still appended. The shared checker's `--write-results`
-mode returns one verdict per row in a single invocation, bound to the input
-row count and SHA-256, so one refused row no longer decides the fate of the
-batch. A repeated identity whose body changed is quarantined the same way; an
-exact replay remains a no-op.
+be written (not JSON, not UTF-8, malformed provenance, an undeclared failing
+verify report, a comparison cell with no typed attempts, or a row the shared
+type's `validate_for_write` refuses) is **quarantined** and the independent
+valid results beside it are still appended. The shared checker's
+`--write-results` mode returns one verdict per row in a single invocation,
+bound to the input row count and SHA-256, so one refused row no longer decides
+the fate of the batch. A repeated identity whose body changed is quarantined
+the same way; an exact replay remains a no-op.
 
-Each quarantined input becomes one `series-quarantine/v1` record in
+Only malformed data is quarantined: every data check in the projection raises
+`MalformedRow`, and that is the only exception the per-cell catch takes. Any
+other exception (a `TypeError`, `KeyError` or similar) is a defect in the
+writer. It is not recorded as bad data. `append-cells` retains every received
+input with stage `writer-error` and the exception type, then lets the
+exception propagate with its traceback and a nonzero exit.
+`test_projection_refuses_every_mutated_field_as_data_never_as_a_crash`
+replaces every JSON path of representative cells, and of their embedded
+verification reports, with values of every JSON type, or deletes it, and
+requires each mutant to be either admitted or quarantined.
+
+Stdin is read as bytes and split on `\n` alone. `str.splitlines` would also
+split a JSON string at U+2028. Each refused input is retained **byte for
+byte**:
+
+* `raw` holds the exact line when it decodes strictly as UTF-8;
+* otherwise `raw_base64` holds the exact bytes;
+* `raw_sha256` and `raw_bytes` are always computed over the received bytes,
+  never over a re-serialization.
+
+A `series-quarantine/v2` record holds one refusal:
+
+* `stage`: `parse`, `projection`, `shared-checker`, `spool-conflict`, `batch`
+  or `writer-error`;
+* `error`: the typed refusal, such as `JSONDecodeError`, `MalformedRow`,
+  `SpoolConflict` or the writer exception's type;
+* the exact `reason`;
+* the cell, when it can be named;
+* for a post-projection refusal, the projected `row` and its `row_event_id`;
+* `inputs`: every input the refusal covers.
+
+Its `event_id` binds the producer, run, tree, stage, row event id and each
+input's line number and digest. It does not bind the observation time, so a
+replayed run retains and publishes each refusal once and the first observation
+stands. `validate_quarantine_records` refuses a record whose content does not
+prove its digest and length.
+
+The exact records are written, with fsync and under the quarantine spool lock
+(which waits at most 120 s), to
 `ignored/ci-hub/series-quarantine/<run_id>.jsonl` under the shared parent
-root: the stage (`parse`, `projection`, `shared-checker`, `spool-conflict`, or
-`batch`), the exact refusal, the input line, the cell when it can be named,
-and the retained input itself with its canonical SHA-256. Records are keyed
-by stage, run, input line, event id, and that digest, so re-emitting a run
-retains each refusal once. Each record is also printed as a
-`series: QUARANTINED` line followed by a `quarantined Q of N input(s) to P`
-summary. The quarantine is local; it is not yet published to the ledger.
+root. They are then **published to `hermit_test_ledger`** at
+`quarantine/series/<team>/<host>/<YYYY-MM>.jsonl`. That path is outside the
+`series/*/*/*.jsonl` tree that every series reader globs, so a refusal is
+never read as a series row. Publication happens in two places:
+
+* `mirror.py` publishes the quarantine after the run's series rows. A
+  quarantine failure never undoes the series. It is recorded in
+  `raw_publication.quarantine.error`, the refused inputs stay pending, and the
+  writer is returned to published main.
+* `publish_backlog.py` drains a quarantine-only backlog. This covers a batch
+  whose every row was refused, which leaves no series batch to trigger a
+  publish. The sweep judges that store by the quarantine sub-report, not by
+  the mirror's exit status.
+
+After publication, the exact copy waits in `published/` until the ledger
+checkout reads every identity, and is then removed.
+
+The published form must not carry an owner path. Each owner-home prefix is
+replaced by a `{{OWNER_HOME_<n>}}` token listed in `owner_paths` with its byte
+length, so replacing each token restores the exact bytes that `raw_sha256`
+proves. A record that cannot be made public reversibly is published as a stub
+with `withheld` set and no content, and its exact local copy moves to `held/`
+permanently. Two cases produce a stub: base64-held bytes that contain an owner
+path, and content that already contains a token. A legacy `series-quarantine/v1`
+record stored the parsed object and a digest of its canonical
+re-serialization, not the received bytes. It is published as v2 with empty
+`inputs`, its v1 content under `legacy`, and its v1 `quarantine_id` as its
+identity.
+
+Each record is printed as a `series: QUARANTINED` line, without its content,
+followed by `quarantined R record(s) covering Q of N input(s) to P`. One
+machine-readable `series: QUARANTINE_SUMMARY {json}` line
+(`series-quarantine-summary/v1`) always follows. It holds the input, appended,
+admitted, quarantined-record and quarantined-input counts, the count per stage,
+whether retention succeeded, and the exit code. For a finalized validate run,
+`raw_publication.quarantine.run` in the run's `ledger_mirror` record counts that
+run's refusals: published, withheld, and still unpublished.
 
 Only a refusal about the invocation itself (the producer, run id, or tree;
 source ancestry and depth; the recorded Detcore tree; a checker that cannot
 run; or a spool that cannot be written) keeps every row out, and then every
-input is quarantined with stage `batch`. Exit status: `0` when nothing was
-quarantined; `1` when every input was refused, when the invocation was
-refused, or when the quarantine itself could not be written; for `validate`,
-`0` when valid rows were appended beside quarantined ones (the validate's
-verdict stands on its tests, and the quarantine lines reach its log); for
-`pressure-test` and `hermit-repeat`, `1` whenever anything was quarantined.
-The library function `rows_from_cell_results` still refuses a batch it cannot
-write whole.
+input is quarantined with stage `batch`. Exit status:
+
+* `0` when nothing was quarantined;
+* `1` when every input was refused, when the invocation was refused, or when
+  the quarantine itself could not be retained;
+* for `validate`, `0` when valid rows were appended beside retained quarantined
+  ones;
+* for `pressure-test` and `hermit-repeat`, `1` whenever anything was
+  quarantined.
+
+The validate exception is not a silenced alarm. The refused inputs are
+retained exactly, published to the test ledger, and counted in the run
+record. The `series_quarantine` health reminder
+(`ledger_spool_backlog.py --store series-quarantine --gate`) fails, with a
+coordinator warning, in any of these cases:
+
+* a refusal emitted in the last 24 hours exists, locally or in the published
+  ledger;
+* a withheld record is held;
+* the pending quarantine stalls.
+
+Failing the validate itself would instead turn one cell's data refusal into a
+failure of every other cell's tests. The library function
+`rows_from_cell_results` still refuses a batch it cannot write whole.
 
 The canonical Python reader also exposes `projection_results(rows)`. It sends
 the complete read-valid population to the same Rust checker and returns the

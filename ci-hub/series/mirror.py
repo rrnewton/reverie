@@ -228,8 +228,34 @@ def recover_spooled_commit(writer: Path, parent: Path) -> str | None:
         parts = Path(path).parts
         return (len(parts) == 4 and parts[0] == "series"
                 and publisher._store_shard("series", parts[1], parts[2], Path(parts[3]).stem) == path)
-    if not paths or any(not shard(path) for path in paths):
+    def quarantine_shard(path):
+        parts = Path(path).parts
+        return (len(parts) == 5 and parts[:2] == ("quarantine", "series")
+                and publisher._store_shard("series-quarantine", parts[2], parts[3],
+                                           Path(parts[4]).stem) == path)
+    if not paths or any(not (shard(path) or quarantine_shard(path)) for path in paths):
         raise MirrorRefused(f"ledger writer has unpublished derived or unknown work at {head}; retained for recovery")
+    if any(quarantine_shard(path) for path in paths):
+        # Same rule for refused inputs: every published record is unchanged and
+        # every added one is still pending in the local quarantine spool.
+        try:
+            with series.series_spool_transition_lock(
+                series.quarantine_dir(parent), exclusive=True,
+                timeout_seconds=series.QUARANTINE_LOCK_TIMEOUT_SECONDS,
+            ):
+                pending_quarantine, _ = publisher._store_snapshot(
+                    "series-quarantine", series.quarantine_dir(parent))
+            _, old_quarantine = series.published_quarantine_at_repo(writer, base)
+            _, new_quarantine = series.published_quarantine_at_repo(writer, head)
+        except series.LedgerError as error:
+            raise MirrorRefused(f"cannot check unpublished quarantine at {head}: {error}") from error
+        was = {record["event_id"]: record for record in old_quarantine}
+        now = {record["event_id"]: record for record in new_quarantine}
+        waiting = {record["event_id"]: record
+                   for records in pending_quarantine.values() for record in records}
+        if (any(now.get(key) != value for key, value in was.items())
+                or any(waiting.get(key) != value for key, value in now.items() if key not in was)):
+            raise MirrorRefused(f"unpublished ledger commit {head} is not an unchanged spooled quarantine append; retained")
     old = series._published_snapshot_at_repo(writer, base, repository=REMOTE_URL)
     current = series._published_snapshot_at_repo(writer, head, repository=REMOTE_URL)
     before = {row["event_id"]: row for row in old.rows}
@@ -249,7 +275,8 @@ def recover_spooled_commit(writer: Path, parent: Path) -> str | None:
     return recovery
 
 
-def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int) -> dict[str, Any]:
+def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int,
+                   run_id: str | None = None) -> dict[str, Any]:
     # Immutable batches are moved only while readers and appenders are excluded.
     with series.series_spool_transition_lock(series.spool_dir(parent), exclusive=True):
         try:
@@ -261,9 +288,75 @@ def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str
             )
             if recovery:
                 report["recovered_ref"] = recovery
-            return report
         except (publisher.PublishRefused, subprocess.SubprocessError) as error:
             raise MirrorRefused(str(error)) from error
+    report["quarantine"] = publish_quarantine(
+        parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts, run_id=run_id,
+    )
+    return report
+
+
+def _quarantine_records(path: Path) -> list[dict]:
+    return [record for file in sorted(path.glob("*.jsonl"))
+            for record in series._read_quarantine_file(file)]
+
+
+def publish_quarantine(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int,
+                       run_id: str | None = None) -> dict[str, Any]:
+    """Publish refused series inputs and count them; never undo the series.
+
+    The result is the machine-readable count that start_unit copies into the
+    run's ``ledger_mirror.raw_publication.quarantine``. A failure is recorded
+    in ``error`` rather than raised: the series rows are already published, the
+    refused inputs stay in the local spool (``pending_records``) for the next
+    publication, and ``ledger_spool_backlog --store series-quarantine`` alarms
+    on them. The writer is returned to published main so the scorecard never
+    binds an unpushed quarantine commit.
+    """
+    directory = series.quarantine_dir(parent)
+    result: dict[str, Any] = {
+        "schema": "series-quarantine-publication/v1", "published": 0,
+        "already_published": 0, "commit": None, "error": None,
+        "pending_records": None, "held_records": None, "run": None,
+    }
+    try:
+        with series.series_spool_transition_lock(
+            directory, exclusive=True, timeout_seconds=series.QUARANTINE_LOCK_TIMEOUT_SECONDS,
+        ):
+            outcome = publisher.publish(
+                writer, directory, source_root=ledger, store="series-quarantine",
+                attempts=attempts, network_wrapper=net_wrapper,
+            )
+        result["published"] = outcome.get("published", 0)
+        result["already_published"] = outcome.get("already_published", 0)
+        result["commit"] = outcome.get("commit")
+    except (publisher.PublishRefused, subprocess.SubprocessError, OSError, series.LedgerError) as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+        try:
+            _git(writer, "checkout", "--quiet", "--force", "--detach", "refs/remotes/origin/main")
+            _git(writer, "clean", "-fdq", "--", "quarantine")
+        except (subprocess.SubprocessError, OSError) as restore_error:
+            result["error"] += f"; writer restore FAILED: {restore_error}"
+    try:
+        pending = _quarantine_records(directory)
+        result["pending_records"] = len(pending)
+        result["held_records"] = len(_quarantine_records(directory / series.QUARANTINE_HELD_SUBDIR))
+        if run_id is not None:
+            _, published = series.published_quarantine_at_repo(writer, "refs/remotes/origin/main")
+            mine = [record for record in published if record.get("run_id") == run_id]
+            waiting = [record for record in pending if record.get("run_id") == run_id]
+            result["run"] = {
+                "run_id": run_id,
+                "published": len(mine),
+                "withheld": sum(record.get("withheld") is not None for record in mine),
+                "unpublished": len(waiting),
+                "records": len({record["event_id"] for record in mine}
+                               | {series.quarantine_identity(record) for record in waiting}),
+            }
+    except (subprocess.SubprocessError, OSError, series.LedgerError) as error:
+        count_error = f"cannot count quarantine: {type(error).__name__}: {error}"
+        result["error"] = count_error if result["error"] is None else f"{result['error']}; {count_error}"
+    return result
 
 
 def _published_snapshot(writer: Path, ref: str = "HEAD") -> dict[str, Any]:
@@ -898,7 +991,8 @@ def mirror(
                         {"source": {"repository": REMOTE_URL, "commit": commit,
                                     "tree": series._series_tree_at(writer, commit)}})
         else:
-            publication = publish_series(parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts)
+            publication = publish_series(parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts,
+                                         run_id=finalized_run_id)
             snapshot = _published_snapshot(writer)
         series_commit = snapshot["source"]["commit"]
         report = {

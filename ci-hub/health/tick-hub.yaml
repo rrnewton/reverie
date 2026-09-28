@@ -409,6 +409,24 @@ reminders:
         component: series-spool-backlog
       title: "per-test series publication is stalled: {summary}"
 
+  # A validate run that appends its valid rows exits 0 even when the series
+  # writer quarantined others (ci-hub/series/README.md, "Quarantine"). This gate
+  # is where that refusal is counted and raised: it fails for a day after any
+  # refusal, while exact records are held back from the public ledger, and when
+  # refused inputs stay unpublished past the backlog bound.
+  - name: series_quarantine
+    cadence_secs: 3600
+    gate:
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --store series-quarantine --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: series-quarantine
+      title: "series writer refused input records: {summary}"
+
   # Run one bounded sample of red cells with executable commands each day. The
   # health tick only
   # launches the work and returns; the fixed systemd unit prevents overlap.

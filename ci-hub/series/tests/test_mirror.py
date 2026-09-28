@@ -602,6 +602,77 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual({"VALIDATED", "FAILED"}, {row["event_id"] for row in self.remote_rows()})
         self.assertEqual("", git(self.source, "status", "--porcelain"))
 
+    def test_finalized_run_record_counts_only_that_runs_quarantined_inputs(self):
+        # The run record is where a validate's refused inputs are counted.
+        # start_unit copies the mirror's raw_publication into ledger_mirror and
+        # names the run by the same suffix-free unit it exported as E2E_RUN_ID,
+        # which is the --run-id the validate gave append-cells.
+        sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/validate"))
+        sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub"))
+        import start_unit
+        import run_registry
+
+        expected_run_id = "validate-quarantine"
+        bootstrap = (
+            "import runpy,sys,subprocess;"
+            f"sys.path[:0]=[{str(MODULE.parent)!r},{str(mirror.TOOL_ROOT / 'ci-hub/ledger')!r}];"
+            "import series,publisher,validate_rows;"
+            "series._run_shared_checker=lambda *a: subprocess.CompletedProcess(a,0,'','');"
+            "publisher._series_store=lambda:series;"
+            f"r={{'repo':'hermit','run_id':{expected_run_id!r},"
+            "'record_id':'fixture-final','commit':sys.argv[sys.argv.index('--target')+1],"
+            "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'started_at':'2026-09-21T12:00:00Z'};"
+            "validate_rows.rows=lambda **k:[r];"
+            "validate_rows.canonical_finalized_row=lambda **k:r;"
+            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+        )
+
+        def native_run(command, **kwargs):
+            return subprocess.run(
+                bounded_fixture_command([sys.executable, "-B", "-c", bootstrap,
+                                         *command[1:], "--tool-checkout", str(self.tool)]),
+                cwd=kwargs.get("cwd"), env=kwargs.get("env"), capture_output=True, text=True,
+                timeout=30,
+            )
+
+        # Publication never needs GitHub; a call would fail this test loudly.
+        no_gh = self.root / "no-gh"
+        no_gh.write_text("#!/bin/sh\necho 'GitHub must not be called' >&2\nexit 97\n")
+        no_gh.chmod(0o755)
+        self.append("QUARANTINED")
+        mine = self.quarantine(expected_run_id, b'{"schema": 4, "truncated')
+        other = self.quarantine("validate-other", b"another run's refusal")
+        series.append_quarantine(self.parent, expected_run_id, [mine])
+        series.append_quarantine(self.parent, "validate-other", [other])
+        record_path = self.parent / "quarantine-run.json"
+        record = {
+            "schema_version": run_registry.SCHEMA_VERSION,
+            "producer": "normal-completion-publication-fixture",
+            "repo": "rrnewton/hermit", "checkout": str(self.source),
+            "target": self.target, "canonical_verdict": "VALIDATED",
+            "unit": expected_run_id + ".service", "wrapper_exit_code": 0,
+            "e2e_result_root": str(self.root / "results"),
+            "github_executable": str(no_gh),
+        }
+        run_registry.write_record(record_path, record)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("FLEET_REAL_GH", None)
+            result = start_unit.finalize_ledger_mirror(
+                self.parent, mirror.TOOL_ROOT, record_path, record=record, run=native_run,
+            )
+        self.assertTrue(start_unit.cell_ledger_published(result), result)
+        self.assertEqual(result, run_registry.read_record(record_path))
+        counted = result["ledger_mirror"]["raw_publication"]["quarantine"]
+        self.assertIsNone(counted["error"], counted)
+        self.assertEqual(2, counted["published"])
+        self.assertEqual(0, counted["pending_records"])
+        # Violating: the other run's refusal is published too but is not this
+        # run's, so it must not be counted against it.
+        self.assertEqual({"run_id": expected_run_id, "published": 1, "withheld": 0,
+                          "unpublished": 0, "records": 1}, counted["run"])
+        self.assertEqual({mine["event_id"], other["event_id"]},
+                         {item["event_id"] for item in self.remote_quarantine()})
+
     def test_missing_finalized_run_identity_preserves_verdict_and_pending_spool(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/validate"))
         import start_unit
@@ -761,7 +832,11 @@ class DirectLedgerFixture(unittest.TestCase):
                 self.assertEqual(self.parent, kwargs["source_root"])
                 self.assertEqual(mirror.TOOL_ROOT / "scripts/parent-main-write", kwargs["serialized_writer"])
                 return {"published": 1}
-            order.append("raw-publish")
+            # The refused-input spool is published after the series rows, in
+            # the same held cell lock; it is recorded separately so the order
+            # of both is asserted rather than counted as one.
+            order.append("quarantine-publish" if kwargs.get("store") == "series-quarantine"
+                         else "raw-publish")
             return actual_publish(*args, **kwargs)
 
         @contextlib.contextmanager
@@ -777,7 +852,7 @@ class DirectLedgerFixture(unittest.TestCase):
                 mock.patch.object(mirror, "publication_writer", side_effect=writer):
             report = self.publish(results=self.root / "results", finalized_run_id=selection["row"]["run_id"])
         self.assertEqual("published", report["state"], report)
-        self.assertEqual(["parent-publish", "cell-lock", "raw-publish"], order)
+        self.assertEqual(["parent-publish", "cell-lock", "raw-publish", "quarantine-publish"], order)
         self.assertEqual(2, live.call_count)
         self.assertEqual(2, committed.call_count)
         artifacts, _ = mirror.finalized_proof.capture_artifacts(self.parent, selection["row"])
@@ -1091,6 +1166,231 @@ class DirectLedgerFixture(unittest.TestCase):
             git(writer, "commit", "-qm", "invalid JSON type mutation of historical event")
             with self.subTest(extra=extra), self.assertRaisesRegex(mirror.MirrorRefused, "changed or removed"):
                 mirror.published_scorecard_binding(writer, mirror._published_snapshot(writer), self.target)
+
+    # --- refused series inputs (series quarantine) -------------------------
+
+    QUARANTINE_SHARD = "quarantine/series/hermit/fixture/2026-09.jsonl"
+
+    def quarantine(self, run_id: str, raw: bytes, *, emitted_at: str = "2026-09-21T12:00:00Z") -> dict:
+        return series.quarantine_record(
+            stage="projection", run_id=run_id, producer="validate", tree="a" * 40,
+            emitted_at=emitted_at, error="MalformedRow", reason="fixture refusal",
+            inputs=[series.quarantine_input(1, raw)], host="fixture",
+        )
+
+    def remote_quarantine(self) -> list[dict]:
+        shown = subprocess.run(["git", "-C", str(self.remote), "show", f"main:{self.QUARANTINE_SHARD}"],
+                               capture_output=True, text=True, check=False)
+        if shown.returncode != 0:
+            return []
+        return [json.loads(line) for line in shown.stdout.split("\n") if line.strip()]
+
+    def refuse_quarantine_pushes(self) -> Path:
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text(
+            "#!/bin/sh\nwhile read old new ref; do\n"
+            " if git diff --name-only \"$old\" \"$new\" | grep -q '^quarantine/'; then\n"
+            "  echo deliberate-quarantine-refusal >&2; exit 1\n fi\ndone\nexit 0\n"
+        )
+        hook.chmod(0o755)
+        return hook
+
+    def test_quarantine_publishes_beside_the_series_and_is_counted(self):
+        needle = series._OWNER_PATH_NEEDLE
+        plain = self.quarantine("run-q", b'{"schema": 4, "truncated')
+        owner = self.quarantine("run-q", json.dumps({"cwd": needle + "alice/work"}).encode())
+        self.append("run-q")
+        retained = series.append_quarantine(self.parent, "run-q", [plain, owner])
+        self.assertEqual(2, retained["written"])
+        local = series.quarantine_dir(self.parent) / "run-q.jsonl"
+        exact = local.read_bytes()
+
+        report = self.publish(publish_only=True)
+        quarantine = report["raw_publication"]["quarantine"]
+        self.assertIsNone(quarantine["error"], quarantine)
+        self.assertEqual(2, quarantine["published"])
+        self.assertEqual(0, quarantine["pending_records"])
+        self.assertEqual(0, quarantine["held_records"])
+        self.assertEqual([row("run-q")], self.remote_rows(), "the series rows publish as before")
+        published = self.remote_quarantine()
+        expected = series.union_events([series.portable_quarantine_record(plain),
+                                        series.portable_quarantine_record(owner)])
+        self.assertEqual(expected, published)
+        self.assertNotIn(needle, git(self.remote, "show", f"main:{self.QUARANTINE_SHARD}"))
+        series.validate_quarantine_records(published, public=True)
+        # Nothing is read as series data: the series tree is unchanged.
+        self.assertEqual("series/hermit/fixture/2026-09.jsonl",
+                         git(self.remote, "ls-tree", "-r", "--name-only", "main", "series"))
+        # The exact local copy waits in published/ until the ledger reads it.
+        self.assertFalse(local.exists())
+        self.assertEqual(exact, (local.parent / "published" / local.name).read_bytes())
+
+        writer = self.parent / mirror.WRITER_RELATIVE
+        counted = mirror.publish_quarantine(self.parent, self.ledger, writer,
+                                            net_wrapper="/usr/bin/env", attempts=1, run_id="run-q")
+        self.assertEqual({"run_id": "run-q", "published": 2, "withheld": 0, "unpublished": 0,
+                          "records": 2}, counted["run"])
+        self.assertFalse((local.parent / "published" / local.name).exists(), "reaped once readable")
+
+        # A replay of the same refusals publishes nothing new.
+        replay = [self.quarantine("run-q", b'{"schema": 4, "truncated', emitted_at="2026-10-02T12:00:00Z")]
+        replayed = series.append_quarantine(self.parent, "run-q", replay)
+        self.assertIsNone(replayed["published_check_error"])
+        self.assertEqual((0, 1), (replayed["written"], replayed["duplicates"]))
+        again = self.publish(publish_only=True)["raw_publication"]["quarantine"]
+        self.assertEqual((0, None), (again["published"], again["error"]))
+        self.assertEqual(expected, self.remote_quarantine())
+
+    def test_a_replayed_refusal_published_once_even_when_the_writer_could_not_dedupe(self):
+        first = self.quarantine("run-d", b"not json")
+        series.append_quarantine(self.parent, "run-d", [first])
+        self.publish(publish_only=True)
+        self.publish(publish_only=True)  # reaps the local published/ copy
+        self.assertEqual([], list((series.quarantine_dir(self.parent) / "published").glob("*.jsonl")))
+        later = self.quarantine("run-d", b"not json", emitted_at="2026-10-02T12:00:00Z")
+        with mock.patch.object(series, "published_quarantine_at",
+                               side_effect=series.SeriesError("ledger unreadable")):
+            retained = series.append_quarantine(self.parent, "run-d", [later])
+        self.assertEqual("ledger unreadable", retained["published_check_error"])
+        self.assertEqual(1, retained["written"])
+        report = self.publish(publish_only=True)["raw_publication"]["quarantine"]
+        self.assertEqual((0, 1, None), (report["published"], report["already_published"], report["error"]))
+        self.assertEqual([series.portable_quarantine_record(first)], self.remote_quarantine())
+        self.assertFalse(git(self.remote, "ls-tree", "-r", "--name-only", "main",
+                             "quarantine/series/hermit/fixture/2026-10.jsonl"))
+
+    def test_quarantine_push_failure_is_recorded_and_the_spool_retried(self):
+        self.append("run-f")
+        record = self.quarantine("run-f", b"not json")
+        series.append_quarantine(self.parent, "run-f", [record])
+        local = series.quarantine_dir(self.parent) / "run-f.jsonl"
+        exact = local.read_bytes()
+        hook = self.refuse_quarantine_pushes()
+        report = self.publish(publish_only=True, attempts=1)
+        quarantine = report["raw_publication"]["quarantine"]
+        self.assertEqual([row("run-f")], self.remote_rows(), "a quarantine failure never undoes the series")
+        self.assertIn("PublishRefused", quarantine["error"])
+        self.assertEqual((0, 1), (quarantine["published"], quarantine["pending_records"]))
+        self.assertEqual(exact, local.read_bytes())
+        self.assertEqual([], self.remote_quarantine())
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual(git(writer, "rev-parse", "refs/remotes/origin/main"), git(writer, "rev-parse", "HEAD"))
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        hook.unlink()
+        retried = self.publish(publish_only=True)["raw_publication"]["quarantine"]
+        self.assertEqual((1, None, 0), (retried["published"], retried["error"], retried["pending_records"]))
+        self.assertEqual([series.portable_quarantine_record(record)], self.remote_quarantine())
+
+    def test_withheld_quarantine_is_published_as_a_stub_and_held_locally(self):
+        needle = series._OWNER_PATH_NEEDLE
+        raw = needle.encode() + b"alice/\xff"
+        record = self.quarantine("run-w", raw)
+        series.append_quarantine(self.parent, "run-w", [record])
+        report = self.publish(publish_only=True)["raw_publication"]["quarantine"]
+        self.assertEqual((1, None), (report["published"], report["error"]))
+        [stub] = self.remote_quarantine()
+        self.assertEqual("owner-path", stub["withheld"]["reason"])
+        self.assertEqual((None, None), (stub["inputs"][0]["raw"], stub["inputs"][0]["raw_base64"]))
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), stub["inputs"][0]["raw_sha256"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        counted = mirror.publish_quarantine(self.parent, self.ledger, writer,
+                                            net_wrapper="/usr/bin/env", attempts=1, run_id="run-w")
+        self.assertEqual(1, counted["held_records"])
+        self.assertEqual(1, counted["run"]["withheld"])
+        held = series.quarantine_dir(self.parent) / series.QUARANTINE_HELD_SUBDIR / "run-w.jsonl"
+        self.assertEqual([record], series._read_quarantine_file(held), "the only exact copy is kept")
+        self.assertEqual([], list((series.quarantine_dir(self.parent) / "published").glob("*.jsonl")))
+
+    def test_recovery_republishes_an_unpushed_quarantine_append_and_refuses_others(self):
+        self.publish(publish_only=True)
+        writer = self.parent / mirror.WRITER_RELATIVE
+        spooled = self.quarantine("run-r", b"not json")
+        series.append_quarantine(self.parent, "run-r", [spooled])
+        shard = writer / self.QUARANTINE_SHARD
+
+        def commit(records):
+            shard.parent.mkdir(parents=True, exist_ok=True)
+            shard.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in records))
+            git(writer, "add", "quarantine")
+            git(writer, "commit", "-qm", "series-quarantine: append event(s)")
+            return git(writer, "rev-parse", "HEAD")
+
+        # Violating: the unpushed commit adds a record that is not spooled here.
+        foreign = self.quarantine("run-other", b"never spooled")
+        refused = commit([series.portable_quarantine_record(foreign)])
+        with self.assertRaisesRegex(mirror.MirrorRefused, "unchanged spooled quarantine append"):
+            self.publish(publish_only=True)
+        self.assertEqual(refused, git(writer, "rev-parse", "HEAD"))
+        self.assertEqual([], self.remote_quarantine())
+        git(writer, "reset", "-q", "--hard", "refs/remotes/origin/main")
+
+        # Qualifying: a crash between commit and push left exactly the spooled records.
+        crashed = commit([series.portable_quarantine_record(spooled)])
+        report = self.publish(publish_only=True)
+        self.assertEqual(f"refs/heads/recovery/cell-series-{crashed}",
+                         report["raw_publication"]["recovered_ref"])
+        self.assertIsNone(report["raw_publication"]["quarantine"]["error"])
+        self.assertEqual([series.portable_quarantine_record(spooled)], self.remote_quarantine())
+
+    def test_scheduled_backlog_publishes_a_quarantine_only_backlog(self):
+        sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))
+        import publish_backlog
+
+        bootstrap = (
+            "import runpy,sys,subprocess;"
+            f"sys.path[:0]=[{str(MODULE.parent)!r},{str(mirror.TOOL_ROOT / 'ci-hub/ledger')!r}];"
+            "import series,publisher;"
+            "series._run_shared_checker=lambda *a: subprocess.CompletedProcess(a,0,'','');"
+            "publisher._series_store=lambda:series;"
+            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+        )
+        native_run = subprocess.run
+
+        def sweep_child(command, **kwargs):
+            if str(MODULE) in command:
+                command = bounded_fixture_command(
+                    [sys.executable, "-B", "-c", bootstrap, *command[1:]])
+            return native_run(command, **kwargs)
+
+        # Every row of the run was refused: no series batch triggers a publish.
+        record = self.quarantine("run-only-refused", b"not json")
+        series.append_quarantine(self.parent, "run-only-refused", [record])
+        self.assertEqual({"series-quarantine": series.quarantine_dir(self.parent)},
+                         publish_backlog.pending_stores(self.parent))
+        hook = self.refuse_quarantine_pushes()
+        with mock.patch.object(publish_backlog, "STATE_ROOT", self.parent), \
+             mock.patch.object(publish_backlog.subprocess, "run", side_effect=sweep_child):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                failed = publish_backlog.main(["--net-wrapper", "/usr/bin/env", "--timeout-seconds", "30"])
+            failure = json.loads(output.getvalue())
+            # The mirror exits 0 (its series had nothing to publish); the store
+            # is judged by its own quarantine report.
+            self.assertEqual(1, failed)
+            self.assertEqual(1, failure["failed_stores"])
+            [store] = failure["reports"]
+            self.assertEqual(("series-quarantine", 1), (store["store"], store["rc"]))
+            self.assertIn("PublishRefused", store["error"])
+            self.assertEqual([], self.remote_quarantine())
+            hook.unlink()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                passed = publish_backlog.main(["--net-wrapper", "/usr/bin/env", "--timeout-seconds", "30"])
+            delivered = json.loads(output.getvalue())
+        self.assertEqual(0, passed)
+        self.assertEqual((0, 1), (delivered["failed_stores"], delivered["published"]))
+        self.assertEqual([series.portable_quarantine_record(record)], self.remote_quarantine())
+        self.assertEqual({}, publish_backlog.pending_stores(self.parent))
+
+    def test_quarantine_outcome_never_reads_a_missing_report_as_published(self):
+        sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))
+        import publish_backlog
+
+        self.assertEqual({"published": 2}, publish_backlog.quarantine_outcome(
+            {"raw_publication": {"quarantine": {"published": 2, "error": None}}}))
+        self.assertEqual(1, publish_backlog.quarantine_outcome({"raw_publication": {}})["rc"])
+        self.assertEqual(1, publish_backlog.quarantine_outcome(
+            {"raw_publication": {"quarantine": {"published": 0, "error": "push refused"}}})["rc"])
 
     def test_scheduled_backlog_retries_failed_push_without_another_validation(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))

@@ -533,6 +533,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             ),
             "ledger_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "series_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
+            "series_quarantine": '--root "$DEV_HERMIT_PARENT"',
             "validate_wall_regression": (
                 '--ledger "$DEV_HERMIT_PARENT/ledger" '
                 '--repo "$DEV_HERMIT_PARENT/hermit" '
@@ -846,6 +847,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         for relative in (
             "ignored/ci-hub/validate-ledger-spool/stale.jsonl",
             "ignored/ci-hub/series-spool/stale.jsonl",
+            "ignored/ci-hub/series-quarantine/stale.jsonl",
         ):
             entry = state_root / relative
             entry.parent.mkdir(parents=True, exist_ok=True)
@@ -979,6 +981,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             ROOT / ".ops-state.yaml",
             ROOT / "ignored" / "ci-hub" / "validate-ledger-spool",
             ROOT / "ignored" / "ci-hub" / "series-spool",
+            ROOT / "ignored" / "ci-hub" / "series-quarantine",
             ROOT / "worktrees" / "ACTIVE",
         )
         tool_state_before = {path: snapshot(path) for path in tool_state_paths}
@@ -1005,6 +1008,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         for name, label in (
             ("ledger_spool_backlog", "validation ledger"),
             ("series_spool_backlog", "per-test series"),
+            ("series_quarantine", "series quarantine"),
         ):
             result = subprocess.run(
                 ["bash", "-c", commands[name]],

@@ -13,6 +13,7 @@ whose negative case is untested is indistinguishable from one that returns
 this repository has hit repeatedly.
 """
 
+import base64
 import contextlib
 import copy
 import errno
@@ -4926,12 +4927,20 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(series.union([tracked]), stored)
 
     def _append_cells(self, lines, *, producer, run_id, emitted_at, tree=None):
-        """Run append-cells on raw stdin lines; return (rc, stdout, stderr)."""
+        """Run append-cells on raw stdin lines; return (rc, stdout, stderr).
+
+        Each line is text or exact bytes; stdin carries them as bytes, as the
+        producer's pipe does.
+        """
         import contextlib
         import io
 
+        data = b"".join(
+            (line if isinstance(line, bytes) else line.encode("utf-8")) + b"\n"
+            for line in lines
+        )
         real_stdin = sys.stdin
-        sys.stdin = io.StringIO("".join(line + "\n" for line in lines))
+        sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8")
         stdout = io.StringIO()
         stderr = io.StringIO()
         try:
@@ -4949,10 +4958,16 @@ class CellResultProjection(unittest.TestCase):
         return rc, stdout.getvalue(), stderr.getvalue()
 
     def _quarantined(self, run_id):
-        path = series.quarantine_dir(self.parent) / f"{run_id}.jsonl"
-        if not path.exists():
-            return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return series._read_quarantine_file(
+            series.quarantine_dir(self.parent) / f"{run_id}.jsonl"
+        )
+
+    @staticmethod
+    def _received(item):
+        """The exact bytes one quarantine input records."""
+        if item["raw_base64"] is not None:
+            return base64.b64decode(item["raw_base64"])
+        return item["raw"].encode("utf-8")
 
     def test_append_cells_retains_typed_pressure_rows_when_one_cell_is_untyped(self):
         thread_output = self._cell(0)
@@ -5001,19 +5016,19 @@ class CellResultProjection(unittest.TestCase):
         )
         self.assertIn("comparison cell result has no typed attempts", stderr)
         self.assertRegex(stderr, r'"raw_sha256":"[0-9a-f]{64}"')
-        self.assertIn("quarantined 1 of 4 input(s) to ", stderr)
+        self.assertIn("quarantined 1 record(s) covering 1 of 4 input(s) to ", stderr)
 
         quarantined = self._quarantined("pressure-mixed-evidence")
         self.assertEqual(len(quarantined), 1)
         self.assertEqual(quarantined[0]["schema"], series.QUARANTINE_SCHEMA)
         # The refused input is retained exactly as it was received.
-        self.assertEqual(quarantined[0]["raw"], untyped)
+        [received] = quarantined[0]["inputs"]
+        self.assertEqual(received["input_row"], 2)
+        self.assertEqual(received["raw"], json.dumps(untyped))
         self.assertEqual(
-            quarantined[0]["raw_sha256"],
-            hashlib.sha256(json.dumps(
-                untyped, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-            ).encode()).hexdigest(),
+            received["raw_sha256"], hashlib.sha256(json.dumps(untyped).encode()).hexdigest(),
         )
+        self.assertEqual(received["raw_bytes"], len(json.dumps(untyped).encode()))
 
         target = series.spool_dir(self.parent) / "pressure-mixed-evidence.jsonl"
         first_bytes = target.read_bytes()
@@ -5062,7 +5077,8 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(target.read_bytes(), first_bytes)
         replayed = self._quarantined("pressure-mixed-evidence")
         self.assertEqual(len(replayed), 1)
-        self.assertEqual(replayed[0]["quarantine_id"], quarantined[0]["quarantine_id"])
+        self.assertEqual(replayed[0]["event_id"], quarantined[0]["event_id"])
+        self.assertEqual(replayed, quarantined, "the first observation stands")
 
     def test_append_cells_quarantines_refused_cells_and_keeps_their_valid_siblings(self):
         untyped = self._cell(0, outcome="ERROR")
@@ -5076,7 +5092,7 @@ class CellResultProjection(unittest.TestCase):
         # Nothing independent survived, so the batch does not read as a success.
         self.assertEqual(rc, 1)
         self.assertNotIn("appended", stdout)
-        self.assertIn("quarantined 1 of 1 input(s)", stderr)
+        self.assertIn("quarantined 1 record(s) covering 1 of 1 input(s)", stderr)
         self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
         self.assertEqual(len(self._quarantined("pressure-untyped-only")), 1)
 
@@ -5103,8 +5119,8 @@ class CellResultProjection(unittest.TestCase):
         )
         quarantined = self._quarantined("pressure-untyped-and-malformed")
         self.assertEqual(len(quarantined), 1)
-        self.assertEqual(quarantined[0]["input_row"], 2)
-        self.assertEqual(quarantined[0]["raw"], untyped)
+        self.assertEqual(quarantined[0]["inputs"][0]["input_row"], 2)
+        self.assertEqual(quarantined[0]["inputs"][0]["raw"], json.dumps(untyped))
         self.assertIn("detcore_tree must be a 40-hex object id", quarantined[0]["reason"])
 
     def test_validate_append_cells_keeps_the_batch_when_one_row_is_refused(self):
@@ -5129,8 +5145,28 @@ class CellResultProjection(unittest.TestCase):
         # records the writer's successful output.
         self.assertEqual(rc, 0, stderr)
         self.assertIn("appended 1 row(s) representing 1 run(s)", stdout)
-        self.assertIn("quarantined 2 of 3 input(s) to ", stdout)
+        self.assertIn("quarantined 2 record(s) covering 2 of 3 input(s) to ", stdout)
         self.assertEqual(stdout.count("series: QUARANTINED "), 2)
+        [summary_line] = [line for line in stdout.splitlines()
+                          if line.startswith("series: QUARANTINE_SUMMARY ")]
+        summary = json.loads(summary_line.removeprefix("series: QUARANTINE_SUMMARY "))
+        self.assertEqual(summary, {
+            "schema": series.QUARANTINE_SUMMARY_SCHEMA,
+            "run_id": "validate-one-refused",
+            "producer": "validate",
+            "inputs": 3,
+            "rows_appended": 1,
+            "rows_admitted": 1,
+            "quarantined_records": 2,
+            "quarantined_inputs": 2,
+            "stages": {"parse": 1, "projection": 1},
+            "retained": True,
+            "written": 2,
+            "duplicates": 0,
+            "published_check_error": summary["published_check_error"],
+            "retention_error": None,
+            "exit_code": 0,
+        })
         stored = series.union(
             [series.spool_dir(self.parent) / "validate-one-refused.jsonl"]
         )
@@ -5139,13 +5175,16 @@ class CellResultProjection(unittest.TestCase):
             ["applications/thread-output/verify/ptrace"],
         )
         quarantined = {
-            record["input_row"]: record for record in self._quarantined("validate-one-refused")
+            record["inputs"][0]["input_row"]: record
+            for record in self._quarantined("validate-one-refused")
         }
         self.assertEqual(set(quarantined), {2, 3})
         self.assertEqual(quarantined[2]["stage"], "parse")
-        self.assertEqual(quarantined[2]["raw"], not_json)
+        self.assertEqual(quarantined[2]["error"], "JSONDecodeError")
+        self.assertEqual(quarantined[2]["inputs"][0]["raw"], not_json)
         self.assertIn("stdin line 2 is not JSON", quarantined[2]["reason"])
-        self.assertEqual(quarantined[3]["raw"], undeclared)
+        self.assertEqual(quarantined[3]["error"], "MalformedRow")
+        self.assertEqual(quarantined[3]["inputs"][0]["raw"], json.dumps(undeclared))
         self.assertIn("matched report is internally inconsistent", quarantined[3]["reason"])
         self.assertEqual(quarantined[3]["cell"], "applications/qemu-hello/verify/ptrace")
 
@@ -5157,7 +5196,8 @@ class CellResultProjection(unittest.TestCase):
             emitted_at="2026-09-28T10:00:00Z",
         )
         self.assertEqual(rc, 1)
-        self.assertIn("quarantined 1 of 1 input(s)", stderr)
+        self.assertIn("quarantined 1 record(s) covering 1 of 1 input(s)", stderr)
+        self.assertIn('"exit_code": 1', stderr)
         self.assertFalse(
             (series.spool_dir(self.parent) / "validate-all-refused.jsonl").exists()
         )
@@ -5177,7 +5217,10 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
         quarantined = self._quarantined("validate-bad-tree")
         self.assertEqual([record["stage"] for record in quarantined], ["batch", "batch"])
-        self.assertEqual([record["raw"] for record in quarantined], cells)
+        self.assertEqual(
+            [record["inputs"][0]["raw"] for record in quarantined],
+            [json.dumps(cell) for cell in cells],
+        )
 
     def test_append_cells_quarantines_a_changed_repeat_and_appends_the_rest(self):
         first = self._validate_cell(1)
@@ -5204,8 +5247,365 @@ class CellResultProjection(unittest.TestCase):
         quarantined = self._quarantined("validate-repeat")
         self.assertEqual([record["stage"] for record in quarantined], ["spool-conflict"])
         self.assertIn("already records a different row", quarantined[0]["reason"])
+        self.assertEqual(quarantined[0]["inputs"][0]["raw"], json.dumps(changed))
+        self.assertEqual(quarantined[0]["row_event_id"], quarantined[0]["row"]["event_id"])
         stored = series.union([series.spool_dir(self.parent) / "validate-repeat.jsonl"])
         self.assertEqual(len(stored), 2)
+
+    def test_append_cells_retains_each_received_line_byte_for_byte(self):
+        passing = self._validate_cell(1)
+        # Valid JSON a writer may emit without escaping: U+2028 inside a
+        # string. It is one input line, not two.
+        separated = '{"schema": 4,  "note": "a\u2028b"}'.encode("utf-8")
+        # Not UTF-8 at all: retained as base64 of the exact bytes.
+        undecodable = b'{"schema": 4, "note": "\xff\xfe"}'
+        # Valid JSON whose spacing a re-serialization would not preserve.
+        spaced = b'{ "schema" : 3 ,"test":"x" }'
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(passing), separated, undecodable, spaced],
+            producer="validate",
+            run_id="validate-exact-bytes",
+            emitted_at="2026-09-28T10:00:00Z",
+        )
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("quarantined 3 record(s) covering 3 of 4 input(s) to ", stdout)
+        path = series.quarantine_dir(self.parent) / "validate-exact-bytes.jsonl"
+        # The local file is ASCII JSON lines, one per record.
+        stored_bytes = path.read_bytes()
+        stored_bytes.decode("ascii")
+        self.assertEqual(stored_bytes.count(b"\n"), 3)
+        quarantined = {
+            record["inputs"][0]["input_row"]: record for record in self._quarantined(
+                "validate-exact-bytes"
+            )
+        }
+        expected = {2: separated, 3: undecodable, 4: spaced}
+        self.assertEqual(set(quarantined), set(expected))
+        for number, raw in expected.items():
+            with self.subTest(input_row=number):
+                [item] = quarantined[number]["inputs"]
+                self.assertEqual(self._received(item), raw)
+                self.assertEqual(item["raw_sha256"], hashlib.sha256(raw).hexdigest())
+                self.assertEqual(item["raw_bytes"], len(raw))
+        self.assertIsNone(quarantined[3]["inputs"][0]["raw"])
+        self.assertEqual(quarantined[3]["stage"], "parse")
+        self.assertEqual(quarantined[3]["error"], "UnicodeDecodeError")
+        self.assertEqual(quarantined[2]["stage"], "projection")
+        self.assertEqual(quarantined[4]["stage"], "projection")
+        # With no owner path in them, the published form is the record itself.
+        for record in quarantined.values():
+            self.assertEqual(series.portable_quarantine_record(record), record)
+            series.validate_quarantine_records([record], public=True)
+
+    def _quarantine_fixture(self, raw, *, reason="refused", stage="projection", row=None):
+        return series.quarantine_record(
+            stage=stage, run_id="validate-fixture", producer="validate", tree=self.tree,
+            emitted_at="2026-09-28T10:00:00Z", error="MalformedRow", reason=reason,
+            inputs=[series.quarantine_input(1, raw)], row=row,
+            row_event_id=None if row is None else row["event_id"], host="testhost",
+        )
+
+    def test_portable_quarantine_record_replaces_owner_homes_reversibly(self):
+        needle = series._OWNER_PATH_NEEDLE
+        alice, bob = needle + "alice", needle + "bob"
+        raw = json.dumps({
+            "cmd": alice + "/work/x",
+            "cwd": bob + "/y",
+            "nested": json.dumps({"again": alice + "/z"}),
+        }).encode()
+        record = self._quarantine_fixture(raw, reason=f"cannot read {alice}/work/x")
+        with self.assertRaisesRegex(series.MalformedQuarantine, "would publish an owner path"):
+            series.validate_quarantine_records([record], public=True)
+
+        portable = series.portable_quarantine_record(record)
+        text = json.dumps(portable)
+        self.assertNotIn(needle, text)
+        self.assertEqual(portable["owner_paths"], [
+            {"token": "{{OWNER_HOME_1}}", "bytes": len(alice.encode())},
+            {"token": "{{OWNER_HOME_2}}", "bytes": len(bob.encode())},
+        ])
+        self.assertIsNone(portable["withheld"])
+        self.assertEqual(portable["event_id"], record["event_id"])
+        self.assertEqual(portable["reason"], "cannot read {{OWNER_HOME_1}}/work/x")
+        series.validate_quarantine_records([portable], public=True)
+        # Replacing each token by its prefix restores the exact received bytes.
+        restored = portable["inputs"][0]["raw"]
+        restored = restored.replace("{{OWNER_HOME_1}}", alice).replace("{{OWNER_HOME_2}}", bob)
+        self.assertEqual(restored.encode(), raw)
+        self.assertEqual(hashlib.sha256(restored.encode()).hexdigest(),
+                         portable["inputs"][0]["raw_sha256"])
+        self.assertEqual(series.portable_quarantine_record(portable), portable)
+
+        # A token whose listed length does not restore raw_bytes is refused.
+        wrong = copy.deepcopy(portable)
+        wrong["owner_paths"][0]["bytes"] += 1
+        with self.assertRaisesRegex(series.MalformedQuarantine, "restored does not match"):
+            series.validate_quarantine_records([wrong], public=True)
+
+    def test_portable_quarantine_record_withholds_what_it_cannot_replace_reversibly(self):
+        needle = series._OWNER_PATH_NEEDLE
+        cases = {
+            "token already present": json.dumps(
+                {"cwd": needle + "alice/x", "note": "{{OWNER_HOME_1}}"}
+            ).encode(),
+            "base64-held bytes": needle.encode() + b"alice/\xff",
+        }
+        for label, raw in cases.items():
+            with self.subTest(label=label):
+                record = self._quarantine_fixture(raw)
+                portable = series.portable_quarantine_record(record)
+                self.assertEqual(portable["withheld"]["reason"], "owner-path")
+                self.assertEqual(portable["inputs"], [{
+                    "input_row": 1, "raw": None, "raw_base64": None,
+                    "raw_sha256": hashlib.sha256(raw).hexdigest(), "raw_bytes": len(raw),
+                }])
+                self.assertEqual(portable["owner_paths"], [])
+                self.assertEqual(portable["event_id"], record["event_id"])
+                self.assertNotIn(needle, json.dumps(portable))
+                series.validate_quarantine_records([portable], public=True)
+                # The exact record is still valid local evidence.
+                series.validate_quarantine_records([record], public=False)
+                self.assertEqual(self._received(record["inputs"][0]), raw)
+
+    def test_validate_quarantine_records_refuses_inexact_evidence(self):
+        raw = b'{"schema": 4, "truncated": true}'
+        record = self._quarantine_fixture(raw)
+        series.validate_quarantine_records([record], public=True)
+        series.validate_quarantine_records([record], public=False)
+
+        def mutated(change):
+            candidate = copy.deepcopy(record)
+            change(candidate)
+            return candidate
+
+        def rebind(candidate):
+            candidate["event_id"] = series._quarantine_event_id(candidate)
+
+        needle = series._OWNER_PATH_NEEDLE
+        owner = self._quarantine_fixture(json.dumps({"cwd": needle + "alice/x"}).encode())
+        series.validate_quarantine_records([owner], public=False)
+        cases = {
+            "digest mismatch": (
+                mutated(lambda r: (r["inputs"][0].update(raw_sha256="0" * 64), rebind(r))),
+                "raw does not match raw_sha256/raw_bytes",
+            ),
+            "length mismatch": (
+                mutated(lambda r: r["inputs"][0].update(raw_bytes=len(raw) + 1)),
+                "raw does not match raw_sha256/raw_bytes",
+            ),
+            "content changed": (
+                mutated(lambda r: r["inputs"][0].update(raw=raw.decode().replace(" ", ""))),
+                "raw does not match raw_sha256/raw_bytes",
+            ),
+            "no inputs": (
+                mutated(lambda r: (r.update(inputs=[]), rebind(r))),
+                "must carry the inputs it refused",
+            ),
+            "both encodings": (
+                mutated(lambda r: r["inputs"][0].update(
+                    raw_base64=base64.b64encode(raw).decode())),
+                "exactly one of raw and raw_base64",
+            ),
+            "wrong base64": (
+                mutated(lambda r: r["inputs"][0].update(
+                    raw=None, raw_base64=base64.b64encode(raw + b" ").decode())),
+                "raw_base64 does not match",
+            ),
+            "wrong event id": (
+                mutated(lambda r: r.update(event_id="series-quarantine-" + "0" * 64)),
+                "event_id does not bind",
+            ),
+            "timestamp in identity": (
+                mutated(lambda r: r.update(run_id="another-run")),
+                "event_id does not bind",
+            ),
+            "extra key": (mutated(lambda r: r.update(extra=1)), "keys differ"),
+            "unknown stage": (mutated(lambda r: r.update(stage="elsewhere")), "stage"),
+            "untyped error": (mutated(lambda r: r.update(error="")), "error must name"),
+            "post-projection without row": (
+                mutated(lambda r: (r.update(stage="shared-checker"), rebind(r))),
+                "names its row event id",
+            ),
+            "unused token": (
+                mutated(lambda r: r.update(owner_paths=[{"token": "{{OWNER_HOME_1}}",
+                                                        "bytes": 20}])),
+                "listed but unused",
+            ),
+            "owner path in public": (owner, "would publish an owner path"),
+        }
+        for label, (candidate, message) in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(series.MalformedQuarantine, message):
+                    series.validate_quarantine_records([candidate], public=True)
+        # The observation time is not part of the identity.
+        later = mutated(lambda r: r.update(emitted_at="2026-09-29T10:00:00Z"))
+        series.validate_quarantine_records([later], public=True)
+
+    def test_legacy_quarantine_is_published_as_legacy_not_as_received_bytes(self):
+        raw = {"schema": 4, "test": "applications/qemu-hello"}
+        canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False).encode()
+        # The v1 writer's identity: the canonical re-serialization's digest.
+        identity = json.dumps({
+            "event_id": None, "input_row": 3, "producer": "validate",
+            "raw_sha256": hashlib.sha256(canonical).hexdigest(),
+            "run_id": "validate-legacy", "stage": "projection", "tree": self.tree,
+        }, sort_keys=True, separators=(",", ":"))
+        legacy = {
+            "schema": series.LEGACY_QUARANTINE_SCHEMA,
+            "quarantine_id": "series-quarantine-" + hashlib.sha256(identity.encode()).hexdigest(),
+            "host": None,
+            "event_id": None,
+            "emitted_at": "2026-09-27T10:00:00Z",
+            "run_id": "validate-legacy",
+            "producer": "validate",
+            "tree": self.tree,
+            "stage": "projection",
+            "reason": "matched report is internally inconsistent",
+            "cell": "applications/qemu-hello/verify/ptrace",
+            "input_row": 3,
+            "raw": raw,
+            "raw_sha256": hashlib.sha256(canonical).hexdigest(),
+            "raw_bytes": len(canonical),
+        }
+        upgraded = series._published_form(legacy, host="testhost")
+        self.assertEqual(upgraded["schema"], series.QUARANTINE_SCHEMA)
+        self.assertEqual(upgraded["event_id"], legacy["quarantine_id"])
+        self.assertEqual(upgraded["inputs"], [])
+        self.assertEqual(upgraded["error"], "legacy-v1-unrecorded")
+        self.assertEqual(upgraded["legacy"]["raw"], raw)
+        self.assertEqual(series.quarantine_identity(legacy), legacy["quarantine_id"])
+        series.validate_quarantine_records([upgraded], public=True)
+        self.assertEqual(upgraded["host"], "testhost")
+        forged = copy.deepcopy(upgraded)
+        forged["legacy"]["raw"]["test"] = "applications/other"
+        with self.assertRaisesRegex(series.MalformedQuarantine, "legacy raw does not match"):
+            series.validate_quarantine_records([forged], public=True)
+        renamed = dict(legacy, quarantine_id="series-quarantine-" + "a" * 64)
+        with self.assertRaisesRegex(series.MalformedQuarantine, "event_id does not bind"):
+            series._published_form(renamed, host="testhost")
+
+    def test_append_cells_propagates_a_writer_defect_after_retaining_every_input(self):
+        # A projection bug is not a data refusal: it must not be quarantined
+        # as if the cell were malformed. Every input is retained exactly and
+        # the exception propagates.
+        passing = self._validate_cell(1)
+        not_json = '{"schema": 4, "truncated'
+        with mock.patch.object(series, "_cell_runtime",
+                               side_effect=TypeError("simulated projection defect")):
+            with self.assertRaisesRegex(TypeError, "simulated projection defect"):
+                self._append_cells(
+                    [json.dumps(passing), not_json],
+                    producer="validate",
+                    run_id="validate-writer-defect",
+                    emitted_at="2026-09-28T10:00:00Z",
+                )
+        self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+        quarantined = {
+            record["inputs"][0]["input_row"]: record
+            for record in self._quarantined("validate-writer-defect")
+        }
+        self.assertEqual(set(quarantined), {1, 2})
+        self.assertEqual(quarantined[1]["stage"], "writer-error")
+        self.assertEqual(quarantined[1]["error"], "TypeError")
+        self.assertIn("simulated projection defect", quarantined[1]["reason"])
+        self.assertEqual(quarantined[1]["inputs"][0]["raw"], json.dumps(passing))
+        self.assertEqual(quarantined[2]["stage"], "parse")
+        self.assertEqual(quarantined[2]["inputs"][0]["raw"], not_json)
+
+    def test_projection_refuses_every_mutated_field_as_data_never_as_a_crash(self):
+        """Malformed cell data must reach MalformedRow, not escape as a bug.
+
+        Each JSON path of representative cells (and of their embedded
+        verification report) is replaced by values of every JSON type, or
+        deleted. Every mutant must be either admitted or quarantined; any
+        other exception names a data check that is missing. The admission
+        checker is stubbed so this measures the projection alone.
+        """
+        missing = object()
+        values = [None, True, False, 0, 1, -1, 1.5, 2**64, "x", "", [], {}, [None],
+                  {"x": None}, "matched", "diverged", "0" * 40, missing]
+
+        def paths(node, prefix=()):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield prefix + (key,)
+                    yield from paths(value, prefix + (key,))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    yield prefix + (index,)
+                    yield from paths(value, prefix + (index,))
+
+        def replaced(node, path, value):
+            node = copy.deepcopy(node)
+            target = node
+            for step in path[:-1]:
+                target = target[step]
+            if value is missing:
+                del target[path[-1]]
+            else:
+                target[path[-1]] = value
+            return node
+
+        def mutants(base):
+            for path in paths(base):
+                for value in values:
+                    yield path, value, replaced(base, path, value)
+            for index, attempt in enumerate(base.get("attempts") or []):
+                report = json.loads(attempt["verification_report"])
+                for path in paths(report):
+                    for value in values:
+                        cell = copy.deepcopy(base)
+                        self._replace_comparison_report(
+                            cell["attempts"][index], replaced(report, path, value)
+                        )
+                        yield ("attempts", index, "verification_report") + path, value, cell
+
+        escaped = []
+
+        def judge(items, producer):
+            cells = [cell for _, _, cell in items]
+            quarantine, provenance = [], []
+            try:
+                series._rows_from_cell_results(
+                    cells, parent=self.parent, producer=producer, run_id="fuzz",
+                    tree=self.tree, emitted_at="2026-09-28T10:00:00Z",
+                    quarantine=quarantine, raw_inputs=[b"{}"] * len(cells),
+                    provenance=provenance,
+                )
+            except Exception as error:  # bisect to the mutant that escaped
+                if len(items) == 1:
+                    escaped.append((producer, items[0][0], repr(items[0][1]),
+                                    f"{type(error).__name__}: {error}"))
+                    return
+                middle = len(items) // 2
+                judge(items[:middle], producer)
+                judge(items[middle:], producer)
+                return
+            covered = {index for sources in provenance for index in sources}
+            covered |= {item["input_row"] - 1 for record in quarantine
+                        for item in record["inputs"]}
+            for index, cell in enumerate(cells):
+                inapplicable = isinstance(cell, dict) and cell.get("outcome") == "HOST-INAPPLICABLE"
+                if index not in covered and not inapplicable:
+                    escaped.append((producer, items[index][0], repr(items[index][1]),
+                                    "neither admitted nor quarantined"))
+
+        bases = {
+            "validate": [self._validate_cell(1), self._validate_diverged_cell(1),
+                         self._validate_no_verdict_cell(1, timed_out=True, backend="kvm")],
+            "pressure-test": [self._cell(0)],
+        }
+        count = 0
+        with mock.patch.object(series, "write_admission",
+                               side_effect=lambda rows: [None] * len(rows)):
+            for producer, cells in bases.items():
+                for base in cells:
+                    items = list(mutants(base))
+                    count += len(items)
+                    judge(items, producer)
+        self.assertGreater(count, 5000)
+        self.assertEqual(escaped, [], f"{len(escaped)} of {count} mutants escaped")
 
     def test_write_admission_judges_every_row_in_one_checker_call(self):
         rows = series.rows_from_cell_results(
