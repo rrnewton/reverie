@@ -19,13 +19,13 @@ static _Atomic int vfork_ready;
 static _Atomic int ordinary_done;
 static _Atomic int ordinary_result;
 
-static void spin_until(_Atomic int *value) {
+static void spin_until(_Atomic int* value) {
   while (atomic_load_explicit(value, memory_order_acquire) == 0) {
     __asm__ volatile("pause" ::: "memory");
   }
 }
 
-static int vfork_child(void *unused) {
+static int vfork_child(void* unused) {
   (void)unused;
 
   struct sigaction action = {0};
@@ -39,7 +39,7 @@ static int vfork_child(void *unused) {
   return child_result;
 }
 
-static void *ordinary_fork_thread(void *unused) {
+static void* ordinary_fork_thread(void* unused) {
   (void)unused;
   spin_until(&vfork_ready);
 
@@ -62,7 +62,7 @@ static void *ordinary_fork_thread(void *unused) {
 }
 
 int main(void) {
-  void *child_stack = malloc(CHILD_STACK_SIZE);
+  void* child_stack = malloc(CHILD_STACK_SIZE);
   if (child_stack == NULL) {
     perror("malloc");
     return 10;
@@ -83,9 +83,15 @@ int main(void) {
   }
 
   int flags = CLONE_VM | CLONE_VFORK | CLONE_SETTLS | CLONE_SIGHAND | SIGCHLD;
-  void *stack_top = (char *)child_stack + CHILD_STACK_SIZE;
-  pid_t vfork_pid = clone(vfork_child, stack_top, flags, NULL, NULL,
-                          (void *)(uintptr_t)fs_base, NULL);
+  void* stack_top = (char*)child_stack + CHILD_STACK_SIZE;
+  pid_t vfork_pid = clone(
+      vfork_child,
+      stack_top,
+      flags,
+      NULL,
+      NULL,
+      (void*)(uintptr_t)fs_base,
+      NULL);
   if (vfork_pid < 0) {
     perror("clone");
     return 13;

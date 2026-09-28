@@ -37,8 +37,13 @@ enum {
 #endif
 
 static int pidfd_targets_virtual_child(void) {
-  _Atomic int *gate = mmap(NULL, sizeof(*gate), PROT_READ | PROT_WRITE,
-                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  _Atomic int* gate = mmap(
+      NULL,
+      sizeof(*gate),
+      PROT_READ | PROT_WRITE,
+      MAP_SHARED | MAP_ANONYMOUS,
+      -1,
+      0);
   if (gate == MAP_FAILED)
     return 1;
   atomic_init(gate, 0);
@@ -68,10 +73,9 @@ static int pidfd_targets_virtual_child(void) {
   munmap(gate, sizeof(*gate));
 
   return fd >= 0 && wait_result == -1 && wait_errno == EAGAIN &&
-                 reaped == child && WIFEXITED(status) &&
-                 WEXITSTATUS(status) == 42
-             ? 0
-             : 1;
+          reaped == child && WIFEXITED(status) && WEXITSTATUS(status) == 42
+      ? 0
+      : 1;
 }
 
 static int pidfd_preserves_identity_and_flag_validation_order(void) {
@@ -111,8 +115,8 @@ static int close_range_preserves_internal_descriptors(void) {
     return 1;
 
   errno = 0;
-  if (syscall(SYS_close_range, RANGE_FIRST_FD, RANGE_LAST_FD,
-              unknown_flag) != -1 ||
+  if (syscall(SYS_close_range, RANGE_FIRST_FD, RANGE_LAST_FD, unknown_flag) !=
+          -1 ||
       errno != EINVAL || fd_flags(RANGE_FIRST_FD) < 0 ||
       fd_flags(VIRTUAL_IDENTITY_FD) < 0 || fd_flags(DBT_DIAGNOSTIC_FD) < 0 ||
       fd_flags(RANGE_LAST_FD) < 0)
@@ -129,8 +133,11 @@ static int close_range_preserves_internal_descriptors(void) {
 
   if (install_range_neighbor_fds() != 0)
     return 7;
-  if (syscall(SYS_close_range, RANGE_FIRST_FD, RANGE_LAST_FD,
-              CLOSE_RANGE_CLOEXEC) != 0)
+  if (syscall(
+          SYS_close_range,
+          RANGE_FIRST_FD,
+          RANGE_LAST_FD,
+          CLOSE_RANGE_CLOEXEC) != 0)
     return 8;
   int first_flags = fd_flags(RANGE_FIRST_FD);
   int identity_flags = fd_flags(VIRTUAL_IDENTITY_FD);
@@ -138,16 +145,18 @@ static int close_range_preserves_internal_descriptors(void) {
   int last_flags = fd_flags(RANGE_LAST_FD);
   if (first_flags < 0 || identity_flags < 0 || diagnostic_flags < 0 ||
       last_flags < 0 || (first_flags & FD_CLOEXEC) == 0 ||
-      (last_flags & FD_CLOEXEC) == 0 ||
-      (identity_flags & FD_CLOEXEC) != 0 ||
+      (last_flags & FD_CLOEXEC) == 0 || (identity_flags & FD_CLOEXEC) != 0 ||
       (diagnostic_flags & FD_CLOEXEC) != 0)
     return 9;
 
   if (fcntl(RANGE_FIRST_FD, F_SETFD, 0) != 0 ||
       fcntl(RANGE_LAST_FD, F_SETFD, 0) != 0)
     return 10;
-  if (syscall(SYS_close_range, RANGE_FIRST_FD, RANGE_LAST_FD,
-              CLOSE_RANGE_UNSHARE) != 0)
+  if (syscall(
+          SYS_close_range,
+          RANGE_FIRST_FD,
+          RANGE_LAST_FD,
+          CLOSE_RANGE_UNSHARE) != 0)
     return 11;
   if (fd_flags(RANGE_FIRST_FD) >= 0 || errno != EBADF)
     return 12;

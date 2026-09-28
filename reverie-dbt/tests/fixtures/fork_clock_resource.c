@@ -28,7 +28,8 @@
  *
  *   - Virtual CLOCK_MONOTONIC advances one microsecond per read across the
  *     complete process tree; no process restarts or owns a private clock.
- *   - Virtual RLIMIT_NOFILE is 1048576, distinct from a typical host soft limit.
+ *   - Virtual RLIMIT_NOFILE is 1048576, distinct from a typical host soft
+ * limit.
  */
 
 #define _GNU_SOURCE
@@ -52,8 +53,9 @@ enum {
 #define CLOSE_RANGE_CLOEXEC (1U << 2)
 #endif
 
-// TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review the shared-clock lifecycle probe.
-static int probe(const char *who) {
+// TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review the shared-clock lifecycle
+// probe.
+static int probe(const char* who) {
   struct rlimit rl = {0, 0};
   for (int read = 0; read < CLOCK_READS; ++read) {
     struct timespec ts = {0, 0};
@@ -65,7 +67,7 @@ static int probe(const char *who) {
     printf("%s_mono_ns[%d]=%llu\n", who, read, nanoseconds);
   }
   // Raw syscall: prlimit64(pid=0 -> current, new=NULL, old=&rl).
-  if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, (void *)0, &rl) != 0)
+  if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, (void*)0, &rl) != 0)
     return 1;
   printf("%s_nofile=%llu\n", who, (unsigned long long)rl.rlim_cur);
   fflush(stdout);
@@ -98,7 +100,7 @@ static int write_byte(int fd) {
   return result == 1 ? 0 : 1;
 }
 
-static int concurrent_child(const char *who, int ready_fd, int start_fd) {
+static int concurrent_child(const char* who, int ready_fd, int start_fd) {
   if (write_byte(ready_fd) != 0)
     return 1;
   close(ready_fd);
@@ -108,11 +110,11 @@ static int concurrent_child(const char *who, int ready_fd, int start_fd) {
   return probe(who);
 }
 
-static int run_concurrent_children(const char *self) {
+static int run_concurrent_children(const char* self) {
   int ready[2] = {-1, -1};
   int start[2] = {-1, -1};
   pid_t children[2] = {-1, -1};
-  const char *labels[2] = {"concurrent-child-a", "concurrent-child-b"};
+  const char* labels[2] = {"concurrent-child-a", "concurrent-child-b"};
 
   if (pipe(ready) != 0 || pipe(start) != 0)
     return 1;
@@ -128,8 +130,14 @@ static int run_concurrent_children(const char *self) {
       close(start[1]);
       snprintf(ready_fd, sizeof(ready_fd), "%d", ready[1]);
       snprintf(start_fd, sizeof(start_fd), "%d", start[0]);
-      execl("/proc/self/exe", self, "--concurrent-child", labels[child_index],
-            ready_fd, start_fd, (char *)0);
+      execl(
+          "/proc/self/exe",
+          self,
+          "--concurrent-child",
+          labels[child_index],
+          ready_fd,
+          start_fd,
+          (char*)0);
       syscall(SYS_exit, 1);
     }
   }
@@ -148,7 +156,7 @@ static int run_concurrent_children(const char *self) {
   return 0;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc == 2 && strcmp(argv[1], "--exec-child") == 0)
     return probe("exec-child");
   if (argc == 5 && strcmp(argv[1], "--concurrent-child") == 0)
@@ -173,15 +181,18 @@ int main(int argc, char **argv) {
     return 4;
   if (child == 0) {
 #ifdef SYS_close_range
-    if (syscall(SYS_close_range, VIRTUAL_IDENTITY_FD, DBT_DIAGNOSTIC_FD,
-                CLOSE_RANGE_CLOEXEC) != 0 ||
+    if (syscall(
+            SYS_close_range,
+            VIRTUAL_IDENTITY_FD,
+            DBT_DIAGNOSTIC_FD,
+            CLOSE_RANGE_CLOEXEC) != 0 ||
         syscall(SYS_close_range, VIRTUAL_IDENTITY_FD, DBT_DIAGNOSTIC_FD, 0) !=
             0)
       syscall(SYS_exit, 5);
 #else
     syscall(SYS_exit, 5);
 #endif
-    execl("/proc/self/exe", argv[0], "--exec-child", (char *)0);
+    execl("/proc/self/exe", argv[0], "--exec-child", (char*)0);
     syscall(SYS_exit, 6);
   }
   if (wait_for_child(child) != 0)

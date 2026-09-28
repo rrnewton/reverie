@@ -9,9 +9,15 @@
 static bool domain;
 static char sequence[8];
 static size_t used;
-static bool get_domain(void) { return domain; }
-static void enter_domain(void) { domain = true; }
-static void exit_domain(void) { domain = false; }
+static bool get_domain(void) {
+  return domain;
+}
+static void enter_domain(void) {
+  domain = true;
+}
+static void exit_domain(void) {
+  domain = false;
+}
 calling_from_plugin_fn calling_from_plugin = get_domain;
 enter_plugin_fn enter_plugin = enter_domain;
 exit_plugin_fn exit_plugin = exit_domain;
@@ -20,14 +26,22 @@ static void record(char value) {
   assert(used < sizeof(sequence) - 1);
   sequence[used++] = value;
 }
-static void first(void) { record('1'); }
-static void second(void) { record('2'); }
-static void last(void) { record('F'); }
-static void guest(void) { assert(!domain); }
+static void first(void) {
+  record('1');
+}
+static void second(void) {
+  record('2');
+}
+static void last(void) {
+  record('F');
+}
+static void guest(void) {
+  assert(!domain);
+}
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   assert(argc == 2);
-  const char *mode = argv[1];
+  const char* mode = argv[1];
   bool prior = strcmp(mode, "prior-plugin") == 0;
   bool array = strcmp(mode, "fini-only") != 0 && strcmp(mode, "empty") != 0;
   bool fini = strcmp(mode, "array-only") != 0 && strcmp(mode, "empty") != 0;
@@ -39,10 +53,10 @@ int main(int argc, char **argv) {
   struct ld_link_map before = {.l_addr = 0x1000};
   struct ld_link_map selected = {.l_addr = 0x2000};
   struct ld_link_map after = {.l_addr = 0x3000};
-  before.l_next = (struct link_map *)&selected;
-  selected.l_prev = (struct link_map *)&before;
-  selected.l_next = (struct link_map *)&after;
-  after.l_prev = (struct link_map *)&selected;
+  before.l_next = (struct link_map*)&selected;
+  selected.l_prev = (struct link_map*)&before;
+  selected.l_next = (struct link_map*)&after;
+  after.l_prev = (struct link_map*)&selected;
   array_entry.d_un.d_ptr = (ElfW(Addr))originals - selected.l_addr;
   size_entry.d_un.d_val = zero ? 0 : sizeof(originals);
   fini_entry.d_un.d_ptr = (ElfW(Addr))last - selected.l_addr;
@@ -74,13 +88,15 @@ int main(int argc, char **argv) {
     assert(selected.l_info[DT_FINI_ARRAY] == NULL);
     assert(selected.l_info[DT_FINI_ARRAYSZ] == NULL);
     ((plugin_fini_fn)(selected.l_addr +
-                     selected.l_info[DT_FINI]->d_un.d_ptr))();
+                      selected.l_info[DT_FINI]->d_un.d_ptr))();
   } else {
     assert(selected.l_info[DT_FINI] == NULL);
   }
   assert(domain == prior);
-  assert(strcmp(sequence, !array || zero ? (fini ? "F" : "")
-                                         : (fini ? "21F" : "21")) == 0);
+  assert(
+      strcmp(
+          sequence,
+          !array || zero ? (fini ? "F" : "") : (fini ? "21F" : "21")) == 0);
   domain = false;
   guest();
   printf("PASS %s\n", mode);

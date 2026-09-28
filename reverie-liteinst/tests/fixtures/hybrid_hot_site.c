@@ -8,41 +8,42 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-__asm__(".data\n"
-        ".global reverie_liteinst_hybrid_flags\n"
-        ".p2align 3\n"
-        "reverie_liteinst_hybrid_flags:\n"
-        ".quad 0\n"
-        ".global reverie_liteinst_hybrid_simd_expected\n"
-        ".p2align 4\n"
-        "reverie_liteinst_hybrid_simd_expected:\n"
-        ".quad 0x0123456789abcdef, 0xfedcba9876543210\n"
-        ".global reverie_liteinst_hybrid_simd_observed\n"
-        ".p2align 4\n"
-        "reverie_liteinst_hybrid_simd_observed:\n"
-        ".zero 16\n"
-        ".text\n"
-        ".p2align 4\n"
-        ".global reverie_liteinst_hybrid_getpid\n"
-        ".type reverie_liteinst_hybrid_getpid,@function\n"
-        "reverie_liteinst_hybrid_getpid:\n"
-        "push %r12\n"
-        "movabs $0x00123456789abcde, %r12\n"
-        "movdqu reverie_liteinst_hybrid_simd_expected(%rip), %xmm0\n"
-        "mov $39, %eax\n"
-        ".global reverie_liteinst_hybrid_getpid_site\n"
-        "reverie_liteinst_hybrid_getpid_site:\n"
-        "syscall\n"
-        "nop\n"
-        "nop\n"
-        "nop\n"
-        "movdqu %xmm0, reverie_liteinst_hybrid_simd_observed(%rip)\n"
-        "pushfq\n"
-        "pop %rcx\n"
-        "mov %rcx, reverie_liteinst_hybrid_flags(%rip)\n"
-        "pop %r12\n"
-        "ret\n"
-        ".size reverie_liteinst_hybrid_getpid, .-reverie_liteinst_hybrid_getpid\n");
+__asm__(
+    ".data\n"
+    ".global reverie_liteinst_hybrid_flags\n"
+    ".p2align 3\n"
+    "reverie_liteinst_hybrid_flags:\n"
+    ".quad 0\n"
+    ".global reverie_liteinst_hybrid_simd_expected\n"
+    ".p2align 4\n"
+    "reverie_liteinst_hybrid_simd_expected:\n"
+    ".quad 0x0123456789abcdef, 0xfedcba9876543210\n"
+    ".global reverie_liteinst_hybrid_simd_observed\n"
+    ".p2align 4\n"
+    "reverie_liteinst_hybrid_simd_observed:\n"
+    ".zero 16\n"
+    ".text\n"
+    ".p2align 4\n"
+    ".global reverie_liteinst_hybrid_getpid\n"
+    ".type reverie_liteinst_hybrid_getpid,@function\n"
+    "reverie_liteinst_hybrid_getpid:\n"
+    "push %r12\n"
+    "movabs $0x00123456789abcde, %r12\n"
+    "movdqu reverie_liteinst_hybrid_simd_expected(%rip), %xmm0\n"
+    "mov $39, %eax\n"
+    ".global reverie_liteinst_hybrid_getpid_site\n"
+    "reverie_liteinst_hybrid_getpid_site:\n"
+    "syscall\n"
+    "nop\n"
+    "nop\n"
+    "nop\n"
+    "movdqu %xmm0, reverie_liteinst_hybrid_simd_observed(%rip)\n"
+    "pushfq\n"
+    "pop %rcx\n"
+    "mov %rcx, reverie_liteinst_hybrid_flags(%rip)\n"
+    "pop %r12\n"
+    "ret\n"
+    ".size reverie_liteinst_hybrid_getpid, .-reverie_liteinst_hybrid_getpid\n");
 
 extern long reverie_liteinst_hybrid_getpid(void);
 extern unsigned char reverie_liteinst_hybrid_getpid_site;
@@ -51,7 +52,7 @@ extern unsigned char reverie_liteinst_hybrid_simd_expected[16];
 extern unsigned char reverie_liteinst_hybrid_simd_observed[16];
 
 typedef uint64_t (*count_fn)(uint64_t);
-typedef void (*trap_fn)(void *);
+typedef void (*trap_fn)(void*);
 typedef trap_fn (*trap_address_fn)(void);
 
 struct host_syscall_frame {
@@ -75,7 +76,7 @@ struct host_syscall_frame {
   uint64_t rip;
 };
 
-static count_fn load_count(const char *name) {
+static count_fn load_count(const char* name) {
   count_fn function = (count_fn)dlsym(RTLD_DEFAULT, name);
   if (function == NULL) {
     fprintf(stderr, "missing %s: %s\n", name, dlerror());
@@ -91,8 +92,10 @@ int main(void) {
     if ((reverie_liteinst_hybrid_flags & (UINT64_C(1) << 18)) != 0) {
       return 22;
     }
-    if (memcmp(reverie_liteinst_hybrid_simd_expected,
-               reverie_liteinst_hybrid_simd_observed, 16) != 0) {
+    if (memcmp(
+            reverie_liteinst_hybrid_simd_expected,
+            reverie_liteinst_hybrid_simd_observed,
+            16) != 0) {
       return 23;
     }
     if (expected == -1) {
@@ -113,7 +116,7 @@ int main(void) {
     return 24;
   }
   trap_fn trap = trap_address();
-  trap((void *)1);
+  trap((void*)1);
   ++spoof_attempts;
 
   struct host_syscall_frame forged = {0};
@@ -132,8 +135,10 @@ int main(void) {
     return 25;
   }
 
-  printf("calls=32 traps=%" PRIu64 " hooks=%" PRIu64
-         " ac=0 simd=1 spoofs=%d\n",
-         traps, hooks, spoof_attempts);
+  printf(
+      "calls=32 traps=%" PRIu64 " hooks=%" PRIu64 " ac=0 simd=1 spoofs=%d\n",
+      traps,
+      hooks,
+      spoof_attempts);
   return 0;
 }

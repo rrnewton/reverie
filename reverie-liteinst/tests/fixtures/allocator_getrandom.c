@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 int main(void) {
-  void *allocation = malloc(1);
+  void* allocation = malloc(1);
   if (allocation == NULL) {
     return 10;
   }

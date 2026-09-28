@@ -18,8 +18,8 @@ typedef struct {
   pid_t tid;
 } observed_identity_t;
 
-static void *observe_identity(void *argument) {
-  observed_identity_t *observed = argument;
+static void* observe_identity(void* argument) {
+  observed_identity_t* observed = argument;
   observed->pid = (pid_t)syscall(SYS_getpid);
   observed->tid = (pid_t)syscall(SYS_gettid);
   return NULL;

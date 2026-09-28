@@ -1,10 +1,10 @@
-#include <stdbool.h>
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include <unistd.h>
-extern ssize_t late_probe(unsigned char *, size_t, unsigned);
+extern ssize_t late_probe(unsigned char*, size_t, unsigned);
 extern bool late_guest_ran;
 int main(void) {
   late_guest_ran = true;
@@ -20,7 +20,8 @@ int main(void) {
 /* These belong to the guest and its ordinary dependency, not the plugin. */
 extern bool calling_from_plugin(void) __attribute__((weak));
 __attribute__((destructor)) static void guest_finalizer(void) {
-  if (!late_guest_ran) return;
+  if (!late_guest_ran)
+    return;
   assert(calling_from_plugin != NULL);
   assert(!calling_from_plugin());
 }

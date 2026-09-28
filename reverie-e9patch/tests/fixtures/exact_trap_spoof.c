@@ -10,12 +10,13 @@ extern char recovered_getpid_syscall;
 /* Keep one genuine syscall site so e9tool maps the replacement payload. */
 __attribute__((noinline, used)) static long recovered_getpid(void) {
   register long result __asm__("rax") = SYS_getpid;
-  __asm__ volatile(".global recovered_getpid_syscall\n"
-                   "recovered_getpid_syscall:\n"
-                   "syscall"
-                   : "+a"(result)
-                   :
-                   : "rcx", "r11", "memory");
+  __asm__ volatile(
+      ".global recovered_getpid_syscall\n"
+      "recovered_getpid_syscall:\n"
+      "syscall"
+      : "+a"(result)
+      :
+      : "rcx", "r11", "memory");
   return result;
 }
 
