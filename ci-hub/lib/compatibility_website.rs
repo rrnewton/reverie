@@ -1846,10 +1846,9 @@ where
     F: FnMut(&str) -> Result<Option<bool>, String>,
 {
     let allowed_cells = manifest_cell_identities(manifest)?;
-    validate_history_selections(&history.selections, &allowed_cells)?;
     validate_derived_series(rows, &history.derived)?;
     let physical_row_count = rows.len();
-    let accumulation = accumulate_series(rows, history)?;
+    let accumulation = accumulate_series(rows, history, &allowed_cells)?;
     let ancestry = series_ancestry(&accumulation.prepared, current_main_ancestry)?;
     let SeriesAccumulation {
         prepared,
@@ -1979,29 +1978,26 @@ fn manifest_cell_identities(manifest: &Value) -> Result<BTreeSet<String>, String
     Ok(allowed_cells)
 }
 
-fn validate_history_selections(
-    selections: &BTreeMap<String, ValidationSelection>,
-    allowed_cells: &BTreeSet<String>,
-) -> Result<(), String> {
-    for (run_id, selection) in selections {
-        let unknown = selection
-            .selected_cells
-            .difference(allowed_cells)
-            .cloned()
-            .collect::<Vec<_>>();
-        if !unknown.is_empty() {
-            return Err(format!(
-                "current validation run {run_id:?} selects unknown cells: {}",
-                unknown.join(", ")
-            ));
-        }
-    }
-    Ok(())
+/// Exclusion reason for a series row whose cell this builder's manifest does
+/// not contain, naming the cell.
+///
+/// A validate run on a newer Hermit can select a cell that the website
+/// builder's pinned manifest predates. This used to refuse the whole build
+/// ("current validation run ... selects unknown cells"): on 2026-09-28 three
+/// new `c-programs/random-readv-stream` cells stopped the nightly rebuild
+/// (https://github.com/rrnewton/hermit/actions/runs/36453865612) and left the
+/// site at the previous day's data. Such a row is now kept out of the
+/// published cells, which must exactly exhaust the manifest, and is counted
+/// in the projection exclusion audit under its own named reason. Every other
+/// cell still publishes.
+fn cell_not_in_manifest_reason(cell: &str) -> String {
+    format!("cell is not in the website builder's manifest (not yet in its cell universe): {cell}")
 }
 
 fn accumulate_series(
     rows: &[Parsed<SeriesRow>],
     history: &HistoryProjection,
+    allowed_cells: &BTreeSet<String>,
 ) -> Result<SeriesAccumulation, String> {
     let mut accumulation = SeriesAccumulation::default();
     for parsed in rows {
@@ -2016,7 +2012,7 @@ fn accumulate_series(
             return Err(format!("series rows repeat event_id {:?}", row.event_id));
         }
         record_raw_series_counts(&mut accumulation, &row)?;
-        let reasons = series_exclusion_reasons(&row, history);
+        let reasons = series_exclusion_reasons(&row, history, allowed_cells);
         if !reasons.is_empty() {
             for reason in reasons {
                 let counts = accumulation
@@ -2063,8 +2059,15 @@ fn record_raw_series_counts(
     Ok(())
 }
 
-fn series_exclusion_reasons(row: &PreparedSeries, history: &HistoryProjection) -> BTreeSet<String> {
+fn series_exclusion_reasons(
+    row: &PreparedSeries,
+    history: &HistoryProjection,
+    allowed_cells: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut reasons = BTreeSet::new();
+    if !allowed_cells.contains(&row.cell) {
+        reasons.insert(cell_not_in_manifest_reason(&row.cell));
+    }
     if row.schema != series_schema_name(&SeriesSchema::V3) {
         reasons.insert("series schema is not stress-series/v3".to_owned());
     }
@@ -3233,6 +3236,63 @@ mod tests {
             );
             assert_eq!(projected.history.len(), 1);
             assert_eq!(projected.current.len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_selected_cell_missing_from_the_builder_manifest_is_excluded_by_name_not_refused() {
+        // Nightly run 36453865612 (2026-09-28): a validate run selected three new
+        // cells that the website builder's pinned manifest predated, and the
+        // whole projection refused. Reconstruct that shape: the history row
+        // selects fixture/test/verify/ptrace, the builder's manifest only knows
+        // fixture/test/replay/ptrace, and a second known-cell row still publishes.
+        let commit = "c".repeat(40);
+        let mut builder_manifest = manifest();
+        builder_manifest["cells"][0]["mode"] = Value::String("replay".into());
+        let known = builder_manifest["cells"][0].clone();
+        let mut hermit_repeat = series("repeat-run", &commit, "event-repeat-known");
+        hermit_repeat["producer"] = Value::String("hermit-repeat".into());
+        hermit_repeat["series"]["cell"] = Value::String("fixture/test/replay/ptrace".into());
+        let mut unknown_repeat = series("repeat-run", &commit, "event-repeat-unknown");
+        unknown_repeat["producer"] = Value::String("hermit-repeat".into());
+        unknown_repeat["series"]["cell"] = Value::String("fixture/new-test/verify/kvm".into());
+        let value = project(
+            &canonical_bytes(&builder_manifest),
+            &jsonl(&[history_row(7, "record-good", "run-good", &commit)]),
+            &jsonl(&[
+                series("run-good", &commit, "event-unknown"),
+                hermit_repeat,
+                unknown_repeat,
+            ]),
+            None,
+            |_| Ok(Some(true)),
+        )
+        .expect("an unknown selected cell must not refuse the whole website projection");
+
+        assert_eq!(known["mode"], "replay");
+        assert_eq!(value["input"]["series_rows"]["row_count"], 3);
+        assert_eq!(value["counts"]["projection_admitted_physical_row_count"], 1);
+        assert_eq!(value["counts"]["projection_excluded_physical_row_count"], 2);
+        assert_eq!(value["series_rows"][0]["event_id"], "event-repeat-known");
+        assert!(
+            value["validate_run_selection"]
+                .get("event-unknown")
+                .is_none()
+        );
+        assert_eq!(value["counts"]["current_validation_run_row_count"], 1);
+        let audit = value["projection_exclusion_counts"].as_array().unwrap();
+        for cell in ["fixture/test/verify/ptrace", "fixture/new-test/verify/kvm"] {
+            let reason = cell_not_in_manifest_reason(cell);
+            assert!(reason.ends_with(cell));
+            assert!(
+                audit.iter().any(|row| {
+                    row["schema"] == "stress-series/v3"
+                        && row["reason"] == reason.as_str()
+                        && row["physical_row_count"] == 1
+                        && row["represented_run_count"] == 1
+                }),
+                "missing named exclusion for {cell}: {audit:?}"
+            );
         }
     }
 
