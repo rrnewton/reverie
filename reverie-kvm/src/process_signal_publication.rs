@@ -1539,6 +1539,7 @@ mod tests {
 
     use super::super::ElfExecutor;
     use super::super::native_loaded_state;
+    use super::super::native_loaded_state_with_authority;
     use super::*;
     use crate::GuestMemory;
     use crate::SyscallRequest;
@@ -1765,7 +1766,11 @@ mod tests {
             !ready(&parent, alias),
             "another process cannot publish to this carrier"
         );
-        parent.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = parent.proc_carrier_authority();
+        parent.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         assert_eq!(identity(&parent), parent_id);
         assert_eq!(
             parent
@@ -2127,7 +2132,11 @@ mod tests {
         };
         control.reserve_delivery(permit).unwrap();
         assert_eq!(executor.delivery_permit(), Some(permit));
-        executor.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = executor.proc_carrier_authority();
+        executor.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         assert_eq!(executor.delivery_permit(), None);
         assert_eq!(executor.owned_delivery_permit(), Some(permit));
         assert!(matches!(
@@ -2365,7 +2374,11 @@ mod tests {
         let id = identity(&executor);
         let first = receipt(control.publish_alarm(id, alarm(id)));
         let old = executor.state.process_signals.clone();
-        executor.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = executor.proc_carrier_authority();
+        executor.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         // Exec preserves pending SIGALRM but resets the image binding.
         let second = receipt(control.publish_alarm(id, alarm(id)));
         assert_ne!(first.image, second.image);
@@ -5354,7 +5367,10 @@ mod tests {
         let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
         assert!(stat >= 0 && status >= 0);
         // As exec_static_elf names the new image before it inherits the process.
-        let mut replacement = native_loaded_state(std::path::Path::new("/"));
+        let mut replacement = native_loaded_state_with_authority(
+            std::path::Path::new("/"),
+            child.proc_carrier_authority(),
+        );
         replacement.thread_name =
             crate::elf::initial_thread_name(std::path::Path::new("/bin/exec-image"));
         *replacement.thread_group_leader_name.lock().unwrap() = replacement.thread_name;
@@ -5372,7 +5388,10 @@ mod tests {
     #[test]
     fn outside_init_orphan_keeps_its_reaper_across_exec() {
         fn exec(executor: &mut ElfExecutor) {
-            let replacement = native_loaded_state(std::path::Path::new("/tmp"));
+            let replacement = native_loaded_state_with_authority(
+                std::path::Path::new("/tmp"),
+                executor.proc_carrier_authority(),
+            );
             let previous = std::mem::replace(&mut executor.state, replacement);
             executor.state.inherit_process_state(previous);
         }

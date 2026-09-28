@@ -392,7 +392,7 @@ fn random_device_stream_rebinding_fork_exec_and_thread_table_keep_identity() {
         random_stream_read(&mut memory, &mut forked, ordinary, 0x40d, 17),
         17
     );
-    let mut replacement = test_state(&root.0);
+    let mut replacement = test_exec_replacement(&root.0, &forked);
     replacement.inherit_process_state(forked);
     assert!(
         !replacement
