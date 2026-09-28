@@ -24,8 +24,10 @@ mod counter1_tool;
 #[path = "../../reverie-examples/counter2_tool.rs"]
 mod counter2_tool;
 
+use core::cell::Cell;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::task::Context;
@@ -60,6 +62,7 @@ use reverie_narf_core::Disposition;
 use reverie_narf_core::LifecycleOutcome;
 use reverie_narf_core::NarfFatal;
 use reverie_narf_core::NarfSyscallRequest;
+use reverie_narf_core::RepollWait;
 use reverie_narf_core::SyscallEntry;
 use reverie_narf_core::TaskExit;
 
@@ -906,8 +909,286 @@ fn pending_tool_fails_closed_after_one_poll() {
         "polled exactly once"
     );
     assert_eq!(kernel.natives(), [], "nothing ran natively");
+    assert_eq!(
+        kernel.repoll_waits(),
+        [1000],
+        "the kernel was asked to wait and could not"
+    );
     // The thread's state was checked back in; the task is not wedged.
     assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+}
+
+#[test]
+fn pending_tool_is_polled_again_after_the_kernel_yields() {
+    let host = host::<Suspender>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+
+    // The first poll stops at `YieldOnce`. After the kernel let other tasks
+    // run, the second poll finishes with the tail inject.
+    let getpid = request(Sysno::getpid, NONE);
+    assert_eq!(complete(kernel.syscall(&host, root, getpid)), 1000);
+    assert_eq!(host.global().0.load(Ordering::SeqCst), 101);
+    assert_eq!(kernel.repoll_waits(), [1000], "one wait, between the polls");
+    assert_eq!(
+        kernel.natives(),
+        [Native {
+            tid: 1000,
+            request: getpid,
+            via: Via::Original
+        }]
+    );
+    assert_eq!(kernel.violations(), []);
+}
+
+/// Meets two tasks' callbacks through the global state: a `getpid` callback
+/// finishes only once a `gettid` callback has run. Every syscall is then
+/// forwarded.
+#[derive(Default)]
+struct Rendezvous;
+
+/// Whether `Rendezvous`'s `gettid` callback has run.
+#[derive(Default)]
+struct Meeting(AtomicBool);
+
+/// `Meeting`'s requests; each answers whether the `gettid` callback ran.
+const ASK: u64 = 0;
+const ARRIVE: u64 = 1;
+
+#[async_trait]
+impl GlobalTool for Meeting {
+    type Request = u64;
+    type Response = bool;
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, request: u64) -> bool {
+        if request == ARRIVE {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl Tool for Rendezvous {
+    type GlobalState = Meeting;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall {
+            Syscall::Getpid(_) => {
+                while !guest.send_rpc(ASK).await {
+                    YieldOnce(false).await;
+                }
+            }
+            Syscall::Gettid(_) => {
+                guest.send_rpc(ARRIVE).await;
+            }
+            _ => {}
+        }
+        guest.tail_inject(syscall).await
+    }
+}
+
+#[test]
+fn waiting_tool_finishes_once_another_tasks_callback_runs() {
+    let host = host::<Rendezvous>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let child = complete(kernel.syscall(&host, root, request(Sysno::fork, NONE)));
+    let child = pid(child as i32);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+
+    // The root's callback waits; while it is switched out, the child's
+    // callback runs to completion on the same host.
+    let mut arrived = None;
+    let mut others = || {
+        if arrived.is_none() {
+            arrived = Some(kernel.syscall(&host, child, request(Sysno::gettid, NONE)));
+        }
+    };
+    let waited = kernel.syscall_with_others(&host, root, request(Sysno::getpid, NONE), &mut others);
+    assert_eq!(complete(waited), 1000);
+    let arrived = arrived.expect("the child's callback ran during the wait");
+    assert_eq!(complete(arrived), 1001);
+    assert_eq!(
+        kernel.repoll_waits(),
+        [1000],
+        "only the root's callback waited"
+    );
+    assert_eq!(kernel.violations(), []);
+}
+
+#[test]
+fn waiting_tool_fails_closed_when_no_other_task_runs() {
+    let host = host::<Rendezvous>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded; 3]);
+
+    // Three waits end with nobody having run the `gettid` callback, and the
+    // fourth is refused.
+    let result = kernel.syscall(&host, root, request(Sysno::getpid, NONE));
+    assert!(
+        matches!(result, Err(NarfFatal::ToolSuspended)),
+        "{result:?}"
+    );
+    assert_eq!(kernel.repoll_waits(), [1000; 4]);
+    assert_eq!(kernel.natives(), [], "nothing ran natively");
+}
+
+std::thread_local! {
+    /// Polls and drops of `Forever` futures on this test's thread.
+    static FOREVER: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+}
+
+/// Pending on every poll; counts its polls and its drops.
+struct Forever;
+
+impl Future for Forever {
+    type Output = Result<i64, Error>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let (polls, drops) = FOREVER.get();
+        FOREVER.set((polls + 1, drops));
+        Poll::Pending
+    }
+}
+
+impl Drop for Forever {
+    fn drop(&mut self) {
+        let (polls, drops) = FOREVER.get();
+        FOREVER.set((polls, drops + 1));
+    }
+}
+
+/// Waits for something that never happens.
+#[derive(Default)]
+struct NeverReady;
+
+#[async_trait]
+impl Tool for NeverReady {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        _guest: &mut G,
+        _syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Forever.await
+    }
+}
+
+#[test]
+fn tool_killed_while_waiting_is_dropped_and_its_task_torn_down() {
+    let host = host::<NeverReady>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded, RepollWait::Killed]);
+
+    // SIGKILL arrives during the second wait: the kernel owns the task, so
+    // the future is dropped without another poll.
+    context_managed(kernel.syscall(&host, root, request(Sysno::getpid, NONE)));
+    assert_eq!(
+        FOREVER.get(),
+        (2, 1),
+        "polled before each wait, dropped once"
+    );
+    assert_eq!(kernel.repoll_waits(), [1000, 1000]);
+    assert_eq!(kernel.natives(), [], "nothing ran natively");
+    assert_eq!(kernel.violations(), []);
+    // The callback checked the task back in, so the kill tears it down.
+    assert_teardowns(&kernel, &[(1000, exited(true))]);
+    assert_eq!((host.live_threads(), host.live_processes()), (0, 0));
+}
+
+/// Daemonizes, then waits once before it forwards the syscall.
+#[derive(Default)]
+struct DaemonizeThenYield;
+
+#[async_trait]
+impl Tool for DaemonizeThenYield {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        guest.daemonize().await;
+        YieldOnce(false).await;
+        guest.tail_inject(syscall).await
+    }
+}
+
+#[test]
+fn failed_tool_is_not_polled_again() {
+    let host = host::<DaemonizeThenYield>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+    kernel.refuse_daemonize(Errno::EPERM);
+
+    // The refusal is recorded while the future is still pending: the
+    // callback ends with it, without a wait and without another poll.
+    let result = kernel.syscall(&host, root, request(Sysno::getpid, NONE));
+    assert!(
+        matches!(result, Err(NarfFatal::DaemonizeRefused(Errno::EPERM))),
+        "{result:?}"
+    );
+    assert_eq!(kernel.repoll_waits(), []);
+    assert_eq!(kernel.natives(), [], "the tail inject never ran");
+    assert!(!kernel.daemon(root));
+}
+
+/// Injects the intercepted syscall, then waits once before it returns.
+#[derive(Default)]
+struct InjectThenYield;
+
+#[async_trait]
+impl Tool for InjectThenYield {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let value = guest.inject(syscall).await?;
+        YieldOnce(false).await;
+        Ok(value + 1)
+    }
+}
+
+#[test]
+fn resumed_tool_is_polled_again_after_the_kernel_yields() {
+    let host = host::<InjectThenYield>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+    let read = request(Sysno::read, [PIPE_FD, (BASE + 0x100) as u64, 4, 0, 0, 0]);
+
+    // A parked inject suspends the Tool until the re-execution; that is not a
+    // wait for another task.
+    context_managed(kernel.syscall(&host, root, read));
+    assert_eq!(kernel.repoll_waits(), []);
+
+    kernel.push_pipe(b"xy");
+    // The re-execution resumes the future with the read's value, and the
+    // future waits once more before it finishes.
+    assert_eq!(complete(kernel.reexecute(&host, root)), 3);
+    assert_eq!(kernel.repoll_waits(), [1000]);
+    assert_eq!(kernel.peek(root, BASE + 0x100, 2), b"xy");
+    assert_eq!(kernel.natives().len(), 2, "the read and its re-execution");
+    assert_eq!(kernel.violations(), []);
 }
 
 /// Tail-injects `getpid` at thread start, when there is no syscall to answer.

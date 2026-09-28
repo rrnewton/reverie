@@ -57,10 +57,11 @@ pub struct CreatedTask {
 /// `Send + Sync` is required because [`reverie::Guest`] is `Send` and
 /// [`reverie::GlobalRPC`] is `Sync`. Narf's transition object is not `Send`;
 /// the kernel's wrapper supplies these bounds on the strength of the fact that
-/// the core reaches a `KernelServices` only synchronously, on the calling CPU,
-/// inside the interceptor call that created it: a Tool future kept across a
-/// park holds no reference to it, and sees the next call's services only
-/// while that call polls it.
+/// the core reaches a `KernelServices` only synchronously, from the calling
+/// task, inside the interceptor call that created it: a Tool future kept
+/// across a park holds no reference to it, and sees the next call's services
+/// only while that call polls it. The task may resume on another CPU after
+/// [`wait_for_repoll`](Self::wait_for_repoll), still inside the same call.
 pub trait KernelServices: Send + Sync {
     /// Guest-memory accessor bound to the current task's address space.
     type Memory: MemoryAccess + Send;
@@ -100,4 +101,32 @@ pub trait KernelServices: Send + Sync {
 
     /// Mark the current task as a daemon: the run does not wait for it.
     fn daemonize(&mut self) -> Result<(), Errno>;
+
+    /// Let other tasks run before the core polls this callback's pending
+    /// Tool future again, and report how the wait ended.
+    ///
+    /// The core calls this only between two polls of a future that is
+    /// pending without having made a terminal transition, parked an inject
+    /// or failed: a future waiting for another task (a global-state RPC,
+    /// say). Nothing wakes such a future, so the core polls it again after
+    /// every [`RepollWait::Yielded`]. The default cannot wait and returns
+    /// [`RepollWait::Unsupported`], which ends the callback as
+    /// [`NarfFatal::ToolSuspended`](crate::NarfFatal::ToolSuspended).
+    fn wait_for_repoll(&mut self) -> RepollWait {
+        RepollWait::Unsupported
+    }
+}
+
+/// How the kernel's [`KernelServices::wait_for_repoll`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RepollWait {
+    /// Other tasks could run, and this one runs again: the core polls the
+    /// Tool future again.
+    Yielded,
+    /// The task was killed while it waited. The kernel owns its context and
+    /// runs no further transition for this callback; the core drops the
+    /// Tool future.
+    Killed,
+    /// The kernel cannot switch this task out here.
+    Unsupported,
 }
