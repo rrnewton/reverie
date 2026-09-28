@@ -131,6 +131,24 @@ Pull requests opened before 2026-09-28 usually have no `Owner:` line. Before
 taking one, look at its comments and pushes from the last day for an agent that
 is still working on it, and ask that agent's coordinator if you find one.
 
+# GitHub CI is best-effort; local validation is the real testing
+
+Owner directive, 2026-09-28: GitHub Actions CI, both the portable hosted jobs
+and the privileged self-hosted jobs (KVM and other device-dependent tests), is
+**additional, best-effort signal**. The real testing is our local validation.
+
+- Landing evidence is an exact-head local validation receipt. A green GitHub run
+  does not substitute for it, and a red or missing GitHub run does not block a
+  landing by itself. Look at a red GitHub run, and file an issue if it shows a
+  real defect.
+- Do not make a GitHub check a required status check in a ruleset or branch
+  protection.
+- Tests that need privileges or a device, such as `/dev/kvm`, belong in the
+  privileged self-hosted lane, not the hosted lane.
+- The shared bot identity (`rrnewton-bots`) may dispatch and run any workflow,
+  self-hosted jobs included. It now does everything the `rrnewton` account used
+  to do.
+
 # Directory management and concurrency
 
 **Every task starts with an explicit write destination.** The dispatch names the repository, checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not permission to write somewhere else.
