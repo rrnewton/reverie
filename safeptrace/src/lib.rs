@@ -536,8 +536,36 @@ bitflags::bitflags! {
 
 /// A process that is in a stopped state and allows ptrace operations to be
 /// performed.
-#[derive(Debug, Hash, Eq, PartialEq)]
-pub struct Stopped(Pid, TraceeToken);
+#[derive(Hash, Eq, PartialEq)]
+pub struct Stopped(Pid, TraceeToken, ExitStopMark);
+
+impl fmt::Debug for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Stopped")
+            .field(&self.0)
+            .field(&self.1)
+            .finish()
+    }
+}
+
+/// Marks the one [`Stopped`] minted by an exit future for a published
+/// `PTRACE_EVENT_EXIT` stop, with the exit epoch that publication belongs to.
+/// It is not part of the value's identity: equality and hashing ignore it.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(feature = "notifier"), allow(dead_code))]
+struct ExitStopMark(Option<usize>);
+
+impl PartialEq for ExitStopMark {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ExitStopMark {}
+
+impl std::hash::Hash for ExitStopMark {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
 
 impl Stopped {
     /// Helper for converting from the Errno type.
@@ -558,8 +586,19 @@ impl Stopped {
     ///
     /// For more information, please see the "Death under ptrace" section
     /// in `man 2 ptrace`.
+    ///
+    /// On the capability for a published exit stop, ESRCH also retires the
+    /// statuses queued before that exit stop (see
+    /// [`Stopped::retire_statuses_before_exit_stop`]). That relies on the
+    /// same assumption as the mapping to `Died` above: every ptrace request
+    /// for this tracee comes from its one tracer thread, so reason (2), which
+    /// the kernel also reports to a thread that is not the tracer, does not
+    /// apply. The kernel also returns ESRCH when it cannot freeze the stop
+    /// because a fatal signal is pending; the tracee is then being killed out
+    /// of the exit stop, so the queued stops ahead of it are still dead.
     fn map_err(&self, err: Errno) -> Error {
         if err == Errno::ESRCH {
+            self.retire_statuses_before_exit_stop();
             Error::Died(Zombie::from_token(self.0, self.1.clone()))
         } else {
             Error::Errno(err)
@@ -629,7 +668,42 @@ impl Stopped {
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
-        Self(pid, token)
+        Self(pid, token, ExitStopMark(None))
+    }
+
+    /// The capability for the `PTRACE_EVENT_EXIT` stop published in exit
+    /// `epoch`. See [`Stopped::retire_statuses_before_exit_stop`] for when the
+    /// statuses queued before that exit stop are retired.
+    #[cfg(feature = "notifier")]
+    fn from_exit_token(pid: Pid, token: TraceeToken, epoch: usize) -> Self {
+        Self(pid, token, ExitStopMark(Some(epoch)))
+    }
+
+    /// On the capability for a published exit stop, retires the statuses the
+    /// notifier queued before that exit stop. The tracee had already left
+    /// each of those stops when it entered the exit stop, so none of them
+    /// names a stop it can still be in.
+    ///
+    /// This runs on every terminal disposition of the capability: a ptrace
+    /// request that moves the tracee out of the exit stop, and an ESRCH from
+    /// any request on it (resume, step, GETEVENTMSG, ...), which means the
+    /// tracee is no longer in the exit stop. Statuses queued after the exit
+    /// stop, such as the Exec or the terminal wait status, are never removed.
+    /// A mark from an earlier exit epoch retires nothing, so a stale
+    /// capability cannot remove the prefix of a later exit stop. Does nothing
+    /// on any other capability.
+    fn retire_statuses_before_exit_stop(&self) {
+        #[cfg(feature = "notifier")]
+        if let Some(epoch) = self.2.0 {
+            self.1.event().retire_statuses_before_exit_stop(epoch);
+        }
+    }
+
+    /// Converts this capability into the running state after a successful
+    /// ptrace request moved the tracee out of its stop.
+    fn into_running(self) -> Running {
+        self.retire_statuses_before_exit_stop();
+        Running::from_token(self.0, self.1)
     }
 
     /// Returns the process ID of the tracee.
@@ -775,7 +849,7 @@ impl Stopped {
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Attempts to resume while retaining the original capability on error.
@@ -816,8 +890,16 @@ impl Stopped {
         result: Result<(), nix::Error>,
     ) -> Result<Running, (Self, Errno)> {
         match result {
-            Ok(()) => Ok(Running::from_token(self.0, self.1)),
-            Err(error) => Err((self, Errno::new(error as i32))),
+            Ok(()) => Ok(self.into_running()),
+            Err(error) => {
+                let errno = Errno::new(error as i32);
+                if errno == Errno::ESRCH {
+                    // The retained value keeps its ownership role, but the
+                    // tracee has left the exit stop this capability names.
+                    self.retire_statuses_before_exit_stop();
+                }
+                Err((self, errno))
+            }
         }
     }
 
@@ -825,14 +907,14 @@ impl Stopped {
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Sets the syscall to be executed. Only available on `aarch64`.
@@ -969,7 +1051,7 @@ impl Stopped {
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 }
 
@@ -1440,13 +1522,17 @@ mod test {
 
         let (pid, tracee) = trace(
             move || {
-                // Create a handful of threads that do nothing but exit.
+                // Create a handful of threads that do nothing but exit. They
+                // are raw pthreads: see `spawn_tracee_thread`.
+                extern "C" fn exit_at_once(_: *mut libc::c_void) -> *mut libc::c_void {
+                    std::ptr::null_mut()
+                }
                 let threads = (0..THREAD_COUNT)
-                    .map(|i| thread::spawn(move || i))
+                    .map(|_| spawn_tracee_thread(exit_at_once, std::ptr::null_mut()))
                     .collect::<Vec<_>>();
 
                 for t in threads {
-                    t.join().unwrap();
+                    assert_eq!(unsafe { libc::pthread_join(t, std::ptr::null_mut()) }, 0);
                 }
 
                 42
@@ -1497,6 +1583,26 @@ mod test {
         Ok(())
     }
 
+    /// Starts a thread in a tracee forked by [`trace`] with a raw
+    /// `pthread_create`.
+    ///
+    /// The test harness is multithreaded, and `fork` copies only the calling
+    /// thread. A lock another harness thread held at the fork stays held in
+    /// the child forever. `std::thread::spawn` takes such a lock (the thread
+    /// info lock of std's stack overflow handler), so a tracee that uses it
+    /// can block before its first clone. `pthread_create` needs no lock that
+    /// glibc does not reset in the child of a fork.
+    #[cfg(not(sanitized))]
+    fn spawn_tracee_thread(
+        start: extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
+        arg: *mut libc::c_void,
+    ) -> libc::pthread_t {
+        let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+        let rc = unsafe { libc::pthread_create(thread.as_mut_ptr(), std::ptr::null(), start, arg) };
+        assert_eq!(rc, 0, "pthread_create in a tracee failed");
+        unsafe { thread.assume_init() }
+    }
+
     #[cfg(not(sanitized))]
     fn group_exit(thread_count: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
         use std::sync::Arc;
@@ -1508,15 +1614,21 @@ mod test {
             move || {
                 let counter = Arc::new(AtomicUsize::new(0));
 
-                // Create a handful of threads that sleep forever.
+                // Create a handful of threads that sleep forever. They are
+                // raw pthreads: see `spawn_tracee_thread`.
+                extern "C" fn count_and_sleep(counter: *mut libc::c_void) -> *mut libc::c_void {
+                    // SAFETY: `counter` comes from `Arc::into_raw` below and
+                    // owns one strong count, which this thread never drops:
+                    // it sleeps until exit_group ends the process.
+                    let counter = unsafe { &*(counter as *const AtomicUsize) };
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    unsafe { libc::sleep(Duration::from_mins(1).as_secs() as libc::c_uint) };
+                    std::ptr::null_mut()
+                }
                 let _threads = (0..thread_count)
                     .map(|_i| {
-                        let counter = counter.clone();
-
-                        thread::spawn(move || {
-                            counter.fetch_add(1, Ordering::Relaxed);
-                            thread::sleep(Duration::from_mins(1));
-                        })
+                        let counter = Arc::into_raw(counter.clone()) as *mut libc::c_void;
+                        spawn_tracee_thread(count_and_sleep, counter)
                     })
                     .collect::<Vec<_>>();
 
