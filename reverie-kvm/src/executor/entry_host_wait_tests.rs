@@ -80,6 +80,7 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
     const WORD: u64 = 0x1_0000;
     const SECOND: u64 = WORD + 4;
     const TIMEOUT: u64 = WORD + 16;
+    let started = Instant::now();
     let memory = GuestMemory::new(WORD, PAGE_SIZE as usize).unwrap();
     memory.map_user_range(WORD, PAGE_SIZE, false).unwrap();
     memory.enable_user_access();
@@ -107,35 +108,83 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
     let (finished, completion) = mpsc::channel();
     let mut waiter = FutexWaiter {
         handle: Some(std::thread::spawn(move || {
+            let wait_started_at = started.elapsed();
             // Exactly one adapter invocation, with no EINTR or timeout retry.
             let result = futex(
                 &waiting_memory,
                 &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0],
             );
+            // Capture thread-local errno before any timestamp, channel or log
+            // operation. The adapter result already preserves a failing host
+            // errno; thread_errno is observational and is stale on success.
+            // SAFETY: errno_location points to this live thread's errno cell.
+            let thread_errno = unsafe { *libc::__errno_location() };
+            let wait_returned_at = started.elapsed();
             finished.send(result).unwrap();
+            eprintln!(
+                "queued-host-futex wait result={result} result_errno={:?} thread_errno={thread_errno} started_at={wait_started_at:?} returned_at={wait_returned_at:?} elapsed={:?}",
+                (result < 0).then_some(-result),
+                wait_returned_at - wait_started_at,
+            );
             result
         })),
         original_address,
         requeued_address,
     };
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        // Zero wakes, at most one requeue. Returning one proves a real queued
-        // kernel waiter and leaves it asleep at SECOND without completing it.
+    let requeue_started_at = started.elapsed();
+    let mut adapter_moves = 0;
+    let mut last_move = None;
+    let (requeued_at, requeue_errno, destination_observed_at) = loop {
+        // Zero wakes, at most one requeue. A positive move proves queue
+        // membership at that instant, not persistent sleep at SECOND: Linux
+        // may internally retry or restart this same WAIT at its original WORD.
         let moved = futex(
             &memory,
             &[WORD, libc::FUTEX_CMP_REQUEUE as u64, 0, 1, SECOND, 0],
         );
-        assert!(moved == 0 || moved == 1, "requeue returned {moved}");
+        // SAFETY: errno_location points to this live thread's errno cell.
+        let thread_errno = unsafe { *libc::__errno_location() };
+        assert!(
+            moved == 0 || moved == 1,
+            "requeue returned {moved}, thread_errno={thread_errno}, elapsed={:?}",
+            started.elapsed(),
+        );
         if moved == 1 {
-            break;
+            adapter_moves += 1;
+            last_move = Some((started.elapsed(), thread_errno));
+        }
+        // Independently require the actual destination key, so a broken
+        // adapter that translated uaddr2 back to WORD cannot pass. Ordinary
+        // same-key CMP_REQUEUE wakes nothing and does not change the key.
+        // SAFETY: both aligned operands name SECOND in this live, unchanged
+        // Mapping; the controller retains it until the real waiter joins.
+        let destination = unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                requeued_address,
+                libc::FUTEX_CMP_REQUEUE,
+                0,
+                1,
+                requeued_address,
+                0,
+            )
+        };
+        // SAFETY: errno_location points to this live thread's errno cell.
+        let destination_errno = unsafe { *libc::__errno_location() };
+        assert!(
+            destination == 0 || destination == 1,
+            "destination membership returned {destination}, thread_errno={destination_errno}"
+        );
+        if let (1, Some((requeued_at, requeue_errno))) = (destination, last_move) {
+            break (requeued_at, requeue_errno, started.elapsed());
         }
         assert!(
             Instant::now() < deadline,
-            "waiter never entered kernel queue"
+            "waiter never demonstrated adapter requeue and destination membership"
         );
         std::thread::yield_now();
-    }
+    };
     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
     assert!(!waiter.handle.as_ref().unwrap().is_finished());
     // Controller view + waiter view + the retained word. The timeout was
@@ -144,6 +193,7 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
     assert_eq!(owners(), 3);
     assert_eq!(gate.test_state().copies, 0);
     assert_eq!(gate.test_state().retained_operands, 1);
+    let close_started_at = started.elapsed();
     let closed = gate
         .try_close()
         .unwrap()
@@ -152,23 +202,82 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
         .now_or_never()
         .expect("unchanged-mapping fence waited for the kernel futex")
         .unwrap();
+    let closed_at = started.elapsed();
     assert!(gate.test_state().closed);
     assert_eq!(gate.test_state().copies, 0);
     assert_eq!(gate.test_state().retained_operands, 1);
     assert_eq!(owners(), 3);
     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
     assert!(!waiter.handle.as_ref().unwrap().is_finished());
+    let reopen_started_at = started.elapsed();
     drop(closed);
-    assert_eq!(
-        futex(&memory, &[SECOND, libc::FUTEX_WAKE as u64, 1, 0, 0, 0]),
-        1
+    let reopened_at = started.elapsed();
+    let wake_started_at = started.elapsed();
+    let mut wake_rounds = 0;
+    let mut wake = 0;
+    let (wake_by_key, wake_errnos) = loop {
+        // Reuse the initial two-second deadline; do not renew either this
+        // budget or the worker's single five-second kernel WAIT. A retry can
+        // briefly leave both queues empty before reenqueuing at WORD.
+        assert!(
+            Instant::now() < deadline,
+            "controller never woke the retained waiter: rounds={wake_rounds}, elapsed={:?}",
+            started.elapsed(),
+        );
+        wake_rounds += 1;
+        let mut by_key = [0; 2];
+        let mut errnos = [0; 2];
+        for (index, address) in [SECOND, WORD].into_iter().enumerate() {
+            by_key[index] = futex(&memory, &[address, libc::FUTEX_WAKE as u64, 1, 0, 0, 0]);
+            // SAFETY: errno_location points to this live thread's errno cell.
+            errnos[index] = unsafe { *libc::__errno_location() };
+            assert!(
+                by_key[index] == 0 || by_key[index] == 1,
+                "wake at {address:#x} returned {}, thread_errno={}",
+                by_key[index],
+                errnos[index],
+            );
+            wake += by_key[index];
+            assert!(wake <= 1, "more than one retained waiter was woken");
+        }
+        if wake == 1 {
+            assert!(
+                Instant::now() < deadline,
+                "positive controller wake exceeded the shared admission deadline",
+            );
+            break (by_key, errnos);
+        }
+        // A zero-only round is not success. A signal, timeout, or unrelated
+        // wake completing WAIT without our positive wake must still fail.
+        assert_eq!(
+            completion.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "WAIT completed without a positive controller wake",
+        );
+        assert!(!waiter.handle.as_ref().unwrap().is_finished());
+        std::thread::yield_now();
+    };
+    let wake_returned_at = started.elapsed();
+    eprintln!(
+        "queued-host-futex controller original={original_address:#x} second={requeued_address:#x} requeue_started_at={requeue_started_at:?} requeued_at={requeued_at:?} requeue_thread_errno={requeue_errno} adapter_moves={adapter_moves} destination_observed_at={destination_observed_at:?} close_started_at={close_started_at:?} closed_at={closed_at:?} reopen_started_at={reopen_started_at:?} reopened_at={reopened_at:?} wake_started_at={wake_started_at:?} wake_returned_at={wake_returned_at:?} wake_total={wake} wake_rounds={wake_rounds} wake_by_key_second_original={wake_by_key:?} wake_thread_errnos={wake_errnos:?}",
     );
+    assert_eq!(wake, 1);
     assert_eq!(completion.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
-    assert_eq!(waiter.join(), 0);
+    let join_started_at = started.elapsed();
+    let joined = waiter.join();
+    eprintln!(
+        "queued-host-futex join result={joined} started_at={join_started_at:?} completed_at={:?}",
+        started.elapsed(),
+    );
+    assert_eq!(joined, 0);
     assert_eq!(owners(), 1);
     assert!(gate.pending_failure().is_none());
     assert_eq!(
         futex(&memory, &[SECOND, libc::FUTEX_WAKE as u64, 1, 0, 0, 0]),
+        0
+    );
+    assert_eq!(
+        futex(&memory, &[WORD, libc::FUTEX_WAKE as u64, 1, 0, 0, 0]),
         0
     );
     drop(memory);
