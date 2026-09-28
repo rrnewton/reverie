@@ -1,0 +1,18 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+warning: function `ensure_file_table_fdinfo_content_supported` is never used
+    --> reverie-kvm/src/executor.rs:2376:4
+     |
+2376 | fn ensure_file_table_fdinfo_content_supported(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.37s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 1 test
+test executor::tests::close_range_shared_and_unshare_failure_boundaries_are_atomic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 884 filtered out; finished in 0.00s
+

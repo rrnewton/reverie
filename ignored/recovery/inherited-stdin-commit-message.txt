@@ -1,0 +1,21 @@
+Stabilize inherited KVM stdin identity
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Register caller-supplied pipe or socket stdin in the deterministic file-object
+identity table before publishing guest state. Preserve that identity across
+fork and exec, while dropping it for CLOEXEC and final process exit.
+
+Release exited executors' local identity references after detaching their file
+table, so live fork or CLONE_FILES owners retain identity but a kernel-only SCM
+queue does not become an implicit identity escrow. Leave ordinary stdin and
+the captured-output identity domain unchanged.
+
+Test Plan:
+- inherited stdin epoll, replacement, fork, exec, and CLOEXEC tests: 3 passed
+- final-owner and live-CLONE_FILES identity teardown test: 1 passed
+- required-KVM anonymous identity integration: 1 passed in three outer runs
+- required-KVM anti-skip gate: 1 passed
+- reverie-kvm library tests: 875/875 default and 875/875 serial
+- cargo clippy -p reverie-kvm --all-targets -- -D warnings
+- cargo fmt --all -- --check

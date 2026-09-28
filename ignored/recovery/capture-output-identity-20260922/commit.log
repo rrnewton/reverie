@@ -1,0 +1,2 @@
+[codex/kvm-pr611-recovery-20260922 b3f0de34] Make captured KVM output identity deterministic
+ 5 files changed, 793 insertions(+), 115 deletions(-)

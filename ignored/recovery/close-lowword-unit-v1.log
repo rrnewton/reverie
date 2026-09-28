@@ -1,0 +1,10 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.41s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 2 tests
+test executor::tests::close_range_closes_the_inclusive_descriptor_span ... ok
+test executor::tests::close_range_validates_bounds_and_flags ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 880 filtered out; finished in 0.00s
+

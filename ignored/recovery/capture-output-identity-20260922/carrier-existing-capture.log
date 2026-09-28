@@ -1,0 +1,92 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 29 tests
+test entry::captured_owner_is_visible_before_wake_outside_registry_lock ... ok
+test entry::driver::tests::retained_old_generation_captures_without_acknowledging_current_callback ... ok
+test entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection ... ok
+test entry::owner::tests::capture_records_before_deferred_notification_and_retains_arcs ... ok
+test entry::owner::tests::retirement_preserves_both_sides_of_capture_race ... ok
+test executor::tests::capture_identity_keeps_closed_standard_descriptors_closed ... capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::capture_identity_keeps_closed_standard_descriptors_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.00s
+
+
+stderr:
+capture closed standard descriptors completed
+
+ok
+test executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams ... capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.05s
+
+
+stderr:
+capture setup EMFILE control completed
+
+ok
+test executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement ... ok
+test executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias ... ok
+test executor::tests::captured_output_fstat_is_synthetic_and_stable ... ok
+test executor::tests::captured_output_identity_is_deterministic_and_preserves_proc_symlinks ... ok
+test executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias ... ok
+test executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink ... ok
+test executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout ... capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.00s
+
+
+stderr:
+capture virtual status control completed
+
+ok
+test executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind ... capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.00s
+
+
+stderr:
+
+thread 'executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind' (3108214) panicked at reverie-kvm/src/capture_identity_tests.rs:847:17:
+intentional capture cleanup unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+capture final owner cleanup completed
+
+ok
+test executor::tests::captured_write_site_uses_current_table_and_full_callback_identity ... ok
+test executor::tests::forked_executors_share_captured_output_order ... ok
+test executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture ... ok
+test executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused ... ok
+test executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics ... ok
+test executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing ... ok
+test executor::tests::syncfs_capture_shortcut_requires_open_implicit_output ... ok
+test executor::tests::syncfs_models_captured_output_aliases_as_pipes_across_lifecycle ... ok
+test memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure ... 
+thread 'memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure' (3108527) panicked at reverie-kvm/src/memory.rs:2739:21:
+controlled admitted-copy unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test runtime::captured_write_tests::captured_write_query_default_adapter_and_nested_guards_have_no_effects ... ok
+test signal::tests::sigcontext_restore_accepts_captured_sysret_stack_selector ... ok
+test vm::exec_wait_tests::exec_join_helper_does_not_capture_nested_discard_behind_another_worker ... ok
+test vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation ... ok
+test vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 848 filtered out; finished in 2.66s
+

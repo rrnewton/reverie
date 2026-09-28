@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 9 tests
+test captured_aliases_ignore_reused_supervisor_stdio_on_kvm ... ok
+test captured_dirfds_reject_reused_supervisor_directories_on_kvm ... ok
+test captured_file_operations_ignore_reused_supervisor_files_on_kvm ... ok
+test captured_output_statfs_matches_native_and_is_repeatable_on_kvm ... ok
+test captured_socket_operations_ignore_reused_supervisor_sockets_on_kvm ... ok
+test captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm ... ok
+test captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission ... ok
+test captured_write_signals::captured_write_signal_capability_preserves_fault_and_partial_result ... ok
+test captured_write_signals::captured_write_signal_capability_routes_and_refusals ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 341 filtered out; finished in 6.62s
+

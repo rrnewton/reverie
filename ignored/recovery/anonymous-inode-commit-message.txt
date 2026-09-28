@@ -1,0 +1,19 @@
+Stabilize KVM anonymous object identities
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Assign deterministic synthetic device, inode, and mount identities to
+guest-created pipe and socket objects. Use the same identity across stat,
+statx, proc-fd link, fdinfo lock, and socket-cookie observations while
+preserving ordinary-file and captured-output behavior.
+
+Keep identity stable across aliases, fork, and live-source SCM_RIGHTS
+delivery. Reject malformed anonymous-link and fdinfo identity text rather
+than leaking host identity or silently accepting an inconsistent result.
+
+Test Plan:
+- focused anonymous-object, kind-reuse, fdinfo-lock, and captured-identity tests
+- required-KVM anonymous identity integration, three outer repetitions
+- reverie-kvm library tests: 874/874 default and 874/874 serial
+- cargo clippy -p reverie-kvm --all-targets -- -D warnings
+- cargo fmt --all -- --check

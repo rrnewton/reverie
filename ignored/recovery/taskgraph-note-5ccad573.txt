@@ -1,0 +1,33 @@
+2026-09-22 KVM anonymous pipe/socket identity slice qualified locally; not published or landed.
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Exact commit: 5ccad573afc40fb8cda85c07cd9ded5518a12100
+Tree: 78dec398abbdc1e992a7a399c6f0b30389e94692
+Parent: f05ff333ac752d820d53f7558b7de6b3c44d5fd8
+Base origin/main: 5f5cc66039de38bc07301705753fc6e6de4d1928
+Commit delta: 4 files, 948 insertions, 63 deletions
+PR dependency: https://github.com/rrnewton/reverie/pull/610 remains read-only pending independent Claude-family approval; https://github.com/rrnewton/reverie/pull/611 remains stacked on it. No push or PR publication was attempted.
+
+Implemented stable synthetic identity for guest-created pipes and sockets. Existing deterministic fd-object IDs now drive synthetic device and inode values consistently through fstat, newfstatat, stat, statx, direct and authenticated proc-fd readlink, fdinfo inode and lock tuples, and SO_COOKIE. Statx preserves the kernel-returned mask and distinguishes synthetic legacy MNT_ID from MNT_ID_UNIQUE. Identity survives aliases, fork, and SCM_RIGHTS receive while a live source alias remains. Type-mismatched reuse and malformed anonymous-link or fdinfo identity text fail closed with EIO. Ordinary files, named FIFO/socket nodes on ordinary filesystems, and captured output retain their prior behavior.
+
+Native evidence:
+- ignored/recovery/anonymous-inode-native-report.md SHA-256 7567640a02445832f2d11f1a25cf6497fec50f4fd21b00a3c1b349a856d98aab; source SHA-256 618db1bbd0229de3ba546e001488b15f4ad99e213c915371367c096801f9607f; binary SHA-256 ce85854ca66c6803b3122a440bd71bd875a65f5bc4ab2c9833314b0dc261f16f. Eight fresh native processes show pipe ends sharing device/inode, socket endpoints using distinct inodes on a shared device, and stat/statx/proc-link/fdinfo agreement within each run; host inodes change between runs.
+- ignored/recovery/anonymous-inode-native-mnt-unique-report.md SHA-256 8e9a3d18205b244e9b24c186edc0be2b8b169f03b12c8fcbdb1d87b3d7ad1808. Three native runs show UNIQUE-only statx requests returning the unique mount-ID bit and values distinct from fdinfo legacy mount IDs.
+
+Validation on the frozen diff and exact commit:
+- anonymous-object unit tests: 4 passed, 0 failed, including overflow and malformed-label refusal
+- kind-reuse invariant: 1 passed, 0 failed
+- fdinfo OFD-lock rewrite: 1 passed, 0 failed
+- captured-identity regression: 1 passed, 0 failed
+- required real-KVM integration: 1 passed, 0 failed in each of three outer repetitions; the fixture runs native once, direct KVM twice, and Tool KVM twice; exact stdout, stderr, and exit-status repeat parity only
+- required-KVM refusal meta-test: 1 passed, 0 failed
+- full reverie-kvm library default: 874 passed, 0 failed, 11.96 seconds test body
+- full reverie-kvm library serial: 874 passed, 0 failed, 33.64 seconds test body
+- cargo clippy all targets with warnings denied, cargo fmt check, and git diff check: pass
+- three independent exact-diff adversarial reviews: APPROVE, no findings; prior checked-u64 and exact statx mask coverage findings resolved
+- three independent exact-commit rebinds: APPROVE, no findings; all explicitly checked for weakened assertions, tolerances, exemptions, skips, relabeling, and deleted checks
+
+Declared residuals: SCM_RIGHTS delivery may remint identity if every guest source alias closes before receive; no unbounded escrow was added. Preexisting inherited anonymous standard streams without a captured fd-object identity remain outside this slice. Other anonymous inode classes are unchanged. Existing proc-fd restrictions and lack of synthetic proc statfs remain. No L2 or log parity is claimed.
+
+Current local stack from base through this commit: 12 commits, 19 files, 13327 insertions, 910 deletions. The official Hermit census remains 243 green, 8 red, 109 disabled; this unlanded Reverie work does not change that official count.

@@ -1,0 +1,63 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:13996:
+     proc_stat_content(state.tid, state.ppid, &proc_thread_comm(state))
+ }
+ 
+-fn proc_status_content(
+-    state: &LoadedStaticElf,
+-    name: &[u8],
+-    tgid: i32,
+-    pid: i32,
+-) -> Vec<u8> {
++fn proc_status_content(state: &LoadedStaticElf, name: &[u8], tgid: i32, pid: i32) -> Vec<u8> {
+     let mut content = b"Name:\t".to_vec();
+     content.extend_from_slice(name);
+     content.push(b'\n');
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:14035:
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(kvm-thread-self-procfs): Review opener-bound thread proc identity.
+ fn proc_thread_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+-    proc_status_content(
+-        state,
+-        &proc_thread_status_comm(state),
+-        state.pid,
+-        state.tid,
+-    )
++    proc_status_content(state, &proc_thread_status_comm(state), state.pid, state.tid)
+ }
+ 
+ /// Back a synthesized /proc file with a memfd holding `content` and record it in
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:21643:
+ 
+         let self_status_fd = open_readonly(&mut memory, &mut worker.state, "/proc/self/status");
+         assert!(self_status_fd >= 0);
+-        let self_status =
+-            String::from_utf8(read_fd_to_end(&mut memory, &mut worker.state, self_status_fd))
+-                .unwrap();
+-        assert!(self_status.contains("Name:\tleader-before\n"), "{self_status}");
++        let self_status = String::from_utf8(read_fd_to_end(
++            &mut memory,
++            &mut worker.state,
++            self_status_fd,
++        ))
++        .unwrap();
++        assert!(
++            self_status.contains("Name:\tleader-before\n"),
++            "{self_status}"
++        );
+         assert!(self_status.contains("Tgid:\t1\n"), "{self_status}");
+         assert!(self_status.contains("Pid:\t1\n"), "{self_status}");
+         assert!(self_status.contains("PPid:\t0\n"), "{self_status}");
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:21727:
+ 
+         // A later open observes the worker's current identity; immutability is
+         // per successful readable open, not a process-lifetime cache.
+-        let fresh_status_fd = open_readonly(
+-            &mut memory,
+-            &mut worker.state,
+-            "/proc/thread-self/status",
+-        );
++        let fresh_status_fd =
++            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/status");
+         assert!(fresh_status_fd >= 0);
+         let fresh_status = String::from_utf8(read_fd_to_end(
+             &mut memory,

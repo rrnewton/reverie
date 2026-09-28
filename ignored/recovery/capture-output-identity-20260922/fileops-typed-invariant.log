@@ -1,0 +1,141 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+warning: use of deprecated method `std::sync::atomic::Atomic::<i32>::fetch_update`: renamed to `try_update` for consistency
+     --> reverie-kvm/src/executor.rs:16463:32
+      |
+16463 |                 let _ = status.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+      |                                ^^^^^^^^^^^^
+      |
+      = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+      |
+16463 -                 let _ = status.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+16463 +                 let _ = status.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+      |
+
+error[E0373]: closure may outlive the current function, but it borrows `parent_finish`, which is owned by the current function
+    --> reverie-kvm/src/capture_identity_tests.rs:1633:41
+     |
+1630 |     std::thread::scope(|scope| {
+     |                         ----- has type `&'1 std::thread::Scope<'1, '_>`
+...
+1633 |         let parent_worker = scope.spawn(|| {
+     |                                         ^^ may outlive borrowed value `parent_finish`
+...
+1654 |                 parent_finish.wait();
+     |                 ------------- `parent_finish` is borrowed here
+     |
+note: function requires argument type to outlive `'1`
+    --> reverie-kvm/src/capture_identity_tests.rs:1633:29
+     |
+1633 |           let parent_worker = scope.spawn(|| {
+     |  _____________________________^
+1634 | |             let parent_memory = GuestMemory::new(0, 0x1000).unwrap();
+1635 | |             for _ in 0..iterations {
+1636 | |                 parent_start.wait();
+...    |
+1656 | |         });
+     | |__________^
+help: to force the closure to take ownership of `parent_finish` (and any other referenced variables), use the `move` keyword
+     |
+1633 |         let parent_worker = scope.spawn(move || {
+     |                                         ++++
+
+error[E0373]: closure may outlive the current function, but it borrows `parent_start`, which is owned by the current function
+    --> reverie-kvm/src/capture_identity_tests.rs:1633:41
+     |
+1630 |     std::thread::scope(|scope| {
+     |                         ----- has type `&'1 std::thread::Scope<'1, '_>`
+...
+1633 |         let parent_worker = scope.spawn(|| {
+     |                                         ^^ may outlive borrowed value `parent_start`
+...
+1636 |                 parent_start.wait();
+     |                 ------------ `parent_start` is borrowed here
+     |
+note: function requires argument type to outlive `'1`
+    --> reverie-kvm/src/capture_identity_tests.rs:1633:29
+     |
+1633 |           let parent_worker = scope.spawn(|| {
+     |  _____________________________^
+1634 | |             let parent_memory = GuestMemory::new(0, 0x1000).unwrap();
+1635 | |             for _ in 0..iterations {
+1636 | |                 parent_start.wait();
+...    |
+1656 | |         });
+     | |__________^
+help: to force the closure to take ownership of `parent_start` (and any other referenced variables), use the `move` keyword
+     |
+1633 |         let parent_worker = scope.spawn(move || {
+     |                                         ++++
+
+error[E0373]: closure may outlive the current function, but it borrows `child_finish`, which is owned by the current function
+    --> reverie-kvm/src/capture_identity_tests.rs:1659:40
+     |
+1630 |     std::thread::scope(|scope| {
+     |                         ----- has type `&'1 std::thread::Scope<'1, '_>`
+...
+1659 |         let child_worker = scope.spawn(|| {
+     |                                        ^^ may outlive borrowed value `child_finish`
+...
+1674 |                 child_finish.wait();
+     |                 ------------ `child_finish` is borrowed here
+     |
+note: function requires argument type to outlive `'1`
+    --> reverie-kvm/src/capture_identity_tests.rs:1659:28
+     |
+1659 |           let child_worker = scope.spawn(|| {
+     |  ____________________________^
+1660 | |             let mut child_memory = GuestMemory::new(0, 0x1000).unwrap();
+1661 | |             child_memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
+1662 | |             for _ in 0..iterations {
+...    |
+1676 | |         });
+     | |__________^
+help: to force the closure to take ownership of `child_finish` (and any other referenced variables), use the `move` keyword
+     |
+1659 |         let child_worker = scope.spawn(move || {
+     |                                        ++++
+
+error[E0373]: closure may outlive the current function, but it borrows `child_start`, which is owned by the current function
+    --> reverie-kvm/src/capture_identity_tests.rs:1659:40
+     |
+1630 |     std::thread::scope(|scope| {
+     |                         ----- has type `&'1 std::thread::Scope<'1, '_>`
+...
+1659 |         let child_worker = scope.spawn(|| {
+     |                                        ^^ may outlive borrowed value `child_start`
+...
+1663 |                 child_start.wait();
+     |                 ----------- `child_start` is borrowed here
+     |
+note: function requires argument type to outlive `'1`
+    --> reverie-kvm/src/capture_identity_tests.rs:1659:28
+     |
+1659 |           let child_worker = scope.spawn(|| {
+     |  ____________________________^
+1660 | |             let mut child_memory = GuestMemory::new(0, 0x1000).unwrap();
+1661 | |             child_memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
+1662 | |             for _ in 0..iterations {
+...    |
+1676 | |         });
+     | |__________^
+help: to force the closure to take ownership of `child_start` (and any other referenced variables), use the `move` keyword
+     |
+1659 |         let child_worker = scope.spawn(move || {
+     |                                        ++++
+
+error[E0596]: cannot borrow `memory` as mutable, as it is not declared as mutable
+   --> reverie-kvm/src/pipe_fionread_tests.rs:187:5
+    |
+187 |     memory.write(64, &1_i32.to_ne_bytes()).unwrap();
+    |     ^^^^^^ cannot borrow as mutable
+    |
+help: consider changing this to be mutable
+    |
+185 |     let mut memory = GuestMemory::new(0, 16384).unwrap();
+    |         +++
+
+Some errors have detailed explanations: E0373, E0596.
+For more information about an error, try `rustc --explain E0373`.
+warning: `reverie-kvm` (lib test) generated 1 warning
+error: could not compile `reverie-kvm` (lib test) due to 5 previous errors; 1 warning emitted

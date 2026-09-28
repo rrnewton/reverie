@@ -1,0 +1,38 @@
+KVM recovery update 2026-09-22
+
+Prepared locally in the authorized Reverie slot /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922 on branch codex/kvm-pr611-recovery-20260922. Nothing was pushed or published.
+
+Commit: c4854d8eeb054b73780df3e2abade646e86ecbdd
+Parent: dc19eebb94c34a3f8566bb9185c861823f4d3fe2
+Tree: fc2f540ef1f15f00d2f37af7da043dd146e8fe40
+Author/committer: rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+Subject: Isolate captured KVM file operations
+Disclosure: [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Exact reviewed patch: ignored/recovery/capture-output-identity-20260922/fileops-frozen-v4.diff
+SHA-256: 2504a70357b8accb6f0866a67ecd2a13ea8b636d038d127cf5633f74883c5a0e
+Bytes: 58441
+Base: dc19eebb94c34a3f8566bb9185c861823f4d3fe2
+The committed diff was byte-identical to this artifact.
+
+Substance:
+- ftruncate, fallocate, fsync, fdatasync, readahead, sync_file_range, and ioctl now route captured output aliases through capture-owned private pipe descriptions rather than inherited/reused physical fd 1/2.
+- Linux low-word fd/ioctl decoding, O_PATH precedence, and measured pipe errno ordering are preserved.
+- FIONBIO updates virtual open-file status atomically across dup/fork aliases while proc-fd reopens remain independent.
+- Blocking FIONBIO is refused for virtual signalfd before mutating its private eventfd.
+- Metadata-lost private capture carriers refuse FIONBIO, F_SETFL, F_GETPIPE_SZ, and F_SETPIPE_SZ; flags, capacity, and deterministic identity allocation are verified unchanged.
+- Missing capture status is a typed backend failure checked against the authoritative shared table before wait/accept early paths and rechecked after table installation.
+- Captured FIONREAD remains an explicit ENOTTY divergence because capture-buffer occupancy is not modeled.
+
+Evidence on the exact v4 content:
+- Three independent adversarial reviews approved after earlier review rounds found and caused fixes for signalfd FIONBIO, lost atomic updates, metadata-lost carrier mutation, guest-EIO invariant handling, fcntl carrier mutation, and early wait/accept bypasses. No goalpost weakening was found.
+- cargo test -p reverie-kvm --lib: 879/879 pass in 8.38s.
+- cargo test -p reverie-kvm --lib -- --test-threads=1: final rerun 879/879 pass in 36.52s. An earlier unrelated vm::tests::fatal_worker_ro_delayed_waiter_qualifies timing failure passed 5/5 isolated reruns before the clean full rerun.
+- cargo clippy -p reverie-kvm --all-targets -- -D warnings: pass in 5.16s.
+- cargo fmt --all -- --check and git diff --check: pass.
+- captured_file_operations_ignore_reused_supervisor_files_on_kvm: three outer repeats pass. Each run includes native oracle plus direct KVM x2 and CounterTool KVM x2. This proves output/exit/status repeat parity and physical-carrier nonmutation, not L2-log parity.
+- captured_ integration group: 7/7 pass in 2.84s.
+- repair_prctl_required_kvm_is_not_optional anti-skip gate: pass in 0.17s.
+- Forked F_SETFL/FIONBIO atomic race test: 20/20 outer repetitions pass, 2000 coordinated races per run.
+
+Publication remains held behind the documented PR610 prerequisite and independent exact-head approval. PR610 stays read-only; PR611 dependency was not removed or weakened. Next work continues on the highest-impact remaining captured-descriptor host-fd consumer.

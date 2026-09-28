@@ -1,0 +1,13 @@
+Isolate captured KVM socket operations
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Resolve captured stdout and stderr through private carriers for every
+supported socket operation, including accept and serialized receive paths.
+Reject labelled and metadata-lost capture carriers in SCM_RIGHTS before a
+host message can be sent.
+
+Match Linux low-word decoding and socket error/copy ordering, including
+post-consumption address-length validation and recvmmsg input validation.
+Add native and repeated KVM controls that keep unrelated supervisor socket
+options, queues, addresses, and pending connections unchanged.

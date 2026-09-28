@@ -1,0 +1,28 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error: this `match` expression can be replaced with `?`
+     --> reverie-kvm/src/executor.rs:11525:19
+      |
+11525 |       let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+      |  ___________________^
+11526 | |         Ok(host_fd) => host_fd,
+11527 | |         Err(error) => return Err(error),
+11528 | |     };
+      | |_____^ help: try instead: `socket_host_fd(state, args[0] as libc::c_int, capture)?`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#question_mark
+      = note: `-D clippy::question-mark` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::question_mark)]`
+
+error: this block may be rewritten with the `?` operator
+     --> reverie-kvm/src/executor.rs:11533:5
+      |
+11533 | /     if let Err(error) = ensure_host_socket(host_fd) {
+11534 | |         return Err(error);
+11535 | |     }
+      | |_____^ help: replace it with: `ensure_host_socket(host_fd)?;`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#question_mark
+
+error: could not compile `reverie-kvm` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reverie-kvm` (lib test) due to 2 previous errors

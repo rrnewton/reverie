@@ -1,0 +1,381 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/ignored/recovery/capture-output-identity-20260922/socket-frozen-v1.diff	2026-09-22 19:20:52.609803212 -0700
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/ignored/recovery/capture-output-identity-20260922/socket-frozen-v2.diff	2026-09-22 19:24:26.672602573 -0700
+@@ -1,5 +1,5 @@
+ diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+-index 5af2a5bd4875c675c5c3c044b6489228ead2afe5..32961922de695e3c5d20fa8dba41cf725b425888 100644
++index 5af2a5bd4875c675c5c3c044b6489228ead2afe5..2122f32d403ee0f6bfa902188ac57ecfbd275f8a 100644
+ --- a/reverie-kvm/src/executor.rs
+ +++ b/reverie-kvm/src/executor.rs
+ @@ -629,48 +629,48 @@ fn execute_basic_syscall_inner(
+@@ -260,16 +260,13 @@
+      };
+  
+      // Query into fixed host storage before touching guest pointers. Linux gives
+-@@ -11474,30 +11520,24 @@ fn accept_socket(
++@@ -11474,30 +11520,19 @@ fn accept_socket(
+      state: &LoadedStaticElf,
+      args: &[u64; 6],
+      flags: libc::c_int,
+ +    capture: Option<CaptureMetadata>,
+  ) -> Result<std::fs::File, i64> {
+-+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+-+        Ok(host_fd) => host_fd,
+-+        Err(error) => return Err(error),
+-+    };
+++    let host_fd = socket_host_fd(state, args[0] as libc::c_int, capture)?;
+      let allowed_flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+      if flags & !allowed_flags != 0 {
+          return Err(negative_errno(libc::EINVAL));
+@@ -277,9 +274,7 @@
+ -    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+ -        return Err(negative_errno(libc::EBADF));
+ -    };
+-+    if let Err(error) = ensure_host_socket(host_fd) {
+-+        return Err(error);
+-+    }
+++    ensure_host_socket(host_fd)?;
+  
+      // SAFETY: a zeroed sockaddr_storage is valid scratch space for accept4.
+      let mut address =
+@@ -299,7 +294,7 @@
+      let address_pointer = if args[1] == 0 {
+          std::ptr::null_mut()
+      } else {
+-@@ -11526,6 +11566,18 @@ fn accept_socket(
++@@ -11526,6 +11561,18 @@ fn accept_socket(
+      let accepted = unsafe { std::fs::File::from_raw_fd(accepted_fd) };
+  
+      if args[1] != 0 {
+@@ -318,7 +313,7 @@
+          let copy_length = guest_capacity
+              .min(length as usize)
+              .min(std::mem::size_of::<libc::sockaddr_storage>());
+-@@ -11539,10 +11591,6 @@ fn accept_socket(
++@@ -11539,10 +11586,6 @@ fn accept_socket(
+                  return Err(negative_errno(libc::EFAULT));
+              }
+          }
+@@ -329,7 +324,7 @@
+      }
+      Ok(accepted)
+  }
+-@@ -11593,13 +11641,17 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
++@@ -11593,13 +11636,17 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
+  // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+  // TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX connect translation.
+  // TODO-HUMAN-REVIEW(PR-349): Review host-backed AF_INET/AF_INET6 connect translation.
+@@ -353,7 +348,7 @@
+      let length_usize = length as usize;
+      if length_usize < std::mem::size_of::<libc::sa_family_t>()
+          || length_usize > std::mem::size_of::<libc::sockaddr_storage>()
+-@@ -11610,6 +11662,9 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
++@@ -11610,6 +11657,9 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
+      if memory.user().read(args[1], &mut address).is_err() {
+          return negative_errno(libc::EFAULT);
+      }
+@@ -363,7 +358,7 @@
+      let family = libc::sa_family_t::from_ne_bytes(
+          address[..std::mem::size_of::<libc::sa_family_t>()]
+              .try_into()
+-@@ -11651,10 +11706,14 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
++@@ -11651,10 +11701,14 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
+  
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-205): Review host-backed AF_UNIX shutdown semantics.
+@@ -381,7 +376,7 @@
+      let how = args[1] as libc::c_int;
+      if !matches!(how, libc::SHUT_RD | libc::SHUT_WR | libc::SHUT_RDWR) {
+          return negative_errno(libc::EINVAL);
+-@@ -11665,28 +11724,30 @@ fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++@@ -11665,28 +11719,30 @@ fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+  }
+  
+  // TODO-HUMAN-REVIEW(PR-218): Review bounded guest sendto translation and SIGPIPE suppression.
+@@ -428,7 +423,7 @@
+      if address_length as usize > std::mem::size_of::<libc::sockaddr_storage>() {
+          return negative_errno(libc::EINVAL);
+      }
+-@@ -11699,6 +11760,10 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
++@@ -11699,6 +11755,10 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
+      } else {
+          address.as_ptr().cast::<libc::sockaddr>()
+      };
+@@ -439,7 +434,7 @@
+  
+      // SAFETY: the payload and optional address are readable host buffers and
+      // host_fd belongs to the guest descriptor table. MSG_NOSIGNAL keeps a
+-@@ -11721,20 +11786,16 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
++@@ -11721,20 +11781,16 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
+  }
+  
+  // TODO-HUMAN-REVIEW(PR-218): Review bounded recvfrom buffer and peer-address copyback semantics.
+@@ -467,7 +462,7 @@
+          return negative_errno(libc::EFAULT);
+      }
+      let length = requested_length.min(MAX_HOST_IO);
+-@@ -11744,6 +11805,15 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
++@@ -11744,6 +11800,15 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
+      if writable == 0 && requested_length != 0 {
+          return negative_errno(libc::EFAULT);
+      }
+@@ -483,7 +478,7 @@
+      let mut bytes = vec![0; writable];
+  
+      // SAFETY: a zeroed sockaddr_storage is valid scratch space for recvfrom.
+-@@ -11795,6 +11865,10 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
++@@ -11795,6 +11860,10 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
+      }
+  
+      if args[4] != 0 {
+@@ -494,7 +489,7 @@
+          let address_copy_length = guest_address_capacity
+              .min(address_length as usize)
+              .min(std::mem::size_of::<libc::sockaddr_storage>());
+-@@ -11811,10 +11885,6 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
++@@ -11811,10 +11880,6 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6])
+                  return negative_errno(libc::EFAULT);
+              }
+          }
+@@ -505,7 +500,7 @@
+      }
+      result as i64
+  }
+-@@ -11919,7 +11989,7 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
++@@ -11919,7 +11984,7 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
+  fn translate_outgoing_control(
+      control: &mut [u8],
+      state: &LoadedStaticElf,
+@@ -514,7 +509,7 @@
+  ) -> Result<(), i64> {
+      let messages = control_messages(control)?;
+      let mut translations = Vec::new();
+-@@ -11939,19 +12009,26 @@ fn translate_outgoing_control(
++@@ -11939,19 +12004,26 @@ fn translate_outgoing_control(
+          for offset in (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
+          {
+              let guest_fd = read_control_fd(control, offset)?;
+@@ -543,7 +538,7 @@
+              translations.push((offset, host_fd));
+          }
+      }
+-@@ -12433,11 +12510,15 @@ fn sendmsg(
++@@ -12433,11 +12505,15 @@ fn sendmsg(
+      memory: &GuestMemory,
+      state: &LoadedStaticElf,
+      args: &[u64; 6],
+@@ -562,7 +557,7 @@
+      if args[1] == 0 {
+          return negative_errno(libc::EFAULT);
+      }
+-@@ -12513,7 +12594,7 @@ fn sendmsg(
++@@ -12513,7 +12589,7 @@ fn sendmsg(
+      {
+          return negative_errno(libc::EFAULT);
+      }
+@@ -571,7 +566,7 @@
+          return error;
+      }
+  
+-@@ -12586,10 +12667,15 @@ fn recvmsg_with_table(
++@@ -12586,10 +12662,15 @@ fn recvmsg_with_table(
+      state: &mut LoadedStaticElf,
+      args: &[u64; 6],
+      shared: &mut FileTableState,
+@@ -589,7 +584,7 @@
+      let message_address = args[1];
+      if message_address == 0 {
+          return negative_errno(libc::EFAULT);
+-@@ -12796,12 +12882,17 @@ fn recvmsg_with_table(
++@@ -12796,12 +12877,17 @@ fn recvmsg_with_table(
+      received as i64
+  }
+  
+@@ -609,7 +604,7 @@
+  }
+  
+  // AUTONOMOUS-BOT-IMPLEMENTED
+-@@ -12811,15 +12902,27 @@ fn recvmmsg_with_table(
++@@ -12811,15 +12897,27 @@ fn recvmmsg_with_table(
+      state: &mut LoadedStaticElf,
+      args: &[u64; 6],
+      shared: &mut FileTableState,
+@@ -644,7 +639,7 @@
+      }
+  
+      let message_size = std::mem::size_of::<libc::mmsghdr>();
+-@@ -13129,12 +13232,17 @@ fn recvmmsg_with_table(
++@@ -13129,12 +13227,17 @@ fn recvmmsg_with_table(
+      delivered as i64
+  }
+  
+@@ -664,7 +659,7 @@
+  }
+  
+  // General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
+-@@ -16350,6 +16458,25 @@ fn isolated_host_fd(
++@@ -16350,6 +16453,25 @@ fn isolated_host_fd(
+      host_fd(state, guest_fd)
+  }
+  
+@@ -690,7 +685,7 @@
+  // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
+  fn fcntl(
+      memory: &GuestMemory,
+-@@ -29868,6 +29995,127 @@ mod tests {
++@@ -29868,6 +29990,127 @@ mod tests {
+          }
+      }
+  
+@@ -818,7 +813,7 @@
+      #[test]
+      fn unix_seqpacket_socket_autobinds_like_stream_and_dgram() {
+          // socket(AF_UNIX, SOCK_SEQPACKET) must take the identical
+-@@ -29965,6 +30213,7 @@ mod tests {
++@@ -29965,6 +30208,7 @@ mod tests {
+  
+      #[test]
+      fn elf_executor_accepts_unix_listener_connection() {
+@@ -826,7 +821,7 @@
+          const ADDRESS: u64 = 0x100;
+          const PAYLOAD: u64 = 0x300;
+  
+-@@ -29996,7 +30245,14 @@ mod tests {
++@@ -29996,7 +30240,14 @@ mod tests {
+              executor.execute(
+                  &SyscallRequest::new(
+                      libc::SYS_bind as u64,
+@@ -842,7 +837,7 @@
+                  ),
+                  &memory,
+              ),
+-@@ -30004,7 +30260,10 @@ mod tests {
++@@ -30004,7 +30255,10 @@ mod tests {
+          );
+          assert_eq!(
+              executor.execute(
+@@ -854,7 +849,7 @@
+                  &memory,
+              ),
+              0
+-@@ -30021,7 +30280,14 @@ mod tests {
++@@ -30021,7 +30275,14 @@ mod tests {
+              executor.execute(
+                  &SyscallRequest::new(
+                      libc::SYS_connect as u64,
+@@ -870,7 +865,7 @@
+                  ),
+                  &memory,
+              ),
+-@@ -30030,7 +30296,14 @@ mod tests {
++@@ -30030,7 +30291,14 @@ mod tests {
+          let accepted = executor.execute(
+              &SyscallRequest::new(
+                  libc::SYS_accept4 as u64,
+@@ -886,7 +881,7 @@
+              ),
+              &memory,
+          );
+-@@ -30041,7 +30314,14 @@ mod tests {
++@@ -30041,7 +30309,14 @@ mod tests {
+              executor.execute(
+                  &SyscallRequest::new(
+                      libc::SYS_sendto as u64,
+@@ -902,7 +897,7 @@
+                  ),
+                  &memory,
+              ),
+-@@ -30051,7 +30331,7 @@ mod tests {
++@@ -30051,7 +30326,7 @@ mod tests {
+              executor.execute(
+                  &SyscallRequest::new(
+                      libc::SYS_recvfrom as u64,
+@@ -911,7 +906,7 @@
+                  ),
+                  &memory,
+              ),
+-@@ -31885,6 +32165,7 @@ mod tests {
++@@ -31885,6 +32160,7 @@ mod tests {
+  
+      #[test]
+      fn recvmmsg_translates_guest_headers_and_receives_multiple_datagrams() {
+@@ -919,7 +914,7 @@
+          const PAIR_FDS: u64 = 0x100;
+          const SECOND_PAYLOAD: u64 = 0x220;
+          const MESSAGES: u64 = 0x300;
+-@@ -31894,6 +32175,7 @@ mod tests {
++@@ -31894,6 +32170,7 @@ mod tests {
+          const SECOND_BUFFER: u64 = 0x540;
+          const FIRST_CONTROL: u64 = 0x580;
+          const PIPE_RESULT: u64 = 0x600;
+@@ -927,7 +922,7 @@
+  
+          let root = TestDir::new();
+          let mut state = test_state(&root.0);
+-@@ -31917,6 +32199,81 @@ mod tests {
++@@ -31917,6 +32194,81 @@ mod tests {
+              0
+          );
+          let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+@@ -1009,7 +1004,7 @@
+          // Queue the first datagram from the host with one real descriptor, then
+          // queue the second through the guest path. recvmmsg must translate the
+          // first control record without affecting ordinary later messages.
+-@@ -32000,10 +32357,10 @@ mod tests {
++@@ -32000,10 +32352,10 @@ mod tests {
+                  &mut state,
+                  libc::SYS_recvmmsg,
+                  [
+@@ -1023,7 +1018,7 @@
+                      0,
+                      0,
+                  ],
+-@@ -32690,6 +33047,7 @@ mod tests {
++@@ -32690,6 +33042,7 @@ mod tests {
+                      0,
+                  ],
+                  &mut shared,
+@@ -1031,7 +1026,7 @@
+              ),
+              1,
+              "the valid first message commits before the bad later message"
+-@@ -32858,6 +33216,7 @@ mod tests {
++@@ -32858,6 +33211,7 @@ mod tests {
+                      0,
+                  ],
+                  &mut shared,
+@@ -1039,7 +1034,7 @@
+              ),
+              1,
+              "two same-handle rights in one message share authentication, but the next message must consume the syscall-wide budget"
+-@@ -33302,8 +33661,16 @@ mod tests {
++@@ -33302,8 +33656,16 @@ mod tests {
+          // Active output capture makes both standard slots and every duplicate
+          // private. Exercise the real sendmsg translation with capture enabled;
+          // the ordinary syscall helper intentionally passes false.
+@@ -1058,7 +1053,7 @@
+          assert!(stdout_alias >= 0);
+          for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
+              let control = rights_control(&[donated as libc::c_int]);
+-@@ -33315,7 +33682,7 @@ mod tests {
++@@ -33315,7 +33677,7 @@ mod tests {
+                      &memory,
+                      &state,
+                      &[socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+@@ -1067,7 +1062,7 @@
+                  ),
+                  negative_errno(libc::ENOSYS),
+                  "captured output alias {donated} escaped through SCM_RIGHTS",
+-@@ -36454,7 +36821,7 @@ mod tests {
++@@ -36454,7 +36816,7 @@ mod tests {
+              let mut control = rights_control(&rights);
+              let unchanged = control.clone();
+              assert_eq!(
+@@ -1076,7 +1071,7 @@
+                  Err(negative_errno(libc::ENOSYS)),
+              );
+              assert_eq!(
+-@@ -40031,7 +40398,7 @@ mod tests {
++@@ -40031,7 +40393,7 @@ mod tests {
+              );
+              let mut control = rights_control(&[fd as i32]);
+              assert_eq!(

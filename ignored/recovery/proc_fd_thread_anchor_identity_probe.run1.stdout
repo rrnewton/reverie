@@ -1,0 +1,18 @@
+identity tgid=1669815 leader_tid=1669815 worker_tid=1669816
+open anchor=/proc/self/fd fd=3 errno=0 (Success)
+open anchor=/proc/thread-self/fd fd=4 errno=0 (Success)
+readlink label=worker-opened-self path=/proc/self/fd/3 rc=16 errno=0 destination=/proc/1669815/fd
+readlink label=worker-opened-thread-self path=/proc/self/fd/4 rc=29 errno=0 destination=/proc/1669815/task/1669816/fd
+fstat label=worker-opened-self fd=3 rc=0 errno=0 dev=22 ino=3187808439 mode=040500
+fstat label=worker-opened-thread-self fd=4 rc=0 errno=0 dev=22 ino=3187808442 mode=040500
+stat label=canonical-process-fd path=/proc/1669815/fd rc=0 errno=0 dev=22 ino=3187808439 mode=040500
+stat label=canonical-worker-fd path=/proc/1669815/task/1669816/fd rc=0 errno=0 dev=22 ino=3187808442 mode=040500
+stat label=leader-thread-self path=/proc/thread-self/fd rc=0 errno=0 dev=22 ino=3203245169 mode=040500
+worker_stat label=/proc/self/fd errno=0 dev=22 ino=3187808439
+worker_stat label=/proc/thread-self/fd errno=0 dev=22 ino=3187808442
+compare label=self-anchor-vs-canonical-process dev_equal=1 ino_equal=1 same_identity=1
+compare label=self-anchor-vs-worker-direct-self dev_equal=1 ino_equal=1 same_identity=1
+compare label=thread-anchor-vs-canonical-worker dev_equal=1 ino_equal=1 same_identity=1
+compare label=thread-anchor-vs-worker-direct-thread-self dev_equal=1 ino_equal=1 same_identity=1
+compare label=thread-anchor-vs-leader-thread-self dev_equal=1 ino_equal=0 same_identity=0
+compare label=self-anchor-vs-thread-anchor dev_equal=1 ino_equal=0 same_identity=0

@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.01s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 9 tests
+test executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement ... ok
+test executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias ... FAILED
+test executor::tests::captured_output_fstat_is_synthetic_and_stable ... ok
+test executor::tests::captured_output_identity_is_deterministic_and_preserves_proc_symlinks ... ok
+test executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias ... ok
+test executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink ... ok
+test executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout ... ok
+test executor::tests::forked_executors_share_captured_output_order ... ok
+test executor::tests::syncfs_models_captured_output_aliases_as_pipes_across_lifecycle ... ok
+
+failures:
+
+---- executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias stdout ----
+
+thread 'executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias' (1407877) panicked at reverie-kvm/src/capture_identity_tests.rs:308:5:
+assertion failed: path_only >= 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 868 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

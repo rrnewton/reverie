@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 19 tests
+test executor::tests::captured_output_fdinfo_is_synthetic_and_observes_the_current_alias ... ok
+test executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit ... ok
+test executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers ... ok
+test executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable ... ok
+test executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec ... ok
+test executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions ... ok
+test executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime ... ok
+test executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags ... ok
+test executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state ... ok
+test executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts ... ok
+test executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields ... ok
+test executor::tests::fdinfo_socket_ofd_lock_uses_synthetic_object_and_mount_identity ... ok
+test executor::tests::synthetic_proc_fdinfo_carrier_seals_and_pwrite_match_native ... ok
+test executor::tests::synthetic_proc_fdinfo_legacy_create_directory_is_exact ... ok
+test executor::tests::synthetic_proc_fdinfo_missing_closed_and_malformed_targets_remain_enoent ... ok
+test executor::tests::synthetic_proc_fdinfo_procfd_combined_flags_precede_reopen_refusal ... ok
+test executor::tests::synthetic_proc_fdinfo_tmpfile_access_precedes_directory ... ok
+test executor::tests::synthetic_proc_fdinfo_unsupported_targets_use_current_policy_after_existence ... ok
+test executor::tests::synthetic_proc_fdinfo_unsupported_targets_use_injected_legacy_policy_after_existence ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 858 filtered out; finished in 0.06s
+

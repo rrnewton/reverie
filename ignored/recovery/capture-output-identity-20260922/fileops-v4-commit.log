@@ -1,0 +1,2 @@
+[codex/kvm-pr611-recovery-20260922 c4854d8e] Isolate captured KVM file operations
+ 5 files changed, 1029 insertions(+), 79 deletions(-)

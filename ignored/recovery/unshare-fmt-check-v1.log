@@ -1,0 +1,239 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/elf.rs:346:
+         dumpable: bool,
+         capability_permitted: u64,
+         signals: &SharedThreadSignalState,
+-        file_table: &std::sync::Arc<
+-            std::sync::Mutex<crate::executor::FileTableState>,
+-        >,
++        file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+     ) -> TaskLifecycleState {
+         let generation = self.register(tid, tgid, pgid, dumpable, capability_permitted);
+         self.signal_targets.insert(tid, signals.downgrade());
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/elf.rs:355:
+-        self.file_tables.insert(
+-            tid,
+-            (generation, std::sync::Arc::downgrade(file_table)),
+-        );
++        self.file_tables
++            .insert(tid, (generation, std::sync::Arc::downgrade(file_table)));
+         self.tasks[&tid]
+     }
+ 
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/elf.rs:367:
+         dumpable: bool,
+         capability_permitted: u64,
+         signals: &SharedThreadSignalState,
+-        file_table: &std::sync::Arc<
+-            std::sync::Mutex<crate::executor::FileTableState>,
+-        >,
++        file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+     ) -> TaskLifecycleState {
+         let generation = self.ensure_registered(tid, tgid, pgid, dumpable, capability_permitted);
+         self.signal_targets.insert(tid, signals.downgrade());
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/elf.rs:376:
+-        self.file_tables.insert(
+-            tid,
+-            (generation, std::sync::Arc::downgrade(file_table)),
+-        );
++        self.file_tables
++            .insert(tid, (generation, std::sync::Arc::downgrade(file_table)));
+         self.tasks[&tid]
+     }
+ 
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/elf.rs:2261:
+             crate::executor::FileTableState::default(),
+         ));
+         let mut lifecycle = TaskLifecycleTable::default();
+-        let first = lifecycle.register_with_bindings(
+-            7,
+-            7,
+-            7,
+-            true,
+-            0,
+-            &signals,
+-            &first_table,
+-        );
++        let first = lifecycle.register_with_bindings(7, 7, 7, true, 0, &signals, &first_table);
+         assert!(lifecycle.signal_target(7).is_some());
+         assert!(std::sync::Arc::ptr_eq(
+             &lifecycle.file_table(7, first.generation).unwrap(),
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:493:
+     state.mmap_base = cursors.mmap_base;
+     state.mmap_next = cursors.mmap_next;
+     state.mmap_limit = cursors.mmap_limit;
+-    let action =
+-        execute_basic_syscall_inner(
+-            memory,
+-            state,
+-            request,
+-            current_user_stack_pointer,
+-            output,
+-            signal_file_binding,
+-        );
++    let action = execute_basic_syscall_inner(
++        memory,
++        state,
++        request,
++        current_user_stack_pointer,
++        output,
++        signal_file_binding,
++    );
+     owner.set_allocation_cursors(AllocationCursors::from_elf(state));
+     action
+ }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:1925:
+     lifecycle: &Arc<Mutex<crate::elf::TaskLifecycleTable>>,
+     tid: i32,
+     generation: u64,
+-    mut validate: impl FnMut(
+-        &FileTableState,
+-        &crate::elf::TaskLifecycleTable,
+-    ) -> Result<(), i64>,
++    mut validate: impl FnMut(&FileTableState, &crate::elf::TaskLifecycleTable) -> Result<(), i64>,
+     snapshot: impl FnOnce(&FileTableState) -> Result<T, i64>,
+ ) -> Result<T, i64> {
+     let mut snapshot = Some(snapshot);
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:5690:
+         memory: &GuestMemory,
+     ) -> crate::Result<Option<i64>> {
+         let (guest_dirfd, path_address, raw_flags) = match request.number() {
+-            number if number == libc::SYS_open as u64 => (
+-                libc::AT_FDCWD,
+-                request.args()[0],
+-                request.args()[1],
+-            ),
++            number if number == libc::SYS_open as u64 => {
++                (libc::AT_FDCWD, request.args()[0], request.args()[1])
++            }
+             number if number == libc::SYS_openat as u64 => (
+                 request.args()[0] as libc::c_int,
+                 request.args()[1],
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:5773:
+             }
+         } else {
+             let source = if !path.starts_with(b"/") {
+-                if let Some(description) = self
+-                    .state
+-                    .proc_fd_directories
+-                    .get(&guest_dirfd)
+-                    .cloned()
++                if let Some(description) = self.state.proc_fd_directories.get(&guest_dirfd).cloned()
+                 {
+                     match proc_fd_relative_path_suffix(&path) {
+                         Ok(ProcFdPathSuffix::Target(guest_fd)) => {
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:9343:
+         source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode));
+     let path_only = flags & libc::O_PATH as u64 != 0;
+     let create_exclusive = !path_only
+-        && flags & (libc::O_CREAT | libc::O_EXCL) as u64
+-            == (libc::O_CREAT | libc::O_EXCL) as u64;
++        && flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64;
+     if regular_proc
+         && (flags & (libc::O_DIRECTORY | libc::O_NOFOLLOW) as u64 != 0 || create_exclusive)
+     {
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:9369:
+     if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
+         return Err(negative_errno(libc::EINVAL));
+     }
+-    if flags & (libc::O_PATH | libc::O_NOFOLLOW) as u64
+-        == (libc::O_PATH | libc::O_NOFOLLOW) as u64
++    if flags & (libc::O_PATH | libc::O_NOFOLLOW) as u64 == (libc::O_PATH | libc::O_NOFOLLOW) as u64
+     {
+         return Err(negative_errno(libc::ELOOP));
+     }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:15100:
+         let stat = synthetic_guest_fd_symlink_statx(metadata.guest_fd);
+         return write_struct(memory, args[4], &stat);
+     }
+-    let descriptor = guest_path.as_ref().map(|metadata| metadata.guest_fd).or_else(|| {
+-        (path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD)
+-            .then_some(args[0] as libc::c_int)
+-    });
++    let descriptor = guest_path
++        .as_ref()
++        .map(|metadata| metadata.guest_fd)
++        .or_else(|| {
++            (path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD)
++                .then_some(args[0] as libc::c_int)
++        });
+     if let Some(metadata) = guest_path.as_ref()
+         && let Some(capture) = capture
+         && let Some(alias) = metadata.output_alias
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:15537:
+     captured_fifo_access_result_host(host_fd, mode, flags)
+ }
+ 
+-fn captured_fifo_access_result_host(
+-    host_fd: RawFd,
+-    mode: libc::c_int,
+-    flags: libc::c_int,
+-) -> i64 {
++fn captured_fifo_access_result_host(host_fd: RawFd, mode: libc::c_int, flags: libc::c_int) -> i64 {
+     let empty_path = b"\0";
+     let host_flags = libc::AT_EMPTY_PATH | (flags & (libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW));
+     // SAFETY: empty_path is terminated and host_fd is the private capture pipe
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:22820:
+             );
+             assert_eq!(
+                 worker.execute(
+-                    &SyscallRequest::new(
+-                        libc::SYS_statfs as u64,
+-                        [0x100, STAT, 0, 0, 0, 0],
+-                    ),
++                    &SyscallRequest::new(libc::SYS_statfs as u64, [0x100, STAT, 0, 0, 0, 0],),
+                     &memory,
+                 ),
+                 0
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/process_signal_publication.rs:2037:
+                 &mut leader,
+                 &memory,
+                 libc::SYS_close_range,
+-                [u32::MAX as u64, u32::MAX as u64, super::super::CLOSE_RANGE_UNSHARE as u64, 0, 0, 0],
++                [
++                    u32::MAX as u64,
++                    u32::MAX as u64,
++                    super::super::CLOSE_RANGE_UNSHARE as u64,
++                    0,
++                    0,
++                    0
++                ],
+             ),
+             0
+         );
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/process_signal_publication.rs:2060:
+         let publish_control = leader.signal_registry.control();
+         let old_guard = old_table.lock().unwrap();
+         let baseline_owners = Arc::strong_count(&old_table);
+-        let publisher = std::thread::spawn(move || {
+-            publish_control.publish_alarm(id, alarm(id))
+-        });
++        let publisher = std::thread::spawn(move || publish_control.publish_alarm(id, alarm(id)));
+         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+         while Arc::strong_count(&old_table) == baseline_owners {
+             assert!(
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/process_signal_publication.rs:2073:
+         }
+ 
+         let signal_fd = signalfd(&mut leader, &mut memory);
+-        assert_eq!(signal_fd, old_fd as i32, "signalfd must reuse fd 3 in the detached table");
++        assert_eq!(
++            signal_fd, old_fd as i32,
++            "signalfd must reuse fd 3 in the detached table"
++        );
+         drop(old_guard);
+         assert_eq!(
+             publisher.join().unwrap(),
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/process_signal_publication.rs:2100:
+         );
+         drop(process);
+ 
+-        receipt(leader.signal_registry.control().publish_alarm(id, alarm(id)));
++        receipt(
++            leader
++                .signal_registry
++                .control()
++                .publish_alarm(id, alarm(id)),
++        );
+         assert!(ready(&leader, signal_fd));
+         let old = old_table.lock().unwrap();
+         let mut poll = libc::pollfd {

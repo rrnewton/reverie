@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 3 tests
+test executor::tests::chdir_and_fchdir_update_working_directory ... ok
+test executor::tests::fchdir_follows_open_directory_descriptor ... ok
+test executor::tests::fchdir_rejects_nondirectory_before_fallible_reopen ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 879 filtered out; finished in 0.00s
+

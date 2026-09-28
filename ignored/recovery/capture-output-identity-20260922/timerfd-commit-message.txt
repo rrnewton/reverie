@@ -1,0 +1,11 @@
+Isolate captured KVM timer controls
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Route timerfd controls on captured output descriptors through private
+capture carriers instead of supervisor fd 1 or 2. Preserve Linux low-word
+ABI decoding and timerfd copyin, validation, mutation, and copyout order.
+
+Cover direct, duplicated, proc-reopened, and O_PATH aliases with native,
+direct KVM, and CounterTool output/exit/status repeat-parity checks while
+asserting that physical supervisor timerfds remain unchanged.

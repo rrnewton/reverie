@@ -1,0 +1,28 @@
+Stabilize captured KVM pipefs metadata
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Route statfs and fstatfs for captured stdout and stderr through their private
+pipe keepers instead of the supervisor's inherited descriptors. This preserves
+the synthetic pipe model when the invoking harness uses regular files or has
+closed its standard descriptors, while retaining existing deterministic fsid
+and capacity normalization.
+
+Add native-oracle, regular-carrier, ordinary-file, alias, proc-fd, fork,
+copyout-error, direct, Tool, repeat, and required-KVM anti-skip coverage.
+
+Task: kvm-lane-to-full-determinism-and-parity
+Task: kvm_backend_emits_no
+
+Validation:
+- cargo fmt --all -- --check
+- cargo test --locked -p reverie-kvm --lib captured_output: 9 passed
+- cargo test --locked -p reverie-kvm --lib: 877 passed
+- cargo test --locked -p reverie-kvm --lib -- --test-threads=1: 877 passed
+- REVERIE_REQUIRE_KVM=1 cargo test --locked -p reverie-kvm --test static_elf captured_output_statfs_matches_native_and_is_repeatable_on_kvm -- --exact --nocapture: 3 outer runs passed
+- cargo test --locked -p reverie-kvm --test static_elf proc_root_received_filesystem_stat_refusal -- --exact --nocapture: passed
+- cargo test --locked -p reverie-kvm --test static_elf repair_prctl_required_kvm_is_not_optional -- --exact --nocapture: passed
+- cargo clippy --locked -p reverie-kvm --lib --tests -- -D warnings
+
+Three adversarial reviews approved exact diff
+225c86a9678816ee62e4b0bebb4aff1bcf848c7da082475a68d732c50b0132e2.
