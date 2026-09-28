@@ -224,11 +224,12 @@ fn notify_parent(pid: Pid) {
 /// A pending SIGKILL is not enough: the killed thread leaves its ptrace stop
 /// and, with PTRACE_O_TRACEEXIT, stops again at PTRACE_EVENT_EXIT (measured
 /// on this host's kernel), with the entry registers. A ptrace request the
-/// tracer makes in between fails with ESRCH, one made after it succeeds, so
-/// the parked call would race the thread's exit under either backend. The
+/// tracer makes in between fails with ESRCH, one made after it succeeds. The
 /// kill has taken effect once the thread is a zombie or gone, or is in a
 /// tracing stop again with its private SIGKILL dequeued (the process-wide
-/// bit stays set until the process is reaped).
+/// bit stays set until the process is reaped). A Tool handler parked on a
+/// SIGKILL does not return after this (see its caller): the exit then races
+/// the handler inside the tracer, whatever this function observes.
 ///
 /// Each field is a separate read of `/proc/<tid>/status`, so the reads are
 /// ordered to be sound across the gaps: the process-wide bit first (the kill
@@ -237,9 +238,7 @@ fn notify_parent(pid: Pid) {
 /// then the state (a tracing stop now must be the exit stop). Reading the
 /// state first, as a single read of the file also does, can pair the old
 /// stop's `t` with the dequeued bits of a thread that is still running to its
-/// exit stop, and the parked call then races the exit again; measured as a
-/// final-resume record present in one backend's run and absent in the
-/// other's, in either direction, in 2 of 25 runs of the P2 subset.
+/// exit stop.
 fn signal_arrived(tid: Pid, signal: i32) -> bool {
     let state = proc_status_field(tid, "State:");
     if state
@@ -413,6 +412,20 @@ impl Tool for P2Tool {
                 let park = ((regs.r9 >> TOOL_PARK_SHIFT) & 0xff) as i32;
                 if park != 0 {
                     park_for(pid, tid, park).await;
+                }
+                if park == libc::SIGKILL {
+                    // The killed thread is at its PTRACE_EVENT_EXIT stop.
+                    // The task's driver (`drive_ordinary`) selects, biased
+                    // towards the exit, between that exit and the run loop
+                    // holding this handler, so whether the rest of the
+                    // handler and its final resume ever run depends only on
+                    // whether the tracer's waiter has reported the exit stop
+                    // by the time this future is polled again. Measured
+                    // under both backends, in either direction: 1 of 60 and
+                    // 3 of 70 runs of the P2 subset recorded that resume in
+                    // one backend's run and not the other's. Stay parked, so
+                    // the exit always wins, as it does in every other run.
+                    return std::future::pending().await;
                 }
             } else if regs.r9 & NOTIFY_AGAIN != 0
                 && NOTIFIED.lock().unwrap().insert((tid.as_raw(), sequence))
