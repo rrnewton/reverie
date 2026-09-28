@@ -589,7 +589,13 @@ impl Stopped {
     ///
     /// On the capability for a published exit stop, ESRCH also retires the
     /// statuses queued before that exit stop (see
-    /// [`Stopped::retire_statuses_before_exit_stop`]).
+    /// [`Stopped::retire_statuses_before_exit_stop`]). That relies on the
+    /// same assumption as the mapping to `Died` above: every ptrace request
+    /// for this tracee comes from its one tracer thread, so reason (2), which
+    /// the kernel also reports to a thread that is not the tracer, does not
+    /// apply. The kernel also returns ESRCH when it cannot freeze the stop
+    /// because a fatal signal is pending; the tracee is then being killed out
+    /// of the exit stop, so the queued stops ahead of it are still dead.
     fn map_err(&self, err: Errno) -> Error {
         if err == Errno::ESRCH {
             self.retire_statuses_before_exit_stop();

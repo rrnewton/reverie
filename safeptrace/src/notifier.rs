@@ -3332,6 +3332,15 @@ impl TerminalCleanup {
     pub unsafe fn revoke_owned_exit_stop(&self) -> Result<(), Errno> {
         let event = self.event.event();
         event.prepare_exit_capability_for_cleanup(true)?;
+        // Not keyed on an exit epoch, unlike the paths of a marked Stopped.
+        // The key stops a capability from an earlier epoch from changing the
+        // FIFO that a later exit stop's owner consumes. Here the caller owns
+        // this generation exclusively and cleanup consumes every queued status
+        // from now on, so no other owner exists. The recorded prefix holds only
+        // stops reported before the latest published exit stop, each of which
+        // the tracee had left; an Exec after that exit stop is queued behind
+        // it, outside the prefix, and the lifecycle guard in
+        // `retire_before_exit` still keeps any prefix holding one.
         event.status.lock().retire_before_exit();
         Ok(())
     }
