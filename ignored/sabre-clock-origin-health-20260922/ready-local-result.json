@@ -1,0 +1,63 @@
+{
+  "branch": "codex/sabre-clock-origin-health-20260922",
+  "cleanup": [
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "sabre-origin-build-20260922-v3.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "sabre-origin-build-20260922-v4.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "sabre-finalizer-repair-build-20260922-v1.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "sabre-finalizer-repair-build-20260922-v2.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "sabre-finalizer-rust-controls-20260922-v4.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "safehermit-20260922T172948Z-2649553.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "safehermit-20260922T173518Z-3323524.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "safehermit-20260922T173714Z-3516946.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "safehermit-20260922T174403Z-4134388.service"
+    },
+    {
+      "native_exit": 0,
+      "properties": "ActiveState=inactive\nMainPID=0\nControlGroup=\n",
+      "unit": "safehermit-20260922T174944Z-391638.service"
+    }
+  ],
+  "delivery": "local committed candidate; push refused by GitHub primary email unverified; no PR or landing",
+  "head": "f3be94e21627667b58ea1f1b52af8db01483c28b",
+  "patch_sha256": "1e2f1f44f1141e9d4a01395ed68f86a9a3a3ed4ad9de45452b89d1ba313e285e",
+  "pr_body_sha256": "c19ea3399de4dfb87e8c7c3d48e33db04e2581202657642337f6e0e4ee5a3b68",
+  "recorded_at": "2026-09-22T17:56:54.222149+00:00",
+  "staged_diff": "",
+  "tracked_status": "",
+  "untracked_evidence_only": "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922"
+}

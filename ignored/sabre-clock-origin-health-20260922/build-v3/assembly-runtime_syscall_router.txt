@@ -1,0 +1,202 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922/sabre:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+Disassembly of section .plt:
+
+Disassembly of section .text:
+
+000000000000db50 <runtime_syscall_router>:
+    db50:	41 57                	push   %r15
+    db52:	41 56                	push   %r14
+    db54:	49 89 fe             	mov    %rdi,%r14
+    db57:	41 55                	push   %r13
+    db59:	49 89 cd             	mov    %rcx,%r13
+    db5c:	41 54                	push   %r12
+    db5e:	49 89 d4             	mov    %rdx,%r12
+    db61:	55                   	push   %rbp
+    db62:	48 89 f5             	mov    %rsi,%rbp
+    db65:	53                   	push   %rbx
+    db66:	4c 89 cb             	mov    %r9,%rbx
+    db69:	48 83 ec 28          	sub    $0x28,%rsp
+    db6d:	48 81 ff e4 00 00 00 	cmp    $0xe4,%rdi
+    db74:	48 8b 15 3d 38 01 00 	mov    0x1383d(%rip),%rdx        # 213b8 <calling_from_plugin>
+    db7b:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+    db80:	0f 94 c1             	sete   %cl
+    db83:	48 83 fe 01          	cmp    $0x1,%rsi
+    db87:	4c 89 44 24 08       	mov    %r8,0x8(%rsp)
+    db8c:	4c 8b 7c 24 68       	mov    0x68(%rsp),%r15
+    db91:	48 89 44 24 10       	mov    %rax,0x10(%rsp)
+    db96:	0f 94 c0             	sete   %al
+    db99:	84 c1                	test   %al,%cl
+    db9b:	75 06                	jne    dba3 <runtime_syscall_router+0x53>
+    db9d:	48 83 ff 1c          	cmp    $0x1c,%rdi
+    dba1:	75 73                	jne    dc16 <runtime_syscall_router+0xc6>
+    dba3:	48 8b 0d 5e db 00 00 	mov    0xdb5e(%rip),%rcx        # 1b708 <sbr_bootstrap_frame_layout_v1+0x28>
+    dbaa:	41 b8 ff ff ff ff    	mov    $0xffffffff,%r8d
+    dbb0:	4c 01 f9             	add    %r15,%rcx
+    dbb3:	48 85 d2             	test   %rdx,%rdx
+    dbb6:	74 10                	je     dbc8 <runtime_syscall_router+0x78>
+    dbb8:	48 89 4c 24 18       	mov    %rcx,0x18(%rsp)
+    dbbd:	ff d2                	call   *%rdx
+    dbbf:	48 8b 4c 24 18       	mov    0x18(%rsp),%rcx
+    dbc4:	44 0f b6 c0          	movzbl %al,%r8d
+    dbc8:	4c 8b 09             	mov    (%rcx),%r9
+    dbcb:	b9 01 00 00 00       	mov    $0x1,%ecx
+    dbd0:	87 0d 32 bd 01 00    	xchg   %ecx,0x1bd32(%rip)        # 29908 <entered.4>
+    dbd6:	48 8b 15 db 37 01 00 	mov    0x137db(%rip),%rdx        # 213b8 <calling_from_plugin>
+    dbdd:	85 c9                	test   %ecx,%ecx
+    dbdf:	75 35                	jne    dc16 <runtime_syscall_router+0xc6>
+    dbe1:	83 3d 1c bd 01 00 7f 	cmpl   $0x7f,0x1bd1c(%rip)        # 29904 <records.3>
+    dbe8:	0f 87 a2 01 00 00    	ja     dd90 <runtime_syscall_router+0x240>
+    dbee:	48 8b 05 f3 da 00 00 	mov    0xdaf3(%rip),%rax        # 1b6e8 <sbr_bootstrap_frame_layout_v1+0x8>
+    dbf5:	4c 89 ca             	mov    %r9,%rdx
+    dbf8:	4c 89 f6             	mov    %r14,%rsi
+    dbfb:	48 8d 3d fd d6 00 00 	lea    0xd6fd(%rip),%rdi        # 1b2ff <message.0+0x6ff>
+    dc02:	49 8d 8c 07 80 00 00 	lea    0x80(%r15,%rax,1),%rcx
+    dc09:	00 
+    dc0a:	e8 e1 eb ff ff       	call   c7f0 <origin_diagnostic.part.0>
+    dc0f:	48 8b 15 a2 37 01 00 	mov    0x137a2(%rip),%rdx        # 213b8 <calling_from_plugin>
+    dc16:	48 85 d2             	test   %rdx,%rdx
+    dc19:	74 65                	je     dc80 <runtime_syscall_router+0x130>
+    dc1b:	ff d2                	call   *%rdx
+    dc1d:	84 c0                	test   %al,%al
+    dc1f:	0f 85 81 00 00 00    	jne    dca6 <runtime_syscall_router+0x156>
+    dc25:	ff 15 85 37 01 00    	call   *0x13785(%rip)        # 213b0 <enter_plugin>
+    dc2b:	49 81 fe 9e 00 00 00 	cmp    $0x9e,%r14
+    dc32:	75 0d                	jne    dc41 <runtime_syscall_router+0xf1>
+    dc34:	48 81 fd 02 10 00 00 	cmp    $0x1002,%rbp
+    dc3b:	0f 84 3f 01 00 00    	je     dd80 <runtime_syscall_router+0x230>
+    dc41:	41 57                	push   %r15
+    dc43:	4c 89 e2             	mov    %r12,%rdx
+    dc46:	49 89 d9             	mov    %rbx,%r9
+    dc49:	4c 89 e9             	mov    %r13,%rcx
+    dc4c:	ff 74 24 18          	push   0x18(%rsp)
+    dc50:	48 89 ee             	mov    %rbp,%rsi
+    dc53:	4c 8b 44 24 18       	mov    0x18(%rsp),%r8
+    dc58:	4c 89 f7             	mov    %r14,%rdi
+    dc5b:	ff 15 67 37 01 00    	call   *0x13767(%rip)        # 213c8 <plugin_sc_handler>
+    dc61:	49 89 c4             	mov    %rax,%r12
+    dc64:	58                   	pop    %rax
+    dc65:	5a                   	pop    %rdx
+    dc66:	ff 15 3c 37 01 00    	call   *0x1373c(%rip)        # 213a8 <exit_plugin>
+    dc6c:	48 83 c4 28          	add    $0x28,%rsp
+    dc70:	4c 89 e0             	mov    %r12,%rax
+    dc73:	5b                   	pop    %rbx
+    dc74:	5d                   	pop    %rbp
+    dc75:	41 5c                	pop    %r12
+    dc77:	41 5d                	pop    %r13
+    dc79:	41 5e                	pop    %r14
+    dc7b:	41 5f                	pop    %r15
+    dc7d:	c3                   	ret    
+    dc7e:	66 90                	xchg   %ax,%ax
+    dc80:	e8 9b d0 ff ff       	call   ad20 <sbr_bootstrap_enabled>
+    dc85:	49 81 fe 3e 01 00 00 	cmp    $0x13e,%r14
+    dc8c:	75 08                	jne    dc96 <runtime_syscall_router+0x146>
+    dc8e:	84 c0                	test   %al,%al
+    dc90:	0f 85 1a 01 00 00    	jne    ddb0 <runtime_syscall_router+0x260>
+    dc96:	48 8b 15 1b 37 01 00 	mov    0x1371b(%rip),%rdx        # 213b8 <calling_from_plugin>
+    dc9d:	48 85 d2             	test   %rdx,%rdx
+    dca0:	0f 85 75 ff ff ff    	jne    dc1b <runtime_syscall_router+0xcb>
+    dca6:	49 83 fe 38          	cmp    $0x38,%r14
+    dcaa:	75 09                	jne    dcb5 <runtime_syscall_router+0x165>
+    dcac:	4d 85 e4             	test   %r12,%r12
+    dcaf:	0f 85 93 00 00 00    	jne    dd48 <runtime_syscall_router+0x1f8>
+    dcb5:	49 81 fe b3 01 00 00 	cmp    $0x1b3,%r14
+    dcbc:	74 4a                	je     dd08 <runtime_syscall_router+0x1b8>
+    dcbe:	49 83 fe 3b          	cmp    $0x3b,%r14
+    dcc2:	0f 84 07 01 00 00    	je     ddcf <runtime_syscall_router+0x27f>
+    dcc8:	49 83 fe 3a          	cmp    $0x3a,%r14
+    dccc:	0f 84 1c 01 00 00    	je     ddee <runtime_syscall_router+0x29e>
+    dcd2:	48 8b 44 24 10       	mov    0x10(%rsp),%rax
+    dcd7:	4c 8b 44 24 08       	mov    0x8(%rsp),%r8
+    dcdc:	49 89 d9             	mov    %rbx,%r9
+    dcdf:	4c 89 e9             	mov    %r13,%rcx
+    dce2:	4c 89 e2             	mov    %r12,%rdx
+    dce5:	48 89 ee             	mov    %rbp,%rsi
+    dce8:	4c 89 f7             	mov    %r14,%rdi
+    dceb:	48 89 44 24 60       	mov    %rax,0x60(%rsp)
+    dcf0:	48 83 c4 28          	add    $0x28,%rsp
+    dcf4:	5b                   	pop    %rbx
+    dcf5:	5d                   	pop    %rbp
+    dcf6:	41 5c                	pop    %r12
+    dcf8:	41 5d                	pop    %r13
+    dcfa:	41 5e                	pop    %r14
+    dcfc:	41 5f                	pop    %r15
+    dcfe:	e9 30 a9 00 00       	jmp    18633 <real_syscall>
+    dd03:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+    dd08:	48 83 7d 28 00       	cmpq   $0x0,0x28(%rbp)
+    dd0d:	74 c3                	je     dcd2 <runtime_syscall_router+0x182>
+    dd0f:	4c 89 ff             	mov    %r15,%rdi
+    dd12:	e8 a9 2b 00 00       	call   108c0 <get_syscall_return_address>
+    dd17:	49 89 d8             	mov    %rbx,%r8
+    dd1a:	4c 89 ea             	mov    %r13,%rdx
+    dd1d:	4c 89 e6             	mov    %r12,%rsi
+    dd20:	48 c7 44 24 60 00 00 	movq   $0x0,0x60(%rsp)
+    dd27:	00 00 
+    dd29:	48 83 c4 28          	add    $0x28,%rsp
+    dd2d:	48 89 ef             	mov    %rbp,%rdi
+    dd30:	49 89 c1             	mov    %rax,%r9
+    dd33:	5b                   	pop    %rbx
+    dd34:	31 c9                	xor    %ecx,%ecx
+    dd36:	5d                   	pop    %rbp
+    dd37:	41 5c                	pop    %r12
+    dd39:	41 5d                	pop    %r13
+    dd3b:	41 5e                	pop    %r14
+    dd3d:	41 5f                	pop    %r15
+    dd3f:	e9 2a a8 00 00       	jmp    1856e <clone3_syscall>
+    dd44:	0f 1f 40 00          	nopl   0x0(%rax)
+    dd48:	4c 89 ff             	mov    %r15,%rdi
+    dd4b:	e8 70 2b 00 00       	call   108c0 <get_syscall_return_address>
+    dd50:	48 8b 4c 24 08       	mov    0x8(%rsp),%rcx
+    dd55:	49 89 d8             	mov    %rbx,%r8
+    dd58:	4c 89 ea             	mov    %r13,%rdx
+    dd5b:	48 c7 44 24 60 00 00 	movq   $0x0,0x60(%rsp)
+    dd62:	00 00 
+    dd64:	48 83 c4 28          	add    $0x28,%rsp
+    dd68:	4c 89 e6             	mov    %r12,%rsi
+    dd6b:	48 89 ef             	mov    %rbp,%rdi
+    dd6e:	5b                   	pop    %rbx
+    dd6f:	49 89 c1             	mov    %rax,%r9
+    dd72:	5d                   	pop    %rbp
+    dd73:	41 5c                	pop    %r12
+    dd75:	41 5d                	pop    %r13
+    dd77:	41 5e                	pop    %r14
+    dd79:	41 5f                	pop    %r15
+    dd7b:	e9 4d a8 00 00       	jmp    185cd <clone_syscall>
+    dd80:	4c 89 e7             	mov    %r12,%rdi
+    dd83:	e8 e8 fb ff ff       	call   d970 <arch_set_fs_handler>
+    dd88:	49 89 c4             	mov    %rax,%r12
+    dd8b:	e9 d6 fe ff ff       	jmp    dc66 <runtime_syscall_router+0x116>
+    dd90:	c7 05 6e bb 01 00 00 	movl   $0x0,0x1bb6e(%rip)        # 29908 <entered.4>
+    dd97:	00 00 00 
+    dd9a:	48 8b 15 17 36 01 00 	mov    0x13617(%rip),%rdx        # 213b8 <calling_from_plugin>
+    dda1:	e9 70 fe ff ff       	jmp    dc16 <runtime_syscall_router+0xc6>
+    dda6:	66 2e 0f 1f 84 00 00 	cs nopw 0x0(%rax,%rax,1)
+    ddad:	00 00 00 
+    ddb0:	48 83 c4 28          	add    $0x28,%rsp
+    ddb4:	4c 89 f9             	mov    %r15,%rcx
+    ddb7:	4c 89 ea             	mov    %r13,%rdx
+    ddba:	4c 89 e6             	mov    %r12,%rsi
+    ddbd:	5b                   	pop    %rbx
+    ddbe:	48 89 ef             	mov    %rbp,%rdi
+    ddc1:	5d                   	pop    %rbp
+    ddc2:	41 5c                	pop    %r12
+    ddc4:	41 5d                	pop    %r13
+    ddc6:	41 5e                	pop    %r14
+    ddc8:	41 5f                	pop    %r15
+    ddca:	e9 d1 d1 ff ff       	jmp    afa0 <sbr_bootstrap_getrandom>
+    ddcf:	48 8d 0d 6a d5 00 00 	lea    0xd56a(%rip),%rcx        # 1b340 <__PRETTY_FUNCTION__.0>
+    ddd6:	ba c1 02 00 00       	mov    $0x2c1,%edx
+    dddb:	48 8d 35 9e d1 00 00 	lea    0xd19e(%rip),%rsi        # 1af80 <message.0+0x380>
+    dde2:	48 8d 3d 1e d5 00 00 	lea    0xd51e(%rip),%rdi        # 1b307 <message.0+0x707>
+    dde9:	e8 e2 63 ff ff       	call   41d0 <__assert_fail@plt>
+    ddee:	48 8d 0d 4b d5 00 00 	lea    0xd54b(%rip),%rcx        # 1b340 <__PRETTY_FUNCTION__.0>
+    ddf5:	ba c2 02 00 00       	mov    $0x2c2,%edx
+    ddfa:	48 8d 35 7f d1 00 00 	lea    0xd17f(%rip),%rsi        # 1af80 <message.0+0x380>
+    de01:	48 8d 3d 13 d5 00 00 	lea    0xd513(%rip),%rdi        # 1b31b <message.0+0x71b>
+    de08:	e8 c3 63 ff ff       	call   41d0 <__assert_fail@plt>
+
+Disassembly of section .fini:

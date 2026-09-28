@@ -1,0 +1,7 @@
+{
+  "recorded_at": "2026-09-22T17:52:16.864909+00:00",
+  "native_terminal": "2026-09-22T17:48:50.481567+00:00",
+  "fixture_library_mtime": "2026-09-22T17:48:49.050556+00:00",
+  "source_correction": "2026-09-22T17:49:07.968264+00:00",
+  "correction": "The prior pre-fixture-correction note relied on a stale compilation observation. The completed native red exercised the pre-correction unconditional guest-domain checks, confirmed by retained binary disassembly. Current corrected fixture requires a new focused run. No production fault inferred from the stale fixture."
+}

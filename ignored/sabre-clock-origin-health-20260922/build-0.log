@@ -1,0 +1,13 @@
+CMake Warning (dev) at tests/CMakeLists.txt:45 (message):
+  ThreadSanitizer is not supported by the system compiler
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at tests/CMakeLists.txt:26 (message):
+  Optional test dependency "ntfs-3g" not found
+Call Stack (most recent call first):
+  tests/CMakeLists.txt:88 (FIND_TEST_FEATURE)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922

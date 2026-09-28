@@ -1,0 +1,49 @@
+2026-09-22T17:44:05.197921Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-22T17:44:05.198067Z  INFO detcore::tool_global: [scheduler] daemon task starting up, waiting for guest thread start..
+2026-09-22T17:44:05.202926Z  INFO hermit::sabre: launching Detcore guest through SaBRe with coordinator RPC guest=/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/runtime-fixed-v1/pid-probe plugin=/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/ci/hermit-e2e-artifacts/37216010831f755680c35f7cc92294b07c73e0f843919583b831afed2ed2bc90/install/rsrcs/libdetcore_sabre.so
+2026-09-22T17:44:05.220332Z  INFO detcore::random: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242] DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-22T17:44:05.344341Z  INFO detcore::random: DETLOG [dtid 3] USER RAND [getrandom] Filled guest memory with 8 random bytes, hash of bytes: 9401673912765844831 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-22T17:44:05.441919Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+2026-09-22T17:44:05.442144Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_767_225_600.000_000_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":0,"virtual_nanoseconds":1767225600000000000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-22T17:44:05.442602Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.000_500_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":1,"virtual_nanoseconds":1767225600000500000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-22T17:44:05.442644Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-09-22T17:44:05.446999Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 2, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.001_033_250s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":2,"virtual_nanoseconds":1767225600001033250,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-22T17:44:05.448841Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 3, dettid 3 using resources {Exit { group: true, process: DetPid(3), mm: MmId { creator: DetPid(3), generation: 0 } }: RW}, on previously committed 1_767_225_600.001_783_250s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":3,"virtual_nanoseconds":1767225600001783250,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-22T17:44:05.448897Z  INFO detcore::tool_global: Scheduler authorized an exit-group scenario, from dettid 3 / detpid 3
+2026-09-22T17:44:05.449096Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+2026-09-22T17:44:05.451965Z  INFO detcore::scheduler: [scheduler] run queue empty, exiting sched_loop.
+2026-09-22T17:44:05.452216Z  WARN hermit::sabre: :: Backend: sabre static rewriting + ptrace runtime; run_mode=run; evidence_schema=1; preplugin_coverage=absent; ptrace_fallback_sites=0; trusted_shared_object_sites=0; guest_rpc_observed=true; reach_state=sabre-exercised
+2026-09-22T17:44:05.452442Z  INFO detcore::tool_global: detcore shut down, destroying global state
+2026-09-22T17:44:05.452685Z  INFO detcore::tool_global: 
+  ------------------------------ hermit run report ------------------------------
+Final thread-tree was: [3]
+There were 1 group leaders of 1 thread(s) total.
+Guest threads completed 6 syscalls.
+Internally, the hermit scheduler ran 4 turns, recorded 0 events (0 desynced)
+Final virtual global (cpu) time: 1_767_225_600.002_283_250s
+Elapsed virtual global (cpu) time: 2_283_250ns
+Timeslice stats: min=283250ns max=283250ns mean=283250ns count=1
+
+2026-09-22T17:44:05.452719Z  INFO hermit::sabre::fallback: SaBRe ptrace fallback completed ptrace_fallback_sites=0 trusted_shared_object_sites=0 guest_rpc_observed=true
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG USER RAND: seeding PRNG for root thread with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG CHAOSRAND: seeding chaos scheduler with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getpid() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #1: getpid() = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":1}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(1, 0x7fffffffe350) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #2: fstat(1, 0x7fffffffe350) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":2}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #3: brk(NULL) = Ok(93824992399360) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":3}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(0x55555559f000) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #4: brk(0x55555559f000) = Ok(93824992538624) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":4}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x55555557d010, 6) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #5: write(1, 0x55555557d010, 6) = Ok(6) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":5}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [iobuf][dtid 3] write out fd=1 0x55555557d010+6->342cc5c394f2bfe94370f4f30493c870f7877e1dd0646dc7c41af1fc9d14838c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+1970-01-01T00:00:00.000000Z INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: exit_group(0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}

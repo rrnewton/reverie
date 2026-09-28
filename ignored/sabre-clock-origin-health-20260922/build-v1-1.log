@@ -1,0 +1,85 @@
+[  3%] Building ASM object plugin_api/CMakeFiles/plugin_api.dir/vfork_syscall.s.o
+[  7%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall.S.o
+[ 11%] Building ASM object plugin_api/CMakeFiles/plugin_api.dir/vfork_return_from_child.s.o
+[ 15%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall_loader.s.o
+[ 19%] Building ASM object plugin_api/CMakeFiles/plugin_api.dir/clone3_syscall.s.o
+[ 23%] Building ASM object arch/CMakeFiles/backend.dir/handle_vdso.s.o
+[ 26%] Building ASM object plugin_api/CMakeFiles/plugin_api.dir/clone_syscall.s.o
+[ 30%] Building C object arch/CMakeFiles/backend.dir/rewriter.c.o
+[ 34%] Building ASM object plugin_api/CMakeFiles/plugin_api.dir/real_syscall.s.o
+[ 38%] Linking ASM static library libplugin_api.a
+[ 38%] Built target plugin_api
+[ 42%] Building C object arch/CMakeFiles/backend.dir/syscall_stackframe.c.o
+[ 46%] Building C object arch/CMakeFiles/backend.dir/x86_decoder.c.o
+[ 50%] Building ASM object arch/CMakeFiles/backend.dir/handle_rdtsc.s.o
+[ 53%] Linking C static library libbackend.a
+[ 53%] Built target backend
+[ 57%] Building C object loader/CMakeFiles/loader.dir/backend_stats.c.o
+[ 61%] Building C object loader/CMakeFiles/loader.dir/bootstrap.c.o
+[ 65%] Building C object loader/CMakeFiles/loader.dir/elf_loading.c.o
+[ 69%] Building C object loader/CMakeFiles/loader.dir/ld_sc_handler.c.o
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c: In function ‘origin_write’:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:503:42: error: passing argument 3 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+  503 |     long n = real_syscall(SYS_write, fd, data, bytes, 0, 0, 0);
+      |                                          ^~~~
+      |                                          |
+      |                                          const char *
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:47: note: expected ‘long int’ but argument is of type ‘const char *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                          ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c: In function ‘origin_diagnostic’:
+<command-line>: error: passing argument 3 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+<command-line>: note: in definition of macro ‘SBR_ORIGIN_DIAGNOSTIC_PATH’
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:47: note: expected ‘long int’ but argument is of type ‘char *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                          ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:524:54: error: passing argument 3 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+  524 |       long maps = real_syscall(SYS_openat, AT_FDCWD, "/proc/self/maps",
+      |                                                      ^~~~~~~~~~~~~~~~~
+      |                                                      |
+      |                                                      char *
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:47: note: expected ‘long int’ but argument is of type ‘char *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                          ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:529:49: error: passing argument 3 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+  529 |           long n = real_syscall(SYS_read, maps, block, sizeof(block), 0, 0, 0);
+      |                                                 ^~~~~
+      |                                                 |
+      |                                                 char *
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:47: note: expected ‘long int’ but argument is of type ‘char *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                          ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:541:71: error: passing argument 3 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+  541 |     long copied = caller_sp ? real_syscall(SYS_process_vm_readv, pid, &local, 1,
+      |                                                                       ^~~~~~
+      |                                                                       |
+      |                                                                       struct iovec *
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:47: note: expected ‘long int’ but argument is of type ‘struct iovec *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                          ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:542:44: error: passing argument 5 of ‘real_syscall’ makes integer from pointer without a cast [-Werror=int-conversion]
+  542 |                                            &remote, 1, 0) : 0;
+      |                                            ^~~~~~~
+      |                                            |
+      |                                            struct iovec *
+In file included from /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:31:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/plugins/real_syscall.h:35:69: note: expected ‘long int’ but argument is of type ‘struct iovec *’
+   35 | long real_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
+      |                                                                ~~~~~^~~~
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c: In function ‘runtime_syscall_router’:
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c:661:35: error: implicit declaration of function ‘get_offsetof_syscall_return_address’; did you mean ‘get_syscall_return_address’? [-Werror=implicit-function-declaration]
+  661 |                                   get_offsetof_syscall_return_address());
+      |                                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |                                   get_syscall_return_address
+[ 73%] Building C object loader/CMakeFiles/loader.dir/loader.c.o
+cc1: all warnings being treated as errors
+gmake[3]: *** [loader/CMakeFiles/loader.dir/build.make:121: loader/CMakeFiles/loader.dir/ld_sc_handler.c.o] Error 1
+gmake[3]: *** Waiting for unfinished jobs....
+gmake[2]: *** [CMakeFiles/Makefile2:372: loader/CMakeFiles/loader.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:314: arch/CMakeFiles/sabre.dir/rule] Error 2
+gmake: *** [Makefile:138: sabre] Error 2

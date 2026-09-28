@@ -1,0 +1,18 @@
+{
+  "detcore-scheduling": {
+    "applies": false,
+    "reason": "No DetCore scheduler, race-search, scheduling policy or continuous virtual-time source is modified."
+  },
+  "new-determinization": {
+    "applies": false,
+    "reason": "No new guest determinization strategy or virtual-time behavior. Proven tool allocator finalization remains native tool work under the existing domain model."
+  },
+  "new-syscall": {
+    "applies": false,
+    "reason": "No new syscall support, dispatch/classification entry, or syscall implementation is added."
+  },
+  "reverie-core-api": {
+    "applies": false,
+    "reason": "Tool, Guest, Backend and the syscall-interception model/ABI are unchanged. This routine SaBRe parity repair applies the existing plugin-domain guard to the selected plugin ELF finalization lifecycle, preserving the existing routers and all callbacks."
+  }
+}

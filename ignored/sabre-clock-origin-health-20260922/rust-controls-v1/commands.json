@@ -1,0 +1,33 @@
+[
+  [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  [
+    "cargo",
+    "test",
+    "--offline",
+    "-p",
+    "reverie-sabre",
+    "--test",
+    "loader_plugin_finalizers",
+    "--test",
+    "late_function_registration",
+    "--",
+    "--nocapture"
+  ],
+  [
+    "cargo",
+    "clippy",
+    "--offline",
+    "-p",
+    "reverie-sabre",
+    "--tests",
+    "--",
+    "-D",
+    "warnings"
+  ]
+]

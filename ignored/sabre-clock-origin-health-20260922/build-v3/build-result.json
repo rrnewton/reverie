@@ -1,0 +1,14 @@
+{
+  "finished_at": "2026-09-22T17:34:44.203734+00:00",
+  "results": [
+    {
+      "native_exit": 0,
+      "phase": 0
+    },
+    {
+      "native_exit": 0,
+      "phase": 1
+    }
+  ],
+  "wall_seconds": 1.3006545291282237
+}

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cc",
+    "-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes/loader",
+    "-O2",
+    "-std=gnu99",
+    "-UNDEBUG",
+    "-ffunction-sections",
+    "-fdata-sections",
+    "-Wl,--gc-sections",
+    "-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/includes",
+    "-I/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/tests/loader_plugin_finalizers.c",
+    "-o",
+    "/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/ignored/sabre-clock-origin-health-20260922/repair-v2/plugin-finalizers"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

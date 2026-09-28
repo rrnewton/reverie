@@ -1,0 +1,10 @@
+{
+  "at": "2026-09-22T17:49:07.968264+00:00",
+  "phase": "Cargo dependency compilation; no fixture execution yet",
+  "correction": "Scope guest-domain assertions to actual guest main entry, preserving existing initialization-failure verdicts",
+  "hashes": {
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c": "b831f856941cdaafcb81926a04f4ad27121ee11adfbbec07122be1ba92097861",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c": "1df2378bb1447353949d814b6c89fb0ff0a72ef68308071922cc639645e0026d",
+    "experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c": "38afd143c4e7e5861d17ee93eb80c5f00eb0c43a561399decf8ada6fcf85584b"
+  }
+}

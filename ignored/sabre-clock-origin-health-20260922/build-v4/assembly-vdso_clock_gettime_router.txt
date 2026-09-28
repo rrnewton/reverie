@@ -1,0 +1,81 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922/sabre:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+Disassembly of section .plt:
+
+Disassembly of section .text:
+
+000000000000d5d0 <vdso_clock_gettime_router>:
+    d5d0:	55                   	push   %rbp
+    d5d1:	48 89 e5             	mov    %rsp,%rbp
+    d5d4:	41 55                	push   %r13
+    d5d6:	49 89 f5             	mov    %rsi,%r13
+    d5d9:	41 54                	push   %r12
+    d5db:	41 89 fc             	mov    %edi,%r12d
+    d5de:	53                   	push   %rbx
+    d5df:	48 83 ec 08          	sub    $0x8,%rsp
+    d5e3:	83 ff 01             	cmp    $0x1,%edi
+    d5e6:	74 68                	je     d650 <vdso_clock_gettime_router+0x80>
+    d5e8:	48 83 3d 58 c3 01 00 	cmpq   $0x0,0x1c358(%rip)        # 29948 <plugin_clock_gettime>
+    d5ef:	00 
+    d5f0:	74 3e                	je     d630 <vdso_clock_gettime_router+0x60>
+    d5f2:	48 8b 05 bf 3d 01 00 	mov    0x13dbf(%rip),%rax        # 213b8 <calling_from_plugin>
+    d5f9:	48 85 c0             	test   %rax,%rax
+    d5fc:	74 32                	je     d630 <vdso_clock_gettime_router+0x60>
+    d5fe:	ff d0                	call   *%rax
+    d600:	84 c0                	test   %al,%al
+    d602:	75 2c                	jne    d630 <vdso_clock_gettime_router+0x60>
+    d604:	ff 15 a6 3d 01 00    	call   *0x13da6(%rip)        # 213b0 <enter_plugin>
+    d60a:	4c 89 ee             	mov    %r13,%rsi
+    d60d:	44 89 e7             	mov    %r12d,%edi
+    d610:	ff 15 32 c3 01 00    	call   *0x1c332(%rip)        # 29948 <plugin_clock_gettime>
+    d616:	41 89 c4             	mov    %eax,%r12d
+    d619:	ff 15 89 3d 01 00    	call   *0x13d89(%rip)        # 213a8 <exit_plugin>
+    d61f:	48 83 c4 08          	add    $0x8,%rsp
+    d623:	44 89 e0             	mov    %r12d,%eax
+    d626:	5b                   	pop    %rbx
+    d627:	41 5c                	pop    %r12
+    d629:	41 5d                	pop    %r13
+    d62b:	5d                   	pop    %rbp
+    d62c:	c3                   	ret    
+    d62d:	0f 1f 00             	nopl   (%rax)
+    d630:	48 83 c4 08          	add    $0x8,%rsp
+    d634:	4c 89 ee             	mov    %r13,%rsi
+    d637:	44 89 e7             	mov    %r12d,%edi
+    d63a:	5b                   	pop    %rbx
+    d63b:	41 5c                	pop    %r12
+    d63d:	41 5d                	pop    %r13
+    d63f:	5d                   	pop    %rbp
+    d640:	ff 25 e2 c2 01 00    	jmp    *0x1c2e2(%rip)        # 29928 <actual_clock_gettime>
+    d646:	66 2e 0f 1f 84 00 00 	cs nopw 0x0(%rax,%rax,1)
+    d64d:	00 00 00 
+    d650:	48 8b 45 00          	mov    0x0(%rbp),%rax
+    d654:	41 b8 ff ff ff ff    	mov    $0xffffffff,%r8d
+    d65a:	48 8b 18             	mov    (%rax),%rbx
+    d65d:	48 8b 05 54 3d 01 00 	mov    0x13d54(%rip),%rax        # 213b8 <calling_from_plugin>
+    d664:	48 85 c0             	test   %rax,%rax
+    d667:	74 06                	je     d66f <vdso_clock_gettime_router+0x9f>
+    d669:	ff d0                	call   *%rax
+    d66b:	44 0f b6 c0          	movzbl %al,%r8d
+    d66f:	4c 8b 4b 08          	mov    0x8(%rbx),%r9
+    d673:	ba 01 00 00 00       	mov    $0x1,%edx
+    d678:	87 15 8a c2 01 00    	xchg   %edx,0x1c28a(%rip)        # 29908 <entered.4>
+    d67e:	85 d2                	test   %edx,%edx
+    d680:	0f 85 62 ff ff ff    	jne    d5e8 <vdso_clock_gettime_router+0x18>
+    d686:	83 3d 77 c2 01 00 7f 	cmpl   $0x7f,0x1c277(%rip)        # 29904 <records.3>
+    d68d:	77 21                	ja     d6b0 <vdso_clock_gettime_router+0xe0>
+    d68f:	48 8d 8b a0 00 00 00 	lea    0xa0(%rbx),%rcx
+    d696:	4c 89 ca             	mov    %r9,%rdx
+    d699:	be e4 00 00 00       	mov    $0xe4,%esi
+    d69e:	48 8d 3d 40 dc 00 00 	lea    0xdc40(%rip),%rdi        # 1b2e5 <message.0+0x6e5>
+    d6a5:	e8 46 f1 ff ff       	call   c7f0 <origin_diagnostic.part.0>
+    d6aa:	e9 39 ff ff ff       	jmp    d5e8 <vdso_clock_gettime_router+0x18>
+    d6af:	90                   	nop
+    d6b0:	c7 05 4e c2 01 00 00 	movl   $0x0,0x1c24e(%rip)        # 29908 <entered.4>
+    d6b7:	00 00 00 
+    d6ba:	e9 29 ff ff ff       	jmp    d5e8 <vdso_clock_gettime_router+0x18>
+
+Disassembly of section .fini:
