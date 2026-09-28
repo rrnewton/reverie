@@ -37,6 +37,7 @@ use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Getpid;
+use reverie::syscalls::Getppid;
 use reverie::syscalls::Ppoll;
 use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::RtTgsigqueueinfo;
@@ -62,6 +63,11 @@ const UNBLOCK_THEN_GETPID_FD: i32 = 903;
 /// A zero-length write to this descriptor is replaced with
 /// `ppoll(NULL, 0, &buf.timeout, &buf.mask, 8)` for a `PpollArgs` at `buf`.
 const PPOLL_FD: i32 = 904;
+/// Like `PPOLL_FD`, followed by an injected `getpid` whose result the tool
+/// returns to the guest.
+const PPOLL_THEN_GETPID_FD: i32 = 905;
+/// A zero-length write to this descriptor is replaced with `getppid`.
+const GETPPID_FD: i32 = 906;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
@@ -168,7 +174,10 @@ impl Tool for ReplaceMarker {
                     .await;
                 Ok(result?)
             }
-            Syscall::Write(write) if write.fd() == PPOLL_FD && write.len() == 0 => {
+            Syscall::Write(write)
+                if (write.fd() == PPOLL_FD || write.fd() == PPOLL_THEN_GETPID_FD)
+                    && write.len() == 0 =>
+            {
                 let base = write.buf().map_or(0, |buf| buf.as_raw());
                 let result = guest
                     .inject(
@@ -182,6 +191,20 @@ impl Tool for ReplaceMarker {
                             .with_sigsetsize(8),
                     )
                     .await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                if write.fd() == PPOLL_FD {
+                    return Ok(result?);
+                }
+                let result = guest.inject(Getpid::new()).await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                Ok(result?)
+            }
+            Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0 => {
+                let result = guest.inject(Getppid::new()).await;
                 guest
                     .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                     .await;
@@ -879,6 +902,11 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
 /// `getpid` before its `syscall` is delivered through the single
 /// `pending_signal` slot, which bypasses `Tool::handle_signal_event`, so only
 /// SIGSEGV is observed. A fix for that bypass must update this assertion.
+///
+/// Known gaps pinned here, tracked in TaskGraph: the interrupted `getpid`
+/// and the signal parked in the single slot are `reverie_pending_signal_single_slot`;
+/// the tool never seeing SIGSYS is
+/// `reverie_held_signal_skips_tool_handle_signal_event`.
 #[test]
 fn requeued_signals_interrupt_the_next_injected_syscall() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -932,5 +960,303 @@ fn requeued_signals_interrupt_the_next_injected_syscall() {
         *signals,
         vec![libc::SIGSEGV],
         "SIGSYS bypasses the tool through pending_signal (known gap)"
+    );
+}
+
+/// An injected `ppoll` whose temporary mask unblocks two pending
+/// synchronous-class signals. Both are dequeued ahead of the step SIGTRAP, one
+/// stop each. The first is held for delivery at the guest's syscall site and
+/// the step stops there, leaving the second (and the step SIGTRAP) queued in
+/// the kernel: holding both would need a second hold slot, and returning the
+/// second to the queue by masking it would discard `ppoll`'s saved mask.
+///
+/// Oracle: untraced Linux and `strace -f` both print "-1 4 1 1 1 1" (EINTR,
+/// each handler once, both blocked again once the saved mask is restored).
+///
+/// Known gap pinned here: the held SIGSYS reaches the guest through the
+/// `pending_signal` slot and so bypasses `Tool::handle_signal_event`; only
+/// SIGSEGV, delivered from the kernel queue, is reported to the tool
+/// (TaskGraph `reverie_held_signal_skips_tool_handle_signal_event`).
+#[test]
+fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        install_counter(libc::SIGSEGV, count_sigsegv);
+        block(&[libc::SIGSYS, libc::SIGSEGV]);
+        queue_to_self(libc::SIGSYS, 1);
+        queue_to_self(libc::SIGSEGV, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {} {} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGSEGV_HANDLER_CALLS.load(Ordering::Relaxed),
+            is_blocked(libc::SIGSYS),
+            is_blocked(libc::SIGSEGV)
+        );
+    })
+    .expect("run ppoll two-signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE ppoll-two guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw())],
+        "ppoll is interrupted by the signals its mask unblocks"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 1 1 1 1", libc::EINTR),
+        "EINTR, each handler run once, saved mask restored (native and strace oracle)"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSEGV],
+        "the held SIGSYS bypasses the tool (known gap); SIGSEGV is reported"
+    );
+}
+
+/// After a held signal stops the step of an injected `ppoll`, that step's
+/// SIGTRAP is still queued. The same callback's next injection (`getpid`)
+/// meets it before its own `syscall` executes; it must be discarded rather
+/// than read as that step's completion, which would report RAX (the syscall
+/// number, 39) for a `getpid` that never ran.
+///
+/// Known gaps pinned here, tracked in TaskGraph
+/// `reverie_pending_signal_single_slot`: resuming the second step lets the
+/// kernel restore `ppoll`'s saved mask before the held SIGSYS is delivered,
+/// so it is requeued blocked and its handler never runs. Untraced, the same
+/// callback would return the pid after one SIGSYS handler run.
+#[test]
+fn injection_after_a_held_signal_discards_the_stale_step_trap() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_THEN_GETPID_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        println!(
+            "{} {} {} {}",
+            ret == libc::getpid() as i64,
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            is_blocked(libc::SIGSYS),
+            ret
+        );
+    })
+    .expect("run ppoll-then-getpid guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE ppoll-getpid guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(injected.len(), 2, "{:?}", *injected);
+    assert_eq!(
+        injected[0],
+        Err(Errno::ERESTARTNOHAND.into_raw()),
+        "ppoll is interrupted by the signal its mask unblocks"
+    );
+    assert_ne!(
+        injected[1],
+        Ok(libc::SYS_getpid),
+        "the stale step SIGTRAP was read as getpid's completion"
+    );
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(
+        fields[..3],
+        ["true", "0", "1"],
+        "getpid ran and returned the pid; SIGSYS stays pending and blocked (known gap)"
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+static SECCOMP_TRAPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_arch = "x86_64")]
+static SECCOMP_CODE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+#[cfg(target_arch = "x86_64")]
+static SECCOMP_SYSCALL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+#[cfg(target_arch = "x86_64")]
+static SECCOMP_RAX_SEEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// A SIGSYS handler emulating a seccomp-trapped syscall: records `si_code`,
+/// `si_syscall` and the RAX it finds, then makes the syscall return 4242.
+#[cfg(target_arch = "x86_64")]
+extern "C" fn emulate_trapped_syscall(
+    _signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    // SAFETY: the kernel passes a valid siginfo and ucontext to an
+    // SA_SIGINFO handler. For SIGSYS the siginfo union holds `_sigsys`
+    // (`void *_call_addr; int _syscall; unsigned _arch;`) at offset 16.
+    unsafe {
+        let syscall = *(info.cast::<u8>().add(24).cast::<i32>());
+        let gregs = &mut (*context.cast::<libc::ucontext_t>()).uc_mcontext.gregs;
+        SECCOMP_CODE.store((*info).si_code as i64, Ordering::Relaxed);
+        SECCOMP_SYSCALL.store(syscall as i64, Ordering::Relaxed);
+        SECCOMP_RAX_SEEN.store(gregs[libc::REG_RAX as usize], Ordering::Relaxed);
+        gregs[libc::REG_RAX as usize] = 4242;
+    }
+    SECCOMP_TRAPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Loads a seccomp filter that traps `getppid` (`SECCOMP_RET_TRAP`) and
+/// allows everything else, with `emulate_trapped_syscall` as the SIGSYS
+/// handler.
+///
+/// # Safety
+/// Replaces the process-wide SIGSYS disposition and restricts the calling
+/// thread's syscalls for the rest of its life.
+#[cfg(target_arch = "x86_64")]
+unsafe fn trap_getppid() {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = emulate_trapped_syscall as *const () as usize;
+        action.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&mut action.sa_mask);
+        assert_eq!(
+            libc::sigaction(libc::SIGSYS, &action, std::ptr::null_mut()),
+            0
+        );
+        let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+            code: code as u16,
+            jt,
+            jf,
+            k,
+        };
+        let filter = [
+            // seccomp_data.nr is at offset 0.
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+            statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                libc::SYS_getppid as u32,
+                0,
+                1,
+            ),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_TRAP, 0, 0),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr() as *mut libc::sock_filter,
+        };
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &program as *const libc::sock_fprog
+            ),
+            0
+        );
+    }
+}
+
+/// Prints the last trapped syscall's return value and what the handler saw.
+#[cfg(target_arch = "x86_64")]
+fn print_seccomp_trap(ret: i64) {
+    println!(
+        "{ret} {} {} {} {}",
+        SECCOMP_TRAPS.load(Ordering::Relaxed),
+        SECCOMP_CODE.load(Ordering::Relaxed),
+        SECCOMP_SYSCALL.load(Ordering::Relaxed),
+        SECCOMP_RAX_SEEN.load(Ordering::Relaxed)
+    );
+}
+
+/// A seccomp `SECCOMP_RET_TRAP` filter the guest installed can trap a syscall
+/// the tool injects. The kernel does not execute it: it rolls RAX back to the
+/// syscall number and raises SIGSYS (`si_code` `SYS_SECCOMP`) with RIP already
+/// past the private `syscall`, ahead of the step SIGTRAP. The tool must be
+/// told the syscall did not run (`ENOSYS`), not handed the leftover syscall
+/// number as a success, and the guest's SIGSYS handler must still run.
+///
+/// The first line is the in-place control, the same guest calling `getppid`
+/// itself: the handler sees `si_code` 1, `si_syscall` 110 and RAX 110, and
+/// the call returns the handler's 4242. In the injected case the handler
+/// sees the `-ENOSYS` the tool returned instead of 110 (seccomp(2) leaves
+/// that register architecture-dependent), and its 4242 is again the result.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn injected_syscall_trapped_by_guest_seccomp_reports_enosys() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        trap_getppid();
+        print_seccomp_trap(libc::syscall(libc::SYS_getppid));
+        let ret = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+        print_seccomp_trap(ret);
+    })
+    .expect("run seccomp-trap guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE seccomp-trap guest={:?} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(libc::ENOSYS)],
+        "the trapped getppid did not run"
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        [
+            format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
+            format!("4242 2 1 {} {}", libc::SYS_getppid, -libc::ENOSYS),
+        ],
+        "in place and injected, the guest's SIGSYS handler emulates getppid once"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS, libc::SIGSYS],
+        "each SIGSYS reaches the tool"
     );
 }
