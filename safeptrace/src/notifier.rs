@@ -963,6 +963,39 @@ impl Event {
         previous
     }
 
+    /// Queues an exit stop reported while an earlier exit stop of the same
+    /// exec epoch is still published. Returns false, and changes nothing, if
+    /// no exit stop is published.
+    ///
+    /// A tracee is in at most one ptrace stop at a time, so a real
+    /// `PTRACE_EVENT_EXIT` report proves the earlier exit stop was left. With
+    /// no Exec report in between it comes from another task: a non-leader
+    /// exec's de_thread gave that thread this PID after the leader's exit
+    /// stop, and a fatal signal made it skip its `PTRACE_EVENT_EXEC` stop.
+    /// As on Exec, the earlier capability expires and every old waiter keeps
+    /// its old epoch. No capability is minted for the new stop. It joins the
+    /// FIFO behind every status reported before it, as on a synchronous wait,
+    /// so this PID's status waiter receives it in order. Nothing is retired.
+    ///
+    /// Lock order: `exit_publication`, then `status`, as in
+    /// [`Event::publish_exit_stop`].
+    fn queue_exit_stop_after_exit(&self, status: i32) -> bool {
+        let publication = self.exit_publication.lock();
+        if self.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            return false;
+        }
+        self.exit_epoch.fetch_add(1, Ordering::AcqRel);
+        self.exit_capability
+            .store(EXIT_CAP_PENDING, Ordering::Release);
+        self.exit_status.store(EXIT_PENDING, Ordering::Release);
+        self.status.lock().pending.push_back(status);
+        drop(publication);
+        self.status_changed.notify_all();
+        self.status_waker.wake();
+        self.exit_waiters.wake_all();
+        true
+    }
+
     fn observe_exec_after_exit(&self) {
         let publication = self.exit_publication.lock();
         if self.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
@@ -984,7 +1017,9 @@ impl Event {
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
         if status == PTRACE_EVENT_EXIT_STOP {
-            self.publish_exit_stop(|| {});
+            if !self.queue_exit_stop_after_exit(status) {
+                self.publish_exit_stop(|| {});
+            }
             return None;
         }
 
@@ -5203,6 +5238,51 @@ mod test {
         assert!(matches!(current.resume(None), Err(Error::Died(_))));
         assert!(queued(event).is_empty());
         assert_eq!(event.status.lock().retired_before_exit, 1);
+    }
+
+    /// A second exit stop with no Exec report in between comes from another
+    /// task that de_thread moved onto this PID. It is queued in order behind
+    /// the earlier statuses, and the earlier exit capability expires; neither
+    /// report is dropped and no capability is minted for the second one.
+    #[test]
+    fn second_exit_stop_without_exec_is_queued_and_expires_the_first() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let first = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&first, &waker), Poll::Ready(Ok(())));
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_STOPPED);
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP]);
+
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.exit_epoch.load(Ordering::Acquire), 1);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_PENDING
+        );
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP, PTRACE_EVENT_EXIT_STOP]);
+        let stale = Arc::new(ExitWaiter::default());
+        assert_eq!(
+            event.poll_exit(&stale, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        let current = Arc::new(ExitWaiter {
+            epoch: 1,
+            ..ExitWaiter::default()
+        });
+        assert_eq!(event.poll_exit(&current, &waker), Poll::Pending);
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PRE_EXIT_STEP_STOP))
+        );
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PTRACE_EVENT_EXIT_STOP))
+        );
+        assert!(queued(event).is_empty());
     }
 
     /// Cleanup's transfer of the claimed exit capability is also its terminal
