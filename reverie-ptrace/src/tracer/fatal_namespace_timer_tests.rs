@@ -92,8 +92,7 @@ mod fatal_namespace_timer_tests {
 
     fn payload() -> PathBuf {
         static PAYLOAD: LazyLock<PathBuf> = LazyLock::new(|| {
-            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/fatal_namespace_timer.c");
+            let source = fixture("fatal_namespace_timer.c");
             let output = std::env::temp_dir().join(format!(
                 "reverie-fatal-namespace-timer-{}",
                 std::process::id()
