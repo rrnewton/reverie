@@ -2438,7 +2438,10 @@ class CellResultProjection(unittest.TestCase):
         # The committed manifests are the authority for a declared guest exit
         # (series.manifest_guest_exit_declarations); _expected_exit_cell names
         # one of these ids. defaults.yaml and README.md must be ignored: the
-        # defaults file repeats an id with a different declaration.
+        # defaults file repeats an id with a different declaration. The
+        # runner-red tests append -red to a cell's test id so it never shares
+        # a cell name with its passing sibling; the two declared ids that
+        # makes are declared here as well.
         self.manifest_dir = self.repo / series.HERMIT_MANIFEST_DIR
         self.manifest_dir.mkdir(parents=True)
         (self.manifest_dir / "fixture-exit.yaml").write_text(
@@ -2447,6 +2450,7 @@ class CellResultProjection(unittest.TestCase):
                 ("fixture/exit-3", "code: 3"),
                 ("fixture/exit-1", "code: 1"),
                 ("fixture/undeclared", None),
+                ("fixture/exit-7-red", "code: 7"),
             ]),
             encoding="utf-8",
         )
@@ -2454,6 +2458,7 @@ class CellResultProjection(unittest.TestCase):
             self._manifest_yaml("fixture-signal", [
                 ("fixture/signal-11", "signal: 11"),
                 ("fixture/signal-6", "signal: 6"),
+                ("fixture/signal-11-red", "signal: 11"),
             ]),
             encoding="utf-8",
         )
@@ -4792,10 +4797,16 @@ class CellResultProjection(unittest.TestCase):
         """serde_json refuses a lone surrogate; Python accepts it and then
         cannot encode it. The identity hash and both stdin readers refuse it
         by name."""
-        target = self._expected_exit_cell(
-            status=7, signal=None, guest_exit_code=7, guest_signal=None, declared=(7, None),
-        )
-        target["expected_guest_exit"]["reason"] = "fails \ud800 on purpose"
+        # A declared reason must equal its manifest entry's, so a surrogate
+        # there is refused by that binding before any hash is taken.
+        in_reason = self._declared_exit_7()
+        in_reason["expected_guest_exit"]["reason"] = "fails \ud800 on purpose"
+        with self.assertRaisesRegex(series.MalformedRow, "disagrees with its manifest entry"):
+            self._project_validate(in_reason, "surrogate-reason")
+        # category is hashed and nothing else reads it, so this surrogate
+        # reaches the identity hash.
+        target = self._declared_exit_7()
+        target["category"] = "fails \ud800 on purpose"
         with self.assertRaisesRegex(series.MalformedRow, "not valid Unicode"):
             self._project_validate(target, "surrogate")
         for label, line, error_type in (
