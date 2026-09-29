@@ -3208,6 +3208,68 @@ impl PendingStatusReservation<'_> {
         let committed = self.state.pending.pop_front();
         debug_assert_eq!(committed, Some(self.status));
     }
+
+    /// Removes a queued stop that this generation's `PTRACE_EVENT_EXIT` stop
+    /// has superseded, without decoding it.
+    ///
+    /// The notifier queues ordinary stops in a FIFO but publishes the exit
+    /// stop separately. A fatal signal wakes a tracee out of a ptrace stop the
+    /// tracer has not yet consumed, so a stop observed before the exit stop can
+    /// still be queued when the exit stop is published. The tracee has already
+    /// left that stop: nothing can act on it, and resuming the exit stop would
+    /// otherwise return it as though it were the tracee's next state.
+    ///
+    /// No ptrace request is made. Decoding would be wrong here: an event stop's
+    /// `PTRACE_GETEVENTMSG` now reads the exit stop's message (the exit
+    /// status), not the queued event's, and fails with `ESRCH` once the exit
+    /// stop is resumed.
+    ///
+    /// Refused, returning the reservation unchanged, when no exit stop is
+    /// published for this generation (an exec after an exit stop withdraws the
+    /// publication, so a queued post-exit exec is never discarded), when the
+    /// front is the exit stop itself, and for a fork, vfork or clone stop: its
+    /// child is a live tracee whose PID is only in that stop's event message.
+    pub fn discard_superseded_by_exit(self) -> Result<(), (Self, SupersededStopRefusal)> {
+        let refusal = if self.event.event().exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            Some(SupersededStopRefusal::ExitStopNotObserved)
+        } else if !libc::WIFSTOPPED(self.status) || self.status == PTRACE_EVENT_EXIT_STOP {
+            Some(SupersededStopRefusal::NotSuperseded(self.status))
+        } else if libc::WSTOPSIG(self.status) == libc::SIGTRAP
+            && matches!(
+                self.status >> 16,
+                libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
+            )
+        {
+            Some(SupersededStopRefusal::NewChild(self.status))
+        } else {
+            None
+        };
+        match refusal {
+            Some(refusal) => Err((self, refusal)),
+            None => {
+                self.commit();
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Why [`PendingStatusReservation::discard_superseded_by_exit`] kept a queued
+/// status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SupersededStopRefusal {
+    /// This tracee generation has no published `PTRACE_EVENT_EXIT` stop.
+    #[error("no PTRACE_EVENT_EXIT stop is published for this tracee generation")]
+    ExitStopNotObserved,
+    /// The queued status is the exit stop itself or is not a stop.
+    #[error("queued wait status {0:#x} is not a stop superseded by the exit stop")]
+    NotSuperseded(i32),
+    /// A fork, vfork or clone stop names a live child only through its event
+    /// message, which the later exit stop has replaced.
+    #[error(
+        "queued wait status {0:#x} is a fork, vfork or clone stop superseded by the exit stop; its child PID is no longer readable"
+    )]
+    NewChild(i32),
 }
 
 /// A future representing a process state change.
@@ -5231,6 +5293,131 @@ mod test {
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("decode failure removed FIFO front");
         assert_eq!(retry.status, child_event);
+    }
+
+    fn cleanup_with_queued(pid_offset: i32, queued: &[i32], exit_stop: bool) -> TerminalCleanup {
+        // A PID no tracee can hold: any ptrace request made while discarding
+        // would fail, so a successful discard proves none was made.
+        let handle = EventHandle::new();
+        for status in queued {
+            handle.event().update(*status);
+        }
+        if exit_stop {
+            handle.event().update(PTRACE_EVENT_EXIT_STOP);
+        }
+        TerminalCleanup {
+            pid: Pid::from_raw(i32::MAX - pid_offset).into(),
+            event: handle,
+        }
+    }
+
+    #[test]
+    fn exit_stop_supersedes_queued_stops_without_decoding_them() {
+        let sigtrap = (libc::SIGTRAP << 8) | 0x7f;
+        let seccomp = (libc::PTRACE_EVENT_SECCOMP << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let syscall = ((libc::SIGTRAP | 0x80) << 8) | 0x7f;
+        // Decoding an exec stop reads PTRACE_GETEVENTMSG, which here fails.
+        let exec = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let probe = cleanup_with_queued(45, &[exec], true);
+        assert!(
+            probe
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .expect("reserve queued exec")
+                .decode()
+                .is_err(),
+            "fake exec stop decoded"
+        );
+
+        let cleanup = cleanup_with_queued(40, &[sigtrap, seccomp, syscall, exec], true);
+        for expected in [sigtrap, seccomp, syscall, exec] {
+            let reservation = cleanup
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .expect("queued stop missing");
+            assert_eq!(reservation.status, expected);
+            assert!(reservation.discard_superseded_by_exit().is_ok());
+        }
+        assert!(cleanup.pending_is_empty());
+        assert!(
+            cleanup
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn queued_stop_is_kept_without_an_exit_stop() {
+        let sigtrap = (libc::SIGTRAP << 8) | 0x7f;
+        let cleanup = cleanup_with_queued(41, &[sigtrap], false);
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("queued stop missing");
+        let (reservation, refusal) = reservation
+            .discard_superseded_by_exit()
+            .expect_err("discarded a stop with no exit stop published");
+        assert_eq!(refusal, SupersededStopRefusal::ExitStopNotObserved);
+        drop(reservation);
+        assert_eq!(
+            cleanup
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .expect("refusal removed the FIFO front")
+                .status,
+            sigtrap
+        );
+    }
+
+    #[test]
+    fn superseded_new_child_stop_is_kept() {
+        for op in [
+            libc::PTRACE_EVENT_FORK,
+            libc::PTRACE_EVENT_VFORK,
+            libc::PTRACE_EVENT_CLONE,
+        ] {
+            let child_event = (op << 16) | (libc::SIGTRAP << 8) | 0x7f;
+            let cleanup = cleanup_with_queued(42, &[child_event], true);
+            let (reservation, refusal) = cleanup
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .expect("queued child event missing")
+                .discard_superseded_by_exit()
+                .expect_err("discarded the only record of a live child");
+            assert_eq!(refusal, SupersededStopRefusal::NewChild(child_event));
+            drop(reservation);
+            assert!(!cleanup.pending_is_empty());
+        }
+    }
+
+    #[test]
+    fn exec_after_exit_stop_is_not_superseded() {
+        // A leader's exec is reported after its exit stop. The exec withdraws
+        // the exit publication, so the queued exec is not discarded.
+        let exec = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let cleanup = cleanup_with_queued(43, &[], true);
+        cleanup.event.event().update(exec);
+        let (reservation, refusal) = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("queued exec missing")
+            .discard_superseded_by_exit()
+            .expect_err("discarded an exec that followed the exit stop");
+        assert_eq!(refusal, SupersededStopRefusal::ExitStopNotObserved);
+        drop(reservation);
+        assert!(!cleanup.pending_is_empty());
+    }
+
+    #[test]
+    fn sync_exit_stop_in_the_fifo_is_not_superseded() {
+        let cleanup = cleanup_with_queued(44, &[], true);
+        cleanup
+            .event
+            .event()
+            .update_sync_status(PTRACE_EVENT_EXIT_STOP);
+        let (_reservation, refusal) = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("queued exit stop missing")
+            .discard_superseded_by_exit()
+            .expect_err("discarded the exit stop itself");
+        assert_eq!(
+            refusal,
+            SupersededStopRefusal::NotSuperseded(PTRACE_EVENT_EXIT_STOP)
+        );
     }
 
     #[test]
