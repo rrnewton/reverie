@@ -75,7 +75,8 @@ DEFAULT_SUITES = (
     ("ci-hub/closure", 85),
     ("ci-hub/attribution/tests", 43),
     ("ci-hub/pin/tests", 34),
-    ("ci-hub/main-metrics/tests", 29),
+    # 64 executed at 2026-09-29 (wall_series GitHub-absence cases); ~90% floor.
+    ("ci-hub/main-metrics/tests", 57),
     ("ci-hub/ratchet/tests", 20),
     ("ci-hub/series/tests", 159),
     ("ci-hub/stranded/tests", 19),
