@@ -3919,7 +3919,11 @@ fn process_has_file_open(pid: i64, own: &LockFileIdentity) -> Option<bool> {
             },
         }
     }
-    if undecided { None } else { Some(false) }
+    if undecided {
+        None
+    } else {
+        Some(false)
+    }
 }
 
 fn process_command_line(pid: i64) -> String {
