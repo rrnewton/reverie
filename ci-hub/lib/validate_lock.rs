@@ -13539,6 +13539,13 @@ exit 0
             include_str!("../validate/preflight_anchor.py"),
         )
         .unwrap();
+        // `preflight_anchor` builds every GitHub command through `gh_route`
+        // (68e56d4c002a), so the real module is part of the predicate.
+        fs::write(
+            authority.join("gh_route.py"),
+            include_str!("../validate/gh_route.py"),
+        )
+        .unwrap();
         fs::write(
             authority.join("rebase-base-floors.json"),
             serde_json::to_vec(&serde_json::json!({"anchors": [{
@@ -13561,9 +13568,21 @@ exit 0
         )
         .unwrap();
         fs::set_permissions(&proxy, fs::Permissions::from_mode(0o755)).unwrap();
+        // `gh_route` refuses unless FLEET_REAL_GH names an existing absolute
+        // executable (68e56d4c002a). The child wrapper selects this fixture
+        // executable itself, so the result never depends on the caller's
+        // environment and the host's real GitHub CLI is never selected. The
+        // fixture `with-proxy` above never executes it; the marker checks that.
+        let fixture_gh = network_bin.join("gh");
+        fs::write(
+            &fixture_gh,
+            "#!/bin/sh\nprintf 'ran\\n' >> \"$0.called\"\nprintf 'fixture gh must not run\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fixture_gh, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
             authority.join("preflight_validate.py"),
-            "import os, runpy\nfrom pathlib import Path\np = Path(__file__).parent\nos.environ['PATH'] = str(p / 'network-bin') + os.pathsep + os.environ.get('PATH', '')\nrunpy.run_path(str(p / 'preflight_validate_actual.py'), run_name='__main__')\n",
+            "import os, runpy\nfrom pathlib import Path\np = Path(__file__).parent\nos.environ['PATH'] = str(p / 'network-bin') + os.pathsep + os.environ.get('PATH', '')\nos.environ['FLEET_REAL_GH'] = str(p / 'network-bin' / 'gh')\nrunpy.run_path(str(p / 'preflight_validate_actual.py'), run_name='__main__')\n",
         )
         .unwrap();
         for untrusted_root in [&state_root, &checkout, &service_checkout] {
@@ -13659,6 +13678,10 @@ exit 0
         assert_eq!(
             fs::read_to_string(compare_marker).unwrap(),
             "attempted\nattempted\n"
+        );
+        assert!(
+            !network_bin.join("gh.called").exists(),
+            "the fixture with-proxy must intercept every GitHub command"
         );
         assert!(!service_checkout.join("untrusted-ran").exists());
         assert!(!state_root.join("untrusted-ran").exists());
