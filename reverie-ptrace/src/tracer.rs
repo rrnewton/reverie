@@ -650,8 +650,12 @@ async fn finish_ordinary_terminal(
                                 // superseded capability and transfer this same
                                 // generation to one retained wait; only its
                                 // actual terminal/Exec result can settle it.
-                                // The ESRCH on the exit-stop capability has
-                                // already retired the stops queued before it.
+                                // No stop queued before this exit stop can be
+                                // popped by that wait, for one of two reasons.
+                                // On the exit future's marked capability, the
+                                // ESRCH has already retired them. On a queued
+                                // exit stop popped from the FIFO (below), the
+                                // wait consumed them in order before popping it.
                                 drop(stopped);
                                 break zombie.wait_owned();
                             }
@@ -698,8 +702,10 @@ async fn finish_ordinary_terminal(
                             // A real group-fatal signal may advance this EXIT
                             // after GETEVENTMSG and before CONT. Keep its sole
                             // generation owner; ESRCH itself supplies no status.
-                            // As on success, the stops queued before the exit
-                            // stop were retired, so the wait cannot pop one.
+                            // As on success, the wait cannot pop a stop queued
+                            // before the exit stop: a marked capability's ESRCH
+                            // retired them, and for a queued exit stop popped
+                            // from the FIFO they were consumed before it.
                             break retained.wait_owned();
                         }
                         Err((retained, error)) => {
