@@ -173,6 +173,7 @@ fn runtime_with_gnu_hash(keep_sysv: bool) -> Vec<u8> {
     bytes
 }
 
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
 fn runtime_with_gnu_coverage_hole() -> Vec<u8> {
     let mut bytes = runtime_with_gnu_hash(true);
     let strings = b"\0reverie_liteinst_initialize_host\0tail\0";
@@ -197,6 +198,8 @@ fn runtime_with_gnu_coverage_hole() -> Vec<u8> {
     bytes
 }
 
+=======
+>>>>>>> f75114e25f
 fn assert_invalid(bytes: &[u8], message: &str) {
     let error = match parse_runtime(bytes) {
         Ok(_) => panic!("runtime unexpectedly accepted"),
@@ -581,6 +584,7 @@ fn refuses_duplicate_named_initializer_even_when_both_are_ordinary() {
     let mut bytes = runtime();
     bytes.copy_within(0x618..0x630, 0x630);
     put32(&mut bytes, 0x704, 3);
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
     put32(&mut bytes, 0x710, 2);
     put16(&mut bytes, 0x744, 1);
     assert_invalid(&bytes, "ambiguous ordinary initializer");
@@ -592,6 +596,10 @@ fn refuses_gnu_hash_that_does_not_cover_every_symbol() {
         &runtime_with_gnu_coverage_hole(),
         "malformed runtime GNU hash table",
     );
+=======
+    put16(&mut bytes, 0x744, 1);
+    assert!(parse_runtime(&bytes).is_err());
+>>>>>>> f75114e25f
 }
 
 #[test]

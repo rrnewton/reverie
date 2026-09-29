@@ -475,10 +475,19 @@ fn verify_native_report(
         assert_eq!(report.iterate_addr, report.dlinfo_addr);
     } else {
         assert_ne!(report.namespace, 0);
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
         // This call originates in the base namespace; dl_iterate_phdr must not
         // report a runtime loaded only in the new dlmopen namespace.
         assert_eq!(report.iterate_matches, 0);
         assert_eq!(report.iterate_addr, 0);
+=======
+        if report.iterate_matches == 0 {
+            assert_eq!(report.iterate_addr, 0);
+        } else {
+            assert_eq!(report.iterate_matches, 1);
+            assert_eq!(report.iterate_addr, report.dlinfo_addr);
+        }
+>>>>>>> f75114e25f
     }
 
     let layout = runtime_layout(&artifact.bytes, report);

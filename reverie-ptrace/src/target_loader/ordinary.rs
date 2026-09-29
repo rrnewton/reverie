@@ -50,11 +50,17 @@ pub struct TargetHostInitializer {
 /// Resolve the exact unversioned host initializer without running target code.
 ///
 /// The controller supplies independently bound runtime bytes. All tasks sharing
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
 /// this image must remain stopped. The mapping, default-namespace link-map,
 /// exact non-writable PT_LOAD file-byte comparison, and before/after snapshot
 /// readback checks of [`resolve_dlopen`] apply. Provider selection requires an
 /// ordinary unversioned initializer, without `dlopen`'s versioned libc/libdl
 /// export policy. This does not authorize executing the result.
+=======
+/// this image must remain stopped. The complete provider, map, and readback
+/// contract of [`resolve_dlopen`] applies; this does not authorize executing the
+/// result.
+>>>>>>> f75114e25f
 pub fn resolve_host_initializer(
     task: &Stopped,
     expected_runtime: &[u8],
@@ -335,6 +341,12 @@ fn validate_runtime_hashes(
 ) -> io::Result<()> {
     let sysv = unique.get(&dynamic::DT_HASH).copied();
     let gnu = unique.get(&dynamic::DT_GNU_HASH).copied();
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
+=======
+    if sysv.is_none() && gnu.is_none() {
+        return Err(invalid("missing runtime symbol hash table"));
+    }
+>>>>>>> f75114e25f
     if let Some(address) = sysv {
         validate_sysv_hash(elf, bytes, strings, address, selected)?;
     }
@@ -345,9 +357,14 @@ fn validate_runtime_hashes(
 }
 
 fn parse_runtime(bytes: &[u8]) -> io::Result<Provider<'_>> {
+<<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
     // The measured unstripped release runtime is 35,223,752 bytes, exceeding
     // the public dlopen provider's 32 MiB limit. Keep a separate bounded 64 MiB
     // runtime policy with room for build variation; this is not an ABI limit.
+=======
+    // The reviewed staged-release contract permits an ELF file up to 64 MiB.
+    // This separate policy does not widen dlopen's 32 MiB libc/libdl limit.
+>>>>>>> f75114e25f
     runtime_file_bound(bytes.len())?;
     let elf = Elf::parse(bytes).map_err(|_| invalid("malformed runtime ELF"))?;
     if !elf.is_64
