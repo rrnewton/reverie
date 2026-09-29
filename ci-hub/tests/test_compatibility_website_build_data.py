@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import enum
 import hashlib
 import importlib.util
 import json
@@ -910,6 +911,12 @@ def test_publishable_output_adversarial_strings_refuse_in_every_position(
         # A key that is not a string wins over later fields and string refusals.
         ({"a": "/home/alice/x", "b": {7: 1}, "enabled": 1}, "keys must be strings"),
         ({"enabled": 1, "b": {7: 1}}, "forbidden stored field 'enabled'"),
+        # A string refusal found in a key is deferred exactly like one in a
+        # value: a later forbidden field or non-string key still wins.
+        ({"/home/alice/x": 0, "enabled": 1}, "forbidden stored field 'enabled'"),
+        ({"/home/alice/x": 0, "b": {7: 1}}, "keys must be strings"),
+        ({"api_token": 0, "enabled": 1}, "forbidden stored field 'enabled'"),
+        ({"api_token": 0, "b": {7: 1}}, "keys must be strings"),
         # The same text is judged separately as a key and as a value.
         ({"a": "api_token", "api_token": 1}, "credential-bearing"),
         ({"a": ["secret", "secret"], "b": {"secret": 0}}, "credential-bearing"),
@@ -2519,11 +2526,93 @@ def test_validation_memo_revalidates_when_a_recorded_digest_disagrees(
         for key in build_data._VALIDATION_MEMO
         if key[0] == build_data._plain_value_digest(value)
     )
-    anchors = build_data._VALIDATION_MEMO[key][1]
-    build_data._VALIDATION_MEMO[key] = (bytes(32), anchors)
+    recorded = build_data._VALIDATION_MEMO[key]
+    build_data._VALIDATION_MEMO[key] = (bytes(32), *recorded[1:])
     before = len(counted_validation)
     assert _verdict(value) == passed
     assert len(counted_validation) == before + 1
+
+
+def _deeper(levels: int, call: Any) -> Any:
+    """Run ``call`` with ``levels`` more Python frames on the stack."""
+    if levels == 0:
+        return call()
+    return _deeper(levels - 1, call)
+
+
+def test_validation_memo_revalidates_for_a_call_with_less_recursion_headroom(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    build_data._VALIDATION_MEMO.clear()
+    before = len(counted_validation)
+    passed = _verdict(value)
+    assert passed[0] == "pass" and len(counted_validation) == before + 1
+    # A deeper caller has less headroom than the recorded pass had, so its
+    # verdict is computed again...
+    assert _deeper(50, lambda: _verdict(value)) == passed
+    assert len(counted_validation) == before + 2
+    # ...and the pass recorded with the smaller headroom then serves callers
+    # at either depth.
+    assert _deeper(50, lambda: _verdict(value)) == passed
+    assert _verdict(value) == passed
+    assert len(counted_validation) == before + 2
+    # A lower recursion limit leaves less headroom at the same depth.
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(limit - 100)
+    try:
+        assert _verdict(value) == passed
+    finally:
+        sys.setrecursionlimit(limit)
+    assert len(counted_validation) == before + 3
+
+
+def test_validation_memo_keeps_a_refusal_that_only_a_deeper_caller_gets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    real = build_data._validate_build_data
+    shallow = build_data._recursion_headroom()
+
+    # Stands in for the reference string walk, which runs out of frames on a
+    # value nested close to the caller's headroom.
+    def headroom_sensitive(candidate: Any) -> bytes:
+        if build_data._recursion_headroom() < shallow - 40:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(candidate)
+
+    monkeypatch.setattr(build_data, "_validate_build_data", headroom_sensitive)
+    build_data._VALIDATION_MEMO.clear()
+    try:
+        passed = _verdict(value)
+        assert passed[0] == "pass"
+        assert _deeper(60, lambda: _verdict(value)) == (
+            "refused",
+            "build data is malformed: maximum recursion depth exceeded",
+        )
+        assert _verdict(value) == passed
+    finally:
+        build_data._VALIDATION_MEMO.clear()
+
+
+def test_validation_memo_hit_refuses_errors_like_a_full_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    assert _verdict(value)[0] == "pass"
+    before = len(counted_validation)
+
+    def exhausted(*_args: Any, **_kwargs: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded while decoding")
+
+    # Only the hit path decodes here: the digest and state walk do not.
+    with monkeypatch.context() as patch:
+        patch.setattr(build_data.json, "loads", exhausted)
+        assert _verdict(value) == (
+            "refused",
+            "build data is malformed: maximum recursion depth exceeded while decoding",
+        )
+    assert len(counted_validation) == before
 
 
 def test_validation_memo_keeps_at_most_sixteen_recent_passes(
@@ -2554,11 +2643,25 @@ def test_validation_memo_keeps_at_most_sixteen_recent_passes(
     assert len(counted_validation) == before + 1
 
 
-def test_validation_never_mutates_its_input_and_performs_no_io(
+def _audited_events(active: list[bool], events: list[tuple[str, Any]]) -> None:
+    def audit(event: str, args: Any) -> None:
+        if active[0] and (
+            event in {"open", "socket.connect", "subprocess.Popen"}
+            or event.startswith(("os.exec", "os.posix_spawn", "os.spawn", "os.system"))
+            or event.startswith(("os.listdir", "os.scandir", "os.remove", "os.rename"))
+        ):
+            events.append((event, args))
+
+    sys.addaudithook(audit)
+
+
+def test_validation_never_mutates_its_input_and_performs_no_io_once_its_readers_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
 ) -> None:
     import pickle
 
+    # The fixture's build has already loaded every reader validation uses;
+    # the cold first load is covered by the next test.
     value = _validated_stage1_fixture(monkeypatch, tmp_path)
     exact = pickle.dumps(value)
     build_data._VALIDATION_MEMO.clear()
@@ -2586,6 +2689,152 @@ def test_validation_never_mutates_its_input_and_performs_no_io(
     assert pickle.dumps(value) == exact
 
 
+def test_validation_reads_only_its_proof_reader_on_first_use_and_then_hits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    export_inputs = build_data._modules().export_inputs
+    # As in a fresh process: export_inputs loads series/finalized_proof.py
+    # the first time captured_proof_objects needs it.
+    monkeypatch.setattr(export_inputs, "finalized_proof", None)
+    counted = build_data._validate_build_data
+
+    # Stage 1 data built from a validation history commit carries a captured
+    # proof, which _canonical_provenance checks with captured_proof_objects.
+    # This fixture carries none, so make the same call on an empty proof.
+    def with_proof_check(candidate: Any) -> bytes:
+        export_inputs.captured_proof_objects(
+            {"schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []}
+        )
+        return counted(candidate)
+
+    monkeypatch.setattr(build_data, "_validate_build_data", with_proof_check)
+    build_data._VALIDATION_MEMO.clear()
+    events: list[tuple[str, Any]] = []
+    active = [True]
+    _audited_events(active, events)
+    before = len(counted_validation)
+    try:
+        cold = build_data.validate_build_data(value)
+        cold_events = list(events)
+        events.clear()
+        warm = build_data.validate_build_data(value)
+    finally:
+        active[0] = False
+    assert export_inputs.finalized_proof is not None
+    reader = Path(export_inputs.SERIES_DIR / "finalized_proof.py")
+    # The only events open that module's source or its bytecode cache (a
+    # valid cache is read instead of the source).
+    assert cold_events and all(event == "open" for event, _args in cold_events), cold_events
+    opened = [Path(str(args[0])) for _event, args in cold_events]
+    assert all(
+        path == reader
+        or (path.parent == reader.parent / "__pycache__" and path.name.startswith("finalized_proof."))
+        for path in opened
+    ), opened
+    # The state recorded after the pass includes the reader it bound, so the
+    # next call hits and does no I/O.
+    assert events == []
+    assert len(counted_validation) == before + 1
+    assert warm == cold
+
+
+_MUTATING_METHODS = frozenset(
+    {
+        "add", "append", "clear", "difference_update", "discard", "extend",
+        "insert", "intersection_update", "pop", "popitem", "remove", "reverse",
+        "setdefault", "sort", "symmetric_difference_update", "update",
+        "__setitem__", "__delitem__", "__iadd__", "__ior__",
+    }
+)
+
+
+def _names_changed_in_place(sources: list[Path]) -> set[str]:
+    """Every name some statement changes in place, reached by any path.
+
+    ``NAME.append(...)``, ``module.NAME[key] = item``, ``del self.NAME[key]``
+    and ``NAME |= ...`` all count.  Matching by name alone over-reports, which
+    is the safe direction for this test.
+    """
+
+    def named(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    changed: set[str] = set()
+    for source in sources:
+        for node in ast.walk(ast.parse(source.read_text(), str(source))):
+            names: list[str | None] = []
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in _MUTATING_METHODS:
+                    names.append(named(node.func.value))
+            elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+                targets = (
+                    node.targets
+                    if isinstance(node, (ast.Assign, ast.Delete))
+                    else [node.target]
+                )
+                for target in targets:
+                    names.extend(
+                        named(part.value)
+                        for part in ast.walk(target)
+                        if isinstance(part, ast.Subscript)
+                        and isinstance(part.ctx, (ast.Store, ast.Del))
+                    )
+                if isinstance(node, ast.AugAssign):
+                    names.append(named(node.target))
+            changed.update(name for name in names if name is not None)
+    return changed
+
+
+def _held_state(namespace: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
+    """Mutable containers, caches and stateful objects one module holds.
+
+    It looks at the module's globals, at the attributes of every class the
+    module defines, and at static and class methods.  Enum's own sunder
+    tables (_member_map_ and the like) are built with the class and are not
+    listed.
+    """
+    module = namespace.get("__name__")
+    containers: set[str] = set()
+    caches: set[str] = set()
+    objects: set[str] = set()
+
+    def judge(label: str, item: Any) -> None:
+        if isinstance(item, (staticmethod, classmethod)):
+            item = item.__func__
+        if isinstance(item, (dict, list, set, bytearray)):
+            containers.add(label)
+        elif callable(item) and hasattr(item, "cache_info") and hasattr(item, "cache_clear"):
+            caches.add(label)
+
+    for name, item in namespace.items():
+        if name.startswith("__"):
+            continue
+        judge(name, item)
+        if isinstance(item, type) and item.__module__ == module:
+            for attribute, member in vars(item).items():
+                if attribute.startswith("__"):
+                    continue
+                if (
+                    isinstance(item, enum.EnumMeta)
+                    and attribute.startswith("_")
+                    and attribute.endswith("_")
+                ):
+                    continue
+                judge(f"{name}.{attribute}", member)
+        elif (
+            not isinstance(item, type)
+            and getattr(type(item), "__module__", None) == module
+            and (hasattr(item, "__dict__") or hasattr(type(item), "__dataclass_fields__"))
+        ):
+            objects.add(name)
+    return containers, caches, objects
+
+
 def test_validation_state_reaches_the_loaded_modules_and_holds_no_hidden_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2601,20 +2850,69 @@ def test_validation_state_reaches_the_loaded_modules_and_holds_no_hidden_state(
     for module in (build_data, modules.export_inputs, modules.reducer, modules.rust_toolchain):
         assert id(vars(module)) in namespaces
     tests = str(REPOSITORY / "ci-hub/tests") + os.sep
-    # Only the memo itself and phase-timing bookkeeping may change without
-    # rebinding.  The two reader tables are never read by validation.
-    allowed = {
-        ("build_data.py", "_PHASE_STATE"),
+    # A hosted export binds its canonical readers before it validates, and
+    # through them validate_rows, ledger, qualifying_receipt and the rest
+    # become reachable.  Bind them here too, so the scan does not depend on
+    # which tests ran first.
+    export_inputs = modules.export_inputs
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    for name in (
+        "ledger_store", "ledger_publisher", "series_store",
+        "validation_ledger", "finalized_proof", "_AUTHORITY_IMPORT_READER_STATE",
+    ):
+        monkeypatch.setattr(export_inputs, name, getattr(export_inputs, name))
+    export_inputs._AUTHORITY_IMPORT_READER_STATE = export_inputs._import_authorities(dict)
+    namespaces = {
+        id(anchor): anchor
+        for anchor in build_data._validation_state()[1]
+        if isinstance(anchor, dict) and "__builtins__" in anchor
+        and not str(anchor.get("__file__", "")).startswith(tests)
+    }
+    files = {Path(namespace["__file__"]).name for namespace in namespaces.values()}
+    assert {"validate_rows.py", "ledger.py", "qualifying_receipt.py", "finalized_proof.py"} <= files
+
+    containers: set[tuple[str, str]] = set()
+    caches: set[tuple[str, str]] = set()
+    objects: set[tuple[str, str]] = set()
+    for namespace in namespaces.values():
+        held = _held_state(namespace)
+        origin = Path(namespace["__file__"]).name
+        for found, into in zip(held, (containers, caches, objects)):
+            into.update((origin, name) for name in found)
+    # The memo keys on identities, so a cache or an object whose attributes
+    # can change unseen would let it replay a stale pass.  The loaded
+    # Modules record is frozen, and the state walk records each field.
+    assert caches == set(), sorted(caches)
+    assert objects == {("build_data.py", "_LOADED_MODULES")}, sorted(objects)
+
+    # A mutable container is safe while nothing changes it in place.  Check
+    # every ci-hub source, since any module could change another's global.
+    sources = [
+        path
+        for path in sorted((REPOSITORY / "ci-hub").rglob("*.py"))
+        if "tests" not in path.relative_to(REPOSITORY / "ci-hub").parts
+    ]
+    changed = _names_changed_in_place(sources)
+    exempt = {
+        # The memo itself, and phase-timing bookkeeping no verdict reads.
         ("build_data.py", "_VALIDATION_MEMO"),
-        ("validate_rows.py", "HISTORICAL_REPOSITORY_MISMATCHES"),
-        ("ledger.py", "_SHARED_TYPE_CACHE_MODES"),
+        ("build_data.py", "_PHASE_STATE"),
+        # validation_evidence_batch pushes and pops this stack inside one
+        # with block, so it is empty between calls unless a caller validates
+        # inside such a block, and no website source enters one (checked
+        # below).
+        ("qualifying_receipt.py", "_VALIDATION_EVIDENCE_BATCHES"),
     }
-    mutable = {
-        (Path(namespace["__file__"]).name, name)
-        for namespace in namespaces.values()
-        if not str(namespace.get("__file__", "")).startswith(tests)
-        for name, item in namespace.items()
-        if not name.startswith("__")
-        and isinstance(item, (dict, list, set, bytearray))
+    # The scan must see the changes it exists to catch.
+    assert {name for _origin, name in exempt} <= changed
+    assert exempt <= containers
+    unsafe = {
+        (origin, name)
+        for origin, name in containers - exempt
+        if name.rsplit(".", 1)[-1] in changed
     }
-    assert mutable <= allowed, sorted(mutable - allowed)
+    assert unsafe == set(), sorted(unsafe)
+    website = REPOSITORY / "ci-hub/compatibility-website"
+    assert not any(
+        "validation_evidence_batch" in path.read_text() for path in website.glob("*.py")
+    )

@@ -203,9 +203,10 @@ _LOADED_MODULES: Modules | None = None
 
 # Phase timing is diagnostic output only.  It is off unless this variable is
 # exactly "1", so the CLI single-channel contracts (empty stderr on success, a
-# lone REFUSED line on refusal) are unchanged by default.  The hosted rebuild
-# step sets it to show where its wall time goes.  The lines go to stderr and
-# never into an output file, a receipt, or the stdout JSON result.
+# lone REFUSED line on refusal) are unchanged by default.  Nothing here turns
+# it on: the hosted rebuild step shows these lines only while hermit's
+# .github/workflows/docs.yml sets it in that step's env.  The lines go to
+# stderr and never into an output file, a receipt, or the stdout JSON result.
 PHASE_TIMING_ENVIRONMENT = "COMPATIBILITY_WEBSITE_PHASE_TIMING"
 # One mutable object, so the counters never rebind a module global.
 _PHASE_STATE: dict[str, int | None] = {"builds": 0, "build": None}
@@ -2360,8 +2361,18 @@ def _validate_build_data(value: Any) -> bytes:
 # raises the same error.  A hit re-encodes the input and returns a fresh
 # object only when those canonical bytes have the digest the first pass
 # returned; otherwise it re-validates.
+#
+# The verdict can also depend on how much Python recursion headroom the call
+# has: the reference string walk in _require_publishable_output takes one
+# frame per nesting level, so a value deep enough to exhaust the headroom is
+# refused.  Having more headroom never turns a pass into a refusal, so each
+# pass records the headroom it had (recursion limit minus stack depth), and it
+# is replayed only for a call with at least that much.  A call with less
+# re-validates.  As in _plain_publishable_refusal, the separate C-level
+# recursion budget of json and pickle is not tracked; published Stage 1 data
+# is about 15 levels deep.
 _VALIDATION_MEMO: dict[
-    tuple[bytes, tuple[int, ...]], tuple[bytes, tuple[Any, ...]]
+    tuple[bytes, tuple[int, ...]], tuple[bytes, tuple[Any, ...], int]
 ] = {}
 _VALIDATION_MEMO_LIMIT = 16
 
@@ -2456,25 +2467,32 @@ def _validation_state() -> tuple[tuple[int, ...], tuple[Any, ...]]:
     return tuple(identities), tuple(anchors)
 
 
+def _recursion_headroom() -> int:
+    return sys.getrecursionlimit() - _stack_depth()
+
+
 def validate_build_data(value: Any) -> dict[str, Any]:
+    headroom = _recursion_headroom()
     with phase("validate.key"):
         digest = _plain_value_digest(value)
         key = recorded = None
         if digest is not None:
             key = (digest, _validation_state()[0])
             recorded = _VALIDATION_MEMO.get(key)
-    if key is not None and recorded is not None:
-        with phase("validate.hit"):
-            encoded = _canonical_bytes(value)
-            if hashlib.sha256(encoded).digest() == recorded[0]:
-                _VALIDATION_MEMO[key] = _VALIDATION_MEMO.pop(key)
-                return json.loads(encoded)
-    with phase("validate.miss" if digest is not None else "validate.unmemoized"):
-        try:
+    # Both paths convert the same errors, as the unmemoized validator did
+    # around its whole body, including the final json.loads.
+    try:
+        if key is not None and recorded is not None and headroom >= recorded[2]:
+            with phase("validate.hit"):
+                encoded = _canonical_bytes(value)
+                if hashlib.sha256(encoded).digest() == recorded[0]:
+                    _VALIDATION_MEMO[key] = _VALIDATION_MEMO.pop(key)
+                    return json.loads(encoded)
+        with phase("validate.miss" if digest is not None else "validate.unmemoized"):
             encoded = _validate_build_data(value)
             result = json.loads(encoded)
-        except (KeyError, RecursionError, TypeError) as error:
-            raise BuildRefused(f"build data is malformed: {error}") from error
+    except (KeyError, RecursionError, TypeError) as error:
+        raise BuildRefused(f"build data is malformed: {error}") from error
     if digest is not None:
         # Record the state after the pass: a lazily loaded reader bound during
         # the first call is part of the state later calls see.
@@ -2483,6 +2501,7 @@ def validate_build_data(value: Any) -> dict[str, Any]:
         _VALIDATION_MEMO[(digest, identities)] = (
             hashlib.sha256(encoded).digest(),
             anchors,
+            headroom,
         )
         while len(_VALIDATION_MEMO) > _VALIDATION_MEMO_LIMIT:
             del _VALIDATION_MEMO[next(iter(_VALIDATION_MEMO))]
