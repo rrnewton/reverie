@@ -501,6 +501,7 @@ MAIN_HERMIT = "a1" * 20
 MAIN_REVERIE = "b2" * 20
 LOCAL_ONLY = "c3" * 20  # validated on some host, never pushed
 UNFETCHED = "d4" * 20
+OFF_MAIN = "e5" * 20  # present in the checkout, not an ancestor of main
 
 
 def _http(status_line, body):
@@ -587,6 +588,8 @@ def _rows():
         {**ledger_row(MAIN_REVERIE, "2026-09-26T02:00:00Z"), "repo": "reverie"},
         {**ledger_row(LOCAL_ONLY, "2026-09-26T03:00:00Z"), "repo": "reverie"},
         {**ledger_row(LOCAL_ONLY, "2026-09-26T04:00:00Z"), "repo": "rrnewton/reverie"},
+        # Off main by git's own answer; GitHub is never asked about it.
+        {**ledger_row(OFF_MAIN, "2026-09-26T05:00:00Z"), "repo": "reverie"},
     ]
 
 
@@ -603,10 +606,9 @@ def _build(monkeypatch, cache, rows=None):
                     Path("/reverie"), cache)
 
 
-def _gate_fields(monkeypatch, capsys, cache, *extra):
+def _gate_fields(monkeypatch, capsys, cache, *extra, mode="--gate-regression"):
     rc = ws.main(["--ledger", "/ledger", "--repo", "/hermit", "--reverie-repo",
-                  "/reverie", "--absent-cache", str(cache), "--gate-regression",
-                  *extra])
+                  "/reverie", "--absent-cache", str(cache), mode, *extra])
     lines = capsys.readouterr().out.splitlines()
     return rc, dict(line.split("=", 1) for line in lines)
 
@@ -652,6 +654,29 @@ def test_main_rows_still_count_next_to_an_excluded_row(monkeypatch, tmp_path):
     assert rep["summary"]["n"] == 3
     assert rep["summary"]["distinct_commits"] == 2
     assert rep["rows_absent_upstream"] == 2
+
+
+def test_a_present_off_main_commit_is_excluded_without_asking_github(monkeypatch,
+                                                                    tmp_path):
+    """Only commits MISSING from the checkout are GitHub's question.
+
+    A commit the checkout has but main does not contain is off main by git's
+    own answer. Here GitHub would even say it does not exist (an unpushed local
+    branch commit), so asking would miscount it as absent upstream and spend
+    the lookup budget on a commit that was never in doubt.
+    """
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY),
+                                         OFF_MAIN: gh_absent(OFF_MAIN)})
+
+    rep = _build(monkeypatch, tmp_path / "absent.json")
+
+    assert [call[4] for call in host.gh_calls] == [
+        f"repos/{ws.REVERIE_REPOSITORY}/commits/{LOCAL_ONLY}"]
+    assert OFF_MAIN not in {point["commit"] for point in rep["points"]}
+    assert rep["rows_on_main"] == 3
+    assert rep["rows_absent_upstream"] == 2
+    assert [r["commit"] for r in rep["commits_absent_upstream"]] == [LOCAL_ONLY]
+    assert rep["github_absence_lookup"]["github_lookups"] == 1
 
 
 @pytest.mark.parametrize("answer", [
@@ -802,19 +827,33 @@ def test_an_expired_or_invalid_cache_entry_is_asked_again(monkeypatch, tmp_path,
     assert json.loads(cache.read_text())["entries"] == {}
 
 
+@pytest.mark.parametrize("content, error", [
+    (b"{not json", "cache is not JSON, ignored"),
+    # Not UTF-8: read_text raises UnicodeDecodeError, a ValueError rather than
+    # an OSError, which used to escape as a traceback with no state= line.
+    (b"\xff\xfe\x00", "cache is not UTF-8, ignored: 'utf-8' codec can't decode"),
+    # Nested past the recursion limit: json raises RecursionError, a
+    # RuntimeError, which main() would have reported as an ancestry refusal.
+    (b"[" * 200_000, "cache is not JSON, ignored"),
+], ids=["not-json", "not-utf8", "too-deep"])
 def test_an_unreadable_cache_is_reported_and_costs_only_a_lookup(monkeypatch, capsys,
-                                                                 tmp_path):
+                                                                 tmp_path, content,
+                                                                 error):
     cache = tmp_path / "absent.json"
-    cache.write_text("{not json")
+    cache.write_bytes(content)
     host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY)})
     monkeypatch.setattr(ws, "load_population", lambda _path: (_rows(), 5, 0))
 
     rc, fields = _gate_fields(monkeypatch, capsys, cache)
 
-    assert rc == 0
+    assert rc == 0, fields
+    assert fields["state"] == "holding", fields
     assert len(host.gh_calls) == 1
     assert fields["absent_upstream_rows"] == "2"
-    assert fields["absent_cache_error"] == "cache is not JSON, ignored"
+    assert fields["absent_cache_error"].startswith(error), fields
+    # The unreadable file is replaced by a valid one holding the fresh answer.
+    assert set(json.loads(cache.read_text())["entries"]) == {
+        f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}"}
 
 
 def test_the_lookup_budget_bounds_one_run_and_the_next_run_resumes(monkeypatch,
@@ -852,6 +891,67 @@ def test_the_lookup_budget_bounds_one_run_and_the_next_run_resumes(monkeypatch,
     assert set(absent) == {LOCAL_ONLY, UNFETCHED}
     assert (nxt.cache_hits, nxt.lookups) == (1, 1)
 
+
+def _ready_rows(candidate_wall):
+    """A series that meets BOTH readiness preconditions, next to excluded rows.
+
+    Four conditioned main rows over 117 days: two baseline rows at 500 s, then
+    two at ``candidate_wall``. The two LOCAL_ONLY rows (absent upstream) and the
+    OFF_MAIN row would each change baseline_n/candidate_n if they leaked in.
+    """
+    def row(commit, finished, wall, repo=None):
+        return {**ledger_row(commit, finished), "real_seconds": wall,
+                "user_seconds": wall * 3, "sys_seconds": 0,
+                "concurrent_validates": 2, **({"repo": repo} if repo else {})}
+    return [
+        row(MAIN_HERMIT, "2026-06-01T00:00:00Z", 500),
+        row(MAIN_HERMIT, "2026-06-02T00:00:00Z", 500),
+        row(LOCAL_ONLY, "2026-09-25T00:00:00Z", 5000, "reverie"),
+        row(MAIN_REVERIE, "2026-09-25T01:00:00Z", candidate_wall, "reverie"),
+        row(LOCAL_ONLY, "2026-09-25T02:00:00Z", 5000, "rrnewton/reverie"),
+        row(OFF_MAIN, "2026-09-25T03:00:00Z", 5000, "reverie"),
+        row(MAIN_HERMIT, "2026-09-26T00:00:00Z", candidate_wall),
+    ]
+
+
+@pytest.mark.parametrize("mode, candidate_wall, state, rc", [
+    ("--gate-regression", 510, "ok", 0),
+    ("--gate-regression", 900, "regression", 1),
+    ("--readiness", 510, "ready", 0),
+    ("--readiness", None, "not-ready", 1),
+], ids=["ok", "regression", "ready", "not-ready"])
+def test_every_verdict_names_the_rows_excluded_as_absent_upstream(
+        monkeypatch, capsys, tmp_path, mode, candidate_wall, state, rc):
+    """`holding` is covered above; the verdicts that PAGE must carry it too.
+
+    `ok` and `regression` are unreachable in production until retention reaches
+    90 days, so without this a refactor could drop the exclusion accounting
+    from exactly the verdicts that page, and nothing would notice until then.
+    """
+    rows = _rows() if candidate_wall is None else _ready_rows(candidate_wall)
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY)})
+    monkeypatch.setattr(ws, "load_population", lambda _path: (rows, len(rows), 0))
+
+    got_rc, fields = _gate_fields(monkeypatch, capsys, tmp_path / "absent.json",
+                                  mode=mode)
+
+    assert (got_rc, fields["state"]) == (rc, state), fields
+    assert fields["absent_upstream_rows"] == "2", fields
+    assert fields["absent_upstream_commits"] == "1", fields
+    assert fields["absent_upstream_shas"] == f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}"
+    assert fields["github_lookups"] == "1", fields
+    assert fields["absent_cache_hits"] == "0", fields
+    assert float(fields["github_lookup_seconds"]) >= 0.0
+    if state in ("ok", "regression"):
+        # Only the four main rows are compared: 2 baseline, 2 candidate.
+        assert (fields["baseline_n"], fields["candidate_n"]) == ("2", "2"), fields
+    if state == "regression":
+        assert fields["baseline_median"] == "500.0", fields
+        assert fields["candidate_median"] == "900.0", fields
+    if state == "ready":
+        assert (fields["n"], fields["conditioned"]) == ("4", "4"), fields
+    if state == "not-ready":
+        assert fields["n"] == "3", fields
 
 
 # ------------------------------------------------- readiness / wireable gate

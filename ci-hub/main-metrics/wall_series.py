@@ -294,9 +294,17 @@ class UpstreamAbsence:
         except OSError as error:
             self.cache_error = f"cache unreadable, ignored: {error}"
             return {}
+        except UnicodeDecodeError as error:
+            # A ValueError, not an OSError. Uncaught, it escaped the constructor
+            # and main() -- which catches only RuntimeError -- died with a
+            # traceback and no `state=`/`summary=` lines at all.
+            self.cache_error = f"cache is not UTF-8, ignored: {error}"
+            return {}
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError (deeply nested JSON) is a RuntimeError: uncaught,
+            # main() would report a malformed CACHE as an ancestry refusal.
             self.cache_error = "cache is not JSON, ignored"
             return {}
         if (not isinstance(data, dict) or data.get("schema") != ABSENT_CACHE_SCHEMA
