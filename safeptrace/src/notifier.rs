@@ -624,7 +624,8 @@ struct StatusState {
 
 /// Returns true for a stop whose status records more than the stop itself: a
 /// new tracee (fork, vfork, clone), a vfork release, or an exec's thread-group
-/// identity change. Such an entry is never retired, even when it is dead.
+/// identity change. [`StatusState::retire_before_exit`] never retires such an
+/// entry, except an Exec queued before the exit stop (see there).
 fn stop_records_lifecycle_state(status: i32) -> bool {
     !libc::WIFSTOPPED(status)
         || matches!(
@@ -634,6 +635,16 @@ fn stop_records_lifecycle_state(status: i32) -> bool {
                 | libc::PTRACE_EVENT_CLONE
                 | libc::PTRACE_EVENT_EXEC
                 | libc::PTRACE_EVENT_VFORK_DONE
+        )
+}
+
+/// Returns true for a fork, vfork or clone stop, whose event message is the
+/// only record of the new child's PID.
+fn stop_reports_new_child(status: i32) -> bool {
+    libc::WIFSTOPPED(status)
+        && matches!(
+            (status >> 16) & 0xff,
+            libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
         )
 }
 
@@ -662,6 +673,15 @@ impl StatusState {
     /// is touched. If the prefix holds a status that records lifecycle state
     /// (see [`stop_records_lifecycle_state`]), nothing is removed and the
     /// existing consumers see the queue unchanged.
+    ///
+    /// The one lifecycle status retired with the prefix is an Exec stop
+    /// other than the epoch Exec. The tracee left that exec stop without a
+    /// tracer request, through the fatal signal that took it into the exit
+    /// stop, so its event message (the former TID) is no longer readable:
+    /// no decode can recover it, and a consumer would only meet its death
+    /// ahead of the statuses behind it. The epoch Exec (see
+    /// [`StatusState::epoch_exec`]) is still kept, because the waiter that
+    /// retires it forwards the exit stop its report withdrew.
     fn retire_before_exit(&mut self) -> usize {
         debug_assert!(self.before_exit <= self.pending.len());
         let count = self.before_exit.min(self.pending.len());
@@ -669,12 +689,16 @@ impl StatusState {
             .pending
             .iter()
             .take(count)
-            .any(|&status| stop_records_lifecycle_state(status))
+            .enumerate()
+            .any(|(position, &status)| {
+                stop_records_lifecycle_state(status)
+                    && (status != PTRACE_EVENT_EXEC_STOP || self.epoch_exec == Some(position))
+            })
         {
             return 0;
         }
         self.pending.drain(..count);
-        // The prefix holds no Exec status, so the epoch Exec is behind it.
+        // The prefix holds no epoch Exec, so the epoch Exec is behind it.
         self.epoch_exec = self.epoch_exec.map(|position| position - count);
         self.before_exit = 0;
         self.retired_before_exit += count as u64;
@@ -1350,6 +1374,25 @@ impl Event {
         self.status.lock().retire_before_exit_of(epoch)
     }
 
+    /// Refuses the exit stop published in `epoch` if a fork, vfork or clone
+    /// stop is queued before it. Inspects only; see
+    /// [`crate::Stopped::superseded_new_child`].
+    fn superseded_new_child(&self, epoch: usize) -> Result<(), SupersededStopRefusal> {
+        let state = self.status.lock();
+        if state.before_exit_epoch != epoch {
+            return Ok(());
+        }
+        match state
+            .pending
+            .iter()
+            .take(state.before_exit)
+            .find(|&&status| stop_reports_new_child(status))
+        {
+            Some(&status) => Err(SupersededStopRefusal::NewChild(status)),
+            None => Ok(()),
+        }
+    }
+
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
         self.publish_terminal_exit_state(ECHILD_STATUS);
@@ -2022,6 +2065,11 @@ impl EventHandle {
     /// See [`Event::retire_statuses_before_exit_stop`].
     pub(super) fn retire_statuses_before_exit_stop(&self, epoch: usize) -> usize {
         self.event().retire_statuses_before_exit_stop(epoch)
+    }
+
+    /// See [`Event::superseded_new_child`].
+    pub(super) fn superseded_new_child(&self, epoch: usize) -> Result<(), SupersededStopRefusal> {
+        self.event().superseded_new_child(epoch)
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
@@ -3788,8 +3836,10 @@ impl TerminalCleanup {
         // from now on, so no other owner exists. The recorded prefix holds only
         // stops reported before the latest published exit stop, each of which
         // the tracee had left; an Exec after that exit stop is queued behind
-        // it, outside the prefix, and the lifecycle guard in
-        // `retire_before_exit` still keeps any prefix holding one.
+        // it, outside the prefix. An Exec inside the prefix was reported
+        // before the exit stop, so the tracee had left it; the lifecycle guard
+        // in `retire_before_exit` retires it unless it is the epoch Exec, and
+        // keeps any prefix holding a fork, vfork, clone or vfork-done stop.
         event.status.lock().retire_before_exit();
         Ok(())
     }
@@ -3899,6 +3949,18 @@ impl Future for WaitFuture {
             };
         }
     }
+}
+
+/// Why [`crate::Stopped::superseded_new_child`] refused an exit stop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SupersededStopRefusal {
+    /// A fork, vfork or clone stop was queued before the exit stop. It names
+    /// its live child only through its event message, which the exit stop
+    /// has replaced, so the child's PID can no longer be read.
+    #[error(
+        "queued wait status {0:#x} is a fork, vfork or clone stop superseded by the exit stop; its child PID is no longer readable"
+    )]
+    NewChild(i32),
 }
 
 /// A non-owning refusal from an original-generation retained wait.
@@ -6089,6 +6151,112 @@ mod test {
         assert_eq!(event.status.lock().retired_before_exit, 0);
     }
 
+    /// An Exec queued before the exit stop is retired with the rest of the
+    /// prefix: the tracee left that exec stop for the exit stop, so its
+    /// former TID is no longer readable. The epoch Exec is kept for the
+    /// waiter that forwards its exit stop, and a fork, vfork or clone stop
+    /// anywhere in the prefix still keeps all of it.
+    #[test]
+    fn exit_retirement_retires_a_prefix_exec_except_the_epoch_exec() {
+        let fork = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let later = (libc::SIGUSR1 << 8) | 0x7f;
+
+        let event = Event::new();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXEC_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        event.update(later);
+        assert_eq!(event.status.lock().epoch_exec, None);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 2);
+        assert_eq!(queued(&event), [later]);
+        assert_eq!(event.status.lock().retired_before_exit, 2);
+        assert_eq!(event.status.lock().retired_dead_exec, 0);
+
+        let event = Event::new();
+        event.update(PTRACE_EVENT_EXEC_STOP);
+        event.update_sync_status(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(queued(&event), [PTRACE_EVENT_EXIT_STOP]);
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+
+        let event = Event::new();
+        event.update(PTRACE_EVENT_EXEC_STOP);
+        event.update(fork);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 0);
+        assert_eq!(queued(&event), [PTRACE_EVENT_EXEC_STOP, fork]);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
+
+        // The epoch Exec, then this image's exit stop published behind it.
+        let (handle, _token) = dead_epoch_exec_at_front();
+        let event = handle.event();
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_STOPPED);
+        assert_eq!(event.status.lock().before_exit_epoch, 1);
+        assert_eq!(event.status.lock().before_exit, 1);
+        assert_eq!(event.retire_statuses_before_exit_stop(1), 0);
+        assert_eq!(queued(event), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(event.status.lock().epoch_exec, Some(0));
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+    }
+
+    /// Only the marked capability of the exit stop whose prefix holds a
+    /// fork, vfork or clone stop is refused, with that exact status. The
+    /// inspection changes no queue.
+    #[test]
+    fn exit_capability_refuses_a_new_child_stop_queued_before_it() {
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let fork = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let vfork = (libc::PTRACE_EVENT_VFORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let clone = (libc::PTRACE_EVENT_CLONE << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let vfork_done = (libc::PTRACE_EVENT_VFORK_DONE << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        for child in [fork, vfork, clone] {
+            let handle = EventHandle::new();
+            let event = handle.event();
+            let token = TraceeToken::from_event(handle.clone());
+            event.update(PRE_EXIT_STEP_STOP);
+            event.update(child);
+            event.update(PTRACE_EVENT_EXIT_STOP);
+            assert_eq!(
+                Stopped::from_exit_token(pid, token.clone(), 0).superseded_new_child(),
+                Err(SupersededStopRefusal::NewChild(child))
+            );
+            assert_eq!(
+                Stopped::from_exit_token(pid, token.clone(), 1).superseded_new_child(),
+                Ok(())
+            );
+            assert_eq!(
+                Stopped::from_token(pid, token).superseded_new_child(),
+                Ok(())
+            );
+            assert_eq!(queued(event), [PRE_EXIT_STEP_STOP, child]);
+            assert_eq!(event.status.lock().before_exit, 2);
+        }
+
+        for (before, after) in [
+            (
+                vec![PRE_EXIT_STEP_STOP, PTRACE_EVENT_EXEC_STOP, vfork_done],
+                vec![],
+            ),
+            (vec![PRE_EXIT_STEP_STOP], vec![fork]),
+        ] {
+            let handle = EventHandle::new();
+            let event = handle.event();
+            let token = TraceeToken::from_event(handle.clone());
+            for &status in &before {
+                event.update(status);
+            }
+            event.update(PTRACE_EVENT_EXIT_STOP);
+            for &status in &after {
+                event.update(status);
+            }
+            assert_eq!(
+                Stopped::from_exit_token(pid, token, 0).superseded_new_child(),
+                Ok(()),
+                "refused with prefix {before:x?} and suffix {after:x?}"
+            );
+        }
+    }
+
     /// Races the exit publication against a consumer popping the pre-exit
     /// prefix, and the retirement against pushes queued after the exit stop.
     /// Every iteration must retire exactly the pre-exit statuses the consumer
@@ -6400,6 +6568,173 @@ mod test {
             )
         );
         assert!(Instant::now() < deadline);
+        root_cleanup.disarm();
+    }
+
+    /// The ordinary terminal path's order on a real tracee: its Exec is
+    /// queued, a SIGKILL takes it out of that exec stop into its exit stop,
+    /// and the exit stop's capability is resumed with nothing having
+    /// consumed the Exec. The resume retires the Exec with the rest of the
+    /// pre-exit prefix, so the owned wait returns the final SIGKILL status
+    /// instead of meeting the dead Exec's death.
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_resume_retires_a_killed_exec_and_the_owned_wait_reaches_its_exit() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (root, mut root_cleanup, stopped) = spawn_exec_tracee(deadline);
+        let mut exit = Box::pin(root_cleanup.exit_event(&stopped).unwrap());
+        let terminal = stopped.terminal_cleanup();
+        let running = stopped.resume(None).unwrap();
+        while terminal.pending_is_empty() {
+            assert!(Instant::now() < deadline, "no exec stop queued");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(queued(terminal.event.event()), [PTRACE_EVENT_EXEC_STOP]);
+        assert_eq!(unsafe { libc::kill(root.as_raw(), libc::SIGKILL) }, 0);
+        while !terminal.exit_stop_observed() {
+            assert!(Instant::now() < deadline, "no exit stop observed");
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(running);
+        let exit_stop = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            exit.as_mut(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        root_cleanup.mark_claimed_exit();
+        assert_eq!(exit_stop.superseded_new_child(), Ok(()));
+        assert_eq!(queued(terminal.event.event()), [PTRACE_EVENT_EXEC_STOP]);
+        let Ok(running) = exit_stop.resume_retaining(None) else {
+            panic!("resuming the exit stop failed");
+        };
+        assert!(terminal.pending_is_empty(), "the dead Exec stayed queued");
+        assert_eq!(terminal.retired_stops_before_exit(), 1);
+        assert_eq!(terminal.retired_dead_exec_stops(), 0);
+        let final_wait = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            running.wait_owned(),
+        )
+        .await
+        .unwrap();
+        let Ok(final_wait) = final_wait else {
+            panic!("the owned wait after the exit resume returned {final_wait:?}");
+        };
+        assert_eq!(
+            final_wait.assume_exited(),
+            (
+                root.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        root_cleanup.disarm();
+    }
+
+    /// A real fork stop queued before the exit stop: a SIGKILL takes the
+    /// tracee out of it into its exit stop before anything consumed it. The
+    /// exit stop's capability is refused with that exact status, the prefix
+    /// holding it is not retired, and after the resume the stop can only
+    /// meet its death: its child's PID is no longer readable.
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_capability_refuses_a_killed_fork_stop_queued_before_it() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let fork_stop = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let root = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().unwrap();
+                unsafe {
+                    if libc::fork() == 0 {
+                        libc::pause();
+                        libc::_exit(0);
+                    }
+                    libc::pause();
+                    libc::_exit(0);
+                }
+            }
+        };
+        let mut root_cleanup = TraceeCleanupGuard::new(root).unwrap();
+        let status = waitpid_status_bounded(
+            root,
+            libc::WUNTRACED,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .unwrap();
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        let stopped = Stopped::new_unchecked(root.into());
+        stopped
+            .setoptions(
+                Options::PTRACE_O_TRACEFORK
+                    | Options::PTRACE_O_TRACEEXIT
+                    | Options::PTRACE_O_EXITKILL,
+            )
+            .unwrap();
+        let mut exit = Box::pin(root_cleanup.exit_event(&stopped).unwrap());
+        let terminal = stopped.terminal_cleanup();
+        let running = stopped.resume(None).unwrap();
+        while terminal.pending_is_empty() {
+            assert!(Instant::now() < deadline, "no fork stop queued");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(queued(terminal.event.event()), [fork_stop]);
+        // Read while the tracee is in its fork stop, only to clean up the
+        // child; nothing below is given this PID.
+        let child = Pid::from_raw(nix::sys::ptrace::getevent(root).unwrap() as i32);
+        let _child_cleanup = TraceeCleanupGuard::new(child).unwrap();
+        assert_eq!(unsafe { libc::kill(root.as_raw(), libc::SIGKILL) }, 0);
+        while !terminal.exit_stop_observed() {
+            assert!(Instant::now() < deadline, "no exit stop observed");
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(running);
+        let exit_stop = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            exit.as_mut(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        root_cleanup.mark_claimed_exit();
+        let refusal = exit_stop.superseded_new_child();
+        assert_eq!(refusal, Err(SupersededStopRefusal::NewChild(fork_stop)));
+        assert_eq!(
+            refusal.unwrap_err().to_string(),
+            "queued wait status 0x1057f is a fork, vfork or clone stop superseded by the exit stop; its child PID is no longer readable"
+        );
+        assert_eq!(queued(terminal.event.event()), [fork_stop]);
+        let Ok(running) = exit_stop.resume_retaining(None) else {
+            panic!("resuming the exit stop failed");
+        };
+        assert_eq!(queued(terminal.event.event()), [fork_stop]);
+        assert_eq!(terminal.retired_stops_before_exit(), 0);
+        let mut wait = running.wait_owned();
+        let first = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut wait,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(first, Err(OwnedWaitError::Died)),
+            "the killed fork stop decoded as {first:?}"
+        );
+        let final_wait = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut wait,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            final_wait.assume_exited(),
+            (
+                root.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
         root_cleanup.disarm();
     }
 
