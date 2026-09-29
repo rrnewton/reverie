@@ -2323,7 +2323,11 @@ impl RunRegistryLock {
 /// waiters in no fixed order. So two launches blocked behind one removal can
 /// reach the queue in either order. Binding after the run is queued would
 /// leave a queued run without the process identity that
-/// `run_registry.request_termination` requires before it will stop a run.
+/// `run_registry.record_termination_request` requires before it will record
+/// a stop request, which is written before any stop is attempted. That
+/// function also takes the run-population lock itself, blocking, so a stop
+/// request already waits behind a `wrkslots` mutation today; what binding
+/// later would add is a run that sits in the queue with no identity.
 /// https://github.com/rrnewton/dev-hermit/issues/422 tracks this gap.
 fn bind_current_run_process_identity(
     tool_root: &Path,
@@ -3388,19 +3392,23 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
 /// proven": nobody held the lock when it was examined, and no log line shows
 /// either run waiting here. The mechanism does not depend on that incident:
 /// an unbounded flock is granted to whichever waiter the kernel wakes first.
-/// A bound turns that back into launch order, and the WAITING lines below make
-/// the next occurrence attributable.
+/// A bound removes this lock's contribution to that reordering, and the
+/// WAITING lines below make the next occurrence attributable. It does not
+/// restore launch order: other waits before the queue have no bound (see the
+/// warning below).
 ///
-/// The order it restores is loose by about a minute, not by this bound alone.
-/// Before it joins the queue a run can spend this wait, plus at most one
-/// holder description past it (`LOCK_HOLDER_SCAN_MILLIS`, 2 s), and then its
-/// own fetch under the lock, which `timeout` ends after
-/// `CURRENT_MAIN_FETCH_TIMEOUT_SECONDS` plus a 1 s kill-after. So a run can
-/// reach the queue behind one launched up to about 63 s (30 + 2 + 30 + 1)
-/// after it.
+/// The reordering this lock can still cause is about a minute, longer than
+/// the bound itself. Before it joins the queue a run can spend this wait,
+/// plus at most one holder description past it (`LOCK_HOLDER_SCAN_MILLIS`,
+/// 2 s), and then its own fetch under the lock, which `timeout` ends after
+/// `CURRENT_MAIN_FETCH_TIMEOUT_SECONDS` plus a 1 s kill-after. So, counting
+/// this lock alone, a run can reach the queue behind one launched up to about
+/// 63 s (30 + 2 + 30 + 1) after it. The unbounded waits listed below remove
+/// any overall bound: the run-population lock alone was measured held for up
+/// to 426.5 s.
 ///
 /// ⚠️ THIS BOUNDS ONLY THE SHARED GIT LOCK, SO LAUNCH ORDER IS NOT GUARANTEED.
-/// Two other waits before the queue have no time limit:
+/// Other waits before the queue have no time limit. They include:
 /// - The run-population lock in `bind_current_run_process_identity`: an
 ///   exclusive flock on the validate state-root directory. The wait is logged
 ///   (WAITING, still WAITING, acquired) but not bounded. Every `wrkslots`
@@ -3409,14 +3417,18 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
 ///   (https://github.com/rrnewton/dev-hermit/issues/389). flock wakes its
 ///   waiters in no fixed order, so two launches blocked behind one removal can
 ///   reach the queue in either order.
+/// - The other waits in that same bind, logged the same way and not bounded
+///   either: the run-writer generation lock (taken shared; its only exclusive
+///   taker is destructive cleanup), the run record's own lock, and the
+///   run_registry.py bind child itself.
 /// - `base_admission_check` runs `preflight_validate.py` with no wall-clock
 ///   bound and logs nothing while it runs.
 ///
-/// Neither was bounded here, because every option found either leaves a
-/// queued run without the process identity other tools use to stop it, or
-/// changes when runs are refused, or is unsafe while old and new builds share
-/// the queue file. https://github.com/rrnewton/dev-hermit/issues/422 tracks
-/// this gap.
+/// None of these was bounded here, because every option assessed either
+/// leaves a queued run without the process identity other tools use to stop
+/// it, or changes when runs are refused, or is unsafe while old and new
+/// builds share the queue file. https://github.com/rrnewton/dev-hermit/issues/422
+/// tracks this gap, including a variant not yet assessed.
 ///
 /// Deferring is safe because this check is an early refusal, not the admission
 /// gate. A run whose check deferred rechecks at its first queue poll, and that
@@ -3426,6 +3438,16 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
 /// evicts a stale target. Every queued run also rechecks every
 /// `CURRENT_MAIN_RECHECK_SECONDS`, and the boundary and final checks still
 /// run, unbounded and fail-closed, before any admission.
+///
+/// So a deferred run whose target main has left behind is refused under one of
+/// two labels, depending on which check decides it. The head-of-queue check
+/// (its first poll found it at the head, or an earlier queued recheck was
+/// UNRESOLVED) prints that the check completed at the head refused it, then
+/// the stale-base message, and records the refusal as `StaleBase`. The queued
+/// recheck (its first poll found it anywhere else) prints the EVICTED line and
+/// records it as `ValidationLockRefusal`. Both exit with code 3 and take no
+/// slot. Before this bound existed, the pre-queue check waited as long as it
+/// took and refused such a run before the queue, always as `StaleBase`.
 ///
 /// The value equals the fetch timeout, so a peer's ordinary freshness fetch
 /// under this lock (at most about 31 s) normally finishes inside it.
@@ -4244,6 +4266,15 @@ fn current_main_freshness_check_reported(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// When `Some`, every `current_main_freshness_check_within` call on this
+    /// thread appends the `git_lock_wait` it was given, so a test can assert
+    /// which bound, if any, a path passes. Production never reads it.
+    static FRESHNESS_GIT_LOCK_WAITS: RefCell<Option<Vec<Option<Duration>>>> =
+        const { RefCell::new(None) };
+}
+
 /// `git_lock_wait` of `None` waits for the shared Git lock without bound;
 /// `Some(bound)` returns `FreshnessCheck::Deferred` once the bound expires.
 fn current_main_freshness_check_within(
@@ -4253,6 +4284,12 @@ fn current_main_freshness_check_within(
     git_lock_wait: Option<Duration>,
     report: LockWaitReport<'_>,
 ) -> Result<FreshnessCheck, ValidateLockError> {
+    #[cfg(test)]
+    FRESHNESS_GIT_LOCK_WAITS.with(|calls| {
+        if let Some(calls) = calls.borrow_mut().as_mut() {
+            calls.push(git_lock_wait);
+        }
+    });
     let Some(repository) = validation_repository(root, kind)? else {
         return Ok(FreshnessCheck::Checked(None));
     };
@@ -4303,8 +4340,14 @@ fn current_main_freshness_check_within(
         .map_err(|source| io_error("open shared Git mutation lock", &git_lock_path, source))?;
     // Every hermit validation checkout shares one Git common directory, and
     // start_unit.py holds this same lock while it prepares a checkout, which
-    // can take minutes. A wait on it is therefore never silent, and a queued
-    // or not-yet-queued caller bounds it.
+    // can take minutes. A wait on it is therefore never silent: WAITING with
+    // the holder before it blocks, still WAITING every
+    // `LOCK_WAIT_REPORT_SECONDS`, and acquired when it ends. Only the
+    // pre-queue check bounds it (`PRE_QUEUE_GIT_LOCK_WAIT_SECONDS`). The
+    // queued recheck, the head-of-queue check, and the boundary and final
+    // checks pass `None` and wait without a limit. A queued run keeps its
+    // place during that wait: only the run itself removes its entry, or
+    // `prune_and_sort_global_queue` once the entry's owner is dead.
     let what = format!("the shared Git lock for the current-main freshness check of {target}");
     let every = Duration::from_secs(LOCK_WAIT_REPORT_SECONDS);
     match git_lock_wait {
@@ -5299,7 +5342,12 @@ impl ValidateLock {
                 // here cannot reorder the queue. The wait is logged, naming the
                 // lock and its holder, before it blocks, every
                 // `LOCK_WAIT_REPORT_SECONDS` while it lasts, and when it ends.
-                // It stalls this waiter's queue poll until then.
+                // It stalls this waiter's queue poll until then. ⚠️ If this run
+                // becomes the head while it waits here, nobody behind it can
+                // take a free slot until the wait ends, because only the head
+                // takes a slot, and start_unit.py can hold this lock for
+                // minutes. The recheck had the same stall before the
+                // pre-queue bound was added.
                 let checked =
                     current_main_freshness_check_reported(root, &args.target, args.kind, report);
                 match checked {
@@ -14397,9 +14445,14 @@ garbage
     /// and a target that main has left behind is evicted: removed from the
     /// queue and refused, with no slot taken.
     ///
-    /// The lock is held for `HOLD` after the WAITING line, many times the
-    /// poll, the recheck period and the pre-queue bound. A recheck bounded by
-    /// any of them would have given up before the release.
+    /// The lock is held for `HOLD` after the WAITING line: many times this
+    /// test's poll, recheck period and pre-queue bound, and longer than
+    /// `POLL_SECONDS`, the production bound an earlier revision put on this
+    /// recheck. A recheck bounded by any of them would have given up before
+    /// the release. A bound longer than `HOLD` (such as the 30 s production
+    /// pre-queue bound) could still acquire in time, so the test also records
+    /// the bound every freshness check in this queue wait is given, and
+    /// requires all of them to be unbounded.
     #[test]
     fn a_queued_recheck_waits_for_a_held_git_lock_without_a_limit_and_keeps_its_place() {
         let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
@@ -14415,7 +14468,7 @@ garbage
         // declared before the waiter.
         const HEAD: &str = "git-lock-in-queue-head";
         const AGENT: &str = "git-lock-in-queue-waiter";
-        const HOLD: Duration = Duration::from_millis(2_500);
+        const HOLD: Duration = Duration::from_secs(POLL_SECONDS + 1);
         lock.write_global_queue(&[GlobalQueueEntry {
             enqueued_at: epoch_seconds().unwrap() - 60,
             priority: QueuePriority::Routine,
@@ -14457,6 +14510,7 @@ garbage
             }
         };
         let started = Instant::now();
+        FRESHNESS_GIT_LOCK_WAITS.with(|calls| *calls.borrow_mut() = Some(Vec::new()));
         let (waited, released) = thread::scope(|scope| {
             // Once the recheck says it is blocked, keep the lock for `HOLD`,
             // look at the queue while the waiter is still blocked, and release.
@@ -14482,6 +14536,9 @@ garbage
             );
             (waited, releaser.join().unwrap())
         });
+        let bounds = FRESHNESS_GIT_LOCK_WAITS
+            .with(|calls| calls.borrow_mut().take())
+            .expect("the freshness bound recorder was enabled");
         let waited = waited.unwrap();
         let elapsed = started.elapsed();
         holder.finish();
@@ -14555,6 +14612,19 @@ garbage
                  {lines:#?}"
             );
         }
+        // The queue wait's own freshness checks are the queued recheck
+        // (recheck_now, then every recheck period) and, at the head, the
+        // head-of-queue check; this waiter never reaches the head. Every one
+        // of them must wait for the Git lock without a bound, whatever its
+        // length.
+        assert!(
+            !bounds.is_empty(),
+            "the queue wait ran no freshness check at all: {lines:#?}"
+        );
+        assert!(
+            bounds.iter().all(Option::is_none),
+            "a queued freshness check was given a Git-lock bound: {bounds:?}"
+        );
         assert!(
             lines[..waiting[0]]
                 .iter()
