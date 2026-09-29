@@ -1,0 +1,839 @@
+#!/usr/bin/python3 -I
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+"""Claude Code PreToolUse hook: refuse Bash commands that would raise a dialog.
+
+WHY THIS EXISTS. The owner runs Claude Code agents unattended. Claude Code
+2.1.284 stops an agent with a permission dialog for some Bash commands even in
+bypass mode, and an in-process subagent's dialog appears on its parent's
+terminal, so one dialog freezes the coordinator and every subagent it runs.
+Owner directive, 2026-09-29: refuse these commands at once, with a reason that
+says how to rewrite them, instead of waiting on a dialog.
+
+WHAT RAISES THE DIALOG (read from the 2.1.284 binary on 2026-09-29):
+
+  * The `dangerousRemoval` check on `rm` and `rmdir` is the only Bash check
+    marked `bypassImmune` that is active in this host's configuration. It
+    fires when a removal target contains an unguarded variable that can become
+    `/` or a top-level directory when empty, contains command substitution
+    output, resolves to the working directory or one of its parents or a
+    critical system directory, or is a relative glob after a `cd`. In bypass
+    mode the dialog waits 120 s and then denies. In auto mode it goes to the
+    user as well; the classifier cannot allow it.
+  * `cd` compounds (`cd-compound-write`, `-read`, `-redirect`, `multi-cd`,
+    `cd-git-compound`) are ordinary "ask" results. Bypass mode allows them;
+    auto and default mode (external agents, per managed settings) do not.
+
+WHAT THIS REFUSES. A superset of the removal check, matching the owner's rule
+"rm targets must be literal absolute paths or "${VAR:?}" forms": any `rm`,
+`rmdir`, or `find ... -delete` / `find ... -exec rm` whose target has an
+unguarded expansion; any removal of the working directory, `/tmp`, one of
+their parents, `/`, a top-level directory, or the home directory; and any
+`cd`, `pushd`, `popd`, or `chdir` in a command that runs more than one simple
+command. A PreToolUse "deny" is applied before Claude Code's own checks run,
+so no dialog is raised.
+
+THE ORGANIZATION'S GUARDRAILS HOOK. The Meta preset enables the
+agent-security-guardrails plugin, whose own PreToolUse hook runs
+`guardrails_cli PreToolUse` and answers "ask" for about 35 Bash rules compiled
+into guardrails_srv (host/namespace escape tools, crontab, sudo, su,
+destructive rm and dd, ssh localhost, reboot, daemon restarts, database dumps,
+and more). Their input is the command with quoted spans removed, so a bare
+word anywhere outside quotes matches, even as a grep pattern. That "ask" is
+the same dialog. Claude Code merges every PreToolUse hook's answer as
+deny > ask > allow (2.1.284, `uQe`), so when no local rule applies this hook
+asks the same CLI with the same input and turns its "ask" into a "deny" that
+keeps the guardrail's reason and adds a rewrite hint. That covers every
+current and future ask rule without copying their patterns. A hard ask
+answers in about 10 ms; a soft ask waits about 4.7 s, which the managed hook
+spends in parallel anyway. Set DEV_HERMIT_GUARDRAILS_CLI to another path (or
+to "off") to change or skip the consultation.
+
+FAIL OPEN. Any parse failure, unknown input shape, or internal error exits 0
+with no output: a bug in this hook must never block work. Set
+DEV_HERMIT_BASH_DENY_HOOK=off in the agent's environment to disable it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import posixpath
+import re
+import subprocess
+import sys
+
+MAX_COMMAND_BYTES = 200_000
+MAX_DEPTH = 6
+
+HOOK = "Refused by the dev-hermit permission hook"
+
+CD_COMMANDS = {"cd", "pushd", "popd", "chdir"}
+REMOVE_COMMANDS = {"rm", "rmdir"}
+RESERVED_PREFIXES = {
+    "if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+    "{", "}", "!", "time", "esac", "function",
+}
+WRAPPERS = {"sudo", "env", "command", "builtin", "exec", "nice", "nohup",
+            "time", "timeout", "ionice", "stdbuf", "xargs", "doas", "chronic",
+            "setsid", "unbuffer"}
+SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
+# Mirrors the top-level names Claude Code treats as `/<name>` hazards.
+TOP_LEVEL = {
+    "bin", "boot", "dev", "etc", "home", "lib", "lib32", "lib64", "libx32",
+    "media", "mnt", "opt", "proc", "root", "run", "sbin", "srv", "sys", "tmp",
+    "usr", "var", "snap", "nix", "data", "private",
+}
+# Managed settings add /tmp as a working directory for every session.
+EXTRA_WORKING_DIRS = ("/tmp",)
+
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+GUARDED_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:\?")
+
+
+class ParseError(Exception):
+    pass
+
+
+class Word:
+    """One shell word: raw text, literal value, and the expansions it holds."""
+
+    def __init__(self) -> None:
+        self.raw = ""
+        self.value = ""          # expansions replaced by \x00
+        self.expansions: list[tuple[str, str, bool]] = []  # (kind, text, guarded)
+        self.unquoted_glob = False
+        self.subscripts: list[str] = []   # $(...) and `...` bodies
+
+    def unguarded(self) -> list[tuple[str, str, bool]]:
+        return [e for e in self.expansions if not e[2]]
+
+
+def _match_paren(s: str, i: int) -> int:
+    """Given s[i] just after an opening '(', return index of matching ')'."""
+    depth = 1
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                raise ParseError("unterminated '")
+            i = j + 1
+            continue
+        if c == '"':
+            i = _skip_dquote(s, i + 1)
+            continue
+        if c == "`":
+            j = _skip_backtick(s, i + 1)
+            i = j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ParseError("unterminated (")
+
+
+def _match_brace(s: str, i: int) -> int:
+    depth = 1
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                raise ParseError("unterminated '")
+            i = j + 1
+            continue
+        if c == '"':
+            i = _skip_dquote(s, i + 1)
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ParseError("unterminated {")
+
+
+def _skip_backtick(s: str, i: int) -> int:
+    n = len(s)
+    while i < n:
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == "`":
+            return i
+        i += 1
+    raise ParseError("unterminated `")
+
+
+def _skip_dquote(s: str, i: int) -> int:
+    """Return index just past the closing double quote."""
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == '"':
+            return i + 1
+        if c == "$" and i + 1 < n and s[i + 1] == "(":
+            i = _match_paren(s, i + 2) + 1
+            continue
+        if c == "$" and i + 1 < n and s[i + 1] == "{":
+            i = _match_brace(s, i + 2) + 1
+            continue
+        if c == "`":
+            i = _skip_backtick(s, i + 1) + 1
+            continue
+        i += 1
+    raise ParseError('unterminated "')
+
+
+def _read_dollar(s: str, i: int, w: Word) -> int:
+    """s[i] == '$'. Record the expansion in w; return the index after it."""
+    n = len(s)
+    nxt = s[i + 1] if i + 1 < n else ""
+    if nxt == "(":
+        if i + 2 < n and s[i + 2] == "(":
+            j = _match_paren(s, i + 2)
+            end = j + 1
+            if end < n and s[end] == ")":
+                end += 1
+            w.expansions.append(("arith", s[i:end], False))
+            w.value += "\x00"
+            return end
+        j = _match_paren(s, i + 2)
+        body = s[i + 2:j]
+        w.subscripts.append(body)
+        w.expansions.append(("cmdsub", s[i:j + 1], False))
+        w.value += "\x00"
+        return j + 1
+    if nxt == "{":
+        j = _match_brace(s, i + 2)
+        body = s[i + 2:j]
+        w.expansions.append(("var", s[i:j + 1], bool(GUARDED_RE.match(body))))
+        w.value += "\x00"
+        return j + 1
+    if nxt == "'":
+        j = i + 2
+        out = []
+        while j < n and s[j] != "'":
+            if s[j] == "\\" and j + 1 < n:
+                out.append(s[j:j + 2])
+                j += 2
+                continue
+            out.append(s[j])
+            j += 1
+        if j >= n:
+            raise ParseError("unterminated $'")
+        w.value += "".join(out)
+        return j + 1
+    if nxt == '"':
+        return i + 1  # locale string: treat $ as nothing, "..." follows
+    m = NAME_RE.match(s, i + 1)
+    if m:
+        w.expansions.append(("var", s[i:m.end()], False))
+        w.value += "\x00"
+        return m.end()
+    if nxt and (nxt.isdigit() or nxt in "@*#?!-"):
+        w.expansions.append(("var", s[i:i + 2], False))
+        w.value += "\x00"
+        return i + 2
+    if nxt == "$":
+        # $$ is the shell's pid and never empty.
+        w.value += "PID"
+        return i + 2
+    w.value += "$"
+    return i + 1
+
+
+OPERATORS = ("&&", "||", ";;&", ";;", ";&", "|&", ";", "|", "&", "(", ")")
+
+
+def tokenize(s: str) -> list:
+    """Tokens are Word objects or operator strings ('\\n' for newline).
+
+    Redirections are consumed here and dropped, with their targets.
+    Heredoc bodies are skipped.
+    """
+    toks: list = []
+    pending_heredocs: list[tuple[str, bool]] = []
+    i = 0
+    n = len(s)
+    at_word_start = True
+    while i < n:
+        c = s[i]
+        if c == "\n":
+            toks.append("\n")
+            i += 1
+            if pending_heredocs:
+                i = _skip_heredocs(s, i, pending_heredocs)
+                pending_heredocs = []
+            continue
+        if c in " \t\r":
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n and s[i + 1] == "\n":
+            i += 2
+            continue
+        if c == "#":
+            j = s.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        # Redirections, optionally preceded by a fd number or &.
+        m = re.match(r"(\d*|&)(<<<|<<-|<<|<>|>>|>\||<&|>&|&>>|&>|<|>)", s[i:])
+        if m and not (m.group(1) == "&" and m.group(2) in ("<<<", "<<-", "<<")):
+            op = m.group(2)
+            if m.group(1) == "&" and op in (">", ">>"):
+                op = "&" + op
+            i += m.end()
+            while i < n and s[i] in " \t":
+                i += 1
+            if op in ("<&", ">&") and i < n and (s[i].isdigit() or s[i] == "-"):
+                while i < n and (s[i].isdigit() or s[i] == "-"):
+                    i += 1
+                continue
+            if op in ("<<", "<<-"):
+                w, i = _read_word(s, i)
+                delim = w.raw.replace("'", "").replace('"', "").replace("\\", "")
+                pending_heredocs.append((delim, op == "<<-"))
+                continue
+            w, i = _read_word(s, i)
+            # A redirect target can hold a substitution; keep it for analysis.
+            if w.subscripts:
+                toks.append(("redirsub", w))
+            continue
+        if c in "<>" and i + 1 < n and s[i + 1] == "(":
+            j = _match_paren(s, i + 2)
+            w = Word()
+            w.raw = s[i:j + 1]
+            w.subscripts.append(s[i + 2:j])
+            w.expansions.append(("procsub", w.raw, False))
+            w.value = "\x00"
+            toks.append(w)
+            i = j + 1
+            continue
+        matched = False
+        for op in OPERATORS:
+            if s.startswith(op, i):
+                toks.append(op)
+                i += len(op)
+                matched = True
+                break
+        if matched:
+            continue
+        w, i = _read_word(s, i)
+        toks.append(w)
+    if pending_heredocs:
+        # Heredoc never terminated by a newline: bash would warn; fail open.
+        raise ParseError("heredoc without body")
+    return toks
+
+
+def _skip_heredocs(s: str, i: int, pending: list[tuple[str, bool]]) -> int:
+    for delim, strip_tabs in pending:
+        while True:
+            j = s.find("\n", i)
+            line = s[i:] if j < 0 else s[i:j]
+            check = line.lstrip("\t") if strip_tabs else line
+            i = len(s) if j < 0 else j + 1
+            if check == delim:
+                break
+            if j < 0:
+                return i  # unterminated heredoc runs to end of input
+    return i
+
+
+def _read_word(s: str, i: int) -> tuple[Word, int]:
+    w = Word()
+    start = i
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c in " \t\r\n;&|()<>":
+            if c in "<>" and i + 1 < n and s[i + 1] == "(" and i > start:
+                pass
+            else:
+                break
+        if c == "\\":
+            if i + 1 < n:
+                if s[i + 1] != "\n":
+                    w.value += s[i + 1]
+                i += 2
+            else:
+                i += 1
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                raise ParseError("unterminated '")
+            w.value += s[i + 1:j]
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while True:
+                if j >= n:
+                    raise ParseError('unterminated "')
+                d = s[j]
+                if d == '"':
+                    j += 1
+                    break
+                if d == "\\":
+                    if j + 1 < n and s[j + 1] in '$`"\\\n':
+                        w.value += s[j + 1]
+                    else:
+                        w.value += s[j:j + 2]
+                    j += 2
+                    continue
+                if d == "$":
+                    j = _read_dollar(s, j, w)
+                    continue
+                if d == "`":
+                    k = _skip_backtick(s, j + 1)
+                    w.subscripts.append(s[j + 1:k])
+                    w.expansions.append(("cmdsub", s[j:k + 1], False))
+                    w.value += "\x00"
+                    j = k + 1
+                    continue
+                w.value += d
+                j += 1
+            i = j
+            continue
+        if c == "$":
+            i = _read_dollar(s, i, w)
+            continue
+        if c == "`":
+            k = _skip_backtick(s, i + 1)
+            w.subscripts.append(s[i + 1:k])
+            w.expansions.append(("cmdsub", s[i:k + 1], False))
+            w.value += "\x00"
+            i = k + 1
+            continue
+        if c in "*?[":
+            w.unquoted_glob = True
+        w.value += c
+        i += 1
+    w.raw = s[start:i]
+    return w, i
+
+
+SEPARATORS = {"&&", "||", ";;&", ";;", ";&", "|&", ";", "|", "&", "(", ")", "\n"}
+
+
+def simple_commands(toks: list) -> list[list[Word]]:
+    cmds: list[list[Word]] = []
+    cur: list[Word] = []
+    for t in toks:
+        if isinstance(t, str):
+            if cur:
+                cmds.append(cur)
+            cur = []
+        elif isinstance(t, tuple):
+            continue
+        else:
+            cur.append(t)
+    if cur:
+        cmds.append(cur)
+    out = []
+    for c in cmds:
+        c = _strip_prefixes(c)
+        if c:
+            out.append(c)
+    return out
+
+
+def _strip_prefixes(words: list[Word]) -> list[Word]:
+    i = 0
+    while i < len(words):
+        v = words[i].value
+        if not words[i].expansions and v in RESERVED_PREFIXES:
+            i += 1
+            continue
+        if not words[i].expansions and v in ("for", "select", "case"):
+            return []  # loop/case header: its words are not a command
+        if not words[i].expansions and v == "in":
+            return []
+        break
+    return words[i:]
+
+
+def _is_assignment(w: Word) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w.raw))
+
+
+def effective_argv(words: list[Word]) -> list[Word]:
+    """Drop leading assignments and wrapper commands like sudo/env/timeout."""
+    i = 0
+    n = len(words)
+    while i < n:
+        w = words[i]
+        if _is_assignment(w):
+            i += 1
+            continue
+        name = posixpath.basename(w.value) if not w.expansions else ""
+        if name in WRAPPERS:
+            i += 1
+            if name == "timeout":
+                while i < n and words[i].value.startswith("-"):
+                    i += 1
+                i += 1  # duration
+                continue
+            while i < n and (words[i].value.startswith("-")
+                             or (name == "env" and _is_assignment(words[i]))):
+                opt = words[i].value
+                i += 1
+                if name in ("sudo", "doas") and opt in ("-u", "-g", "-C", "-D", "-h", "-p", "-U"):
+                    i += 1
+                elif name == "nice" and opt == "-n":
+                    i += 1
+                elif name == "ionice" and opt in ("-c", "-n", "-p"):
+                    i += 1
+                elif name == "xargs" and opt in ("-n", "-P", "-I", "-L", "-d", "-a", "-E", "-s"):
+                    i += 1
+                elif name == "env" and opt in ("-u", "-C", "-S"):
+                    i += 1
+            continue
+        break
+    return words[i:]
+
+
+class Analysis:
+    def __init__(self, cwd: str, home: str) -> None:
+        self.cwd = cwd
+        self.home = home
+        self.reasons: list[str] = []
+
+    def add(self, reason: str) -> None:
+        if reason not in self.reasons:
+            self.reasons.append(reason)
+
+
+def analyze(script: str, a: Analysis, depth: int = 0, cd_rule: bool = True) -> None:
+    """Check one script. The cd rule counts the commands of this script only:
+    a substitution's commands are a separate script, and `sh -c` runs its
+    script in a child shell whose cd Claude Code does not track."""
+    if depth > MAX_DEPTH:
+        raise ParseError("nesting too deep")
+    toks = tokenize(script)
+    for t in toks:
+        if isinstance(t, tuple):
+            for sub in t[1].subscripts:
+                analyze(sub, a, depth + 1)
+    count = 0
+    cd_seen = False
+    for words in simple_commands(toks):
+        count += 1
+        for w in words:
+            for sub in w.subscripts:
+                analyze(sub, a, depth + 1)
+        argv = effective_argv(words)
+        if not argv:
+            continue
+        head = argv[0]
+        name = posixpath.basename(head.value) if not head.expansions else ""
+        if name in CD_COMMANDS:
+            cd_seen = True
+        elif name in REMOVE_COMMANDS:
+            check_remove(name, argv[1:], a)
+        elif name == "find":
+            check_find(argv[1:], a)
+        elif name in SHELLS or name == "eval":
+            check_inline_script(name, argv[1:], a, depth)
+    if cd_rule and cd_seen and count > 1:
+        a.add(CD_REASON)
+
+
+def check_inline_script(name: str, args: list[Word], a: Analysis, depth: int) -> None:
+    if name == "eval":
+        if args and not any(w.unguarded() for w in args):
+            analyze(" ".join(w.value for w in args), a, depth + 1)
+        return
+    for idx, w in enumerate(args):
+        if w.value.startswith("-") and "c" in w.value[1:] and not w.value.startswith("--"):
+            if idx + 1 < len(args):
+                script = args[idx + 1]
+                if not script.expansions:
+                    analyze(script.value, a, depth + 1, cd_rule=False)
+            return
+        if not w.value.startswith("-"):
+            return
+
+
+def _guarded_rewrite(w: Word) -> str:
+    out = w.raw
+    for kind, text, guarded in w.expansions:
+        if kind != "var" or guarded:
+            continue
+        inner = text[2:-1] if text.startswith("${") else text[1:]
+        m = NAME_RE.fullmatch(inner) or re.fullmatch(r"[0-9]+", inner)
+        if m:
+            out = out.replace(text, "${%s:?}" % inner, 1)
+    if not (out.startswith('"') or out.startswith("'")) and "$" in out:
+        out = '"' + out.replace('"', "") + '"'
+    return out
+
+
+def _normalize_target(value: str, cwd: str, home: str) -> str | None:
+    if "\x00" in value:
+        return None
+    if value == "~" or value.startswith("~/"):
+        value = home + value[1:]
+    elif value.startswith("~"):
+        return None
+    path = value if value.startswith("/") else posixpath.join(cwd, value)
+    path = posixpath.normpath(path)
+    if path.startswith("//"):
+        path = "/" + path.lstrip("/")
+    # rm -rf DIR/* removes DIR's contents: judge it as DIR, like Claude Code.
+    while True:
+        stripped = re.sub(r"/\*+$", "", path)
+        if stripped == path:
+            break
+        path = stripped or "/"
+    if path in ("*",):
+        path = cwd
+    return path
+
+
+def _is_ancestor_or_self(target: str, path: str) -> bool:
+    if target == "/":
+        return True
+    return path == target or path.startswith(target.rstrip("/") + "/")
+
+
+def _removal_hazard(path: str, a: Analysis) -> str | None:
+    if path == "/":
+        return "the filesystem root"
+    parts = [p for p in path.split("/") if p]
+    if len(parts) == 1 and parts[0] in TOP_LEVEL:
+        return "a top-level system directory"
+    if a.home and _is_ancestor_or_self(path, a.home):
+        return "the home directory or one of its parents"
+    if a.cwd and _is_ancestor_or_self(path, a.cwd):
+        return "the working directory or one of its parents"
+    for d in EXTRA_WORKING_DIRS:
+        if _is_ancestor_or_self(path, d):
+            return "a working directory (%s) or one of its parents" % d
+    return None
+
+
+def _targets(args: list[Word]) -> list[Word]:
+    out = []
+    opts_done = False
+    for w in args:
+        if not opts_done and not w.expansions:
+            if w.value == "--":
+                opts_done = True
+                continue
+            if w.value.startswith("-") and w.value != "-":
+                continue
+        out.append(w)
+    return out
+
+
+def check_remove(name: str, args: list[Word], a: Analysis) -> None:
+    for w in _targets(args):
+        bad = w.unguarded()
+        if bad:
+            if any(k in ("cmdsub", "procsub") for k, _, _ in bad):
+                a.add(
+                    f"{HOOK}: {name} target `{w.raw}` is the output of a command "
+                    "substitution, which Claude Code cannot check and stops for a "
+                    "permission dialog. Run the substitution as its own command "
+                    f"first, then {name} the literal absolute paths it prints."
+                )
+            else:
+                a.add(
+                    f"{HOOK}: {name} targets must be literal absolute paths or "
+                    f"\"${{VAR:?}}\" forms; `{w.raw}` has an unguarded expansion, "
+                    "which makes Claude Code stop for a permission dialog. "
+                    f"Rewrite as {name} ... {_guarded_rewrite(w)}"
+                    + (" (or use a literal absolute path)." if not w.subscripts else ".")
+                )
+            continue
+        if w.expansions:
+            continue  # every expansion is ${VAR:?}: the owner's allowed form
+        path = _normalize_target(w.value, a.cwd, a.home)
+        if path is None:
+            continue
+        hazard = _removal_hazard(path, a)
+        if hazard:
+            a.add(
+                f"{HOOK}: {name} target `{w.raw}` would remove {hazard} ({path}), which "
+                f"makes Claude Code stop for a permission dialog. {CLEANUP_HINT}"
+            )
+
+
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+
+
+def check_find(args: list[Word], a: Analysis) -> None:
+    deletes = False
+    for idx, w in enumerate(args):
+        if w.value == "-delete":
+            deletes = True
+        if w.value in FIND_EXEC and idx + 1 < len(args):
+            prog = posixpath.basename(args[idx + 1].value)
+            if prog in REMOVE_COMMANDS:
+                deletes = True
+    if not deletes:
+        return
+    for w in args:
+        if not w.expansions and (w.value.startswith("-") or w.value in ("(", "!", "\\(")):
+            break
+        if w.value.startswith("-"):
+            break
+        if w.unguarded():
+            a.add(
+                f"{HOOK}: find paths that delete must be literal absolute paths or "
+                f"\"${{VAR:?}}\" forms; `{w.raw}` has an unguarded expansion. "
+                f"Rewrite as find {_guarded_rewrite(w)} ... -delete, or use a "
+                "literal absolute path."
+            )
+
+
+CD_REASON = (
+    f"{HOOK}: never cd in a compound command (cd followed by &&, ;, ||, | or a "
+    "newline makes Claude Code stop for a permission dialog). Use absolute paths, "
+    "git -C DIR, make -C DIR, cargo --manifest-path DIR/Cargo.toml, or env -C DIR "
+    "CMD; or run the cd as its own Bash call."
+)
+
+
+GUARDRAILS_CLI = "/usr/local/bin/ai_security/claude_code/guardrails_cli"
+# The managed hook entry gives the CLI 5 s; a soft ask measured 4.71 s.
+GUARDRAILS_TIMEOUT_S = 5.5
+# A hint never suggests a way around the guardrail (another interpreter, other
+# quoting, a different wrapper); it names the sanctioned alternative or hands
+# the command to the coordinator. The first matching key wins.
+CLEANUP_HINT = (
+    "Do not delete; list the path under a CLEANUP heading in your status file, "
+    "and the coordinator will batch the cleanup."
+)
+GUARDRAILS_HINTS = (
+    ("Host/namespace escape tools",
+     "Measure CPU with /usr/bin/time instead of systemd-run scopes; run the "
+     "command without the wrapper."),
+    ("Cron jobs",
+     "Read timers with `systemctl --user list-timers --all` instead."),
+    ("sudo runs commands",
+     "Run it without sudo. If root is really required, hand the command to the "
+     "coordinator."),
+    ("Switching to another user",
+     "Run it as the current user. If another user is really required, hand the "
+     "command to the coordinator."),
+    ("disk device",
+     "Do not write to a device; hand the command to the coordinator."),
+    ("permanently destroy", CLEANUP_HINT),
+    ("permanently deletes", CLEANUP_HINT),
+    ("recursively deletes", CLEANUP_HINT),
+    ("Deleting home directory", CLEANUP_HINT),
+    ("SSH to localhost",
+     "Run the command directly instead of through ssh localhost."),
+    ("EdenFS or Buck daemons",
+     "Do not restart or stop EdenFS or Buck unattended; report the problem to "
+     "the coordinator instead."),
+)
+GUARDRAILS_GENERIC_HINT = (
+    "Do not reword the command to get past the check. If it is really needed, "
+    "hand it to the coordinator: nobody answers the dialog while agents run "
+    "unattended."
+)
+
+
+def guardrails_ask(payload: dict) -> str | None:
+    """Ask the organization's guardrails CLI what its own hook will answer."""
+    cli = os.environ.get("DEV_HERMIT_GUARDRAILS_CLI", GUARDRAILS_CLI)
+    if cli.lower() in ("off", "0", "false", "") or not os.access(cli, os.X_OK):
+        return None
+    try:
+        proc = subprocess.run(
+            [cli, "PreToolUse"], input=json.dumps(payload), capture_output=True,
+            text=True, timeout=GUARDRAILS_TIMEOUT_S,
+        )
+        hso = json.loads(proc.stdout).get("hookSpecificOutput", {})
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return None
+    if not isinstance(hso, dict) or hso.get("permissionDecision") != "ask":
+        return None
+    why = str(hso.get("permissionDecisionReason") or "no reason given")
+    hint = next((h for key, h in GUARDRAILS_HINTS if key in why), GUARDRAILS_GENERIC_HINT)
+    return (f"{HOOK}: the organization's guardrails hook (agent-security-guardrails) "
+            f"would stop this command for a permission dialog: \"{why}\". {hint}")
+
+
+def decide(payload: dict) -> str | None:
+    if payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if len(command) > MAX_COMMAND_BYTES:
+        return None
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd.startswith("/"):
+        cwd = ""
+    home = os.environ.get("HOME", "")
+    if not home.startswith("/") or home == "/":
+        home = ""
+    a = Analysis(posixpath.normpath(cwd) if cwd else "", posixpath.normpath(home) if home else "")
+    try:
+        analyze(command, a)
+    except ParseError:
+        pass  # our own rules fail open; the guardrails question still applies
+    if not a.reasons:
+        return guardrails_ask(payload)
+    return "\n".join(a.reasons)
+
+
+def main() -> int:
+    try:
+        if os.environ.get("DEV_HERMIT_BASH_DENY_HOOK", "").lower() in ("off", "0", "false"):
+            return 0
+        payload = json.loads(sys.stdin.read())
+        if not isinstance(payload, dict):
+            return 0
+        reason = decide(payload)
+        if reason is None:
+            return 0
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+        sys.stdout.write(json.dumps(out))
+        sys.stdout.flush()
+    except BaseException:  # fail open, including on RecursionError and SystemExit
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        code = main()
+    except BaseException:
+        code = 0
+    sys.exit(code)
