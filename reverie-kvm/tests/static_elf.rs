@@ -1603,14 +1603,67 @@ fn leader_self_exec_bounded(test: &str) -> bool {
         .env("REVERIE_LEADER_EXEC_CHILD", test)
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
         "{test}: status={:?} stdout={} stderr={}",
         output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        stdout,
+        stderr
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("running "))
+            .collect::<Vec<_>>(),
+        ["running 1 test"],
+        "\n{test}: bounded child discovery mismatch; exit_code={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
+    );
+    let completed_test = format!("test {test} ... ok");
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("test ") && line.contains(" ... "))
+            .collect::<Vec<_>>(),
+        [completed_test.as_str()],
+        "{test}: stdout={stdout} stderr={stderr}"
     );
     false
+}
+
+#[test]
+fn leader_self_exec_bounded_rejects_zero_matched_tests() {
+    const TEST: &str = "leader_self_exec_bounded_rejects_zero_matched_tests";
+    const MISSING: &str = "__reverie_deliberately_nonexistent_leader_self_exec_test__";
+    // Keep strict-KVM failures outside the expected assertion. A permissive
+    // run still follows the integration suite's ordinary availability guard.
+    if !kvm_available(TEST) {
+        return;
+    }
+    let rejected = std::panic::catch_unwind(|| leader_self_exec_bounded(MISSING))
+        .expect_err("the bounded child helper accepted a zero-match child");
+    let message = rejected
+        .downcast_ref::<String>()
+        .expect("the bounded child helper did not emit a diagnostic");
+    let expected_diagnostic =
+        format!("{MISSING}: bounded child discovery mismatch; exit_code=Some(0)");
+    assert!(
+        message.lines().any(|line| line == expected_diagnostic),
+        "unexpected bounded child refusal: {message}"
+    );
+    assert!(
+        message.lines().any(|line| line == "running 0 tests"),
+        "the rejected child did not report zero matched tests: {message}"
+    );
+    assert!(
+        message
+            .lines()
+            .any(|line| line
+                .starts_with("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; ")),
+        "the rejected child did not complete a successful zero-test run: {message}"
+    );
 }
 
 fn leader_self_exec_guest(
