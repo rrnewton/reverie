@@ -32,7 +32,7 @@ Labels: **[MEASURED]** is a number read from a receipt, log or command output. *
 2. **Behind the landing queue, the census found 37 non-passing cells in 15 families.** 28 cells in 8 families (F1, F2, F4-F9) need LiteInst work; one of those families (F5, 5 cells) is speed against the time budget. The other 9 are by-design refusals or test, gate or host issues (6), cells with no ptrace reference (2), and a host-PMU refusal (1). The biggest LiteInst families:
    - vfork refused, 6 cells;
    - an exec'd child reaching its entry point before the runtime has checked in, 8 cells (7 static or no-libc images, 1 PIE child);
-   - a kernel-internal restart code (ERESTARTSYS, -512) reaching the guest, 5 cells. The fix is on an unmerged, unpushed reverie branch, stalled on an open slowness defect (section 3.2); it is **not** on reverie main.
+   - a kernel-internal restart code (ERESTARTSYS, -512) reaching the guest, 5 cells. The fix is on a pushed reverie branch that has no pull request yet, stalled on an open slowness defect (section 3.2); it is **not** on reverie main.
    - over the 22 CPU-second budget, 5 cells. The budget may not be widened; only a faster LiteInst fixes this.
    - LiteInst refuses record/replay and chaos by design. Only 8 of the 369 cells are in those modes (chaos 6, replay 2).
 3. **Parity is 0 for one structural reason.**
@@ -209,7 +209,7 @@ The first design was reviewed and rejected on 2026-09-28. Its fixed addresses we
 |---|---|---|---|
 | F1 vfork refused | 6 | "exec cannot preserve the preload runtime" | Built into the preload design; expected to go away only with TrapOnly [INFERRED] |
 | F2 entry before handshake | 8 | An exec'd child reaches its entry point before the runtime has checked in (7 static or no-libc images, 1 PIE child) | Built into the preload design [INFERRED] |
-| F4 ERESTARTSYS -512 reaches the guest | 5 (+ perl `close()`) | The LiteInst stop is a breakpoint, not a syscall stop, so the kernel never restarts an interrupted injected syscall and the raw restart code leaks into the guest | **Not fixed on reverie main.** The fix is on the unpushed branch `claude/liteinst-hybrid-restart-20260927`. Its round 3 stalled on 2026-09-27: a new test passes but takes 113-119 s under LiteInst against 0.17 s under ptrace, because the tracer single-steps most of a spin loop after a timer step window; the cause is not yet found [MEASURED, `ignored/liteinst-lane-claude/f4-restart/restart-r3-blocked-state.md`] |
+| F4 ERESTARTSYS -512 reaches the guest | 5 (+ perl `close()`) | The LiteInst stop is a breakpoint, not a syscall stop, so the kernel never restarts an interrupted injected syscall and the raw restart code leaks into the guest | **Not fixed on reverie main.** The fix is on branch `claude/liteinst-hybrid-restart-20260927` @5024e938 (pushed, no pull request); the unfinished round-3 work is saved at `claude/liteinst-hybrid-restart-wip-20260927` @295b5f29. Round 3 stalled on 2026-09-27: a new test passes but takes 113-119 s under LiteInst against 0.17 s under ptrace. The cause is not yet found; the open hypotheses are that the tracer keeps single-stepping after the timer's 1,000-branch step window, or that one step blocks on a fixed timeout [MEASURED times, INFERRED hypotheses; `ignored/liteinst-lane-claude/f4-restart/restart-r3-blocked-state.md`, branches read back with `git ls-remote` at 16:35Z] |
 | F5 over the 22 CPU-s budget | 5 | LiteInst is slower than ptrace on these cells (example-timed-progress-bar, kvm-python-examples, timed-progress-bar, writev-determinism, dd-partial-transfers) | The bound may not be widened |
 | F6 hang after exit | 1 | Hang after the injected `exit_group` | Open |
 | F7 `times()` clock does not advance | 1 | resource-determinism | https://github.com/rrnewton/hermit/pull/3261, validation queued |
@@ -355,7 +355,7 @@ Earlier, looser work:
 1. Finish the validations that are running or queued: https://github.com/rrnewton/reverie/pull/649 (rerun queued), https://github.com/rrnewton/hermit/pull/3261, https://github.com/rrnewton/hermit/pull/3255, https://github.com/rrnewton/reverie/pull/680.
 2. Push the https://github.com/rrnewton/dev-hermit/issues/414 trust-root rotation once parity-green's commits land and the coordinator OKs the exact commit.
 3. Land the correctness PRs, then the combined Hermit pin bump. That bump carries TrapOnly P1 into Hermit.
-4. Resume the F4 restart fix (5 cells plus perl): find why the tracer single-steps the spin loop after a timer step window, then review and land it.
+4. Resume the F4 restart fix (5 cells plus perl): find why the new test is about 700 times slower under LiteInst, rebase onto current reverie main, then review and land it.
 5. Build the timer rules and P2e gates (https://github.com/rrnewton/reverie/issues/776), then Hermit P3, then the first real TrapOnly parity measurement.
 6. Refresh `scorecard.md` after each new qualifying validation.
 
