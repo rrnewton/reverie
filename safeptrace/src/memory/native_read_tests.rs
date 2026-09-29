@@ -1132,3 +1132,38 @@ fn native_read_register_shape_actual_compat68_refuses_before_proc_or_source() {
         },
     );
 }
+
+#[test]
+fn native_read_register_shape_generic_getregs_refuses_actual_compat_and_restores() {
+    native_child(
+        libc::PROT_READ | libc::PROT_WRITE,
+        0,
+        0,
+        8,
+        |memory, tid, _, native| {
+            let (original, length) = raw_prstatus(tid).unwrap();
+            assert_eq!(length, 216);
+            assert_eq!(length, PRSTATUS_BYTES);
+            assert_eq!(memory.getregs().unwrap().cs, 0x33);
+            let mut compat = original;
+            compat[PRSTATUS_CS..PRSTATUS_CS + 8].copy_from_slice(&0x23u64.to_ne_bytes());
+            set_native_prstatus(tid, &compat).expect("install actual compat mode");
+            let (reply, length) = raw_prstatus(tid).unwrap();
+            assert_eq!(length, 68, "actual short kernel PRSTATUS, never a mock");
+            assert_eq!(u16::from_ne_bytes(reply[52..54].try_into().unwrap()), 0x23);
+            assert!(reply[length..].iter().all(|byte| *byte == 0xa5));
+
+            // The fixed generic API must refuse before constructing Regs.
+            // Run the historical implementation only with debug assertions:
+            // its short-reply panic unwinds to the exact-child kill/reap guard.
+            let result = memory.getregs();
+            set_native_prstatus(tid, &original).expect("restore actual native registers");
+            let (restored, length) = raw_prstatus(tid).unwrap();
+            assert_eq!(length, PRSTATUS_BYTES);
+            assert_eq!(restored, original);
+            assert!(matches!(result, Err(crate::Error::Errno(Errno::EPROTO))));
+            assert_eq!(memory.getregs().unwrap().cs, 0x33);
+            assert_eq!(native, 8, "original native access oracle still holds");
+        },
+    );
+}

@@ -773,10 +773,13 @@ impl Stopped {
         }
         .map_err(|err| self.map_err(err))?;
 
-        // PTRACE_GETREGSET modifies the length to the real length of the
-        // registers, but we should already know the exact number of registers
-        // for this architecture.
-        debug_assert_eq!(iov.iov_len, core::mem::size_of_val(&regs));
+        // GETREGSET selects the target's ABI, which may differ from the
+        // tracer's (for example, a compat PRSTATUS reply is shorter). Require
+        // the entire typed layout in every build before assuming initialization.
+        // Zero-filling the tail would not make a short reply a valid native ABI.
+        if iov.iov_len != core::mem::size_of_val(&regs) {
+            return Err(Error::Errno(Errno::EPROTO));
+        }
 
         Ok(unsafe { regs.assume_init() })
     }
