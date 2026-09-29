@@ -51,6 +51,7 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -298,6 +299,58 @@ def quarantine_shard_path(team: str, host: str, month: str) -> str:
     recursively), and a quarantine record is not a `SeriesRow`.
     """
     return "quarantine/" + shard_path(team, host, month)
+
+
+PARITY_SCHEMA = "parity-ledger/v1"
+_PARITY_LEDGER_MODULE = "ci_hub_series_parity_ledger"
+
+
+def parity_ledger_module():
+    """The parity ledger store (`parity_ledger.py`), loaded once per process.
+
+    Every loader (this module, the ledger publisher, the mirror, the website
+    exporter) shares this one module object, so `ParityLedgerError` is one
+    class wherever it is caught. The module is registered before it runs:
+    a dataclass looks its module up in `sys.modules` while it is defined.
+    """
+    module = sys.modules.get(_PARITY_LEDGER_MODULE)
+    if module is not None:
+        return module
+    path = Path(__file__).resolve().parent / "parity_ledger.py"
+    spec = importlib.util.spec_from_file_location(_PARITY_LEDGER_MODULE, path)
+    if spec is None or spec.loader is None:
+        raise SeriesError(f"cannot load the parity ledger store from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_PARITY_LEDGER_MODULE] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(_PARITY_LEDGER_MODULE, None)
+        raise
+    return module
+
+
+def parity_spool_dir(parent: Any) -> Path:
+    """The live, UNPUBLISHED spool of parity batches, one file per run.
+
+    `series.py append-parity` writes here; the ledger publisher
+    (`publisher.py --store parity`, run by `mirror.py` in the same commit as
+    the series rows) appends each batch to `parity/<team>/<host>/<YYYY-MM>.jsonl`
+    and its run marker to `parity-runs/<team>/<host>/<YYYY-MM>.jsonl`. Both
+    trees are outside the `series/` glob. See `parity_ledger.py` and
+    https://github.com/rrnewton/hermit/issues/3301.
+    """
+    return shared_parent_root(parent) / "ignored" / "ci-hub" / "parity-spool"
+
+
+def parity_shard_path(team: str, host: str, month: str) -> str:
+    """`parity/<team>/<host>/<YYYY-MM>.jsonl`: where a run's parity rows go."""
+    return parity_ledger_module().shard_path("parity", team, host, month)
+
+
+def parity_run_shard_path(team: str, host: str, month: str) -> str:
+    """`parity-runs/<team>/<host>/<YYYY-MM>.jsonl`: one marker per appended run."""
+    return parity_ledger_module().shard_path("parity-runs", team, host, month)
 
 
 def ledger_root(parent: Any) -> Path:
@@ -6497,6 +6550,123 @@ def _cmd_append(argv: list[str]) -> int:
     return 0
 
 
+def _parity_stdin_sources(parity) -> list[Any]:
+    """One `ParityLedgerSource` per stdin line, in order; strict JSON.
+
+    Unlike `append-cells`, nothing is quarantined: parity rows are derived from
+    files hermit already retains, so a refused batch is re-exportable
+    (`test-harness parity export`) and is refused whole, loudly.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    data = buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise parity.ParityLedgerError(f"stdin is not UTF-8: {error}") from error
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    sources = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            raise parity.ParityLedgerError(f"stdin line {number} is blank")
+        sources.append(parity.loads(line, f"stdin line {number}"))
+    return sources
+
+
+def _cmd_append_parity(argv: list[str]) -> int:
+    """Spool one run's parity rows: `parity: ...` on stdout, a refusal on stderr.
+
+    Exit 0 when the batch was written or was already recorded identically,
+    1 when the rows were refused (nothing written), 2 for a usage error or an
+    unwritable spool.
+    """
+    options: dict[str, str] = {}
+    flags = {
+        "--parent": "parent", "--producer": "producer", "--run-id": "run_id",
+        "--tree": "tree", "--emitted-at": "emitted_at",
+        "--source-tree-dirty": "source_tree_dirty",
+    }
+    i = 0
+    while i < len(argv):
+        name = flags.get(argv[i])
+        if name is None or i + 1 >= len(argv):
+            return _usage(f"unknown append-parity argument {argv[i]!r}")
+        if name in options:
+            return _usage(f"append-parity supplies {argv[i]} more than once")
+        options[name] = argv[i + 1]
+        i += 2
+    missing = [
+        flag for flag, name in flags.items()
+        if name in {"parent", "producer", "run_id", "tree"} and not options.get(name)
+    ]
+    if missing:
+        return _usage(f"append-parity requires {', '.join(missing)}")
+    dirty_text = options.get("source_tree_dirty", "false")
+    if dirty_text not in {"true", "false"}:
+        return _usage(f"append-parity --source-tree-dirty must be true or false, got {dirty_text!r}")
+    emitted_at = options.get("emitted_at") or datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    parity = parity_ledger_module()
+    try:
+        host = _writer_host()
+        sources = _parity_stdin_sources(parity)
+    except (MalformedQuarantine, parity.ParityLedgerError) as error:
+        print(f"series: REFUSED the parity batch, nothing was written: {error}", file=sys.stderr)
+        return 1
+    parent = options["parent"]
+    spool = parity_spool_dir(parent)
+    # What the ledger already holds for this run, so a replay is recognised
+    # and a changed record is refused even after its batch was drained. An
+    # unreadable ledger is named, not fatal: the publisher repeats this check
+    # against the ledger it pushes to.
+    published: dict[str, dict] = {}
+    published_check: str | None = None
+    try:
+        at = parity.published_parity_at_repo(ledger_root(parent), "refs/remotes/origin/main")
+        published = at.events
+        published_check = f"read {len(published)} published parity event(s) at {at.commit}"
+    except (SeriesError, parity.ParityLedgerError, OSError, subprocess.SubprocessError) as error:
+        published_check = f"published ledger not consulted: {error}"
+    try:
+        with series_spool_transition_lock(spool, exclusive=True):
+            result = parity.append_parity(
+                spool, sources,
+                producer=options["producer"], run_id=options["run_id"],
+                hermit_sha=options["tree"], emitted_at=emitted_at,
+                source_tree_dirty=dirty_text == "true", host=host,
+                published=published, published_check=published_check,
+            )
+    except parity.ParityLedgerError as error:
+        print(f"series: REFUSED the parity batch, nothing was written: {error}", file=sys.stderr)
+        return 1
+    except (OSError, SeriesError) as error:
+        print(f"series: cannot write the parity spool {spool}: {error}", file=sys.stderr)
+        return 2
+    counts = ", ".join(
+        f"{verdict} {count}" for verdict, count in result["verdicts"].items() if count
+    ) or "no rows"
+    subject = f"{result['producer']} run {result['run_id']}"
+    if result["already_recorded"]:
+        print(
+            f"parity: {result['records']} record(s) for {subject} are already recorded "
+            f"({', '.join(result['recorded_in'])}); nothing written"
+        )
+    elif result["records"] == 0:
+        print(
+            f"parity: recorded an empty parity selection for {subject} "
+            f"-> {spool / result['batch']}"
+        )
+    else:
+        print(
+            f"parity: appended {result['records']} record(s) ({counts}) for {subject} "
+            f"-> {spool / result['batch']}"
+        )
+    print(f"parity: {published_check}", file=sys.stderr)
+    return 0
+
+
 def _cmd_append_cells(argv: list[str]) -> int:
     parent = None
     hermit_checkout = None
@@ -7019,10 +7189,15 @@ def _usage(message: str) -> int:
         "--producer <validate|pressure-test|hermit-repeat>\n"
         "      --run-id <id> --tree <sha> [--checkout <Hermit checkout>]\n"
         "      [--emitted-at <UTC>] < cell-results.jsonl\n"
+        "  series.py append-parity --parent <root> --producer <validate|pressure-test>\n"
+        "      --run-id <id> --tree <sha> [--emitted-at <UTC>]\n"
+        "      [--source-tree-dirty true|false] < parity-ledger-sources.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "  series.py snapshot --parent <root> --output <run-scoped.json>\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses exact equal runs, and writes the UNPUBLISHED spool.\n"
+        "append-parity spools one run's parity rows (hermit's ParityLedgerSource) with\n"
+        "a run marker; empty stdin records an empty parity selection.\n"
         "history freshly reads tracked shards from test-ledger origin/main plus that local spool.\n"
         "snapshot atomically writes that canonical union with immutable source identities;\n"
         "an unavailable source is refused and never replaced by stale tracked output.",
@@ -7038,6 +7213,8 @@ def main(argv: list[str]) -> int:
         return _cmd_append(argv[1:])
     if argv[0] == "append-cells":
         return _cmd_append_cells(argv[1:])
+    if argv[0] == "append-parity":
+        return _cmd_append_parity(argv[1:])
     if argv[0] == "history":
         return _cmd_history(argv[1:])
     if argv[0] == "snapshot":

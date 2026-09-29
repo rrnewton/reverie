@@ -106,6 +106,11 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
             "--store series-quarantine --gate",
             config,
         )
+        self.assertIn("name: parity_spool_backlog", config)
+        self.assertIn(
+            'python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --store parity --gate',
+            config,
+        )
 
     def test_series_backlog_names_the_store_it_measured(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -117,6 +122,65 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
             result = self.run_gate(spool, bound=60, store="series")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("per-test series spool publication stalled", result.stdout)
+
+    def test_parity_backlog_names_the_store_it_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            spool = Path(raw)
+            fresh = self.run_gate(spool, bound=60, store="parity")
+            self.assertEqual(fresh.returncode, 0, fresh.stdout + fresh.stderr)
+            self.assertIn("state=drained", fresh.stdout)
+            old = spool / "hermit__host__2026-09__run.jsonl"
+            old.write_text("{}\n", encoding="utf-8")
+            timestamp = time.time() - 120
+            os.utime(old, (timestamp, timestamp))
+            result = self.run_gate(spool, bound=60, store="parity")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("parity ledger spool publication stalled", result.stdout)
+            self.assertIn("spool_depth=1", result.stdout)
+
+    def test_parity_store_discovers_each_parents_parity_spool(self) -> None:
+        """--root finds ``ignored/ci-hub/parity-spool`` in every producing parent.
+
+        A refused parity batch stays in the spool, so it must age into a
+        firing gate; the ``published/`` subdirectory of proven batches must
+        not count. Bracketed: the same parent is clean once the batch is gone.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            parents = []
+            for name in ("dev-hermit", "dev-hermit5"):
+                parent = base / name
+                (parent / "ci-hub" / "ledger").mkdir(parents=True)
+                (parent / "ci-hub" / "ledger" / "validate_rows.py").write_text("")
+                parents.append(parent)
+            spool = parents[1] / "ignored" / "ci-hub" / "parity-spool"
+            (spool / "published").mkdir(parents=True)
+            proven = spool / "published" / "hermit__host__2026-09__proven.jsonl"
+            proven.write_text("{}\n", encoding="utf-8")
+            timestamp = time.time() - 7200
+            os.utime(proven, (timestamp, timestamp))
+
+            def run() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [sys.executable, str(GATE), "--gate", "--root", str(parents[0]),
+                     "--store", "parity", "--max-age-seconds", "60"],
+                    text=True, capture_output=True, check=False,
+                )
+
+            clean = run()
+            self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+            self.assertIn("spool_depth=0", clean.stdout)
+            self.assertIn("parents_scanned=2", clean.stdout)
+
+            refused = spool / "hermit__host__2026-09__refused.jsonl"
+            refused.write_text("{}\n", encoding="utf-8")
+            os.utime(refused, (timestamp, timestamp))
+            fired = run()
+            self.assertEqual(fired.returncode, 1, fired.stdout + fired.stderr)
+            self.assertIn("state=stalled", fired.stdout)
+            self.assertIn("spool_depth=1", fired.stdout)
+            self.assertIn("parity ledger spool publication stalled", fired.stdout)
+            self.assertIn("dev-hermit5", fired.stdout)
 
 
 class MultiParentDiscoveryTest(unittest.TestCase):

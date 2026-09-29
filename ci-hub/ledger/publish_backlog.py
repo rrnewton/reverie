@@ -5,7 +5,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Drain every producing parent's validation-ledger, per-test series and series quarantine spools.
+"""Drain every producing parent's validation-ledger, per-test series, series quarantine and parity spools.
 
 WHY THIS EXISTS. Publication was a manual command. Nothing ran it, so a receipt
 or per-test run was readable only by the parent that produced it and invisible
@@ -50,6 +50,7 @@ from check_commit_attribution import AttributionError, detect_machine  # noqa: E
 from ledger_spool_backlog import SpoolUnavailable, producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
 sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "series"))
+from series import parity_spool_dir as series_parity_spool_dir  # noqa: E402
 from series import quarantine_dir as series_quarantine_dir  # noqa: E402
 from series import spool_dir as series_spool_dir  # noqa: E402
 sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "lib"))
@@ -62,7 +63,7 @@ CLONE_RELATIVE = Path("ignored/ci-hub/ledger-publisher-clone")
 ORIGIN = "https://github.com/rrnewton/dev-hermit.git"
 #: Stores published by ``ci-hub/series/mirror.py --publish-only`` into the test
 #: ledger rather than by the parent-main writer.
-MIRROR_STORES = frozenset({"series", "series-quarantine"})
+MIRROR_STORES = frozenset({"series", "series-quarantine", "parity"})
 
 
 def pending_batches(spool_dir: Path) -> int:
@@ -110,6 +111,11 @@ def pending_stores(parent: Path) -> dict[str, Path]:
         # this host, and neither can the absence of new rows to trigger a
         # series publish.
         "series-quarantine": series_quarantine_dir(parent),
+        # Parity batches, one per run (https://github.com/rrnewton/hermit/issues/3301).
+        # A plain --publish-only mirror publishes them with any pending series
+        # rows, or alone, so a run whose series published without them (a
+        # refused batch, or a series failure) is republished here.
+        "parity": series_parity_spool_dir(parent),
     }
     return {
         name: spool
@@ -154,7 +160,26 @@ def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
         report["error"] = (result.stderr or result.stdout).strip()[-400:]
     if store == "series-quarantine" and not report["rc"] and "error" not in report:
         report.update(quarantine_outcome(report))
+    if store == "parity" and isinstance((report.get("raw_publication") or {}).get("parity"), dict):
+        # Judged by its own sub-report: a series failure fails the mirror, but
+        # the parity batches still publish alone, and a refused parity batch
+        # leaves the mirror exit 0.
+        report.update(parity_outcome(report))
     return report
+
+
+def parity_outcome(report: dict) -> dict:
+    """The parity store's result, from ``raw_publication.parity``."""
+    parity = report["raw_publication"]["parity"]
+    if parity.get("error"):
+        return {"rc": 1, "published": 0, "error": str(parity["error"])[-400:]}
+    if parity.get("refused"):
+        refused = parity["refused"]
+        return {"rc": 1, "published": parity.get("published", 0) or 0,
+                "error": f"{len(refused)} parity batch(es) refused: "
+                         + "; ".join(f"{item.get('batch')}: {item.get('error')}"
+                                     for item in refused)[-400:]}
+    return {"rc": 0, "published": parity.get("published", 0) or 0}
 
 
 def quarantine_outcome(report: dict) -> dict:

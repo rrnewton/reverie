@@ -409,6 +409,21 @@ reminders:
         component: series-spool-backlog
       title: "per-test series publication is stalled: {summary}"
 
+  # Parity batches ride in the series commit; one the publisher refused stays
+  # spooled and ages here (https://github.com/rrnewton/hermit/issues/3301).
+  - name: parity_spool_backlog
+    cadence_secs: 3600
+    gate:
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --store parity --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: parity-spool-backlog
+      title: "parity ledger publication is stalled: {summary}"
+
   # A validate run that appends its valid rows exits 0 even when the series
   # writer quarantined others (ci-hub/series/README.md, "Quarantine"). This gate
   # is where that refusal is counted and raised: it fails for a day after any

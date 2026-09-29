@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "state": "complete",
+  "run_id": "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
+  "hermit_sha": "d3a0a4ae3d168565595ae4157b25ab8efbb1861a",
+  "hermit_bin": "/src/target/ci/hermit-e2e-artifacts/c4892f438e96c412189d6b77e4054da9faa450b72dfa46e4c1dfbbabd6dca8d6/hermit",
+  "hermit_bin_sha256": "a284a7e012a2d993cfc121e0cdb5c07daf3406d93eb85469801ed800c29eaad3",
+  "records": "/results/privileged/manifest_backend_parity_c/parity.jsonl",
+  "cells": 2,
+  "summary": "parity: 2 cell(s) -> /results/privileged/manifest_backend_parity_c/parity.jsonl: matched 0, diverged 2, reference-missing 0, candidate-missing 0, unavailable 0, inputs-not-equalized 0; mean credit 0.0686 over 2 measured (inputs not equalized); 2 log-diff comparison(s), 0 guest runs",
+  "error": null
+}

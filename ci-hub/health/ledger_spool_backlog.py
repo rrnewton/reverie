@@ -21,6 +21,12 @@ quarantine files and from the records published in the test ledger), while
 ``held/`` keeps exact records whose content could not be published, while
 ``corrupt/`` keeps any file the publisher could not read (counted as a file,
 never parsed), and when unpublished refusals are older than the backlog bound.
+
+``--store parity`` measures the parity spool: one batch per run, written by
+``series.py append-parity`` and published by the series mirror in the same
+commit as the series rows. A parity batch the publisher refused stays in the
+spool, so it ages here like any unpublished batch
+(https://github.com/rrnewton/hermit/issues/3301).
 """
 
 from __future__ import annotations
@@ -48,11 +54,12 @@ from series import spool_dir as series_spool_dir  # noqa: E402
 DEFAULT_MAX_AGE_SECONDS = 3600
 #: How long one observed refusal keeps the quarantine gate failing.
 DEFAULT_QUARANTINE_RECENT_SECONDS = 86400
-STORES = ("ledger", "series", "series-quarantine")
+STORES = ("ledger", "series", "series-quarantine", "parity")
 STORE_LABELS = {
     "ledger": "validation ledger",
     "series": "per-test series",
     "series-quarantine": "series quarantine",
+    "parity": "parity ledger",
 }
 
 
@@ -371,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         "--store",
         choices=STORES,
         default="ledger",
-        help="measure the validation ledger, per-test series or series quarantine spool",
+        help="measure the validation ledger, per-test series, series quarantine or parity spool",
     )
     parser.add_argument(
         "--recent-seconds",
@@ -397,7 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         spool_dirs = [args.spool_dir]
     else:
         locate = {"ledger": live_spool_dir, "series": series_spool_dir,
-                  "series-quarantine": series.quarantine_dir}[args.store]
+                  "series-quarantine": series.quarantine_dir,
+                  "parity": series.parity_spool_dir}[args.store]
         parents = producing_parents(args.root.resolve())
         spool_dirs = [locate(parent) for parent in parents]
 

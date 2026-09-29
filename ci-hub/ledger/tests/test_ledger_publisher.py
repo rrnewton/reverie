@@ -766,3 +766,237 @@ def test_a_leftover_file_from_a_failed_attempt_is_not_mistaken_for_published(tmp
                                capture_output=True, text=True, check=True).stdout
     assert [json.loads(l)["event_id"] for l in published.splitlines() if l.strip()] == ["01A"]
     assert not publisher.spooled(spool_dir)
+
+
+# --------------------------------------------------------------- parity rides with series
+#
+# https://github.com/rrnewton/hermit/issues/3301: a validate's parity rows are
+# published in the SAME ledger commit as its series rows, under `parity/` and
+# `parity-runs/`, never under the `series/` tree every series reader globs.
+
+PARITY_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "parity-run-1953"
+PARITY_RUN = "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da"
+PARITY_TREE = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
+PARITY_EMITTED = "2026-09-28T21:40:00Z"
+
+
+def _series_row(identifier: str) -> dict:
+    return {
+        "schema": "stress-series/v1", "event_id": identifier,
+        "event_type": "series.observation", "emitted_at": "2026-09-21T12:00:00Z",
+        "team": TEAM, "host": HOST, "run_id": identifier, "producer": "fixture",
+        "series": {"cell": "c-programs/hello/verify/ptrace", "tree": "a" * 40,
+                   "run_index": 0, "outcome": "passed"},
+    }
+
+
+@pytest.fixture()
+def parity_store(monkeypatch):
+    """The publisher's own series module with the Rust row checker stubbed.
+
+    Only the SERIES rows' shared Rust checker is replaced; every parity check
+    below is the real one.
+    """
+    store = publisher._series_store()
+    monkeypatch.setattr(store, "_run_shared_checker", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(["schema-fixture"], 0, "", ""))
+    return store.parity_ledger_module()
+
+
+def _parity_sources(parity) -> list[dict]:
+    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    return [parity.loads(line, f"fixture line {n}") for n, line in enumerate(text.splitlines(), 1)]
+
+
+def _parity_events(parity, sources, **overrides) -> list[dict]:
+    options = dict(producer="validate", run_id=PARITY_RUN, hermit_sha=PARITY_TREE,
+                   emitted_at=PARITY_EMITTED, source_tree_dirty=False, host=HOST)
+    options.update(overrides)
+    return parity.build_batch(sources, **options)
+
+
+def _spool_parity(parity, spool: Path, events: list[dict]) -> Path:
+    """Place a batch in the spool exactly as `append_parity` names it."""
+    spool.mkdir(parents=True, exist_ok=True)
+    path = spool / parity.batch_name(events[0])
+    path.write_text(parity.encode_batch(events), encoding="utf-8")
+    return path
+
+
+def _spool_series(spool: Path, *identifiers: str) -> Path:
+    spool.mkdir(parents=True, exist_ok=True)
+    path = spool / f"{identifiers[0]}.jsonl"
+    path.write_text("".join(json.dumps(_series_row(i), sort_keys=True) + "\n" for i in identifiers))
+    return path
+
+
+def _remote_text(bare: Path, rel: str) -> str:
+    return git(bare, "show", f"main:{rel}").stdout
+
+
+def test_one_commit_carries_the_series_rows_and_the_parity_run(tmp_path, remote_and_clone, parity_store):
+    parity = parity_store
+    bare, clone = remote_and_clone
+    series_spool, parity_spool = tmp_path / "series-spool", tmp_path / "parity-spool"
+    _spool_series(series_spool, "run-one")
+    events = _parity_events(parity, _parity_sources(parity))
+    batch = _spool_parity(parity, parity_spool, events)
+
+    out = publisher.publish(clone, series_spool, store="series", parity_spool=parity_spool)
+
+    assert out["published"] == 1, out
+    assert out["parity"]["published"] == 193, out["parity"]  # marker + 192 rows
+    assert out["parity"]["refused"] == [] and out["parity"]["error"] is None
+    assert out["parity"]["batches"] == [batch.name]
+    assert git(bare, "log", "-1", "--format=%s", "main").stdout.strip() == (
+        "series: append 1 event(s); parity: append 193 event(s)")
+    changed = git(bare, "show", "--name-only", "--format=", "main").stdout.split()
+    assert sorted(changed) == [f"parity-runs/{TEAM}/{HOST}/2026-09.jsonl",
+                               f"parity/{TEAM}/{HOST}/2026-09.jsonl",
+                               f"series/{TEAM}/{HOST}/2026-09.jsonl"]
+    # One commit on top of the seed: both stores landed together or not at all.
+    assert git(bare, "rev-list", "--count", "main").stdout.strip() == "2"
+    rows_text = _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl")
+    assert rows_text == parity.encode_batch(events[1:])
+    assert _remote_text(bare, f"parity-runs/{TEAM}/{HOST}/2026-09.jsonl") == parity.encode_batch(events[:1])
+    # Both batches were proven published, so both moved into retention.
+    assert not batch.exists() and (parity_spool / "published" / batch.name).exists()
+    assert not list(series_spool.glob("*.jsonl"))
+
+
+def test_the_series_glob_sees_only_series_rows(tmp_path, remote_and_clone, parity_store):
+    parity = parity_store
+    bare, clone = remote_and_clone
+    _spool_series(tmp_path / "series-spool", "run-one", "run-two")
+    _spool_parity(parity, tmp_path / "parity-spool", _parity_events(parity, _parity_sources(parity)))
+    publisher.publish(clone, tmp_path / "series-spool", store="series",
+                      parity_spool=tmp_path / "parity-spool")
+    listed = git(bare, "ls-tree", "-r", "--name-only", "main", "--", "series").stdout.split()
+    assert listed == [f"series/{TEAM}/{HOST}/2026-09.jsonl"]
+    series_rows = [json.loads(line) for line in _remote_text(bare, listed[0]).splitlines()]
+    assert [row["event_id"] for row in series_rows] == ["run-one", "run-two"]
+    assert {row["schema"] for row in series_rows} == {"stress-series/v1"}
+    # The source-root reader globs `<store>/*/*/YYYY-MM.jsonl`; parity is not in it.
+    git(clone, "fetch", "-q", "origin", "main")
+    git(clone, "checkout", "-q", "--detach", "origin/main")
+    assert publisher._source_root_event_ids(clone, store="series") == {"run-one", "run-two"}
+
+
+def test_a_changed_parity_replay_is_refused_but_the_series_still_publishes(
+        tmp_path, remote_and_clone, parity_store):
+    parity = parity_store
+    bare, clone = remote_and_clone
+    sources = _parity_sources(parity)
+    _spool_series(tmp_path / "s1", "run-one")
+    _spool_parity(parity, tmp_path / "p1", _parity_events(parity, sources))
+    publisher.publish(clone, tmp_path / "s1", store="series", parity_spool=tmp_path / "p1")
+    rows_before = _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl")
+
+    # The same run, same event ids, different bytes: now claims a dirty tree.
+    changed = _spool_parity(parity, tmp_path / "p2",
+                            _parity_events(parity, sources, source_tree_dirty=True))
+    _spool_series(tmp_path / "s2", "run-two")
+    out = publisher.publish(clone, tmp_path / "s2", store="series", parity_spool=tmp_path / "p2")
+
+    assert out["published"] == 1, out
+    assert out["parity"]["published"] == 0
+    (refusal,) = out["parity"]["refused"]
+    assert refusal["batch"] == changed.name
+    assert refusal["error"] == (
+        f"run marker of validate run {PARITY_RUN} (192 record(s)) is already published "
+        "with a different body")
+    assert git(bare, "log", "-1", "--format=%s", "main").stdout.strip() == "series: append 1 event(s)"
+    assert _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl") == rows_before
+    assert changed.exists(), "a refused parity batch stays spooled and visible"
+
+
+def test_a_node_that_never_ran_publishes_as_record_missing(tmp_path, remote_and_clone, parity_store):
+    parity = parity_store
+    bare, clone = remote_and_clone
+    portable = [s for s in _parity_sources(parity) if s["source"]["lane"] == "portable"]
+    missing = {
+        "cell": "backend-parity-c/never-ran@kvm", "test_id": "backend-parity-c/never-ran",
+        "backend": "kvm", "verdict": "record-missing",
+        "reason": "the parity post-pass of privileged/manifest_backend_parity_c left no parity.status.json",
+        "run_id": None, "hermit_sha": None,
+        "source": {"lane": "privileged", "node": "manifest_backend_parity_c",
+                   "post_pass_state": "absent", "status_sha256": None, "records_sha256": None,
+                   "hermit_bin_sha256": None, "scope_source": "expected-scope"},
+        "record": None,
+    }
+    _spool_parity(parity, tmp_path / "parity-spool", _parity_events(parity, [*portable, missing]))
+
+    out = publisher.publish(clone, tmp_path / "parity-spool", store="parity")
+
+    assert out["published"] == 192 and out["parity"]["published"] == 192, out  # 191 rows + marker
+    assert git(bare, "log", "-1", "--format=%s", "main").stdout.strip() == "parity: append 192 event(s)"
+    rows = [json.loads(line) for line in
+            _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]
+    (published_missing,) = [row for row in rows if row["verdict"] == "record-missing"]
+    assert published_missing["record"] is None
+    assert published_missing["source"]["post_pass_state"] == "absent"
+    (marker,) = [json.loads(line) for line in
+                 _remote_text(bare, f"parity-runs/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]
+    assert marker["records"] == 191 and marker["verdicts"]["record-missing"] == 1
+    assert {(n["lane"], n["post_pass_state"], n["records"]) for n in marker["nodes"]} == {
+        ("portable", "complete", 190), ("privileged", "absent", 1)}
+
+
+def test_a_spooled_row_whose_envelope_disagrees_with_its_record_is_refused(
+        tmp_path, remote_and_clone, parity_store, capsys):
+    parity = parity_store
+    bare, clone = remote_and_clone
+    events = _parity_events(parity, _parity_sources(parity))
+    index = next(i for i, e in enumerate(events) if e.get("verdict") == "diverged")
+    events[index]["verdict"] = "matched"
+    # Keep the marker consistent so the ROW check is the one that must fire.
+    events[0]["verdicts"] = {**events[0]["verdicts"]}
+    events[0]["verdicts"]["diverged"] -= 1
+    events[0]["verdicts"]["matched"] = events[0]["verdicts"].get("matched", 0) + 1
+    spool = tmp_path / "parity-spool"
+    spool.mkdir()
+    batch = spool / parity.batch_name(events[0])
+    batch.write_text(parity.encode_batch(events))
+    head_before = git(bare, "rev-parse", "main").stdout
+
+    out = publisher.publish(clone, spool, store="parity")
+
+    assert out["published"] == 0 and out["commit"] is None
+    assert out["note"] == "nothing published: every pending parity batch was refused"
+    (refusal,) = out["parity"]["refused"]
+    assert refusal == {"batch": batch.name, "error": (
+        f"{batch.name}: event {index + 1}: parity ledger row {events[index]['cell']} "
+        f"(validate run {PARITY_RUN}): row verdict matched disagrees with record verdict diverged")}
+    assert git(bare, "rev-parse", "main").stdout == head_before
+    assert batch.exists()
+
+    # The CLI says so loudly and exits nonzero rather than reporting success.
+    source = tmp_path / "source"
+    subprocess.run(["git", "clone", "-q", str(bare), str(source)], check=True)
+    rc = publisher.main(["publish", "--source-root", str(source), "--repo", str(clone),
+                         "--spool-dir", str(spool), "--store", "parity"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert f"ledger-publisher: REFUSED parity batch {batch.name}: " in err
+    assert "row verdict matched disagrees with record verdict diverged" in err
+
+
+def test_a_batch_not_in_canonical_bytes_is_refused(tmp_path, remote_and_clone, parity_store):
+    """Published parity bytes are the canonical encoding; a re-encoded batch is not."""
+    parity = parity_store
+    _bare, clone = remote_and_clone
+    events = _parity_events(parity, _parity_sources(parity))
+    spool = tmp_path / "parity-spool"
+    spool.mkdir()
+    batch = spool / parity.batch_name(events[0])
+    batch.write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in events))
+    out = publisher.publish(clone, spool, store="parity")
+    assert out["parity"]["refused"] == [
+        {"batch": batch.name, "error": f"{batch.name}:1: not the canonical compact encoding"}]
+    assert batch.exists()
+
+
+def test_a_parity_spool_rides_only_on_the_series_store(tmp_path, remote_and_clone):
+    _bare, clone = remote_and_clone
+    with pytest.raises(publisher.PublishRefused, match="rides only on the series store"):
+        publisher.publish(clone, tmp_path / "spool", store="ledger", parity_spool=tmp_path / "p")

@@ -534,6 +534,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             "ledger_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "series_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "series_quarantine": '--root "$DEV_HERMIT_PARENT"',
+            "parity_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "validate_wall_regression": (
                 '--ledger "$DEV_HERMIT_PARENT/ledger" '
                 '--repo "$DEV_HERMIT_PARENT/hermit" '
@@ -848,6 +849,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             "ignored/ci-hub/validate-ledger-spool/stale.jsonl",
             "ignored/ci-hub/series-spool/stale.jsonl",
             "ignored/ci-hub/series-quarantine/stale.jsonl",
+            "ignored/ci-hub/parity-spool/stale.jsonl",
         ):
             entry = state_root / relative
             entry.parent.mkdir(parents=True, exist_ok=True)
@@ -982,6 +984,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             ROOT / "ignored" / "ci-hub" / "validate-ledger-spool",
             ROOT / "ignored" / "ci-hub" / "series-spool",
             ROOT / "ignored" / "ci-hub" / "series-quarantine",
+            ROOT / "ignored" / "ci-hub" / "parity-spool",
             ROOT / "worktrees" / "ACTIVE",
         )
         tool_state_before = {path: snapshot(path) for path in tool_state_paths}
@@ -1009,6 +1012,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             ("ledger_spool_backlog", "validation ledger"),
             ("series_spool_backlog", "per-test series"),
             ("series_quarantine", "series quarantine"),
+            ("parity_spool_backlog", "parity ledger"),
         ):
             result = subprocess.run(
                 ["bash", "-c", commands[name]],

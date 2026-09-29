@@ -1,0 +1,49 @@
+{
+  "copied_from": {
+    "portable/parity.jsonl": "ignored/validate/artifacts/<validate_unit>/e2e/portable/manifest_backend_parity_c/parity.jsonl",
+    "portable/parity.status.json": "ignored/validate/artifacts/<validate_unit>/e2e/portable/manifest_backend_parity_c/parity.status.json",
+    "privileged/parity.jsonl": "ignored/validate/artifacts/<validate_unit>/e2e/privileged/manifest_backend_parity_c/parity.jsonl",
+    "privileged/parity.status.json": "ignored/validate/artifacts/<validate_unit>/e2e/privileged/manifest_backend_parity_c/parity.status.json"
+  },
+  "copied_on": "devbig014, 2026-09-28, paths relative to the dev-hermit parent checkout",
+  "description": "RUN 1953: the first validate whose manifest_backend_parity_c post-pass wrote parity.jsonl and parity.status.json on both lanes (192 parity cells). The four post-pass files are verbatim copies, never edited. ledger-sources.jsonl is the verbatim stdout of hermit's `test-harness parity export` over those four files.",
+  "files": {
+    "ledger-sources.jsonl": {
+      "bytes": 354789,
+      "lines": 192,
+      "sha256": "dfa186f44662a635b543d518fbb70bf4b7e10a4c198b516b98fab80183140863"
+    },
+    "portable/parity.jsonl": {
+      "bytes": 219790,
+      "lines": 190,
+      "sha256": "b899db9c238dbaf5efa90bad7da36a8674e098f1f9f7c85395ea991af6275045"
+    },
+    "portable/parity.status.json": {
+      "bytes": 815,
+      "lines": 12,
+      "sha256": "f3986e013209a0a46c5f62f3e29ad8d94dad05ee542a4e6e7bddb476a950f7b8"
+    },
+    "privileged/parity.jsonl": {
+      "bytes": 2360,
+      "lines": 2,
+      "sha256": "5140ddd0eb69b9fbd98dbfcdc88fcf18ab0a24051f623529b70cdeef3c08e96d"
+    },
+    "privileged/parity.status.json": {
+      "bytes": 808,
+      "lines": 12,
+      "sha256": "9635821c2ce75d21b1c51349029385a3618df030adcc40653f770f66c5bf0eb5"
+    }
+  },
+  "hermit_sha": "d3a0a4ae3d168565595ae4157b25ab8efbb1861a",
+  "issue": "https://github.com/rrnewton/hermit/issues/3301",
+  "ledger_sources_producer": {
+    "binary": "worktrees/slots/parity-s12/target/debug/test-harness (debug build, 2026-09-28T21:06:52-07:00)",
+    "binary_sha256": "5315f59e45e055991a8ee1b1f8dfd794a73693459fd67502248e8e4e8886a400",
+    "built_from": "hermit 497193bb3ab70cfbee73e2a991e4aec9e1cb5174 plus the uncommitted parity-ledger change to ci/manifest-plan/src/parity.rs and ci/manifest-plan/src/bin/test-harness.rs (https://github.com/rrnewton/hermit/issues/3301, step S12)",
+    "command": "test-harness parity export --e2e-root <dir holding portable/manifest_backend_parity_c and privileged/manifest_backend_parity_c>",
+    "exit_code": 0,
+    "stderr": "test-harness: parity export: 192 source row(s) from <dir>"
+  },
+  "schema": "fixture-provenance/v1",
+  "validate_unit": "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da"
+}

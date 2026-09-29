@@ -66,8 +66,11 @@ DEFAULT_BRANCH = "main"
 DEFAULT_ATTEMPTS = 5
 #: ``series-quarantine`` publishes refused series inputs to
 #: ``quarantine/series/<team>/<host>/<YYYY-MM>.jsonl``, outside the
-#: ``series/`` tree every series reader globs.
-STORES = ("ledger", "series", "series-quarantine")
+#: ``series/`` tree every series reader globs. ``parity`` publishes one batch
+#: per run: its rows to ``parity/<team>/<host>/<YYYY-MM>.jsonl`` and its run
+#: marker to ``parity-runs/<team>/<host>/<YYYY-MM>.jsonl``, also outside
+#: ``series/`` (https://github.com/rrnewton/hermit/issues/3301).
+STORES = ("ledger", "series", "series-quarantine", "parity")
 CHECKOUT_LOCK_TIMEOUT_SECONDS = 60.0
 
 
@@ -89,6 +92,16 @@ def _series_store():
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _parity_store():
+    """The parity ledger store, shared with the series module that loads it."""
+    return _series_store().parity_ledger_module()
+
+
+def _parity_report() -> dict:
+    return {"published": 0, "already_published": 0, "batches": [], "refused": [],
+            "error": None}
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
@@ -646,14 +659,22 @@ def publish(
     source_root: str | os.PathLike[str] | None = None,
     store: str = "ledger",
     network_wrapper: str | None = None,
+    parity_spool: str | os.PathLike[str] | None = None,
 ) -> dict:
     """Publish with exclusive parent-checkout mutation and unchanged push guards.
 
     Series publication already holds its own cell-ledger writer lock. Parent
     publication takes this checkout lock before the machine-wide main writer,
     and releases both before its caller can acquire cell-ledger authority.
+
+    ``parity_spool`` (series only) publishes that run's parity batches in the
+    SAME commit as the series rows. A parity batch that cannot be published is
+    reported under ``parity.refused`` and stays spooled; it never blocks the
+    series rows. The caller holds both spool locks.
     """
     repo = Path(repo).resolve()
+    if parity_spool is not None and store != "series":
+        raise PublishRefused(f"a joint parity publication rides only on the series store, not {store!r}")
     _require_source_repository(repo, source_root, remote, branch)
     if store == "ledger":
         _prepare_parent_checker()
@@ -663,6 +684,7 @@ def publish(
             repo, spool_dir, remote=remote, branch=branch, attempts=attempts,
             fetch=fetch, serialized_writer=serialized_writer, attribution=attribution,
             source_root=source_root, store=store, network_wrapper=network_wrapper,
+            parity_spool=parity_spool,
         )
 
 
@@ -679,6 +701,7 @@ def _publish(
     source_root: str | os.PathLike[str] | None = None,
     store: str = "ledger",
     network_wrapper: str | None = None,
+    parity_spool: str | os.PathLike[str] | None = None,
 ) -> dict:
     """Publish one store's spool; drain only once ancestry proves it.
 
@@ -686,6 +709,11 @@ def _publish(
     push needed, and the ancestry check that authorised draining the spool.
     """
     repo = Path(repo).resolve()
+    # The parity batches this call publishes: the store itself, or the ones
+    # riding in the series commit.
+    parity_dir = (Path(spool_dir) if store == "parity"
+                  else Path(parity_spool) if parity_spool is not None else None)
+    parity_report = _parity_report() if parity_dir is not None else None
 
     def network(*args: str, check: bool = True):
         if network_wrapper is None:
@@ -707,6 +735,13 @@ def _publish(
     # the previous run left behind, with no separate schedule to forget.
     corrupt_before = _corrupt_quarantine_names(spool_dir) if store == "series-quarantine" else set()
     reaped = reap_retained(spool_dir, Path(source_root), store=store) if source_root else 0
+    if parity_dir is not None and store != "parity" and source_root:
+        try:
+            parity_report["reaped_retained"] = reap_retained(parity_dir, Path(source_root), store="parity")
+        except PublishRefused as error:
+            # A parity reap failure must not hold back the series rows.
+            parity_report["error"] = str(error)
+    parity_batches = _parity_store().batch_paths(parity_dir) if parity_dir is not None else []
 
     set_aside: list[str] = []
     if store == "series-quarantine":
@@ -719,9 +754,10 @@ def _publish(
             raise PublishRefused(f"{spool_dir}: cannot set aside unreadable quarantine: {error}") from error
         # Everything this run moved, from pending, published/ or held/.
         set_aside = sorted(_corrupt_quarantine_names(spool_dir) - corrupt_before)
-    pending, snapshot_files = _store_snapshot(store, spool_dir)
-    if not pending:
-        return {
+    pending, snapshot_files = (({}, []) if store == "parity"
+                               else _store_snapshot(store, spool_dir))
+    if not pending and not parity_batches:
+        empty = {
             "published": 0,
             "commit": None,
             "attempts": 0,
@@ -729,6 +765,9 @@ def _publish(
             "reaped_retained": reaped,
             "set_aside": set_aside,
         }
+        if parity_report is not None:
+            empty["parity"] = parity_report
+        return empty
 
     # Validate before touching Git. A refused batch stays spooled and visible
     # rather than being written into shared history and linted afterwards.
@@ -763,6 +802,7 @@ def _publish(
                     attempt_pending[key] = fresh
 
         written: list[str] = []
+        primary_count = sum(len(v) for v in attempt_pending.values())
         for (team, host, month), events in sorted(attempt_pending.items()):
             rel = _store_shard(store, team, host, month)
             target = repo / rel
@@ -790,15 +830,37 @@ def _publish(
             target.write_text(merged)
             written.append(rel)
 
+        plan = None
+        if parity_batches:
+            plan = _plan_parity(repo, f"{remote}/{branch}", parity_batches, parity_report,
+                                required=(store == "parity"))
+            if plan is not None:
+                written.extend(_write_parity(repo, plan))
+        parity_done = [] if plan is None else [*plan.fresh_batches, *plan.already_published]
+        parity_count = 0 if plan is None else plan.appended
+
         if not written:
-            _drain(snapshot_files)
-            return {"published": 0, "commit": None, "attempts": attempt,
-                    "shards": [], "note": "all events already published",
-                    "already_published": already_published,
-                    "reaped_retained": reaped, "set_aside": set_aside}
+            _drain([*snapshot_files, *parity_done])
+            refused_parity = bool(parity_report and parity_report["refused"])
+            note = ("nothing published: every pending parity batch was refused"
+                    if refused_parity and not parity_done and not snapshot_files
+                    else "all events already published")
+            result = {"published": 0, "commit": None, "attempts": attempt,
+                      "shards": [], "note": note,
+                      "already_published": already_published,
+                      "reaped_retained": reaped, "set_aside": set_aside}
+            if parity_report is not None:
+                _settle_parity(parity_report, plan, published=False)
+                result["parity"] = parity_report
+            return result
 
         _git(repo, "add", "--", *written)
-        subject = f"{store}: append {sum(len(v) for v in attempt_pending.values())} event(s)"
+        subjects = []
+        if store != "parity" and primary_count:
+            subjects.append(f"{store}: append {primary_count} event(s)")
+        if parity_count:
+            subjects.append(f"parity: append {parity_count} event(s)")
+        subject = "; ".join(subjects) or f"{store}: append 0 event(s)"
         message = subject if attribution is None else f"{subject}\n\n{attribution}"
         _git(repo, "commit", "-q", "-m", message, "--", *written)
         commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -822,15 +884,19 @@ def _publish(
             ancestry = _git(repo, "merge-base", "--is-ancestor", commit,
                             f"{remote}/{branch}", check=False)
             if ancestry.returncode == 0:
-                _drain(snapshot_files)
-                return {"published": sum(len(v) for v in attempt_pending.values()),
-                        "already_published": already_published,
-                        "commit": commit, "attempts": attempt, "shards": written,
-                        "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
-                        "reaped_retained": reaped,
-                        "set_aside": set_aside,
-                        "retained": len(snapshot_files),
-                        "transport": "parent-main-write" if serialized_writer else "git"}
+                _drain([*snapshot_files, *parity_done])
+                result = {"published": parity_count if store == "parity" else primary_count,
+                          "already_published": already_published,
+                          "commit": commit, "attempts": attempt, "shards": written,
+                          "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
+                          "reaped_retained": reaped,
+                          "set_aside": set_aside,
+                          "retained": len(snapshot_files) + len(parity_done),
+                          "transport": "parent-main-write" if serialized_writer else "git"}
+                if parity_report is not None:
+                    _settle_parity(parity_report, plan, published=True)
+                    result["parity"] = parity_report
+                return result
             last_error = "push reported success but the commit is not an ancestor of the branch"
             continue
 
@@ -844,6 +910,52 @@ def _publish(
     raise PublishRefused(
         f"gave up after {attempts} attempts; spool retained. last error: {last_error}"
     )
+
+
+def _plan_parity(repo: Path, ref: str, batches: Sequence[Path], report: dict, *, required: bool):
+    """Plan this attempt's parity append onto the published parity tree.
+
+    An unreadable published tree refuses a parity-only publication. Riding
+    on the series commit, it is recorded and the series rows go ahead alone;
+    the parity batches stay spooled for the next run.
+    """
+    parity = _parity_store()
+    try:
+        published = parity.published_parity_at_repo(repo, ref)
+    except parity.ParityLedgerError as error:
+        detail = f"cannot read published parity at {ref}; parity spool retained: {error}"
+        if required:
+            raise PublishRefused(detail) from error
+        report["error"] = detail
+        return None
+    plan = parity.plan_publication(batches, published)
+    report["refused"] = list(plan.refused)
+    return plan
+
+
+def _write_parity(repo: Path, plan) -> list[str]:
+    written = []
+    for rel, text in sorted(plan.texts.items()):
+        base = plan.base_texts.get(rel, "")
+        violations = verify_append_only(base, text)
+        if violations:
+            raise PublishRefused(f"{rel}: parity merge would violate append-only {violations}")
+        if text == base:
+            continue
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        written.append(rel)
+    return written
+
+
+def _settle_parity(report: dict, plan, *, published: bool) -> None:
+    if plan is None:
+        return
+    report["published"] = plan.appended if published else 0
+    report["already_published"] = len(plan.already_published)
+    report["batches"] = sorted(
+        path.name for path in (plan.fresh_batches if published else []) + plan.already_published)
 
 
 def _drain(snapshot_files: Sequence[Path]) -> None:
@@ -897,6 +1009,21 @@ def reap_retained(
         return 0
     if store == "series-quarantine":
         return _reap_retained_quarantine(Path(spool_dir), Path(source_root))
+    if store == "parity":
+        # A run's batch goes only once the producing root's fetched main
+        # carries every one of its events with the same body.
+        parity = _parity_store()
+        try:
+            published_parity = parity.published_parity_at_repo(
+                Path(source_root), "refs/remotes/origin/main")
+        except parity.ParityLedgerError as error:
+            raise PublishRefused(f"cannot reap retained parity: {error}") from error
+        count = 0
+        for path in parity.batch_paths(directory):
+            if parity.reapable(path, published_parity):
+                path.unlink(missing_ok=True)
+                count += 1
+        return count
     if store == "series":
         # The pinned submodule worktree may lag its fetched history. Only full
         # matching bodies at a named published commit justify dropping a copy.
@@ -1042,7 +1169,11 @@ def main(argv: list[str] | None = None) -> int:
                 attribution=args.attribution,
             )
         print(json.dumps(report, sort_keys=True))
-        return 0
+        refused = (report.get("parity") or {}).get("refused") or []
+        for item in refused:
+            print(f"ledger-publisher: REFUSED parity batch {item['batch']}: {item['error']}",
+                  file=sys.stderr)
+        return 2 if refused else 0
     except (OSError, subprocess.SubprocessError, PublishRefused, MalformedEvent) as error:
         print(f"ledger-publisher: REFUSED: {error}", file=sys.stderr)
         return 2

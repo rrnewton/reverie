@@ -11644,13 +11644,16 @@ def finalize_reverie_counts(
                 "reverie_count_refusal": f"count bookkeeping unavailable: {error}"}
 
 
-def failed_publication_quarantine(stdout: str | None) -> dict[str, Any] | None:
-    """The quarantine outcome from a mirror's failure report, if it printed one.
+def failed_publication_outcome(stdout: str | None) -> dict[str, Any] | None:
+    """The quarantine and parity outcomes from a mirror's failure report, if printed.
 
     ``mirror.py`` prints ``{"state": "failed", ..., "raw_publication":
-    {"quarantine": {...}}}`` when the series rows fail but the refused inputs
-    were still published, or counted. Anything else yields None and the
-    record keeps only the failure detail.
+    {"quarantine": {...}, "parity": {...}}}`` when the series rows fail but
+    the refused inputs were still published, or counted; ``parity`` is present
+    when the parity batches were attempted (or counted) beside them. Anything
+    without a quarantine object yields None and the record keeps only the
+    failure detail. The shape is NOT checked here: the caller checks it with
+    ``run_registry.check_failed_raw_publication`` so that a mismatch is named.
     """
     try:
         report = json.loads((stdout or "").strip().splitlines()[-1])
@@ -11659,10 +11662,12 @@ def failed_publication_quarantine(stdout: str | None) -> dict[str, Any] | None:
     if not isinstance(report, dict) or report.get("state") != "failed":
         return None
     publication = report.get("raw_publication")
-    quarantine = publication.get("quarantine") if isinstance(publication, dict) else None
-    if not isinstance(quarantine, dict):
+    if not isinstance(publication, dict) or not isinstance(publication.get("quarantine"), dict):
         return None
-    return quarantine
+    outcome = {"quarantine": publication["quarantine"]}
+    if "parity" in publication:
+        outcome["parity"] = publication["parity"]
+    return outcome
 
 
 def finalize_ledger_mirror(
@@ -11872,14 +11877,22 @@ def finalize_ledger_mirror(
                 # keep their count in the run record beside the failure. A count
                 # the record schema refuses is named in the detail instead, so
                 # it can never cost the record the failure itself.
-                quarantine = failed_publication_quarantine(result.stdout)
-                if quarantine is not None:
+                # A parity outcome that does not fit is dropped and named on
+                # its own; it must not cost the record the quarantine count.
+                failed_publication = failed_publication_outcome(result.stdout)
+                if failed_publication is not None and "parity" in failed_publication:
                     try:
-                        run_registry.check_failed_raw_publication({"quarantine": quarantine})
+                        run_registry.check_parity_publication(failed_publication["parity"])
+                    except RuntimeError as refused:
+                        outcome["detail"] += f"; parity outcome not recorded: {refused}"
+                        del failed_publication["parity"]
+                if failed_publication is not None:
+                    try:
+                        run_registry.check_failed_raw_publication(failed_publication)
                     except RuntimeError as refused:
                         outcome["detail"] += f"; quarantine outcome not recorded: {refused}"
                     else:
-                        outcome["raw_publication"] = {"quarantine": quarantine}
+                        outcome["raw_publication"] = failed_publication
 
     scorecard_outcome = outcome.get("scorecard")
     if isinstance(scorecard_outcome, dict) and scorecard_outcome.get("state") == "superseded":

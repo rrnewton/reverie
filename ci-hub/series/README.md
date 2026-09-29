@@ -586,6 +586,56 @@ ledger; they do not interpret a row as measurement evidence. `observed_range`
 still filters on `outcome` itself so a retained row cannot leak a position into
 a derived range.
 
+## Parity rows (`parity-ledger/v1`)
+
+Parity is measured AFTER determinism: hermit's post-pass compares each
+candidate backend's retained verify log against the ptrace reference cell and
+writes one record per cell to `parity.jsonl` beside the node's results. The
+design is https://github.com/rrnewton/hermit/issues/3301. This store carries
+those records into the test ledger; `parity_ledger.py` owns every check.
+
+```sh
+test-harness parity export --e2e-root <run e2e root> \
+  | python3 ci-hub/series/series.py append-parity --parent <root> \
+      --producer validate --run-id <unit> --tree <hermit commit> \
+      [--source-tree-dirty true|false]
+```
+
+* Rows go to `parity/<team>/<host>/<YYYY-MM>.jsonl`. Their fields are exactly
+  hermit's `ParityLedgerRow` (it refuses unknown fields). `event_id` is
+  `sha256(producer \0 run_id \0 cell \0 lane \0 node)`, so a run is keyed by
+  its producer and run id, and a cell by its node.
+* Each appended run also writes one `parity.run` marker to
+  `parity-runs/<team>/<host>/<YYYY-MM>.jsonl` (the row type cannot carry a
+  run total). It tells three states apart. No marker means `append-parity`
+  never ran for that run (an older hermit, or a producer that never called
+  it). A marker with `records: 0` means the run's parity selection was empty.
+  A node that never ran appears as `record-missing` rows whose
+  `source.post_pass_state` is `absent`.
+* Both trees are outside the `series/*/*/*.jsonl` glob, so no series reader
+  sees them.
+* Nothing is quarantined and nothing is skipped. A malformed input line, a
+  record whose verdict disagrees with its envelope, credit that is not
+  hermit's `credit(matched_prefix, left_len, right_len)`, or a workspace-local
+  owner path refuses the WHOLE batch with the reason on stderr (exit 1).
+  Nothing is written, and the batch can be exported again from the files
+  hermit retains.
+* `credit` is null for every cell that was not measured (`unavailable`,
+  `record-missing`, and the rest). A null credit is never counted as 0 or 1.
+* The ledger is append-only. A replay that differs only in `emitted_at` is
+  already recorded and writes nothing. Any other difference, whether spooled,
+  retained, or published, is refused rather than replaced.
+
+The spool is `ignored/ci-hub/parity-spool/`, one batch per run (the marker,
+then its rows). `mirror.py` publishes the pending batches in the SAME ledger
+commit as the series rows (`series: append N event(s); parity: append M
+event(s)`). A parity batch that cannot publish stays spooled and is listed in
+the mirror's `parity.refused`; the series rows publish regardless. When the
+series rows fail, the parity batches publish in their own commit. The
+backlog sweep publishes them with `publish_backlog.py --store parity`, and
+`health/ledger_spool_backlog.py --store parity --gate` fires when a batch
+stays pending past its bound.
+
 ## Running the tests
 
 ```sh

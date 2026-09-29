@@ -2280,6 +2280,111 @@ with series._local_snapshot_capture(parent):
         self.assertFalse(output.exists())
 
 
+class AppendParityCli(unittest.TestCase):
+    """`series.py append-parity` as validate calls it: a real process fed
+    hermit's `test-harness parity export` bytes on stdin.
+
+    The input is RUN 1953's verbatim export (ci-hub/tests/fixtures/
+    parity-run-1953, 192 cells). https://github.com/rrnewton/hermit/issues/3301
+    """
+
+    FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "parity-run-1953"
+    RUN_ID = "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da"
+    TREE = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.parent = Path(self.temporary.name)
+        self.spool = series.parity_spool_dir(self.parent)
+
+    def _run(self, data: bytes, *extra, run_id=None, emitted_at="2026-09-28T21:40:00Z"):
+        command = [
+            sys.executable, str(Path(series.__file__).resolve()), "append-parity",
+            "--parent", str(self.parent), "--producer", "validate",
+            "--run-id", run_id or self.RUN_ID, "--tree", self.TREE,
+            "--emitted-at", emitted_at, *extra,
+        ]
+        return subprocess.run(command, input=data, capture_output=True, timeout=120, check=False)
+
+    def _batches(self):
+        return sorted(p.name for p in self.spool.glob("*.jsonl")) if self.spool.is_dir() else []
+
+    def test_round_trip_of_a_real_run_then_an_identical_replay(self):
+        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        first = self._run(data)
+        self.assertEqual(0, first.returncode, first.stderr.decode())
+        self.assertIn(
+            "parity: appended 192 record(s) (candidate-missing 3, inputs-not-equalized 14, "
+            f"diverged 175) for validate run {self.RUN_ID} -> ", first.stdout.decode())
+        self.assertIn("published ledger not consulted", first.stderr.decode())
+        (batch,) = self._batches()
+        parity = series.parity_ledger_module()
+        marker, rows = parity.read_batch(self.spool / batch)
+        self.assertEqual((192, self.TREE, False), (marker["records"], marker["hermit_sha"],
+                                                    marker["source_tree_dirty"]))
+        sources = [json.loads(line) for line in data.decode().splitlines()]
+        self.assertEqual([s["record"] for s in sources], [r["record"] for r in rows])
+        self.assertEqual([s["cell"] for s in sources], [r["cell"] for r in rows])
+
+        replay = self._run(data, emitted_at="2026-09-28T23:00:00Z")
+        self.assertEqual(0, replay.returncode, replay.stderr.decode())
+        self.assertIn("parity: 192 record(s) for validate run", replay.stdout.decode())
+        self.assertIn("are already recorded", replay.stdout.decode())
+        self.assertEqual([batch], self._batches())
+
+    def test_a_malformed_record_refuses_the_batch_and_names_it(self):
+        lines = (self.FIXTURE / "ledger-sources.jsonl").read_text().splitlines()
+        tampered = json.loads(lines[7])
+        self.assertEqual("diverged", tampered["verdict"])
+        tampered["verdict"] = "matched"
+        lines[7] = json.dumps(tampered)
+        refused = self._run(("\n".join(lines) + "\n").encode())
+        self.assertEqual(1, refused.returncode)
+        self.assertEqual(b"", refused.stdout)
+        self.assertIn(
+            "series: REFUSED the parity batch, nothing was written: input row 8: parity ledger "
+            f"source {tampered['cell']}: row verdict matched disagrees with record verdict diverged",
+            refused.stderr.decode())
+        self.assertEqual([], self._batches())
+
+    def test_a_blank_line_or_bad_json_is_refused_not_skipped(self):
+        line = (self.FIXTURE / "ledger-sources.jsonl").read_text().splitlines()[0]
+        blank = self._run((line + "\n\n" + line + "\n").encode())
+        self.assertEqual(1, blank.returncode)
+        self.assertIn("stdin line 2 is blank", blank.stderr.decode())
+        truncated = self._run((line + "\n" + line[:40] + "\n").encode())
+        self.assertEqual(1, truncated.returncode)
+        self.assertIn("stdin line 2", truncated.stderr.decode())
+        self.assertEqual([], self._batches())
+
+    def test_empty_stdin_records_an_empty_selection(self):
+        empty = self._run(b"", run_id="validate-empty-selection")
+        self.assertEqual(0, empty.returncode, empty.stderr.decode())
+        self.assertIn("parity: recorded an empty parity selection for validate run "
+                      "validate-empty-selection", empty.stdout.decode())
+        (batch,) = self._batches()
+        marker, rows = series.parity_ledger_module().read_batch(self.spool / batch)
+        self.assertEqual((0, [], []), (marker["records"], marker["nodes"], rows))
+
+    def test_usage_errors_exit_2(self):
+        missing = subprocess.run(
+            [sys.executable, str(Path(series.__file__).resolve()), "append-parity",
+             "--parent", str(self.parent), "--producer", "validate", "--run-id", "x"],
+            input=b"", capture_output=True, timeout=60, check=False)
+        self.assertEqual(2, missing.returncode)
+        self.assertIn("append-parity requires --tree", missing.stderr.decode())
+        dirty = self._run(b"", "--source-tree-dirty", "maybe")
+        self.assertEqual(2, dirty.returncode)
+        self.assertIn("--source-tree-dirty must be true or false", dirty.stderr.decode())
+        bad_producer = subprocess.run(
+            [sys.executable, str(Path(series.__file__).resolve()), "append-parity",
+             "--parent", str(self.parent), "--producer", "hermit-repeat", "--run-id", "x",
+             "--tree", self.TREE], input=b"", capture_output=True, timeout=60, check=False)
+        self.assertEqual(1, bad_producer.returncode)
+        self.assertIn("--producer", bad_producer.stderr.decode())
+
+
 class WriteBoundaryCli(unittest.TestCase):
     """The CLI exists so a producer can CALL `validate_row` rather than
     reimplement it in another language. These pin the properties that make

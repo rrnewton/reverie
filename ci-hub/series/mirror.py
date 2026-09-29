@@ -73,6 +73,12 @@ METADATA_SCHEMA = "hermit-test-ledger/v1"
 SCORECARD_HEAD_TIME_FIELD = "scorecard_hermit_commit_time"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 MIRRORED_SCORECARD_PATHS = (Path("scorecard/SCORECARD.md"), Path("scorecard/cells.json"))
+#: Generated files a scorecard tool may or may not write. A tool that predates
+#: the parity section writes no ``scorecard/parity.json``; it is bound into
+#: latest.json only when this renderer wrote it, and its absence is never an
+#: error (https://github.com/rrnewton/hermit/issues/3301).
+OPTIONAL_SCORECARD_PATHS = (Path("scorecard/parity.json"),)
+PARITY_PUBLICATION_SCHEMA = "parity-publication/v1"
 WRITER_RELATIVE = Path("ignored/ci-hub/test-ledger-writer")
 PUBLICATION_LOCK = "ci-hub-series-publication.lock"
 LOCK_FD_ENV = "DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD"
@@ -116,9 +122,11 @@ class SeriesPublicationFailed(MirrorRefused):
     failure still carries their machine-readable count for the run record.
     """
 
-    def __init__(self, message: str, quarantine: dict[str, Any]):
+    def __init__(self, message: str, quarantine: dict[str, Any],
+                 parity: dict[str, Any] | None = None):
         super().__init__(message)
         self.quarantine = quarantine
+        self.parity = parity
 
 
 def _environment(extra: Mapping[str, str] | None = None,
@@ -318,8 +326,34 @@ def recover_spooled_commit(writer: Path, parent: Path) -> str | None:
         return (len(parts) == 5 and parts[:2] == ("quarantine", "series")
                 and publisher._store_shard("series-quarantine", parts[2], parts[3],
                                            Path(parts[4]).stem) == path)
-    if not paths or any(not (shard(path) or quarantine_shard(path)) for path in paths):
+    parity = series.parity_ledger_module()
+    def parity_shard(path):
+        parts = Path(path).parts
+        if len(parts) != 4 or parts[0] not in (parity.ROW_ROOT, parity.RUN_ROOT):
+            return False
+        try:
+            return parity.shard_path(parts[0], parts[1], parts[2], Path(parts[3]).stem) == path
+        except parity.ParityLedgerError:
+            return False
+    if not paths or any(not (shard(path) or quarantine_shard(path) or parity_shard(path))
+                        for path in paths):
         raise MirrorRefused(f"ledger writer has unpublished derived or unknown work at {head}; retained for recovery")
+    if any(parity_shard(path) for path in paths):
+        # A joint commit's parity half obeys the same rule: nothing published
+        # changed, and every added event is still pending in the parity spool
+        # (whose lock the caller holds).
+        try:
+            was = parity.published_parity_at_repo(writer, base).events
+            now = parity.published_parity_at_repo(writer, head).events
+            waiting = {}
+            for batch in parity.batch_paths(series.parity_spool_dir(parent)):
+                marker, rows = parity.read_batch(batch)
+                waiting.update((event["event_id"], event) for event in (marker, *rows))
+        except parity.ParityLedgerError as error:
+            raise MirrorRefused(f"cannot check unpublished parity at {head}: {error}") from error
+        if (any(now.get(key) != value for key, value in was.items())
+                or any(waiting.get(key) != value for key, value in now.items() if key not in was)):
+            raise MirrorRefused(f"unpublished ledger commit {head} is not an unchanged spooled parity append; retained")
     if any(quarantine_shard(path) for path in paths):
         # Same rule for refused inputs: every published record is unchanged and
         # every added one is still pending in the local quarantine spool.
@@ -381,6 +415,87 @@ def _preserve_failed_series_commit(writer: Path, parent: Path) -> BaseException 
     return None
 
 
+def _parity_result(*, joint: bool) -> dict[str, Any]:
+    return {"schema": PARITY_PUBLICATION_SCHEMA, "published": 0, "already_published": 0,
+            "commit": None, "joint": joint, "batches": [], "refused": [], "error": None,
+            "pending_batches": None, "run": None}
+
+
+def _absorb_parity(result: dict[str, Any], outcome: Mapping[str, Any] | None,
+                   commit: str | None) -> None:
+    """Copy the publisher's parity sub-report into the mirror's parity record."""
+    if outcome is None:
+        return
+    result["published"] = outcome.get("published", 0)
+    result["already_published"] = outcome.get("already_published", 0)
+    result["batches"] = list(outcome.get("batches", []))
+    result["refused"] = list(outcome.get("refused", []))
+    if outcome.get("error"):
+        result["error"] = str(outcome["error"])
+    if result["published"]:
+        result["commit"] = commit
+
+
+def publish_parity_alone(ledger: Path, writer: Path, result: dict[str, Any], *,
+                         parity_spool: Path, net_wrapper: str, attempts: int,
+                         blocked: BaseException | str | None) -> None:
+    """Publish the parity batches in their own commit after the series failed.
+
+    The caller holds the parity spool lock. A failure is recorded, never
+    raised, and the writer is returned to published main, the same as
+    ``publish_quarantine``.
+    """
+    result["joint"] = False
+    if blocked is not None:
+        result["error"] = f"not attempted: {blocked}"
+        return
+    try:
+        outcome = publisher.publish(
+            writer, parity_spool, source_root=ledger, store="parity",
+            attempts=attempts, network_wrapper=net_wrapper,
+        )
+        _absorb_parity(result, outcome.get("parity"), outcome.get("commit"))
+    except (publisher.PublishRefused, subprocess.SubprocessError, OSError) as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+        try:
+            _git(writer, "checkout", "--quiet", "--force", "--detach", "refs/remotes/origin/main")
+            _git(writer, "clean", "-fdq", "--", "parity", "parity-runs")
+        except (subprocess.SubprocessError, OSError) as restore_error:
+            result["error"] += f"; writer restore FAILED: {restore_error}"
+
+
+def count_parity(result: dict[str, Any], parity_spool: Path, writer: Path | None,
+                 run_id: str | None) -> None:
+    """Pending parity batches, and where this validate run's batch stands.
+
+    ``run.state`` is ``published`` (its marker is on fetched main), ``pending``
+    (spooled, not published), or ``absent`` (append-parity never recorded this
+    run, e.g. an older hermit); ``null`` when the ledger could not be read.
+    """
+    parity = series.parity_ledger_module()
+    try:
+        result["pending_batches"] = len(parity.batch_paths(parity_spool))
+        if run_id is None:
+            return
+        identity = parity.run_event_id("validate", run_id)
+        run = {"producer": "validate", "run_id": run_id, "state": None, "records": None}
+        result["run"] = run
+        pending = sorted(Path(parity_spool).glob(f"*__{identity}.jsonl"))
+        if writer is not None:
+            published = parity.published_parity_at_repo(writer, "refs/remotes/origin/main")
+            marker = published.events.get(identity)
+            if marker is not None:
+                run.update(state="published", records=marker["records"])
+                return
+        if pending:
+            run.update(state="pending", records=parity.read_batch(pending[0])[0]["records"])
+        elif writer is not None:
+            run["state"] = "absent"
+    except (OSError, parity.ParityLedgerError) as error:
+        count_error = f"cannot count parity: {type(error).__name__}: {error}"
+        result["error"] = count_error if result["error"] is None else f"{result['error']}; {count_error}"
+
+
 def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int,
                    run_id: str | None = None, series_rows: bool = True) -> dict[str, Any]:
     """Publish the spooled series rows, then the refused inputs, whatever the rows did.
@@ -393,14 +508,24 @@ def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str
     is a writer holding work that this tool cannot account for, because
     publishing would move the writer off that work. Its records are still
     counted and reported as not attempted.
+
+    Parity batches (``series.parity_spool_dir``) publish in the SAME commit as
+    the series rows. A parity batch that cannot publish is listed in
+    ``parity.refused`` and stays spooled; the series rows publish regardless.
+    When the series rows fail, the parity batches publish alone. The
+    ``--quarantine-only`` sweep leaves them alone. The outcome is
+    ``report["parity"]`` (``parity-publication/v1``).
     """
     report: dict[str, Any] = (
         {"published": 0, "commit": None, "attempts": 0, "skipped": "quarantine only"}
         if not series_rows else {})
     series_error: BaseException | None = None
     blocked: BaseException | None = None
+    parity_spool = series.parity_spool_dir(parent)
+    parity_result = _parity_result(joint=series_rows)
     # Immutable batches are moved only while readers and appenders are excluded.
-    with series.series_spool_transition_lock(series.spool_dir(parent), exclusive=True):
+    with series.series_spool_transition_lock(series.spool_dir(parent), exclusive=True), \
+            series.series_spool_transition_lock(parity_spool, exclusive=True):
         try:
             recovery = recover_spooled_commit(writer, parent)
         except (MirrorRefused, publisher.PublishRefused, subprocess.SubprocessError) as error:
@@ -412,19 +537,28 @@ def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str
                     report = publisher.publish(
                         writer, series.spool_dir(parent), source_root=ledger,
                         store="series", attempts=attempts, network_wrapper=net_wrapper,
+                        parity_spool=parity_spool,
                     )
+                    _absorb_parity(parity_result, report.pop("parity", None), report.get("commit"))
                 if recovery:
                     report["recovered_ref"] = recovery
             except (publisher.PublishRefused, subprocess.SubprocessError) as error:
                 series_error = error
                 blocked = _preserve_failed_series_commit(writer, parent)
+        if not series_rows:
+            parity_result["error"] = "not attempted: quarantine only"
+        elif series_error is not None:
+            publish_parity_alone(ledger, writer, parity_result, parity_spool=parity_spool,
+                                 net_wrapper=net_wrapper, attempts=attempts, blocked=blocked)
+        count_parity(parity_result, parity_spool, writer if blocked is None else None, run_id)
     quarantine = publish_quarantine(
         parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts, run_id=run_id,
         blocked=blocked,
     )
     if series_error is not None:
-        raise SeriesPublicationFailed(str(series_error), quarantine) from series_error
+        raise SeriesPublicationFailed(str(series_error), quarantine, parity_result) from series_error
     report["quarantine"] = quarantine
+    report["parity"] = parity_result
     return report
 
 
@@ -967,7 +1101,7 @@ def _render_copy(writer: Path, base: str) -> Iterator[tuple[Path, str | None]]:
         yield copy, view
 
 
-def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view: str | None) -> None:
+def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view: str | None, optional: Sequence[Path] = ()) -> list[Path]:
     """Move exactly the renderer's generated files from COPY into the writer.
 
     The generated scorecard/cells.json is stored in parts (scorecard_cells).
@@ -977,13 +1111,18 @@ def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view:
     export (no history) keeps its archive whole, and _publish_scorecard later
     writes latest.json and, through finish_portable_proof, any finalized-proof
     carrier files.
+
+    Every one of ``paths`` must exist. One of ``optional`` is copied only when
+    the renderer changed it, and returned with ``paths`` as what was bound.
     """
     if _copy_git(copy, "rev-parse", "HEAD^{commit}") != base:
         raise MirrorRefused("scorecard tool moved the HEAD of its ledger copy; nothing was copied "
                             "into the ledger writer")
     _require_render_view(copy, base, view, rendered=True)
+    changed = set(_copy_changes(copy))
+    paths = [*paths, *(path for path in optional if path.as_posix() in changed)]
     expected = {path.as_posix() for path in paths}
-    unexpected = sorted(set(_copy_changes(copy)) - expected)
+    unexpected = sorted(changed - expected)
     if unexpected:
         raise MirrorRefused(
             "scorecard tool changed ledger paths outside its generated output; nothing was copied "
@@ -1032,6 +1171,7 @@ def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view:
     if document is not None and _stored_history(writer) != document:
         raise MirrorRefused("the scorecard history stored in the ledger writer differs from the generated "
                             "document; writer retained for recovery")
+    return paths
 
 
 def build_scorecard(
@@ -1111,16 +1251,18 @@ def build_scorecard(
             raise MirrorRefused("scorecard source HEAD changed during generation")
         if _committed_tool_source(tool_checkout) != tool_commit:
             raise MirrorRefused("scorecard tool HEAD changed during generation")
+        optional: Sequence[Path] = ()
         if scorecard_command == "export-legacy":
             blob = _git(source_checkout, "rev-parse", "HEAD:ci/compat-envelope/cells.json")
             paths = (Path(f"scorecard/legacy/{blob}.json"),
                      Path(f"scorecard/legacy/{blob}.identity.json"))
         else:
             paths = MIRRORED_SCORECARD_PATHS
+            optional = OPTIONAL_SCORECARD_PATHS
         # The renderer is the measured tree's code. Its write authority is
         # exactly the generated files, copied last so a failure above leaves
         # the writer untouched.
-        _copy_back(ledger, writer, base, paths, view)
+        paths = _copy_back(ledger, writer, base, paths, view, optional)
     return ({path.as_posix(): hashlib.sha256(
                 _stored_history(writer) if path.as_posix() == scorecard_cells.LOGICAL_PATH
                 else (writer / path).read_bytes()).hexdigest()
@@ -1356,8 +1498,9 @@ def mirror(
                                          run_id=finalized_run_id, series_rows=not quarantine_only)
             snapshot = _published_snapshot(writer)
         series_commit = snapshot["source"]["commit"]
+        parity_published = (publication.get("parity") or {}).get("published")
         report = {
-            "state": "published" if publication.get("published") else "unchanged",
+            "state": "published" if publication.get("published") or parity_published else "unchanged",
             "repository": REMOTE_URL, "commit": series_commit,
             "source_repository": REMOTE_URL, "source_commit": series_commit,
             "source_tree": snapshot["source"]["tree"],
@@ -1658,6 +1801,7 @@ def failure_report(parent: Path, error: BaseException, *, run_id: str | None,
     failure is reported on stderr only, as before.
     """
     quarantine = getattr(error, "quarantine", None)
+    parity = getattr(error, "parity", None)
     if quarantine is None and count:
         try:
             quarantine = publish_quarantine(
@@ -1672,9 +1816,12 @@ def failure_report(parent: Path, error: BaseException, *, run_id: str | None,
                           "set_aside": [], "run": None}
     if quarantine is None:
         return None
+    publication = {"quarantine": quarantine}
+    if parity is not None:
+        publication["parity"] = parity
     return {"state": "failed", "repository": REMOTE_URL,
             "error": f"{type(error).__name__}: {error}",
-            "raw_publication": {"quarantine": quarantine}}
+            "raw_publication": publication}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

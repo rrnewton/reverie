@@ -795,15 +795,19 @@ def _count(value: Any, field: str, *, nullable: bool) -> None:
 
 
 def check_failed_raw_publication(value: Any) -> None:
-    """A failed publication may keep only the quarantine outcome, fully typed.
+    """A failed publication may keep only the quarantine and parity outcomes, fully typed.
 
     Public so that start_unit can check a mirror's failure report before it
     attaches the count: a count that does not fit must not stop the failure
-    itself from being recorded.
+    itself from being recorded. The parity outcome is optional: a mirror older
+    than the parity ledger, or one that failed before the parity spool was
+    read, reports the quarantine alone.
     """
     field = "ledger_mirror.raw_publication"
-    if not isinstance(value, dict) or set(value) != {"quarantine"}:
-        raise _error(field, "a failed publication may carry only its quarantine outcome")
+    if not isinstance(value, dict) or set(value) not in ({"quarantine"}, {"quarantine", "parity"}):
+        raise _error(field, "a failed publication may carry only its quarantine and parity outcomes")
+    if "parity" in value:
+        check_parity_publication(value["parity"], field=f"{field}.parity")
     quarantine = value["quarantine"]
     field += ".quarantine"
     keys = {"schema", "published", "already_published", "commit", "error", "pending_records",
@@ -838,22 +842,87 @@ def check_failed_raw_publication(value: Any) -> None:
         _count(run[name], f"{field}.run.{name}", nullable=False)
 
 
+PARITY_RUN_STATES = frozenset({"published", "pending", "absent"})
+
+
+def check_parity_publication(value: Any, *, field: str = "ledger_mirror.raw_publication.parity") -> None:
+    """The mirror's parity-publication/v1 outcome, fully typed.
+
+    ``run`` is where this validate run's parity batch stands: ``published``
+    (its run marker is on the ledger), ``pending`` (spooled), ``absent``
+    (append-parity never recorded it), or ``null`` state when the ledger
+    could not be read. ``records`` is the marker's row count, so an empty
+    selection (0) stays distinct from a run that recorded nothing (absent).
+    """
+    keys = {"schema", "published", "already_published", "commit", "joint", "batches",
+            "refused", "error", "pending_batches", "run"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise _error(field, "must contain exactly " + ", ".join(sorted(keys)))
+    if value["schema"] != "parity-publication/v1":
+        raise _error(f"{field}.schema", "must be parity-publication/v1")
+    for name in ("published", "already_published"):
+        _count(value[name], f"{field}.{name}", nullable=False)
+    _count(value["pending_batches"], f"{field}.pending_batches", nullable=True)
+    if value["commit"] is not None and not _is_commit(value["commit"]):
+        raise _error(f"{field}.commit", "must be null or lowercase forty-hex")
+    if value["published"] and value["commit"] is None:
+        raise _error(f"{field}.commit", "must name the commit that published parity events")
+    if not isinstance(value["joint"], bool):
+        raise _error(f"{field}.joint", "must be a boolean")
+    if value["error"] is not None and (not isinstance(value["error"], str)
+                                       or not value["error"].strip()):
+        raise _error(f"{field}.error", "must be null or a nonempty string")
+    if (not isinstance(value["batches"], list)
+            or any(not isinstance(item, str) or not item for item in value["batches"])):
+        raise _error(f"{field}.batches", "must be a list of batch file names")
+    refused = value["refused"]
+    if not isinstance(refused, list) or any(
+            not isinstance(item, dict) or set(item) != {"batch", "error"}
+            or not isinstance(item["batch"], str) or not item["batch"]
+            or not isinstance(item["error"], str) or not item["error"].strip()
+            for item in refused):
+        raise _error(f"{field}.refused", "must be a list of {batch, error} refusals")
+    run = value["run"]
+    if run is None:
+        return
+    run_keys = {"producer", "run_id", "state", "records"}
+    if not isinstance(run, dict) or set(run) != run_keys:
+        raise _error(f"{field}.run", "must contain exactly " + ", ".join(sorted(run_keys)))
+    for name in ("producer", "run_id"):
+        if not isinstance(run[name], str) or not run[name].strip():
+            raise _error(f"{field}.run.{name}", "must be a nonempty string")
+    if run["state"] is not None and run["state"] not in PARITY_RUN_STATES:
+        raise _error(f"{field}.run.state", "must be null, published, pending, or absent")
+    _count(run["records"], f"{field}.run.records", nullable=True)
+    if (run["records"] is None) != (run["state"] in {None, "absent"}):
+        raise _error(f"{field}.run.records", "must be counted exactly when the run's marker was read")
+
+
 def _is_commit(value: Any) -> bool:
     return (isinstance(value, str) and len(value) == 40
             and all(ch in "0123456789abcdef" for ch in value))
 
 
+OPTIONAL_SCORECARD_FILES = frozenset({"scorecard/parity.json"})
+
+
 def _scorecard_publication_files(files: Any, *, field: str = "ledger_mirror.scorecard.files",
                                  generated: frozenset[str] = frozenset(
-                                     {"scorecard/SCORECARD.md", "scorecard/cells.json"})) -> None:
-    """Validate publication metadata; the proof reader verifies operand bytes."""
+                                     {"scorecard/SCORECARD.md", "scorecard/cells.json"}),
+                                 optional: frozenset[str] = OPTIONAL_SCORECARD_FILES) -> None:
+    """Validate publication metadata; the proof reader verifies operand bytes.
+
+    ``optional`` names generated files bound only when this publication
+    changed them: ``scorecard/parity.json`` is written by a hermit scorecard
+    new enough to summarize the parity ledger, and absent otherwise.
+    """
     if not isinstance(files, dict) or not generated.issubset(files):
         raise _error(field, "must bind both generated files")
     for path, digest in files.items():
         if (not isinstance(path, str) or not isinstance(digest, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", digest)):
             raise _error(field, "must contain named complete SHA-256 identities")
-    proof_paths = set(files) - generated
+    proof_paths = set(files) - generated - optional
     if not proof_paths:
         return
     carriers = []
@@ -894,7 +963,8 @@ def _portable_proof(value: Any, *, publication_state: str) -> None:
     for name in ("commit", "hermit_commit", "tool_hermit_commit"):
         if not _is_commit(value[name]):
             raise _error(f"{field}.{name}", "must be lowercase forty-hex")
-    _scorecard_publication_files(value["files"], field=f"{field}.files", generated=frozenset())
+    _scorecard_publication_files(value["files"], field=f"{field}.files", generated=frozenset(),
+                                 optional=frozenset())
     if not value["files"]:
         raise _error(f"{field}.files", "must bind one finalized carrier and one to three proof objects")
 

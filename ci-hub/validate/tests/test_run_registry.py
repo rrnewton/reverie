@@ -751,6 +751,77 @@ class RunRegistryContractTests(unittest.TestCase):
                 run_registry.parse_current_record(validation_handle(
                     ledger_mirror={**failed, "raw_publication": raw}))
 
+    def test_failed_publication_keeps_a_typed_parity_outcome(self) -> None:
+        # https://github.com/rrnewton/hermit/issues/3301: the parity batches
+        # publish (or are counted) beside a failed series; the record keeps
+        # that outcome typed as strictly as the quarantine count.
+        quarantine = {
+            "schema": "series-quarantine-publication/v1", "published": 0,
+            "already_published": 0, "commit": None, "error": None,
+            "pending_records": 0, "held_records": 0, "corrupt_files": 0,
+            "set_aside": [], "run": None,
+        }
+        parity = {
+            "schema": "parity-publication/v1", "published": 193, "already_published": 0,
+            "commit": "b" * 40, "joint": False, "batches": ["hermit__h__2026-09__x.jsonl"],
+            "refused": [], "error": None, "pending_batches": 0,
+            "run": {"producer": "validate", "run_id": "validate-x", "state": "published",
+                    "records": 192},
+        }
+        failed = {"state": "failed", "recorded_at": "2026-09-28T03:00:00+00:00",
+                  "detail": "series push refused",
+                  "raw_publication": {"quarantine": quarantine, "parity": parity}}
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=failed))
+        self.assertEqual(failed, accepted.raw["ledger_mirror"])
+        run = parity["run"]
+        for label, good in (
+            ("empty selection is 0, not absent", {**parity, "run": {**run, "records": 0}}),
+            ("pending", {**parity, "published": 0, "commit": None,
+                         "run": {**run, "state": "pending"}}),
+            ("absent run has no count", {**parity, "run": {**run, "state": "absent",
+                                                           "records": None}}),
+            ("unreadable ledger", {**parity, "error": "cannot count parity: x",
+                                   "run": {**run, "state": None, "records": None}}),
+            ("no run named", {**parity, "run": None}),
+            ("refused batch", {**parity, "refused": [{"batch": "b.jsonl", "error": "bad"}]}),
+        ):
+            with self.subTest(label):
+                run_registry.check_parity_publication(good)
+        field = "ledger_mirror.raw_publication.parity"
+        for label, bad, message in (
+            ("missing key", {k: v for k, v in parity.items() if k != "run"}, "must contain exactly"),
+            ("wrong schema", {**parity, "schema": "v0"}, "must be parity-publication/v1"),
+            ("published without a commit", {**parity, "commit": None}, "must name the commit"),
+            ("bool is not a count", {**parity, "published": True}, f"{field}.published"),
+            ("joint not bool", {**parity, "joint": 1}, "must be a boolean"),
+            ("blank error", {**parity, "error": " "}, "must be null or a nonempty string"),
+            ("batches not names", {**parity, "batches": [""]}, "must be a list of batch file names"),
+            ("refusal shape", {**parity, "refused": [{"batch": "b"}]},
+             "must be a list of {batch, error} refusals"),
+            ("unknown state", {**parity, "run": {**run, "state": "matched"}},
+             "must be null, published, pending, or absent"),
+            ("absent with a count", {**parity, "run": {**run, "state": "absent", "records": 0}},
+             "must be counted exactly when the run's marker was read"),
+            ("published without a count", {**parity, "run": {**run, "records": None}},
+             "must be counted exactly when the run's marker was read"),
+        ):
+            with self.subTest(label), self.assertRaisesRegex(RuntimeError, message):
+                run_registry.parse_current_record(validation_handle(
+                    ledger_mirror={**failed, "raw_publication": {"quarantine": quarantine,
+                                                                 "parity": bad}}))
+        with self.assertRaisesRegex(RuntimeError, "may carry only its quarantine and parity"):
+            run_registry.parse_current_record(validation_handle(
+                ledger_mirror={**failed, "raw_publication": {"parity": parity}}))
+
+    def test_scorecard_may_bind_parity_json_but_nothing_else_optional(self) -> None:
+        files = {"scorecard/SCORECARD.md": "f" * 64, "scorecard/cells.json": "0" * 64}
+        run_registry._scorecard_publication_files(files)
+        run_registry._scorecard_publication_files({**files, "scorecard/parity.json": "1" * 64})
+        with self.assertRaisesRegex(RuntimeError, "unsupported publication path"):
+            run_registry._scorecard_publication_files({**files, "scorecard/extra.json": "1" * 64})
+        with self.assertRaisesRegex(RuntimeError, "must bind both generated files"):
+            run_registry._scorecard_publication_files({"scorecard/parity.json": "1" * 64})
+
     def test_direct_publication_binds_storage_and_preserves_partial_failure(self) -> None:
         repository = "https://github.com/rrnewton/hermit_test_ledger.git"
         publication = {
