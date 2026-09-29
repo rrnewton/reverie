@@ -217,6 +217,9 @@ pub trait GlobalTool: Send + Sync + Default {
     /// Returning allows the backend to drop in-flight callbacks, including
     /// `receive_rpc`, and proceed to consuming exit hooks. Shared state must
     /// already support that cleanup; returning is not an ordinary RPC reply.
+    /// The ptrace backend polls the returned future again only after the waker
+    /// it was last polled with fires, so a pending future must arrange that
+    /// wake rather than rely on being polled again for another reason.
     async fn wait_for_backend_failure(&self) {
         std::future::pending::<()>().await
     }

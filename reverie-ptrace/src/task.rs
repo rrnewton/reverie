@@ -99,6 +99,7 @@ use crate::gdbstub::StopReason;
 use crate::gdbstub::StoppedInferior;
 use crate::injected_syscall::InjectedSyscallFrame;
 use crate::liteinst_stats::LiteinstPatchOutcome;
+use crate::poll_on_wake::PollOnWake;
 use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::stack::GuestStack;
@@ -6717,7 +6718,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let drive = self
                     .drive_ordinary(start, &mut exit_event, &stop, &session)
                     .fuse();
-                let transfer = async {
+                // Polled only after `slot.changed` woke it, not on every
+                // resume of this task: it completes at most once per exec.
+                let transfer = PollOnWake::new(Box::pin(async {
                     slot.requested().await;
                     // The forced order is complete only once the run loop,
                     // not an earlier Exec transfer, has observed the former
@@ -6734,7 +6737,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             changed.await;
                         }
                     }
-                }
+                }))
                 .fuse();
                 futures::pin_mut!(drive, transfer);
                 futures::select_biased! {
@@ -6950,8 +6953,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         let outcome = {
             let run_loop = self.ordinary_start(start).fuse();
-            let cancelled = session.cancelled().fuse();
-            let global_failure = global.wait_for_backend_failure().fuse();
+            // Both watchers complete at most once per run and wake this task
+            // when they do, so poll them only after their own wakers fired.
+            let cancelled = PollOnWake::new(Box::pin(session.cancelled())).fuse();
+            let global_failure = PollOnWake::new(global.wait_for_backend_failure()).fuse();
             futures::pin_mut!(run_loop, cancelled, global_failure);
             let exit = async {
                 #[cfg(test)]
