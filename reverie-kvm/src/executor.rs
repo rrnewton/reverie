@@ -13408,15 +13408,6 @@ fn recvmsg_with_table(
         Ok(staged) => staged,
         Err(error) => return error,
     };
-    let identity_table = state.file_identity_table.clone();
-    let mut identities = identity_table
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prepared = match prepare_received_identities(&identities, staged) {
-        Ok(prepared) => prepared,
-        Err(error) => return error,
-    };
-
     let copied_length = (received as usize).min(payload.len());
     let mut copied = 0usize;
     for iov in &guest_iovecs {
@@ -13434,6 +13425,22 @@ fn recvmsg_with_table(
         }
         copied += length;
     }
+    // Authentication and descriptor preparation above precede all guest output.
+    // CopyAccess retirement may synchronously wake a forked process whose
+    // separate descriptor table shares this identity allocator. Acquire the
+    // allocator only after payload copy; prepare and commit remain one locked
+    // operation, using any identities that the wake callback allocated.
+    // Payload faults leave the allocator unchanged. Allocator exhaustion is
+    // detected here, after the payload, before descriptor/control publication.
+    let identity_table = state.file_identity_table.clone();
+    let mut identities = identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prepared = match prepare_received_identities(&identities, staged) {
+        Ok(prepared) => prepared,
+        Err(error) => return error,
+    };
+
     let installed = commit_received_rights(
         state,
         shared,
@@ -13713,21 +13720,6 @@ fn recvmmsg_with_table(
                 };
             }
         };
-        let identity_table = state.file_identity_table.clone();
-        let mut identities = identity_table
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prepared = match prepare_received_identities(&identities, staged) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return if delivered == 0 {
-                    error
-                } else {
-                    delivered as i64
-                };
-            }
-        };
-
         let copied_length = (received as usize).min(payload.len());
         let mut copied = 0usize;
         for iov in &guest_iovecs {
@@ -13749,6 +13741,28 @@ fn recvmmsg_with_table(
             }
             copied += length;
         }
+        // Authentication and descriptor preparation above precede all guest output.
+        // CopyAccess retirement may synchronously wake a forked process whose
+        // separate descriptor table shares this identity allocator. Acquire the
+        // allocator only after payload copy; prepare and commit remain one locked
+        // operation, using any identities that the wake callback allocated.
+        // Payload faults leave the allocator unchanged. Allocator exhaustion is
+        // detected here, after the payload, before descriptor/control publication.
+        let identity_table = state.file_identity_table.clone();
+        let mut identities = identity_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prepared = match prepare_received_identities(&identities, staged) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return if delivered == 0 {
+                    error
+                } else {
+                    delivered as i64
+                };
+            }
+        };
+
         let installed = commit_received_rights(
             state,
             shared,
