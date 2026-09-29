@@ -707,6 +707,46 @@ class RunRegistryContractTests(unittest.TestCase):
                 )
             )
 
+    def test_failed_publication_keeps_a_typed_quarantine_count(self) -> None:
+        quarantine = {
+            "schema": "series-quarantine-publication/v1", "published": 1,
+            "already_published": 0, "commit": "b" * 40, "error": None,
+            "pending_records": 0, "held_records": 0, "corrupt_files": 0,
+            "set_aside": [],
+            "run": {"run_id": "validate-x", "published": 1, "withheld": 0,
+                    "unpublished": 0, "records": 1},
+        }
+        failed = {"state": "failed", "recorded_at": "2026-09-28T03:00:00+00:00",
+                  "detail": "series batch refused",
+                  "raw_publication": {"quarantine": quarantine}}
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=failed))
+        self.assertEqual(failed, accepted.raw["ledger_mirror"])
+        not_attempted = {**quarantine, "published": 0, "commit": None,
+                         "error": "not attempted: MirrorRefused: lock held",
+                         "pending_records": 1,
+                         "run": {**quarantine["run"], "published": None, "withheld": None,
+                                 "unpublished": 1}}
+        run_registry.parse_current_record(validation_handle(
+            ledger_mirror={**failed, "raw_publication": {"quarantine": not_attempted}}))
+        for label, raw in (
+            ("series outcome smuggled in", {"quarantine": quarantine, "published": 3}),
+            ("missing key", {"quarantine": {k: v for k, v in quarantine.items() if k != "run"}}),
+            ("negative count", {"quarantine": {**quarantine, "published": -1}}),
+            ("nullable only where declared", {"quarantine": {**quarantine, "published": None}}),
+            ("bool is not a count", {"quarantine": {**quarantine, "pending_records": True}}),
+            ("wrong schema", {"quarantine": {**quarantine, "schema": "v0"}}),
+            ("short commit", {"quarantine": {**quarantine, "commit": "abc"}}),
+            ("blank error", {"quarantine": {**quarantine, "error": " "}}),
+            ("set_aside not names", {"quarantine": {**quarantine, "set_aside": [3]}}),
+            ("run shape", {"quarantine": {**quarantine, "run": {"run_id": "x"}}}),
+            ("run records nullable", {"quarantine": {**quarantine,
+                                                     "run": {**quarantine["run"], "records": None}}}),
+        ):
+            with self.subTest(label), self.assertRaisesRegex(
+                    RuntimeError, "ledger_mirror.raw_publication"):
+                run_registry.parse_current_record(validation_handle(
+                    ledger_mirror={**failed, "raw_publication": raw}))
+
     def test_direct_publication_binds_storage_and_preserves_partial_failure(self) -> None:
         repository = "https://github.com/rrnewton/hermit_test_ledger.git"
         publication = {

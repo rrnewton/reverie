@@ -64,7 +64,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -157,6 +157,10 @@ QUARANTINE_STAGES = frozenset({
 })
 #: Exact records whose content cannot be published without an owner path.
 QUARANTINE_HELD_SUBDIR = "held"
+#: Top-level quarantine files the publisher could not read, moved aside whole so
+#: the readable ones still publish. Never republished or deleted; the backlog
+#: gate counts every file here as held back from publication and alarms.
+QUARANTINE_CORRUPT_SUBDIR = "corrupt"
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -276,11 +280,12 @@ def quarantine_dir(parent: Any) -> Path:
 def quarantine_held_dir(parent: Any) -> Path:
     """Exact refused inputs whose content cannot be published portably.
 
-    The test ledger is public and carries no owner path. A record whose owner
-    paths cannot be replaced reversibly is published as a content-free stub
-    (digest, length, reason) and its exact bytes stay here. Nothing deletes
-    this directory, and ``ledger_spool_backlog --store series-quarantine``
-    alarms while it holds anything.
+    The test ledger is public and carries no owner path. A record that cannot
+    be made public by owner-home token substitution is published as a
+    content-free stub (digest, length, reason). Its exact bytes then exist only
+    here, on this host: the ledger cannot restore them. Nothing deletes this
+    directory, and ``ledger_spool_backlog --store series-quarantine`` alarms
+    while it holds anything.
     """
     return quarantine_dir(parent) / QUARANTINE_HELD_SUBDIR
 
@@ -1078,7 +1083,9 @@ _QUARANTINE_LEGACY_KEYS = frozenset({
 })
 _QUARANTINE_ID_RE = re.compile(r"series-quarantine-[0-9a-f]{64}")
 _QUARANTINE_EMITTED_AT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\S+")
-#: A reversible stand-in for one owner-home prefix in a published record.
+#: A stand-in for one owner-home prefix in a published record. The ledger
+#: publishes only the prefix's byte length, so the bytes come back only for a
+#: reader who already knows the prefix (see portable_quarantine_record).
 _OWNER_HOME_TOKEN_RE = re.compile(r"\{\{OWNER_HOME_[0-9]+\}\}")
 #: One owner-home prefix: the needle plus the account segment that follows it.
 #: The segment stops at any character that JSON escapes or that delimits a path,
@@ -1279,7 +1286,13 @@ def quarantine_exposes_owner_path(record: Mapping[str, Any]) -> bool:
 
 
 def _withheld_quarantine_stub(record: Mapping[str, Any], detail: str) -> dict:
-    """A content-free public stand-in; the exact record stays in ``held/``."""
+    """A content-free public stand-in for a record token substitution cannot publish.
+
+    It keeps each input's digest and length and none of its bytes. The ledger
+    cannot restore the record from it: the only exact copy is the host-local
+    one that the publisher moves into ``held/`` (:func:`quarantine_held_dir`),
+    where the health gate alarms until someone deals with it.
+    """
     stub = copy.deepcopy(dict(record))
     stub["inputs"] = [
         {
@@ -1313,11 +1326,16 @@ def portable_quarantine_record(record: Mapping[str, Any]) -> dict:
 
     Each distinct owner-home prefix (the needle plus its account segment) is
     replaced by ``{{OWNER_HOME_<n>}}`` and listed in ``owner_paths`` with its
-    byte length. Replacing each token by that prefix restores the exact
-    received bytes, which ``raw_sha256`` then proves. A record whose owner
-    paths cannot be replaced that way (a token already in the content, a path
-    the prefix pattern does not cover, or base64-held bytes) is published as a
-    stub with ``withheld`` set and no content. Idempotent.
+    byte length only. The published record is therefore NOT the received
+    bytes: it is exact only after each token is replaced by a prefix that the
+    ledger does not contain, and ``raw_sha256``/``raw_bytes`` prove a
+    substitution a reader who knows the prefixes makes. The substitution is
+    checked to round-trip here, before publication. A record that token
+    substitution cannot make public (a token already in the content, a path
+    the prefix pattern does not cover, or base64-held bytes) is published as
+    a stub with ``withheld`` set, each input's digest and length, and no
+    content. Its bytes are then kept only in the host-local ``held/``
+    directory (:func:`quarantine_held_dir`). Idempotent.
     """
     text = _quarantine_text(record)
     prefixes: list[str] = []
@@ -1328,8 +1346,8 @@ def portable_quarantine_record(record: Mapping[str, Any]) -> dict:
         portable = json.loads(text)
     elif _OWNER_HOME_TOKEN_RE.search(text) is not None:
         return _withheld_quarantine_stub(
-            record, "the content already contains an owner-home token, so replacing "
-            "owner paths would not be reversible",
+            record, "the content already contains an owner-home token, so a token "
+            "substitution could not be told apart from the content",
         )
     else:
         tokens = {prefix: "{{OWNER_HOME_%d}}" % ordinal
@@ -1351,7 +1369,7 @@ def portable_quarantine_record(record: Mapping[str, Any]) -> dict:
     if quarantine_exposes_owner_path(portable):
         return _withheld_quarantine_stub(
             record, "an owner path remains that the owner-home pattern does not "
-            "replace reversibly",
+            "replace",
         )
     return portable
 
@@ -1538,19 +1556,82 @@ def _local_quarantine_ids(path: Path) -> set[str]:
     return known
 
 
+def _readable_local_quarantine_ids(directory: Path) -> set[str]:
+    """Identities in every readable local quarantine file.
+
+    Reads the pending, ``published/`` and ``held/`` files. Deduplication is
+    best effort: an unreadable file is skipped here, not fatal. The publisher
+    moves it into ``corrupt/`` and the backlog gate alarms on it. A duplicate
+    that gets through is dropped again at publication.
+    """
+    known: set[str] = set()
+    for folder in (directory, directory / "published", directory / QUARANTINE_HELD_SUBDIR):
+        try:
+            paths = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                known |= _local_quarantine_ids(path)
+            except (OSError, LedgerError):
+                continue
+    return known
+
+
+def _fsync_quarantine_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_quarantine_file(directory: Path, name: str, text: str, *, replace: bool = False) -> Path:
+    """Durably create ``directory/name`` holding exactly ``text``.
+
+    The bytes go to a hidden ``.partial`` file, which no reader globs, and are
+    fsynced. The file is then linked (or with ``replace``, renamed) into place
+    and the directory is fsynced. A reader therefore sees either the whole file
+    or no file, never a torn one. Without ``replace``, an existing name is an
+    error and is never overwritten.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    final = directory / name
+    partial = directory / f".{name}.{os.getpid()}-{secrets.token_hex(4)}.partial"
+    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if replace:
+            os.replace(partial, final)
+        else:
+            os.link(partial, final)
+    finally:
+        partial.unlink(missing_ok=True)
+    _fsync_quarantine_directory(directory)
+    return final
+
+
 def append_quarantine(parent: Any, run_id: str, records: Sequence[dict]) -> dict:
     """Retain refused inputs once per identity, exactly, with fsync.
 
-    The local file keeps every received byte. It is deduplicated against this
-    run's live, publication-retained and held files and against the records
-    already published in the test ledger, so a replayed run adds nothing.
-    Returns ``{"path", "written", "duplicates", "published_check_error"}``.
+    Each call writes the new records to a NEW immutable file,
+    ``<run>.<time_ns>-<pid>-<random>.jsonl``, and never appends to an existing
+    one. It takes no lock, so it never waits for a publisher, even one that is
+    part way through a network push. The publisher snapshots the complete
+    top-level files and moves exactly those files once they are published. A
+    file created during a publication is therefore left for the next one.
+
+    Records are deduplicated against every readable local file and against
+    those already published in the test ledger, so a replayed run adds nothing.
+    Returns ``{"path", "written", "duplicates", "published_check_error"}``, where
+    ``path`` is the new file, or None when nothing was new.
     """
     directory = quarantine_dir(parent)
-    name = _quarantine_name(run_id)
-    path = directory / name
     result: dict[str, Any] = {
-        "path": path, "written": 0, "duplicates": 0, "published_check_error": None,
+        "path": None, "written": 0, "duplicates": 0, "published_check_error": None,
     }
     if not records:
         return result
@@ -1566,25 +1647,22 @@ def append_quarantine(parent: Any, run_id: str, records: Sequence[dict]) -> dict
         # of a published identity is dropped again at publication.
         result["published_check_error"] = str(error)
     directory.mkdir(parents=True, exist_ok=True)
-    with series_spool_transition_lock(
-        directory, exclusive=True, timeout_seconds=QUARANTINE_LOCK_TIMEOUT_SECONDS,
-    ):
-        known = set(published)
-        for candidate in (path, directory / "published" / name,
-                          directory / QUARANTINE_HELD_SUBDIR / name):
-            known |= _local_quarantine_ids(candidate)
-        pending = []
-        for record in records:
-            if record["event_id"] in known:
-                result["duplicates"] += 1
-                continue
-            known.add(record["event_id"])
-            pending.append(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-        if pending:
-            with open(path, "a", encoding="ascii") as handle:
-                handle.write("".join(pending))
-                handle.flush()
-                os.fsync(handle.fileno())
+    known = published | _readable_local_quarantine_ids(directory)
+    pending = []
+    for record in records:
+        if record["event_id"] in known:
+            result["duplicates"] += 1
+            continue
+        known.add(record["event_id"])
+        pending.append(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    if pending:
+        stem = _quarantine_name(run_id).removesuffix(".jsonl")
+        if len(stem.encode()) > 150:
+            # The record carries the run id; the name only has to be unique
+            # and fit a 255-byte path component with its suffix.
+            stem = "run-id-sha256-" + hashlib.sha256(run_id.encode()).hexdigest()
+        name = f"{stem}.{time.time_ns()}-{os.getpid()}-{secrets.token_hex(4)}.jsonl"
+        result["path"] = write_quarantine_file(directory, name, "".join(pending))
     result["written"] = len(pending)
     return result
 
@@ -1598,17 +1676,71 @@ def _published_form(record: Mapping[str, Any], *, host: str) -> dict:
     return portable_quarantine_record(record)
 
 
+def _quarantine_file_forms(path: Path, host: str) -> list[dict]:
+    """The validated public form of every record in one local file, in order."""
+    forms = []
+    for record in _read_quarantine_file(path):
+        portable = _published_form(record, host=host)
+        validate_quarantine_records([portable], public=True)
+        quarantine_shard_path("hermit", portable["host"], portable["emitted_at"][:7])
+        forms.append(portable)
+    return forms
+
+
+def set_aside_unreadable_quarantine(directory: Any, *, host: str | None = None,
+                                    folder: str | None = None) -> list[str]:
+    """Move each local file that cannot be published whole into ``corrupt/``.
+
+    Checks every ``*.jsonl`` file in ``directory`` (or in its ``folder``
+    subdirectory). A file that is not UTF-8, lacks its final newline, has a line
+    that does not parse, or has a record whose public form does not validate is
+    renamed to ``corrupt/<folder>--<name>``. The rename is atomic and the bytes
+    are unchanged. Nothing republishes or deletes ``corrupt/``, and
+    ``ledger_spool_backlog --store series-quarantine`` counts every file there
+    as held back and alarms. One bad file therefore no longer stops the others
+    publishing. Returns the names it moved.
+    """
+    root = Path(directory)
+    source = root / folder if folder else root
+    if not source.is_dir():
+        return []
+    fallback = host if host is not None else _writer_host()
+    corrupt = root / QUARANTINE_CORRUPT_SUBDIR
+    moved: list[str] = []
+    for path in sorted(source.glob("*.jsonl")):
+        try:
+            _quarantine_file_forms(path, fallback)
+            continue
+        except FileNotFoundError:
+            continue
+        except (OSError, LedgerError):
+            pass
+        corrupt.mkdir(parents=True, exist_ok=True)
+        target = corrupt / f"{folder or 'pending'}--{path.name}"
+        if target.exists():
+            target = corrupt / f"{folder or 'pending'}--{time.time_ns()}-{path.name}"
+        os.replace(path, target)
+        moved.append(target.name)
+    if moved:
+        _fsync_quarantine_directory(corrupt)
+        _fsync_quarantine_directory(source)
+    return moved
+
+
 def quarantine_publication_snapshot(
     directory: Any, *, host: str | None = None,
 ) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
     """Group pending local quarantine files by the ledger shard they publish into.
 
-    Only top-level ``*.jsonl`` files are pending; ``published/`` (proven
-    published, awaiting durability) and ``held/`` are never republished.
-    Every record is converted to its portable form and validated as public.
-    An identity is published once: its identity excludes the observation
-    time, so a later line with the same identity is the same refusal seen
-    again and the first one (in file, then line, order) stands.
+    Only top-level ``*.jsonl`` files are pending. ``published/`` (proven
+    published, awaiting durability), ``held/`` and ``corrupt/`` are never
+    republished. Every record is converted to its portable form and validated
+    as public. This function stays strict: the publisher first calls
+    ``set_aside_unreadable_quarantine``, so a file that fails here is one that
+    changed after that check, and the publication refuses. An identity is
+    published once. Its identity excludes the observation time, so a later line
+    with the same identity is the same refusal seen again, and the first one (in
+    file, then line, order) stands.
     """
     root = Path(directory)
     pending: dict[tuple[str, str, str], list[dict]] = {}
@@ -1618,14 +1750,11 @@ def quarantine_publication_snapshot(
     fallback = host if host is not None else _writer_host()
     seen: set[str] = set()
     for path in sorted(root.glob("*.jsonl")):
-        for record in _read_quarantine_file(path):
-            portable = _published_form(record, host=fallback)
-            validate_quarantine_records([portable], public=True)
+        for portable in _quarantine_file_forms(path, fallback):
             if portable["event_id"] in seen:
                 continue
             seen.add(portable["event_id"])
             key = ("hermit", portable["host"], portable["emitted_at"][:7])
-            quarantine_shard_path(*key)
             pending.setdefault(key, []).append(portable)
         files.append(path)
     return {key: union_events(value) for key, value in pending.items()}, files
@@ -3406,6 +3535,257 @@ def _expected_guest_exit(row: dict) -> tuple[int | None, int | None] | None:
     return code, signal
 
 
+#: Where Hermit's E2E manifests live in a Hermit commit, and the file of
+#: shared defaults beside them that declares no test (ci/manifest-plan's
+#: DEFAULTS_FILE). The Rust loader reads every other ``*.yaml`` file there.
+HERMIT_MANIFEST_DIR = "tests/e2e/manifests"
+HERMIT_MANIFEST_DEFAULTS = "defaults.yaml"
+
+# Hermit's manifest loader (ci/manifest-plan/src/manifest_value.rs) parses YAML
+# with serde_yaml 0.9.34, whose plain-scalar rules are YAML 1.2 core, not the
+# YAML 1.1 rules PyYAML applies by default. Under PyYAML's rules `yes`, `on`,
+# `010`, `1_0`, `1:30` and `2001-12-14` are not strings, and `0o7` is not an
+# integer. These mirror serde_yaml's de.rs (visit_untagged_scalar, visit_int,
+# parse_f64 and digits_but_not_number) so that both read the same values.
+_SERDE_YAML_INT_TAG = "tag:hermit.invalid,2026:serde-yaml-int"
+_SERDE_YAML_FLOAT_TAG = "tag:hermit.invalid,2026:serde-yaml-float"
+_SERDE_YAML_RADIX = (("0x", 16, re.compile(r"[0-9a-fA-F]+")),
+                     ("0o", 8, re.compile(r"[0-7]+")),
+                     ("0b", 2, re.compile(r"[01]+")))
+_SERDE_YAML_DECIMAL = re.compile(r"[0-9]+")
+_SERDE_YAML_FLOAT = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
+def _serde_yaml_leading_zero(scalar: str) -> bool:
+    """serde_yaml's ``digits_but_not_number``: ``0`` then digits is a string."""
+    bare = scalar[1:] if scalar[:1] in ("+", "-") else scalar
+    return len(bare) > 1 and bare[0] == "0" and _SERDE_YAML_DECIMAL.fullmatch(bare[1:]) is not None
+
+
+def _serde_yaml_int(scalar: str) -> int | None:
+    """The integer serde_yaml 0.9.34 resolves a plain scalar to, or None."""
+    unpositive = scalar[1:] if scalar.startswith("+") else scalar
+    for prefix, base, digits in _SERDE_YAML_RADIX:
+        if unpositive.startswith(prefix) and digits.fullmatch(unpositive[2:]):
+            value = int(unpositive[2:], base)
+            return value if value < 1 << 128 else None
+        if scalar.startswith("-" + prefix) and digits.fullmatch(scalar[3:]):
+            value = -int(scalar[3:], base)
+            return value if value >= -(1 << 127) else None
+    if _serde_yaml_leading_zero(scalar):
+        return None
+    if _SERDE_YAML_DECIMAL.fullmatch(unpositive):
+        value = int(unpositive)
+        return value if value < 1 << 128 else None
+    if scalar.startswith("-") and _SERDE_YAML_DECIMAL.fullmatch(scalar[1:]):
+        value = int(scalar)
+        return value if value >= -(1 << 127) else None
+    return None
+
+
+def _serde_yaml_float(scalar: str) -> float | None:
+    """The float serde_yaml 0.9.34 resolves a plain non-integer scalar to, or None."""
+    if _serde_yaml_leading_zero(scalar):
+        return None
+    unpositive = scalar[1:] if scalar.startswith("+") else scalar
+    if unpositive[:1] == "+" or (scalar.startswith("+") and unpositive[:1] == "-"):
+        return None
+    if unpositive in (".inf", ".Inf", ".INF"):
+        return math.inf
+    if scalar in ("-.inf", "-.Inf", "-.INF"):
+        return -math.inf
+    if scalar in (".nan", ".NaN", ".NAN"):
+        return math.nan
+    if _SERDE_YAML_FLOAT.fullmatch(unpositive) is None:
+        return None
+    value = float(unpositive)
+    return value if math.isfinite(value) else None
+
+
+def _serde_yaml_plain_tag(scalar: str) -> str:
+    if scalar in ("", "~", "null", "Null", "NULL"):
+        return "tag:yaml.org,2002:null"
+    if scalar in ("true", "True", "TRUE", "false", "False", "FALSE"):
+        return "tag:yaml.org,2002:bool"
+    if _serde_yaml_int(scalar) is not None:
+        return _SERDE_YAML_INT_TAG
+    if _serde_yaml_float(scalar) is not None:
+        return _SERDE_YAML_FLOAT_TAG
+    return "tag:yaml.org,2002:str"
+
+
+def _manifest_yaml_loader(yaml: Any) -> type:
+    """A PyYAML loader that reads a manifest as Hermit's loader does.
+
+    Plain scalars resolve by serde_yaml's rules above; a quoted scalar is a
+    string in both. A duplicate or non-string mapping key is refused, as
+    ``manifest_value.rs`` refuses it: PyYAML would otherwise keep the last
+    duplicate silently.
+    """
+    base = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+    class ManifestLoader(base):  # type: ignore[misc, valid-type]
+        def resolve(self, kind, value, implicit):
+            if kind is yaml.ScalarNode and implicit[0]:
+                return _serde_yaml_plain_tag(value)
+            return super().resolve(kind, value, implicit)
+
+        def construct_mapping(self, node, deep=False):
+            seen: set[str] = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=True)
+                if not isinstance(key, str):
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"manifest mapping key {key!r} is not a string",
+                        key_node.start_mark,
+                    )
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate manifest key {key!r}", key_node.start_mark,
+                    )
+                seen.add(key)
+            return super().construct_mapping(node, deep=deep)
+
+    def construct_int(loader, node):
+        value = _serde_yaml_int(loader.construct_scalar(node))
+        # serde_yaml resolves integers up to 128 bits, but its Value holds
+        # only i64 and u64 and refuses the rest.
+        if value is None or not -(1 << 63) <= value < 1 << 64:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"integer {node.value} is outside i64 and u64", node.start_mark,
+            )
+        return value
+
+    ManifestLoader.add_constructor(_SERDE_YAML_INT_TAG, construct_int)
+    ManifestLoader.add_constructor(
+        _SERDE_YAML_FLOAT_TAG,
+        lambda loader, node: _serde_yaml_float(loader.construct_scalar(node)),
+    )
+    return ManifestLoader
+
+
+def manifest_guest_exit_declarations(
+    source: Path, tree: str,
+) -> dict[str, tuple[int | None, int | None, str] | None]:
+    """Every manifest test id at Hermit ``tree`` and its verify guest-exit declaration.
+
+    Reads ``tests/e2e/manifests/*.yaml`` (not ``defaults.yaml``) from the
+    immutable commit, never from a working tree, resolving scalars as Hermit's
+    serde_yaml loader does (:func:`_manifest_yaml_loader`). Each test id maps to
+    ``(code, signal, reason)`` from ``modes.verify.expected_guest_exit``, or
+    to None when the entry declares none. The manifest, not the row, is the
+    authority for a declared nonzero guest exit: the runner copies that
+    declaration onto the result row verbatim, so a row that claims one its
+    tree's manifest does not make is not evidence of an intended failure.
+    A tree that cannot be read, or whose manifests do not parse into test
+    entries with unique ids, raises :class:`SeriesError`: that is a fault in
+    the invocation's source, not in any one row.
+    """
+    listed = _git(source, ["ls-tree", "-z", tree, "--", HERMIT_MANIFEST_DIR + "/"])
+    if listed.returncode != 0:
+        detail = listed.stderr.strip() or "no output"
+        raise SeriesError(f"cannot list Hermit manifests at {tree}: {detail}")
+    try:
+        import yaml
+    except ImportError as error:
+        raise SeriesError(
+            f"cannot read Hermit manifests at {tree} without PyYAML: {error}"
+        ) from error
+    loader = _manifest_yaml_loader(yaml)
+    env = dict(os.environ)
+    for name in _GIT_REPO_SCOPED_ENV:
+        env.pop(name, None)
+    declarations: dict[str, tuple[int | None, int | None, str] | None] = {}
+    for entry in listed.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        name = path.rsplit("/", 1)[-1]
+        if (len(fields) != 3 or fields[1] != "blob" or not name.endswith(".yaml")
+                or name == HERMIT_MANIFEST_DEFAULTS):
+            continue
+        shown = subprocess.run(
+            ["git", "-C", str(source), "cat-file", "blob", fields[2]],
+            capture_output=True, timeout=60, check=False, env=env,
+        )
+        if shown.returncode != 0:
+            detail = shown.stderr.decode(errors="replace").strip() or "no output"
+            raise SeriesError(f"cannot read {path} at Hermit {tree}: {detail}")
+        try:
+            document = yaml.load(shown.stdout.decode("utf-8"), Loader=loader)
+        except (UnicodeDecodeError, yaml.YAMLError) as error:
+            raise SeriesError(f"{path} at Hermit {tree} is not UTF-8 YAML: {error}") from error
+        tests = document.get("test") if isinstance(document, dict) else None
+        if not isinstance(tests, list):
+            raise SeriesError(f"{path} at Hermit {tree} has no test list")
+        for test in tests:
+            identifier = test.get("id") if isinstance(test, dict) else None
+            if not isinstance(identifier, str) or not identifier:
+                raise SeriesError(f"{path} at Hermit {tree} has a test without a string id")
+            if identifier in declarations:
+                raise SeriesError(f"Hermit {tree} declares manifest test {identifier!r} twice")
+            modes = test.get("modes")
+            verify = modes.get("verify") if isinstance(modes, dict) else None
+            declared = verify.get("expected_guest_exit") if isinstance(verify, dict) else None
+            if declared is None:
+                declarations[identifier] = None
+                continue
+            if not isinstance(declared, dict) or not set(declared) <= {"code", "signal", "reason"}:
+                raise SeriesError(
+                    f"{path} at Hermit {tree}: {identifier} expected_guest_exit is not "
+                    "an object of code, signal and reason"
+                )
+            declarations[identifier] = (
+                declared.get("code"), declared.get("signal"), declared.get("reason"),
+            )
+    return declarations
+
+
+def _bind_expected_guest_exit(
+    row: dict, tree: str,
+    declarations: Callable[[], dict[str, tuple[int | None, int | None, str] | None]],
+) -> None:
+    """Refuse a row whose guest-exit declaration its tree's manifest does not make.
+
+    The row's declaration is shape-checked first (:func:`_expected_guest_exit`).
+    It must then equal, in code, signal AND reason, the declaration on the
+    manifest entry named by the row's ``test`` at the row's Hermit ``tree``.
+    The runner copies all three verbatim, so any difference means the row
+    was not produced under this tree's manifest; that includes a row from a
+    dirty working tree whose uncommitted manifest declared it. Such a row is
+    refused as :class:`MalformedRow` (quarantined, never admitted). An
+    undeclared row never reads the manifests.
+    """
+    expected = _expected_guest_exit(row)
+    if expected is None:
+        return
+    test = row.get("test")
+    if not isinstance(test, str) or not test:
+        raise MalformedRow("a declared guest exit needs the row's manifest test id")
+    manifests = declarations()
+    if test not in manifests:
+        raise MalformedRow(
+            f"expected_guest_exit is declared for {test!r}, which has no manifest "
+            f"entry at Hermit {tree}"
+        )
+    authority = manifests[test]
+    if authority is None:
+        raise MalformedRow(
+            f"expected_guest_exit is declared for {test!r}, whose manifest entry at "
+            f"Hermit {tree} declares none"
+        )
+    declared = row["expected_guest_exit"]
+    claimed = (declared["code"], declared["signal"], declared["reason"])
+    if any(type(have) is not type(want) or have != want
+           for have, want in zip(claimed, authority)):
+        raise MalformedRow(
+            f"expected_guest_exit code={claimed[0]!r} signal={claimed[1]!r} for {test!r} "
+            f"disagrees with its manifest entry at Hermit {tree} "
+            f"(code={authority[0]!r} signal={authority[1]!r}) or its reason"
+        )
+
+
 def _declared_failure_matches(
     attempt: dict,
     report: dict,
@@ -4873,6 +5253,13 @@ def _rows_from_cell_results(
         raise SeriesError(f"cannot resolve whether Hermit {tree} is on origin/main ancestry")
     depth = source_depths(parent, tree, hermit_checkout=source)
     recorded_detcore_tree = None
+    declared_exits: list[dict] = []
+
+    def manifest_declarations() -> dict:
+        # Read once, and only when some row declares a guest exit.
+        if not declared_exits:
+            declared_exits.append(manifest_guest_exit_declarations(source, tree))
+        return declared_exits[0]
 
     rows = []
     row_sources: list[list[int]] = []
@@ -4967,6 +5354,7 @@ def _rows_from_cell_results(
                     "cell result detcore_tree must be a 40-hex object id when present, "
                     f"got {detcore_tree!r}"
                 )
+            _bind_expected_guest_exit(cell_result, tree, manifest_declarations)
             runtime = _cell_runtime(cell_result)
             projected_outcome = _cell_outcome(cell_result)
             no_verdict_evidence = _no_verdict_evidence(cell_result, projected_outcome)

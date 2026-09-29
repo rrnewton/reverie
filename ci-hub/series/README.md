@@ -369,9 +369,31 @@ writer. It is not recorded as bad data. `append-cells` retains every received
 input with stage `writer-error` and the exception type, then lets the
 exception propagate with its traceback and a nonzero exit.
 `test_projection_refuses_every_mutated_field_as_data_never_as_a_crash`
-replaces every JSON path of representative cells, and of their embedded
-verification reports, with values of every JSON type, or deletes it, and
-requires each mutant to be either admitted or quarantined.
+replaces every JSON path of 15 admitted base cells (the three producers, and
+for validate a `backend_parity` red witness and match, a declared guest exit
+code and signal, and container failures), and of their embedded verification
+reports, with values of every JSON type, or deletes it, and requires each
+mutant to be either admitted or quarantined.
+
+A declared nonzero guest exit (`expected_guest_exit`) is evidence of an
+intended failure only if the row's Hermit tree says so. The runner copies
+`modes.verify.expected_guest_exit` from the manifest entry onto the row
+verbatim, so the projection requires the row's `code`, `signal` and `reason`
+to equal, with the same JSON types, the declaration on the manifest entry that
+the row's `test` names in `tests/e2e/manifests/*.yaml` (not `defaults.yaml`)
+at the row's `tree`. It reads the committed tree, never a working tree, so a
+dirty-tree row whose declaration exists only in an uncommitted manifest is
+refused. A mismatch, a missing test id, an unknown id, or an entry that
+declares nothing is a `MalformedRow` and the row is quarantined. The manifests
+are read with PyYAML under serde_yaml 0.9's scalar rules (YAML 1.2: `yes` and
+`on` are strings, `0o7` is 7, `07` and `1_0` are strings, `1e3` is a float) and serde_yaml's
+refusal of duplicate and non-string keys, so the projection sees the value
+Hermit's `manifest_value.rs` sees; `ManifestScalarResolution` pins 68 scalars
+against a serde_yaml probe. A manifest tree that cannot be read or parsed, or
+that names one test id twice, is a fault in the invocation's source rather
+than in one row: it raises `SeriesError`, which refuses the whole batch
+(every input quarantined, exit 1). A batch with no declared row never reads
+the manifests.
 
 Stdin is read as bytes and split on `\n` alone. `str.splitlines` would also
 split a JSON string at U+2028. Each refused input is retained **byte for
@@ -399,33 +421,68 @@ replayed run retains and publishes each refusal once and the first observation
 stands. `validate_quarantine_records` refuses a record whose content does not
 prove its digest and length.
 
-The exact records are written, with fsync and under the quarantine spool lock
-(which waits at most 120 s), to
-`ignored/ci-hub/series-quarantine/<run_id>.jsonl` under the shared parent
-root. They are then **published to `hermit_test_ledger`** at
+Each append writes the exact records to a new file of its own,
+`ignored/ci-hub/series-quarantine/<run_id>.<ns>-<pid>-<random>.jsonl` under
+the shared parent root. The file is written under a hidden temporary name,
+fsynced, and linked into place, so a reader sees it whole or not at all. An
+append takes no lock and never waits: the publisher holds the quarantine lock
+across its network push, and an append that waited on it could time out and
+lose the refused inputs it held only in memory. A file created after a
+publisher's snapshot is not drained by that publisher; the next one publishes
+it.
+
+The records are then **published to `hermit_test_ledger`** at
 `quarantine/series/<team>/<host>/<YYYY-MM>.jsonl`. That path is outside the
 `series/*/*/*.jsonl` tree that every series reader globs, so a refusal is
 never read as a series row. Publication happens in two places:
 
-* `mirror.py` publishes the quarantine after the run's series rows. A
-  quarantine failure never undoes the series. It is recorded in
-  `raw_publication.quarantine.error`, the refused inputs stay pending, and the
-  writer is returned to published main.
-* `publish_backlog.py` drains a quarantine-only backlog. This covers a batch
-  whose every row was refused, which leaves no series batch to trigger a
-  publish. The sweep judges that store by the quarantine sub-report, not by
-  the mirror's exit status.
+* `mirror.py` publishes the quarantine after the run's series rows, whatever
+  the rows did. A quarantine failure never undoes the series. It is recorded
+  in `raw_publication.quarantine.error`, the refused inputs stay pending, and
+  the writer is returned to published main. A series failure (a refused
+  series batch, a rejected push) does not stop the quarantine either. A
+  failed series commit is first named by a `recovery/cell-series-<sha>` ref,
+  and the mirror still exits nonzero with `state: failed`, but its last
+  stdout line then carries `raw_publication.quarantine`, which `start_unit.py`
+  copies into the run record's failed `ledger_mirror` after checking it
+  against the record's schema. A count that does not fit is not copied; the
+  failure is recorded anyway and its `detail` names the refusal. The one case that
+  publishes nothing is a ledger writer holding an unpushed commit the mirror
+  cannot identify as its own unchanged append: moving the writer would orphan
+  that commit. The quarantine is then reported as `not attempted`, with the
+  local pending counts and `run.published: null`.
+* `publish_backlog.py` drains a quarantine backlog with
+  `mirror.py --publish-only --quarantine-only`, which never reads or publishes
+  the series spool. A refused series batch therefore cannot keep refused
+  inputs on this host, and neither can a batch whose every row was refused,
+  which leaves no series batch to trigger a publish. The sweep judges that
+  store by the quarantine sub-report, not by the mirror's exit status.
 
-After publication, the exact copy waits in `published/` until the ledger
+After publication, the local copy waits in `published/` until the ledger
 checkout reads every identity, and is then removed.
 
-The published form must not carry an owner path. Each owner-home prefix is
-replaced by a `{{OWNER_HOME_<n>}}` token listed in `owner_paths` with its byte
-length, so replacing each token restores the exact bytes that `raw_sha256`
-proves. A record that cannot be made public reversibly is published as a stub
-with `withheld` set and no content, and its exact local copy moves to `held/`
-permanently. Two cases produce a stub: base64-held bytes that contain an owner
-path, and content that already contains a token. A legacy `series-quarantine/v1`
+A local file the publisher cannot read whole (not UTF-8, a truncated final
+line, a line that does not parse, or a record that does not validate) is moved,
+byte for byte, into `corrupt/<pending|published|held>--<name>` before the
+snapshot, and the other files publish. Nothing republishes or deletes
+`corrupt/`. The run's `raw_publication.quarantine` names what was moved in
+`set_aside` and counts `corrupt/` in `corrupt_files`, and the health gate
+alarms while it holds anything.
+
+The public ledger alone does not hold every received byte. The published form
+must not carry an owner path, so each owner-home prefix (the owner-path needle
+plus the account segment after it) is replaced by a `{{OWNER_HOME_<n>}}` token.
+`owner_paths` lists each token with the byte length of the prefix it stands
+for, and nothing else about it. The ledger therefore publishes the prefix's
+length but not its bytes. The received bytes come back only when someone who
+already knows each prefix substitutes it for its token, and `raw_sha256` and
+`raw_bytes` then prove the result. A record that cannot be made public by
+token substitution at all is published as a stub with `withheld` set, the
+digest and length of each input, and no content. Its exact bytes exist only
+in the host-local `held/` directory, which nothing deletes and which the
+health gate alarms on while it holds anything. Two cases produce a stub:
+base64-held bytes that contain an owner path, and content that already
+contains a token. A legacy `series-quarantine/v1`
 record stored the parsed object and a digest of its canonical
 re-serialization, not the received bytes. It is published as v2 with empty
 `inputs`, its v1 content under `legacy`, and its v1 `quarantine_id` as its
@@ -461,7 +518,8 @@ coordinator warning, in any of these cases:
 
 * a refusal emitted in the last 24 hours exists, locally or in the published
   ledger;
-* a withheld record is held;
+* a withheld record is held in `held/`, or an unreadable file is set aside in
+  `corrupt/`;
 * the pending quarantine stalls.
 
 Failing the validate itself would instead turn one cell's data refusal into a

@@ -339,6 +339,23 @@ class SeriesQuarantineGateTest(unittest.TestCase):
         rc, report = self.run_gate()
         self.assertEqual(0, rc, report)
 
+    def test_a_set_aside_corrupt_file_fires_as_withheld_until_it_is_gone(self) -> None:
+        corrupt = self.directory / "corrupt" / "pending--unit-1.jsonl"
+        corrupt.parent.mkdir(parents=True)
+        corrupt.write_bytes(b'{"schema":"series-quarantine/v2","trunc')  # never parsed
+        moment = time.time() - 100000
+        os.utime(corrupt, (moment, moment))
+        rc, report = self.run_gate()
+        self.assertEqual(1, rc, report)
+        self.assertEqual("withheld", report["state"])
+        self.assertEqual(1, report["quarantine_corrupt_files"])
+        self.assertEqual(0, report["quarantine_held_records"])
+        self.assertIn("1 unreadable file(s) set aside in corrupt/", report["summary"])
+        corrupt.unlink()
+        rc, report = self.run_gate()
+        self.assertEqual(0, rc, report)
+        self.assertEqual(0, report["quarantine_corrupt_files"])
+
     def test_an_unpublished_refusal_past_the_bound_is_stalled(self) -> None:
         self.write("unit-1.jsonl", [self.record()], age=120)
         rc, report = self.run_gate(bound=60, recent=30)

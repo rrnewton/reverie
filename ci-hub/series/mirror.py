@@ -96,6 +96,18 @@ class MirrorRefused(RuntimeError):
     """Publication is incomplete; local inputs must be retained."""
 
 
+class SeriesPublicationFailed(MirrorRefused):
+    """The series rows did not publish; ``quarantine`` says what the refusals did.
+
+    The refused inputs are published whatever happens to the rows, so this
+    failure still carries their machine-readable count for the run record.
+    """
+
+    def __init__(self, message: str, quarantine: dict[str, Any]):
+        super().__init__(message)
+        self.quarantine = quarantine
+
+
 def _environment(extra: Mapping[str, str] | None = None,
                  withhold: Sequence[str] = ()) -> dict[str, str]:
     environment = git_env.sanitized_git_env()
@@ -332,24 +344,71 @@ def recover_spooled_commit(writer: Path, parent: Path) -> str | None:
     return recovery
 
 
+def _preserve_failed_series_commit(writer: Path, parent: Path) -> BaseException | None:
+    """Keep a refused series commit inspectable before the writer moves on.
+
+    A push that failed leaves the writer on an unpublished commit. Publishing
+    the quarantine checks out published main, so the commit is first named by
+    the same durable recovery ref a later run would give it. Returns the error
+    if the commit is not an unchanged spooled append; the writer then must not
+    move and nothing more publishes from it.
+    """
+    try:
+        head = _git(writer, "rev-parse", "HEAD")
+        ancestor = _run(["git", "-C", str(writer), "merge-base", "--is-ancestor", head,
+                         "refs/remotes/origin/main"], check=False)
+        if ancestor.returncode == 0:
+            return None
+        recover_spooled_commit(writer, parent)
+    except (MirrorRefused, publisher.PublishRefused, subprocess.SubprocessError, OSError) as error:
+        return error
+    return None
+
+
 def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int,
-                   run_id: str | None = None) -> dict[str, Any]:
+                   run_id: str | None = None, series_rows: bool = True) -> dict[str, Any]:
+    """Publish the spooled series rows, then the refused inputs, whatever the rows did.
+
+    With ``series_rows=False`` only the refused inputs publish (the backlog
+    sweep's ``series-quarantine`` store). A refused series batch, or a series
+    push that failed, no longer strands the quarantine: it still publishes, and
+    the failure is raised afterwards as ``SeriesPublicationFailed`` carrying the
+    quarantine outcome. The only case in which the quarantine does not publish
+    is a writer holding work that this tool cannot account for, because
+    publishing would move the writer off that work. Its records are still
+    counted and reported as not attempted.
+    """
+    report: dict[str, Any] = (
+        {"published": 0, "commit": None, "attempts": 0, "skipped": "quarantine only"}
+        if not series_rows else {})
+    series_error: BaseException | None = None
+    blocked: BaseException | None = None
     # Immutable batches are moved only while readers and appenders are excluded.
     with series.series_spool_transition_lock(series.spool_dir(parent), exclusive=True):
         try:
             recovery = recover_spooled_commit(writer, parent)
-            _git(writer, "checkout", "--detach", "refs/remotes/origin/main")
-            report = publisher.publish(
-                writer, series.spool_dir(parent), source_root=ledger,
-                store="series", attempts=attempts, network_wrapper=net_wrapper,
-            )
-            if recovery:
-                report["recovered_ref"] = recovery
-        except (publisher.PublishRefused, subprocess.SubprocessError) as error:
-            raise MirrorRefused(str(error)) from error
-    report["quarantine"] = publish_quarantine(
+        except (MirrorRefused, publisher.PublishRefused, subprocess.SubprocessError) as error:
+            series_error = blocked = error
+        else:
+            try:
+                _git(writer, "checkout", "--detach", "refs/remotes/origin/main")
+                if series_rows:
+                    report = publisher.publish(
+                        writer, series.spool_dir(parent), source_root=ledger,
+                        store="series", attempts=attempts, network_wrapper=net_wrapper,
+                    )
+                if recovery:
+                    report["recovered_ref"] = recovery
+            except (publisher.PublishRefused, subprocess.SubprocessError) as error:
+                series_error = error
+                blocked = _preserve_failed_series_commit(writer, parent)
+    quarantine = publish_quarantine(
         parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts, run_id=run_id,
+        blocked=blocked,
     )
+    if series_error is not None:
+        raise SeriesPublicationFailed(str(series_error), quarantine) from series_error
+    report["quarantine"] = quarantine
     return report
 
 
@@ -358,58 +417,74 @@ def _quarantine_records(path: Path) -> list[dict]:
             for record in series._read_quarantine_file(file)]
 
 
-def publish_quarantine(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str, attempts: int,
-                       run_id: str | None = None) -> dict[str, Any]:
+def publish_quarantine(parent: Path, ledger: Path, writer: Path | None, *, net_wrapper: str,
+                       attempts: int, run_id: str | None = None,
+                       blocked: BaseException | str | None = None) -> dict[str, Any]:
     """Publish refused series inputs and count them; never undo the series.
 
     The result is the machine-readable count that start_unit copies into the
-    run's ``ledger_mirror.raw_publication.quarantine``. A failure is recorded
-    in ``error`` rather than raised: the series rows are already published, the
-    refused inputs stay in the local spool (``pending_records``) for the next
+    run's ``ledger_mirror.raw_publication.quarantine``, on success and on
+    failure. A failure is recorded in ``error`` rather than raised. The refused
+    inputs stay in the local spool (``pending_records``) for the next
     publication, and ``ledger_spool_backlog --store series-quarantine`` alarms
     on them. The writer is returned to published main so the scorecard never
-    binds an unpushed quarantine commit.
+    binds an unpushed quarantine commit. With ``blocked`` (or no writer),
+    nothing is published and only the local counts are taken. ``run.published``
+    is then None, because nothing was read from the ledger.
     """
     directory = series.quarantine_dir(parent)
     result: dict[str, Any] = {
         "schema": "series-quarantine-publication/v1", "published": 0,
         "already_published": 0, "commit": None, "error": None,
-        "pending_records": None, "held_records": None, "run": None,
+        "pending_records": None, "held_records": None, "corrupt_files": None,
+        "set_aside": [], "run": None,
     }
-    try:
-        with series.series_spool_transition_lock(
-            directory, exclusive=True, timeout_seconds=series.QUARANTINE_LOCK_TIMEOUT_SECONDS,
-        ):
-            outcome = publisher.publish(
-                writer, directory, source_root=ledger, store="series-quarantine",
-                attempts=attempts, network_wrapper=net_wrapper,
-            )
-        result["published"] = outcome.get("published", 0)
-        result["already_published"] = outcome.get("already_published", 0)
-        result["commit"] = outcome.get("commit")
-    except (publisher.PublishRefused, subprocess.SubprocessError, OSError, series.LedgerError) as error:
-        result["error"] = f"{type(error).__name__}: {error}"
+    if writer is None or blocked is not None:
+        result["error"] = f"not attempted: {blocked if blocked is not None else 'no ledger writer'}"
+    else:
         try:
-            _git(writer, "checkout", "--quiet", "--force", "--detach", "refs/remotes/origin/main")
-            _git(writer, "clean", "-fdq", "--", "quarantine")
-        except (subprocess.SubprocessError, OSError) as restore_error:
-            result["error"] += f"; writer restore FAILED: {restore_error}"
+            with series.series_spool_transition_lock(
+                directory, exclusive=True, timeout_seconds=series.QUARANTINE_LOCK_TIMEOUT_SECONDS,
+            ):
+                outcome = publisher.publish(
+                    writer, directory, source_root=ledger, store="series-quarantine",
+                    attempts=attempts, network_wrapper=net_wrapper,
+                )
+            result["published"] = outcome.get("published", 0)
+            result["already_published"] = outcome.get("already_published", 0)
+            result["commit"] = outcome.get("commit")
+            result["set_aside"] = list(outcome.get("set_aside", []))
+        except (publisher.PublishRefused, subprocess.SubprocessError, OSError, series.LedgerError) as error:
+            result["error"] = f"{type(error).__name__}: {error}"
+            try:
+                _git(writer, "checkout", "--quiet", "--force", "--detach", "refs/remotes/origin/main")
+                _git(writer, "clean", "-fdq", "--", "quarantine")
+            except (subprocess.SubprocessError, OSError) as restore_error:
+                result["error"] += f"; writer restore FAILED: {restore_error}"
     try:
         pending = _quarantine_records(directory)
         result["pending_records"] = len(pending)
         result["held_records"] = len(_quarantine_records(directory / series.QUARANTINE_HELD_SUBDIR))
+        corrupt = directory / series.QUARANTINE_CORRUPT_SUBDIR
+        result["corrupt_files"] = len(list(corrupt.glob("*.jsonl"))) if corrupt.is_dir() else 0
         if run_id is not None:
-            _, published = series.published_quarantine_at_repo(writer, "refs/remotes/origin/main")
-            mine = [record for record in published if record.get("run_id") == run_id]
             waiting = [record for record in pending if record.get("run_id") == run_id]
-            result["run"] = {
-                "run_id": run_id,
-                "published": len(mine),
-                "withheld": sum(record.get("withheld") is not None for record in mine),
-                "unpublished": len(waiting),
-                "records": len({record["event_id"] for record in mine}
-                               | {series.quarantine_identity(record) for record in waiting}),
-            }
+            if result["error"] is not None and result["error"].startswith("not attempted"):
+                result["run"] = {"run_id": run_id, "published": None, "withheld": None,
+                                 "unpublished": len(waiting),
+                                 "records": len({series.quarantine_identity(record)
+                                                 for record in waiting})}
+            else:
+                _, published = series.published_quarantine_at_repo(writer, "refs/remotes/origin/main")
+                mine = [record for record in published if record.get("run_id") == run_id]
+                result["run"] = {
+                    "run_id": run_id,
+                    "published": len(mine),
+                    "withheld": sum(record.get("withheld") is not None for record in mine),
+                    "unpublished": len(waiting),
+                    "records": len({record["event_id"] for record in mine}
+                                   | {series.quarantine_identity(record) for record in waiting}),
+                }
     except (subprocess.SubprocessError, OSError, series.LedgerError) as error:
         count_error = f"cannot count quarantine: {type(error).__name__}: {error}"
         result["error"] = count_error if result["error"] is None else f"{result['error']}; {count_error}"
@@ -1085,9 +1160,12 @@ def mirror(
     tool_checkout: Path | None = None, finalized_run_id: str | None = None,
     lifecycle_deadline_ns: int | None = None,
     portable_proof_only: bool = False,
+    quarantine_only: bool = False,
 ) -> dict[str, Any]:
     if remote_url != REMOTE_URL:
         raise MirrorRefused("unexpected ledger repository")
+    if quarantine_only and not publish_only:
+        raise MirrorRefused("quarantine-only publication requires --publish-only")
     if portable_proof_only and (finalized_run_id is None or results is None or publish_only or scorecard_command):
         raise MirrorRefused("proof-only attachment requires --finalized-run-id/--results and no scorecard override")
     legacy_export = scorecard_command == "export-legacy"
@@ -1138,7 +1216,7 @@ def mirror(
                                     "tree": series._series_tree_at(writer, commit)}})
         else:
             publication = publish_series(parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts,
-                                         run_id=finalized_run_id)
+                                         run_id=finalized_run_id, series_rows=not quarantine_only)
             snapshot = _published_snapshot(writer)
         series_commit = snapshot["source"]["commit"]
         report = {
@@ -1411,6 +1489,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--results", type=Path)
     parser.add_argument("--finalized-run-id", help="canonical completed validation run; row and proof are read from STATE")
     parser.add_argument("--publish-only", action="store_true")
+    parser.add_argument("--quarantine-only", action="store_true",
+                        help="with --publish-only: publish only the refused series inputs, "
+                             "never the series rows")
     parser.add_argument("--portable-proof-only", action="store_true",
                         help="attach newly verified public census operands without regenerating the scorecard; "
                              "a run the published scorecard names stays bound to it, and any other run must be "
@@ -1426,6 +1507,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def failure_report(parent: Path, error: BaseException, *, run_id: str | None,
+                   count: bool) -> dict[str, Any] | None:
+    """The machine-readable failure a caller records, with the quarantine count.
+
+    A series failure already carries the quarantine outcome (it was
+    published anyway). Any earlier failure, before a writer was available, is
+    reported with local counts only when ``count`` asks for them: a finalized
+    run's record, or the quarantine-only backlog store. Otherwise None, and the
+    failure is reported on stderr only, as before.
+    """
+    quarantine = getattr(error, "quarantine", None)
+    if quarantine is None and count:
+        try:
+            quarantine = publish_quarantine(
+                parent, parent, None, net_wrapper="", attempts=1, run_id=run_id,
+                blocked=f"{type(error).__name__}: {error}")
+        except (OSError, series.LedgerError) as count_error:
+            quarantine = {"schema": "series-quarantine-publication/v1", "published": 0,
+                          "already_published": 0, "commit": None,
+                          "error": f"not attempted: {type(error).__name__}: {error}; "
+                                   f"cannot count quarantine: {type(count_error).__name__}: {count_error}",
+                          "pending_records": None, "held_records": None, "corrupt_files": None,
+                          "set_aside": [], "run": None}
+    if quarantine is None:
+        return None
+    return {"state": "failed", "repository": REMOTE_URL,
+            "error": f"{type(error).__name__}: {error}",
+            "raw_publication": {"quarantine": quarantine}}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     started_ns = time.monotonic_ns()
     actual_argv = list(sys.argv[1:] if argv is None else argv)
@@ -1437,6 +1548,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--finalized-run-id requires --results and ordinary scorecard publication")
     if args.portable_proof_only and (args.finalized_run_id is None or args.publish_only or args.scorecard_command):
         parser.error("--portable-proof-only requires --finalized-run-id/--results without --publish-only or --scorecard-command")
+    if args.quarantine_only and not args.publish_only:
+        parser.error("--quarantine-only requires --publish-only")
     deadline_ns = min(started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000,
                       args.lifecycle_deadline_ns if args.lifecycle_deadline_ns is not None
                       else started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000)
@@ -1462,9 +1575,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             tool_checkout=args.tool_checkout, finalized_run_id=args.finalized_run_id,
             lifecycle_deadline_ns=deadline_ns,
             portable_proof_only=args.portable_proof_only,
+            quarantine_only=args.quarantine_only,
         )
     except (MirrorRefused, OSError, KeyError, TypeError, series.SeriesError) as error:
         print(f"ledger publication: FAILED: {error}", file=sys.stderr)
+        failure = failure_report(args.parent.resolve(), error, run_id=args.finalized_run_id,
+                                 count=args.finalized_run_id is not None or args.quarantine_only)
+        if failure is not None:
+            print(json.dumps(failure, sort_keys=True, separators=(",", ":")))
         return 1
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
     return 1 if report["state"] == "derived-failed" else 0

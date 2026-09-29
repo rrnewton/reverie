@@ -18,8 +18,9 @@ run that appends its valid rows exits 0 even when it quarantined others, so a
 quarantine must raise an alarm somewhere else: this gate fails while any
 refusal was observed within ``--recent-seconds`` (read from this host's
 quarantine files and from the records published in the test ledger), while
-``held/`` keeps exact records whose content could not be published, and when
-unpublished refusals are older than the backlog bound.
+``held/`` keeps exact records whose content could not be published, while
+``corrupt/`` keeps any file the publisher could not read (counted as a file,
+never parsed), and when unpublished refusals are older than the backlog bound.
 """
 
 from __future__ import annotations
@@ -196,6 +197,9 @@ class QuarantineState:
     ledger_unread: int = 0
     recent_parent: str | None = None
     held_parent: str | None = None
+    #: Local files the publisher set aside in ``corrupt/`` because they could
+    #: not be read. Their records cannot be counted, so the files are.
+    corrupt_files: int = 0
 
 
 def _emitted_epoch(value: object) -> float | None:
@@ -251,9 +255,18 @@ def measure_quarantine(
     held: set = set()
     unread = 0
     recent_parent = held_parent = None
+    corrupt = 0
     for parent in parents:
         directory = series.quarantine_dir(parent)
         held_dir = directory / series.QUARANTINE_HELD_SUBDIR
+        corrupt_dir = directory / series.QUARANTINE_CORRUPT_SUBDIR
+        try:
+            set_aside = sorted(corrupt_dir.glob("*.jsonl")) if corrupt_dir.is_dir() else []
+        except OSError as exc:
+            raise SpoolUnavailable(f"cannot list {corrupt_dir}: {exc}") from exc
+        if set_aside:
+            corrupt += len(set_aside)
+            held_parent = held_parent or str(parent)
         for folder in (directory, directory / "published", held_dir):
             try:
                 paths = sorted(folder.glob("*.jsonl"))
@@ -282,7 +295,7 @@ def measure_quarantine(
                 recent.add(record["event_id"])
                 recent_parent = recent_parent or str(parent)
     return QuarantineState(len(recent), len(held), recent_seconds, unread,
-                           recent_parent, held_parent)
+                           recent_parent, held_parent, corrupt)
 
 
 def render_quarantine(
@@ -292,13 +305,15 @@ def render_quarantine(
     window = round(quarantine.recent_seconds, 1)
     counts = (f"recent_records={quarantine.recent_records} within {window}s; "
               f"held_records={quarantine.held_records}; "
+              f"corrupt_files={quarantine.corrupt_files}; "
               f"ledger_unread_parents={quarantine.ledger_unread}")
     if state == "stalled":
         return state, f"{summary}; {counts}"
-    if quarantine.held_records:
+    if quarantine.held_records or quarantine.corrupt_files:
         return ("withheld",
                 f"series quarantine holds {quarantine.held_records} exact record(s) whose "
-                f"content could not be published portably, in {quarantine.held_parent}; "
+                f"content could not be published portably and {quarantine.corrupt_files} "
+                f"unreadable file(s) set aside in corrupt/, in {quarantine.held_parent}; "
                 f"{counts}")
     if quarantine.recent_records:
         return ("quarantined",
@@ -334,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--gate", action="store_true",
         help="exit 1 when backlog is too old (series-quarantine: also when a "
-             "refusal is recent or an exact record is held)",
+             "refusal is recent, an exact record is held or an unreadable file is set aside)",
     )
     parser.add_argument("--json", action="store_true", help="emit one JSON report")
     parser.add_argument(
@@ -413,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         report.update({
             "quarantine_recent_records": quarantine.recent_records,
             "quarantine_held_records": quarantine.held_records,
+            "quarantine_corrupt_files": quarantine.corrupt_files,
             "quarantine_recent_seconds": round(quarantine.recent_seconds, 1),
             "quarantine_ledger_unread_parents": quarantine.ledger_unread,
         })

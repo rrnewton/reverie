@@ -104,9 +104,11 @@ def pending_stores(parent: Path) -> dict[str, Path]:
     candidates = {
         "ledger": live_spool_dir(parent),
         "series": series_spool_dir(parent),
-        # Refused series inputs. They publish through the same series mirror
-        # after its rows, so a batch whose rows were refused is not stranded
-        # on this host when no new rows arrive to trigger a series publish.
+        # Refused series inputs. The series mirror publishes them after its
+        # rows, whatever the rows did. This store runs the mirror with
+        # --quarantine-only, so a refused series batch cannot strand them on
+        # this host, and neither can the absence of new rows to trigger a
+        # series publish.
         "series-quarantine": series_quarantine_dir(parent),
     }
     return {
@@ -123,6 +125,10 @@ def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
             sys.executable, str(TOOL_ROOT / "ci-hub/series/mirror.py"),
             "--parent", str(parent), "--publish-only", "--net-wrapper", net_wrapper,
         ]
+        if store == "series-quarantine":
+            # Never through the series rows: a refused series batch must not
+            # decide whether the refused inputs publish.
+            command.append("--quarantine-only")
     else:
         command = [
             sys.executable, str(TOOL_ROOT / "ci-hub/ledger/publisher.py"), "publish",
@@ -154,10 +160,10 @@ def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
 def quarantine_outcome(report: dict) -> dict:
     """Judge the quarantine store by its own sub-report, not the mirror's exit.
 
-    The mirror exits 0 once the series rows publish and records a quarantine
-    publication failure under ``raw_publication.quarantine.error`` without
-    raising. Taking that exit status here would call a stranded quarantine
-    published.
+    The mirror (``--quarantine-only``) exits 0 when its writer transaction
+    completes and records a quarantine publication failure under
+    ``raw_publication.quarantine.error`` without raising. Taking that exit
+    status here would call a stranded quarantine published.
     """
     quarantine = (report.get("raw_publication") or {}).get("quarantine")
     if not isinstance(quarantine, dict):

@@ -705,8 +705,20 @@ def _publish(
     # Reap first: batches the PRODUCING root can now read for itself are done
     # being retained. Doing it here means every publish run also collects what
     # the previous run left behind, with no separate schedule to forget.
+    corrupt_before = _corrupt_quarantine_names(spool_dir) if store == "series-quarantine" else set()
     reaped = reap_retained(spool_dir, Path(source_root), store=store) if source_root else 0
 
+    set_aside: list[str] = []
+    if store == "series-quarantine":
+        # One unreadable refusal file must not strand every readable one. It
+        # moves whole into corrupt/, where the backlog gate counts and alarms.
+        series_store = _series_store()
+        try:
+            series_store.set_aside_unreadable_quarantine(spool_dir)
+        except (OSError, series_store.LedgerError) as error:
+            raise PublishRefused(f"{spool_dir}: cannot set aside unreadable quarantine: {error}") from error
+        # Everything this run moved, from pending, published/ or held/.
+        set_aside = sorted(_corrupt_quarantine_names(spool_dir) - corrupt_before)
     pending, snapshot_files = _store_snapshot(store, spool_dir)
     if not pending:
         return {
@@ -715,6 +727,7 @@ def _publish(
             "attempts": 0,
             "shards": [],
             "reaped_retained": reaped,
+            "set_aside": set_aside,
         }
 
     # Validate before touching Git. A refused batch stays spooled and visible
@@ -782,7 +795,7 @@ def _publish(
             return {"published": 0, "commit": None, "attempts": attempt,
                     "shards": [], "note": "all events already published",
                     "already_published": already_published,
-                    "reaped_retained": reaped}
+                    "reaped_retained": reaped, "set_aside": set_aside}
 
         _git(repo, "add", "--", *written)
         subject = f"{store}: append {sum(len(v) for v in attempt_pending.values())} event(s)"
@@ -815,6 +828,7 @@ def _publish(
                         "commit": commit, "attempts": attempt, "shards": written,
                         "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
                         "reaped_retained": reaped,
+                        "set_aside": set_aside,
                         "retained": len(snapshot_files),
                         "transport": "parent-main-write" if serialized_writer else "git"}
             last_error = "push reported success but the commit is not an ancestor of the branch"
@@ -915,23 +929,35 @@ def reap_retained(
     return reaped
 
 
+def _corrupt_quarantine_names(spool_dir: str | os.PathLike[str]) -> set[str]:
+    corrupt = Path(spool_dir) / _series_store().QUARANTINE_CORRUPT_SUBDIR
+    try:
+        return {path.name for path in corrupt.glob("*.jsonl")} if corrupt.is_dir() else set()
+    except OSError as error:
+        raise PublishRefused(f"cannot list set-aside quarantine in {corrupt}: {error}") from error
+
+
 def _reap_retained_quarantine(spool_dir: Path, source_root: Path) -> int:
     """Forget a published quarantine file only once the source root reads it.
 
     A file is done when every record's identity is published at the source
     root's ``refs/remotes/origin/main``. A file holding any record whose
-    public form was withheld (an owner path that cannot be replaced
-    reversibly) is MOVED into ``held/`` instead of deleted: the published
+    public form was withheld (an owner path that token substitution cannot
+    replace) is MOVED into ``held/`` instead of deleted: the published
     stub proves the refusal happened but carries none of its bytes, so this
     host keeps the only exact copy, and ``ledger_spool_backlog --store
-    series-quarantine`` alarms while ``held/`` is not empty.
+    series-quarantine`` alarms while ``held/`` is not empty. A retained file
+    that can no longer be read is moved whole into ``corrupt/`` (also alarmed)
+    rather than refusing the whole store.
     """
     series_store = _series_store()
     directory = retained_dir(spool_dir)
     try:
         published = _published_quarantine_ids(source_root, "refs/remotes/origin/main")
         host = series_store._writer_host()
-    except series_store.SeriesError as error:
+        for folder in (directory.name, series_store.QUARANTINE_HELD_SUBDIR):
+            series_store.set_aside_unreadable_quarantine(spool_dir, host=host, folder=folder)
+    except (OSError, series_store.SeriesError) as error:
         raise PublishRefused(f"cannot reap retained quarantine: {error}") from error
     held = spool_dir / series_store.QUARANTINE_HELD_SUBDIR
     reaped = 0
@@ -939,24 +965,25 @@ def _reap_retained_quarantine(spool_dir: Path, source_root: Path) -> int:
         try:
             records = series_store._read_quarantine_file(path)
             forms = [series_store._published_form(record, host=host) for record in records]
-        except series_store.LedgerError as error:
-            raise PublishRefused(f"{path}: retained quarantine is invalid: {error}") from error
-        if not forms or not all(form["event_id"] in published for form in forms):
-            continue
-        if any(form["withheld"] is not None for form in forms):
-            held.mkdir(parents=True, exist_ok=True)
+            if not forms or not all(form["event_id"] in published for form in forms):
+                continue
             target = held / path.name
             present = series_store._local_quarantine_ids(target)
+        except (OSError, UnicodeDecodeError, series_store.LedgerError) as error:
+            # Set aside above; only a concurrent change can reach this.
+            raise PublishRefused(f"{path}: retained quarantine is invalid: {error}") from error
+        if any(form["withheld"] is not None for form in forms):
             lines = [
                 json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
                 for record, form in zip(records, forms)
                 if form["withheld"] is not None and form["event_id"] not in present
             ]
             if lines:
-                with open(target, "a", encoding="ascii") as handle:
-                    handle.write("".join(lines))
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                # Replace, never append in place: a reader sees the old file
+                # or the complete new one, never a torn final line.
+                existing = target.read_bytes().decode("utf-8") if target.exists() else ""
+                series_store.write_quarantine_file(
+                    held, path.name, existing + "".join(lines), replace=True)
         path.unlink()
         reaped += 1
     return reaped

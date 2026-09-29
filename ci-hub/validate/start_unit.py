@@ -9646,6 +9646,27 @@ def finalize_reverie_counts(
                 "reverie_count_refusal": f"count bookkeeping unavailable: {error}"}
 
 
+def failed_publication_quarantine(stdout: str | None) -> dict[str, Any] | None:
+    """The quarantine outcome from a mirror's failure report, if it printed one.
+
+    ``mirror.py`` prints ``{"state": "failed", ..., "raw_publication":
+    {"quarantine": {...}}}`` when the series rows fail but the refused inputs
+    were still published, or counted. Anything else yields None and the
+    record keeps only the failure detail.
+    """
+    try:
+        report = json.loads((stdout or "").strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("state") != "failed":
+        return None
+    publication = report.get("raw_publication")
+    quarantine = publication.get("quarantine") if isinstance(publication, dict) else None
+    if not isinstance(quarantine, dict):
+        return None
+    return quarantine
+
+
 def finalize_ledger_mirror(
     root: Path,
     tool_root: Path,
@@ -9847,6 +9868,18 @@ def finalize_ledger_mirror(
                     "recorded_at": recorded_at,
                     "detail": f"{error}; output={detail!r}",
                 }
+                # The refused inputs publish even when the series rows do not;
+                # keep their count in the run record beside the failure. A count
+                # the record schema refuses is named in the detail instead, so
+                # it can never cost the record the failure itself.
+                quarantine = failed_publication_quarantine(result.stdout)
+                if quarantine is not None:
+                    try:
+                        run_registry.check_failed_raw_publication({"quarantine": quarantine})
+                    except RuntimeError as refused:
+                        outcome["detail"] += f"; quarantine outcome not recorded: {refused}"
+                    else:
+                        outcome["raw_publication"] = {"quarantine": quarantine}
 
     scorecard_outcome = outcome.get("scorecard")
     if isinstance(scorecard_outcome, dict) and scorecard_outcome.get("state") == "superseded":

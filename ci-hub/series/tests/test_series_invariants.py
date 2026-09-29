@@ -21,6 +21,7 @@ import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -2434,7 +2435,34 @@ class CellResultProjection(unittest.TestCase):
             check=True,
         )
         (self.repo / "one").write_text("one\n")
-        subprocess.run(["git", "-C", str(self.repo), "add", "one"], check=True)
+        # The committed manifests are the authority for a declared guest exit
+        # (series.manifest_guest_exit_declarations); _expected_exit_cell names
+        # one of these ids. defaults.yaml and README.md must be ignored: the
+        # defaults file repeats an id with a different declaration.
+        self.manifest_dir = self.repo / series.HERMIT_MANIFEST_DIR
+        self.manifest_dir.mkdir(parents=True)
+        (self.manifest_dir / "fixture-exit.yaml").write_text(
+            self._manifest_yaml("fixture-exit", [
+                ("fixture/exit-7", "code: 7"),
+                ("fixture/exit-3", "code: 3"),
+                ("fixture/exit-1", "code: 1"),
+                ("fixture/undeclared", None),
+            ]),
+            encoding="utf-8",
+        )
+        (self.manifest_dir / "fixture-signal.yaml").write_text(
+            self._manifest_yaml("fixture-signal", [
+                ("fixture/signal-11", "signal: 11"),
+                ("fixture/signal-6", "signal: 6"),
+            ]),
+            encoding="utf-8",
+        )
+        (self.manifest_dir / series.HERMIT_MANIFEST_DEFAULTS).write_text(
+            self._manifest_yaml("defaults", [("fixture/exit-7", "code: 9")]),
+            encoding="utf-8",
+        )
+        (self.manifest_dir / "README.md").write_text("test: [not a manifest]\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
         subprocess.run(
             ["git", "-C", str(self.repo), "commit", "-qm", "one"], check=True,
         )
@@ -2470,6 +2498,66 @@ class CellResultProjection(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    #: The reason every fixture declaration carries, on the manifest entry and
+    #: on the row the runner copies it to.
+    FIXTURE_EXIT_REASON = "the fixture guest fails on purpose"
+
+    @classmethod
+    def _manifest_yaml(cls, bucket, entries, reason=None):
+        """A schema-3 manifest whose verify modes declare ``entries``.
+
+        Each entry is ``(test id, declaration line or None)``; the declaration
+        line is ``code: N`` or ``signal: N`` as a manifest author writes it.
+        """
+        reason = cls.FIXTURE_EXIT_REASON if reason is None else reason
+        lines = ["schema: 3", f"bucket: {bucket}", "test:"]
+        for identifier, declaration in entries:
+            lines += [
+                f"  - id: {identifier}",
+                "    lane: portable",
+                "    modes:",
+                "      verify:",
+                "        ci: true",
+                "        backends_enabled: [ptrace]",
+            ]
+            if declaration is not None:
+                lines += [
+                    "        expected_guest_exit:",
+                    f"          {declaration}",
+                    f"          reason: {reason}",
+                ]
+        return "\n".join(lines) + "\n"
+
+    def _commit_manifests(self, files):
+        """Commit ``files`` (name -> text, bytes, or None to delete); return the new tree."""
+        for name, text in files.items():
+            if text is None:
+                subprocess.run(
+                    ["git", "-C", str(self.repo), "rm", "-q", str(self.manifest_dir / name)],
+                    check=True,
+                )
+            else:
+                if isinstance(text, bytes):
+                    (self.manifest_dir / name).write_bytes(text)
+                else:
+                    (self.manifest_dir / name).write_text(text, encoding="utf-8")
+                subprocess.run(
+                    ["git", "-C", str(self.repo), "add", str(self.manifest_dir / name)],
+                    check=True,
+                )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "manifest change"], check=True,
+        )
+        tree = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", tree],
+            check=True,
+        )
+        return tree
 
     def test_linked_parent_worktree_uses_the_primary_checkout_spool(self):
         primary = self.parent / "dev-hermit"
@@ -3816,12 +3904,23 @@ class CellResultProjection(unittest.TestCase):
         }
         self._replace_comparison_report(attempt, report)
         if declared is not None:
+            cell["test"] = self._declared_test_id(declared)
             cell["expected_guest_exit"] = {
                 "code": declared[0],
                 "signal": declared[1],
-                "reason": "the fixture guest fails on purpose",
+                "reason": self.FIXTURE_EXIT_REASON,
             }
         return cell
+
+    @staticmethod
+    def _declared_test_id(declared):
+        """The setUp manifest id whose entry makes ``declared``, when one does."""
+        code, signal = declared
+        if type(code) is int and signal is None:
+            return f"fixture/exit-{code}"
+        if code is None and type(signal) is int:
+            return f"fixture/signal-{signal}"
+        return f"fixture/declared-{code}-{signal}"
 
     def _project_validate(self, cell, label):
         rows = series.rows_from_cell_results(
@@ -4114,6 +4213,188 @@ class CellResultProjection(unittest.TestCase):
     def test_undeclared_rows_carry_no_declared_guest_exit_audit(self):
         row = self._project_validate(self._validate_cell(1), "undeclared")[0]
         self.assertNotIn("declared_guest_exit", row["series"])
+
+    def _project_at(self, cell, tree, label):
+        cell = copy.deepcopy(cell)
+        cell["hermit_sha"] = tree
+        rows = series.rows_from_cell_results(
+            [cell], parent=self.parent, producer="validate",
+            run_id=f"validate-manifest-{label}", tree=tree,
+            emitted_at="2026-09-25T12:00:00Z",
+        )
+        series.validate_rows(rows)
+        return rows
+
+    def test_a_declared_guest_exit_must_be_its_manifest_entrys_own_declaration(self):
+        # Every row below is internally consistent: its report, status and
+        # compared outputs all show exactly the exit its row declares, so only
+        # the manifest binding can refuse it.
+        def exit_cell(code, test=None, reason=None):
+            target = self._expected_exit_cell(
+                status=code, signal=None, guest_exit_code=code, guest_signal=None,
+                declared=(code, None),
+            )
+            if test is not None:
+                target["test"] = test
+            if reason is not None:
+                target["expected_guest_exit"]["reason"] = reason
+            return target
+
+        def signal_cell(signal, test=None):
+            target = self._expected_exit_cell(
+                status=None, signal=signal, guest_exit_code=None, guest_signal=signal,
+                declared=(None, signal),
+            )
+            if test is not None:
+                target["test"] = test
+            return target
+
+        # Qualifying: each manifest declaration, including one in the second
+        # manifest file, admits the row that carries it verbatim.
+        for label, target in (
+            ("exit 7", exit_cell(7)),
+            ("exit 3", exit_cell(3)),
+            ("signal 6 from the second manifest", signal_cell(6)),
+        ):
+            with self.subTest(qualifying=label):
+                row = self._project_validate(target, "bound-" + label.replace(" ", "-"))[0]
+                self.assertEqual(row["series"]["outcome"], "passed")
+                self.assertEqual(row["series"]["cell"].split("/verify/")[0], target["test"])
+
+        disagrees = "disagrees with its manifest entry"
+        no_test_id = exit_cell(7)
+        no_test_id.pop("test")
+        cases = [
+            ("the manifest declares a different code",
+             exit_cell(7, test="fixture/exit-3"), disagrees),
+            ("the manifest declares a signal, the row a code",
+             exit_cell(11, test="fixture/signal-11"), disagrees),
+            ("the manifest declares a code, the row a signal",
+             signal_cell(7, test="fixture/exit-7"), disagrees),
+            ("the manifest declares a different signal",
+             signal_cell(11, test="fixture/signal-6"), disagrees),
+            ("the reason differs from the manifest's",
+             exit_cell(7, reason="a reason the manifest never gave"), disagrees),
+            # defaults.yaml repeats fixture/exit-7 with code 9. It declares no
+            # test, so the row that copies it is not authorised by anything.
+            ("defaults.yaml is not a manifest",
+             exit_cell(9, test="fixture/exit-7"), disagrees),
+            ("the manifest entry declares no guest exit",
+             exit_cell(7, test="fixture/undeclared"), "declares none"),
+            ("no manifest has the row's test id",
+             exit_cell(7, test="fixture/in-no-manifest"), "has no manifest entry"),
+            ("the row names no test id", no_test_id, "manifest test id"),
+        ]
+        for label, target, message in cases:
+            with self.subTest(violating=label), self.assertRaisesRegex(
+                series.MalformedRow, message
+            ):
+                self._project_validate(target, "mutant")
+
+        # The authority is the committed tree, never the working tree: an
+        # uncommitted edit that declares fixture/undeclared does not authorise
+        # a dirty-tree row that copies it.
+        manifest = self.manifest_dir / "fixture-exit.yaml"
+        committed = manifest.read_text(encoding="utf-8")
+        manifest.write_text(self._manifest_yaml("fixture-exit", [
+            ("fixture/exit-7", "code: 7"),
+            ("fixture/exit-3", "code: 3"),
+            ("fixture/exit-1", "code: 1"),
+            ("fixture/undeclared", "code: 5"),
+        ]), encoding="utf-8")
+        dirty = exit_cell(5, test="fixture/undeclared")
+        dirty["source_tree_dirty"] = True
+        with self.subTest(violating="declared only in the uncommitted manifest"), \
+                self.assertRaisesRegex(series.MalformedRow, "declares none"):
+            self._project_validate(dirty, "dirty")
+        manifest.write_text(committed, encoding="utf-8")
+
+        # Each row is judged at its own tree: once a later commit withdraws the
+        # declaration, the same row is refused there and still admitted at the
+        # tree whose manifest made it.
+        withdrawn = self._commit_manifests({
+            "fixture-exit.yaml": self._manifest_yaml("fixture-exit", [
+                ("fixture/exit-7", None),
+                ("fixture/exit-3", "code: 3"),
+                ("fixture/exit-1", "code: 1"),
+                ("fixture/undeclared", None),
+            ]),
+        })
+        self.assertNotEqual(withdrawn, self.tree)
+        with self.subTest(violating="withdrawn at the row's tree"), \
+                self.assertRaisesRegex(series.MalformedRow, "declares none"):
+            self._project_at(exit_cell(7), withdrawn, "withdrawn")
+        self.assertEqual(
+            self._project_at(exit_cell(7), self.tree, "declaring")[0]["series"]["outcome"],
+            "passed",
+        )
+
+        # Scalars are read as Hermit's serde_yaml loader reads them: `0o7` is
+        # 7 and `yes` is the string "yes". PyYAML's default rules read the
+        # string "0o7" and the boolean True, and would refuse this genuine row.
+        spelled = self._commit_manifests({
+            "fixture-spelled.yaml": self._manifest_yaml(
+                "fixture-spelled", [("fixture/spelled", "code: 0o7")], reason="yes",
+            ),
+        })
+        self.assertEqual(
+            self._project_at(
+                exit_cell(7, test="fixture/spelled", reason="yes"), spelled, "spelled",
+            )[0]["series"]["outcome"],
+            "passed",
+        )
+
+    def test_a_manifest_tree_that_cannot_be_read_refuses_only_declared_batches(self):
+        # A declared row whose tree's manifests do not load cannot be bound,
+        # and the fault is in the source, not the row: SeriesError, which
+        # append-cells turns into a whole-batch refusal that quarantines every
+        # input. A row with no declaration never reads the manifests.
+        declared = self._expected_exit_cell(
+            status=7, signal=None, guest_exit_code=7, guest_signal=None, declared=(7, None),
+        )
+        undeclared = self._validate_cell(1)
+        declaration = "          code: 7\n          reason: r\n"
+        for label, files, message in (
+            ("a test id declared in two manifests",
+             {"fixture-again.yaml": self._manifest_yaml("again", [("fixture/exit-7", "code: 7")])},
+             "declares manifest test 'fixture/exit-7' twice"),
+            ("a manifest that is not YAML",
+             {"broken.yaml": "schema: 3\ntest: [\n"}, "is not UTF-8 YAML"),
+            ("a manifest that is not UTF-8",
+             {"latin1.yaml": "schema: 3\nbucket: caf\xe9\ntest: []\n".encode("latin-1")},
+             "is not UTF-8 YAML"),
+            ("a manifest without a test list",
+             {"empty.yaml": "schema: 3\nbucket: empty\n"}, "has no test list"),
+            ("a test entry without a string id",
+             {"no-id.yaml": "schema: 3\nbucket: x\ntest:\n  - id: 7\n"},
+             "test without a string id"),
+            ("a declaration that is not an object",
+             {"scalar.yaml": ("schema: 3\nbucket: x\ntest:\n  - id: x/scalar\n"
+                              "    modes:\n      verify:\n        expected_guest_exit: 7\n")},
+             "is not an object of code, signal and reason"),
+            ("a declaration with an unknown key",
+             {"extra.yaml": ("schema: 3\nbucket: x\ntest:\n  - id: x/extra\n"
+                             "    modes:\n      verify:\n        expected_guest_exit:\n"
+                             + declaration + "          note: x\n")},
+             "is not an object of code, signal and reason"),
+            # serde_yaml refuses a duplicate key; PyYAML alone keeps the last.
+            ("a declaration with a duplicate key",
+             {"twice.yaml": ("schema: 3\nbucket: x\ntest:\n  - id: x/twice\n"
+                             "    modes:\n      verify:\n        expected_guest_exit:\n"
+                             "          code: 9\n" + declaration)},
+             "duplicate manifest key 'code'"),
+        ):
+            with self.subTest(label=label):
+                tree = self._commit_manifests(files)
+                with self.assertRaisesRegex(series.SeriesError, message) as refused:
+                    self._project_at(declared, tree, "unreadable")
+                self.assertNotIsInstance(refused.exception, series.MalformedRow)
+                self.assertEqual(
+                    self._project_at(undeclared, tree, "unread")[0]["series"]["outcome"],
+                    "passed",
+                )
+                # Restore the readable manifests for the next case.
+                self._commit_manifests({name: None for name in files})
 
 
     def test_no_verdict_contradiction_refuses_the_batch(self):
@@ -4957,10 +5238,13 @@ class CellResultProjection(unittest.TestCase):
             sys.stdin = real_stdin
         return rc, stdout.getvalue(), stderr.getvalue()
 
+    def _quarantine_files(self, run_id):
+        """Each append writes its own immutable file, named for the run."""
+        return sorted(series.quarantine_dir(self.parent).glob(f"{run_id}.*.jsonl"))
+
     def _quarantined(self, run_id):
-        return series._read_quarantine_file(
-            series.quarantine_dir(self.parent) / f"{run_id}.jsonl"
-        )
+        return [record for path in self._quarantine_files(run_id)
+                for record in series._read_quarantine_file(path)]
 
     @staticmethod
     def _received(item):
@@ -5269,7 +5553,7 @@ class CellResultProjection(unittest.TestCase):
         )
         self.assertEqual(rc, 0, stderr)
         self.assertIn("quarantined 3 record(s) covering 3 of 4 input(s) to ", stdout)
-        path = series.quarantine_dir(self.parent) / "validate-exact-bytes.jsonl"
+        [path] = self._quarantine_files("validate-exact-bytes")
         # The local file is ASCII JSON lines, one per record.
         stored_bytes = path.read_bytes()
         stored_bytes.decode("ascii")
@@ -5305,7 +5589,7 @@ class CellResultProjection(unittest.TestCase):
             row_event_id=None if row is None else row["event_id"], host="testhost",
         )
 
-    def test_portable_quarantine_record_replaces_owner_homes_reversibly(self):
+    def test_portable_quarantine_record_replaces_owner_homes_by_tokens(self):
         needle = series._OWNER_PATH_NEEDLE
         alice, bob = needle + "alice", needle + "bob"
         raw = json.dumps({
@@ -5328,7 +5612,11 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(portable["event_id"], record["event_id"])
         self.assertEqual(portable["reason"], "cannot read {{OWNER_HOME_1}}/work/x")
         series.validate_quarantine_records([portable], public=True)
-        # Replacing each token by its prefix restores the exact received bytes.
+        # The ledger holds only each prefix's length, never its bytes ...
+        self.assertNotIn("alice", text)
+        self.assertNotIn("bob", text)
+        # ... so the received bytes come back only for a reader who already
+        # knows each prefix and substitutes it; the digest proves that result.
         restored = portable["inputs"][0]["raw"]
         restored = restored.replace("{{OWNER_HOME_1}}", alice).replace("{{OWNER_HOME_2}}", bob)
         self.assertEqual(restored.encode(), raw)
@@ -5342,7 +5630,7 @@ class CellResultProjection(unittest.TestCase):
         with self.assertRaisesRegex(series.MalformedQuarantine, "restored does not match"):
             series.validate_quarantine_records([wrong], public=True)
 
-    def test_portable_quarantine_record_withholds_what_it_cannot_replace_reversibly(self):
+    def test_portable_quarantine_record_withholds_what_token_substitution_cannot_replace(self):
         needle = series._OWNER_PATH_NEEDLE
         cases = {
             "token already present": json.dumps(
@@ -5591,20 +5879,73 @@ class CellResultProjection(unittest.TestCase):
                     escaped.append((producer, items[index][0], repr(items[index][1]),
                                     "neither admitted nor quarantined"))
 
+        # One base per projected shape: each payload branch of
+        # _rows_from_cell_results (no_verdict_evidence, declared_guest_exit,
+        # pressure_evidence, coordinates and divergence messages, the
+        # backend_parity witness, container failures) under each producer
+        # that emits it, and each non-verify mode family.
+        parity_matched = self._parity_cell()
+        self._make_parity_match(parity_matched)
+        divergence = dict(record=1_718, syscall=7, scheduler_turn=1_248,
+                          virtual_nanoseconds=80_000)
+        pressure_replay_failure = self._container_failure_cell(mode="replay")
+        pressure_replay_failure["run_index"] = 0
+        naked = self._cell(0)
+        naked.update(mode="naked", backend=None)
+        custom = self._cell(0, outcome="FAIL")
+        custom["mode"] = "custom"
         bases = {
-            "validate": [self._validate_cell(1), self._validate_diverged_cell(1),
-                         self._validate_no_verdict_cell(1, timed_out=True, backend="kvm")],
-            "pressure-test": [self._cell(0)],
+            "validate": {
+                "ordinary pass": self._validate_cell(1),
+                "diverged": self._validate_diverged_cell(1),
+                "no verdict (kvm, timed out)":
+                    self._validate_no_verdict_cell(1, timed_out=True, backend="kvm"),
+                "backend_parity, red witness": self._parity_cell(),
+                "backend_parity, matched": parity_matched,
+                "declared guest exit code": self._expected_exit_cell(
+                    status=7, signal=None, guest_exit_code=7, guest_signal=None,
+                    declared=(7, None)),
+                "declared guest signal": self._expected_exit_cell(
+                    status=None, signal=11, guest_exit_code=None, guest_signal=11,
+                    declared=(None, 11)),
+                "chaos container failure": self._container_failure_cell(mode="chaos"),
+            },
+            "pressure-test": {
+                "ordinary pass": self._cell(0),
+                "diverged": self._diverged_cell(0, **divergence),
+                "replay container failure": pressure_replay_failure,
+                "naked": naked,
+                "custom failure": custom,
+            },
+            "hermit-repeat": {
+                "ordinary pass": self._cell(0),
+                "diverged": self._diverged_cell(0, **divergence),
+            },
         }
         count = 0
+        per_base = {}
         with mock.patch.object(series, "write_admission",
                                side_effect=lambda rows: [None] * len(rows)):
             for producer, cells in bases.items():
-                for base in cells:
+                for label, base in cells.items():
+                    # A base that is itself refused would fuzz only the path
+                    # to its first refusal, not the shape it stands for.
+                    refused = []
+                    admitted = series._rows_from_cell_results(
+                        [copy.deepcopy(base)], parent=self.parent, producer=producer,
+                        run_id="fuzz-base", tree=self.tree,
+                        emitted_at="2026-09-28T10:00:00Z", quarantine=refused,
+                        raw_inputs=[b"{}"], provenance=[],
+                    )
+                    self.assertEqual((len(admitted), refused), (1, []), (producer, label))
                     items = list(mutants(base))
+                    per_base[(producer, label)] = len(items)
                     count += len(items)
                     judge(items, producer)
         self.assertGreater(count, 5000)
+        self.assertEqual(
+            [key for key, number in per_base.items() if number < 100], [], per_base,
+        )
         self.assertEqual(escaped, [], f"{len(escaped)} of {count} mutants escaped")
 
     def test_write_admission_judges_every_row_in_one_checker_call(self):
@@ -6002,6 +6343,151 @@ class HistoryCli(unittest.TestCase):
                 ])
             self.assertEqual(rc, 1, stderr.getvalue())
             self.assertIn("no runs recorded", stderr.getvalue())
+
+
+class ManifestScalarResolution(unittest.TestCase):
+    """series reads Hermit manifests with the scalar rules of Hermit's own loader.
+
+    ``ci/manifest-plan/src/manifest_value.rs`` parses manifests with serde_yaml
+    0.9.34 (hermit Cargo.lock at pin 10770b2f34686587418598fbde9c48de9445ed76).
+    GOLDEN below is serde_yaml's own reading of ``v: <scalar>``, recorded on
+    2026-09-28 by a probe that deserialized each line into a
+    ``serde_yaml::Mapping`` (cargo --offline, serde_yaml =0.9.34); REFUSED is
+    a serde_yaml error. PyYAML's default YAML 1.1 rules disagree on several.
+    """
+
+    REFUSED = object()
+
+    def golden(self):
+        REFUSED = self.REFUSED
+        return [
+        ('7', 7),
+        ('+7', 7),
+        ('0x7', 7),
+        ('0o7', 7),
+        ('0b111', 7),
+        ('-7', -7),
+        ('-0x7', -7),
+        ('-0o7', -7),
+        ('-0b111', -7),
+        ('+0x7', 7),
+        ('07', '07'),
+        ('-07', '-07'),
+        ('00', '00'),
+        ('0', 0),
+        ('-0', 0),
+        ('1_0', '1_0'),
+        ('yes', 'yes'),
+        ('no', 'no'),
+        ('on', 'on'),
+        ('off', 'off'),
+        ('Yes', 'Yes'),
+        ('y', 'y'),
+        ('true', True),
+        ('True', True),
+        ('TRUE', True),
+        ('tRUE', 'tRUE'),
+        ('false', False),
+        ('~', None),
+        ('null', None),
+        ('Null', None),
+        ('NULL', None),
+        ('nUll', 'nUll'),
+        ('1:30', '1:30'),
+        ('2001-12-14', '2001-12-14'),
+        ('1e3', float('1000')),
+        ('1E3', float('1000')),
+        ('1.', float('1')),
+        ('.5', float('0.5')),
+        ('0.5', float('0.5')),
+        ('01.5', float('1.5')),
+        ('-1.5', float('-1.5')),
+        ('+1.5', float('1.5')),
+        ('+-1.5', '+-1.5'),
+        ('.inf', math.inf),
+        ('-.inf', -math.inf),
+        ('+.inf', math.inf),
+        ('.nan', math.nan),
+        ('+.nan', '+.nan'),
+        ('inf', 'inf'),
+        ('nan', 'nan'),
+        ('1e999', '1e999'),
+        ('0x', '0x'),
+        ('0x+5', '0x+5'),
+        ('0xg', '0xg'),
+        ('+-5', '+-5'),
+        ('-', REFUSED),
+        ('.', '.'),
+        ('e5', 'e5'),
+        ('340282366920938463463374607431768211456', float('340282366920938500000000000000000000000')),
+        ('340282366920938463463374607431768211455', REFUSED),
+        ('-170141183460469231731687303715884105728', REFUSED),
+        ('-170141183460469231731687303715884105729', float('-170141183460469230000000000000000000000')),
+        ('18446744073709551616', REFUSED),
+        ('<<', '<<'),
+        ('=', '='),
+        ('the fixture guest fails on purpose', 'the fixture guest fails on purpose'),
+        ("'7'", '7'),
+        ('"7"', '7'),
+        ]
+
+    def read(self, loader, scalar):
+        import yaml
+
+        return yaml.load(f"v: {scalar}\n", Loader=loader)["v"]
+
+    def assertSameValue(self, actual, expected, scalar):
+        self.assertIs(type(actual), type(expected), scalar)
+        if isinstance(expected, float) and math.isnan(expected):
+            self.assertTrue(math.isnan(actual), scalar)
+        else:
+            self.assertEqual(actual, expected, scalar)
+
+    def test_plain_scalars_resolve_exactly_as_serde_yaml_resolves_them(self):
+        import yaml
+
+        loader = series._manifest_yaml_loader(yaml)
+        for scalar, expected in self.golden():
+            with self.subTest(scalar=scalar):
+                if expected is self.REFUSED:
+                    with self.assertRaises(yaml.YAMLError):
+                        self.read(loader, scalar)
+                else:
+                    self.assertSameValue(self.read(loader, scalar), expected, scalar)
+
+    def test_pyyaml_default_rules_would_misread_the_manifest(self):
+        # The reason the loader exists: each of these is read differently by
+        # PyYAML's SafeLoader, so a manifest spelling that Hermit's loader
+        # accepts would be refused, or read as another value.
+        import yaml
+
+        golden = dict(self.golden())
+        default = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+        for scalar in ("yes", "on", "0o7", "07", "1_0", "1:30", "2001-12-14", "1e3"):
+            with self.subTest(scalar=scalar):
+                misread = self.read(default, scalar)
+                self.assertFalse(
+                    type(misread) is type(golden[scalar]) and misread == golden[scalar],
+                    f"PyYAML reads {scalar!r} as {misread!r}, which serde_yaml also reads",
+                )
+
+    def test_duplicate_and_non_string_keys_are_refused_as_hermit_refuses_them(self):
+        import yaml
+
+        loader = series._manifest_yaml_loader(yaml)
+        for text, message in (
+            ("code: 7\ncode: 9\n", "duplicate manifest key 'code'"),
+            ("a:\n  code: 7\n  code: 7\n", "duplicate manifest key 'code'"),
+            ("7: x\n", "is not a string"),
+            ("true: x\n", "is not a string"),
+            ("~: x\n", "is not a string"),
+        ):
+            with self.subTest(text=text), self.assertRaisesRegex(yaml.YAMLError, message):
+                yaml.load(text, Loader=loader)
+        # A quoted key is a string, and `<<` is an ordinary key, not a merge.
+        self.assertEqual(
+            yaml.load("'7': x\n<<: y\n", Loader=loader), {"7": "x", "<<": "y"}
+        )
 
 
 if __name__ == "__main__":

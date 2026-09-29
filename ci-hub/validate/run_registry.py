@@ -634,6 +634,10 @@ def _ledger_mirror(value: Any) -> None:
         }
     elif state == "failed":
         required = {"state", "recorded_at", "detail"}
+        if "raw_publication" in value:
+            # The refused inputs publish even when the series rows fail.
+            required.add("raw_publication")
+            check_failed_raw_publication(value["raw_publication"])
     else:
         raise _error("ledger_mirror.state", f"unsupported value {state!r}")
     if set(value) != required:
@@ -652,6 +656,57 @@ def _ledger_mirror(value: Any) -> None:
     rows = value.get("rows")
     if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
         raise _error("ledger_mirror.rows", "must be a nonnegative integer")
+
+
+def _count(value: Any, field: str, *, nullable: bool) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise _error(field, "must be a nonnegative integer" + (" or null" if nullable else ""))
+
+
+def check_failed_raw_publication(value: Any) -> None:
+    """A failed publication may keep only the quarantine outcome, fully typed.
+
+    Public so that start_unit can check a mirror's failure report before it
+    attaches the count: a count that does not fit must not stop the failure
+    itself from being recorded.
+    """
+    field = "ledger_mirror.raw_publication"
+    if not isinstance(value, dict) or set(value) != {"quarantine"}:
+        raise _error(field, "a failed publication may carry only its quarantine outcome")
+    quarantine = value["quarantine"]
+    field += ".quarantine"
+    keys = {"schema", "published", "already_published", "commit", "error", "pending_records",
+            "held_records", "corrupt_files", "set_aside", "run"}
+    if not isinstance(quarantine, dict) or set(quarantine) != keys:
+        raise _error(field, "must contain exactly " + ", ".join(sorted(keys)))
+    if quarantine["schema"] != "series-quarantine-publication/v1":
+        raise _error(f"{field}.schema", "must be series-quarantine-publication/v1")
+    for name in ("published", "already_published"):
+        _count(quarantine[name], f"{field}.{name}", nullable=False)
+    for name in ("pending_records", "held_records", "corrupt_files"):
+        _count(quarantine[name], f"{field}.{name}", nullable=True)
+    if quarantine["commit"] is not None and not _is_commit(quarantine["commit"]):
+        raise _error(f"{field}.commit", "must be null or lowercase forty-hex")
+    if quarantine["error"] is not None and (not isinstance(quarantine["error"], str)
+                                            or not quarantine["error"].strip()):
+        raise _error(f"{field}.error", "must be null or a nonempty string")
+    if (not isinstance(quarantine["set_aside"], list)
+            or any(not isinstance(item, str) for item in quarantine["set_aside"])):
+        raise _error(f"{field}.set_aside", "must be a list of file names")
+    run = quarantine["run"]
+    if run is None:
+        return
+    run_keys = {"run_id", "published", "withheld", "unpublished", "records"}
+    if not isinstance(run, dict) or set(run) != run_keys:
+        raise _error(f"{field}.run", "must contain exactly " + ", ".join(sorted(run_keys)))
+    _required_text(run, "run_id")
+    # published/withheld are null only when nothing was read from the ledger.
+    for name in ("published", "withheld"):
+        _count(run[name], f"{field}.run.{name}", nullable=True)
+    for name in ("unpublished", "records"):
+        _count(run[name], f"{field}.run.{name}", nullable=False)
 
 
 def _is_commit(value: Any) -> bool:
