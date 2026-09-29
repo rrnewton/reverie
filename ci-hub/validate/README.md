@@ -82,12 +82,26 @@ proving the payload gone, the slot keeps a cleanup record. `validate-lock
 status` prints it. No new validation starts while any record exists, and that
 includes records in this repository's other slots.
 
-At normal exit, teardown sends SIGTERM, waits 5 s, and then sends SIGKILL to
-two sets of processes: those that carry the run's payload token
-(`CI_HUB_PAYLOAD_DOMAIN`), and those still in the payload's original process
-group. A process that left the group and also dropped the token is not
-reached. <https://github.com/rrnewton/dev-hermit/issues/428> tracks
-cgroup-based teardown for that case.
+At normal exit, teardown sends SIGTERM, waits up to 5 s, and then sends
+SIGKILL. Before the first signal and at every 20 ms poll after it, teardown
+records by exact identity (pid and start time) every process that started no
+earlier than the payload leader, does not carry another run's payload token,
+and is one of these:
+
+- a process carrying the run's payload token (`CI_HUB_PAYLOAD_DOMAIN`);
+- a process still in the payload's original process group;
+- a child of a process already recorded, which catches a child started with
+  `env -u CI_HUB_PAYLOAD_DOMAIN setsid` while its parent still exists;
+- a new direct child of the supervisor outside the supervisor's own process
+  group, which catches a process whose parent exited during teardown, for
+  example one started by a SIGTERM handler.
+
+A recorded process stays recorded after its parent dies. The teardown kills
+it, and if it is still alive after the last kill round the run quarantines
+instead of releasing. One case is not reached: a process that dropped the
+token, left the original group, and was already detached from its parent
+before teardown began. <https://github.com/rrnewton/dev-hermit/issues/428>
+tracks cgroup-based teardown for that case.
 
 An acquirer with `--wait N` (N > 0) classifies the record on every poll:
 
@@ -125,10 +139,16 @@ Two consequences are easy to miss:
 `run` spends one `--wait` budget, measured from its start, across the
 owner-watch yield, the global queue, quarantine waits in any slot, and local
 acquisition. It does not restart the clock for each phase. Each phase can
-overrun by one 3 s poll. After the child exits, teardown adds at most 16 s:
-5 s of SIGTERM grace, 3 kill rounds of 2 s each, and a 5 s check that the
-payload domain is empty. The Hermit service's `RuntimeMaxSec` is `--wait` plus
-the child deadline plus 600 s, which covers all of these.
+overrun by one 3 s poll. After the child exits normally, teardown adds about
+22 s at most: 5 s of SIGTERM grace and 3 kill rounds of 2 s each (11 s), then
+a check that the payload domain is empty (another 11 s: the check stops
+starting new work after 5 s, but a set of 3 kill rounds started just before
+then still runs its 6 s). When the child deadline or a signal
+to the supervisor ends the run, the supervisor first spends 5 s of SIGTERM
+grace on the payload's process group and up to 5 s waiting for its SIGKILL,
+about 32 s in all. Each figure excludes the time the `/proc` scans and the
+residual census themselves take. The Hermit service's `RuntimeMaxSec` is
+`--wait` plus the child deadline plus 600 s, which covers all of these.
 
 ## CPU placement: validation stays off PMU-bound CPUs
 

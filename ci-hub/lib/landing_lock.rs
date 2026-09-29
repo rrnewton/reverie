@@ -1935,12 +1935,17 @@ impl LandingLock {
             }
         });
 
+        let mut lineage = PayloadLineage::new(
+            std::process::id(),
+            gated.leader.start_ticks,
+            &gated.domain_token,
+            gated.pgid,
+        );
         let outcome = supervise_child(
             &mut gated.child,
             args.child_deadline,
             &args.pr,
-            gated.leader.start_ticks,
-            &gated.domain_token,
+            &mut lineage,
         );
         // Atomically disable heartbeat renewal before stopping it. A heartbeat
         // already holding the guard finishes first; after this durable phase
@@ -1951,14 +1956,13 @@ impl LandingLock {
         reap_exited_children();
         let pgid = outcome.pgid();
         // Kill, do not merely freeze, whatever outlived the leader: a setsid'd
-        // descendant escapes the group signal but not its payload token
-        // (https://github.com/rrnewton/dev-hermit/issues/419). The capture
-        // names only what SIGKILL could not remove, and that still quarantines.
+        // descendant escapes the group signal but not its payload token, and a
+        // tokenless one escapes both but not the lineage recorded from its
+        // parent (https://github.com/rrnewton/dev-hermit/issues/419). The
+        // capture names only what SIGKILL could not remove, and that still
+        // quarantines.
         let capture = tear_down_payload_domain(
-            std::process::id(),
-            gated.leader.start_ticks,
-            &gated.domain_token,
-            pgid,
+            &mut lineage,
             Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
             "landing-lock",
         );
@@ -3110,7 +3114,10 @@ pub(crate) fn safe_ci_slice_for(payload_cgroup: &str) -> Option<String> {
     Some(format!("{prefix}{marker}/safe.slice/safe-ci.slice"))
 }
 
-fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
+/// One `/proc` stat read per process: pid -> (state, parent pid, start ticks).
+type ProcessTable = BTreeMap<u32, (char, u32, u64)>;
+
+fn scan_process_table(_diagnostic_root: u32) -> io::Result<ProcessTable> {
     let mut processes = BTreeMap::new();
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
@@ -3133,7 +3140,7 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
             Err(source) => {
                 #[cfg(test)]
                 eprintln!(
-                    "CENSUS_SCAN_ERROR root={root_pid} pid={pid} kind={:?} errno={:?} error={source:?}",
+                    "CENSUS_SCAN_ERROR root={_diagnostic_root} pid={pid} kind={:?} errno={:?} error={source:?}",
                     source.kind(),
                     source.raw_os_error()
                 );
@@ -3141,10 +3148,16 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
             }
         }
     }
+    Ok(processes)
+}
+
+/// Every pid whose parent chain in `processes` reaches `root_pid`, excluding
+/// `root_pid` itself.
+fn descendant_pids(processes: &ProcessTable, root_pid: u32) -> BTreeSet<u32> {
     let mut domain = BTreeSet::from([root_pid]);
     loop {
         let before = domain.len();
-        for (&pid, &(_, parent, _)) in &processes {
+        for (&pid, &(_, parent, _)) in processes {
             if domain.contains(&parent) {
                 domain.insert(pid);
             }
@@ -3154,6 +3167,12 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
         }
     }
     domain.remove(&root_pid);
+    domain
+}
+
+fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
+    let processes = scan_process_table(root_pid)?;
+    let domain = descendant_pids(&processes, root_pid);
     Ok(domain
         .into_iter()
         .filter_map(|pid| {
@@ -3452,24 +3471,6 @@ fn exempt_from_teardown_signals(pid: u32) -> bool {
     false
 }
 
-/// Live members of the payload domain beneath `supervisor_pid`, by the SAME
-/// rule the census uses: a descendant of this subreaper that started no
-/// earlier than the payload leader and whose environment carries
-/// `domain_token`. Reads `/proc` only; it neither reaps nor freezes.
-fn live_payload_members(
-    supervisor_pid: u32,
-    payload_start_ticks: u64,
-    domain_token: &str,
-) -> io::Result<Vec<ProcessIdentity>> {
-    Ok(scan_descendants(supervisor_pid)?
-        .into_iter()
-        .filter(|identity| identity.start_ticks >= payload_start_ticks)
-        .filter(|identity| {
-            classify_membership(identity.pid, domain_token) == DomainMembership::Payload
-        })
-        .collect())
-}
-
 /// Process group of exactly `identity`, or `None` when that pid is gone, now
 /// names a later process, or its `stat` cannot be parsed. Reading the group and
 /// the start time from ONE `stat` read binds the answer to this generation.
@@ -3496,9 +3497,233 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
     })
 }
 
-/// Every live process the teardown of this payload must dispose of: the
-/// payload-domain members (the census rule, [`live_payload_members`]) PLUS the
-/// surviving members of the payload's ORIGINAL process group, `payload_pgid`.
+/// Every process the teardown of ONE run has attributed to its payload, kept by
+/// exact identity (pid and start time) across every census and poll of that
+/// teardown.
+///
+/// ⚠️ WHY A PERSISTENT RECORD. The two axes that attribute a process at the
+/// moment teardown looks -- the payload token and membership of the payload's
+/// original process group -- both miss a process started with
+/// `env -u CI_HUB_PAYLOAD_DOMAIN setsid ...`. Such a process is attributable
+/// only through its parent, and the parent link lasts only while the parent
+/// lives: once teardown signals the parent and the parent exits, the child is
+/// reparented to this subreaper and `/proc` no longer says where it came from.
+/// Two shapes turned that into a release with a live payload process, where
+/// the code before teardown killed anything had frozen the parent and
+/// quarantined (review of https://github.com/rrnewton/dev-hermit/issues/419):
+///   - parent-waits: a token-carrying setsid'd parent waits on such a child.
+///     Killing the parent orphaned the child, and the run released.
+///   - escape-on-term: an original-group process that dropped the token has a
+///     SIGTERM handler that starts such a child and exits. The SIGTERM the
+///     teardown sent was what created the escapee.
+///
+/// So [`PayloadLineage::observe`] runs before the first teardown signal and at
+/// every teardown poll, and records every live process that started no earlier
+/// than the payload leader, does not carry a DIFFERENT payload's token, and is
+/// one of:
+///   - a payload-token member beneath this subreaper (the census rule);
+///   - a surviving member of the original group `payload_pgid`
+///     ([`in_original_group`]);
+///   - a child, in the same `/proc` scan, of an identity already selected, so a
+///     child is recorded while its parent's link is still visible;
+///   - a direct child of this subreaper that was not one when teardown began
+///     and is not in the subreaper's own process group. Nothing the supervisor
+///     starts during teardown leaves its own group, so such a process was
+///     reparented here from a payload process that exited while teardown ran
+///     -- for example one forked by a SIGTERM handler that exited before the
+///     next 20 ms poll.
+///
+/// A recorded identity stays recorded after it is reparented. Each is a
+/// teardown target, and one still alive when [`kill_payload_domain`] finishes
+/// is returned as an exact residual, which blocks release exactly like a
+/// census residual.
+///
+/// NOT COVERED, tracked in https://github.com/rrnewton/dev-hermit/issues/428:
+/// a process that dropped the token and left the original group and was
+/// ALREADY reparented to this subreaper when teardown began (for example a
+/// tokenless daemon detached before the leader exited), its descendants, and
+/// anything that is not a descendant of this subreaper at all.
+pub(crate) struct PayloadLineage {
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: String,
+    payload_pgid: u32,
+    /// The supervisor's own process group.
+    supervisor_pgid: Option<u32>,
+    /// Direct children of the supervisor at the first successful observation.
+    baseline_children: Option<BTreeSet<ProcessIdentity>>,
+    recorded: BTreeSet<ProcessIdentity>,
+    /// Identities already sent SIGTERM, or already reached by the payload
+    /// group's SIGTERM, so no process gets that signal twice.
+    termed: BTreeSet<ProcessIdentity>,
+}
+
+impl PayloadLineage {
+    pub(crate) fn new(
+        supervisor_pid: u32,
+        payload_start_ticks: u64,
+        domain_token: &str,
+        payload_pgid: u32,
+    ) -> Self {
+        // SAFETY: getpgid(0) only reads this process's own process-group id.
+        let supervisor_pgid = u32::try_from(unsafe { libc::getpgid(0) })
+            .ok()
+            .filter(|pgid| *pgid > 0);
+        Self {
+            supervisor_pid,
+            payload_start_ticks,
+            domain_token: domain_token.to_string(),
+            payload_pgid,
+            supervisor_pgid,
+            baseline_children: None,
+            recorded: BTreeSet::new(),
+            termed: BTreeSet::new(),
+        }
+    }
+
+    /// Scan `/proc` once, record every process the rules on [`PayloadLineage`]
+    /// attribute to the payload, and return the recorded identities that are
+    /// alive in this scan. A zombie is not alive here: it owns nothing, and
+    /// its live parent (if any) is recorded too. Reads `/proc` only; it
+    /// neither reaps nor signals.
+    pub(crate) fn observe(&mut self) -> io::Result<Vec<ProcessIdentity>> {
+        let table = scan_process_table(self.supervisor_pid)?;
+        let descendants = descendant_pids(&table, self.supervisor_pid);
+        let floor = self.payload_start_ticks;
+        let live_identity = |pid: u32| -> Option<ProcessIdentity> {
+            let &(state, _, start_ticks) = table.get(&pid)?;
+            (state != 'Z' && start_ticks >= floor).then_some(ProcessIdentity { pid, start_ticks })
+        };
+        let direct_children: BTreeSet<ProcessIdentity> = descendants
+            .iter()
+            .filter(|pid| matches!(table.get(pid), Some(&(_, parent, _)) if parent == self.supervisor_pid))
+            .filter_map(|pid| live_identity(*pid))
+            .collect();
+        let teardown_began_earlier = self.baseline_children.is_some();
+        if !teardown_began_earlier {
+            self.baseline_children = Some(direct_children.clone());
+        }
+        let baseline = self.baseline_children.as_ref().expect("baseline set above");
+        let original_generation = original_group_generation_is_live(self.payload_pgid, floor);
+
+        let mut selected = BTreeSet::new();
+        for &pid in &descendants {
+            let Some(identity) = live_identity(pid) else {
+                continue;
+            };
+            let chosen = self.recorded.contains(&identity)
+                || match classify_membership(pid, &self.domain_token) {
+                    DomainMembership::Payload => true,
+                    DomainMembership::Foreign | DomainMembership::Unclassifiable => {
+                        !carries_other_payload_token(pid, &self.domain_token)
+                            && ((original_generation
+                                && in_original_group(&identity, self.payload_pgid))
+                                || (teardown_began_earlier
+                                    && direct_children.contains(&identity)
+                                    && !baseline.contains(&identity)
+                                    && exact_process_group(&identity) != self.supervisor_pgid))
+                    }
+                };
+            if chosen {
+                selected.insert(pid);
+            }
+        }
+        loop {
+            let before = selected.len();
+            for &pid in &descendants {
+                if selected.contains(&pid) {
+                    continue;
+                }
+                let Some(&(_, parent, _)) = table.get(&pid) else {
+                    continue;
+                };
+                if selected.contains(&parent)
+                    && live_identity(pid).is_some()
+                    && !carries_other_payload_token(pid, &self.domain_token)
+                {
+                    selected.insert(pid);
+                }
+            }
+            if selected.len() == before {
+                break;
+            }
+        }
+        self.recorded
+            .extend(selected.into_iter().filter_map(|pid| live_identity(pid)));
+        Ok(self
+            .recorded
+            .iter()
+            .filter(|identity| {
+                matches!(
+                    table.get(&identity.pid),
+                    Some(&(state, _, start_ticks))
+                        if start_ticks == identity.start_ticks && state != 'Z'
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// [`Self::observe`], or, when `/proc` cannot be scanned, every recorded
+    /// identity not proven gone. Signalling that fallback is safe because
+    /// every signal is sent by exact identity; the census that follows fails
+    /// closed on the same scan error.
+    fn live_or_recorded(&mut self) -> Vec<ProcessIdentity> {
+        self.observe_or_recorded().0
+    }
+
+    /// [`Self::live_or_recorded`], also saying whether the `/proc` scan
+    /// succeeded (`false` means the fallback was used).
+    fn observe_or_recorded(&mut self) -> (Vec<ProcessIdentity>, bool) {
+        match self.observe() {
+            Ok(live) => (live, true),
+            Err(_) => (
+                self.recorded
+                    .iter()
+                    .filter(|identity| !matches!(exact_process_liveness(identity), Ok(false)))
+                    .cloned()
+                    .collect(),
+                false,
+            ),
+        }
+    }
+
+    /// Observe, then SIGTERM every live recorded identity that has not had
+    /// SIGTERM yet. With `group_signalled`, identities currently in that
+    /// process group are counted as already signalled, because the caller
+    /// just sent the group SIGTERM. Returns the identities signalled here.
+    fn term_unsignalled(&mut self, group_signalled: Option<u32>) -> Vec<ProcessIdentity> {
+        let mut reached = Vec::new();
+        for identity in self.live_or_recorded() {
+            if self.termed.contains(&identity) || exempt_from_teardown_signals(identity.pid) {
+                continue;
+            }
+            self.termed.insert(identity.clone());
+            if group_signalled.is_some() && exact_process_group(&identity) == group_signalled {
+                continue;
+            }
+            if matches!(signal_exact_process(&identity, libc::SIGTERM), Ok(true)) {
+                reached.push(identity);
+            }
+        }
+        reached
+    }
+}
+
+/// Whether the number `payload_pgid` still names the payload's ORIGINAL
+/// process group. A live process whose pid IS `payload_pgid` but whose start
+/// time differs from the leader's means the original group emptied and a later
+/// one took the number, so no member of it may be selected.
+fn original_group_generation_is_live(payload_pgid: u32, payload_start_ticks: u64) -> bool {
+    process_group_target(payload_pgid).is_some()
+        && !matches!(
+            process_start_ticks(payload_pgid),
+            Ok(start_ticks) if start_ticks != payload_start_ticks
+        )
+}
+
+/// Whether one `stat` read shows exactly `identity` in the payload's original
+/// process group.
 ///
 /// ⚠️ WHY THE ORIGINAL GROUP IS A SECOND AXIS. The payload token is inherited,
 /// but a process can drop it: `env -u`, `env -i`, `sudo`'s `env_reset`, or a
@@ -3510,100 +3735,94 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 /// waiter could do about it (review of
 /// https://github.com/rrnewton/dev-hermit/issues/419).
 ///
-/// The leader is already reaped here, so a group signal is not safe: the
-/// number is only protected while the group has members. Each group member is
-/// therefore selected and later signalled by exact identity, and only when all
-/// of these hold:
-///   - it descends from this subreaper and started no earlier than the leader
-///     (the census floor);
-///   - one `stat` read shows it in `payload_pgid` for this exact generation;
-///   - the number `payload_pgid` has not been reused: a live process whose pid
-///     IS `payload_pgid` but whose start time differs from the leader's means
-///     the original group emptied and a later one took the number, so no group
-///     member is selected at all;
-///   - its readable environment does not name a DIFFERENT payload token.
-///
-/// A foreign or unclassifiable descendant OUTSIDE the original group is still
-/// never selected, exactly as before.
-fn teardown_targets(
-    supervisor_pid: u32,
-    payload_start_ticks: u64,
-    domain_token: &str,
-    payload_pgid: u32,
-) -> io::Result<Vec<ProcessIdentity>> {
-    let group_generation_is_original = process_group_target(payload_pgid).is_some()
-        && !matches!(
-            process_start_ticks(payload_pgid),
-            Ok(start_ticks) if start_ticks != payload_start_ticks
-        );
-    let mut targets = Vec::new();
-    for identity in scan_descendants(supervisor_pid)? {
-        if identity.start_ticks < payload_start_ticks
-            || exempt_from_teardown_signals(identity.pid)
-        {
-            continue;
-        }
-        let selected = match classify_membership(identity.pid, domain_token) {
-            DomainMembership::Payload => true,
-            DomainMembership::Foreign | DomainMembership::Unclassifiable => {
-                group_generation_is_original
-                    && exact_process_group(&identity) == Some(payload_pgid)
-                    && !carries_other_payload_token(identity.pid, domain_token)
-            }
-        };
-        if selected {
-            targets.push(identity);
-        }
-    }
-    Ok(targets)
+/// The leader is already reaped after a normal exit, so a group signal is not
+/// safe: the number is only protected while the group has members. Each group
+/// member is therefore selected and signalled by exact identity, and only
+/// while [`original_group_generation_is_live`] holds.
+fn in_original_group(identity: &ProcessIdentity, payload_pgid: u32) -> bool {
+    exact_process_group(identity) == Some(payload_pgid)
 }
 
-/// Send `signal` to every live payload-domain member that is not in
-/// `skip_pgid`, and return the identities it reached.
-///
-/// This is what reaches a payload process that left the payload's process
-/// group with `setsid` or `setpgid`: the group signal cannot, and the payload
-/// token survives both. `skip_pgid` lets a caller that has already signalled
-/// the payload group avoid delivering the same signal twice to its members,
-/// which some programs treat as a request to abandon their own cleanup.
-///
-/// It does not reap, so it is safe while the direct payload child's exit
-/// status is still owed to `Child::wait`. Membership is the census rule
-/// exactly, so it can never signal a process the census would not have
-/// frozen: an unclassifiable or foreign descendant is left alone.
-pub(crate) fn signal_payload_domain(
-    supervisor_pid: u32,
-    payload_start_ticks: u64,
-    domain_token: &str,
+/// Send `signal`, by exact identity, to each of `identities` that is not
+/// exempt and, with `skip_pgid`, not currently in that process group. Returns
+/// the identities it reached. It does not reap, so it is safe while the direct
+/// payload child's status is still owed to `Child::wait`.
+fn signal_identities(
+    identities: &[ProcessIdentity],
     skip_pgid: Option<u32>,
     signal: libc::c_int,
 ) -> Vec<ProcessIdentity> {
-    let Ok(members) = live_payload_members(supervisor_pid, payload_start_ticks, domain_token)
-    else {
-        // Best effort: the census that follows every teardown rescans and
-        // fails closed on the same error.
-        return Vec::new();
-    };
     let mut reached = Vec::new();
-    for identity in members {
+    for identity in identities {
         if exempt_from_teardown_signals(identity.pid) {
             continue;
         }
-        if let Some(pgid) = skip_pgid {
-            let Ok(pid) = libc::pid_t::try_from(identity.pid) else {
-                continue;
-            };
-            // SAFETY: getpgid only reads the target's process-group id.
-            let member_pgid = unsafe { libc::getpgid(pid) };
-            if member_pgid > 0 && member_pgid as u32 == pgid {
-                continue;
-            }
+        if skip_pgid.is_some() && exact_process_group(identity) == skip_pgid {
+            continue;
         }
-        if matches!(signal_exact_process(&identity, signal), Ok(true)) {
-            reached.push(identity);
+        if matches!(signal_exact_process(identity, signal), Ok(true)) {
+            reached.push(identity.clone());
         }
     }
     reached
+}
+
+/// Deadline and supervisor-signal path, first half: SIGTERM the payload's
+/// process group `pgid` and, by exact identity, every recorded payload process
+/// outside it, then keep recording for `grace` and SIGTERM each process found
+/// during it.
+///
+/// The lineage is observed BEFORE the first signal, so a child of a process
+/// about to be signalled is recorded while its parent link is visible. The
+/// grace loop polls every 20 ms and never reaps: the unreaped leader keeps the
+/// number `pgid` from being reused before the final SIGKILL.
+pub(crate) fn term_payload_group(
+    lineage: &mut PayloadLineage,
+    pgid: u32,
+    grace: Duration,
+    label: &str,
+) {
+    let _ = lineage.observe();
+    signal_group(libc::SIGTERM, pgid);
+    let reached = lineage.term_unsignalled(Some(pgid));
+    if !reached.is_empty() {
+        eprintln!(
+            "{label}: SIGTERM {} payload process(es) outside process group -{pgid}: {}",
+            reached.len(),
+            describe_identities(&reached)
+        );
+    }
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+        let reached = lineage.term_unsignalled(Some(pgid));
+        if !reached.is_empty() {
+            eprintln!(
+                "{label}: SIGTERM {} further payload process(es) found during the grace period: {}",
+                reached.len(),
+                describe_identities(&reached)
+            );
+        }
+    }
+}
+
+/// Deadline and supervisor-signal path, second half: SIGKILL the process group
+/// `pgid` and every live recorded payload process outside it. Returns whether
+/// the group signal was delivered. A process a killed parent forked after the
+/// last observation is reparented to this subreaper and recorded by the
+/// normal-exit teardown that follows.
+pub(crate) fn kill_payload_group(lineage: &mut PayloadLineage, pgid: u32, label: &str) -> bool {
+    let kill_sent = signal_group(libc::SIGKILL, pgid);
+    let live = lineage.live_or_recorded();
+    let reached = signal_identities(&live, Some(pgid), libc::SIGKILL);
+    if !reached.is_empty() {
+        eprintln!(
+            "{label}: SIGKILL {} payload process(es) outside process group -{pgid}: {}",
+            reached.len(),
+            describe_identities(&reached)
+        );
+    }
+    kill_sent
 }
 
 pub(crate) fn describe_identities(identities: &[ProcessIdentity]) -> String {
@@ -3639,6 +3858,88 @@ exit 0
     )
 }
 
+/// Test payload for the parent-waits shape on [`PayloadLineage`]: the leader
+/// backgrounds a `setsid`'d PARENT that keeps the payload token, ignores TERM
+/// and HUP, and waits in the foreground on a GRANDCHILD started as
+/// `{grandchild_env} setsid ...`, which blocks opening a FIFO nobody writes and
+/// inherits the ignored TERM and HUP. `grandchild_env` must drop the token (for
+/// example `env -u CI_HUB_PAYLOAD_DOMAIN`), so the grandchild is attributable
+/// only through its parent. Arguments: `$1` identity file (`pid start_ticks`,
+/// the parent's line first), `$2` the FIFO, `$3` the grandchild's
+/// `sid pgrp ppid token-or-unset`, `$4` `wait` to make the leader wait for its
+/// deadline instead of exiting 0.
+#[cfg(test)]
+pub(crate) fn parent_waits_payload(grandchild_env: &str) -> String {
+    const SCRIPT: &str = r#"
+parent_script='
+  trap "" TERM HUP
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  @GRANDCHILD_ENV@ setsid /bin/bash -c "$4" parent-waits-grandchild "$1" "$2" "$3"
+  exit $?
+'
+grandchild_script='
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  printf "%s %s\n" "$(awk "{print \$6, \$5, \$4}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$3"
+  read -r line < "$2"
+'
+setsid /bin/bash -c "$parent_script" parent-waits-parent "$1" "$2" "$3" "$grandchild_script" &
+while [ "$(wc -l < "$1")" -lt 2 ] || [ "$(wc -l < "$3")" -lt 1 ]; do sleep 0.01; done
+if [ "$4" = wait ]; then
+  trap 'exit 0' TERM
+  wait
+fi
+exit 0
+"#;
+    SCRIPT
+        .replace("@GRANDCHILD_ENV@", grandchild_env)
+        .replace("@TOKEN_VAR@", PAYLOAD_DOMAIN_ENV)
+}
+
+/// Test payload for the escape-on-term shape on [`PayloadLineage`]: the leader
+/// backgrounds a HELPER that drops the payload token but stays in the payload's
+/// original process group and blocks opening a FIFO nobody writes. Its SIGTERM
+/// handler ignores TERM and HUP, starts an ESCAPEE with `setsid` (tokenless,
+/// its own session, inheriting the ignored TERM and HUP, blocked on the same
+/// FIFO), waits until the escapee has recorded itself, and exits 0. The leader
+/// exits 0 once the helper has recorded itself. Arguments: `$1` the helper's
+/// identity, `$2` the FIFO, `$3` the escapee's identity, `$4` the escapee's
+/// `sid pgrp token-or-unset`, `$5` the helper's `pgrp token-or-unset`, `$6`
+/// the leader's pgrp.
+#[cfg(test)]
+pub(crate) fn escape_on_term_payload() -> String {
+    const SCRIPT: &str = r#"
+escapee_script='
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  printf "%s %s\n" "$(awk "{print \$6, \$5}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$2"
+  read -r line < "$3"
+'
+helper_script='
+  fifo=$2 escapee_ids=$3 escapee=$4 escapee_facts=$5
+  on_term() {
+    trap "" TERM HUP
+    setsid /bin/bash -c "$escapee" escape-on-term-escapee "$escapee_ids" "$escapee_facts" "$fifo" &
+    while [ "$(wc -l < "$escapee_ids")" -lt 1 ] || [ "$(wc -l < "$escapee_facts")" -lt 1 ]; do
+      sleep 0.01
+    done
+    exit 0
+  }
+  trap on_term TERM
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  printf "%s %s\n" "$(awk "{print \$5}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$6"
+  read -r line < "$fifo"
+'
+env -u @TOKEN_VAR@ /bin/bash -c "$helper_script" escape-on-term-helper "$1" "$2" "$3" "$escapee_script" "$4" "$5" &
+while [ "$(wc -l < "$1")" -lt 1 ] || [ "$(wc -l < "$5")" -lt 1 ]; do sleep 0.01; done
+awk "{print \$5}" /proc/$$/stat > "$6"
+exit 0
+"#;
+    SCRIPT.replace("@TOKEN_VAR@", PAYLOAD_DOMAIN_ENV)
+}
+
 /// Upper bound on the SIGKILL-and-recensus rounds in [`kill_payload_domain`].
 const TEARDOWN_KILL_ROUNDS: usize = 3;
 /// How long one round waits for its SIGKILLed identities to disappear.
@@ -3646,8 +3947,8 @@ const TEARDOWN_KILL_SETTLE_MILLIS: u64 = 2_000;
 const TEARDOWN_POLL_MILLIS: u64 = 20;
 
 /// Census the payload domain, SIGKILL every member the census froze and every
-/// surviving member of the payload's original process group, and census
-/// again, until nothing is left or [`TEARDOWN_KILL_ROUNDS`] is spent.
+/// live identity the [`PayloadLineage`] has recorded, and census again, until
+/// nothing is left or [`TEARDOWN_KILL_ROUNDS`] is spent.
 ///
 /// ⚠️ THE CENSUS FREEZE IS A SNAPSHOT, NOT A DISPOSAL.
 /// [`capture_and_freeze_residuals`] SIGSTOPs what it finds so the membership
@@ -3656,64 +3957,59 @@ const TEARDOWN_POLL_MILLIS: u64 = 20;
 /// end state: RUN 1959's setsid'd scorecard publication was recorded, left
 /// stopped, and held the box in quarantine from 12:37:49Z to 13:01:19Z on
 /// 2026-09-29 until an operator killed it. Here every frozen member is killed
-/// and the domain is re-censused, so the returned capture names only what
-/// SIGKILL could not remove (uninterruptible sleep, or no permission). Those
-/// stay frozen and recorded, and still quarantine the box: nothing is
-/// admitted while any member of the old payload might be alive.
+/// and the domain is re-censused.
 ///
-/// The kill set is [`teardown_targets`]: the census rule (same token, floor
-/// and subreaper walk) plus the original group's surviving members, each by
-/// exact identity. It is NOT "every payload process": a process that both
-/// dropped the token and left the original group, or that is not a
-/// descendant of this subreaper, is not reached here; cgroup-scoped disposal
-/// is https://github.com/rrnewton/dev-hermit/issues/428. Unclassifiable
-/// descendants outside the original group are not killed and keep the
-/// capture incomplete.
+/// The returned capture names what SIGKILL could not remove (uninterruptible
+/// sleep, or no permission): the census's token members, which stay frozen,
+/// PLUS every recorded lineage identity still alive after the last round,
+/// including one the census rule no longer attributes because it carries no
+/// token and was reparented. Both quarantine the box: nothing is admitted while
+/// any process this teardown attributed to the old payload is alive. What the
+/// lineage does not attribute is listed on [`PayloadLineage`] and tracked in
+/// https://github.com/rrnewton/dev-hermit/issues/428. Unclassifiable
+/// descendants the lineage did not record are not killed and keep the capture
+/// incomplete.
+///
+/// A target killed in a round can have forked first; each settle poll records
+/// such a child through the lineage and kills it in the same round.
 ///
 /// Worst case this spends [`TEARDOWN_KILL_ROUNDS`] ×
 /// [`TEARDOWN_KILL_SETTLE_MILLIS`] (6 s) waiting for kills to land, plus one
-/// census per round.
+/// census per round and one `/proc` scan per 20 ms settle poll.
 ///
 /// Callers must have reaped, or given up on, the direct payload child first:
 /// the census reaps adopted children with `waitpid(-1)`.
-pub(crate) fn kill_payload_domain(
-    supervisor_pid: u32,
-    payload_start_ticks: u64,
-    domain_token: &str,
-    payload_pgid: u32,
-    label: &str,
-) -> ResidualCapture {
-    let mut capture = capture_and_freeze_residuals(supervisor_pid, payload_start_ticks, domain_token);
-    for _round in 0..TEARDOWN_KILL_ROUNDS {
-        let mut targets: Vec<_> = capture
-            .identities
-            .iter()
-            .filter(|identity| !exempt_from_teardown_signals(identity.pid))
-            .cloned()
-            .collect();
-        // Best effort: a failed scan leaves the frozen census set as the kill
-        // set, and the census below fails closed on the same error.
-        for identity in teardown_targets(
-            supervisor_pid,
-            payload_start_ticks,
-            domain_token,
-            payload_pgid,
+pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> ResidualCapture {
+    let census = |lineage: &PayloadLineage| {
+        capture_and_freeze_residuals(
+            lineage.supervisor_pid,
+            lineage.payload_start_ticks,
+            &lineage.domain_token,
         )
-        .unwrap_or_default()
-        {
-            if !targets.contains(&identity) {
-                targets.push(identity);
-            }
-        }
+    };
+    let mut capture = census(lineage);
+    // The lineage observation taken after the last census when no signal was
+    // sent after it. It is reused below instead of scanning `/proc` again,
+    // which keeps the common case (nothing outlived the leader) at the scan
+    // count it had before the lineage existed. One scan took over a second
+    // on devbig014 at load average 228 (2026-09-29).
+    let mut final_observation = None;
+    for _round in 0..TEARDOWN_KILL_ROUNDS {
+        let (live, observed) = lineage.observe_or_recorded();
+        let mut targets: BTreeSet<ProcessIdentity> = capture.identities.iter().cloned().collect();
+        targets.extend(live.iter().cloned());
+        targets.retain(|identity| !exempt_from_teardown_signals(identity.pid));
         if targets.is_empty() {
+            final_observation = Some((live, observed));
             break;
         }
+        let payload_pgid = lineage.payload_pgid;
         eprintln!(
             "{label}: SIGKILL {} payload process(es) still alive after the payload leader, \
-             found by payload token or original process group {payload_pgid} (setsid, \
-             setpgid or a dropped token does not remove both): {}",
+             found by payload token, original process group {payload_pgid}, or descent from \
+             one of those (setsid, setpgid or a dropped token does not remove all three): {}",
             targets.len(),
-            describe_identities(&targets)
+            describe_identities(&targets.iter().cloned().collect::<Vec<_>>())
         );
         for identity in &targets {
             let _ = signal_exact_process(identity, libc::SIGKILL);
@@ -3723,6 +4019,25 @@ pub(crate) fn kill_payload_domain(
             // A killed member whose parent was also killed is reparented to
             // this subreaper as a zombie; reaping it is what makes it absent.
             reap_exited_children();
+            let forked: Vec<_> = lineage
+                .live_or_recorded()
+                .into_iter()
+                .filter(|identity| {
+                    !targets.contains(identity) && !exempt_from_teardown_signals(identity.pid)
+                })
+                .collect();
+            if !forked.is_empty() {
+                eprintln!(
+                    "{label}: SIGKILL {} further payload process(es) recorded while the kill \
+                     settled: {}",
+                    forked.len(),
+                    describe_identities(&forked)
+                );
+                for identity in forked {
+                    let _ = signal_exact_process(&identity, libc::SIGKILL);
+                    targets.insert(identity);
+                }
+            }
             if targets
                 .iter()
                 .all(|identity| matches!(exact_process_liveness(identity), Ok(false)))
@@ -3732,51 +4047,65 @@ pub(crate) fn kill_payload_domain(
             }
             thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
         }
-        capture = capture_and_freeze_residuals(supervisor_pid, payload_start_ticks, domain_token);
+        capture = census(lineage);
+    }
+    // A recorded identity blocks release for as long as it is alive, whether
+    // or not the census rule still attributes it. That includes an exempt
+    // (test-unkillable) identity, which was left out of the kill targets
+    // only.
+    let (survivors, observed) = match final_observation {
+        Some(observation) => observation,
+        None => lineage.observe_or_recorded(),
+    };
+    if !observed {
+        capture.complete = false;
+    }
+    let unrecorded: Vec<_> = survivors
+        .into_iter()
+        .filter(|identity| !capture.identities.contains(identity))
+        .collect();
+    if !unrecorded.is_empty() {
+        eprintln!(
+            "{label}: {} recorded payload process(es) outside the census survived SIGKILL and \
+             are recorded as exact residuals: {}",
+            unrecorded.len(),
+            describe_identities(&unrecorded)
+        );
+        capture.identities.extend(unrecorded);
+        capture.identities.sort();
+        capture.identities.dedup();
     }
     capture
 }
 
 /// Tear down the payload processes that outlived the payload leader and that
-/// [`teardown_targets`] can attribute, then return the census of whatever
-/// survived. What it cannot attribute is listed on [`kill_payload_domain`]
-/// and tracked in https://github.com/rrnewton/dev-hermit/issues/428.
+/// the [`PayloadLineage`] attributes, then return the census of whatever
+/// survived.
 ///
-/// Every [`teardown_targets`] member still alive -- payload-token members and
-/// surviving members of the original group `payload_pgid` -- gets SIGTERM and
-/// up to `grace` to exit on its own, so a publication or cleanup step can
-/// finish writing; whatever remains is then disposed of by
-/// [`kill_payload_domain`]. When nothing outlived the leader this costs one
-/// `/proc` scan and returns the same census as before.
+/// The lineage is observed before any signal. Every live recorded identity
+/// gets SIGTERM and up to `grace` to exit on its own, so a publication or
+/// cleanup step can finish writing. Each 20 ms poll of that grace observes the
+/// lineage again and sends SIGTERM to every newly recorded process, including
+/// a child a SIGTERM handler forked and a process reparented here when its
+/// parent exited. Whatever remains is then disposed of by
+/// [`kill_payload_domain`]. When nothing outlived the leader this costs two
+/// lineage `/proc` scans plus the census's own samples, the same count as
+/// before the lineage existed, and returns the same census as before.
 ///
 /// Worst-case wall time: `grace` (5 s at both call sites) plus
-/// [`kill_payload_domain`]'s 6 s of kill settling; the validate run path then
-/// adds its bounded empty-domain settle (5 s).
+/// [`kill_payload_domain`]'s 6 s of kill settling, so about 11 s, plus census
+/// and scan time. The validate run path then adds its bounded empty-domain
+/// settle; see `settle_empty_payload_domain` in validate_lock.rs.
 ///
 /// Call only after the direct child has been reaped (normal exit, or the
 /// group teardown's `Child::wait`) or its status is already lost.
 pub(crate) fn tear_down_payload_domain(
-    supervisor_pid: u32,
-    payload_start_ticks: u64,
-    domain_token: &str,
-    payload_pgid: u32,
+    lineage: &mut PayloadLineage,
     grace: Duration,
     label: &str,
 ) -> ResidualCapture {
     reap_exited_children();
-    let mut termed = Vec::new();
-    for identity in teardown_targets(
-        supervisor_pid,
-        payload_start_ticks,
-        domain_token,
-        payload_pgid,
-    )
-    .unwrap_or_default()
-    {
-        if matches!(signal_exact_process(&identity, libc::SIGTERM), Ok(true)) {
-            termed.push(identity);
-        }
-    }
+    let termed = lineage.term_unsignalled(None);
     if !termed.is_empty() {
         eprintln!(
             "{label}: {} payload process(es) outlived the payload leader: {}; \
@@ -3788,23 +4117,25 @@ pub(crate) fn tear_down_payload_domain(
         let deadline = Instant::now() + grace;
         loop {
             reap_exited_children();
-            if termed
-                .iter()
-                .all(|identity| matches!(exact_process_liveness(identity), Ok(false)))
-                || Instant::now() >= deadline
-            {
+            let more = lineage.term_unsignalled(None);
+            if !more.is_empty() {
+                eprintln!(
+                    "{label}: SIGTERM {} further payload process(es) found during the grace \
+                     period: {}",
+                    more.len(),
+                    describe_identities(&more)
+                );
+            }
+            let all_gone = lineage.termed.iter().all(|identity| {
+                matches!(exact_process_liveness(identity), Ok(false))
+            });
+            if all_gone || Instant::now() >= deadline {
                 break;
             }
             thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
         }
     }
-    kill_payload_domain(
-        supervisor_pid,
-        payload_start_ticks,
-        domain_token,
-        payload_pgid,
-        label,
-    )
+    kill_payload_domain(lineage, label)
 }
 
 /// Reap every exited child adopted by this subreaper without losing the direct
@@ -4385,8 +4716,7 @@ fn supervise_child(
     child: &mut Child,
     deadline_secs: u64,
     pr: &str,
-    payload_start_ticks: u64,
-    domain_token: &str,
+    lineage: &mut PayloadLineage,
 ) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
@@ -4408,7 +4738,7 @@ fn supervise_child(
         }
         if Instant::now() >= deadline {
             let pgid = child.id();
-            terminate_child_group(child, pr, payload_start_ticks, domain_token);
+            terminate_child_group(child, pr, lineage);
             return ChildOutcome::TimedOut { pgid };
         }
         thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
@@ -4420,60 +4750,29 @@ fn supervise_child(
 /// pid equals its pgid and signalling `-pid` reaches the whole land subtree
 /// (gh / git / cargo), not just the wrapper shell.
 ///
-/// Each group signal is paired with the same signal to every payload-domain
-/// member OUTSIDE the group ([`signal_payload_domain`]), so a descendant that
-/// called `setsid` shares the grace window and the final SIGKILL instead of
-/// surviving to be frozen by the census
+/// Each group signal is paired with the same signal, by exact identity, to
+/// every process the [`PayloadLineage`] has recorded OUTSIDE the group
+/// ([`term_payload_group`], [`kill_payload_group`]), so a descendant that
+/// called `setsid`, with or without the payload token, shares the grace window
+/// and the final SIGKILL instead of surviving to be frozen by the census
 /// (https://github.com/rrnewton/dev-hermit/issues/419).
-fn terminate_child_group(
-    child: &mut Child,
-    pr: &str,
-    payload_start_ticks: u64,
-    domain_token: &str,
-) {
+fn terminate_child_group(child: &mut Child, pr: &str, lineage: &mut PayloadLineage) {
     // Capture the protected domain before TERM can reap its leader. Descendants
     // retain this pgid even after the direct child exits.
     let pgid = child.id();
     let group = format!("-{pgid}");
-    let supervisor = std::process::id();
     eprintln!("landing-lock: child-deadline reached for PR #{pr}; SIGTERM process group {group}");
-    signal_group(libc::SIGTERM, pgid);
-    let escaped = signal_payload_domain(
-        supervisor,
-        payload_start_ticks,
-        domain_token,
-        Some(pgid),
-        libc::SIGTERM,
+    // Do not reap the leader during the grace: its exact PID keeps the
+    // captured process group identity from disappearing or being reused
+    // before final KILL.
+    term_payload_group(
+        lineage,
+        pgid,
+        Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
+        "landing-lock",
     );
-    if !escaped.is_empty() {
-        eprintln!(
-            "landing-lock: SIGTERM {} payload process(es) outside process group {group}: {}",
-            escaped.len(),
-            describe_identities(&escaped)
-        );
-    }
-    let grace = Instant::now() + Duration::from_secs(CHILD_TERM_GRACE_SECONDS);
-    while Instant::now() < grace {
-        // Do not reap the leader yet: its exact PID keeps the captured process
-        // group identity from disappearing or being reused before final KILL.
-        thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
-    }
     eprintln!("landing-lock: grace expired for PR #{pr}; SIGKILL process group {group}");
-    let kill_sent = signal_group(libc::SIGKILL, pgid);
-    let escaped = signal_payload_domain(
-        supervisor,
-        payload_start_ticks,
-        domain_token,
-        Some(pgid),
-        libc::SIGKILL,
-    );
-    if !escaped.is_empty() {
-        eprintln!(
-            "landing-lock: SIGKILL {} payload process(es) outside process group {group}: {}",
-            escaped.len(),
-            describe_identities(&escaped)
-        );
-    }
+    let kill_sent = kill_payload_group(lineage, pgid, "landing-lock");
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -7093,6 +7392,110 @@ exit 0
     #[test]
     fn deadline_teardown_kills_setsid_pipe_blocked_landing_payload() {
         run_setsid_pipe_payload("setsid-pipe-deadline", "wait", 2);
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419 (parent-waits),
+    /// landing side: a setsid'd token-carrying parent waits on a grandchild
+    /// started with `env -u CI_HUB_PAYLOAD_DOMAIN setsid`. Killing the parent
+    /// reparented the grandchild beyond both attribution axes and the run
+    /// released with it alive. The grandchild must be killed.
+    fn run_parent_waits_landing_payload(name: &str, mode: &str, child_deadline: u64) {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let identities_path = root.join("parent-waits.identities");
+        fs::write(&identities_path, b"").unwrap();
+        let facts_path = root.join("grandchild.facts");
+        fs::write(&facts_path, b"").unwrap();
+        let fifo = root.join("never-written.fifo");
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo_c` is a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let result = lock.run(RunArgs {
+            agent: format!("{name}-lander"),
+            pr: "9419".into(),
+            wait: 0,
+            hold: 30,
+            child_deadline,
+            child: vec![
+                OsString::from("/bin/bash"),
+                OsString::from("-c"),
+                OsString::from(parent_waits_payload(&format!("env -u {PAYLOAD_DOMAIN_ENV}"))),
+                OsString::from("payload-leader"),
+                identities_path.clone().into_os_string(),
+                fifo.clone().into_os_string(),
+                facts_path.clone().into_os_string(),
+                OsString::from(mode),
+            ],
+        });
+        let identities: Vec<ProcessIdentity> = fs::read_to_string(&identities_path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                ProcessIdentity {
+                    pid: fields[0].parse().unwrap(),
+                    start_ticks: fields[1].parse().unwrap(),
+                }
+            })
+            .collect();
+        reap_exited_children();
+        let survivors: Vec<_> = identities
+            .iter()
+            .filter(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+            .cloned()
+            .collect();
+        for identity in &survivors {
+            let _ = signal_exact_process(identity, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && survivors
+                .iter()
+                .any(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+        {
+            reap_exited_children();
+            thread::sleep(Duration::from_millis(10));
+        }
+        let facts = fs::read_to_string(&facts_path).unwrap();
+        let facts: Vec<String> = facts.split_whitespace().map(String::from).collect();
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(identities.len(), 2, "fixture must record the parent and the grandchild");
+        assert_eq!(facts.len(), 4, "unexpected grandchild facts {facts:?}");
+        let grandchild = identities[1].pid.to_string();
+        assert_eq!(facts[0], grandchild, "the grandchild must lead its own session");
+        assert_eq!(facts[2], identities[0].pid.to_string(), "the grandchild must be the parent's child");
+        assert_eq!(facts[3], "unset", "the grandchild must carry no payload token");
+        assert!(
+            survivors.is_empty(),
+            "the parent-waits payload survived teardown: {survivors:?} (run result {result:?})"
+        );
+        let expected = if mode == "wait" {
+            CHILD_DEADLINE_EXIT_CODE
+        } else {
+            0
+        };
+        assert_eq!(result.unwrap(), expected);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
+    #[test]
+    fn normal_exit_kills_the_tokenless_grandchild_of_a_waiting_setsid_landing_parent() {
+        run_parent_waits_landing_payload("parent-waits-normal", "exit", 60);
+    }
+
+    #[test]
+    fn deadline_teardown_kills_the_tokenless_grandchild_of_a_waiting_setsid_landing_parent() {
+        run_parent_waits_landing_payload("parent-waits-deadline", "wait", 2);
     }
 
     #[test]

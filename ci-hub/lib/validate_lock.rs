@@ -43,20 +43,20 @@ use thiserror::Error;
 // code. None of these carry a LandLockError or print a `landing-lock:` message,
 // so they are safe to share verbatim across both locks.
 #[cfg(test)]
-use crate::landing_lock::census_recorded_domain;
+use crate::landing_lock::{census_recorded_domain, signal_group};
 use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, census_cleanup_domain,
-    census_disposition, current_host, describe_identities, enable_child_subreaper,
+    census_disposition, current_host, enable_child_subreaper,
     exact_process_liveness, exact_process_state, exit_status_code, foreign_box_claim_excluding,
     foreign_box_quarantine_excluding,
     heartbeat_test_helper_delay, kill_payload_domain, operation_is_validation,
     print_census_recovery, print_cleanup_record,
     process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
-    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root, signal_group,
-    signal_payload_domain, spawn_gated_child, suffix, tear_down_payload_domain,
+    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root,
+    kill_payload_group, spawn_gated_child, suffix, tear_down_payload_domain, term_payload_group,
     verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
     CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
-    DomainEvidence, GatedChild, ProcessIdentity, ResidualCapture,
+    DomainEvidence, GatedChild, PayloadLineage, ProcessIdentity, ResidualCapture,
 };
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
@@ -2765,6 +2765,14 @@ impl Drop for OriginalGroupTestStatesGuard {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: make [`ValidateLock::discharge_dead_holder`] wait for the
+    /// wall clock's next second before stamping its release record, which is
+    /// the timing that exposed a caller holding a stale observation time.
+    static DISCHARGE_CROSSES_A_SECOND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[derive(Debug)]
 enum RunCleanupFinalization {
     Released,
@@ -2775,11 +2783,21 @@ enum RunCleanupFinalization {
     },
 }
 
+/// Re-run [`kill_payload_domain`] while the capture is complete and empty but
+/// the original process group has not yet been proven absent, for at most
+/// [`EMPTY_DOMAIN_SETTLE_SECONDS`].
+///
+/// The deadline is checked only between calls, and one call can spend 6 s
+/// settling kills, so this can take up to about 11 s (5 s + 6 s) plus census
+/// time. Added to [`tear_down_payload_domain`]'s 11 s, a normal-exit teardown
+/// on the validate run path is bounded by about 22 s plus census and scan
+/// time; the deadline and supervisor-signal paths add
+/// `terminate_child_group`'s 5 s grace and up to 5 s of kill settling, about
+/// 32 s in all.
 fn settle_empty_payload_domain(
-    supervisor_pid: u32,
+    lineage: &mut PayloadLineage,
     pgid: u32,
     leader: &ProcessIdentity,
-    domain_token: &str,
     mut capture: ResidualCapture,
 ) -> ResidualCapture {
     let deadline = Instant::now() + Duration::from_secs(EMPTY_DOMAIN_SETTLE_SECONDS);
@@ -2798,13 +2816,7 @@ fn settle_empty_payload_domain(
         // becomes visible during the grace window is killed like any other
         // payload survivor, and one that cannot be killed turns into an exact
         // residual and quarantines; waiting may never erase live ownership.
-        capture = kill_payload_domain(
-            supervisor_pid,
-            leader.start_ticks,
-            domain_token,
-            pgid,
-            "validate-lock",
-        );
+        capture = kill_payload_domain(lineage, "validate-lock");
     }
     capture
 }
@@ -3129,8 +3141,15 @@ pub fn execute(
                 args.kind,
                 args.skip_base_check,
             )?;
+            // One `--wait` budget, measured from here, covers the owner-watch
+            // yield, the sibling-slot quarantine wait, and `acquire`'s own
+            // queue wait, as it does on the `run` path ([`WaitBudget`]). Each
+            // phase used to take the full `--wait`, so a bare acquire could
+            // wait about twice what it was given (review of
+            // https://github.com/rrnewton/dev-hermit/issues/419).
+            let budget = WaitBudget::start(args.wait);
             let yield_status =
-                lock.wait_for_owner_watch_yield(&args.agent, args.wait, args.wait == 0)?;
+                lock.wait_for_owner_watch_yield(&args.agent, budget.remaining(), args.wait == 0)?;
             if yield_status != 0 {
                 return Ok(yield_status);
             }
@@ -3139,22 +3158,28 @@ pub fn execute(
             // owns the box. `run` is the sanctioned production path
             // (ci-hub/validate/start_unit.py invokes `validate-lock run`); this
             // keeps the bare-`acquire` path from being the way around it.
-            for slot in 0..VALIDATE_SLOT_COUNT {
-                match BoxExclusionAnchor::observe(&lock.paths.slot_anchor(slot)) {
-                    BoxAnchorObservation::Free => {}
-                    BoxAnchorObservation::Held(holder) => {
-                        eprintln!(
-                            "REFUSED: validation slot {slot} held by {holder}; bare acquire remains single-holder compatibility only"
-                        );
-                        return Ok(REFUSED_EXIT_CODE);
-                    }
-                    BoxAnchorObservation::Unknown(reason) => {
-                        eprintln!(
-                            "REFUSED: validation slot {slot} state UNKNOWN: {reason}; absence is not permission"
-                        );
-                        return Ok(REFUSED_EXIT_CODE);
+            let slot_anchor_refusal = || {
+                for slot in 0..VALIDATE_SLOT_COUNT {
+                    match BoxExclusionAnchor::observe(&lock.paths.slot_anchor(slot)) {
+                        BoxAnchorObservation::Free => {}
+                        BoxAnchorObservation::Held(holder) => {
+                            eprintln!(
+                                "REFUSED: validation slot {slot} held by {holder}; bare acquire remains single-holder compatibility only"
+                            );
+                            return Some(REFUSED_EXIT_CODE);
+                        }
+                        BoxAnchorObservation::Unknown(reason) => {
+                            eprintln!(
+                                "REFUSED: validation slot {slot} state UNKNOWN: {reason}; absence is not permission"
+                            );
+                            return Some(REFUSED_EXIT_CODE);
+                        }
                     }
                 }
+                None
+            };
+            if let Some(refused) = slot_anchor_refusal() {
+                return Ok(refused);
             }
             // This repository's other slots (bare acquire leases slot 0). Their
             // records used to reach this path only through the foreign check
@@ -3162,14 +3187,18 @@ pub fn execute(
             // quarantine admission, with no coexistence, as before. A
             // discharge here is followed by `acquire`, which applies the
             // owner-watch yield it starts.
-            let sibling_budget = WaitBudget::start(args.wait);
             while let SiblingQuarantine::Reclaimed = lock.sibling_slot_quarantine_admission(
                 &args.agent,
                 false,
                 0,
                 args.wait == 0,
-                &sibling_budget,
+                &budget,
             )? {}
+            // The sibling wait can take most of `--wait`, and a `run` can take
+            // a slot anchor meanwhile. Look again before leasing.
+            if let Some(refused) = slot_anchor_refusal() {
+                return Ok(refused);
+            }
             // The anchor is a live-process signal; this is the durable one. A
             // supervisor that died leaving its payload alive released the anchor,
             // but its quarantine record is still outstanding, and now visible from
@@ -3184,7 +3213,7 @@ pub fn execute(
                 eprintln!("REFUSED: {reason}");
                 return Ok(REFUSED_EXIT_CODE);
             }
-            lock.acquire(&args.agent, args.kind, &args.target, args.wait, args.hold)
+            lock.acquire(&args.agent, args.kind, &args.target, budget.remaining(), args.hold)
         }
         ValidateLockCommand::Renew(args) => {
             let selected = (0..VALIDATE_SLOT_COUNT)
@@ -6006,6 +6035,13 @@ impl ValidateLock {
         released_by: &str,
         attestation: Option<&DomainAttestation>,
     ) -> Result<(), ValidateLockError> {
+        #[cfg(test)]
+        if DISCHARGE_CROSSES_A_SECOND.with(|flag| flag.get()) {
+            let entered = epoch_seconds()?;
+            while epoch_seconds()? == entered {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
         self.write_release_record(released_by, &holder.kind, &holder.target, attestation)?;
         self.remove_matching_admission_floor(holder)?;
         remove_if_exists(&self.paths.lock)?;
@@ -6486,7 +6522,7 @@ impl ValidateLock {
         hold: u64,
         honor_repository_fifo: bool,
     ) -> Result<AcquireToken, ValidateLockError> {
-        let now = epoch_seconds()?;
+        let mut now = epoch_seconds()?;
         let mut holder = self.read_holder()?;
         // An unrecoverable quarantine refuses here, before this agent is
         // enqueued, exactly as before.
@@ -6496,6 +6532,14 @@ impl ValidateLock {
                 // The discharge removed the holder under this guard; admit
                 // against the freed lock exactly as after any other release.
                 holder = self.read_holder()?;
+                // The discharge just wrote a release record stamped with the
+                // clock AFTER `now` was read. The owner-watch yield below
+                // refuses a release later than its observation time as
+                // "release-clock-in-future", so a discharge that crossed a
+                // second boundary made this waiter exit 3 instead of yielding
+                // (seen in a full-suite run of
+                // run_waiter_behind_a_clearing_quarantine_keeps_its_turn_and_runs).
+                now = epoch_seconds()?;
                 None
             }
             QuarantineAdmission::Wait(reason) => Some(reason),
@@ -8675,41 +8719,39 @@ impl ValidateLock {
             }
         });
 
+        let mut lineage = PayloadLineage::new(
+            std::process::id(),
+            gated.leader.start_ticks,
+            &gated.domain_token,
+            gated.pgid,
+        );
         let outcome = supervise_child(
             &mut gated.child,
             args.child_deadline,
             &args.target,
-            gated.leader.start_ticks,
-            &gated.domain_token,
+            &mut lineage,
         );
         active.begin_run_census(&args.agent, args.kind, &args.target, &gated)?;
         let _ = stop_tx.send(());
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = settle_empty_payload_domain(
-            std::process::id(),
-            pgid,
-            &gated.leader,
-            &gated.domain_token,
-            // Kill, do not merely freeze, whatever outlived the leader: a
-            // setsid'd descendant escapes the group signal but not its payload
-            // token, and a same-group descendant that dropped its token (env
-            // -i, sudo env_reset, a non-dumpable binary) escapes the token
-            // but not the original process group
-            // (https://github.com/rrnewton/dev-hermit/issues/419). A process
-            // that left BOTH is not found; see tear_down_payload_domain. The
-            // capture names only what SIGKILL could not remove, and that still
-            // quarantines the box.
-            tear_down_payload_domain(
-                std::process::id(),
-                gated.leader.start_ticks,
-                &gated.domain_token,
-                pgid,
-                Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
-                "validate-lock",
-            ),
+        // Kill, do not merely freeze, whatever outlived the leader: a setsid'd
+        // descendant escapes the group signal but not its payload token, a
+        // same-group descendant that dropped its token (env -i, sudo
+        // env_reset, a non-dumpable binary) escapes the token but not the
+        // original process group, and a process that left BOTH is still found
+        // through the lineage recorded from its parent before that parent was
+        // signalled (https://github.com/rrnewton/dev-hermit/issues/419). What
+        // the lineage cannot attribute is listed on PayloadLineage. The
+        // capture names only what SIGKILL could not remove, and that still
+        // quarantines the box.
+        let torn_down = tear_down_payload_domain(
+            &mut lineage,
+            Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
+            "validate-lock",
         );
+        let capture = settle_empty_payload_domain(&mut lineage, pgid, &gated.leader, torn_down);
         match active.finalize_run_census(
             &args.agent,
             args.kind,
@@ -9373,9 +9415,12 @@ extern "C" fn record_termination_signal(signal: libc::c_int) {
 ///
 /// SIGKILL and SIGSTOP remain uncatchable, so this narrows the window rather
 /// than closing it; `census-orphaned-domain` covers the residue. systemd's
-/// default `TimeoutStopSec` (90s) is far longer than a census (~11s worst case:
-/// a 5s TERM grace, a 5s KILL settle, then four freeze iterations), so the
-/// common path now completes.
+/// default `TimeoutStopSec` (90s) is far longer than the signalled teardown and
+/// census (about 32s worst case plus census and scan time: a 5s TERM grace and
+/// up to 5s of KILL settle in `terminate_child_group`, then the normal-exit
+/// teardown's 5s grace and 6s of kill settling, then the empty-domain settle,
+/// whose 5s deadline can be overrun by one more 6s kill round), so the common
+/// path now completes.
 fn install_termination_handlers() -> io::Result<()> {
     for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         // SAFETY: zeroed sigaction is a valid empty set; we install a plain
@@ -9399,13 +9444,13 @@ fn install_termination_handlers() -> io::Result<()> {
 /// Wait for `child`, reaping adopted exits while it is live and killing its
 /// process group if it runs longer than `deadline_secs`. Copied (not reused)
 /// from landing_lock so the deadline-kill messages carry the `validate-lock:`
-/// prefix; `signal_group` itself is shared.
+/// prefix; the group signals themselves (`term_payload_group`,
+/// `kill_payload_group`) are shared.
 fn supervise_child(
     child: &mut Child,
     deadline_secs: u64,
     target: &str,
-    payload_start_ticks: u64,
-    domain_token: &str,
+    lineage: &mut PayloadLineage,
 ) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
@@ -9437,24 +9482,12 @@ fn supervise_child(
             );
             // Name the SIGNAL as the cause. Reusing the deadline phrase here is
             // what made the durable log contradict itself mid-record.
-            terminate_child_group(
-                child,
-                target,
-                &signalled_cause(signal),
-                payload_start_ticks,
-                domain_token,
-            );
+            terminate_child_group(child, target, &signalled_cause(signal), lineage);
             return ChildOutcome::Signalled { pgid, signal };
         }
         if Instant::now() >= deadline {
             let pgid = child.id();
-            terminate_child_group(
-                child,
-                target,
-                TERMINATION_CAUSE_DEADLINE,
-                payload_start_ticks,
-                domain_token,
-            );
+            terminate_child_group(child, target, TERMINATION_CAUSE_DEADLINE, lineage);
             return ChildOutcome::TimedOut { pgid };
         }
         thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
@@ -9478,7 +9511,7 @@ fn supervise_child(
 const TERMINATION_CAUSE_DEADLINE: &str = "child-deadline reached";
 
 /// SIGTERM then (after a grace period) SIGKILL the child's process group and reap
-/// the direct child. `signal_group` is reused from landing_lock.
+/// the direct child. The group signals are reused from landing_lock.
 ///
 /// `cause` names why the teardown is happening; it does NOT affect what the
 /// teardown does. Exit codes are unchanged and are decided by the caller's
@@ -9494,58 +9527,31 @@ fn signalled_cause(signal: i32) -> String {
     format!("supervisor signalled ({signal})")
 }
 
-/// Each group signal is paired with the same signal to every payload-domain
-/// member OUTSIDE the group (`signal_payload_domain`), so a descendant that
-/// called `setsid` -- RUN 1959's scorecard publication, started by
-/// hermit-box-run -- shares the grace window and the final SIGKILL instead of
-/// surviving to be frozen by the census and quarantining the box
+/// Each group signal is paired with the same signal, by exact identity, to
+/// every process the `PayloadLineage` has recorded OUTSIDE the group
+/// (`term_payload_group`, `kill_payload_group`), so a descendant that called
+/// `setsid` -- RUN 1959's scorecard publication, started by hermit-box-run --
+/// shares the grace window and the final SIGKILL instead of surviving to be
+/// frozen by the census and quarantining the box, and so does a tokenless
+/// setsid'd child of a recorded process
 /// (https://github.com/rrnewton/dev-hermit/issues/419).
 fn terminate_child_group(
     child: &mut Child,
     target: &str,
     cause: &str,
-    payload_start_ticks: u64,
-    domain_token: &str,
+    lineage: &mut PayloadLineage,
 ) {
     let pgid = child.id();
     let group = format!("-{pgid}");
-    let supervisor = std::process::id();
     eprintln!("{}", termination_notice(cause, target, &group));
-    signal_group(libc::SIGTERM, pgid);
-    let escaped = signal_payload_domain(
-        supervisor,
-        payload_start_ticks,
-        domain_token,
-        Some(pgid),
-        libc::SIGTERM,
+    term_payload_group(
+        lineage,
+        pgid,
+        Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
+        "validate-lock",
     );
-    if !escaped.is_empty() {
-        eprintln!(
-            "validate-lock: SIGTERM {} payload process(es) outside process group {group}: {}",
-            escaped.len(),
-            describe_identities(&escaped)
-        );
-    }
-    let grace = Instant::now() + Duration::from_secs(CHILD_TERM_GRACE_SECONDS);
-    while Instant::now() < grace {
-        thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
-    }
     eprintln!("validate-lock: grace expired for {target}; SIGKILL process group {group}");
-    let kill_sent = signal_group(libc::SIGKILL, pgid);
-    let escaped = signal_payload_domain(
-        supervisor,
-        payload_start_ticks,
-        domain_token,
-        Some(pgid),
-        libc::SIGKILL,
-    );
-    if !escaped.is_empty() {
-        eprintln!(
-            "validate-lock: SIGKILL {} payload process(es) outside process group {group}: {}",
-            escaped.len(),
-            describe_identities(&escaped)
-        );
-    }
+    let kill_sent = kill_payload_group(lineage, pgid, "validate-lock");
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -10392,8 +10398,8 @@ finally: os.close(held)
     }
     use super::*;
     use crate::landing_lock::{
-        exact_process_liveness, same_group_helper_payload, signal_exact_process,
-        ProcessIdentity, PAYLOAD_DOMAIN_ENV,
+        escape_on_term_payload, exact_process_liveness, parent_waits_payload,
+        same_group_helper_payload, signal_exact_process, ProcessIdentity, PAYLOAD_DOMAIN_ENV,
     };
     use std::os::unix::process::ExitStatusExt;
 
@@ -12519,12 +12525,17 @@ os._exit(exit_code)
                 fs::write(&release_path, b"release\n").unwrap();
             });
 
+            let mut lineage = PayloadLineage::new(
+                std::process::id(),
+                gated.leader.start_ticks,
+                &gated.domain_token,
+                gated.pgid,
+            );
             let outcome = supervise_child(
                 &mut gated.child,
                 5,
                 "periodic-reap-bracket",
-                gated.leader.start_ticks,
-                &gated.domain_token,
+                &mut lineage,
             );
             observer.join().unwrap();
             match outcome {
@@ -13515,6 +13526,309 @@ exit 0
         assert!(outcome.cleanup_left, "the quarantine record must remain");
     }
 
+    struct LineageOutcome {
+        result: Result<i32, ValidateLockError>,
+        /// Identities the fixture recorded, in the order it wrote them.
+        identities: Vec<ProcessIdentity>,
+        /// The subset of `identities` alive when `run` returned. They are
+        /// SIGKILLed and reaped before the outcome is returned.
+        survivors: Vec<ProcessIdentity>,
+        /// Whitespace-separated fields of the fixture's facts line.
+        facts: Vec<String>,
+        /// The quarantine record's residual phase, when one was left.
+        residuals: Option<(bool, Vec<ProcessIdentity>)>,
+        cleanup_left: bool,
+        holder_left: bool,
+    }
+
+    fn read_lineage_facts(path: &Path, expected_fields: usize) -> Vec<String> {
+        let text = fs::read_to_string(path).unwrap();
+        let fields: Vec<String> = text.split_whitespace().map(String::from).collect();
+        assert_eq!(fields.len(), expected_fields, "unexpected facts line {text:?}");
+        fields
+    }
+
+    fn residual_phase(paths: &LockPaths) -> Option<(bool, Vec<ProcessIdentity>)> {
+        let text = fs::read_to_string(&paths.cleanup).ok()?;
+        match CleanupRecord::parse(&text).ok()?.phase {
+            CleanupPhase::Residual {
+                domain_complete,
+                residuals,
+                ..
+            } => Some((domain_complete, residuals)),
+            _ => None,
+        }
+    }
+
+    fn lineage_run_args(
+        name: &str,
+        child_deadline: u64,
+        script: String,
+        args: &[&Path],
+        mode: Option<&str>,
+    ) -> RunArgs {
+        let mut child = vec![
+            OsString::from("/bin/bash"),
+            OsString::from("-c"),
+            OsString::from(script),
+            OsString::from("payload-leader"),
+        ];
+        child.extend(args.iter().map(|path| path.as_os_str().to_owned()));
+        child.extend(mode.map(OsString::from));
+        RunArgs {
+            agent: format!("{name}-validate"),
+            kind: Kind::Bench,
+            target: name.into(),
+            run_record: None,
+            no_wait: false,
+            skip_if_recorded: false,
+            wait: 0,
+            hold: 30,
+            child_deadline,
+            max: 1,
+            skip_base_check: true,
+            child,
+        }
+    }
+
+    /// Run [`parent_waits_payload`] through the real `run` path. The fixture's
+    /// identity file lists the setsid'd token-carrying parent first and the
+    /// tokenless setsid'd grandchild second.
+    fn run_parent_waits(
+        name: &str,
+        grandchild_env: &str,
+        mode: &str,
+        child_deadline: u64,
+    ) -> LineageOutcome {
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (identities_path, fifo) = setsid_pipe_fixture(&root);
+        let facts_path = root.join("grandchild.facts");
+        fs::write(&facts_path, b"").unwrap();
+        let result = lock.run(
+            lineage_run_args(
+                name,
+                child_deadline,
+                parent_waits_payload(grandchild_env),
+                &[&identities_path, &fifo, &facts_path],
+                Some(mode),
+            ),
+            &root,
+        );
+        let identities = read_fixture_identities(&identities_path);
+        let residuals = residual_phase(&paths);
+        let survivors = surviving_fixture_identities(&identities);
+        let facts = read_lineage_facts(&facts_path, 4);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+        LineageOutcome {
+            result,
+            identities,
+            survivors,
+            facts,
+            residuals,
+            cleanup_left,
+            holder_left,
+        }
+    }
+
+    /// The grandchild really is the shape under test: its own session, parented
+    /// by the recorded token-carrying parent, and carrying no payload token.
+    fn assert_parent_waits_shape(outcome: &LineageOutcome) {
+        assert_eq!(
+            outcome.identities.len(),
+            2,
+            "fixture must record the parent and the grandchild"
+        );
+        let parent = &outcome.identities[0];
+        let grandchild = &outcome.identities[1];
+        let sid = outcome.facts[0].parse::<u32>().unwrap();
+        let pgrp = outcome.facts[1].parse::<u32>().unwrap();
+        let ppid = outcome.facts[2].parse::<u32>().unwrap();
+        assert_eq!(sid, grandchild.pid, "the grandchild must lead its own session");
+        assert_eq!(pgrp, grandchild.pid, "the grandchild must lead its own group");
+        assert_eq!(ppid, parent.pid, "the grandchild must be the parent's child");
+        assert_eq!(outcome.facts[3], "unset", "the grandchild must carry no payload token");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419 (parent-waits):
+    /// a setsid'd parent that keeps the payload token waits on a grandchild
+    /// started with `env -u CI_HUB_PAYLOAD_DOMAIN setsid`. Killing the parent
+    /// by token reparented the grandchild to the supervisor, where neither the
+    /// token nor the original group attributed it, and the run released Ok(0)
+    /// with the grandchild alive. The grandchild must be killed.
+    #[test]
+    fn normal_exit_kills_the_tokenless_grandchild_of_a_waiting_setsid_parent() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let outcome = run_parent_waits(
+            "parent-waits-normal",
+            &format!("env -u {PAYLOAD_DOMAIN_ENV}"),
+            "exit",
+            60,
+        );
+        assert_parent_waits_shape(&outcome);
+        assert!(
+            outcome.survivors.is_empty(),
+            "the parent-waits payload survived teardown: {:?} (run result {:?})",
+            outcome.survivors,
+            outcome.result
+        );
+        assert_eq!(outcome.result.unwrap(), 0);
+        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!outcome.holder_left, "teardown left the lock held");
+    }
+
+    /// The same shape reached through the deadline path: the group SIGTERM and
+    /// SIGKILL miss both setsid'd processes, so the lineage recorded before the
+    /// first signal is what reaches the grandchild.
+    #[test]
+    fn deadline_teardown_kills_the_tokenless_grandchild_of_a_waiting_setsid_parent() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let outcome = run_parent_waits(
+            "parent-waits-deadline",
+            &format!("env -u {PAYLOAD_DOMAIN_ENV}"),
+            "wait",
+            2,
+        );
+        assert_parent_waits_shape(&outcome);
+        assert!(
+            outcome.survivors.is_empty(),
+            "the parent-waits payload survived deadline teardown: {:?} (run result {:?})",
+            outcome.survivors,
+            outcome.result
+        );
+        assert_eq!(outcome.result.unwrap(), CHILD_DEADLINE_EXIT_CODE);
+        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!outcome.holder_left, "teardown left the lock held");
+    }
+
+    /// A recorded grandchild that SIGKILL cannot remove (stood in for by
+    /// CI_HUB_TEST_UNKILLABLE) must block release: the run quarantines and the
+    /// record names the grandchild by exact identity, even though it carries no
+    /// token and left the original group.
+    #[test]
+    fn an_unkillable_tokenless_grandchild_quarantines_instead_of_releasing() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let outcome = run_parent_waits(
+            "parent-waits-unkillable",
+            &format!("env -u {PAYLOAD_DOMAIN_ENV} CI_HUB_TEST_UNKILLABLE=1"),
+            "exit",
+            60,
+        );
+        assert_parent_waits_shape(&outcome);
+        let grandchild = outcome.identities[1].clone();
+        assert!(
+            matches!(outcome.result, Err(ValidateLockError::CleanupQuarantined(_))),
+            "a live recorded grandchild must quarantine, got {:?}",
+            outcome.result
+        );
+        let (_, residuals) = outcome
+            .residuals
+            .as_ref()
+            .expect("the quarantine must leave a residual record");
+        assert!(
+            residuals.contains(&grandchild),
+            "the residual record {residuals:?} must name the grandchild {grandchild:?}"
+        );
+        assert_eq!(
+            outcome.survivors,
+            vec![grandchild],
+            "only the exempt grandchild may outlive teardown"
+        );
+        assert!(outcome.cleanup_left, "the quarantine record must remain");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419
+    /// (escape-on-term): a tokenless member of the original group starts a
+    /// tokenless setsid'd child from its SIGTERM handler and exits. The SIGTERM
+    /// teardown sent is what created the escapee; it must be killed, not left
+    /// running beside a released lock.
+    #[test]
+    fn normal_exit_kills_a_process_started_by_a_sigterm_handler() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let name = "escape-on-term";
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (helper_path, fifo) = setsid_pipe_fixture(&root);
+        let escapee_path = root.join("escapee.identities");
+        let escapee_facts = root.join("escapee.facts");
+        let helper_facts = root.join("helper.facts");
+        let leader_group = root.join("leader.group");
+        for path in [&escapee_path, &escapee_facts, &helper_facts] {
+            fs::write(path, b"").unwrap();
+        }
+        let args = lineage_run_args(
+            name,
+            60,
+            escape_on_term_payload(),
+            &[
+                &helper_path,
+                &fifo,
+                &escapee_path,
+                &escapee_facts,
+                &helper_facts,
+                &leader_group,
+            ],
+            None,
+        );
+        let result = lock.run(args, &root);
+        let helper = read_fixture_identities(&helper_path);
+        let escapee = read_fixture_identities(&escapee_path);
+        let mut everything = helper.clone();
+        everything.extend(escapee.iter().cloned());
+        let survivors = surviving_fixture_identities(&everything);
+        let helper_fields = read_lineage_facts(&helper_facts, 2);
+        let escapee_fields = if escapee.is_empty() {
+            Vec::new()
+        } else {
+            read_lineage_facts(&escapee_facts, 3)
+        };
+        let leader_pgrp = fs::read_to_string(&leader_group)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(helper.len(), 1, "fixture must record the helper");
+        assert_eq!(helper_fields[0], leader_pgrp, "the helper must stay in the original group");
+        assert_eq!(helper_fields[1], "unset", "the helper must carry no payload token");
+        assert_eq!(
+            escapee.len(),
+            1,
+            "teardown's SIGTERM must have run the helper's handler and started the escapee \
+             (run result {result:?})"
+        );
+        let escapee_pid = escapee[0].pid.to_string();
+        assert_eq!(escapee_fields[0], escapee_pid, "the escapee must lead its own session");
+        assert_eq!(escapee_fields[1], escapee_pid, "the escapee must lead its own group");
+        assert_eq!(escapee_fields[2], "unset", "the escapee must carry no payload token");
+        assert!(
+            survivors.is_empty(),
+            "a process started by a SIGTERM handler survived teardown: {survivors:?} \
+             (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
     fn quarantined_holder_fixture(
         name: &str,
         target: &str,
@@ -13767,6 +14081,44 @@ exit 0
         assert!(ran, "the admitted payload never ran");
         assert!(!cleanup_left);
         assert!(!holder_left);
+    }
+
+    /// A discharge that crosses a wall-clock second must leave the waiter at
+    /// the ordinary owner-watch yield, not at a fail-closed "release timestamp
+    /// is later than observed time" refusal. Before the fix the acquisition
+    /// compared the discharge's own release record against the time it read
+    /// BEFORE discharging.
+    #[test]
+    fn a_discharge_that_crosses_a_second_still_meets_the_ordinary_yield() {
+        let (paths, lock) = quarantined_holder_fixture(
+            "discharge-crosses-second",
+            "discharge-crosses-second-head",
+            Vec::new(),
+            true,
+        );
+        DISCHARGE_CROSSES_A_SECOND.with(|flag| flag.set(true));
+        let token = lock.with_guard(|| {
+            lock.try_acquire("second-crossing-waiter", Kind::Validate, "sha-second", 30)
+        });
+        DISCHARGE_CROSSES_A_SECOND.with(|flag| flag.set(false));
+        let release = lock.read_release_record().unwrap();
+        let cleanup_left = paths.cleanup.exists();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert_eq!(
+            release.map(|record| record.released_by).as_deref(),
+            Some("auto-reclaim:second-crossing-waiter"),
+            "the attempt must discharge the proven-empty quarantine itself"
+        );
+        assert!(!cleanup_left, "the discharge must remove the cleanup record");
+        match token {
+            Ok(AcquireToken::Yield { .. }) => {}
+            Ok(AcquireToken::YieldUnknown { reason }) => {
+                panic!("the discharge's own release record made the yield UNKNOWN: {reason}")
+            }
+            Ok(_) => panic!("expected the owner-watch yield after a non-watch release"),
+            Err(error) => panic!("acquisition failed: {error}"),
+        }
     }
 
     #[test]
