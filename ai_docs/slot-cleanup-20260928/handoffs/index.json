@@ -1,0 +1,596 @@
+{
+ "generated_at": "2026-09-29T11:10:37Z",
+ "host": "devbig014",
+ "slots": [
+  {
+   "slot": "tree-aware-signal-crosscheck",
+   "generation": 1,
+   "source": "worktrees/slots/tree-aware-signal-crosscheck/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-1.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "wrkslots-create-demo-20260914",
+   "generation": 1,
+   "source": "worktrees/slots/wrkslots-create-demo-20260914/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "c3c8e4d69653ddb46dcc2da9b298f21a110b2d6b95287c4783799d839b504956",
+   "bytes": 3234,
+   "assessor_record": "assess-1.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "codex-liteinst-tail-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/codex-liteinst-tail-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "cd88d5444eafb3bedea8000a504649f1f791c843b1c043620c2d7d7a857a303d",
+   "bytes": 1406,
+   "assessor_record": "assess-2.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-harness-journal-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-harness-journal-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "abb161a082d9ff88b1e88515b851c81f2b6895f71d95723f77eb2d7480b8e265",
+   "bytes": 6116,
+   "assessor_record": "assess-2.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-pinned-guest-paths-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-pinned-guest-paths-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "469affe219051a8e50246ff92b0c8e6fc93dd51114cf811f2e5096fc357512ba",
+   "bytes": 3713,
+   "assessor_record": "assess-2.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "hermit-ecx-complete",
+   "generation": 1,
+   "source": "worktrees/slots/hermit-ecx-complete/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "642711e45303548b87278d45a10116dd5720fa692a98edd49151bcb00996a64a",
+   "bytes": 2616,
+   "assessor_record": "assess-2.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "wrkslots-registry-repair-parent",
+   "generation": 1,
+   "source": "worktrees/slots/wrkslots-registry-repair-parent/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-2.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-15-vdso-getrandom-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-15-vdso-getrandom-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "577192841f1fb9e09f5c2332f24d69d1ce3a2fc97190da2cb45c3c121b4a071c",
+   "bytes": 1201,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-hermetic-v3-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-hermetic-v3-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "084ab6be2ded04753e98dc138757e63dba4af36a6cd6d97e5bee0b47e67efc19",
+   "bytes": 3338,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "hard-green-candidate",
+   "generation": 1,
+   "source": "worktrees/slots/hard-green-candidate/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-frozen-cleanup-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-frozen-cleanup-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "74eb5eb9e5d482052ab4ddb93b276210b68eb8560bf917d6f3d49894f769ad2c",
+   "bytes": 8297,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-parity-ledger-parent-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-parity-ledger-parent-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "0efec4f3a3c61c1440c10cdc6d6ecd249e28820fd6b114ad322392487895524f",
+   "bytes": 45377,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-proc-fd-identity-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-proc-fd-identity-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "342a701d9979504c62824db4f6092c213dbdf2a9bcf0e6b5d0c7be7edd69ee36",
+   "bytes": 59021,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-vectored-io",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-vectored-io/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "549d6d3ee94cf1058bdace63e99648a8daf562b662912bd98fe0ca4665402736",
+   "bytes": 5129,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "mega-ci-passed-count-activation-20260915",
+   "generation": 1,
+   "source": "worktrees/slots/mega-ci-passed-count-activation-20260915/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "b0462a311d86694e45f6af327cbba6994b3f11bc66b211b51ba68aa35563bef2",
+   "bytes": 5590,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "review-520b",
+   "generation": 1,
+   "source": "worktrees/slots/review-520b/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "81206dc7865067491eb5eeffbbcb186494e57d7857c9d644c5c11403df793f13",
+   "bytes": 2961,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "validate-current-tip",
+   "generation": 1,
+   "source": "worktrees/slots/validate-current-tip/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-3.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "crosscheck-unadmitted",
+   "generation": 1,
+   "source": "worktrees/slots/crosscheck-unadmitted/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-au-offline-fetch-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-au-offline-fetch-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "a74b5e1ead558c28e06252df3b5b161dc580593fce6fcd4c86267a312adeae7e",
+   "bytes": 4927,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-hermit-8515-pin",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-hermit-8515-pin/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-proc-locks-runtime-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-proc-locks-runtime-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "8a96fc69d9a73bc0a8ab10d6a0329a922177a536948ef6720d49cdaee2bf8209",
+   "bytes": 554,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-sabre-getrandom-diagnostic-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-sabre-getrandom-diagnostic-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "ef57044115abda404d384f3fa8a53fdca768c2e262a738377fdc7a6f6edd58f6",
+   "bytes": 1847,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-verify-results-20260915",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-verify-results-20260915/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "9adcfa082a1290f756f007aec48325b70f5538961bb3ca443f8ed96d8827d317",
+   "bytes": 6918,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-detcore-vectored",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-detcore-vectored/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "cd3ea6a8ee7b7e5eceb393b8965285ac77fa92c13a72d0df82bb80997d36b6e1",
+   "bytes": 6448,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-parity-recovery-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-parity-recovery-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "f3d4023258cb7644c9a919b07a99f3c7fa0aec330f246b010c2406aa4c07bd3c",
+   "bytes": 2107,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-vfork-optimization",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-vfork-optimization/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "e0be6f78c1e171fb6efb45a2b0ecd05878ee97625b8fe5242b27bc6c214e31f0",
+   "bytes": 9187,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "mega-ci-successor-20260915",
+   "generation": 1,
+   "source": "worktrees/slots/mega-ci-successor-20260915/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "1aa11e576c04579068ba01f7654850c2b56f813e005b22f9fd079360b5c0f126",
+   "bytes": 23006,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "pressure-writeback-path",
+   "generation": 1,
+   "source": "worktrees/slots/pressure-writeback-path/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-4.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "codex-liteinst-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/codex-liteinst-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "739bf1147aab9a723a9c4075d9102dd53000402ef36311fb3ac02060df828253",
+   "bytes": 12255,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "dev-hermit-sabre-random-bootstrap-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-sabre-random-bootstrap-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "a73d6675f0fd137744a6370327bd073cc01f87d0c4dabd52c0a323e77900a2ad",
+   "bytes": 992,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "dev-hermit-verify-two-runs-20260915",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-verify-two-runs-20260915/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "65b6ddb98d128fa72508571b8799d440c1258d865434ddb64850e019e414f8f2",
+   "bytes": 9272,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "hermit-002",
+   "generation": 1,
+   "source": "worktrees/slots/hermit-002/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "5e4c4c158c45e8b9a1974eafb44d493c624e3548e931098a2454764b5011d49b",
+   "bytes": 5332,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "kvm-summary-main-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-summary-main-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "ce7407300ae72a3aa02cb7730d57213a2064976304c500a2da8780c5469a3f20",
+   "bytes": 3309,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "lander-2",
+   "generation": 1,
+   "source": "worktrees/EVENTS.devbig014/00000000000000001938.json payload.contents_utf8 (handoff-read 2026-09-02T22:17:16Z); the slot's HANDOFF.md no longer exists",
+   "tracked_in_checkout": false,
+   "sha256": "bd9323dc2bed0130aacc3718787208a14bc65d725dbd325ac0976a51a6975256",
+   "bytes": 11192,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "scorecard-cold-context",
+   "generation": 1,
+   "source": "worktrees/slots/scorecard-cold-context/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "validate-status-history",
+   "generation": 1,
+   "source": "worktrees/slots/validate-status-history/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-5.json",
+   "assessor_legacy_handoff_md_identical": false
+  },
+  {
+   "slot": "astra-hermit-drafts",
+   "generation": 1,
+   "source": "worktrees/slots/astra-hermit-drafts/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "6ea217e1600876abe939ec1c207943a6c278ebb6fde105e09bbc403e0c6cc85c",
+   "bytes": 784,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "codex-liteinst-exec-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/codex-liteinst-exec-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "838b68d58ca2de946faf6dd412eb645e433377d7bc77e516e6e2638d609ffeb7",
+   "bytes": 802,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "demo08review",
+   "generation": 1,
+   "source": "worktrees/slots/demo08review/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "4052ffbd0b71e1c5c12fc05c36996db79840d533d6d6dcd94cef9ba71a948b50",
+   "bytes": 4691,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-exec-replace",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-exec-replace/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "e1d69077811592907f2051afecf3bdbe7621af1148350b1407506ad786784105",
+   "bytes": 5187,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-raw-stderr-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-raw-stderr-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "273fb844cdc2f52b5bca3cc52260f24f6b1de5487ef3e66c10b78a1e7b99449d",
+   "bytes": 6339,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-summary-publication-20260917",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-summary-publication-20260917/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "1eb6d19793708fbaa1caf98f69a1acad1b33c94248df5466939966b7027ed4cd",
+   "bytes": 18969,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "lander-2-seven-gate-receipts",
+   "generation": 1,
+   "source": "worktrees/slots/lander-2-seven-gate-receipts/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "review-cpuid",
+   "generation": 1,
+   "source": "worktrees/slots/review-cpuid/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "c24ca88152cb263d67da3eb24f55f3ada5f013dc24510c9aa4de2bcd6748745a",
+   "bytes": 10179,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "scorecard-generator-sept14",
+   "generation": 1,
+   "source": "worktrees/slots/scorecard-generator-sept14/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "site-plan",
+   "generation": 1,
+   "source": "worktrees/slots/site-plan/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "validate-status-isolation",
+   "generation": 1,
+   "source": "worktrees/slots/validate-status-isolation/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-6.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "claude-family-review-ten-retained",
+   "generation": 1,
+   "source": "worktrees/slots/claude-family-review-ten-retained/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "daee389a43cd47cf0bb120b90e99c522e0f46a263f5c849fb99e26d466a6ca55",
+   "bytes": 1454,
+   "assessor_record": "assess-7.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "codex-liteinst-receipts-resume-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/codex-liteinst-receipts-resume-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "bbe87ea8385d93739614ddd6abd92680e130e1f0a62c480e083907363e64d16f",
+   "bytes": 187349,
+   "assessor_record": "assess-7.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "demos",
+   "generation": 1,
+   "source": "worktrees/slots/demos/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-7.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-gdb-replay-diagnostic-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-gdb-replay-diagnostic-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "fec9eeed987f54ba5080537805fb6fba3e1215a946c576532267883c747b84fa",
+   "bytes": 1306,
+   "assessor_record": "assess-7.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "hermit-003-anchored-selection",
+   "generation": 1,
+   "source": "worktrees/slots/hermit-003-anchored-selection/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "2cdb2b0737b8bf11388c05205a5a224b546f5871dd9f1dbcbb7ec2d1b23db433",
+   "bytes": 2749,
+   "assessor_record": "assess-7.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "astra-reverie",
+   "generation": 1,
+   "source": "worktrees/slots/astra-reverie/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "851be4563b2460c817bd001b0f32a61846adcc771d1711313a30470ecf13f38e",
+   "bytes": 14503,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "codex-liteinst-resume-01a0a13c",
+   "generation": 1,
+   "source": "worktrees/slots/codex-liteinst-resume-01a0a13c/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "574b26bef35a447605ae8f01eff00b68b72b4fc105ca2f9e289c7c6dc84f6437",
+   "bytes": 19628,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-ci-gate-repairs-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-ci-gate-repairs-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "50e5cd939d2c3a70e3987b470bd45bb312a2f2f001c396da2a4e367a198d6889",
+   "bytes": 2206,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-gdb-vfile-20260916",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-gdb-vfile-20260916/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "ce1e2594c60cb87bb7b429975dc7ca0c69c0635cfb4160a7e6308eb4a6c1cc97",
+   "bytes": 1566,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "dev-hermit-ops-authority-20260915",
+   "generation": 1,
+   "source": "worktrees/slots/dev-hermit-ops-authority-20260915/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "bee00d46643ee3f54525308f399f26f056dfa4c33696a55608e4624adbd8f37b",
+   "bytes": 2636,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "kvm-fchmodat2",
+   "generation": 1,
+   "source": "worktrees/slots/kvm-fchmodat2/HANDOFF.md",
+   "tracked_in_checkout": false,
+   "sha256": "980864f0327402bed613c01ca04c9adfc57b2ef18cc7f13531468ab8f46b0428",
+   "bytes": 5235,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  },
+  {
+   "slot": "status-publisher-schema",
+   "generation": 1,
+   "source": "worktrees/slots/status-publisher-schema/HANDOFF.md",
+   "tracked_in_checkout": true,
+   "sha256": "696aa7a417fcb9c40d6530956cb4e9c397f27d3f994f7efb4a68bd5af336ba6c",
+   "bytes": 6757,
+   "assessor_record": "assess-8.json",
+   "assessor_legacy_handoff_md_identical": null
+  }
+ ]
+}
