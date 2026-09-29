@@ -747,7 +747,12 @@ impl Timer {
     /// `true` hands that stop back as [`HandleFailure::Event`] instead of
     /// counting it as a completed step: a SIGTRAP from a real trap
     /// instruction (the LiteInst host-hybrid `int3`) is a guest event that
-    /// must be dispatched, not a step report to swallow.
+    /// must be dispatched, not a step report to swallow. Returning `false`
+    /// counts the stop as a step. The callback may first change the stopped
+    /// thread's registers, as LiteInst does when it resolves a restart
+    /// landing in place, and stepping then continues from the new state
+    /// toward the same clock target. An error ends the stepping as
+    /// [`HandleFailure::TraceError`].
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
@@ -836,7 +841,8 @@ struct TimerImpl {
 
 /// The backend callbacks [`TimerImpl::attempt_single_step`] drives: `step`
 /// resumes one instruction, `observe` sees every resulting stop, and
-/// `intercept` claims a SIGTRAP stop as a backend event rather than a step.
+/// `intercept` claims a SIGTRAP stop as a backend event rather than a step
+/// (see [`Timer::handle_signal`]).
 struct StepCallbacks<'a> {
     step: &'a mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
     observe: &'a mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
