@@ -3096,9 +3096,12 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
 /// These modes forward from runtime frames on the guest's stack below the
 /// interrupted syscall site: an installed hook's trampoline, or the SIGSYS
 /// handler. Only a child with its own copy of those frames can return through
-/// them. That means bare `fork` and the null-stack, SIGCHLD-only `clone` that
-/// [`clone_is_fork_like`] accepts. Any other `clone` is refused with the
-/// mode-specific errno it already had.
+/// them. That means bare `fork` and the `clone` that [`clone_is_fork_like`]
+/// accepts: a null child stack, `SIGCHLD` as the exit signal, and no flags
+/// other than `CLONE_CHILD_CLEARTID`, `CLONE_CHILD_SETTID` and
+/// `CLONE_PARENT_SETTID`. glibc's `fork` passes that shape: `SIGCHLD`,
+/// `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`. Any other `clone` is
+/// refused with the mode-specific errno it already had.
 ///
 /// A `vfork` child runs on the parent's stack while the parent is suspended
 /// inside those frames. It returns through them, then overwrites them before
@@ -3111,15 +3114,21 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
 ///
 /// Both are refused with `ENOTSUP` in both modes. This matches the preload
 /// dispatcher and Tool mode's nested and injected syscall guards. `ENOSYS` was
-/// the alternative, because glibc's `__clone_internal` retries a failed clone3
-/// as clone only on `ENOSYS`. But glibc calls clone3 only from pthread_create
-/// and posix_spawn, and both pass a child stack. The guard above would refuse
-/// the retried clone (EPERM in compat, ENOTSUP in strace), so the call would
-/// still fail. It would just take a second refused syscall, and the errno would
-/// depend on the mode. glibc's `fork` uses clone, not clone3, and vfork has no
-/// fallback convention. The cost is that a fork-shaped clone3 caller that falls
-/// back only on `ENOSYS` fails here; Tool mode admits that shape through
-/// `tool_host::clone3_is_plain_fork`.
+/// the alternative. Seccomp sandboxes conventionally deny with `ENOSYS` so that
+/// libc falls back to an older syscall (the containers-common 5.8 seccomp
+/// profile's default errno is `ENOSYS`), and glibc does retry a failed clone3
+/// as clone. That does not help here. In glibc 2.34 and 2.42 on x86-64,
+/// pthread_create goes through `__clone_internal`, which retries only on
+/// `ENOSYS`. posix_spawn also uses `__clone_internal` in 2.34; in 2.42 it calls
+/// clone3 itself and, unless a cgroup was requested, retries on `ENOSYS` or
+/// `EINVAL`. Every one of these callers passes a child stack, so the guard
+/// above would refuse the retried clone (EPERM in compat, ENOTSUP in strace)
+/// and the call would still fail. It would just take a second refused syscall,
+/// and the errno would depend on the mode. glibc's `fork` uses clone, not
+/// clone3, and its `vfork` issues the raw syscall with no fallback. Other glibc
+/// versions and other libcs were not checked. The cost is that a fork-shaped
+/// clone3 caller that falls back only on `ENOSYS` fails here; Tool mode admits
+/// that shape through `tool_host::clone3_is_plain_fork`.
 fn refused_process_creation(number: i64, args: [u64; 6], tool_mode: u8) -> Option<i32> {
     match number {
         libc::SYS_clone if !clone_is_fork_like(args[0], args[1]) => {
