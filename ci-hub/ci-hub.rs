@@ -4259,12 +4259,13 @@ impl CanonicalReceiptAssessment {
     ///
     /// NEEDS-RERUN with no unresolved obligation of its own, and at least one
     /// foreign row whose artifacts are absent here, qualifies when either
-    /// this host already holds a qualifying receipt (the foreign rows are
-    /// ancestors that can only block) or an unreadable foreign row for the
-    /// head itself claims a clean full pass (see
-    /// [`Self::foreign_receipt_claim_at_head`]). A head with neither has no
-    /// receipt in the ledger on any host, so it stays decidable here. A
-    /// FAILED record anywhere makes the verdict FAILED, never this.
+    /// this host already holds a qualifying receipt (the unreadable rows can
+    /// only block it) or an unreadable foreign row for the head itself
+    /// claims a clean full pass (see [`Self::foreign_receipt_claim_at_head`]).
+    /// A head with neither has no receipt in the ledger on any host, so it
+    /// stays decidable here. A row for the head whose failure disposition is
+    /// durably FAILED makes the verdict FAILED-ON-RECORD, never this; a row
+    /// that records `fail` without meeting that disposition does not.
     ///
     /// "Another host could decide" is not "another host will". When the
     /// receipt is on host A and a relevant ancestor row is on host B, A holds
