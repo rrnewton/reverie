@@ -433,3 +433,84 @@ fn supplied_and_inherited_physical_stdin_aliases_are_refused() {
     drop(restore);
     eprintln!("{DONE}");
 }
+
+#[test]
+fn tool_default_stdin_reusing_closed_stdout_remains_ordinary() {
+    const TEST: &str =
+        "physical_stdio_rights::tool_default_stdin_reusing_closed_stdout_remains_ordinary";
+    const DONE: &str = "closed physical stdio default stdin native and KVM controls complete";
+    const EXPECTED: &[u8] = b"closed-stdio-default-input-rights-ok\n";
+    if !isolated_child(TEST, DONE) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "closed-stdio-rights",
+        include_str!("../fixtures/closed_stdio_rights.c"),
+    );
+    let native_input = File::open("/dev/null").unwrap();
+    native_control(
+        &executable,
+        "stdin",
+        Path::new("/dev/null"),
+        &native_input,
+        EXPECTED,
+    );
+    let metadata = native_input.metadata().unwrap();
+    let dev = metadata.dev().to_string();
+    let ino = metadata.ino().to_string();
+    let restore = RestoreStandards::save();
+    let (physical, path) = physical_file(&directory.0, false);
+    let before = PhysicalSnapshot::new(&physical, &path);
+    for closed in [false, true] {
+        // All VM/image allocations happen while physical standards are still
+        // open. Only capture setup/default-input creation happens after close.
+        redirect(&physical, &[1, 2]);
+        let mut backend = KvmBackend::new_with_stdin(256 * 1024 * 1024, None).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                File::open(&executable).unwrap(),
+                &[
+                    executable.to_str().unwrap(),
+                    "stdin",
+                    "/dev/null",
+                    &dev,
+                    &ino,
+                    "1",
+                ],
+                &[],
+                &directory.0,
+            )
+            .unwrap();
+        if closed {
+            for fd in [1, 2] {
+                assert_eq!(unsafe { libc::close(fd) }, 0);
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EBADF)
+                );
+            }
+        }
+        let outcome = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<PhysicalStdioRightsTool>((), true),
+        );
+        // The counter/runtime may themselves own a reused low number. Retire
+        // every backend before restoring raw stdio, including error paths.
+        drop(backend);
+        redirect(&physical, &[1, 2]);
+        before.assert_unchanged(&physical, &path);
+        let (log, code, stdout, stderr) = outcome.unwrap();
+        assert_eq!(log.sends.load(Ordering::SeqCst), 1, "closed={closed}");
+        assert_eq!(log.receives.load(Ordering::SeqCst), 1, "closed={closed}");
+        assert_eq!(
+            code, 0,
+            "closed={closed} stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, EXPECTED, "closed={closed}");
+        assert!(stderr.is_empty(), "closed={closed} stderr={stderr:?}");
+    }
+    drop(restore);
+    eprintln!("{DONE}");
+}
