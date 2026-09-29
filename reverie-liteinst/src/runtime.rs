@@ -36,6 +36,8 @@ pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
+/// RAX at the ready trap site when preparation failed after the begin trap.
+pub(crate) const HOST_FAILED_MARKER: u64 = 0x7265_766c_6900_0005;
 const HOST_HANDSHAKE_VERSION: u64 = 4;
 const HOST_INSTALL_RESULT_VERSION: u64 = 2;
 const HOST_HELPER_STACK_BYTES: usize = 256 * 1024;
@@ -59,11 +61,24 @@ reverie_liteinst_host_begin_rip:
     .type reverie_liteinst_host_ready,@function
 reverie_liteinst_host_ready:
     mov rax, 0x7265766c69000002
+    # The one trap site ending the bootstrap window; RAX names its outcome.
+    .global reverie_liteinst_host_outcome_trap
+    .hidden reverie_liteinst_host_outcome_trap
+reverie_liteinst_host_outcome_trap:
     int3
     .global reverie_liteinst_host_ready_rip
 reverie_liteinst_host_ready_rip:
     ret
     .size reverie_liteinst_host_ready, .-reverie_liteinst_host_ready
+
+    .p2align 4
+    .global reverie_liteinst_host_failed
+    .hidden reverie_liteinst_host_failed
+    .type reverie_liteinst_host_failed,@function
+reverie_liteinst_host_failed:
+    mov rax, 0x7265766c69000005
+    jmp reverie_liteinst_host_outcome_trap
+    .size reverie_liteinst_host_failed, .-reverie_liteinst_host_failed
 
     .p2align 4
     .global reverie_liteinst_host_helper_return
@@ -150,6 +165,7 @@ unsafe extern "C" {
     static reverie_liteinst_host_begin_rip: u8;
     fn reverie_liteinst_host_ready(frame: *const HostHandshakeFrame);
     static reverie_liteinst_host_ready_rip: u8;
+    fn reverie_liteinst_host_failed(frame: *const HostHandshakeFrame);
     fn reverie_liteinst_host_helper_return();
     static reverie_liteinst_host_helper_return_rip: u8;
     fn reverie_liteinst_host_syscall_trap_call(frame: *mut HostSyscallFrame);
@@ -966,7 +982,13 @@ fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io:
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
     unsafe { reverie_liteinst_host_begin(&frame) };
-    prepare()?;
+    if let Err(error) = prepare() {
+        // SAFETY: identical handshake contract. Reporting the failure at the
+        // ready trap site ends the bootstrap window the begin trap opened, so
+        // whatever the caller runs next is not attributed to the runtime.
+        unsafe { reverie_liteinst_host_failed(&frame) };
+        return Err(error);
+    }
     // SAFETY: identical handshake contract; all helper state is now published.
     unsafe { reverie_liteinst_host_ready(&frame) };
     Ok(())

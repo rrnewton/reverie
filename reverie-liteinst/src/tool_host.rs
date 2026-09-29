@@ -795,6 +795,14 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         self.ppid
     }
 
+    // This in-process host has no begin/ready runtime window: install_runtime
+    // prepares instrumentation before reverie_preload::install arms the
+    // seccomp filter through which the Tool receives syscalls, so the
+    // runtime's own preparation is never delivered to it.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         LocalMemory::new()
     }

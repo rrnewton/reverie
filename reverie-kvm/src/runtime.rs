@@ -1304,6 +1304,12 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.executor.parent_pid()
     }
 
+    // The KVM bootstrap builds page tables and loads the image from the host;
+    // no guest-resident runtime issues syscalls through the Tool.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         self.memory.user()
     }

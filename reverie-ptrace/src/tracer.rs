@@ -4056,6 +4056,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// re-entrant across tasks, so the hook set freezes at the first task
     /// creation. It still fails closed on a vfork child and on an exec after
     /// start, neither of which can preserve the preload runtime.
+    ///
+    /// `failed_marker` identifies the runtime's report, at the ready trap
+    /// site, that its preparation failed after the begin trap. It ends the
+    /// runtime-bootstrap window without activating the runtime; the process
+    /// can then no longer complete activation, and its exit, exec, signal, or
+    /// arrival at the executable entry fails the session.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         self,
@@ -4064,6 +4070,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         ready_marker: u64,
         helper_return_marker: u64,
         syscall_marker: u64,
+        failed_marker: u64,
     ) -> Self {
         self.liteinst_runtime_with_stats(
             preload,
@@ -4071,11 +4078,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             ready_marker,
             helper_return_marker,
             syscall_marker,
+            failed_marker,
             BackendStatsRequest::DISABLED,
         )
     }
 
     /// Enables the dynamic LiteInst runtime and optionally collects patch statistics.
+    // Each marker is a distinct protocol constant that the preload runtime
+    // defines; grouping them would only move the same five values.
+    #[allow(clippy::too_many_arguments)]
     pub fn liteinst_runtime_with_stats(
         mut self,
         preload: impl Into<PathBuf>,
@@ -4083,6 +4094,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         ready_marker: u64,
         helper_return_marker: u64,
         syscall_marker: u64,
+        failed_marker: u64,
         stats_request: BackendStatsRequest,
     ) -> Self {
         self.liteinst_runtime = Some(LiteinstRuntimeConfig {
@@ -4091,6 +4103,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             ready_marker,
             helper_return_marker,
             syscall_marker,
+            failed_marker,
             newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
             held_root_stop: Arc::new(StdMutex::new(None)),
             root_tid: Arc::new(StdOnceLock::new()),
@@ -8150,7 +8163,7 @@ mod tests {
     #[test]
     fn liteinst_stats_collector_is_allocated_only_when_requested() {
         let disabled = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5);
         assert!(
             disabled
                 .liteinst_runtime
@@ -8167,6 +8180,7 @@ mod tests {
                 2,
                 3,
                 4,
+                5,
                 BackendStatsRequest::ENABLED,
             );
         assert!(
@@ -8196,7 +8210,7 @@ mod tests {
         command.arg(&side_effect);
 
         let error = match TracerBuilder::<InitFailureTool>::new(command)
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .gdbserver(socket.clone())
             .spawn()
             .await
@@ -8344,7 +8358,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition() {
         let tracer = TracerBuilder::<TimedExecTransitionTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .spawn()
             .await
             .expect("spawn timed exec-transition activation tracee");
@@ -8365,7 +8379,7 @@ mod tests {
     async fn pre_ready_pending_signal_is_rejected_before_seccomp_resume() {
         let queue_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .queue_liteinst_pending_signal_once_for_test(Arc::clone(&queue_once))
             .spawn()
             .await
@@ -8390,7 +8404,7 @@ mod tests {
     async fn pre_ready_nested_signal_is_rejected_during_context_none_reinjection() {
         let force_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_context_none_signal_once_for_test(Arc::clone(&force_once))
             .spawn()
             .await
@@ -8415,7 +8429,7 @@ mod tests {
     async fn pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step() {
         let force_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_context_signal_once_for_test(Arc::clone(&force_once))
             .spawn()
             .await
@@ -8440,7 +8454,7 @@ mod tests {
     async fn pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion() {
         let mutate_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_private_stub_mutation_once_for_test(Arc::clone(&mutate_once))
             .spawn()
             .await
@@ -8501,7 +8515,7 @@ mod tests {
     async fn pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall() {
         let force_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_skip_signal_once_for_test(Arc::clone(&force_once))
             .spawn()
             .await
@@ -8526,7 +8540,7 @@ mod tests {
     async fn pre_ready_nested_signal_is_rejected_during_tracee_preinit() {
         let force_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_preinit_signal_once_for_test(Arc::clone(&force_once))
             .spawn()
             .await
@@ -8549,7 +8563,7 @@ mod tests {
     async fn pre_ready_external_sigtrap_is_rejected_after_exec_event() {
         let force_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .force_liteinst_post_exec_signal_once_for_test(Arc::clone(&force_once))
             .spawn()
             .await
@@ -8773,7 +8787,7 @@ mod tests {
         };
         let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<RootStopTool>::new(root_stop_guest_command(mode))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_root_stop_for_test(pause, stop_tx)
             .spawn()
@@ -8815,7 +8829,7 @@ mod tests {
         }
         let (step_tx, mut step_rx) = mpsc::unbounded_channel();
         let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .pause_liteinst_precise_timer_step_for_test(step_tx);
         let held = Arc::clone(
             &builder
@@ -8854,7 +8868,7 @@ mod tests {
             return;
         }
         let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test();
         let held = Arc::clone(
             &builder
@@ -8880,7 +8894,7 @@ mod tests {
         for step in 0..=4 {
             let (step_tx, mut step_rx) = mpsc::unbounded_channel();
             let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-                .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+                .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
                 .pause_liteinst_preinit_step_for_test(step, step_tx);
             let mut spawn = Box::pin(builder.spawn());
             let root_pid = tokio::time::timeout(Duration::from_secs(3), async {
@@ -8900,7 +8914,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn normal_liteinst_completion_leaves_no_stale_root_stop_lease() {
         let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test();
         let held = Arc::clone(
             &builder
@@ -8930,7 +8944,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn liteinst_preinit_failure_reaps_and_unregisters_root() {
         let error = match TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .fail_liteinst_preinit_for_test()
             .spawn()
             .await
@@ -8966,7 +8980,7 @@ mod tests {
     async fn direct_drop_retries_first_discovery_failure() {
         let fail_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
             .spawn()
             .await
@@ -9252,7 +9266,7 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 60 & wait"]);
         let tracer = TracerBuilder::<InitFailureTool>::new(command)
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
@@ -9333,7 +9347,7 @@ mod tests {
     async fn liteinst_clone_thread_fails_closed_and_reaps_group() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
@@ -9381,7 +9395,7 @@ mod tests {
     async fn cancelling_at_clone_thread_event_reaps_group() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
@@ -9408,7 +9422,7 @@ mod tests {
     async fn cancelling_before_clone_thread_handler_reaps_group() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_before_liteinst_new_task_for_test(child_tx)
             .spawn()
@@ -9435,7 +9449,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let fail_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
@@ -9485,7 +9499,7 @@ mod tests {
         let fail_once = Arc::new(AtomicBool::new(true));
         let force_scan_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
@@ -9534,7 +9548,7 @@ mod tests {
     async fn clone_parent_fails_closed_and_reaps_sibling() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
@@ -9577,7 +9591,7 @@ mod tests {
     async fn cancelling_at_clone_parent_event_reaps_sibling() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
@@ -9603,7 +9617,7 @@ mod tests {
     async fn cancelling_before_clone_parent_handler_reaps_sibling() {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .pause_before_liteinst_new_task_for_test(child_tx)
             .spawn()
