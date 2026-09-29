@@ -52,6 +52,14 @@ LIST_PAGE_SIZE = 50
 SELECTED_GROUP_PAGE_SIZE = 8
 SELECTED_GROUP_CHILD_LIMIT = 25
 MAX_U64 = (1 << 64) - 1
+# The website builder counts, per validation run, the test attempts that the
+# run recorded and the published history lacks, with no record of why, under
+# this schema (MISSING_CENSUS_ATTEMPT_SCHEMA in
+# ci-hub/lib/compatibility_website.rs; a test checks that the two agree).
+MISSING_CENSUS_ATTEMPT_SCHEMA = "census-attempt-missing-from-series/v1"
+# The main page lists at most this many runs' missing attempts; the projection
+# audit lists every run.
+MISSING_ATTEMPT_RUNS_LISTED = 10
 DIVERGENCE_COORDINATES = (
     ("first_divergent_record", "First divergent record"),
     ("first_divergent_syscall", "First divergent syscall"),
@@ -2647,10 +2655,47 @@ def _landing_introduction(model: SiteModel) -> str:
     </div>"""
 
 
+def _missing_attempts_notice(model: SiteModel, page: str) -> str:
+    """Name, in plain words, the recorded test attempts that the published
+    history lacks, by validation run; empty when there are none."""
+    entries = [
+        item
+        for item in model.runs["projection_exclusion_counts"]
+        if item["schema"] == MISSING_CENSUS_ATTEMPT_SCHEMA
+    ]
+    if not entries:
+        return ""
+    attempts = sum(int(item["physical_row_count"]) for item in entries)
+    headline = (
+        f"{_integer(attempts)} recorded test attempt{'' if attempts == 1 else 's'} "
+        f"from {_integer(len(entries))} validation run{'' if len(entries) == 1 else 's'} "
+        f"{'is' if attempts == 1 else 'are'} missing from the published history."
+    )
+    listed = "".join(
+        f"<li>{_escape(item['reason'])}</li>"
+        for item in entries[:MISSING_ATTEMPT_RUNS_LISTED]
+    )
+    unlisted = len(entries) - MISSING_ATTEMPT_RUNS_LISTED
+    more = (
+        f"<p>And {_integer(unlisted)} more validation "
+        f"run{'' if unlisted == 1 else 's'}.</p>"
+        if unlisted > 0
+        else ""
+    )
+    audit = _href(page, "cells/projection-audit.html", "series-excluded")
+    return f"""
+    <div class="notice" id="missing-history-attempts">
+      <p><strong>{headline}</strong> Each validation run keeps its own record of every test attempt it made, and this site publishes a history of those attempts. The site builder compares the two. These attempts are in their run's record but not in the published history, and nothing records why. The green, red and never-measured cell results on this site come from the published history, so these attempts are not counted in them. Each validation run's page still shows the per-cell verdicts that run recorded.</p>
+      <ul>{listed}</ul>{more}
+      <p>The <a href="{_escape(audit)}">projection audit</a> lists every run under {_escape(MISSING_CENSUS_ATTEMPT_SCHEMA)}.</p>
+    </div>"""
+
+
 def _landing_page(model: SiteModel) -> bytes:
     page = "index.html"
     content = (
-        (_landing_introduction(model) if model.wording.landing_introduction else "")
+        _missing_attempts_notice(model, page)
+        + (_landing_introduction(model) if model.wording.landing_introduction else "")
         + _overview(model, page)
         + _test_listing(model, page)
         + ("" if model.wording.disclosure else _provenance(model))

@@ -1992,6 +1992,113 @@ def test_projection_audit_preserves_disjoint_totals_and_overlapping_reasons() ->
     assert page.count("<td>stress-series/v1</td>") == 2
 
 
+def _missing_attempts(run_id: str, attempts: int) -> dict[str, Any]:
+    """The builder's audit entry for `attempts` unaccounted attempts of a run."""
+    named = ", ".join(
+        f"fixture/test/verify/ptrace attempt {number}"
+        for number in range(1, attempts + 1)
+    )
+    return {
+        "physical_row_count": attempts,
+        "reason": (
+            f"validation run {run_id}: {attempts} recorded test "
+            f"attempt{'' if attempts == 1 else 's'} missing from the published "
+            f"history, with no record of why: {named}"
+        ),
+        "represented_run_count": attempts,
+        "schema": "census-attempt-missing-from-series/v1",
+    }
+
+
+def _landing_with_exclusions(entries: list[dict[str, Any]]) -> dict[str, str]:
+    data = representative_build_data()
+    data["runs"]["projection_exclusion_counts"] = entries
+    data = _validated(data)
+    return {
+        path: value.decode()
+        for path, value in render_page.render_site(_build(data), data).items()
+        if path.endswith(".html")
+    }
+
+
+def test_main_page_names_recorded_attempts_missing_from_the_published_history() -> (
+    None
+):
+    missing = [_missing_attempts("run-a", 1), _missing_attempts("run-b", 3)]
+    quarantined = {
+        "physical_row_count": 1,
+        "reason": (
+            "derived census attempt refused by the series writer: run run-a cell "
+            "fixture/test/verify/ptrace attempt 2 (MalformedRow: fixture)"
+        ),
+        "represented_run_count": 1,
+        "schema": "series-quarantine/v2",
+    }
+    pages = _landing_with_exclusions([*missing, quarantined])
+    landing = pages["index.html"]
+    start = landing.index('<div class="notice" id="missing-history-attempts">')
+    notice = landing[start : landing.index("</div>", start)]
+
+    assert (
+        "<strong>4 recorded test attempts from 2 validation runs are missing from "
+        "the published history.</strong>"
+    ) in notice
+    assert (
+        "nothing records why. The green, red and never-measured cell results on "
+        "this site come from the published history, so these attempts are not "
+        "counted in them. Each validation run's page still shows the per-cell "
+        "verdicts that run recorded."
+    ) in notice
+    assert re.findall(r"<li>(.*?)</li>", notice) == [
+        entry["reason"] for entry in missing
+    ]
+    # A writer refusal is accounted for, so it is not in the notice.
+    assert "series writer" not in notice
+    # The notice is the first thing on the page, and its link resolves.
+    assert start < landing.index('<section id="overview">')
+    links = Links()
+    links.feed(notice)
+    assert links.links == ["cells/projection-audit.html#series-excluded"]
+    audit = Links()
+    audit.feed(pages["cells/projection-audit.html"])
+    assert "series-excluded" in audit.ids
+    for entry in [*missing, quarantined]:
+        assert f"<td>{entry['reason']}</td>" in pages["cells/projection-audit.html"]
+
+
+def test_missing_attempt_notice_is_absent_singular_and_bounded() -> None:
+    landing = _landing_with_exclusions([])["index.html"]
+    assert 'id="missing-history-attempts"' not in landing
+    assert "missing from the published history" not in landing
+
+    landing = _landing_with_exclusions([_missing_attempts("run-a", 1)])["index.html"]
+    assert (
+        "<strong>1 recorded test attempt from 1 validation run is missing from the "
+        "published history.</strong>"
+    ) in landing
+    assert "more validation run" not in landing
+
+    for runs, more in ((11, "And 1 more validation run."), (12, "And 2 more validation runs.")):
+        entries = [_missing_attempts(f"run-{n:02}", 2) for n in range(1, runs + 1)]
+        landing = _landing_with_exclusions(entries)["index.html"]
+        assert (
+            f"<strong>{2 * runs} recorded test attempts from {runs} validation runs "
+            "are missing from the published history.</strong>"
+        ) in landing
+        assert re.findall(r"<li>validation run (run-\d+):", landing) == [
+            f"run-{n:02}" for n in range(1, 11)
+        ]
+        assert f"<p>{more}</p>" in landing
+
+
+def test_missing_attempt_schema_matches_the_rust_builder() -> None:
+    source = (REPOSITORY / "ci-hub/lib/compatibility_website.rs").read_text()
+    assert (
+        "const MISSING_CENSUS_ATTEMPT_SCHEMA: &str = "
+        f'"{render_page.MISSING_CENSUS_ATTEMPT_SCHEMA}";'
+    ) in source
+
+
 def test_schema_v1_data_refuses_closed() -> None:
     data = representative_build_data()
     data["schema_version"] = 1

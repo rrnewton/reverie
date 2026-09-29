@@ -2038,14 +2038,17 @@ where
 }
 
 /// Join every public event span to the already authenticated original census.
-/// Interval membership alone is not coverage: sparse, overlapping, omitted or
-/// contradictory attempts refuse, including losslessly compressed retries.
+/// Interval membership alone is not coverage: a span that is sparse, overlaps
+/// another, names attempts the census lacks, or contradicts an attempt's
+/// outcome refuses, including losslessly compressed retries.
 ///
-/// A census attempt that no span covers is accounted for only by a published
+/// A census attempt that no span covers is accounted for by a published
 /// series-writer refusal that holds the attempt's exact original row (see
-/// [`QuarantinedCensusRow`]); each refusal accounts for one attempt. Every
-/// such attempt is returned as an exclusion count under a named reason, so
-/// the public audit shows it. Any other omitted attempt still refuses.
+/// [`QuarantinedCensusRow`]); each refusal accounts for one attempt. The
+/// attempts no refusal accounts for are counted, per run, under
+/// [`MISSING_CENSUS_ATTEMPT_SCHEMA`]. Every attempt returned here is outside
+/// the public series, so no series total counts it; the public audit and the
+/// site's main page name it instead.
 fn validate_derived_series(
     rows: &[Parsed<SeriesRow>],
     quarantine: &[Parsed<Value>],
@@ -2056,44 +2059,79 @@ fn validate_derived_series(
         .filter_map(|record| QuarantinedCensusRow::from_record(&record.raw))
         .collect::<Vec<_>>();
     let mut used = BTreeSet::new();
-    let mut quarantined = BTreeMap::<(String, String), (u64, u64)>::new();
+    let mut audited = BTreeMap::<(String, String), (u64, u64)>::new();
     for (run_id, evidence) in derived {
-        let mut remaining = evidence
-            .attempts
-            .iter()
-            .map(|a| {
-                (
-                    (
-                        format!("{}/{}/{}", a.cell.test, a.cell.mode, a.cell.backend),
-                        a.attempt,
-                    ),
-                    a,
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        if remaining.len() != evidence.attempts.len() {
-            return Err("derived census repeats a cell attempt".into());
+        let mut remaining = BTreeMap::new();
+        for attempt in &evidence.attempts {
+            let cell = format!(
+                "{}/{}/{}",
+                attempt.cell.test, attempt.cell.mode, attempt.cell.backend
+            );
+            if remaining
+                .insert((cell.clone(), attempt.attempt), attempt)
+                .is_some()
+            {
+                return Err(format!(
+                    "the scorecard site build checks the published history of validation run \
+                     {run_id} against the run's own record of the test attempts it made, and \
+                     that record lists {cell} attempt {} more than once, so the build cannot \
+                     tell which result the run recorded. File an issue at {DEV_HERMIT_ISSUES} \
+                     with this message.",
+                    attempt.attempt
+                ));
+            }
         }
         for parsed in rows
             .iter()
             .filter(|r| r.typed.producer == SeriesProducer::Validate && &r.typed.run_id == run_id)
         {
             let row = &parsed.typed;
-            row.validate_for_read()?;
-            row.validate_for_projection()?;
             let span = &row.series;
+            let named = |detail: String| {
+                history_contradiction(
+                    run_id,
+                    &format!("{} (event {})", span.cell, row.event_id),
+                    detail,
+                )
+            };
+            row.validate_for_read()
+                .and_then(|()| row.validate_for_projection())
+                .map_err(|error| {
+                    named(format!("the history row is not usable evidence: {error}"))
+                })?;
             if row.schema != SeriesSchema::V3
                 || span.tree != evidence.hermit_sha
                 || span.source_tree_dirty
             {
-                return Err("derived current series has a different source identity".into());
+                return Err(named(format!(
+                    "the history row is in format {} for Hermit commit {}{}, but the run tested \
+                     committed source at {} and only format {} rows of that source can be \
+                     checked",
+                    row.schema.as_str(),
+                    span.tree,
+                    if span.source_tree_dirty {
+                        " with uncommitted changes"
+                    } else {
+                        ""
+                    },
+                    evidence.hermit_sha,
+                    SeriesSchema::V3.as_str()
+                )));
             }
-            let last = span.last_run_index.map(Ok).unwrap_or_else(|| {
-                span.run_index
+            let last = match span.last_run_index {
+                Some(last) => last,
+                None => span
+                    .run_index
                     .checked_add(span.num_runs)
                     .and_then(|v| v.checked_sub(1))
-                    .ok_or("derived series span overflow")
-            })?;
+                    .ok_or_else(|| {
+                        named(format!(
+                            "the history row's attempt numbers overflow: first attempt {} plus \
+                             {} attempts",
+                            span.run_index, span.num_runs
+                        ))
+                    })?,
+            };
             if last
                 .checked_sub(span.run_index)
                 .and_then(|n| n.checked_add(1))
@@ -2102,28 +2140,47 @@ fn validate_derived_series(
                     .attempt
                     .is_some_and(|a| span.num_runs != 1 || a != span.run_index)
             {
-                return Err(
-                    "derived current series has sparse or contradictory attempt span".into(),
-                );
+                return Err(named(format!(
+                    "the history row claims {} attempt(s) numbered {} to {}{}, which is not one \
+                     unbroken run of attempts",
+                    span.num_runs,
+                    span.run_index,
+                    last,
+                    span.attempt
+                        .map(|a| format!(" and names attempt {a}"))
+                        .unwrap_or_default()
+                )));
             }
             let matched = remaining
                 .range((span.cell.clone(), span.run_index)..=(span.cell.clone(), last))
                 .map(|(key, value)| (key.clone(), *value))
                 .collect::<Vec<_>>();
             if matched.len() as u64 != span.num_runs {
-                return Err("derived current series omits or overlaps original attempts".into());
+                return Err(named(format!(
+                    "the history row covers attempts {} to {}, but only {} of those {} attempts \
+                     are in the run's record and not already covered by another history row",
+                    span.run_index,
+                    last,
+                    matched.len(),
+                    span.num_runs
+                )));
             }
             for (key, attempt) in matched {
                 if span.result != attempt.result || span.failure_class != attempt.failure_class {
-                    return Err(
-                        "derived current series changes original attempt outcome/classification"
-                            .into(),
-                    );
+                    return Err(named(format!(
+                        "the history row says attempt {} ended {} (failure class {}), but the \
+                         run recorded {} (failure class {})",
+                        key.1,
+                        recorded_text(&span.result),
+                        recorded_text(&span.failure_class),
+                        recorded_text(&attempt.result),
+                        recorded_text(&attempt.failure_class)
+                    )));
                 }
                 remaining.remove(&key);
             }
         }
-        let mut unaccounted = Vec::new();
+        let mut missing = Vec::new();
         for ((cell, number), attempt) in remaining {
             let refusal = refusals
                 .iter()
@@ -2134,7 +2191,7 @@ fn validate_derived_series(
                 })
                 .min_by(|left, right| left.1.event_id.cmp(&right.1.event_id));
             let Some((index, refusal)) = refusal else {
-                unaccounted.push(format!("{cell} attempt {number}"));
+                missing.push(format!("{cell} attempt {number}"));
                 continue;
             };
             used.insert(index);
@@ -2143,27 +2200,94 @@ fn validate_derived_series(
                  attempt {number} ({}: {})",
                 refusal.error, refusal.reason
             );
-            let target = quarantined
-                .entry((SERIES_QUARANTINE_SCHEMA.to_owned(), reason))
-                .or_default();
-            target.0 = target
-                .0
-                .checked_add(1)
-                .ok_or("excluded physical-row count overflow")?;
-            target.1 = target
-                .1
-                .checked_add(1)
-                .ok_or("excluded represented-run count overflow")?;
+            count_audited(&mut audited, SERIES_QUARANTINE_SCHEMA, reason, 1)?;
         }
-        if !unaccounted.is_empty() {
-            return Err(format!(
-                "public series omits derived original attempts of {run_id} with no matching \
-                 series quarantine record: {}",
-                unaccounted.join(", ")
-            ));
+        if !missing.is_empty() {
+            let reason = missing_attempts_reason(run_id, &missing);
+            let count =
+                u64::try_from(missing.len()).map_err(|_| "missing attempt count overflow")?;
+            count_audited(&mut audited, MISSING_CENSUS_ATTEMPT_SCHEMA, reason, count)?;
         }
     }
-    Ok(quarantined)
+    Ok(audited)
+}
+
+/// Add `count` attempts, each one physical row of one run, under
+/// (`schema`, `reason`).
+fn count_audited(
+    audited: &mut BTreeMap<(String, String), (u64, u64)>,
+    schema: &str,
+    reason: String,
+    count: u64,
+) -> Result<(), String> {
+    let target = audited.entry((schema.to_owned(), reason)).or_default();
+    target.0 = target
+        .0
+        .checked_add(count)
+        .ok_or("excluded physical-row count overflow")?;
+    target.1 = target
+        .1
+        .checked_add(count)
+        .ok_or("excluded represented-run count overflow")?;
+    Ok(())
+}
+
+/// Where a reader of a site-build refusal reports it.
+const DEV_HERMIT_ISSUES: &str = "https://github.com/rrnewton/dev-hermit/issues";
+
+/// Refusal text for a published history row of `run_id` (named by `row`)
+/// that disagrees with the run's own record of its test attempts: what was
+/// compared, what differed, and what to do.
+fn history_contradiction(run_id: &str, row: &str, detail: String) -> String {
+    format!(
+        "the scorecard site build checks every published history row of validation run \
+         {run_id} against the run's own record of the test attempts it made, and the row for \
+         {row} disagrees: {detail}. The build stopped rather than publish results the run did \
+         not record. File an issue at {DEV_HERMIT_ISSUES} with this message."
+    )
+}
+
+/// A recorded result or failure class as a reader sees it: its JSON text, or
+/// `none` when it is absent.
+fn recorded_text<T: Serialize>(value: &Option<T>) -> String {
+    match value {
+        None => "none".to_owned(),
+        Some(value) => serde_json::to_value(value)
+            .map(|value| match value {
+                Value::String(text) => text,
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|error| format!("unprintable ({error})")),
+    }
+}
+
+/// Schema of the audit entry that counts, for one validation run, the census
+/// attempts that neither a public series span nor a series-writer refusal
+/// accounts for. Its reason names the run and the attempts.
+const MISSING_CENSUS_ATTEMPT_SCHEMA: &str = "census-attempt-missing-from-series/v1";
+
+/// At most this many attempts are named in one missing-attempt reason, so a
+/// large gap cannot grow build.json without bound; the count stays exact.
+const MISSING_ATTEMPTS_NAMED: usize = 20;
+
+/// The audit reason for `missing`, the unaccounted attempts of `run_id`.
+fn missing_attempts_reason(run_id: &str, missing: &[String]) -> String {
+    let named = missing
+        .iter()
+        .take(MISSING_ATTEMPTS_NAMED)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = match missing.len().saturating_sub(MISSING_ATTEMPTS_NAMED) {
+        0 => String::new(),
+        more => format!(", and {more} more"),
+    };
+    let plural = if missing.len() == 1 { "" } else { "s" };
+    format!(
+        "validation run {run_id}: {} recorded test attempt{plural} missing from the published \
+         history, with no record of why: {named}{more}",
+        missing.len()
+    )
 }
 
 /// Schema of the series writer's published refusal records.
@@ -4478,12 +4602,20 @@ mod tests {
             let quarantine = parse_jsonl::<Value>(&jsonl(records), "series quarantine").unwrap();
             validate_derived_series(&rows, &quarantine, derived)
         };
-        let unaccounted = |attempts: &str| {
-            format!(
-                "public series omits derived original attempts of run-q with no matching \
-                 series quarantine record: {attempts}"
+        // An attempt nothing accounts for is counted as missing, by name.
+        let missing_entry = |attempt: &str| {
+            (
+                (
+                    "census-attempt-missing-from-series/v1".to_owned(),
+                    format!(
+                        "validation run run-q: 1 recorded test attempt missing from the \
+                         published history, with no record of why: {attempt}"
+                    ),
+                ),
+                (1, 1),
             )
         };
+        let unaccounted = |attempt: &str| BTreeMap::from([missing_entry(attempt)]);
         let exempted = BTreeMap::from([(
             (
                 "series-quarantine/v2".to_owned(),
@@ -4500,10 +4632,11 @@ mod tests {
             check(std::slice::from_ref(&writer), &derived),
             Ok(exempted.clone())
         );
-        // Without any quarantine record the missing attempt still refuses.
+        // Without any quarantine record the missing attempt is counted as
+        // missing, not exempted.
         assert_eq!(
             check(&[], &derived),
-            Err(unaccounted("fixture/test/verify/ptrace attempt 2"))
+            Ok(unaccounted("fixture/test/verify/ptrace attempt 2"))
         );
         let mut no_input_row = writer.clone();
         no_input_row["inputs"][0]["input_row"] = Value::Null;
@@ -4650,13 +4783,16 @@ mod tests {
         for (label, record) in refusing {
             assert_eq!(
                 check(&[record], &derived),
-                Err(unaccounted("fixture/test/verify/ptrace attempt 2")),
+                Ok(unaccounted("fixture/test/verify/ptrace attempt 2")),
                 "{label}"
             );
         }
-        // A record that accounts for nothing neither refuses nor disturbs one
-        // that does.
-        assert_eq!(check(&[other_run, writer.clone()], &derived), Ok(exempted));
+        // A record that accounts for nothing is not counted and does not
+        // disturb one that does.
+        assert_eq!(
+            check(&[other_run, writer.clone()], &derived),
+            Ok(exempted.clone())
+        );
 
         // Each identity field of the refused row is checked on its own: even
         // when the census digest is that of the altered row, the row must name
@@ -4679,13 +4815,13 @@ mod tests {
                     &[record],
                     &census_of_run_q(&[(1, &covered, true), (2, &digest, false)])
                 ),
-                Err(unaccounted("fixture/test/verify/ptrace attempt 2")),
+                Ok(unaccounted("fixture/test/verify/ptrace attempt 2")),
                 "{field}"
             );
         }
 
         // A refusal accounts only for the attempt its row names; any other
-        // omission is named.
+        // omission is named as missing beside it.
         let third = with_refused_row_field(&writer, "attempt", 3.into());
         let third_digest = refused_row_digest(&third);
         let three = census_of_run_q(&[
@@ -4693,13 +4829,244 @@ mod tests {
             (2, &digest, false),
             (3, &third_digest, false),
         ]);
-        assert_eq!(
-            check(std::slice::from_ref(&writer), &three),
-            Err(unaccounted("fixture/test/verify/ptrace attempt 3"))
-        );
+        let mut mixed = exempted.clone();
+        mixed.extend([missing_entry("fixture/test/verify/ptrace attempt 3")]);
+        assert_eq!(check(std::slice::from_ref(&writer), &three), Ok(mixed));
         assert_eq!(
             check(&[writer, third], &three).map(|found| found.len()),
             Ok(2)
+        );
+    }
+
+    #[test]
+    fn missing_census_attempts_are_counted_per_run_and_named_up_to_twenty() {
+        let census = |run_id: &str, numbers: std::ops::RangeInclusive<u64>| {
+            let digests = numbers
+                .clone()
+                .map(|n| format!("{n:064x}"))
+                .collect::<Vec<_>>();
+            let attempts = numbers
+                .zip(&digests)
+                .map(|(n, digest)| (n, digest.as_str(), true))
+                .collect::<Vec<_>>();
+            let mut operand = run_q_census_operand(&attempts);
+            operand["run_id"] = run_id.into();
+            operand["record_id"] = format!("record-{run_id}").into();
+            (
+                run_id.to_owned(),
+                serde_json::from_value::<DerivedCensus>(operand).unwrap(),
+            )
+        };
+        let named = |numbers: std::ops::RangeInclusive<u64>| {
+            numbers
+                .map(|n| format!("fixture/test/verify/ptrace attempt {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let entry = |reason: String, count: u64| {
+            (
+                ("census-attempt-missing-from-series/v1".to_owned(), reason),
+                (count, count),
+            )
+        };
+        // Up to twenty attempts are named; the count stays exact past that.
+        for (last, first_named, more) in [
+            (2, 2, ""),
+            (20, 20, ""),
+            (21, 20, ", and 1 more"),
+            (23, 20, ", and 3 more"),
+        ] {
+            let derived = BTreeMap::from([census("run-q", 1..=last)]);
+            assert_eq!(
+                validate_derived_series(&[], &[], &derived),
+                Ok(BTreeMap::from([entry(
+                    format!(
+                        "validation run run-q: {last} recorded test attempts missing from the \
+                         published history, with no record of why: {}{more}",
+                        named(1..=first_named)
+                    ),
+                    last
+                )])),
+                "{last} attempts"
+            );
+        }
+        // Each run's gap is its own entry, and a history row of one run covers
+        // nothing in another.
+        let rows = parse_jsonl::<SeriesRow>(
+            &jsonl(&[series("run-q", &"f".repeat(40), "event-q-1")]),
+            "SeriesRow",
+        )
+        .unwrap();
+        let derived = BTreeMap::from([census("run-q", 1..=2), census("run-r", 1..=3)]);
+        assert_eq!(
+            validate_derived_series(&rows, &[], &derived),
+            Ok(BTreeMap::from([
+                entry(
+                    "validation run run-q: 1 recorded test attempt missing from the published \
+                     history, with no record of why: fixture/test/verify/ptrace attempt 2"
+                        .to_owned(),
+                    1
+                ),
+                entry(
+                    format!(
+                        "validation run run-r: 3 recorded test attempts missing from the \
+                         published history, with no record of why: {}",
+                        named(1..=3)
+                    ),
+                    3
+                ),
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_history_row_that_contradicts_the_census_refuses_in_plain_words() {
+        let tree = "f".repeat(40);
+        let passed = "b".repeat(64);
+        let failed = "c".repeat(64);
+        let check = |rows: &[Value], derived: &BTreeMap<String, DerivedCensus>| {
+            let rows = parse_jsonl::<SeriesRow>(&jsonl(rows), "SeriesRow").unwrap();
+            validate_derived_series(&rows, &[], derived)
+        };
+        let refusal = |event: &str, detail: &str| {
+            Err(format!(
+                "the scorecard site build checks every published history row of validation run \
+                 run-q against the run's own record of the test attempts it made, and the row for \
+                 fixture/test/verify/ptrace (event {event}) disagrees: {detail}. The build \
+                 stopped rather than publish results the run did not record. File an issue at \
+                 https://github.com/rrnewton/dev-hermit/issues with this message."
+            ))
+        };
+        let row = series("run-q", &tree, "event-q-1");
+        let edited = |change: &dyn Fn(&mut Value)| {
+            let mut row = row.clone();
+            change(&mut row);
+            row
+        };
+        let one = census_of_run_q(&[(1, &passed, true)]);
+        let two = census_of_run_q(&[(1, &passed, true), (2, &failed, false)]);
+        // The unedited row covers attempt 1 exactly.
+        assert_eq!(check(std::slice::from_ref(&row), &one), Ok(BTreeMap::new()));
+
+        assert_eq!(
+            check(
+                &[],
+                &census_of_run_q(&[(1, &passed, true), (1, &failed, false)])
+            ),
+            Err(
+                "the scorecard site build checks the published history of validation run run-q \
+                 against the run's own record of the test attempts it made, and that record \
+                 lists fixture/test/verify/ptrace attempt 1 more than once, so the build cannot \
+                 tell which result the run recorded. File an issue at \
+                 https://github.com/rrnewton/dev-hermit/issues with this message."
+                    .to_owned()
+            ),
+            "a census attempt listed twice"
+        );
+        assert_eq!(
+            check(
+                std::slice::from_ref(&row),
+                &census_of_run_q(&[(1, &failed, false)])
+            ),
+            refusal(
+                "event-q-1",
+                "the history row says attempt 1 ended pass (failure class none), but the run \
+                 recorded determinism-failure (failure class product_failure)"
+            ),
+            "another outcome"
+        );
+        let other_tree = "e".repeat(40);
+        assert_eq!(
+            check(
+                &[edited(&|r| r["series"]["tree"] = other_tree.clone().into())],
+                &one
+            ),
+            refusal(
+                "event-q-1",
+                &format!(
+                    "the history row is in format stress-series/v3 for Hermit commit \
+                     {other_tree}, but the run tested committed source at {tree} and only \
+                     format stress-series/v3 rows of that source can be checked"
+                )
+            ),
+            "another commit"
+        );
+        assert_eq!(
+            check(
+                &[edited(&|r| r["series"]["source_tree_dirty"] = true.into())],
+                &one
+            ),
+            refusal(
+                "event-q-1",
+                "the history row is not usable evidence: source_tree_dirty is true; dirty \
+                 source is not checked-in evidence"
+            ),
+            "uncommitted source"
+        );
+        assert_eq!(
+            check(
+                &[edited(&|r| {
+                    r["series"]["attempt"] = Value::Null;
+                    r["series"]["last_run_index"] = 2.into();
+                })],
+                &two
+            ),
+            refusal(
+                "event-q-1",
+                "the history row claims 1 attempt(s) numbered 1 to 2, which is not one \
+                 unbroken run of attempts"
+            ),
+            "a sparse span"
+        );
+        assert_eq!(
+            check(&[edited(&|r| r["series"]["attempt"] = 2.into())], &two),
+            refusal(
+                "event-q-1",
+                "the history row claims 1 attempt(s) numbered 1 to 1 and names attempt 2, \
+                 which is not one unbroken run of attempts"
+            ),
+            "an attempt outside the span"
+        );
+        assert_eq!(
+            check(
+                &[edited(&|r| {
+                    r["series"]["attempt"] = Value::Null;
+                    r["series"]["run_index"] = u64::MAX.into();
+                    r["series"]["num_runs"] = 2.into();
+                    r["series"]["last_run_index"] = Value::Null;
+                })],
+                &one
+            ),
+            refusal(
+                "event-q-1",
+                &format!(
+                    "the history row's attempt numbers overflow: first attempt {} plus 2 \
+                     attempts",
+                    u64::MAX
+                )
+            ),
+            "an overflowing span"
+        );
+        assert_eq!(
+            check(
+                std::slice::from_ref(&row),
+                &census_of_run_q(&[(2, &failed, false)])
+            ),
+            refusal(
+                "event-q-1",
+                "the history row covers attempts 1 to 1, but only 0 of those 1 attempts are in \
+                 the run's record and not already covered by another history row"
+            ),
+            "an attempt the census lacks"
+        );
+        assert_eq!(
+            check(&[row.clone(), series("run-q", &tree, "event-q-2")], &one),
+            refusal(
+                "event-q-2",
+                "the history row covers attempts 1 to 1, but only 0 of those 1 attempts are in \
+                 the run's record and not already covered by another history row"
+            ),
+            "two rows covering one attempt"
         );
     }
 
@@ -4884,14 +5251,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Value::from("event-q-2")]
         );
-        // The same history and series without the record still refuse.
+        // The same history and series without the record still publish. The
+        // audit page counts attempt 1 as missing from the published history,
+        // and nothing else in the projection changes.
+        let unrecorded = project(None).unwrap();
         assert_eq!(
-            project(None),
-            Err(
-                "public series omits derived original attempts of run-q with no matching \
-                 series quarantine record: fixture/test/verify/ptrace attempt 1"
-                    .to_owned()
-            )
+            unrecorded["projection_exclusion_counts"],
+            serde_json::json!([{
+                "schema": "census-attempt-missing-from-series/v1",
+                "reason": "validation run run-q: 1 recorded test attempt missing from the \
+                           published history, with no record of why: \
+                           fixture/test/verify/ptrace attempt 1",
+                "physical_row_count": 1,
+                "represented_run_count": 1,
+            }])
+        );
+        let without = |value: &Value, keys: &[&str]| {
+            let mut value = value.clone();
+            for key in keys {
+                value.as_object_mut().unwrap().remove(*key);
+            }
+            value
+        };
+        let audit = ["input", "projection_exclusion_counts", "projection_sha256"];
+        assert_eq!(without(&unrecorded, &audit), without(&projected, &audit));
+        assert_eq!(
+            unrecorded["input"],
+            without(&projected["input"], &["series_quarantine_rows"])
         );
         std::fs::remove_dir_all(root).unwrap();
     }
