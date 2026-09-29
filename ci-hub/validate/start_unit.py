@@ -1694,7 +1694,10 @@ SUBMODULE_STATUS_GAPS = {
 
 
 def submodule_registration_gaps(
-    checkout: Path, *, run: Runner
+    checkout: Path,
+    *,
+    run: Runner,
+    environment: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """Return (path, reason) for each top-level gitlink Git would not use as-is.
 
@@ -1714,11 +1717,20 @@ def submodule_registration_gaps(
     minutes later, telling the reader to initialize a checkout that was already
     populated.
 
+    `environment`, when given, is the complete child environment: pass
+    `SubmoduleRegistration.environment()` to read the status exactly as the
+    run's own Git processes read it.
+
     Parse the raw lines: `checked_output` strips the leading space that marks a
     healthy first entry.
     """
 
-    result = run(["git", "-C", str(checkout), "submodule", "status"], check=False)
+    command = ["git", "-C", str(checkout), "submodule", "status"]
+    result = (
+        run(command, check=False)
+        if environment is None
+        else run(command, check=False, env=dict(environment))
+    )
     if result.returncode != 0:
         detail = (
             result.stderr.strip()
@@ -1748,6 +1760,222 @@ def describe_submodule_gaps(gaps: Sequence[tuple[str, str]]) -> str:
     return ", ".join(f"{path} ({reason})" for path, reason in gaps)
 
 
+# The two variables `git submodule init` writes to register a top-level
+# submodule, and which `git submodule deinit` deletes with its section. Only
+# these are captured. Policy such as `submodule.<name>.update` stays with the
+# shared config: reverie's `make sync-submodule-policy` rewrites it there during
+# a run, and a captured copy would silently override that rewrite.
+SUBMODULE_REGISTRATION_VARIABLES = frozenset({"url", "active"})
+SUBMODULE_REGISTRATION_FILE = "validate-submodule-registration"
+
+
+def with_git_config(
+    environment: Mapping[str, str], pairs: Sequence[tuple[str, str]]
+) -> dict[str, str]:
+    """Append `pairs` after any GIT_CONFIG_COUNT overrides `environment` holds.
+
+    Overwriting the count instead would orphan the caller's own numbered
+    overrides: agent shells on this fleet carry three `url.*.insteadOf`
+    rewrites there, and Git reads the count before it reads any key.
+    """
+
+    child = dict(environment)
+    raw = child.get("GIT_CONFIG_COUNT", "")
+    if raw and not raw.isdigit():
+        raise ValueError(f"GIT_CONFIG_COUNT is not a non-negative integer: {raw!r}")
+    count = int(raw) if raw else 0
+    for offset, (key, value) in enumerate(pairs):
+        child[f"GIT_CONFIG_KEY_{count + offset}"] = key
+        child[f"GIT_CONFIG_VALUE_{count + offset}"] = value
+    child["GIT_CONFIG_COUNT"] = str(count + len(pairs))
+    return child
+
+
+def wildmatch_literal(text: str) -> str:
+    """Escape Git's wildmatch metacharacters so a path pattern matches only itself."""
+
+    return re.sub(r"([\\*?\[])", r"\\\1", text)
+
+
+def git_config_quoted(text: str, *, subsection: bool = False) -> str:
+    """Quote `text` as a Git config subsection name or value."""
+
+    if "\0" in text or (subsection and "\n" in text):
+        raise RuntimeError(f"cannot write {text!r} to a Git config file")
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    if not subsection:
+        escaped = (
+            escaped.replace("\n", "\\n").replace("\t", "\\t").replace("\b", "\\b")
+        )
+    return f'"{escaped}"'
+
+
+def read_submodule_registration(
+    checkout: Path, *, run: Runner, config_file: Path | None = None
+) -> list[tuple[str, str]]:
+    """Return the `submodule.<name>.url`/`.active` entries of the COMMON config.
+
+    `--local` names the repository's own config file, which for a linked worktree
+    is the common one every worktree shares. It excludes command-line and
+    environment overrides, so this always reads the shared file. `config_file`
+    reads a captured registration file instead.
+    """
+
+    source = ["--local"] if config_file is None else ["--file", str(config_file)]
+    result = run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "config",
+            *source,
+            "--null",
+            "--get-regexp",
+            r"^submodule\.",
+        ],
+        check=False,
+    )
+    if result.returncode == 1 and not result.stdout:
+        return []  # no submodule entries at all
+    if result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit {result.returncode}"
+        )
+        raise RuntimeError(f"cannot read submodule registration of {checkout}: {detail}")
+    entries: list[tuple[str, str]] = []
+    for record in result.stdout.split("\0"):
+        if not record:
+            continue
+        # `--null` prints `key\nvalue`, or a bare key for an implicit boolean.
+        key, separator, value = record.partition("\n")
+        section, _dot, rest = key.partition(".")
+        name, dot, variable = rest.rpartition(".")
+        if (
+            section == "submodule"
+            and dot
+            and name
+            and variable in SUBMODULE_REGISTRATION_VARIABLES
+        ):
+            entries.append((key, value if separator else "true"))
+    return entries
+
+
+def render_submodule_registration(entries: Sequence[tuple[str, str]]) -> str:
+    sections: dict[str, list[tuple[str, str]]] = {}
+    for key, value in entries:
+        name, _dot, variable = key.partition(".")[2].rpartition(".")
+        sections.setdefault(name, []).append((variable, value))
+    lines = [
+        "# Written by ci-hub validate-run: the submodule registration this",
+        "# checkout was created with. Only this checkout's own Git processes read",
+        "# it, through the includeIf.gitdir override in its run's environment.",
+    ]
+    for name, variables in sections.items():
+        lines.append(f"[submodule {git_config_quoted(name, subsection=True)}]")
+        lines.extend(
+            f"\t{variable} = {git_config_quoted(value)}" for variable, value in variables
+        )
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class SubmoduleRegistration:
+    """The submodule registration a validation checkout was created with.
+
+    WHY. `git submodule deinit` in ANY linked worktree removes the registration
+    from the common config every worktree reads (see
+    `submodule_registration_gaps`). Nothing at creation can see that coming: the
+    creating `submodule update --init` re-registers an earlier loss for every
+    worktree, so only a loss DURING the run survives, and a node that reads
+    `git submodule status` after it reports NO_RESULT for a setup reason.
+
+    HOW. `capture_submodule_registration` copies the registration variables into
+    `file` inside the checkout's OWN Git directory (`<common>/worktrees/<id>`
+    for a linked worktree). No other worktree reads or writes that directory,
+    and `git worktree remove` deletes it with the checkout. The run's unit then
+    receives one Git config override through GIT_CONFIG_COUNT/KEY/VALUE:
+    `includeIf.gitdir:<git_dir>.path=<file>`. Git applies that include only in a
+    process whose repository is exactly this checkout -- not in a peer
+    worktree, not in the submodules' own repositories, and not in a test
+    fixture that reuses a submodule name such as `agent-utils` -- so the run
+    keeps its creation-time registration after a peer's deinit, and nothing
+    else sees any change. Nothing shared is written.
+
+    NOT COVERED: a process that replaces GIT_CONFIG_COUNT with its own, or runs
+    Git inside the pinned-root container, which receives only the environment
+    variables it is explicitly given.
+    """
+
+    git_dir: Path
+    file: Path
+    entries: tuple[tuple[str, str], ...]
+
+    def git_config(self) -> tuple[tuple[str, str], ...]:
+        return (
+            (
+                f"includeIf.gitdir:{wildmatch_literal(str(self.git_dir))}.path",
+                str(self.file),
+            ),
+        )
+
+    def environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+        return git_env.sanitized_git_env(
+            with_git_config(os.environ if base is None else base, self.git_config())
+        )
+
+
+def capture_submodule_registration(
+    checkout: Path, *, run: Runner
+) -> SubmoduleRegistration:
+    entries = tuple(read_submodule_registration(checkout, run=run))
+    git_dir = Path(
+        checked_output(
+            ["git", "-C", str(checkout), "rev-parse", "--absolute-git-dir"],
+            run=run,
+            purpose="cannot resolve the fresh checkout's own Git directory",
+        )
+    ).resolve()
+    registration_file = git_dir / SUBMODULE_REGISTRATION_FILE
+    registration_file.write_text(
+        render_submodule_registration(entries), encoding="utf-8"
+    )
+    return SubmoduleRegistration(
+        git_dir=git_dir, file=registration_file, entries=entries
+    )
+
+
+def load_submodule_registration(
+    checkout: Path, *, run: Runner
+) -> SubmoduleRegistration | None:
+    """Re-read the registration a launcher captured, for a caller that attaches later.
+
+    Returns None when the checkout has no captured registration or it cannot be
+    read; the caller then reports the shared view alone.
+    """
+
+    try:
+        git_dir = Path(
+            checked_output(
+                ["git", "-C", str(checkout), "rev-parse", "--absolute-git-dir"],
+                run=run,
+                purpose="cannot resolve the checkout's own Git directory",
+            )
+        ).resolve()
+        registration_file = git_dir / SUBMODULE_REGISTRATION_FILE
+        if not registration_file.is_file():
+            return None
+        entries = read_submodule_registration(
+            checkout, run=run, config_file=registration_file
+        )
+    except Exception:  # a diagnostic input must never block the cleanup after it
+        return None
+    return SubmoduleRegistration(
+        git_dir=git_dir, file=registration_file, entries=tuple(entries)
+    )
+
+
 def submodule_registration_config(checkout: Path, *, run: Runner) -> str:
     """Name the config file that holds submodule registration, for messages."""
 
@@ -1764,29 +1992,94 @@ def submodule_registration_config(checkout: Path, *, run: Runner) -> str:
     return f"{config} (last modified {modified})"
 
 
+def submodule_restore_commands(
+    checkout: Path,
+    paths: Sequence[str],
+    *,
+    registration: SubmoduleRegistration | None,
+    run: Runner,
+) -> list[str]:
+    """Commands that re-register lost submodules in the file the checkout reads.
+
+    Built from the checkout's own common Git directory, never from the source
+    checkout the launch was given: on the wrkslots path that source may be a
+    separate clone, whose config the checkout never reads. With a captured
+    registration, re-write exactly the creation-time entries now missing.
+    """
+
+    common = git_common_dir(checkout, run=run)
+    if registration is not None:
+        current = set(read_submodule_registration(checkout, run=run))
+        missing = [entry for entry in registration.entries if entry not in current]
+        if missing:
+            return [
+                shlex.join(["git", f"--git-dir={common}", "config", key, value])
+                for key, value in missing
+            ]
+    quoted = " ".join(shlex.quote(path) for path in paths)
+    return [
+        f"git submodule init -- {quoted}   (in a work tree whose common Git "
+        f"directory is {common})"
+    ]
+
+
 def report_submodule_registration_loss(
-    checkout: Path, *, run: Runner, restore_from: Path | None = None
+    checkout: Path,
+    *,
+    run: Runner,
+    registration: SubmoduleRegistration | None = None,
 ) -> list[tuple[str, str]]:
     """After a run, name any submodule registration that vanished while it ran.
 
-    `prepare_fresh_checkout` refuses to launch unless every gitlink is usable,
-    so an unregistered gitlink observed here lost its registration DURING the
-    run. Only `-` is reported: a run may legitimately move a submodule's HEAD
-    (`+`), but nothing in a run deletes shared registration. It does not change
-    the verdict: it names the cause of NO_RESULT nodes that would otherwise read
-    as a checkout that was never initialized.
+    Two views are read. The SHARED view is what every other worktree of the
+    repository sees. The RUN's view applies the run's captured registration,
+    exactly as the run's own Git processes saw it. `prepare_fresh_checkout`
+    refused to launch unless the run's view was clean, so a `-` in either view
+    appeared while the run was in progress:
+
+    * shared view only: a `git submodule deinit` elsewhere removed the shared
+      registration. This run was shielded; every other worktree was not, so
+      name the restore.
+    * the run's view: a node that read `git submodule status` afterwards saw an
+      environment change, not a product result (hermit's check.lint_checks exits
+      NO_RESULT).
+
+    Only `-` is reported: a run may legitimately move a submodule's HEAD (`+`).
+    This never changes the verdict and never raises, because cleanup follows.
     """
 
     if not checkout.is_dir():
         return []
+    not_initialized = SUBMODULE_STATUS_GAPS["-"]
     try:
-        gaps = [
+        shared = [
             gap
             for gap in submodule_registration_gaps(checkout, run=run)
-            if gap[1] == SUBMODULE_STATUS_GAPS["-"]
+            if gap[1] == not_initialized
         ]
-        config = (
-            submodule_registration_config(checkout, run=run) if gaps else ""
+        run_view = (
+            shared
+            if registration is None
+            else [
+                gap
+                for gap in submodule_registration_gaps(
+                    checkout, run=run, environment=registration.environment()
+                )
+                if gap[1] == not_initialized
+            ]
+        )
+        if not shared and not run_view:
+            return []
+        config = submodule_registration_config(checkout, run=run)
+        restore = (
+            submodule_restore_commands(
+                checkout,
+                [path for path, _reason in shared],
+                registration=registration,
+                run=run,
+            )
+            if shared
+            else []
         )
     except Exception as error:  # a diagnostic must never block the cleanup after it
         print(
@@ -1795,23 +2088,41 @@ def report_submodule_registration_loss(
             file=sys.stderr,
         )
         return []
-    if gaps:
-        paths = " ".join(shlex.quote(path) for path, _reason in gaps)
+    shared_cause = (
+        f"Registration lives in {config}; every linked worktree of a repository "
+        "reads that one file, and a `git submodule deinit` run in ANY of them "
+        "removes the registration for all."
+    )
+    if run_view:
+        private = (
+            ""
+            if registration is None
+            else f" (its creation-time registration was read from {registration.file})"
+        )
         print(
             "validate-run: SUBMODULE-REGISTRATION-LOST-DURING-RUN: "
-            f"{describe_submodule_gaps(gaps)}. Every submodule was registered "
-            "and checked out when this checkout was created, so this changed "
-            f"while the run was in progress. Registration lives in {config}; "
-            "every linked worktree of a repository reads that one file, and a "
-            "`git submodule deinit` run in ANY of them removes the registration "
-            "for all. A node that read `git submodule status` after the loss "
-            "(hermit's check.lint_checks exits NO_RESULT) observed an "
-            "environment change, not a product result. The next validation "
-            "checkout re-registers it; to restore it now: git -C "
-            f"{shlex.quote(str(restore_from or checkout))} submodule init -- {paths}",
+            f"{describe_submodule_gaps(run_view)}. Every submodule was registered "
+            "and checked out when this checkout was created, so this run's own Git "
+            f"processes lost it while the run was in progress{private}. "
+            + (shared_cause + " " if shared else "")
+            + "A node that read `git submodule status` after the loss (hermit's "
+            "check.lint_checks exits NO_RESULT) observed an environment change, "
+            "not a product result.",
             file=sys.stderr,
         )
-    return gaps
+    else:
+        assert registration is not None
+        print(
+            "validate-run: SUBMODULE-REGISTRATION-REMOVED-FROM-SHARED-CONFIG-DURING-RUN: "
+            f"{describe_submodule_gaps(shared)}. {shared_cause} This run was not "
+            "affected: its Git processes read the registration captured at creation "
+            f"from {registration.file}. Every other worktree of this repository now "
+            "sees these submodules as not initialized.",
+            file=sys.stderr,
+        )
+    for command in restore:
+        print(f"validate-run:   restore: {command}", file=sys.stderr)
+    return run_view or shared
 
 
 @contextmanager
@@ -1883,7 +2194,7 @@ def prepare_fresh_checkout(
     tool_root: Path = ROOT,
     independent_refs: bool = False,
     slot: str | None = None,
-) -> tuple[Path, WrkslotsIdentity | None]:
+) -> tuple[Path, WrkslotsIdentity | None, SubmoduleRegistration | None]:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
     WHY THIS IS THE DEFAULT. An ordinary source checkout must be clean;
@@ -1959,6 +2270,7 @@ def prepare_fresh_checkout(
     # second host path so git can reach outward weakens the isolation that
     # assert-no-network and the fixed image exist to provide.
     identity: WrkslotsIdentity | None = None
+    registration: SubmoduleRegistration | None = None
     checkout_error: Exception | None = None
     with git_mutation_lock(source, run=run):
         if independent_refs:
@@ -2095,7 +2407,17 @@ def prepare_fresh_checkout(
             # post-condition is. `update --init` re-registers a submodule whose
             # shared registration an earlier `git submodule deinit` removed, so
             # a gap left here is one the update itself could not repair.
-            gaps = submodule_registration_gaps(fresh, run=run)
+            #
+            # A deinit elsewhere AFTER this point would still remove the shared
+            # registration mid-run, which no creation-time check can see. So the
+            # registration is captured now into this checkout's own Git
+            # directory and handed to the run's unit (see
+            # SubmoduleRegistration), and the gate reads the status through
+            # that same override: it judges exactly the view the run will get.
+            registration = capture_submodule_registration(fresh, run=run)
+            gaps = submodule_registration_gaps(
+                fresh, run=run, environment=registration.environment()
+            )
             if gaps:
                 raise RuntimeError(
                     f"fresh checkout {fresh} has submodule(s) Git will not use "
@@ -2172,7 +2494,7 @@ def prepare_fresh_checkout(
             "that would exit fast for an environmental reason and read like a pass "
             "because validation never started and no run evidence exists"
         )
-    return fresh, identity
+    return fresh, identity, registration
 
 
 def remove_fresh_checkout(
@@ -7797,6 +8119,7 @@ def build_systemd_command(
     driver_rust_toolchain: str | None = None,
     measured_rust_toolchain: str | None = None,
     placement: cpu_placement.CpuPlacement | None = None,
+    git_config: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -7935,6 +8258,23 @@ def build_systemd_command(
                 f"HERMIT_VALIDATE_LEDGER={frozen_result}",
             ]
         )
+    if git_config:
+        # Per-run Git config overrides, numbered from zero: the user manager
+        # starts the unit without the launcher's own GIT_CONFIG_* variables, so
+        # an index continuing the launcher's count would name keys the unit
+        # never receives. SubmoduleRegistration.git_config() is the one caller.
+        build_budget_env.extend(["--setenv", f"GIT_CONFIG_COUNT={len(git_config)}"])
+        for index, (key, value) in enumerate(git_config):
+            if any(character in key + value for character in "\n\0"):
+                raise ValueError(f"Git config override {key!r} cannot cross --setenv")
+            build_budget_env.extend(
+                [
+                    "--setenv",
+                    f"GIT_CONFIG_KEY_{index}={key}",
+                    "--setenv",
+                    f"GIT_CONFIG_VALUE_{index}={value}",
+                ]
+            )
 
     child = ["/usr/bin/env"]
     if pr is not None:
@@ -10240,6 +10580,20 @@ def cleanup_after_attach(
 ) -> None:
     """Finish cleanup owned by a caller that previously stopped waiting."""
     associated_cleanup_allowed = False
+    try:
+        temporary_checkout, _not_temporary = classify_recorded_checkout(root, record)
+    except Exception:  # cleanup below classifies again and reports its own error
+        temporary_checkout = None
+    if temporary_checkout is not None and temporary_checkout.is_dir():
+        # The launcher that stopped waiting never reached its own post-run
+        # report, so the caller that finishes the run makes it instead. Only a
+        # temp checkout: creation proved its registration, while an --in-place
+        # source may never have initialized its submodules at all.
+        report_submodule_registration_loss(
+            temporary_checkout,
+            run=run,
+            registration=load_submodule_registration(temporary_checkout, run=run),
+        )
     if retain_checkout_reason is not None:
         print(
             "validate-run: completed checkout RETAINED at "
@@ -11412,6 +11766,7 @@ def main(
 
     fresh_checkout: Path | None = None
     fresh_wrkslots: WrkslotsIdentity | None = None
+    fresh_registration: SubmoduleRegistration | None = None
     source_checkout: Path | None = None
     checkout: Path | None = None
     source_branch: str | None = None
@@ -11733,7 +12088,7 @@ def main(
             )
             release_launcher_generation()
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
-            fresh_checkout, fresh_wrkslots = prepare_fresh_checkout(
+            fresh_checkout, fresh_wrkslots, fresh_registration = prepare_fresh_checkout(
                 source_checkout,
                 args.target,
                 run=run,
@@ -11870,6 +12225,9 @@ def main(
             driver_rust_toolchain=driver_rust_toolchain,
             measured_rust_toolchain=measured_rust_toolchain,
             placement=placement,
+            git_config=(
+                () if fresh_registration is None else fresh_registration.git_config()
+            ),
         )
         if args.dry_run:
             pane = None
@@ -12214,10 +12572,11 @@ def main(
 
     if fresh_checkout is not None:
         # The run is terminal and its checkout still exists. Creation proved
-        # every submodule registered, so a gap now was introduced by something
-        # outside this run; name it before any verdict or cleanup output.
+        # every submodule registered in the run's own view, so a gap now was
+        # introduced by something outside this run; name it before any verdict
+        # or cleanup output.
         report_submodule_registration_loss(
-            fresh_checkout, run=run, restore_from=source_checkout
+            fresh_checkout, run=run, registration=fresh_registration
         )
 
     if record_claims_refused_admission(latest):

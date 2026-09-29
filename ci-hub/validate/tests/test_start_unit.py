@@ -195,9 +195,34 @@ class FakeRun:
         self.inner_log_lines: list[str] = []
         # Successive `git submodule status` outputs for the fresh checkout; the
         # last entry repeats. The default is one registered, current gitlink.
+        # There are two views. The RUN view is a status read through the run's
+        # captured-registration override (an includeIf.gitdir GIT_CONFIG_*
+        # entry in the child environment): the creation gate and the run's own
+        # Git processes. The SHARED view is a status read without it: what
+        # every other worktree sees. None means the shared view mirrors the run
+        # view's outputs.
         self.fresh_submodule_status: list[str] = [f" {SHA} agent-utils (heads/main)\n"]
         self.fresh_submodule_status_calls = 0
+        self.fresh_shared_submodule_status: list[str] | None = None
+        self.fresh_shared_submodule_status_calls = 0
+        self.fresh_submodule_status_views: list[str] = []
+        # Successive `git config --local --null --get-regexp ^submodule\.`
+        # outputs (the shared registration); the last entry repeats.
+        self.fresh_submodule_config: list[str] = [
+            "submodule.agent-utils.url\nhttps://github.com/rrnewton/agent-utils.git\0"
+            "submodule.agent-utils.active\ntrue\0"
+            "submodule.agent-utils.update\ncheckout\0"
+        ]
+        self.fresh_submodule_config_calls = 0
+        self.fresh_common_dir: Path | None = None
 
+
+    def fresh_git_dir(self) -> Path:
+        """The fresh checkout's own Git directory, as a linked worktree has it."""
+        assert self.fresh is not None
+        git_dir = self.checkout / ".git" / "worktrees" / self.fresh.name
+        git_dir.mkdir(parents=True, exist_ok=True)
+        return git_dir
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -779,9 +804,11 @@ class FakeRun:
             return completed(command, stdout=f"{owner}\n")
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "rev-parse"]:
             if command[-1] == "--git-common-dir":
-                common = self.checkout / ".git"
-                common.mkdir(exist_ok=True)
+                common = self.fresh_common_dir or self.checkout / ".git"
+                common.mkdir(parents=True, exist_ok=True)
                 return completed(command, stdout=f"{common}\n")
+            if command[-1] == "--absolute-git-dir":
+                return completed(command, stdout=f"{self.fresh_git_dir()}\n")
             return completed(command, stdout=f"{self.fresh_head}\n")
         if (
             self.fresh is not None
@@ -803,9 +830,46 @@ class FakeRun:
                 shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
         if self.fresh is not None and command[:5] == ["git", "-C", str(self.fresh), "submodule", "status"]:
-            index = min(self.fresh_submodule_status_calls, len(self.fresh_submodule_status) - 1)
-            self.fresh_submodule_status_calls += 1
-            return completed(command, stdout=self.fresh_submodule_status[index])
+            run_view = isinstance(environment, dict) and any(
+                key.startswith("GIT_CONFIG_KEY_")
+                and value
+                == "includeIf.gitdir:"
+                + f"{self.fresh_git_dir().resolve()}.path"
+                and environment.get("GIT_CONFIG_VALUE_" + key.removeprefix("GIT_CONFIG_KEY_"))
+                == str(self.fresh_git_dir().resolve() / "validate-submodule-registration")
+                for key, value in environment.items()
+            )
+            self.fresh_submodule_status_views.append("run" if run_view else "shared")
+            if run_view or self.fresh_shared_submodule_status is None:
+                statuses = self.fresh_submodule_status
+                index = min(self.fresh_submodule_status_calls, len(statuses) - 1)
+                self.fresh_submodule_status_calls += 1
+            else:
+                statuses = self.fresh_shared_submodule_status
+                index = min(self.fresh_shared_submodule_status_calls, len(statuses) - 1)
+                self.fresh_shared_submodule_status_calls += 1
+            return completed(command, stdout=statuses[index])
+        if (
+            self.fresh is not None
+            and command[:4] == ["git", "-C", str(self.fresh), "config"]
+            and command[-3:] == ["--null", "--get-regexp", r"^submodule\."]
+        ):
+            if command[4:-3] == ["--local"]:
+                index = min(
+                    self.fresh_submodule_config_calls, len(self.fresh_submodule_config) - 1
+                )
+                self.fresh_submodule_config_calls += 1
+                stdout = self.fresh_submodule_config[index]
+            else:
+                # A captured file is read back with `--file`; the real one says
+                # what the launcher wrote there.
+                assert command[4] == "--file" and len(command) == 9, command
+                read = subprocess.run(
+                    ["git", *command[3:]], capture_output=True, text=True, check=False
+                )
+                assert read.returncode in (0, 1), read.stderr
+                stdout = read.stdout
+            return completed(command, stdout=stdout, rc=0 if stdout else 1)
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "submodule"]:
             return completed(command)
         if (
@@ -15567,12 +15631,22 @@ else:
             "nothing may be admitted from a tree with an unregistered submodule",
         )
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
-        fresh_submodule = ["git", "-C", str(self.fake.fresh), "submodule"]
+        fresh_git = ["git", "-C", str(self.fake.fresh)]
         update = self.fake.commands.index(
-            fresh_submodule + ["update", "--init", "--recursive"]
+            fresh_git + ["submodule", "update", "--init", "--recursive"]
         )
-        status = self.fake.commands.index(fresh_submodule + ["status"])
+        capture = self.fake.commands.index(
+            fresh_git + ["config", "--local", "--null", "--get-regexp", r"^submodule\."]
+        )
+        status = self.fake.commands.index(fresh_git + ["submodule", "status"])
         self.assertLess(update, status, "the check must judge the tree AFTER the update")
+        self.assertLess(update, capture, "capture the registration the update wrote")
+        self.assertLess(capture, status)
+        self.assertEqual(
+            ["run"],
+            self.fake.fresh_submodule_status_views,
+            "the gate must judge the view the run will get, through its override",
+        )
 
     def test_submodule_status_gaps_each_refuse_fresh_checkout(self) -> None:
         cases = {
@@ -15598,41 +15672,117 @@ else:
                 self.assertNotIn("liteinst", str(caught.exception))
                 self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
-    def test_submodule_registration_lost_during_run_is_named(self) -> None:
+    def fresh_unit_setenv(self) -> dict[str, str]:
+        launch = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        pairs = [
+            launch[index + 1].split("=", 1)
+            for index, argument in enumerate(launch)
+            if argument == "--setenv"
+        ]
+        return {name: value for name, value in pairs}
+
+    def test_the_unit_runs_with_the_captured_submodule_registration(self) -> None:
+        """Finding: a deinit AFTER creation must not reach the running checkout.
+
+        The registration is captured into the checkout's own Git directory and
+        the unit gets exactly one include override, scoped to that directory.
+        test_submodule_registration.py shows with real Git that this keeps the
+        run at ` ` through a peer's deinit and reaches no other repository.
+        """
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        git_dir = self.fake.fresh_git_dir().resolve()
+        registration = git_dir / "validate-submodule-registration"
+        setenv = self.fresh_unit_setenv()
+        self.assertEqual("1", setenv.get("GIT_CONFIG_COUNT"), setenv)
+        self.assertEqual(f"includeIf.gitdir:{git_dir}.path", setenv["GIT_CONFIG_KEY_0"])
+        self.assertEqual(str(registration), setenv["GIT_CONFIG_VALUE_0"])
+        written = subprocess.run(
+            ["git", "config", "--file", str(registration), "--list"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(
+            "submodule.agent-utils.url=https://github.com/rrnewton/agent-utils.git\n"
+            "submodule.agent-utils.active=true\n",
+            written,
+            "only the variables deinit deletes are captured; update policy stays shared",
+        )
+
+    def test_a_shared_registration_removed_mid_run_is_named_with_restores(self) -> None:
         """Measured 2026-09-29: a deinit in ANOTHER worktree, mid-run.
 
         Full validate s17 created its checkout at 02:49:08Z with agent-utils
         registered. At 02:50:41Z an agent ran `git submodule deinit -f
         agent-utils` in its own scratch hermit worktree, which deletes the
         section from the config every worktree shares. check.lint_checks then
-        exited 75 and told the reader to initialize a populated checkout. The
-        launcher must name the real cause after the run, without changing the
-        verdict or blocking cleanup.
+        exited 75. With the captured registration the run keeps its view, and
+        the launcher names the shared loss for everyone else, with restore
+        commands aimed at the checkout's OWN common Git directory -- here a
+        managed repository distinct from the source checkout the launch named.
         """
-        self.fake.fresh_submodule_status = [
-            f" {SHA} agent-utils (heads/main)\n",
-            f"-{SHA} agent-utils\n",
-        ]
+        managed = self.root / "managed-hermit" / ".git"
+        self.fake.fresh_common_dir = managed
+        self.fake.fresh_shared_submodule_status = [f"-{SHA} agent-utils\n"]
+        self.fake.fresh_submodule_config = [self.fake.fresh_submodule_config[0], ""]
 
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(0, rc, error)
-        self.assertIn("SUBMODULE-REGISTRATION-LOST-DURING-RUN", error)
-        self.assertIn("agent-utils (not initialized)", error)
         self.assertIn(
-            f"git -C {self.checkout} submodule init -- agent-utils", error
+            "SUBMODULE-REGISTRATION-REMOVED-FROM-SHARED-CONFIG-DURING-RUN: "
+            "agent-utils (not initialized)",
+            error,
         )
-        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
+        self.assertNotIn("SUBMODULE-REGISTRATION-LOST-DURING-RUN", error)
+        self.assertIn(
+            f"restore: git --git-dir={managed} config submodule.agent-utils.url "
+            "https://github.com/rrnewton/agent-utils.git\n",
+            error,
+        )
+        self.assertIn(
+            f"restore: git --git-dir={managed} config submodule.agent-utils.active true\n",
+            error,
+        )
+        self.assertNotIn(f"-C {self.checkout}", error)
+        self.assertEqual(["run", "shared", "run"], self.fake.fresh_submodule_status_views)
         self.assertIn(
             str(self.fake.fresh), self.fake.removed, "the report must not block cleanup"
         )
+
+    def test_a_registration_lost_from_the_run_view_is_named(self) -> None:
+        self.fake.fresh_submodule_status = [
+            f" {SHA} agent-utils (heads/main)\n",
+            f"-{SHA} agent-utils\n",
+        ]
+        self.fake.fresh_shared_submodule_status = [f"-{SHA} agent-utils\n"]
+        self.fake.fresh_submodule_config = [self.fake.fresh_submodule_config[0], ""]
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn(
+            "SUBMODULE-REGISTRATION-LOST-DURING-RUN: agent-utils (not initialized)", error
+        )
+        self.assertIn(
+            f"restore: git --git-dir={self.checkout / '.git'} config "
+            "submodule.agent-utils.active true",
+            error,
+        )
+        self.assertIn(str(self.fake.fresh), self.fake.removed)
 
     def test_registered_submodules_emit_no_loss_report(self) -> None:
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(0, rc, error)
         self.assertNotIn("SUBMODULE-REGISTRATION", error)
-        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
+        self.assertEqual(["run", "shared", "run"], self.fake.fresh_submodule_status_views)
 
     def test_a_submodule_the_run_moved_is_not_reported_as_lost(self) -> None:
         """A run may check a submodule out elsewhere; only `-` is a lost registration."""
@@ -15640,12 +15790,51 @@ else:
             f" {SHA} agent-utils (heads/main)\n",
             f"+{SHA} agent-utils (heads/other)\n",
         ]
+        self.fake.fresh_shared_submodule_status = [f"+{SHA} agent-utils (heads/other)\n"]
 
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(0, rc, error)
         self.assertNotIn("SUBMODULE-REGISTRATION", error)
-        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
+        self.assertEqual(["run", "shared", "run"], self.fake.fresh_submodule_status_views)
+
+    def test_attach_reports_a_shared_loss_the_waiting_launcher_never_saw(self) -> None:
+        """The WAIT-INTERRUPTED launcher returns before its own post-run report."""
+        record, fresh = self.materialized_attach_record()
+        git_dir = self.fake.fresh_git_dir().resolve()
+        (git_dir / "validate-submodule-registration").write_text(
+            start_unit.render_submodule_registration(
+                [
+                    ("submodule.agent-utils.url", "https://github.com/rrnewton/agent-utils.git"),
+                    ("submodule.agent-utils.active", "true"),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self.fake.fresh_shared_submodule_status = [f"-{SHA} agent-utils\n"]
+        self.fake.fresh_submodule_config = [""]
+        err = io.StringIO()
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertIn(
+            "SUBMODULE-REGISTRATION-REMOVED-FROM-SHARED-CONFIG-DURING-RUN", err.getvalue()
+        )
+        self.assertIn(
+            f"restore: git --git-dir={self.checkout / '.git'} config "
+            "submodule.agent-utils.active true",
+            err.getvalue(),
+        )
+        self.assertEqual(["shared", "run"], self.fake.fresh_submodule_status_views)
+        self.assertEqual([str(fresh)], self.fake.removed)
 
     def test_new_dagrun_name_is_a_usable_fresh_checkout(self) -> None:
         self.fake.fresh_runner_name = "dagrun"
