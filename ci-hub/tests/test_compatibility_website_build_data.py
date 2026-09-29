@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -768,6 +768,255 @@ def test_publishable_output_preserves_immutable_recorded_prose() -> None:
     assert value["gates"][0]["name"] == (
         "Prepare every CI-enabled portable manifest guest"
     )
+
+
+def _leave_to_the_reference(value: Any) -> str | None:
+    raise build_data._NotPlainOutput
+
+
+def _publishable_verdict(value: Any, *, reference: bool) -> tuple[str, ...] | None:
+    # The reference is _require_publishable_output with its one-pass check
+    # declined, which leaves only the stored-field pass and string pass the
+    # function has always run.  Both calls are made from this frame, so a
+    # recursion-limit sweep compares them at the same stack height.
+    one_pass = build_data._plain_publishable_refusal
+    if reference:
+        build_data._plain_publishable_refusal = _leave_to_the_reference
+    try:
+        build_data._require_publishable_output(value)
+    except build_data.BuildRefused as error:
+        return ("refused", str(error))
+    except RecursionError:
+        return ("recursion",)
+    finally:
+        build_data._plain_publishable_refusal = one_pass
+    return None
+
+
+def _assert_publishable_verdicts_agree(value: Any) -> tuple[str, ...] | None:
+    reference = _publishable_verdict(value, reference=True)
+    assert _publishable_verdict(value, reference=False) == reference
+    return reference
+
+
+def _committed_ledger_events() -> list[Any]:
+    events = []
+    for pattern in ("ledger/**/*.jsonl", "ledger-recovery/**/*.jsonl"):
+        for path in sorted(REPOSITORY.glob(pattern)):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    events.append(json.loads(line))
+    return events
+
+
+def _distinct_strings(value: Any) -> list[str]:
+    found: set[str] = set()
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            found.add(item)
+        elif isinstance(item, dict):
+            found.update(key for key in item if isinstance(key, str))
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return sorted(found)
+
+
+def test_publishable_output_matches_the_reference_on_every_committed_ledger_string() -> None:
+    # The committed validation ledger is the real input behind Stage 1's
+    # history rows. Every distinct string gets the same verdict as a key, a
+    # value and a list item from the one-pass check and the reference check.
+    events = _committed_ledger_events()
+    strings = _distinct_strings(events)
+    assert len(events) > 100 and len(strings) > 1000, "the committed ledger corpus is missing"
+    refused = 0
+    for text in strings:
+        for value in ({text: 0}, {"field": text}, {"field": [0, text]}):
+            refused += _assert_publishable_verdicts_agree(value) is not None
+    assert refused > 0  # the corpus also exercises refusals
+    _assert_publishable_verdicts_agree({"events": events[:200]})
+
+
+# Each string is refused by the reference check, through the regex named.
+_OWNER_PATH_STRINGS = [
+    "/home/alice/work", "/home/alice", "/HOME/Alice/x", "/Users/bob/src", "/users/bob",
+    "/U\u017fers/carol/x", "/root", "/root/.ssh", "/ROOT/x", "C:\\Users\\dave\\x",
+    "c:/users/erin/x", "D:\\Documents and Settings\\frank\\x",
+    "d:/documents and \u017fettings/gina/x", "prefix /home/hal/y suffix",
+]
+_CREDENTIAL_STRINGS = [
+    "Authorization: Bearer abc123", "authorization=basic dXNlcjpwYXNz",
+    "AUTHORIZATION : BEARER token", "password=hunter2", "x_api_key: value",
+    "db-passwd = s3cret", "CLIENT_SECRET=abc", "private-key: abc", "pa\u017f\u017fword=x",
+    "a;token=abc", "access_token:abc", "credential=abc", "ghp_abcdef012345",
+    "GHS_abc", "github_pat_ABCdef_012", "https://user:pass@example.invalid/",
+    "http://u:p@host", "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----", "-----begin openssh private key-----",
+    "private_\u212aey=x",
+]
+_CREDENTIAL_KEY_STRINGS = [
+    "access_token", "api_key", "apikey", "Authorization", "client-secret", "credential",
+    "passwd", "password", "private_key", "secret", "token", "x_token", "token_value",
+    "hub-secret-name", "\u017fecret", "private_\u212aey", "API-KEY",
+]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "text"),
+    [("owner", text) for text in _OWNER_PATH_STRINGS]
+    + [("credential", text) for text in _CREDENTIAL_STRINGS]
+    + [("credential_key", text) for text in _CREDENTIAL_KEY_STRINGS],
+)
+def test_publishable_output_adversarial_strings_refuse_in_every_position(
+    pattern: str, text: str
+) -> None:
+    regex = {
+        "owner": build_data._OWNER_PATH_RE,
+        "credential": build_data._CREDENTIAL_RE,
+        "credential_key": build_data._CREDENTIAL_KEY_RE,
+    }[pattern]
+    assert regex.search(text)
+    message = "absolute owner path" if pattern == "owner" else "credential-bearing"
+    positions = [{text: 0}, {"clean": {"deeper": [{text: None}]}}]
+    if pattern != "credential_key":
+        positions += [{"field": text}, {"field": ["clean", [text]]},
+                      {"clean": "clean", "later": text}]
+    else:
+        # A key-only credential name is accepted as a value.
+        for value in ({"field": text}, {"field": [text]}):
+            assert _assert_publishable_verdicts_agree(value) is None
+    for value in positions:
+        reference = _assert_publishable_verdicts_agree(value)
+        assert reference is not None and message in reference[1]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # First string refusal in walk order; owner is judged before credential.
+        ({"a": "password=x", "b": "/home/alice/x"}, "credential-bearing"),
+        ({"a": "/home/alice/x", "b": "password=x"}, "absolute owner path"),
+        ({"a": "/home/alice/x password=y"}, "absolute owner path"),
+        ({"/home/alice/x password=y": 0}, "absolute owner path"),
+        ({"a": [{"b": "ghp_abc"}], "/root": 0}, "credential-bearing"),
+        # A forbidden stored field anywhere wins over any string refusal.
+        (
+            {"a": "/home/alice/x", "b": {"c": [{"measured": 1}]}},
+            "forbidden stored field 'measured'",
+        ),
+        ({"password": 1, "enabled": 1}, "forbidden stored field 'enabled'"),
+        # A key that is not a string wins over later fields and string refusals.
+        ({"a": "/home/alice/x", "b": {7: 1}, "enabled": 1}, "keys must be strings"),
+        ({"enabled": 1, "b": {7: 1}}, "forbidden stored field 'enabled'"),
+        # The same text is judged separately as a key and as a value.
+        ({"a": "api_token", "api_token": 1}, "credential-bearing"),
+        ({"a": ["secret", "secret"], "b": {"secret": 0}}, "credential-bearing"),
+        ({"secret_name": "x", "b": "secret_name"}, "credential-bearing"),
+        # Tuples and other scalars are not walked by the reference.
+        ({"a": ("/home/alice/x",), "b": 1.5, "c": None, "d": True}, None),
+        ({"a": ["api_token", {"clean": "api_token"}]}, None),
+        ({}, None),
+    ],
+)
+def test_publishable_output_keeps_the_reference_refusal_order(
+    value: Any, expected: str | None
+) -> None:
+    reference = _assert_publishable_verdicts_agree(value)
+    if expected is None:
+        assert reference is None
+    else:
+        assert reference is not None and expected in reference[1]
+
+
+class _CollidingText(str):
+    """Equal to, and hashed like, an already-accepted clean string."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __hash__(self) -> int:
+        return hash("clean")
+
+
+class _OrderedMapping(Mapping):
+    def __init__(self, pairs: list[tuple[Any, Any]]) -> None:
+        self._pairs = pairs
+
+    def __getitem__(self, key: Any) -> Any:
+        return dict(self._pairs)[key]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(key for key, _item in self._pairs)
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+
+class _Row(dict):
+    pass
+
+
+class _Rows(list):
+    pass
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"a": "clean", "b": _CollidingText("/home/alice/x")},
+        {"a": {"clean": 0}, "b": {_CollidingText("/home/alice/x"): 0}},
+        {"a": {"clean": 0}, "b": {_CollidingText("enabled"): 0}},
+        {"a": _Row({"/home/alice/x": 0})},
+        {"a": _Rows(["password=x"])},
+        {"a": _OrderedMapping([("b", "/home/alice/x"), ("measured", 1)])},
+        {"a": _OrderedMapping([(7, 1)]), "b": "/home/alice/x"},
+        {"a": b"/home/alice/x", "b": "clean"},
+        _Row({"a": "/home/alice/x"}),
+        ["/home/alice/x"],
+        "/home/alice/x",
+    ],
+)
+def test_publishable_output_leaves_other_types_to_the_reference(value: Any) -> None:
+    # A str or container subclass could compare equal to text already judged,
+    # or iterate differently; only exact dict, list and str use one pass.
+    with pytest.raises(build_data._NotPlainOutput):
+        build_data._plain_publishable_refusal(value)
+    _assert_publishable_verdicts_agree(value)
+
+
+def _nested(depth: int, leaf: Any) -> dict[str, Any]:
+    value: Any = leaf
+    for level in range(depth):
+        value = {"level": value} if level % 2 else [value]
+    return {"root": value}
+
+
+@pytest.mark.parametrize(
+    "leaf", ["clean", "/home/alice/x", {"measured": 1}, {"clean": 0}, {7: "clean"}]
+)
+def test_publishable_output_matches_the_reference_at_every_depth_and_stack_height(
+    leaf: Any,
+) -> None:
+    # Near the recursion limit the reference raises RecursionError.  The
+    # one-pass check uses fewer frames for some data (a forbidden key, or a
+    # key with a non-string value, needs no call of its own), so it must
+    # leave a call without enough headroom to the reference.
+    for depth in (1, 2, 20, build_data._PLAIN_OUTPUT_DEPTH - 1,
+                  build_data._PLAIN_OUTPUT_DEPTH, build_data._PLAIN_OUTPUT_DEPTH + 1, 300):
+        _assert_publishable_verdicts_agree(_nested(depth, leaf))
+    limit = sys.getrecursionlimit()
+    base = build_data._stack_depth()
+    outcomes = set()
+    try:
+        for headroom in (20, 40, 80, 2 * build_data._PLAIN_OUTPUT_DEPTH + 20):
+            sys.setrecursionlimit(base + headroom)
+            for depth in range(headroom + 10):
+                outcomes.add(_assert_publishable_verdicts_agree(_nested(depth, leaf)))
+    finally:
+        sys.setrecursionlimit(limit)
+    assert ("recursion",) in outcomes  # the sweep reached the reference's limit
 
 
 def test_website_owned_text_refuses_dropped_population_label() -> None:

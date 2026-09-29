@@ -1660,31 +1660,149 @@ def _walk_strings(value: Any, *, key: bool = False) -> Any:
             yield from _walk_strings(item)
 
 
+# Both the one-pass check and the reference check read this one set.
+_FORBIDDEN_STORED_FIELDS = frozenset(
+    {"enabled", "measured", "measurement_state", "never_measured"}
+)
+_OWNER_PATH_REFUSAL = "compatibility reduction contains an absolute owner path"
+_CREDENTIAL_REFUSAL = "compatibility reduction contains a credential-bearing string"
+
+
 def _require_no_stored_measurement_fields(value: Mapping[str, Any]) -> None:
-    forbidden = {
-        "enabled",
-        "measured",
-        "measurement_state",
-        "never_measured",
-    }
     for is_key, text in _walk_strings(value):
-        if is_key and text in forbidden:
+        if is_key and text in _FORBIDDEN_STORED_FIELDS:
             raise BuildRefused(
                 f"compatibility reduction contains forbidden stored field {text!r}"
             )
 
 
+# Deeper data, or a call made with less recursion headroom than twice this
+# many frames, goes to the reference check.  That check's generator walk
+# reaches RecursionError on deep enough data, and the one-pass check must not
+# accept anything it would refuse that way.  Published Stage 1 data is about
+# 15 levels deep.
+_PLAIN_OUTPUT_DEPTH = 64
+_PLAIN_OUTPUT_LEAVES = frozenset({int, float, bool, type(None)})
+
+
+class _NotPlainOutput(Exception):
+    """A value the one-pass check leaves to the reference check.
+
+    The reference check is the stored-field pass and string pass at the end of
+    _require_publishable_output.
+    """
+
+
+def _stack_depth() -> int:
+    frame, depth = sys._getframe(), 0
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    return depth
+
+
+def _plain_publishable_refusal(value: Any) -> str | None:
+    """One pass over exact dict, list and str data, equal to the reference check.
+
+    The reference raises a forbidden stored field, or a key that is not a
+    string, at its first occurrence in walk order, before it judges any
+    string; this pass raises those at the same point.  An owner-path or
+    credential refusal is kept and returned only after the walk finds neither.
+    It is the first such refusal in walk order, with the owner check before
+    the credential check, as in the reference.  Each distinct key text and
+    each distinct value text is judged once per call, because a string's
+    verdict depends only on its text and whether it is a key.  Any other
+    type, including a str or dict subclass, raises _NotPlainOutput before
+    anything is judged.
+    """
+    if type(value) is not dict or (
+        _stack_depth() + 2 * _PLAIN_OUTPUT_DEPTH > sys.getrecursionlimit()
+    ):
+        raise _NotPlainOutput
+    forbidden = _FORBIDDEN_STORED_FIELDS
+    leaves = _PLAIN_OUTPUT_LEAVES
+    owner = _OWNER_PATH_RE.search
+    credential = _CREDENTIAL_RE.search
+    credential_key = _CREDENTIAL_KEY_RE.search
+    passed_keys: set[str] = set()
+    passed_values: set[str] = set()
+    refusal: list[str] = []
+
+    def judge_value(text: str) -> None:
+        if owner(text):
+            refusal.append(_OWNER_PATH_REFUSAL)
+        elif credential(text):
+            refusal.append(_CREDENTIAL_REFUSAL)
+        else:
+            passed_values.add(text)
+
+    def visit(children: Any, depth: int) -> None:
+        if depth > _PLAIN_OUTPUT_DEPTH:
+            raise _NotPlainOutput
+        for child in children:
+            kind = type(child)
+            if kind is str:
+                if not refusal and child not in passed_values:
+                    judge_value(child)
+            elif kind is dict:
+                visit_object(child, depth + 1)
+            elif kind is list:
+                visit(child, depth + 1)
+            elif kind not in leaves:
+                raise _NotPlainOutput
+
+    def visit_object(item: dict, depth: int) -> None:
+        if depth > _PLAIN_OUTPUT_DEPTH:
+            raise _NotPlainOutput
+        for name, child in item.items():
+            if type(name) is not str:
+                if isinstance(name, str):
+                    raise _NotPlainOutput
+                raise BuildRefused("published object keys must be strings")
+            if name in forbidden:
+                raise BuildRefused(
+                    f"compatibility reduction contains forbidden stored field {name!r}"
+                )
+            if not refusal and name not in passed_keys:
+                if owner(name):
+                    refusal.append(_OWNER_PATH_REFUSAL)
+                elif credential_key(name) or credential(name):
+                    refusal.append(_CREDENTIAL_REFUSAL)
+                else:
+                    passed_keys.add(name)
+            kind = type(child)
+            if kind is str:
+                if not refusal and child not in passed_values:
+                    judge_value(child)
+            elif kind is dict:
+                visit_object(child, depth + 1)
+            elif kind is list:
+                visit(child, depth + 1)
+            elif kind not in leaves:
+                raise _NotPlainOutput
+
+    visit_object(value, 1)
+    return refusal[0] if refusal else None
+
+
 def _require_publishable_output(value: Mapping[str, Any]) -> None:
+    try:
+        refusal = _plain_publishable_refusal(value)
+    except _NotPlainOutput:
+        pass
+    else:
+        if refusal is not None:
+            raise BuildRefused(refusal)
+        return
+    # The reference check: a stored-field pass, then a string pass.  It runs
+    # in this frame, as it always has, so that a value near the recursion
+    # limit reaches the same outcome as before the one-pass check existed.
     _require_no_stored_measurement_fields(value)
     for is_key, text in _walk_strings(value):
         if _OWNER_PATH_RE.search(text):
-            raise BuildRefused(
-                "compatibility reduction contains an absolute owner path"
-            )
+            raise BuildRefused(_OWNER_PATH_REFUSAL)
         if (is_key and _CREDENTIAL_KEY_RE.search(text)) or _CREDENTIAL_RE.search(text):
-            raise BuildRefused(
-                "compatibility reduction contains a credential-bearing string"
-            )
+            raise BuildRefused(_CREDENTIAL_REFUSAL)
 
 
 def _require_website_owned_text(value: Any) -> None:
