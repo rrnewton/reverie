@@ -1162,7 +1162,20 @@ def _reachable_containers(value) -> list:
     return found
 
 
+class _MutableList(list):
+    __slots__ = ()
+
+
+class _MutableDict(dict):
+    __slots__ = ()
+
+
 def _list_mutations(value: list) -> list:
+    def assign_class():
+        # Layout-compatible with the view class, so only the view's own
+        # __setattr__ can refuse it.
+        value.__class__ = _MutableList
+
     def augmented_add():
         view = value
         view += [1]
@@ -1181,7 +1194,7 @@ def _list_mutations(value: list) -> list:
             lambda: value.pop(), lambda: value.remove(value[0] if value else 1),
             value.clear, value.sort, value.reverse, lambda: value.__setitem__(0, 1),
             lambda: value.__delitem__(0), augmented_add, augmented_multiply,
-            slice_delete, slice_assign]
+            slice_delete, slice_assign, lambda: value.__init__([9]), assign_class]
 
 
 def _dict_mutations(value: dict) -> list:
@@ -1197,9 +1210,13 @@ def _dict_mutations(value: dict) -> list:
     def item_assign():
         value[key] = "changed"
 
+    def assign_class():
+        value.__class__ = _MutableDict
+
     return [value.clear, lambda: value.pop(key), value.popitem,
             lambda: value.setdefault("new", 1), lambda: value.update(new=1),
-            lambda: value.update({key: "changed"}), augmented_or, item_delete, item_assign]
+            lambda: value.update({key: "changed"}), augmented_or, item_delete, item_assign,
+            lambda: value.__init__(zzz=1), assign_class]
 
 
 def _admission_attribute_mutations(value) -> list:
@@ -1244,7 +1261,17 @@ def test_committed_namespace_views_refuse_every_ordinary_mutation(tmp_path: Path
     # At least one list and one admission object received every mutation.
     assert attempted >= len(_list_mutations([])) + len(_dict_mutations({})) + 4
     assert pickle.dumps(copy.deepcopy(view), 5) == before
-    assert getattr(ns, view_name)() is view
+    again = getattr(ns, view_name)()
+    if view_name == "rows_view":
+        # The export reads rows twice, so this view is built once and kept.
+        assert again is view and ns._views == {"rows": view}
+    else:
+        # The export reads events once, so each call builds a new view and
+        # the namespace keeps no reference to either.
+        assert again is not view and again == view
+        assert "events" not in ns._views
+        assert not any(item is view or item is again
+                       for item in (*vars(ns).values(), *ns._views.values()))
     assert _namespace_answers(ns, expected) == answers
 
 
@@ -1322,6 +1349,29 @@ def test_read_only_view_keeps_types_sharing_and_pairs():
     assert pickle.dumps(copy.deepcopy(value), 5) == original
 
 
+def test_read_only_view_refuses_every_ordinary_mutation_of_plain_containers():
+    # Committed rows and events are admission objects and lists, so the
+    # namespace test above never reaches a plain dict view.
+    value = [{"a": ["x", {"b": 1}], "c": {"d": "e"}}, ["f"]]
+    original = pickle.dumps(value, 5)
+    view = validate_rows._read_only_view(value, {})
+    containers = _reachable_containers(view)
+    assert [type(item) for item in containers].count(validate_rows._ReadOnlyList) == 3
+    assert [type(item) for item in containers].count(validate_rows._ReadOnlyDict) == 3
+    assert len(containers) == 6
+    before = pickle.dumps(copy.deepcopy(view), 5)
+    attempted = 0
+    for item in containers:
+        mutations = _list_mutations(item) if isinstance(item, list) else _dict_mutations(item)
+        for mutate in mutations:
+            with pytest.raises(TypeError, match="committed validation views are read-only"):
+                mutate()
+            attempted += 1
+    assert attempted == 3 * len(_list_mutations([])) + 3 * len(_dict_mutations({}))
+    assert pickle.dumps(copy.deepcopy(view), 5) == before
+    assert pickle.dumps(value, 5) == original
+
+
 @pytest.mark.parametrize("unsupported", ["subclass", "extra_attribute", "list_pairs", "tuple_key"])
 def test_committed_namespace_view_falls_back_to_a_private_copy(unsupported: str):
     class Row(dict):
@@ -1348,6 +1398,11 @@ def test_committed_namespace_view_falls_back_to_a_private_copy(unsupported: str)
     assert "rows" not in holder._views
     copied[0]["repo"] = "changed"
     assert item["repo"] == "hermit"
+    # events_view takes the same fallback without retaining anything.
+    holder._events = {"event": item}
+    events = holder.events_view()
+    assert events == [item] and events[0] is not item and type(events[0]) is type(item)
+    assert holder._views == {} and holder.events_view() is not events
 
 
 def test_committed_namespace_retry_keeps_original_origin_after_unrelated_advance(tmp_path: Path):

@@ -1749,6 +1749,10 @@ class _ReadOnlyList(list):
     __slots__ = ()
     append = extend = insert = pop = remove = clear = sort = reverse = _refuse_view_mutation
     __setitem__ = __delitem__ = __iadd__ = __imul__ = _refuse_view_mutation
+    # _read_only_view fills a view with list.extend after __new__, so nothing
+    # calls __init__; calling it again would replace the items.  Refusing
+    # __setattr__ also refuses rebinding __class__ to a mutable subclass.
+    __init__ = __setattr__ = __delattr__ = _refuse_view_mutation
 
     def __copy__(self):
         return list(self)
@@ -1768,6 +1772,8 @@ class _ReadOnlyDict(dict):
     __slots__ = ()
     clear = pop = popitem = setdefault = update = _refuse_view_mutation
     __setitem__ = __delitem__ = __ior__ = _refuse_view_mutation
+    # As for _ReadOnlyList: views are filled with dict.update after __new__.
+    __init__ = __setattr__ = __delattr__ = _refuse_view_mutation
 
     def __copy__(self):
         return dict(self)
@@ -1787,7 +1793,7 @@ class _ReadOnlyAdmissionObject(qualifying_receipt.AdmissionJsonObject):
 
     clear = pop = popitem = setdefault = update = _refuse_view_mutation
     __setitem__ = __delitem__ = __ior__ = _refuse_view_mutation
-    __setattr__ = __delattr__ = _refuse_view_mutation
+    __init__ = __setattr__ = __delattr__ = _refuse_view_mutation
 
     def _mutable(self, memo):
         copied = qualifying_receipt.AdmissionJsonObject.__new__(
@@ -1959,29 +1965,38 @@ class CommittedValidationNamespace:
         """The original validated union, for existing event count/digest capture."""
         return copy.deepcopy(list(self._events.values()))
 
-    def _view(self, name: str, value: list) -> list:
-        if name not in self._views:
-            try:
-                self._views[name] = _read_only_view(value, {})
-            except _NotViewable:
-                return copy.deepcopy(value)
-        return self._views[name]
+    def _view(self, name: str, value: list, *, retain: bool = True) -> list:
+        if name in self._views:
+            return self._views[name]
+        try:
+            view = _read_only_view(value, {})
+        except _NotViewable:
+            return copy.deepcopy(value)
+        if retain:
+            self._views[name] = view
+        return view
 
     def rows_view(self) -> list[dict]:
         """rows() for a caller that only reads: equal items it cannot change.
 
-        The view is built once and shared.  Every list, dict and
-        AdmissionJsonObject in it refuses item and attribute assignment with
-        TypeError, so an ordinary mutation cannot reach a later reader.  It is
-        never the namespace's own storage: select(), terminals(), rows() and
-        events() read separate objects.  copy.deepcopy of the view is equal,
-        type for type, to rows().
+        The view is built once and shared, because the website export reads
+        rows twice; it lives as long as the namespace.  Every list, dict and
+        AdmissionJsonObject in it refuses item and attribute assignment,
+        __init__ and __class__ rebinding with TypeError, so an ordinary
+        mutation cannot reach a later reader.  It is never the namespace's own
+        storage: select(), terminals(), rows() and events() read separate
+        objects.  copy.deepcopy of the view is equal, type for type, to rows().
         """
         return self._view("rows", self._rows)
 
     def events_view(self) -> list[dict]:
-        """events() for a caller that only reads, on the rows_view() terms."""
-        return self._view("events", list(self._events.values()))
+        """events() for a caller that only reads, on the rows_view() terms.
+
+        Unlike rows_view(), each call builds a new view and the namespace keeps
+        no reference to it.  The export reads events once, and a retained view
+        would hold about 10M objects in memory for the rest of the export.
+        """
+        return self._view("events", list(self._events.values()), retain=False)
 
     def source_files(self) -> list[dict]:
         """Original path/blob/data operands for provenance and reproduction."""
