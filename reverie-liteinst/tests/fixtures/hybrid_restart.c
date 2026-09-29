@@ -435,6 +435,48 @@ static int longjmp_read(int flags) {
   return rc;
 }
 
+// Abandons `count` unsubscribed 400 ms nanosleeps through the site, each
+// interrupted by SIGALRM at 3 ms, whose handler (`longjmp_alarm`) siglongjmps
+// back here. Every iteration calls the site from the same frame, so each
+// abandoned restart has the controller stack pointer of the next one.
+static void abandon_sleeps(int count) {
+  for (int i = 0; i < count; i++) {
+    if (sigsetjmp(longjmp_env, 1) == 0) {
+      struct itimerval alarm_at;
+      memset(&alarm_at, 0, sizeof(alarm_at));
+      alarm_at.it_value.tv_usec = 3 * 1000;
+      setitimer(ITIMER_REAL, &alarm_at, NULL);
+      struct timespec request = {.tv_sec = 0, .tv_nsec = 400 * 1000 * 1000};
+      restart_site(SYS_nanosleep, (long)&request, 0, 0, 0);
+      after_sleep += 1;
+    }
+  }
+}
+
+// More abandoned restarts than `LITEINST_PENDING_RESTART_LIMIT`.
+#define ABANDONED_RESTARTS 70
+
+static void abandoning_handler(int signo) {
+  (void)signo;
+  handled += 1;
+  abandon_sleeps(ABANDONED_RESTARTS);
+}
+
+// The handler that decides the magic read's restart abandons more nested
+// restarts than `LITEINST_PENDING_RESTART_LIMIT`, then returns to the magic
+// read's landing.
+static int abandoning_read(int flags) {
+  struct sigaction alarm_action;
+  memset(&alarm_action, 0, sizeof(alarm_action));
+  alarm_action.sa_handler = longjmp_alarm;
+  if (sigaction(SIGALRM, &alarm_action, NULL) != 0) {
+    return 60;
+  }
+  int rc = handled_read_with(abandoning_handler, flags);
+  printf("after-sleep=%d\n", (int)after_sleep);
+  return rc;
+}
+
 // Edits the interrupted read's saved rax as a handler may: an interrupted
 // read (-EINTR) returns 777 instead, and a restarted one (rax is the syscall
 // number again) restarts as close(MAGIC_FD), which fails with EBADF.
@@ -631,6 +673,12 @@ int main(int argc, char **argv) {
   }
   if (strcmp(mode, "handler-longjmp-restart") == 0) {
     return longjmp_read(SA_RESTART);
+  }
+  if (strcmp(mode, "handler-abandon") == 0) {
+    return abandoning_read(0);
+  }
+  if (strcmp(mode, "handler-abandon-restart") == 0) {
+    return abandoning_read(SA_RESTART);
   }
   if (strcmp(mode, "handler-edit-rax") == 0) {
     return siginfo_read_with(edit_rax_handler, 0);
