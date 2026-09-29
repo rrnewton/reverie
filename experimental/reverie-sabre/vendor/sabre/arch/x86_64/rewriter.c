@@ -451,10 +451,20 @@ static inline void copy_postamble(void *dest, struct s_code code[],
       char *mod_rm_ptr;
       char *sib_ptr;
       switch (code[insn].insn) {
+      case 0x80: // Group-1 byte op, e.g. CMP r/m8, imm8
       case 0x81: // CMP with imm16/32 operand
       case 0x83: // CMP with imm8 operand
       {
-        // Instruction format:
+        // The layout below assumes the opcode is the first byte. A legacy or
+        // REX prefix moves the displacement, so refuse rather than rewrite
+        // the wrong bytes.
+        if (*(unsigned char *)code[insn].addr != code[insn].insn)
+          _nx_fatal_printf(
+              "prefixed RIP relative group-1 instruction not supported: "
+              "0x%x\n",
+              code[insn].insn);
+
+        // Instruction format (0x80 has the same layout as 0x83):
         //         83 3D XX XX XX XX XX
         //         -- -- ----------- --
         // addr +  0  1  2           6
