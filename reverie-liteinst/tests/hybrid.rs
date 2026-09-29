@@ -3410,6 +3410,118 @@ struct SigreturnHookTimerRun {
     /// to that stop, in the order witnessed (see
     /// `reverie_ptrace::testing::precise_events_overtaken_with_notification_queued`).
     overtaken: Vec<(u64, u64)>,
+    /// Each round's request, by round, with the guest's RCB clock at it.
+    requests: std::collections::BTreeMap<u64, u64>,
+}
+
+impl SigreturnHookTimerRun {
+    /// The guest's RCBs from round `round`'s request at which the next
+    /// round's signal can stop the guest, for a run whose handler returns
+    /// `lead` branches after its request in that round, and which runs
+    /// `after` branches after each signal: from the end of those `after`
+    /// branches up to the next round's request, inclusive, which the handler
+    /// makes after the signal's stop. After an rt_sigreturn hook trap that keeps the
+    /// event, that stop is the only one before the next request, so it is
+    /// the only stop that can overtake the kept event. Empty for the last
+    /// round, after which the guest makes no stop before it exits.
+    fn next_signal(&self, round: u64, lead: u64, after: u64) -> std::ops::Range<u64> {
+        match self.requests.get(&(round + 1)) {
+            Some(next) => lead + after..next - self.requests[&round] + 1,
+            None => 0..0,
+        }
+    }
+}
+
+/// The most rounds of a run whose kept event may be overtaken with its
+/// notification queued, of `kept` rounds whose event could be: the least
+/// count that a Poisson count with a mean of 4 in 1000 kept rounds exceeds
+/// with a probability under 1 in 10000. That mean is four times the measured
+/// rate rounded up to 1 in 1000: 4 overtaken in 5000 kept rounds in the
+/// round-6 diagnosis
+/// (https://github.com/rrnewton/reverie/issues/726#issuecomment-5881024175),
+/// and 4 in 400 runs of `an_rt_sigreturn_hook_trap_keeps_the_timer_event`,
+/// 6000 kept rounds that could be overtaken, in the round-6 review of
+/// https://github.com/rrnewton/reverie/pull/665, on devbig014, an AMD EPYC
+/// 9D85, at load averages of 30 to 127. So a change that made a kept event's
+/// notification late much more often fails the run: 3 overtaken of 15 kept
+/// rounds, 4 of 44, or 9 of 400.
+fn overtaken_cap(kept: u64) -> u64 {
+    let mean = kept as f64 * 4.0 / 1000.0;
+    // The probability of each count, and of at most `cap`.
+    let mut term = (-mean).exp();
+    let mut at_most = term;
+    let mut cap = 0;
+    while 1.0 - at_most >= 1e-4 {
+        cap += 1;
+        term *= mean / cap as f64;
+        at_most += term;
+    }
+    cap
+}
+
+/// Checks the events that a run counted as overtaken with their notification
+/// queued (see `SigreturnHookTimerRun::overtaken`) against the one host
+/// effect that explains them (see `sweep_sigreturn_hook_trap`), and returns
+/// them by round, each with the guest's RCBs from its request to the stop
+/// that overtook it. Every witness must be an event fired past its target,
+/// `rcbs`, or an overtaken one, and no other. No round may be overtaken
+/// twice, or both overtaken and fired. Each overtaken round must be one of
+/// the run's `rounds`, and its event must be overtaken at or past its target
+/// by a stop at `overtaking_stop(round)` RCBs from its request, where the
+/// only stop that can overtake its kept event lies. Prints how many rounds
+/// were overtaken, so that the rate is seen in every run.
+fn overtaken_rounds(
+    run: &SigreturnHookTimerRun,
+    rcbs: u64,
+    rounds: u64,
+    overtaking_stop: impl Fn(u64) -> std::ops::Range<u64>,
+) -> std::collections::BTreeMap<u64, u64> {
+    let SigreturnHookTimerRun {
+        events,
+        witnesses,
+        overtaken,
+        ..
+    } = run;
+    let late = events.iter().filter(|&&(_, clock)| clock > rcbs).count() as u64;
+    eprintln!(
+        "{} of {rounds} rounds were overtaken with their notification queued, by round and RCBs \
+         from its request: {overtaken:?}",
+        overtaken.len()
+    );
+    assert_eq!(
+        *witnesses,
+        late + overtaken.len() as u64,
+        "every witness must be an event fired past its target, or one overtaken with its \
+         notification queued: {late} fired late, overtaken {overtaken:?}, events {events:?}"
+    );
+    let fired: std::collections::BTreeMap<u64, u64> = events.iter().copied().collect();
+    let by_round: std::collections::BTreeMap<u64, u64> = overtaken.iter().copied().collect();
+    assert_eq!(
+        by_round.len(),
+        overtaken.len(),
+        "no round may be overtaken twice: {overtaken:?}"
+    );
+    for (&round, &clock) in &by_round {
+        let stop = overtaking_stop(round);
+        assert!(
+            round < rounds && !fired.contains_key(&round) && clock >= rcbs && stop.contains(&clock),
+            "an overtaken round's event must not fire, and must be overtaken at or past its \
+             target {rcbs} by the one stop that can overtake it, {stop:?} RCBs from its \
+             request: round {round} at {clock}, events {events:?}"
+        );
+    }
+    by_round
+}
+
+/// Asserts that no more of `kept` rounds were overtaken than
+/// `overtaken_cap(kept)`.
+fn assert_overtaken_within_cap(overtaken: &std::collections::BTreeMap<u64, u64>, kept: u64) {
+    let cap = overtaken_cap(kept);
+    assert!(
+        overtaken.len() as u64 <= cap,
+        "at most {cap} of {kept} kept events may be overtaken with their notification queued, \
+         at four times the measured rate: {overtaken:?}"
+    );
 }
 
 /// Runs `hybrid_sigreturn_hook_timer.c` with `args`, for `rounds` signals,
@@ -3482,6 +3594,7 @@ async fn run_sigreturn_hook_timer_args(
         events,
         witnesses,
         overtaken,
+        requests: requests.into_iter().collect(),
     }
 }
 
@@ -3506,20 +3619,36 @@ fn sigreturn_keep_point() -> u64 {
 // requested: each handler requests an event whose PMU notification comes
 // after the rt_sigreturn, and it must fire at its target after the handler
 // has returned.
+//
+// The one exception is the host timing that `sweep_sigreturn_hook_trap`
+// identifies by its cause: a notification serviced only at the next round's
+// signal, which overtakes the kept event past its target with the
+// notification queued, and witnesses it. Such a round alone may be missing,
+// at that stop, and every other round must fire (see `overtaken_rounds`).
+// The last round cannot be overtaken, since the guest makes no stop between
+// its handler's return and its exit.
 #[tokio::test(flavor = "current_thread")]
 async fn an_rt_sigreturn_hook_trap_keeps_the_timer_event() {
     reverie_ptrace::ret_without_perf!();
     let rcbs = SIGRETURN_RCBS;
+    let (lead, after) = (5_000, 2 * rcbs);
     let rounds = 16;
-    let (events, witnesses) =
-        run_sigreturn_hook_timer(rcbs, 5_000, 1, 0, rounds, 2 * rcbs, false).await;
+    let run = run_sigreturn_hook_timer_overtaken(rcbs, lead, 1, 0, rounds, after, false).await;
+    let overtaken = overtaken_rounds(&run, rcbs, rounds, |round| {
+        run.next_signal(round, lead, after)
+    });
+    assert_overtaken_within_cap(&overtaken, rounds - 1);
+    let events = &run.events;
     assert_eq!(
         events.iter().map(|&(round, _)| round).collect::<Vec<_>>(),
-        (0..rounds).collect::<Vec<_>>(),
-        "every round's event must fire: {events:?}"
+        (0..rounds)
+            .filter(|round| !overtaken.contains_key(round))
+            .collect::<Vec<_>>(),
+        "every round's event must fire, unless overtaken with its notification queued: \
+         {events:?}, overtaken {overtaken:?}"
     );
     let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
-    assert_at_target_unless_witnessed(&clocks, rcbs, witnesses);
+    assert_at_target_unless_witnessed(&clocks, rcbs, run.witnesses - overtaken.len() as u64);
 }
 
 /// A bound on the branches from the return of `hybrid_sigreturn_hook_timer.c`'s
@@ -3563,9 +3692,12 @@ const SIGRETURN_TRAP_BRANCHES: u64 = 200;
 /// and the run must have exactly one witness per event fired past its target
 /// and per such overtaken event, and no other. An overtaken round must be one
 /// whose event was kept, which did not fire and was overtaken at or past its
-/// target, and every other repeat of its distance must have fired; the fate
-/// of each distance is read from the repeats that were not overtaken, of
-/// which there must be at least one. No round is run again.
+/// target by the next round's signal (see `overtaken_rounds` and
+/// `SigreturnHookTimerRun::next_signal`), and every other repeat of its
+/// distance must have fired; the fate of each distance is read from the
+/// repeats that were not overtaken, of which there must be at least one. No
+/// more kept rounds may be overtaken than `overtaken_cap` allows. No round is
+/// run again.
 async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats: u64) -> u64 {
     let rcbs = SIGRETURN_RCBS;
     let keep_point = sigreturn_keep_point();
@@ -3574,41 +3706,19 @@ async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats
         "the sweep must start before the keep point, and every trap come before the target"
     );
     let rounds = leads * repeats;
+    let after = 2 * rcbs;
+    let run =
+        run_sigreturn_hook_timer_overtaken(rcbs, before, leads, stride, rounds, after, false).await;
+    let overtaken_rounds = overtaken_rounds(&run, rcbs, rounds, |round| {
+        run.next_signal(round, before + (round % leads) * stride, after)
+    });
     let SigreturnHookTimerRun {
         events,
         witnesses,
         overtaken,
-    } = run_sigreturn_hook_timer_overtaken(rcbs, before, leads, stride, rounds, 2 * rcbs, false)
-        .await;
-    let late = events.iter().filter(|&&(_, clock)| clock > rcbs).count() as u64;
-    assert_eq!(
-        witnesses,
-        late + overtaken.len() as u64,
-        "every witness must be an event fired past its target, or one overtaken with its \
-         notification queued: {late} fired late, overtaken {overtaken:?}, events {events:?}"
-    );
-    if !overtaken.is_empty() {
-        eprintln!(
-            "{} events were overtaken with their notification queued, by round and RCBs from \
-             its request: {overtaken:?}",
-            overtaken.len()
-        );
-    }
+        ..
+    } = run;
     let fired: std::collections::BTreeMap<u64, u64> = events.iter().copied().collect();
-    let overtaken_rounds: std::collections::BTreeMap<u64, u64> =
-        overtaken.iter().copied().collect();
-    assert_eq!(
-        overtaken_rounds.len(),
-        overtaken.len(),
-        "no round may be overtaken twice: {overtaken:?}"
-    );
-    for (&round, &clock) in &overtaken_rounds {
-        assert!(
-            round < rounds && !fired.contains_key(&round) && clock >= rcbs,
-            "an overtaken round's event must not fire, and must be overtaken at or past its \
-             target {rcbs}: round {round} at {clock}, events {events:?}"
-        );
-    }
     let fates: Vec<bool> = (0..leads)
         .map(|j| {
             let distance = before + j * stride;
@@ -3646,6 +3756,12 @@ async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats
         boundary > 0 && boundary < fates.len(),
         "the sweep must cross the keep point: {fates:?}"
     );
+    // The rounds whose event was kept, and could be overtaken: every round of
+    // a distance that fired, but the last round, which cannot be.
+    let kept = (0..rounds - 1)
+        .filter(|round| fates[(round % leads) as usize])
+        .count() as u64;
+    assert_overtaken_within_cap(&overtaken_rounds, kept);
     assert!(
         fates[boundary..].iter().all(|&fate| !fate),
         "a trap past the keep point must cancel the event, and one before it keep it: {fates:?}"
@@ -3761,12 +3877,24 @@ async fn the_rt_sigreturn_hook_keep_point_does_not_depend_on_the_skid_margin() {
 async fn an_event_kept_across_an_rt_sigreturn_hook_trap_and_overtaken_is_witnessed_once() {
     reverie_ptrace::ret_without_perf!();
     let rcbs = SIGRETURN_RCBS;
+    let (lead, after) = (5_000, 2 * rcbs);
     let rounds = 16;
+    let run = run_sigreturn_hook_timer_overtaken(rcbs, lead, 1, 0, rounds, after, true).await;
+    // The next round's signal overtook each event.
+    for &(round, clock) in &run.overtaken {
+        let stop = run.next_signal(round, lead, after);
+        assert!(
+            stop.contains(&clock),
+            "round {round} was overtaken at {clock}, not by the next round's signal, {stop:?} \
+             RCBs from its request"
+        );
+    }
     let SigreturnHookTimerRun {
         events,
         witnesses,
         overtaken,
-    } = run_sigreturn_hook_timer_overtaken(rcbs, 5_000, 1, 0, rounds, 2 * rcbs, true).await;
+        ..
+    } = run;
     assert_eq!(events, [], "no notification can deliver an event");
     assert_eq!(
         witnesses, rounds,
@@ -3821,20 +3949,38 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
 // per late event, so a run with no late event must have none). The targets
 // are 11000 RCBs, past the period on every processor in Reverie's PMU table,
 // and `SIGRETURN_RCBS`.
+//
+// The one exception is the host timing that `sweep_sigreturn_hook_trap`
+// identifies by its cause, here with the rt_sigreturn hook trap as the
+// overtaking stop: a notification not serviced before the trap, although
+// queued at it, so that the trap decides the event past its target and
+// witnesses it. Such a round alone may be missing, overtaken at the trap,
+// and every other round must fire (see `overtaken_rounds`).
 #[tokio::test(flavor = "current_thread")]
 async fn an_rt_sigreturn_hook_trap_past_a_delivered_event_is_not_witnessed() {
     reverie_ptrace::ret_without_perf!();
     let rounds = 16;
     for rcbs in [11_000, SIGRETURN_RCBS] {
-        let (events, witnesses) =
-            run_sigreturn_hook_timer(rcbs, 2 * rcbs, 1, 0, rounds, 1_000, false).await;
+        let lead = 2 * rcbs;
+        let run = run_sigreturn_hook_timer_overtaken(rcbs, lead, 1, 0, rounds, 1_000, false).await;
+        // The handler's return, and its rt_sigreturn hook trap at most
+        // `SIGRETURN_TRAP_BRANCHES` after it, is the first stop after the
+        // target.
+        let overtaken = overtaken_rounds(&run, rcbs, rounds, |_| {
+            lead..lead + SIGRETURN_TRAP_BRANCHES + 1
+        });
+        assert_overtaken_within_cap(&overtaken, rounds);
+        let events = &run.events;
         assert_eq!(
             events.iter().map(|&(round, _)| round).collect::<Vec<_>>(),
-            (0..rounds).collect::<Vec<_>>(),
-            "every round's event must fire before its handler returns: {events:?}"
+            (0..rounds)
+                .filter(|round| !overtaken.contains_key(round))
+                .collect::<Vec<_>>(),
+            "every round's event must fire before its handler returns, unless overtaken with \
+             its notification queued: {events:?}, overtaken {overtaken:?}"
         );
         let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
-        assert_at_target_unless_witnessed(&clocks, rcbs, witnesses);
+        assert_at_target_unless_witnessed(&clocks, rcbs, run.witnesses - overtaken.len() as u64);
     }
 }
 

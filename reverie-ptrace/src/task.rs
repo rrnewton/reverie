@@ -3467,8 +3467,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             // or not anything was handed on, and the Tool loses that
             // preemption: `Timer::retire` records the event as a skid
             // overshoot if no stop has decided it and the guest has reached
-            // its delivery point, and ends the programming, so that no
-            // notification arrives in the handler. Without this, the
+            // its delivery point, cancels it, and disables the counter, so
+            // that no new notification is raised in the handler. A
+            // notification already queued is still delivered to a stop, where
+            // `handle_signal` finds the event Cancelled and discards it.
+            // Without this, the
             // injection's step SIGTRAP, which the kernel still reports as the
             // guest resumes (`stale_private_step_trap`), would be the next
             // stop: `handle_sigtrap` discards it without disregarding it, so
