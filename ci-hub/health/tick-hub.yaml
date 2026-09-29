@@ -501,24 +501,52 @@ reminders:
   #
   # BOUND DECLARED FROM MEASUREMENT (2026-09-29, devbig014). Until then this gate
   # inherited the 30 s default and reported NO-SIGNAL ("timed out after 30s") on
-  # every tick (https://github.com/rrnewton/dev-hermit/issues/390). Three --dry-run
-  # runs against the ledger at dev-hermit 65f2d4548280 (2636 events), load 36-64:
-  #   after the replay fix : 14.55, 14.42, 88.82 s wall (median 14.55), 13 s CPU
+  # every tick (https://github.com/rrnewton/dev-hermit/issues/390). --dry-run runs
+  # against the ledger at dev-hermit 65f2d4548280 (2636 events), load 36-130:
+  #   after the replay fix : 14.27-15.05 s wall in 8 of 10 runs, 74.02 and
+  #                          88.82 s in the other 2; 13 s CPU in every run
   #   before it            : 47.95, 31.34, 213.58 s wall (median 47.95), 27 s CPU
   # The refs are not the cost: 1254 objects (1036 hermit, 218 reverie) took 0.66 s
-  # of one run; the rest is reading and checking the validation ledger. The spread
-  # is waiting, not work. Each replay runs the shared ledger-event checker once
-  # under a host-wide lock, and that checker's `rust-script --force` build step
+  # of one run; the rest is reading and checking the validation ledger. The slow
+  # runs are waiting, not working. Each replay runs the shared ledger-event checker
+  # once under a host-wide lock, and that checker's `rust-script --force` build step
   # queues behind every other rust-script release build on the host.
-  # 270 s = 3 x the worst run (88.82 s), rounded up. It does not cover the tail:
-  # one replay of the same ledger took 428 s while six other processes held or
-  # waited on that lock, and a bound that large does not fit the tick's 619 s wall
-  # backstop (scripts/hermit-operational-tick), so that case still reports
-  # NO-SIGNAL. Shortening the tail means changing the checker lock, not this bound.
+  #
+  # ONE WALL BUDGET FOR THE THREE LEDGER-REPLAY GATES: this one,
+  # validate_wall_regression and validate_wall_series_readiness. Their timeout_secs
+  # (25 + 26 + 26 = 77 s) are sized together, because:
+  #   - A gate that times out reports NO-SIGNAL and runs again on the NEXT tick,
+  #     and on every tick after that until it completes; its cadence does not hold
+  #     it back. So all three can run to their bounds in one tick, not only when
+  #     their 6 h, 1 h and 24 h cadences meet.
+  #   - scripts/hermit-operational-tick kills a tick at 619 s of wall. A killed
+  #     tick records no fired-state (tick-hub writes it once, after the last gate),
+  #     so every gate that ran in it is due again on the next tick. Moving these
+  #     gates to the end of this file would not avoid that.
+  #   - None of the 591 ticks logged in
+  #     ~/.local/state/hermit-health-tick-invocations.log (2026-09-18 to
+  #     2026-09-29) reached the backstop: 589 completed, and 2 exited with
+  #     status 3 after 84.6 and 49.6 s. The longest took 541.7 s
+  #     (2026-09-21T23:17:54Z, loadavg 356 on 316 CPUs, 60 GiB of swap in use).
+  #     validate_wall_regression passed inside its 30 s in that tick and the other
+  #     two did not run. Counting all 541.7 s as other work leaves
+  #     619 - 541.7 = 77.3 s for the three.
+  # The first declared bounds, 270 s here and 290 s on validate_wall_regression,
+  # did not fit. With both timing out, any tick whose other work took more than
+  # 59 s would have reached the backstop, and 418 of those 591 ticks did. Even
+  # 270 s for all three, which every tick since 2026-09-22 would allow, leaves the
+  # three longest ticks (425.9, 455.9 and 541.7 s, all on 2026-09-21) over it.
+  #
+  # 25 s covers every uncontended run above (at most 15.05 s) with almost 10 s to
+  # spare. A run that waits for the checker lock does not fit: 7 of the 24
+  # post-fix runs of the three gates waited, taking 34.76-88.82 s, and one replay
+  # took 428 s while six other processes held or waited on that lock. Such a run
+  # reports NO-SIGNAL and tries again on the next tick. Shortening the wait means
+  # changing the checker lock, not raising these bounds.
   - name: ledger_referenced_objects
     cadence_secs: 21600
     gate:
-      timeout_secs: 270
+      timeout_secs: 25
       cmd: python3 ci-hub/health/ledger_referenced_objects.py --ledger "$DEV_HERMIT_PARENT/ledger" --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
@@ -537,21 +565,23 @@ reminders:
   #
   # BOUND DECLARED FROM MEASUREMENT (2026-09-29, devbig014). It inherited the 30 s
   # default too and timed out the same way
-  # (https://github.com/rrnewton/dev-hermit/issues/390). Three runs on the same
-  # ledger as ledger_referenced_objects above, load 42-86, with a seeded
-  # absent-commit cache so that no GitHub lookup ran:
-  #   after the replay fix : 34.76, 86.34, 85.92 s wall (median 85.92), 13 s CPU
+  # (https://github.com/rrnewton/dev-hermit/issues/390). Runs on the same ledger as
+  # ledger_referenced_objects above, load 42-130, with a seeded absent-commit cache
+  # so that no GitHub lookup ran:
+  #   after the replay fix : 14.48-14.95 s wall in 5 of 10 runs; the other 5
+  #                          waited for the checker lock and took 34.76, 40.23,
+  #                          46.11, 85.92 and 86.34 s; 13 s CPU in every run
   #   before it            : 33.32, 111.51, 93.42 s wall (median 93.42), 27 s CPU
   # It is the same ledger replay and the same wait on the checker lock as above.
-  # 290 s = 3 x (the worst run, 86.34 s, plus the 10 s GITHUB_LOOKUP_BUDGET_SECONDS
-  # in wall_series.py that these runs did not spend), rounded up. The 428 s tail
-  # described above is not covered here either. These two gates coincide every
-  # 6 h; if both ran to their bounds, 560 s would be most of the tick's 619 s wall
-  # backstop.
+  # 26 s is its share of the 77 s budget described on ledger_referenced_objects:
+  # the slowest uncontended run of any of the three gates (15.05 s) plus the 10 s
+  # GITHUB_LOOKUP_BUDGET_SECONDS in wall_series.py that these runs did not spend,
+  # rounded up. A run that waits for the lock reports NO-SIGNAL and runs again on
+  # the next tick.
   - name: validate_wall_regression
     cadence_secs: 3600
     gate:
-      timeout_secs: 290
+      timeout_secs: 26
       cmd: python3 ci-hub/main-metrics/wall_series.py --ledger "$DEV_HERMIT_PARENT/ledger" --repo "$DEV_HERMIT_PARENT/hermit" --reverie-repo "$DEV_HERMIT_PARENT/reverie" --gate-regression
       when: failure
       capture: true
@@ -565,9 +595,18 @@ reminders:
   # The reason the gate above is holding, surfaced ONCE A DAY so the blocker stays
   # visible instead of the check being silently inert. Daily because it is a
   # backlog condition; a per-tick page would be noise.
+  #
+  # BOUND DECLARED FROM MEASUREMENT (2026-09-29, devbig014). --readiness runs the
+  # same build as validate_wall_regression: the ledger replay, then up to
+  # GITHUB_LOOKUP_BUDGET_SECONDS of GitHub lookups. It inherited the same 30 s
+  # default, and 57 of the 591 ticks described on ledger_referenced_objects
+  # recorded it timing out. Four runs after the replay fix, load 57-130, seeded
+  # absent-commit cache: 14.67, 14.32, 14.76, 14.72 s wall, 13 s CPU. 26 s for the
+  # same reason as validate_wall_regression, inside the same 77 s budget.
   - name: validate_wall_series_readiness
     cadence_secs: 86400
     gate:
+      timeout_secs: 26
       cmd: python3 ci-hub/main-metrics/wall_series.py --ledger "$DEV_HERMIT_PARENT/ledger" --repo "$DEV_HERMIT_PARENT/hermit" --reverie-repo "$DEV_HERMIT_PARENT/reverie" --readiness
       when: failure
       capture: true

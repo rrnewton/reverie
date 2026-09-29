@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 HEALTH = Path(__file__).resolve().parents[1]
 if str(HEALTH) not in sys.path:
@@ -344,3 +346,37 @@ def test_default_ledger_and_checkout_root_follow_dev_hermit_parent(tmp_path):
         capture_output=True,
         text=True,
     ).stdout == tool_status_before
+
+
+# The three gates that replay the validation ledger share one wall budget; the
+# comment on ledger_referenced_objects in tick-hub.yaml derives it. The longest
+# tick in the log it was sized from (591 ticks, 2026-09-18 to 2026-09-29) took
+# this long, and the budget counts all of it as other work.
+LONGEST_RECORDED_TICK_SECONDS = 541.7
+LEDGER_REPLAY_GATES = (
+    "ledger_referenced_objects",
+    "validate_wall_regression",
+    "validate_wall_series_readiness",
+)
+
+
+def test_ledger_replay_gate_bounds_fit_the_tick_backstop_together() -> None:
+    root = HEALTH.parents[1]
+    config = yaml.safe_load((HEALTH / "tick-hub.yaml").read_text())
+    reminders = {item["name"]: item for item in config["reminders"]}
+    bounds = {
+        name: reminders[name]["gate"].get("timeout_secs")
+        for name in LEDGER_REPLAY_GATES
+    }
+    # Each declares its bound: the 30 s default is not part of the budget.
+    assert all(isinstance(bound, int) for bound in bounds.values()), bounds
+    match = re.search(
+        r"^OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS=(\d+)$",
+        (root / "scripts/hermit-operational-tick").read_text(),
+        re.MULTILINE,
+    )
+    assert match, "the operational tick no longer declares its wall backstop"
+    # A gate that times out runs again on every tick, so all three can run to
+    # their bounds in the same tick.
+    total = sum(bounds.values()) + LONGEST_RECORDED_TICK_SECONDS
+    assert total <= int(match.group(1)), bounds
