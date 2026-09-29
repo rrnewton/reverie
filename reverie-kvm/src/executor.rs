@@ -12735,14 +12735,12 @@ fn translate_outgoing_rights(
                 || signalfd_mask(state, fd).is_some()
                 || state.random_device_fds.contains(&fd)
                 || state.loginuid_fds.contains(&fd)
-            {
-                return Err(negative_errno(libc::ENOSYS));
-            } else if !authenticated_fixed_proc_donation(
-                state,
-                fd,
-                &mut auth_budget,
-                &mut auth_cache,
-            )? && unlabelled_capture_carrier(state, host)?
+                || (!authenticated_fixed_proc_donation(
+                    state,
+                    fd,
+                    &mut auth_budget,
+                    &mut auth_cache,
+                )? && unlabelled_capture_carrier(state, host)?)
             {
                 return Err(negative_errno(libc::ENOSYS));
             }
