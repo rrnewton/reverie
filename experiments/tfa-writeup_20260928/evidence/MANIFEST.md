@@ -31,19 +31,21 @@ cited original path to its copy with these rules, or look it up in the table:
 (`sed -E 's/signature=[0-9a-fA-F]+/signature=REDACTED-BY-INTEGRATOR/g'`). Nothing else changed, so line
 numbers match the originals. For every other file the copy's SHA-256 equals the original's.
 
+**Host-name redaction (2026-09-29).** In 55 of the files below, 937 internal host names were each replaced with their first DNS label: for example, a machine's full name became `devbig030`, and `www.<internal domain>` became `www`. This follows the privacy rule in hermit's `.llms/skills/benchmark/SKILL.md`. Those files are marked "host names" in the Redacted column, and their copies no longer match the original's SHA-256. The tool is [../tools/redact_internal_fqdns.py](../tools/redact_internal_fqdns.py), and the per-file counts are in [../REDACTIONS.json](../REDACTIONS.json).
+
 ## Copied files
 
 | Copy | Original | Bytes | SHA-256 of original (first 16 hex) | Redacted |
 |---|---|---:|---|---|
 | [devvm895/STACK_SUMMARIES.md](devvm895/STACK_SUMMARIES.md) | `/tmp/sub-tfa2-030/devvm895/tfa-src/STACK_SUMMARIES.md` | 62,572 | `859dbe3a91c75562` | no |
-| [devvm895/containment-local.log.txt](devvm895/containment-local.log.txt) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/containment-local.log` | 33,439 | `10cf33ed75a857a3` | yes |
-| [devvm895/previous-way-forward-draft.md](devvm895/previous-way-forward-draft.md) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/way-forward.md` | 8,143 | `c6d8090bd2b34680` | no |
-| [devvm895/previous-way-forward-research.json](devvm895/previous-way-forward-research.json) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/way-forward-full.json` | 108,593 | `9c20071bcce229fe` | no |
-| [gather-campaign.md](gather-campaign.md) | `/tmp/sub-tfa2-030/gather/campaign.md` | 46,563 | `1b4d67ee6f403b88` | no |
+| [devvm895/containment-local.log.txt](devvm895/containment-local.log.txt) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/containment-local.log` | 33,439 | `10cf33ed75a857a3` | yes; host names |
+| [devvm895/previous-way-forward-draft.md](devvm895/previous-way-forward-draft.md) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/way-forward.md` | 8,143 | `c6d8090bd2b34680` | host names |
+| [devvm895/previous-way-forward-research.json](devvm895/previous-way-forward-research.json) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/way-forward-full.json` | 108,593 | `9c20071bcce229fe` | host names |
+| [gather-campaign.md](gather-campaign.md) | `/tmp/sub-tfa2-030/gather/campaign.md` | 46,563 | `1b4d67ee6f403b88` | host names |
 | [gather-continuations.md](gather-continuations.md) | `/tmp/sub-tfa2-030/gather/continuations.md` | 37,448 | `5d4e8c02d4a49307` | no |
 | [gather-fixability.md](gather-fixability.md) | `/tmp/sub-tfa2-030/gather/fixability.md` | 50,443 | `22649afbcda2fec9` | no |
 | [gather-phase2.md](gather-phase2.md) | `/tmp/sub-tfa2-030/gather/phase2.md` | 51,433 | `7d0d06f8b586bf81` | no |
-| [gather-raw/batch-describe.json](gather-raw/batch-describe.json) | `/tmp/sub-tfa2-030/gather/batch-describe.json` | 111,444 | `73a0055321fc55f9` | no |
+| [gather-raw/batch-describe.json](gather-raw/batch-describe.json) | `/tmp/sub-tfa2-030/gather/batch-describe.json` | 111,444 | `73a0055321fc55f9` | host names |
 | [gather-raw/campaign_recount.py](gather-raw/campaign_recount.py) | `/tmp/sub-tfa2-030/gather/campaign_recount.py` | 17,556 | `c14e54266646a281` | no |
 | [gather-raw/campaign_verify_classify.out](gather-raw/campaign_verify_classify.out) | `/tmp/sub-tfa2-030/gather/campaign_verify_classify.out` | 11,966 | `90789d6393238f0c` | no |
 | [gather-raw/campaign_verify_classify.py](gather-raw/campaign_verify_classify.py) | `/tmp/sub-tfa2-030/gather/campaign_verify_classify.py` | 2,772 | `628d170eb3301284` | no |
@@ -114,7 +116,7 @@ numbers match the originals. For every other file the copy's SHA-256 equals the 
 | [gather-raw/validate/unittest.out](gather-raw/validate/unittest.out) | `/tmp/sub-tfa2-030/gather/validate/unittest.out` | 160 | `3385c46a7080d5bf` | no |
 | [gather-raw/validate/unittest.rc](gather-raw/validate/unittest.rc) | `/tmp/sub-tfa2-030/gather/validate/unittest.rc` | 23 | `ffc8e61e11ba11a9` | no |
 | [gather-stackstate.md](gather-stackstate.md) | `/tmp/sub-tfa2-030/gather/stackstate.md` | 29,531 | `04426acf77a574a4` | no |
-| [gather-wayforward.md](gather-wayforward.md) | `/tmp/sub-tfa2-030/gather/wayforward.md` | 41,824 | `be490acfefc700f6` | no |
+| [gather-wayforward.md](gather-wayforward.md) | `/tmp/sub-tfa2-030/gather/wayforward.md` | 41,824 | `be490acfefc700f6` | host names |
 | [gh/gh-campaign-1.json](gh/gh-campaign-1.json) | `/tmp/sub-tfa2-030/gh-campaign-1.json` | 295 | `af7336a1d0f0c28a` | no |
 | [gh/gh-campaign-10.json](gh/gh-campaign-10.json) | `/tmp/sub-tfa2-030/gh-campaign-10.json` | 246 | `ba1c6d5bfe564a88` | no |
 | [gh/gh-campaign-2.json](gh/gh-campaign-2.json) | `/tmp/sub-tfa2-030/gh-campaign-2.json` | 75 | `88c0f9b5efd367dc` | no |
@@ -171,7 +173,7 @@ numbers match the originals. For every other file the copy's SHA-256 equals the 
 | [gh/gh-wayforward-8.json](gh/gh-wayforward-8.json) | `/tmp/sub-tfa2-030/gh-wayforward-8.json` | 302 | `9d97281407d05561` | no |
 | [phase2-three-case-RESULTS.md](phase2-three-case-RESULTS.md) | `/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/RESULTS.md` | 24,846 | `30342368daeb13ed` | no |
 | [tfa-lane/codex-drift/AUDIT.md](tfa-lane/codex-drift/AUDIT.md) | `/home/newton/work/tfa/codex-drift/AUDIT.md` | 1,864 | `efd09f1bf2d834cf` | no |
-| [tfa-lane/codex-rollover/full-test.log.txt](tfa-lane/codex-rollover/full-test.log.txt) | `/home/newton/work/tfa/codex-rollover/full-test.log` | 4,990 | `e20db8f0331b7053` | no |
+| [tfa-lane/codex-rollover/full-test.log.txt](tfa-lane/codex-rollover/full-test.log.txt) | `/home/newton/work/tfa/codex-rollover/full-test.log` | 4,990 | `e20db8f0331b7053` | host names |
 | [tfa-lane/codex-rollover/summary.txt](tfa-lane/codex-rollover/summary.txt) | `/home/newton/work/tfa/codex-rollover/summary.txt` | 1,647 | `f5ed97dd61c5114f` | no |
 | [tfa-lane/codex-rollover/testplan.txt](tfa-lane/codex-rollover/testplan.txt) | `/home/newton/work/tfa/codex-rollover/testplan.txt` | 1,107 | `d239e24623429b7e` | no |
 | [tfa-lane/external-hermit/witnesses-1667ce0d7600-fixture/SUMMARY.txt](tfa-lane/external-hermit/witnesses-1667ce0d7600-fixture/SUMMARY.txt) | `/home/newton/work/tfa/external-hermit/witnesses-1667ce0d7600-fixture/SUMMARY.txt` | 476 | `2f43078353b3d37e` | no |
@@ -182,7 +184,7 @@ numbers match the originals. For every other file the copy's SHA-256 equals the 
 | [tfa-lane/external-hermit/witnesses-55f6e37a4a63-fixture/SUMMARY.txt](tfa-lane/external-hermit/witnesses-55f6e37a4a63-fixture/SUMMARY.txt) | `/home/newton/work/tfa/external-hermit/witnesses-55f6e37a4a63-fixture/SUMMARY.txt` | 475 | `71a54b5d2d31294f` | no |
 | [tfa-lane/external-hermit/witnesses-dc3528a0d1ad-fixture/SUMMARY.txt](tfa-lane/external-hermit/witnesses-dc3528a0d1ad-fixture/SUMMARY.txt) | `/home/newton/work/tfa/external-hermit/witnesses-dc3528a0d1ad-fixture/SUMMARY.txt` | 475 | `5224aade1c61e5a0` | no |
 | [tfa-lane/external-oss-mode/D121978137-test-plan.txt](tfa-lane/external-oss-mode/D121978137-test-plan.txt) | `/home/newton/work/tfa/external-oss-mode/D121978137-test-plan.txt` | 2,500 | `a2d3839a899e425d` | no |
-| [tfa-lane/external-oss-mode/DISK-HOLD-4fb8c4120739.txt](tfa-lane/external-oss-mode/DISK-HOLD-4fb8c4120739.txt) | `/home/newton/work/tfa/external-oss-mode/DISK-HOLD-4fb8c4120739.txt` | 7,415 | `43045035e4f462a2` | no |
+| [tfa-lane/external-oss-mode/DISK-HOLD-4fb8c4120739.txt](tfa-lane/external-oss-mode/DISK-HOLD-4fb8c4120739.txt) | `/home/newton/work/tfa/external-oss-mode/DISK-HOLD-4fb8c4120739.txt` | 7,415 | `43045035e4f462a2` | host names |
 | [tfa-lane/external-oss-mode/mutants-head6/SUMMARY.txt](tfa-lane/external-oss-mode/mutants-head6/SUMMARY.txt) | `/home/newton/work/tfa/external-oss-mode/mutants-head6/SUMMARY.txt` | 2,903 | `077b1d2cfc835025` | no |
 | [tfa-lane/hermit-provenance/AUDIT.md](tfa-lane/hermit-provenance/AUDIT.md) | `/home/newton/work/tfa/hermit-provenance/AUDIT.md` | 4,799 | `b4f7194ca6dc36b0` | no |
 | [tfa-lane/import-watcher/watch.jsonl](tfa-lane/import-watcher/watch.jsonl) | `/home/newton/work/tfa/import-watcher/watch.jsonl` | 4,305 | `de0129893d116ccb` | no |
@@ -190,52 +192,52 @@ numbers match the originals. For every other file the copy's SHA-256 equals the 
 | [tfa-lane/three-case-0a413f6c/SUMMARY.txt](tfa-lane/three-case-0a413f6c/SUMMARY.txt) | `/home/newton/work/tfa/three-case-0a413f6c/SUMMARY.txt` | 724 | `c35233206f9c5ec5` | no |
 | [tfa-lane/three-case-b6b8f7a16a8a/SUMMARY.txt](tfa-lane/three-case-b6b8f7a16a8a/SUMMARY.txt) | `/home/newton/work/tfa/three-case-b6b8f7a16a8a/SUMMARY.txt` | 1,014 | `244cccbb2cf590f2` | no |
 | [tfa-lane/three-case/SUMMARY.txt](tfa-lane/three-case/SUMMARY.txt) | `/home/newton/work/tfa/three-case/SUMMARY.txt` | 808 | `728155e7ce9af402` | no |
-| [ti-timerfd.json](ti-timerfd.json) | `/tmp/sub-tfa2-030/ti-timerfd.json` | 2,598 | `95827cd244e788ba` | no |
+| [ti-timerfd.json](ti-timerfd.json) | `/tmp/sub-tfa2-030/ti-timerfd.json` | 2,598 | `95827cd244e788ba` | host names |
 | [ti/281475235281183.json](ti/281475235281183.json) | `/tmp/sub-tfa2-030/ti/281475235281183.json` | 48 | `a8723df56989611b` | no |
-| [ti/281475235299286.json](ti/281475235299286.json) | `/tmp/sub-tfa2-030/ti/281475235299286.json` | 1,059 | `9fdfed32465df6bb` | no |
-| [ti/281475236296488.json](ti/281475236296488.json) | `/tmp/sub-tfa2-030/ti/281475236296488.json` | 3,458 | `e4efbd94e77309f0` | no |
-| [ti/281475238796418.json](ti/281475238796418.json) | `/tmp/sub-tfa2-030/ti/281475238796418.json` | 3,797 | `16b836d3d64069bc` | no |
-| [ti/281475240048871.json](ti/281475240048871.json) | `/tmp/sub-tfa2-030/ti/281475240048871.json` | 3,180 | `2c84427f2e92a3dd` | no |
-| [ti/281475240064369.json](ti/281475240064369.json) | `/tmp/sub-tfa2-030/ti/281475240064369.json` | 2,974 | `94ad88fea7f07297` | no |
-| [ti/281475243043222.json](ti/281475243043222.json) | `/tmp/sub-tfa2-030/ti/281475243043222.json` | 3,080 | `1cc620efa5309083` | no |
-| [ti/281475243051108.json](ti/281475243051108.json) | `/tmp/sub-tfa2-030/ti/281475243051108.json` | 3,160 | `757e3f703eacac33` | no |
-| [ti/281475243249473.json](ti/281475243249473.json) | `/tmp/sub-tfa2-030/ti/281475243249473.json` | 2,930 | `7a24999fb41cbfcc` | no |
-| [ti/281475243259972.json](ti/281475243259972.json) | `/tmp/sub-tfa2-030/ti/281475243259972.json` | 2,855 | `1a628da92ada34cd` | no |
-| [ti/281475244092464.json](ti/281475244092464.json) | `/tmp/sub-tfa2-030/ti/281475244092464.json` | 2,663 | `86b8eb4b8eb8be92` | no |
-| [ti/281475250915202.json](ti/281475250915202.json) | `/tmp/sub-tfa2-030/ti/281475250915202.json` | 3,410 | `b14d0fd92ef1383d` | no |
+| [ti/281475235299286.json](ti/281475235299286.json) | `/tmp/sub-tfa2-030/ti/281475235299286.json` | 1,059 | `9fdfed32465df6bb` | host names |
+| [ti/281475236296488.json](ti/281475236296488.json) | `/tmp/sub-tfa2-030/ti/281475236296488.json` | 3,458 | `e4efbd94e77309f0` | host names |
+| [ti/281475238796418.json](ti/281475238796418.json) | `/tmp/sub-tfa2-030/ti/281475238796418.json` | 3,797 | `16b836d3d64069bc` | host names |
+| [ti/281475240048871.json](ti/281475240048871.json) | `/tmp/sub-tfa2-030/ti/281475240048871.json` | 3,180 | `2c84427f2e92a3dd` | host names |
+| [ti/281475240064369.json](ti/281475240064369.json) | `/tmp/sub-tfa2-030/ti/281475240064369.json` | 2,974 | `94ad88fea7f07297` | host names |
+| [ti/281475243043222.json](ti/281475243043222.json) | `/tmp/sub-tfa2-030/ti/281475243043222.json` | 3,080 | `1cc620efa5309083` | host names |
+| [ti/281475243051108.json](ti/281475243051108.json) | `/tmp/sub-tfa2-030/ti/281475243051108.json` | 3,160 | `757e3f703eacac33` | host names |
+| [ti/281475243249473.json](ti/281475243249473.json) | `/tmp/sub-tfa2-030/ti/281475243249473.json` | 2,930 | `7a24999fb41cbfcc` | host names |
+| [ti/281475243259972.json](ti/281475243259972.json) | `/tmp/sub-tfa2-030/ti/281475243259972.json` | 2,855 | `1a628da92ada34cd` | host names |
+| [ti/281475244092464.json](ti/281475244092464.json) | `/tmp/sub-tfa2-030/ti/281475244092464.json` | 2,663 | `86b8eb4b8eb8be92` | host names |
+| [ti/281475250915202.json](ti/281475250915202.json) | `/tmp/sub-tfa2-030/ti/281475250915202.json` | 3,410 | `b14d0fd92ef1383d` | host names |
 | [ti/281475271465112.json](ti/281475271465112.json) | `/tmp/sub-tfa2-030/ti/281475271465112.json` | 48 | `a8723df56989611b` | no |
-| [ti/562950211052906.json](ti/562950211052906.json) | `/tmp/sub-tfa2-030/ti/562950211052906.json` | 5,609 | `54ed7ff239f69941` | no |
-| [ti/562950212033102.json](ti/562950212033102.json) | `/tmp/sub-tfa2-030/ti/562950212033102.json` | 3,291 | `12d9a727ca179bc0` | no |
-| [ti/562950213120998.json](ti/562950213120998.json) | `/tmp/sub-tfa2-030/ti/562950213120998.json` | 3,502 | `bcb9207107f5274a` | no |
-| [ti/562950215319283.json](ti/562950215319283.json) | `/tmp/sub-tfa2-030/ti/562950215319283.json` | 3,175 | `abde17d47a5bf434` | no |
+| [ti/562950211052906.json](ti/562950211052906.json) | `/tmp/sub-tfa2-030/ti/562950211052906.json` | 5,609 | `54ed7ff239f69941` | host names |
+| [ti/562950212033102.json](ti/562950212033102.json) | `/tmp/sub-tfa2-030/ti/562950212033102.json` | 3,291 | `12d9a727ca179bc0` | host names |
+| [ti/562950213120998.json](ti/562950213120998.json) | `/tmp/sub-tfa2-030/ti/562950213120998.json` | 3,502 | `bcb9207107f5274a` | host names |
+| [ti/562950215319283.json](ti/562950215319283.json) | `/tmp/sub-tfa2-030/ti/562950215319283.json` | 3,175 | `abde17d47a5bf434` | host names |
 | [ti/562950215341224.json](ti/562950215341224.json) | `/tmp/sub-tfa2-030/ti/562950215341224.json` | 48 | `a8723df56989611b` | no |
-| [ti/562950216898741.json](ti/562950216898741.json) | `/tmp/sub-tfa2-030/ti/562950216898741.json` | 4,067 | `15a106842fdcd0ee` | no |
-| [ti/562950220120091.json](ti/562950220120091.json) | `/tmp/sub-tfa2-030/ti/562950220120091.json` | 3,327 | `d75bc80ca7d49454` | no |
-| [ti/562950242844554.json](ti/562950242844554.json) | `/tmp/sub-tfa2-030/ti/562950242844554.json` | 3,993 | `1969ff8c071457fe` | no |
-| [ti/562950274089363.json](ti/562950274089363.json) | `/tmp/sub-tfa2-030/ti/562950274089363.json` | 9,287 | `4d0c0944051d9029` | no |
-| [ti/562950354325343.json](ti/562950354325343.json) | `/tmp/sub-tfa2-030/ti/562950354325343.json` | 2,531 | `dd70265c762794a0` | no |
-| [ti/562950361061616.json](ti/562950361061616.json) | `/tmp/sub-tfa2-030/ti/562950361061616.json` | 3,599 | `3541256972001c9a` | no |
-| [ti/844425193659677.json](ti/844425193659677.json) | `/tmp/sub-tfa2-030/ti/844425193659677.json` | 2,798 | `52dc738cff36422c` | no |
-| [ti/844425197050049.json](ti/844425197050049.json) | `/tmp/sub-tfa2-030/ti/844425197050049.json` | 4,323 | `ae4cb324fd7dc61a` | no |
-| [ti/844425202171362.json](ti/844425202171362.json) | `/tmp/sub-tfa2-030/ti/844425202171362.json` | 9,357 | `23f31622a234e02f` | no |
-| [ti/844425205465381.json](ti/844425205465381.json) | `/tmp/sub-tfa2-030/ti/844425205465381.json` | 9,158 | `fcbbfae64c94e5d0` | no |
-| [ti/844425263427177.json](ti/844425263427177.json) | `/tmp/sub-tfa2-030/ti/844425263427177.json` | 3,231 | `24d374bbf63749a9` | no |
+| [ti/562950216898741.json](ti/562950216898741.json) | `/tmp/sub-tfa2-030/ti/562950216898741.json` | 4,067 | `15a106842fdcd0ee` | host names |
+| [ti/562950220120091.json](ti/562950220120091.json) | `/tmp/sub-tfa2-030/ti/562950220120091.json` | 3,327 | `d75bc80ca7d49454` | host names |
+| [ti/562950242844554.json](ti/562950242844554.json) | `/tmp/sub-tfa2-030/ti/562950242844554.json` | 3,993 | `1969ff8c071457fe` | host names |
+| [ti/562950274089363.json](ti/562950274089363.json) | `/tmp/sub-tfa2-030/ti/562950274089363.json` | 9,287 | `4d0c0944051d9029` | host names |
+| [ti/562950354325343.json](ti/562950354325343.json) | `/tmp/sub-tfa2-030/ti/562950354325343.json` | 2,531 | `dd70265c762794a0` | host names |
+| [ti/562950361061616.json](ti/562950361061616.json) | `/tmp/sub-tfa2-030/ti/562950361061616.json` | 3,599 | `3541256972001c9a` | host names |
+| [ti/844425193659677.json](ti/844425193659677.json) | `/tmp/sub-tfa2-030/ti/844425193659677.json` | 2,798 | `52dc738cff36422c` | host names |
+| [ti/844425197050049.json](ti/844425197050049.json) | `/tmp/sub-tfa2-030/ti/844425197050049.json` | 4,323 | `ae4cb324fd7dc61a` | host names |
+| [ti/844425202171362.json](ti/844425202171362.json) | `/tmp/sub-tfa2-030/ti/844425202171362.json` | 9,357 | `23f31622a234e02f` | host names |
+| [ti/844425205465381.json](ti/844425205465381.json) | `/tmp/sub-tfa2-030/ti/844425205465381.json` | 9,158 | `fcbbfae64c94e5d0` | host names |
+| [ti/844425263427177.json](ti/844425263427177.json) | `/tmp/sub-tfa2-030/ti/844425263427177.json` | 3,231 | `24d374bbf63749a9` | host names |
 | [ti/rc.txt](ti/rc.txt) | `/tmp/sub-tfa2-030/ti/rc.txt` | 609 | `84d8c2c52d7d9f5f` | no |
-| [ti/run-get-281475236296488.txt](ti/run-get-281475236296488.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475236296488.txt` | 19,728 | `bb06c12c50158bfb` | no |
-| [ti/run-get-281475243249473.txt](ti/run-get-281475243249473.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475243249473.txt` | 19,787 | `23a69b43330cdeed` | no |
-| [ti/run-get-281475244092464.txt](ti/run-get-281475244092464.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475244092464.txt` | 19,737 | `c8898053d394d5c4` | no |
-| [ti/run-get-562950212033102.txt](ti/run-get-562950212033102.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950212033102.txt` | 19,764 | `8b720dc184c2fdf9` | no |
-| [ti/run-get-562950216898741.txt](ti/run-get-562950216898741.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950216898741.txt` | 16,233 | `f30405e143717b62` | no |
-| [ti/run-get-562950220120091.txt](ti/run-get-562950220120091.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950220120091.txt` | 19,755 | `93a0fe6261106bf0` | no |
-| [ti/run-get-844425197050049.txt](ti/run-get-844425197050049.txt) | `/tmp/sub-tfa2-030/ti/run-get-844425197050049.txt` | 19,770 | `0f1d2802e3ebc137` | no |
+| [ti/run-get-281475236296488.txt](ti/run-get-281475236296488.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475236296488.txt` | 19,728 | `bb06c12c50158bfb` | host names |
+| [ti/run-get-281475243249473.txt](ti/run-get-281475243249473.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475243249473.txt` | 19,787 | `23a69b43330cdeed` | host names |
+| [ti/run-get-281475244092464.txt](ti/run-get-281475244092464.txt) | `/tmp/sub-tfa2-030/ti/run-get-281475244092464.txt` | 19,737 | `c8898053d394d5c4` | host names |
+| [ti/run-get-562950212033102.txt](ti/run-get-562950212033102.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950212033102.txt` | 19,764 | `8b720dc184c2fdf9` | host names |
+| [ti/run-get-562950216898741.txt](ti/run-get-562950216898741.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950216898741.txt` | 16,233 | `f30405e143717b62` | host names |
+| [ti/run-get-562950220120091.txt](ti/run-get-562950220120091.txt) | `/tmp/sub-tfa2-030/ti/run-get-562950220120091.txt` | 19,755 | `93a0fe6261106bf0` | host names |
+| [ti/run-get-844425197050049.txt](ti/run-get-844425197050049.txt) | `/tmp/sub-tfa2-030/ti/run-get-844425197050049.txt` | 19,770 | `0f1d2802e3ebc137` | host names |
 | [ti/run.log.txt](ti/run.log.txt) | `/tmp/sub-tfa2-030/ti/run.log` | 5 | `d117fa006ba92085` | no |
 | [ti/run.sh](ti/run.sh) | `/tmp/sub-tfa2-030/ti/run.sh` | 933 | `4ade2a7643b813eb` | no |
 | [ti/summary.txt](ti/summary.txt) | `/tmp/sub-tfa2-030/ti/summary.txt` | 25,176 | `70f1a2a839b3c04c` | no |
-| [ti/tls-meta-full.json](ti/tls-meta-full.json) | `/tmp/sub-tfa2-030/ti/tls-meta-full.json` | 523 | `8c16461b1430220f` | no |
-| [ti/tls-meta.json](ti/tls-meta.json) | `/tmp/sub-tfa2-030/ti/tls-meta.json` | 598 | `fb14c43f299c790c` | no |
-| [ti/tls-run-get.txt](ti/tls-run-get.txt) | `/tmp/sub-tfa2-030/ti/tls-run-get.txt` | 7,706 | `0e9515f0d52927d1` | no |
+| [ti/tls-meta-full.json](ti/tls-meta-full.json) | `/tmp/sub-tfa2-030/ti/tls-meta-full.json` | 523 | `8c16461b1430220f` | host names |
+| [ti/tls-meta.json](ti/tls-meta.json) | `/tmp/sub-tfa2-030/ti/tls-meta.json` | 598 | `fb14c43f299c790c` | host names |
+| [ti/tls-run-get.txt](ti/tls-run-get.txt) | `/tmp/sub-tfa2-030/ti/tls-run-get.txt` | 7,706 | `0e9515f0d52927d1` | host names |
 | [tmp-tfa-phase2/goal-20260923.CQi0pX/controller-followup-audit.md](tmp-tfa-phase2/goal-20260923.CQi0pX/controller-followup-audit.md) | `/tmp/tfa-phase2/goal-20260923.CQi0pX/controller-followup-audit.md` | 10,946 | `adc4529578760100` | no |
-| [tmp-tfa-phase2/production-full-68cf2bac-recheck.out](tmp-tfa-phase2/production-full-68cf2bac-recheck.out) | `/tmp/tfa-phase2/production-full-68cf2bac-recheck.out` | 22,525 | `1ec896092fcc992f` | yes |
+| [tmp-tfa-phase2/production-full-68cf2bac-recheck.out](tmp-tfa-phase2/production-full-68cf2bac-recheck.out) | `/tmp/tfa-phase2/production-full-68cf2bac-recheck.out` | 22,525 | `1ec896092fcc992f` | yes; host names |
 | [tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan/result.json](tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan/result.json) | `/tmp/tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan/result.json` | 1,346 | `cab7baf3c3bde284` | no |
 | [tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan1/result.json](tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan1/result.json) | `/tmp/tfa-phase2/requal-a919-asyncssl-pass-seed1-single-asan1/result.json` | 1,348 | `b41471dd7820740e` | no |
 | [tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single/result.json](tmp-tfa-phase2/requal-a919-asyncssl-pass-seed1-single/result.json) | `/tmp/tfa-phase2/requal-a919-asyncssl-pass-seed1-single/result.json` | 1,298 | `8f0844ce6a61e846` | no |
@@ -251,16 +253,16 @@ numbers match the originals. For every other file the copy's SHA-256 equals the 
 | [tmp-tfa-phase2/tfa-phase2-controller-followup-real-asyncssl-verify.log.txt](tmp-tfa-phase2/tfa-phase2-controller-followup-real-asyncssl-verify.log.txt) | `/tmp/tfa-phase2-controller-followup-real-asyncssl-verify.log` | 295 | `9195e7ea8e04accf` | no |
 | [tmp-tfa-phase2/tfa-phase2-controller-followup-real-asyncssl.log.txt](tmp-tfa-phase2/tfa-phase2-controller-followup-real-asyncssl.log.txt) | `/tmp/tfa-phase2-controller-followup-real-asyncssl.log` | 418 | `08abb7bd070349b2` | no |
 | [tmp-tfa-phase2/tfa-phase2-controller-followup-real-httpcoro.log.txt](tmp-tfa-phase2/tfa-phase2-controller-followup-real-httpcoro.log.txt) | `/tmp/tfa-phase2-controller-followup-real-httpcoro.log` | 62 | `8b05b2751e40e9b3` | no |
-| [tmp-tfa-phase2/tfa-phase2-production-final.out](tmp-tfa-phase2/tfa-phase2-production-final.out) | `/tmp/tfa-phase2-production-final.out` | 22,043 | `f9b738da82529424` | yes |
-| [tmp-tfa-phase2/unit-68cf2bac-recheck.out](tmp-tfa-phase2/unit-68cf2bac-recheck.out) | `/tmp/tfa-phase2/unit-68cf2bac-recheck.out` | 508 | `6ecbd125b7b4baae` | no |
-| [way/d121815443.json](way/d121815443.json) | `/tmp/sub-tfa2-030/way/d121815443.json` | 8,243 | `25276e845ca49906` | no |
-| [way/hermit-test-meta.json](way/hermit-test-meta.json) | `/tmp/sub-tfa2-030/way/hermit-test-meta.json` | 89,937 | `2eb0e9dd3c7d580f` | no |
-| [verify/acl-inspect.txt](verify/acl-inspect.txt) | `/tmp/sub-tfa2-030/verify/acl-inspect.txt` (`agentcloudctl inspect`) | 477 | `14b493d53cd6717a` | no |
-| [verify/devbig030.json](verify/devbig030.json) | `/tmp/sub-tfa2-030/verify/devbig030.json` (`meta devserver.server describe`) | 500 | `f50102187ab94c9e` | no |
-| [verify/devvm895.json](verify/devvm895.json) | `/tmp/sub-tfa2-030/verify/devvm895.json` (`meta devserver.server describe`) | 515 | `aa7fe60895a30681` | no |
-| [verify/hist-asyncssl.json](verify/hist-asyncssl.json) | `/tmp/sub-tfa2-030/verify/hist-asyncssl.json` (`meta testinfra.result history --test=562950211052906 --since=ONE_WEEK --final-only --limit=200`) | 164,334 | `3949b2d36f846243` | no |
+| [tmp-tfa-phase2/tfa-phase2-production-final.out](tmp-tfa-phase2/tfa-phase2-production-final.out) | `/tmp/tfa-phase2-production-final.out` | 22,043 | `f9b738da82529424` | yes; host names |
+| [tmp-tfa-phase2/unit-68cf2bac-recheck.out](tmp-tfa-phase2/unit-68cf2bac-recheck.out) | `/tmp/tfa-phase2/unit-68cf2bac-recheck.out` | 508 | `6ecbd125b7b4baae` | host names |
+| [way/d121815443.json](way/d121815443.json) | `/tmp/sub-tfa2-030/way/d121815443.json` | 8,243 | `25276e845ca49906` | host names |
+| [way/hermit-test-meta.json](way/hermit-test-meta.json) | `/tmp/sub-tfa2-030/way/hermit-test-meta.json` | 89,937 | `2eb0e9dd3c7d580f` | host names |
+| [verify/acl-inspect.txt](verify/acl-inspect.txt) | `/tmp/sub-tfa2-030/verify/acl-inspect.txt` (`agentcloudctl inspect`) | 477 | `14b493d53cd6717a` | host names |
+| [verify/devbig030.json](verify/devbig030.json) | `/tmp/sub-tfa2-030/verify/devbig030.json` (`meta devserver.server describe`) | 500 | `f50102187ab94c9e` | host names |
+| [verify/devvm895.json](verify/devvm895.json) | `/tmp/sub-tfa2-030/verify/devvm895.json` (`meta devserver.server describe`) | 515 | `aa7fe60895a30681` | host names |
+| [verify/hist-asyncssl.json](verify/hist-asyncssl.json) | `/tmp/sub-tfa2-030/verify/hist-asyncssl.json` (`meta testinfra.result history --test=562950211052906 --since=ONE_WEEK --final-only --limit=200`) | 164,334 | `3949b2d36f846243` | host names |
 | [verify/tg-futuretimeout-v.txt](verify/tg-futuretimeout-v.txt) | `/tmp/sub-tfa2-030/verify/tg-futuretimeout-v.txt` (`tg -v tfa-diagnose-futuretimeout-strict-hermit`) | 11,288 | `866927aa8016106d` | no |
-| [verify/ti-hist-562950215319283.json](verify/ti-hist-562950215319283.json) | `/tmp/sub-tfa2-030/verify/ti-hist-562950215319283.json` (`meta testinfra.result history --test=562950215319283`) | 92,721 | `6400a272aedcce27` | no |
+| [verify/ti-hist-562950215319283.json](verify/ti-hist-562950215319283.json) | `/tmp/sub-tfa2-030/verify/ti-hist-562950215319283.json` (`meta testinfra.result history --test=562950215319283`) | 92,721 | `6400a272aedcce27` | host names |
 
 ## Cited but not copied
 

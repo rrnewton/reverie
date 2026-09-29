@@ -7,5 +7,5 @@ agent_role: agentcloud (default)
 model:  - (not reported for this session)
 effort: - (not reported for this session)
 tokens: in=7661404 out=42048
-node: devvm895.vcn0.facebook.com
-reservation: lease=28a46778-1ef6-53c4-9932-51005653fed3 node=devvm895.vcn0.facebook.com host=devvm895.vcn0.facebook.com
+node: devvm895
+reservation: lease=28a46778-1ef6-53c4-9932-51005653fed3 node=devvm895 host=devvm895

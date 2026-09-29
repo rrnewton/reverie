@@ -2,8 +2,10 @@
 """TFA round 2: re-find PASS/FAIL seeds for the 3 known tests on current Hermit main.
 
 Replays each campaign winning cell's exact Hermit argv (from the tracked experiment.json),
-substituting only: the Hermit binary, the swept --sched-seed, the verify log dir, and dropping
---keep-logs (disk). Budget (coord2 decision #8, 2026-09-29): 6 seeds per test, 30 min wall per
+substituting only: the Hermit binary, the swept --sched-seed and the verify log dir (--keep-logs
+is kept because --verify-log-dir requires it; logs are deleted after a deterministic trial). The
+safehermit deadline is 300 s. The outcome classifier below is a marker regex; every failure was
+then checked by hand against the declared signature (ROUND2.md section 3). Budget (coord2 decision #8, 2026-09-29): 6 seeds per test, 30 min wall per
 test. One trial at a time, under nice/ionice (decision #3). Every run goes through bin/safehermit.
 """
 import glob, json, os, re, subprocess, sys, time

@@ -1,6 +1,6 @@
-'stable' direct 0 'codex-cli 0.156.0\n' 'Codex CLI at Meta (https://fburl.com/codex.cli.users)\nUsing AI Gateway (Azure Codex upstream)\n'
+'stable' direct 0 'codex-cli 0.156.0\n' 'Codex CLI at Meta (https://fburl/codex.cli.users)\nUsing AI Gateway (Azure Codex upstream)\n'
 'stable' pinned 2 '' "error: unexpected argument '--version' found\n\nUsage: 3 [COMMAND]\n\nFor more information, try '--help'.\n"
 identical False
-'latest' direct 0 'codex-cli 0.156.1\n' "Codex CLI at Meta (https://fburl.com/codex.cli.users)\nUsing codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real\nUsing AI Gateway (Azure Codex upstream)\n"
+'latest' direct 0 'codex-cli 0.156.1\n' "Codex CLI at Meta (https://fburl/codex.cli.users)\nUsing codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real\nUsing AI Gateway (Azure Codex upstream)\n"
 'latest' pinned 2 '' "error: unexpected argument '--version' found\n\nUsage: 3 [COMMAND]\n\nFor more information, try '--help'.\n"
 identical False

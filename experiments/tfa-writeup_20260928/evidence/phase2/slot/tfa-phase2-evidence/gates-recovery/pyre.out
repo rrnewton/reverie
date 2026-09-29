@@ -1,7 +1,7 @@
 2026-09-25T01:18:38.673-07:00  INFO arc_pyre_lib: Querying affected files from source control...
 2026-09-25T01:18:39.389-07:00  INFO arc_pyre_lib: Found 5 existing changed Python files
 2026-09-25T01:18:39.390-07:00  INFO arc_pyre_lib: Checking owning targets of existing changed Python files...
-[2026-09-25T01:18:39.526-07:00] Buck UI: https://www.internalfb.com/buck2/90aa23a7-7bf8-4cf8-bf08-081baf408e3b
+[2026-09-25T01:18:39.526-07:00] Buck UI: https://www/buck2/90aa23a7-7bf8-4cf8-bf08-081baf408e3b
 [2026-09-25T01:18:39.586-07:00] Network: up 0B  down 0B
 2026-09-25T01:18:39.651-07:00  INFO arc_pyre_lib: Found 3 targets and type checking ran on 3 of them
 [32mNo type errors found[0m

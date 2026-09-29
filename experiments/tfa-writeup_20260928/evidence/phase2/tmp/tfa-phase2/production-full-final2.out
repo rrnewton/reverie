@@ -1,5 +1,5 @@
-[2026-09-24T15:45:11.524-07:00] Buck UI: https://www.internalfb.com/buck2/4dd02906-41ab-4a99-b85b-0105b39ffbce
-[2026-09-24T15:45:12.395-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35747322080380996
+[2026-09-24T15:45:11.524-07:00] Buck UI: https://www/buck2/4dd02906-41ab-4a99-b85b-0105b39ffbce
+[2026-09-24T15:45:12.395-07:00] Test session: https://www/intern/testinfra/testrun/35747322080380996
 [2026-09-24T15:46:00.647-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.6s)
 [2026-09-24T15:46:00.647-07:00] test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-24T15:46:00.647-07:00]
@@ -149,7 +149,7 @@
 [2026-09-24T15:49:03.946-07:00] FAILED (failures=1)
 [2026-09-24T15:49:03.946-07:00]
 [2026-09-24T15:49:57.655-07:00] Network: up 0B  down 0B
-[2026-09-24T15:49:57.655-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35747322080380996
+[2026-09-24T15:49:57.655-07:00] Test session: https://www/intern/testinfra/testrun/35747322080380996
 Tests finished: [mPass 35[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 4 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -160,5 +160,5 @@ Tests finished: [mPass 35[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 4 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=35747322080380996&expiry=2026-09-24T22%3A54%3A57Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=35747322080380996&expiry=2026-09-24T22%3A54%3A57Z&viewer=18498&signature=REDACTED]8;;\[0m

@@ -1,4 +1,4 @@
-Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Codex CLI at Meta (https://fburl/codex.cli.users)
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
 2026-09-25T05:45:08.048651Z ERROR codex_core::tools::router: error=failed to spawn code-mode host /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/target/release/codex-code-mode-host: No such file or directory (os error 2)

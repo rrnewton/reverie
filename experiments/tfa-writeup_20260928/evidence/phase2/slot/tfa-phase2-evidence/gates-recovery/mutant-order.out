@@ -1,5 +1,5 @@
-[2026-09-25T01:19:27.810-07:00] Buck UI: https://www.internalfb.com/buck2/4ba237c1-6427-48c9-921f-b24222f94aef
-[2026-09-25T01:19:28.757-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25051272978402997
+[2026-09-25T01:19:27.810-07:00] Buck UI: https://www/buck2/4ba237c1-6427-48c9-921f-b24222f94aef
+[2026-09-25T01:19:28.757-07:00] Test session: https://www/intern/testinfra/testrun/25051272978402997
 [2026-09-25T01:19:33.907-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
 [2026-09-25T01:19:33.907-07:00] test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
 [2026-09-25T01:19:33.907-07:00]
@@ -47,7 +47,7 @@
 [2026-09-25T01:19:34.132-07:00] FAILED (failures=1)
 [2026-09-25T01:19:34.132-07:00]
 [2026-09-25T01:19:35.131-07:00] Network: up 0B  down 0B
-[2026-09-25T01:19:35.131-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25051272978402997
+[2026-09-25T01:19:35.131-07:00] Test session: https://www/intern/testinfra/testrun/25051272978402997
 Tests finished: [38;5;10mPass 3[39m. [38;5;9mFail 2[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 2 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -56,5 +56,5 @@ Tests finished: [38;5;10mPass 3[39m. [38;5;9mFail 2[39m. Timeout 0. Fatal 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 2 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=25051272978402997&expiry=2026-09-25T08%3A24%3A34Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=25051272978402997&expiry=2026-09-25T08%3A24%3A34Z&viewer=18498&signature=REDACTED]8;;\[0m

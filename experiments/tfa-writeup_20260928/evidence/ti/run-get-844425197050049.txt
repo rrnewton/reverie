@@ -6,7 +6,7 @@
   oncall: logdevice
   execution_type: SANDCASTLE_JOB
   execution_id: 40532397339162613
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/
+  result_uri: https://www/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -180,9 +180,9 @@ I0928 04:35:09.318847 703515 ChainedLog.cpp:78]       [0] = DelosPhysicalLog {
                        /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
 
 Test was never completed. The test process might have crashed.
-(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GEkxqjDx7RFrzgAEANtXh7Zd3zsrbswMAAAz)
+(Truncated to 18976 bytes by Tpx; full output at https://fburl/b/everpaste%20GEkxqjDx7RFrzgAEANtXh7Zd3zsrbswMAAAz)
 
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=18014398715564745.844425197050049.1790595361
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/
+  View in browser: https://www/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/

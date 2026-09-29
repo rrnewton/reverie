@@ -27,4 +27,4 @@ Tasks:
 
 Tags:
 
-Differential Revision: https://phabricator.intern.facebook.com/D121649569
+Differential Revision: https://phabricator/D121649569

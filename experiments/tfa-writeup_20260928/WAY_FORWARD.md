@@ -1,6 +1,6 @@
 # TFA: what the diff stack is, and the way forward
 
-Written 2026-09-28 from read-only records on devbig030; summarized in [README.md](README.md) section 9.
+Written 2026-09-28 from read-only records on devbig030; summarized in [README.md](README.md) section 5.
 Bracketed tags point to the sources at the end; copies of non-repository sources are in [evidence/](evidence/).
 "Proven" means a record shows it; "inference" means it is our reasoning.
 
@@ -131,6 +131,16 @@ owner's rule for this work, recorded in the journal of agentcloud session
 
 ## Decisions only the owner can make
 
+**Update, 2026-09-29.** coord2, the coordinating agent, judged that items 2, 3, 6, 8 and 9 below did not need the owner. It decided them in its round-2 dispatch to sub-tfa2-030 (2026-09-29):
+
+- 2: the loop lives in dev-hermit for now.
+- 3: a six-seed replay may run on devbig030, one at a time, under nice/ionice; anything heavier goes to an OnDemand node.
+- 6: use Claude, if a diagnosis agent is needed at all.
+- 8: this round's budget is the 3 known tests, 6 seeds per test, and 30 minutes of wall time per test.
+- 9: preserve a curated copy of the phase-two evidence, which is now in [evidence/phase2/](evidence/phase2/MANIFEST.md).
+
+Items 1, 4, 5 and 7 remain the owner's ([ROUND2.md](ROUND2.md)).
+
 Already decided, so not listed: heavy TFA experiments run on OnDemand agentcloud nodes, not devbig030
 (owner directive of 2026-09-28, relayed by coord2 in sub-tfa2-030's launch prompt); and filing the Hermit
 defects needed no decision (next step 3, done).
@@ -197,9 +207,9 @@ defects needed no decision (next step 3, done).
   stress runs, 52 FAILED; its raw output is `/tmp/sub-tfa2-030/verify/hist-asyncssl.json` (copy
   `evidence/verify/hist-asyncssl.json`).
 - [S10] devvm895: `agentcloudctl inspect --session ef420c5e-34f0-4659-bbba-2967ac725a1a` (node
-  devvm895.vcn0.facebook.com with a reservation lease) and `meta devserver.server describe
-  --hostname=devvm895.vcn0.facebook.com` (type devvm, "Short-term lease devserver", reserved 2026-09-28
+  devvm895 with a reservation lease) and `meta devserver.server describe
+  --hostname=devvm895` (type devvm, "Short-term lease devserver", reserved 2026-09-28
   11:03-19:03 PDT); saved as `/tmp/sub-tfa2-030/verify/acl-inspect.txt` and `devvm895.json` (copies in
   `evidence/verify/`). Containment run: `evidence/devvm895/containment-local.log.txt` line 255, 11:15-11:20 PDT.
-  devbig030's registration: `meta devserver.server describe --hostname=devbig030.atn3.facebook.com` (copy
+  devbig030's registration: `meta devserver.server describe --hostname=devbig030` (copy
   `evidence/verify/devbig030.json`).

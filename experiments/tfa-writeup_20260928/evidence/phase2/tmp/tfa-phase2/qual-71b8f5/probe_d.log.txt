@@ -1,7 +1,7 @@
 base: /tmp/tfa-phase2/qual71-native-zhzkuxwo
 argv: ["/usr/local/bin/codex", "exec", "--sandbox", "workspace-write", "--add-dir", "/tmp/tfa-phase2/qual71-native-zhzkuxwo/agent-output", "--ignore-user-config", "--ignore-rules", "--disable", "hooks", "-c", "approval_policy=\"never\"", "-c", "shell_environment_policy.inherit=\"none\"", "-c", "shell_environment_policy.set.PATH=\"/usr/local/bin:/usr/bin:/bin\"", "-c", "sandbox_workspace_write.network_access=false", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true", "--json", "--skip-git-repo-check", "-C", "/tmp/tfa-phase2/qual71-native-zhzkuxwo/checkout", "--output-schema", "/tmp/tfa-phase2/qual71-native-zhzkuxwo/control/schema.json", "--output-last-message", "/tmp/tfa-phase2/qual71-native-zhzkuxwo/control/diagnostic-agent/final-m
 elapsed: 14.5 rc: 0
-stderr_tail: Codex CLI at Meta (https://fburl.com/codex.cli.users)
+stderr_tail: Codex CLI at Meta (https://fburl/codex.cli.users)
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
 

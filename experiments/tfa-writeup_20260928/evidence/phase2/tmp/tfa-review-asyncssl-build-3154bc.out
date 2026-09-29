@@ -1,4 +1,4 @@
-[2026-09-24T11:32:27.820-07:00] Buck UI: https://www.internalfb.com/buck2/89603944-909d-4465-b875-1b84c58a0c0b
+[2026-09-24T11:32:27.820-07:00] Buck UI: https://www/buck2/89603944-909d-4465-b875-1b84c58a0c0b
 [2026-09-24T11:32:32.951-07:00] RE Session: reSessionID-daaa67cf-9f7a-44f7-b1ec-8daadc0dca99
 [2026-09-24T11:32:52.175-07:00] Network: up 7.7MiB  down 28MiB  session reSessionID-daaa67cf-9f7a-44f7-b1ec-8daadc0dca99
 {"fbcode//folly/io/async/test:async_ssl_socket_test":"/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/28319c6db00b8623/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test"}

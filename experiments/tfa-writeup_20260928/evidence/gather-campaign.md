@@ -62,7 +62,7 @@ Abbreviations used below (defined once):
 Every one of the 25 cells records the same base environment. Source: `campaign_recount.out`,
 "cell fact" lines, counted over all 25 `cells[0]`. It also matches RESULTS.md section 3.2.
 
-- **Host / kernel / CPU:** `devbig030.atn3.facebook.com`, `Linux 7.1.3-0_fbk0_0_g295ad0959f34`, x86_64,
+- **Host / kernel / CPU:** `devbig030`, `Linux 7.1.3-0_fbk0_0_g295ad0959f34`, x86_64,
   `AMD EPYC 9D85 158-Core Processor` (`$.cells[0].host`; 25/25).
 - **Hermit:** source `4630ee2a61f93221a43e2baec0a15f34102a2c61`. The time-knob audit names this commit "Accept virtual RLIMIT_CORE updates"
   (`experiments/tfa-kernel71-time-input-campaign_20260921/HERMIT-TIME-KNOB-AUDIT-20260921.md` lines 3-4).

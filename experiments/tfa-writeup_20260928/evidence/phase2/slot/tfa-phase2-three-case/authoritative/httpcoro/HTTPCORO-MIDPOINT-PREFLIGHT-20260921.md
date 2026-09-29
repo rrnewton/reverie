@@ -1,6 +1,6 @@
 # HTTPCoro ResetRateLimit midpoint preflight
 
-The prospective boundary retains host `devbig030.atn3.facebook.com`, kernel
+The prospective boundary retains host `devbig030`, kernel
 `7.1.3-0_fbk0_0_g295ad0959f34`, PMU type 4, Hermit SHA-256
 `5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a`,
 and test ELF SHA-256

@@ -2,9 +2,9 @@
 
 Caused by:
     0: MetaCLIService.genGetCommandCapabilities failed
-    1: facebook::servicerouter::TServiceRouterException: (OVERALL_TIMEOUT) Overall timeout after '30000'ms for tier 'srproxy.web', please follow wiki https://fburl.com/overall_timeout to debug it
+    1: facebook::servicerouter::TServiceRouterException: (OVERALL_TIMEOUT) Overall timeout after '30000'ms for tier 'srproxy.web', please follow wiki https://fburl/overall_timeout to debug it
 2026-09-24T16:57:48.660-07:00 ERROR cli_log: An error was detected, uploading logs to LogView...
-2026-09-24T16:57:48.833-07:00 ERROR cli_log::logview: Logs uploaded to LogView and viewable at https://www.internalfb.com/cli/meta/errors
+2026-09-24T16:57:48.833-07:00 ERROR cli_log::logview: Logs uploaded to LogView and viewable at https://www/cli/meta/errors
 2026-09-24T16:57:48.833-07:00 ERROR cli_log::logview: A task *may* have been created for the oncall through LogView; we can't currently tell from here.
 2026-09-24T16:57:48.833-07:00 ERROR cli_log::logview: View the link above if you want to be sure! Please wait up to 10 minutes for it to be visible and assigned to an oncall if you do.
 2026-09-24T16:57:48.834-07:00 ERROR cli_main: You can ask for help in: oncall:meta_cli

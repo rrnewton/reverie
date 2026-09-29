@@ -1,5 +1,5 @@
-[2026-09-25T01:11:31.446-07:00] Buck UI: https://www.internalfb.com/buck2/1aa1988e-4be6-4cf9-aadc-43a51e4e9a8e
-[2026-09-25T01:11:32.151-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23362423118127041
+[2026-09-25T01:11:31.446-07:00] Buck UI: https://www/buck2/1aa1988e-4be6-4cf9-aadc-43a51e4e9a8e
+[2026-09-25T01:11:32.151-07:00] Test session: https://www/intern/testinfra/testrun/23362423118127041
 [2026-09-25T01:11:47.339-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.0s)
 [2026-09-25T01:11:47.339-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-25T01:11:47.339-07:00]

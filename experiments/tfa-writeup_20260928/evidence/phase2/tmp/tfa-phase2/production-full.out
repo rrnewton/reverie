@@ -1,5 +1,5 @@
-[2026-09-24T15:26:18.965-07:00] Buck UI: https://www.internalfb.com/buck2/52065ca3-bfc9-44c4-b392-aef8c9a630ed
-[2026-09-24T15:26:20.960-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/10133099363898019
+[2026-09-24T15:26:18.965-07:00] Buck UI: https://www/buck2/52065ca3-bfc9-44c4-b392-aef8c9a630ed
+[2026-09-24T15:26:20.960-07:00] Test session: https://www/intern/testinfra/testrun/10133099363898019
 [2026-09-24T15:26:37.143-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.7s)
 [2026-09-24T15:26:37.143-07:00] test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... ERROR
 [2026-09-24T15:26:37.143-07:00]
@@ -168,7 +168,7 @@
 [2026-09-24T15:30:34.122-07:00] FAILED (failures=1)
 [2026-09-24T15:30:34.122-07:00]
 [2026-09-24T15:31:15.066-07:00] Network: up 0B  down 0B
-[2026-09-24T15:31:15.066-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/10133099363898019
+[2026-09-24T15:31:15.066-07:00] Test session: https://www/intern/testinfra/testrun/10133099363898019
 Tests finished: [mPass 34[m. [mFail 5[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 5 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -180,5 +180,5 @@ Tests finished: [mPass 34[m. [mFail 5[m. Timeout 0. Fatal 0. Skip 0. Omit 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 5 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=10133099363898019&expiry=2026-09-24T22%3A36%3A13Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=10133099363898019&expiry=2026-09-24T22%3A36%3A13Z&viewer=18498&signature=REDACTED]8;;\[0m

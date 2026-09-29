@@ -10,7 +10,7 @@ Copied 2026-09-29 by sub-tfa2-030. Nothing was moved or deleted in the source sl
 
 | | Files | Bytes |
 |---|---:|---:|
-| Tracked here (text files of at most 1 MiB: reports, logs, JSON results, verdicts, patches, small scripts) | 9,327 | 28,121,191 |
+| Tracked here (text files of at most 1 MiB: reports, logs, JSON results, verdicts, patches, small scripts) | 9,327 | 28,107,443 after host-name redaction (28,121,191 before) |
 | Archived outside git (text files over 1 MiB) | 214 | 1,268,882,584 uncompressed |
 
 The archive is untracked, at `/home/newton/work/dev-hermit/ignored/tfa-phase2-archive/tfa-phase2-large-text-20260929.tar.zst` on devbig030:
@@ -46,6 +46,7 @@ Where to start:
 
 - **Redaction.** 40 files contained Devmate "fixtests" links whose signature expired on 2026-09-24/25. Each `signature=<hex>` was replaced with `signature=REDACTED`, so those files no longer match their originals byte for byte. [MANIFEST.tsv](MANIFEST.tsv) records the number of redactions in each file.
 - **Renames.** 89 files ending in `.log` are stored as `.log.txt`, because the repository's `.gitignore` excludes `*.log` (line 94). [MANIFEST.tsv](MANIFEST.tsv) gives each original name.
+- **Host-name redaction (2026-09-29).** In 760 of these files, 1,333 internal host names were each replaced with their first DNS label: for example, a machine's full name became `devbig030`, and `www.<internal domain>` became `www`. This follows the privacy rule in hermit's `.llms/skills/benchmark/SKILL.md`. [MANIFEST.tsv](MANIFEST.tsv) now gives each file's bytes and sha256 after redaction, and a new last column counts its host names. The tool is [../../tools/redact_internal_fqdns.py](../../tools/redact_internal_fqdns.py), and the per-file counts are in [../../REDACTIONS.json](../../REDACTIONS.json). Internal host names are not in the archive-contents list and were never in the file paths; the untracked archive itself is unchanged.
 - **Credential scan.** Every tracked file was scanned for credential-like patterns: GitHub, Slack and AWS tokens, bearer or basic auth headers, private keys, and signed-link parameters. Nothing else matched.
 
 ## Not copied (measured with `find -printf '%s'`)

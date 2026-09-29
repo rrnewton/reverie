@@ -2,7 +2,7 @@
 
 At `2026-09-21T22:13:10Z`, the prospective boundary fixed:
 
-- host `devbig030.atn3.facebook.com`, Linux
+- host `devbig030`, Linux
   `7.1.3-0_fbk0_0_g295ad0959f34`, x86_64 AMD EPYC 9D85;
 - CPU PMU type 4 and `perf_event_paranoid=1`;
 - Hermit revision `4630ee2a61f93221a43e2baec0a15f34102a2c61`,

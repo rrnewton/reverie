@@ -1,4 +1,4 @@
-[2026-09-24T15:02:51.735-07:00] Buck UI: https://www.internalfb.com/buck2/946e735a-8e66-4330-aeba-6fd88b6990b2
+[2026-09-24T15:02:51.735-07:00] Buck UI: https://www/buck2/946e735a-8e66-4330-aeba-6fd88b6990b2
 fbcode//testinfra/tfa:hermit-test-bin-opt (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
 fbcode//hermetic_infra/hermit/hermit-cli:hermit (ovr_config//platform/linux:x86_64-fbcode-platform010-clang#512fd0a9ea51f545)
 [2026-09-24T15:02:51.792-07:00] Network: up 0B  down 0B

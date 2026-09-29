@@ -1,5 +1,5 @@
-[2026-09-25T00:52:13.221-07:00] Buck UI: https://www.internalfb.com/buck2/fcdeb3ab-7141-4171-90af-ab7ec74fb629
-[2026-09-25T00:52:13.898-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/28428972686037604
+[2026-09-25T00:52:13.221-07:00] Buck UI: https://www/buck2/fcdeb3ab-7141-4171-90af-ab7ec74fb629
+[2026-09-25T00:52:13.898-07:00] Test session: https://www/intern/testinfra/testrun/28428972686037604
 [2026-09-25T00:52:17.577-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (0.0s)
 [2026-09-25T00:52:17.577-07:00] test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) ... FAIL
 [2026-09-25T00:52:17.577-07:00]
@@ -29,12 +29,12 @@
 [2026-09-25T00:52:17.577-07:00] FAILED (failures=1)
 [2026-09-25T00:52:17.577-07:00]
 [2026-09-25T00:52:18.115-07:00] Network: up 0B  down 0B
-[2026-09-25T00:52:18.115-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/28428972686037604
+[2026-09-25T00:52:18.115-07:00] Test session: https://www/intern/testinfra/testrun/28428972686037604
 Tests finished: Pass 0. [38;5;9mFail 1[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 1 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
 
 Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest)
       ^^^ just prefix your previous command! ($ fdb !!)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=28428972686037604&expiry=2026-09-25T07%3A57%3A17Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=28428972686037604&expiry=2026-09-25T07%3A57%3A17Z&viewer=18498&signature=REDACTED]8;;\[0m

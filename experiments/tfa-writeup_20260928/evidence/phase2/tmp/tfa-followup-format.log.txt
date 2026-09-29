@@ -2,7 +2,7 @@ notice Found 8 lint issues.
 >>> Lint for fbcode/testinfra/tfa/hermit.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
               61     "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b"
               62 )
@@ -16,7 +16,7 @@ notice Found 8 lint issues.
               69 _VERIFY_OUTPUT_MAX_BYTES: int = 512 * 1024 * 1024
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              105         canonical = root.resolve(strict=True)
              106         fixture_root = root.parents[1]
@@ -30,7 +30,7 @@ notice Found 8 lint issues.
              111         or root.name != "safehermit"
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1433 def packaged_hermit_argv(
             1434     argv: tuple[str, ...], expected_revision: str, expected_sha256: str
@@ -44,7 +44,7 @@ notice Found 8 lint issues.
             1441         compatibility = json.loads(compatibility_path.read_text())
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1441         compatibility = json.loads(compatibility_path.read_text())
             1442         compatibility_after = regular_file_record(compatibility_path)
@@ -58,7 +58,7 @@ notice Found 8 lint issues.
             1447     ):
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1448         raise HermitError("packaged Hermit compatibility record changed while read")
             1449     qualification = compatibility.get("qualification_probe")
@@ -75,7 +75,7 @@ notice Found 8 lint issues.
 >>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1022                 return safehermit if name == "safehermit" else bounded
             1023 
@@ -89,7 +89,7 @@ notice Found 8 lint issues.
             1030                     "testinfra.tfa.hermit.BOUNDED_RUN_SPACE_SHA256", bounded_digest
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1026                     "testinfra.tfa.hermit._packaged_resource", side_effect=resource
             1027                 ),
@@ -103,7 +103,7 @@ notice Found 8 lint issues.
             1034             self.assertEqual(resolved, ["safehermit", "bounded-run-space"])
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1110                     root, root / "preflight", {}
             1111                 )

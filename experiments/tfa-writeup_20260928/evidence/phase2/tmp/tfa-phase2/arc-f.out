@@ -4,7 +4,7 @@ notice Found 11 lint issues.
    Error  (BUCKFORMAT) format
     File needs formatting. Run `arc lint` or `arc f` to resolve.
     
-    See https://fburl.com/starlark-fmt for more info.
+    See https://fburl/starlark-fmt for more info.
 
                6     "hub_python_binary",
                7     "hub_python_library",
@@ -18,7 +18,7 @@ notice Found 11 lint issues.
    Error  (BUCKFORMAT) format
     File needs formatting. Run `arc lint` or `arc f` to resolve.
     
-    See https://fburl.com/starlark-fmt for more info.
+    See https://fburl/starlark-fmt for more info.
 
               10     "@fbcode_macros//build_defs:fbcode_configured_alias.bzl",
               11     "fbcode_configured_alias",
@@ -33,7 +33,7 @@ notice Found 11 lint issues.
 >>> Lint for fbcode/testinfra/tfa/hermit.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              322         or options.count("--verify-strict") != 1
              323         or options.count("--keep-logs") != 1
@@ -51,7 +51,7 @@ notice Found 11 lint issues.
              334         raise HermitError("historical strict verification contract is malformed")
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1486         receipts = json.loads(path.read_text())
             1487         after = regular_file_record(path)
@@ -65,7 +65,7 @@ notice Found 11 lint issues.
             1492         or before.get("sha256") != expected_digest
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1556                 (json.dumps(argv, separators=(",", ":")) + "\n").encode()
             1557             ).hexdigest()
@@ -81,7 +81,7 @@ notice Found 11 lint issues.
             1565             or hashlib.sha256(safehermit_report.encode()).hexdigest()
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1602         for candidate in candidates
             1603         if isinstance(candidate, dict)
@@ -98,7 +98,7 @@ notice Found 11 lint issues.
 >>> Lint for fbcode/testinfra/tfa/tests/test_production_containment.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1526                     "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
             1527                     recovery_root,
@@ -115,7 +115,7 @@ notice Found 11 lint issues.
 >>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              482             receipts["probe_binary"],
              483             {
@@ -129,7 +129,7 @@ notice Found 11 lint issues.
              490             },
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              508         for receipt in receipts["probes"]:
              509             self.assertEqual(
@@ -143,7 +143,7 @@ notice Found 11 lint issues.
              516             )
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              926         self.assertNotIn("--keep-logs", translated[:boundary])
              927         self.assertFalse(
@@ -156,7 +156,7 @@ notice Found 11 lint issues.
              933         self.assertEqual(
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              930                 for token in translated[:boundary]
              931             )

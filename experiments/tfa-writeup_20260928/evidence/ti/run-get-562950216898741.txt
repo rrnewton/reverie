@@ -6,7 +6,7 @@
   oncall: manifold_client
   execution_type: SANDCASTLE_JOB
   execution_id: 45035996971614755
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/
+  result_uri: https://www/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -177,4 +177,4 @@ Test was never completed. The test process might have crashed.
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=10133099364850181.562950216898741.1790607528
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/
+  View in browser: https://www/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/

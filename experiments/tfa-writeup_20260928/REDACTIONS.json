@@ -1,0 +1,3286 @@
+{
+ "files": {
+  "STACK_STATE.md": {
+   "host_names": 0,
+   "markdown_links_unlinked": 22
+  },
+  "WAY_FORWARD.md": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/devvm895/containment-local.log.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/devvm895/previous-way-forward-draft.md": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/devvm895/previous-way-forward-research.json": {
+   "host_names": 16,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/gather-campaign.md": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/gather-raw/batch-describe.json": {
+   "host_names": 22,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/gather-wayforward.md": {
+   "host_names": 12,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/METADATA-DEBT.md": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/codex-a708-bootstrap-version.stderr": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/codex-a708-four-cases.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/codex-current-production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/codex-signed-latest-v4-diagnostic-receipt.json": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/fd_exec_launcher_probe.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790274107680687060/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790279510527782019/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790281338253008738/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790289269885153993/control/diagnostic-agent/codex-preflight-1790289268831591855/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790289640498726283/control/diagnostic-agent/codex-preflight-1790289638995773837/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790290142732490846/control/diagnostic-agent/codex-preflight-1790290141062977391/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790290744930279080/control/diagnostic-agent/codex-preflight-1790290742795771399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790291132775047006/control/diagnostic-agent/codex-preflight-1790291131261740569/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790292239670344366/control/diagnostic-agent/codex-preflight-1790292238149147037/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790294103162161827/control/diagnostic-agent/codex-preflight-1790294092301291122/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790294103162161827/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790294456235288677/control/diagnostic-agent/codex-preflight-1790294454608058830/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790294628906016925/control/diagnostic-agent/codex-preflight-1790294618239058524/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790294628906016925/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790295084073865045/control/diagnostic-agent/codex-preflight-1790295072792296020/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790295084073865045/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790295658538047270/control/diagnostic-agent/codex-preflight-1790295657045483275/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790295742478246354/control/diagnostic-agent/codex-preflight-1790295740943018693/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790296252603639895/control/diagnostic-agent/codex-preflight-1790296250793698018/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790297488628360352/control/diagnostic-agent/codex-preflight-1790297486876796399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790297924976115861/control/diagnostic-agent/codex-preflight-1790297923481123602/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790310868896721601/control/diagnostic-agent/codex-preflight-1790310836543040245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/codex-report/controller-handoff-1790310868896721601/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790166783742147367/artifacts/handoff/control/adversarial-review-attempts/attempt-001/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790166783742147367/artifacts/handoff/control/adversarial-review-attempts/attempt-001/review-process/stdout.txt": {
+   "host_names": 10,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790166783742147367/artifacts/handoff/control/build/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790166783742147367/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790166783742147367/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790279161826974164/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790289499869562004/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289491251527361/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790289613109279236/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289604219751862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790290132152506480/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290123474367377/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790290547132691183/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290538791341675/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790290916693322448/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290907533870127/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790292274120822219/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790292265574074539/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294083834499335/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790293952548730659/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294083834499335/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294445947427647/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294434965923245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294510478866263/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294540255227796/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294913388484960/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294946578859083/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295684294028719/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295676322823422/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790295993927289882/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295983849227017/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790296293594673800/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790296283025734375/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790297514682098520/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790297505017195856/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/controller-handoff/controller-handoff-1790298177246288989/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790298167428124987/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790273917038978025/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790279176207859512/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790281050031661274/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790289230798218129/control/review-process/codex-preflight-1790289229060316627/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790289685373621582/control/review-process/codex-preflight-1790289683921587975/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790289959404162147/control/review-process/codex-preflight-1790289957935021392/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790290733703809120/control/review-process/codex-preflight-1790290731911665266/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790291078931723339/control/review-process/codex-preflight-1790291077413195917/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790292231323902294/control/review-process/codex-preflight-1790292229625818930/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294147487070984/control/review-process/codex-preflight-1790294133653152218/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294147487070984/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294474818903460/control/review-process/codex-preflight-1790294473416015773/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294671456255914/control/review-process/codex-preflight-1790294659209717862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294671456255914/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294852019106462/control/review-process/codex-preflight-1790294837975803443/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790294852019106462/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790295666696630717/control/review-process/codex-preflight-1790295665210254800/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790295764843385201/control/review-process/codex-preflight-1790295762509716890/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790296264860639817/control/review-process/codex-preflight-1790296262627069294/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790297550491792710/control/review-process/codex-preflight-1790297548755028280/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790298098224975852/control/review-process/codex-preflight-1790298096092314362/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790310909842495350/control/review-process/codex-preflight-1790310875408960621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/production-test-failures/reviewer-report/controller-handoff-1790310909842495350/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v1/codex-report/controller-handoff-1790314621019409171/control/diagnostic-agent/codex-preflight-1790314604517114799/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v1/codex-report/controller-handoff-1790314621019409171/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v1/reviewer-report/controller-handoff-1790314642944347495/control/review-process/codex-preflight-1790314628173155546/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v1/reviewer-report/controller-handoff-1790314642944347495/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/codex-report/controller-handoff-1790315091486913029/control/diagnostic-agent/codex-preflight-1790315072555663972/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/codex-report/controller-handoff-1790315091486913029/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790314951317407341/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790315004023464536/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/reviewer-report/controller-handoff-1790315112392908528/control/review-process/codex-preflight-1790315098219026549/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v2/reviewer-report/controller-handoff-1790315112392908528/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/codex-report/controller-handoff-1790316222693345521/control/diagnostic-agent/codex-preflight-1790316187226875683/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/codex-report/controller-handoff-1790316222693345521/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316042078016919/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316076704907472/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/reviewer-report/controller-handoff-1790316245088465262/control/review-process/codex-preflight-1790316230036980621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v3/reviewer-report/controller-handoff-1790316245088465262/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/codex-report/controller-handoff-1790316718407495841/control/diagnostic-agent/codex-preflight-1790316705495975432/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/codex-report/controller-handoff-1790316718407495841/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/controller-handoff/controller-handoff-1790316697371108549/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316566676857001/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/controller-handoff/controller-handoff-1790316697371108549/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/reviewer-report/controller-handoff-1790316739665304261/control/review-process/codex-preflight-1790316726082211500/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v4/reviewer-report/controller-handoff-1790316739665304261/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/codex-report/controller-handoff-1790317443685900023/control/diagnostic-agent/codex-preflight-1790317429842775515/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/codex-report/controller-handoff-1790317443685900023/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/codex-preflight-1790317317080889276/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stdout.txt": {
+   "host_names": 9,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317261358844300/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317293045287158/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/reviewer-report/controller-handoff-1790317465660924895/control/review-process/codex-preflight-1790317451317329566/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/retained-v5/reviewer-report/controller-handoff-1790317465660924895/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/tfa-production-codex-report-13bkbop2/control/diagnostic-agent/codex-preflight-1790310836543040245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/tfa-production-codex-report-13bkbop2/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/tfa-production-reviewer-report-um9fx9nh/control/review-process/codex-preflight-1790310875408960621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/tfa-production-reviewer-report-um9fx9nh/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/v5-sandbox-discriminator/A-signed-latest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/v5-sandbox-discriminator/A2-launcher-exec-record.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/v5-sandbox-discriminator/A2-signed-latest-recorded.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/v5-sandbox-discriminator/B-signed-stable.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/diagnostic/v8-buck-build.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/focused.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/manifest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/mutant-argv.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/mutant-order.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/production.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-followup/unit.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/focused1.log.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/manifest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/manifest2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/mutant-lstat.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/process.py.good": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/prod-focused1.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/production-pre-lstat.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/pyre2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/unit.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/unit1.log.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-hardening/unit2.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/focused.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/manifest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/mutant-argv.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/mutant-order.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-recovery/unit.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-tfa-checkout/manifest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-tfa-checkout/production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-tfa-checkout/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/gates-tfa-checkout/unit.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/receipts/manifest-68cf2bac-recheck.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/receipts/production-full-68cf2bac-recheck.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/receipts/pyre-68cf2bac-recheck.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-evidence/receipts/unit-68cf2bac-recheck.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/ASYNCSSL-SCHED-SLOWDOWN-PREFLIGHT-20260921.md": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-000-sched-seed-00000000000000000000-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-000-sched-seed-00000000000000000000-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-001-sched-seed-00000000000000000001-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-002-sched-seed-00000000000000000002-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-002-sched-seed-00000000000000000002-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-003-sched-seed-00000000000000000003-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-004-sched-seed-00000000000000000004-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-004-sched-seed-00000000000000000004-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-005-sched-seed-00000000000000000005-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-005-sched-seed-00000000000000000005-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-006-sched-seed-00000000000000000006-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-006-sched-seed-00000000000000000006-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-007-sched-seed-00000000000000000007-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-007-sched-seed-00000000000000000007-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-008-sched-seed-00000000000000000008-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-008-sched-seed-00000000000000000008-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-009-sched-seed-00000000000000000009-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-009-sched-seed-00000000000000000009-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-010-sched-seed-00000000000000000010-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-010-sched-seed-00000000000000000010-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-011-sched-seed-00000000000000000011-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-011-sched-seed-00000000000000000011-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/asyncssl/experiment.json": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/HTTPCORO-MIDPOINT-PREFLIGHT-20260921.md": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-00000000000000000000-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-00000000000000000000-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-002-sched-seed-00000000000000000002-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-00000000000000000003-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-00000000000000000003-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/httpcoro/experiment.json": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000000000-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000000000-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000000001-replica-2.invocation.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/authoritative/thrift/experiment.json": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r6-3eb9d118337a/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r6-3eb9d118337a/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r6-3eb9d118337a/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r6-precommit/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r6-precommit/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/containment_rerun-env-flakes.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/containment_test-run2.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/ps-pre-containment.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-c1f8817a5ebb/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-precommit/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r7-precommit/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-2c30cbedb0ba/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-2c30cbedb0ba/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-2c30cbedb0ba/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/run1-aborted/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/run1-aborted/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/run1-aborted/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/followup-20260925-r8-b8b85d00462b/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r2/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r2/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r2/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r2/sl-commit.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r2/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r3-bb4ff9f3/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r3-bb4ff9f3/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r3-bb4ff9f3/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r3-bb4ff9f3/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-335ed55b/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-76901578/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-76901578/ps-pre-containment.out": {
+   "host_names": 30,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-76901578/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-76901578/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-precommit/arc-f.out": {
+   "host_names": 5,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r4-precommit/pyre-after-fix.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-38939dd4/build-cli.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-38939dd4/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-38939dd4/ps-pre-containment.out": {
+   "host_names": 29,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-38939dd4/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-38939dd4/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925-r5-precommit/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925/containment_test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925/pyre-pre-fix.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/gates/relocation-20260925/tfa_phase2_test.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/investigation/asyncssl/start-76-inspection.pane": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/investigation/httpcoro/goal-inspection.pane": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/investigation/httpcoro/start-76-inspection.pane": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/investigation/thrift/start-76-inspection.pane": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/reviews/delivery-c1f8817a-pre-enter.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/reviews/test_prototype-parent.py": {
+   "host_names": 15,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/asyncssl/postfix/build-patched.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/asyncssl/postfix/build-reverted.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/asyncssl/postfix/unit.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/httpcoro/postfix/build-patched.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/httpcoro/postfix/build-reverted.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/httpcoro/postfix/unit.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/logs/build-prefix-asyncssl.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/logs/build-prefix-httpcoro.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/logs/build-prefix-thrift.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/thrift/postfix/build-patched.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/thrift/postfix/build-reverted.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/stress/thrift/postfix/unit.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/slot/tfa-phase2-three-case/tmpdir/build-r8.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-4d6-message.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-build-isolated.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-log-0.jsonl": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-log-3.jsonl": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-log-4.jsonl": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-log-5.jsonl": {
+   "host_names": 17,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-buck-log-7.jsonl": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-codex-version-current.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-diff.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-blocked-final.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-blocked.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-blocked2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-blocked3.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-build-before.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-configured-build.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-format.log.txt": {
+   "host_names": 8,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-format2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-manifest-final.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-manifest.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-postcommit-pyre.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-pyre-final.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-pyre-final2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-pyre.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-pyre2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-after1.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-after2.log.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-after3.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-before.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-final.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-final2.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-unit-final3.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-followup-verify-pyre.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-hardening.diff": {
+   "host_names": 8,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-hermit-opt-build.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-hist.txt": {
+   "host_names": 10,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-jf-submit-stack.out": {
+   "host_names": 16,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-jf-submit.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-arc-pyre-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-arc-pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-codex-latest-qualification-2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-codex-latest-qualification.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-codex-qualification.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-prod-reviewfix.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-prod-reviewfix2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-prod-reviewfix3.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-prod-reviewfix4.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-prod.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-test.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-build-unit-reviewfix.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-completion-locks.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-build.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-build2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-cli-slow.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-lint-apply.log.txt": {
+   "host_names": 16,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-lint-final.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-lint1.log.txt": {
+   "host_names": 16,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-lint2.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-manifest.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-matrix1.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-matrix2.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-pyre.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-test1.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-test2.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-test3.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-followup-types2.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-controller-help.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-exact-head-reviewfix.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-exact-head.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-final-dirty.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-locks-exact.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-manifest-exact-head.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-manifest.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-meta-command-search.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-meta-search-annotations-retry.json": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-meta-search-annotations.json": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-production-exact.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-production-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-production-reviewfix-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-pyre-reviewfix-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-pyre-reviewfix.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-running-units.out": {
+   "host_names": 24,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-system-codex-exec-help.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-system-codex-version.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-targeted.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-test-help.out": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-test-list.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-unit-final-2.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-unit-final.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-unit-reviewfix-final.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-unit-reviewfix.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-units.out": {
+   "host_names": 26,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2-wrapper-latest-version.err": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/alias-build-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/alias-build.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/alias-cquery.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/arc-f-2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/arc-f-4.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/arc-f.out": {
+   "host_names": 11,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/codex-a708-bootstrap-version.stderr": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/codex-a708-four-cases.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/codex-current-production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/codex-version.stderr": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/configurations-2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/configurations.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/crash-recovery-retry.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/current-verify-production.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/fixture-one.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/fixture-tests-2.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/fixture-tests.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/forced-run2-1.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/forced-run2-2.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/forced-run2-3.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/forced-run2-retry.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/full-trace-final.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/hermit-production-focus.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/hermit-production-retry.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/manifest-68cf2bac-recheck.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/manifest-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/opt-build-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/opt-build.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/opt-cquery.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-full-68cf2bac-recheck.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-full-exact-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-full-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-full-final2.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-full.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790274107680687060/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790279510527782019/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790281338253008738/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790289269885153993/control/diagnostic-agent/codex-preflight-1790289268831591855/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790289640498726283/control/diagnostic-agent/codex-preflight-1790289638995773837/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790290142732490846/control/diagnostic-agent/codex-preflight-1790290141062977391/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790290744930279080/control/diagnostic-agent/codex-preflight-1790290742795771399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790291132775047006/control/diagnostic-agent/codex-preflight-1790291131261740569/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790292239670344366/control/diagnostic-agent/codex-preflight-1790292238149147037/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294103162161827/control/diagnostic-agent/codex-preflight-1790294092301291122/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294103162161827/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294456235288677/control/diagnostic-agent/codex-preflight-1790294454608058830/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294628906016925/control/diagnostic-agent/codex-preflight-1790294618239058524/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294628906016925/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790295084073865045/control/diagnostic-agent/codex-preflight-1790295072792296020/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790295084073865045/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790295658538047270/control/diagnostic-agent/codex-preflight-1790295657045483275/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790295742478246354/control/diagnostic-agent/codex-preflight-1790295740943018693/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790296252603639895/control/diagnostic-agent/codex-preflight-1790296250793698018/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790297488628360352/control/diagnostic-agent/codex-preflight-1790297486876796399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790297924976115861/control/diagnostic-agent/codex-preflight-1790297923481123602/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790310868896721601/control/diagnostic-agent/codex-preflight-1790310836543040245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790310868896721601/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790314621019409171/control/diagnostic-agent/codex-preflight-1790314604517114799/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790314621019409171/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790315091486913029/control/diagnostic-agent/codex-preflight-1790315072555663972/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790315091486913029/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790315519170681655/control/diagnostic-agent/codex-preflight-1790315517161435832/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790316222693345521/control/diagnostic-agent/codex-preflight-1790316187226875683/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790316222693345521/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790316718407495841/control/diagnostic-agent/codex-preflight-1790316705495975432/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790316718407495841/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790317443685900023/control/diagnostic-agent/codex-preflight-1790317429842775515/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790317443685900023/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790322623701910055/control/diagnostic-agent/codex-preflight-1790322621785537327/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790322851787803470/control/diagnostic-agent/codex-preflight-1790322850063331055/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790323901876744447/control/diagnostic-agent/codex-preflight-1790323900217032706/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790324668800301589/control/diagnostic-agent/codex-preflight-1790324667019733765/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790328082297137980/control/diagnostic-agent/codex-preflight-1790328080640475105/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790328834320252825/control/diagnostic-agent/codex-preflight-1790328832561902493/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790328997677331925/control/diagnostic-agent/codex-preflight-1790328995963370402/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790329846825058842/control/diagnostic-agent/codex-preflight-1790329845021444550/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790330672336899653/control/diagnostic-agent/codex-preflight-1790330670269510499/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790331284105369166/control/diagnostic-agent/codex-preflight-1790331280564700840/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790335946363391118/control/diagnostic-agent/codex-preflight-1790335944652490620/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790336124633480582/control/diagnostic-agent/codex-preflight-1790336122864822716/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790345171591589737/control/diagnostic-agent/codex-preflight-1790345169172689400/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790274381085278114/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790279161826974164/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790281214224028480/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790289499869562004/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289491251527361/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790289613109279236/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289604219751862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790290132152506480/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290123474367377/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790290547132691183/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290538791341675/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790290916693322448/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290907533870127/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790292274120822219/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790292265574074539/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294083834499335/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790293952548730659/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294083834499335/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294445947427647/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294434965923245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294510478866263/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294540255227796/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294610927179978/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294913388484960/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294946578859083/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295044179920229/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295684294028719/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295676322823422/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790295993927289882/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295983849227017/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790296293594673800/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790296283025734375/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790297514682098520/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790297505017195856/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790298177246288989/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790298167428124987/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790314951317407341/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790315004023464536/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315065020168086/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315554939939934/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790315535442884536/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316042078016919/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316076704907472/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316697371108549/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316566676857001/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316697371108549/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/codex-preflight-1790317317080889276/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stdout.txt": {
+   "host_names": 9,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317261358844300/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317293045287158/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790317422643739008/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790322462003666258/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790322453148485729/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790323124304858136/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790323114294132090/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790323952435129820/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790323942276003420/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790324708516507502/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790324699389600920/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790328148971151020/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790328139298850250/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790328622023281157/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790328612129802815/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790329257785730012/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790329248202981232/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790329804732519474/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790329794634210185/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790330725147292117/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790330715143784076/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790331228828699647/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790331216739099145/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790335678407272872/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790335667443203926/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790336329942836479/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790336320931393552/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790345387579253024/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790345378372866180/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790273917038978025/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790279176207859512/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790281050031661274/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790289230798218129/control/review-process/codex-preflight-1790289229060316627/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790289685373621582/control/review-process/codex-preflight-1790289683921587975/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790289959404162147/control/review-process/codex-preflight-1790289957935021392/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790290733703809120/control/review-process/codex-preflight-1790290731911665266/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790291078931723339/control/review-process/codex-preflight-1790291077413195917/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790292231323902294/control/review-process/codex-preflight-1790292229625818930/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294147487070984/control/review-process/codex-preflight-1790294133653152218/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294147487070984/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294474818903460/control/review-process/codex-preflight-1790294473416015773/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294671456255914/control/review-process/codex-preflight-1790294659209717862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294671456255914/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294852019106462/control/review-process/codex-preflight-1790294837975803443/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294852019106462/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790295666696630717/control/review-process/codex-preflight-1790295665210254800/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790295764843385201/control/review-process/codex-preflight-1790295762509716890/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790296264860639817/control/review-process/codex-preflight-1790296262627069294/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790297550491792710/control/review-process/codex-preflight-1790297548755028280/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790298098224975852/control/review-process/codex-preflight-1790298096092314362/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790310909842495350/control/review-process/codex-preflight-1790310875408960621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790310909842495350/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790314642944347495/control/review-process/codex-preflight-1790314628173155546/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790314642944347495/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790315112392908528/control/review-process/codex-preflight-1790315098219026549/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790315112392908528/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790315649387997165/control/review-process/codex-preflight-1790315647725011150/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790316245088465262/control/review-process/codex-preflight-1790316230036980621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790316245088465262/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790316739665304261/control/review-process/codex-preflight-1790316726082211500/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790316739665304261/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790317465660924895/control/review-process/codex-preflight-1790317451317329566/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790317465660924895/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790322393088757878/control/review-process/codex-preflight-1790322391252447649/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790322894828154770/control/review-process/codex-preflight-1790322893037450127/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790324726310528670/control/review-process/codex-preflight-1790324724804738596/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790328045909877016/control/review-process/codex-preflight-1790328043921098686/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790328409208819251/control/review-process/codex-preflight-1790328407693806455/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790328859777346283/control/review-process/codex-preflight-1790328858017015952/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790329295611754094/control/review-process/codex-preflight-1790329293830052380/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790329562138374971/control/review-process/codex-preflight-1790329560403989853/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790330682826410911/control/review-process/codex-preflight-1790330680350411909/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790331529155143532/control/review-process/codex-preflight-1790331527224074831/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790335932796431914/control/review-process/codex-preflight-1790335930426695792/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790336083931421125/control/review-process/codex-preflight-1790336081707767325/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790345352623106010/control/review-process/codex-preflight-1790345350851428540/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/pyre-2.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/pyre-68cf2bac-recheck.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/pyre-exact-final.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/pyre-final-preprod.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/pyre.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/qual-71b8f5/preflight-artifacts/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/qual-71b8f5/probe_ab.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/qual-71b8f5/probe_d.log.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/qual71-bootstrap-wrjkp9q7/run/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/qual71-native-zhzkuxwo/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/review-ce8fa9b.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-02tz6x5h/control/diagnostic-agent/codex-preflight-1790329845021444550/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-13bkbop2/control/diagnostic-agent/codex-preflight-1790310836543040245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-13bkbop2/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-1mxmwved/control/diagnostic-agent/codex-preflight-1790335944652490620/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-3j666o3y/control/diagnostic-agent/codex-preflight-1790324667019733765/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-6kta7lea/control/diagnostic-agent/codex-preflight-1790322621785537327/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-6t2zsorc/control/diagnostic-agent/codex-preflight-1790297923481123602/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-82pck0yu/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-8_57fjgn/control/diagnostic-agent/codex-preflight-1790328080640475105/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-8aitb9_2/control/diagnostic-agent/codex-preflight-1790328832561902493/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-a0hle6xp/control/diagnostic-agent/codex-preflight-1790322850063331055/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-d7dytlmh/control/diagnostic-agent/codex-preflight-1790290141062977391/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-dubgj7mv/control/diagnostic-agent/codex-preflight-1790295072792296020/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-dubgj7mv/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-f34pmy85/control/diagnostic-agent/codex-preflight-1790323900217032706/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-g0936z1k/control/diagnostic-agent/codex-preflight-1790295740943018693/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-gbuem3f7/control/diagnostic-agent/codex-preflight-1790328995963370402/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-gtzoizw6/control/diagnostic-agent/codex-preflight-1790290742795771399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-hfus5mim/control/diagnostic-agent/codex-preflight-1790315072555663972/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-hfus5mim/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-hpsew1sv/control/diagnostic-agent/codex-preflight-1790331280564700840/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-hv9365ao/control/diagnostic-agent/codex-preflight-1790295657045483275/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-ij_7gnr8/control/diagnostic-agent/codex-preflight-1790330670269510499/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-j98bg9_m/control/diagnostic-agent/codex-preflight-1790345169172689400/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-jb_c1aax/control/diagnostic-agent/codex-preflight-1790294092301291122/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-jb_c1aax/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-jlkyk139/control/diagnostic-agent/codex-preflight-1790316705495975432/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-jlkyk139/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-lsu_spv1/control/diagnostic-agent/codex-preflight-1790297486876796399/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-m1op5m3t/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-nwqszvyg/control/diagnostic-agent/codex-preflight-1790316187226875683/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-nwqszvyg/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-pz_h78l3/control/diagnostic-agent/codex-preflight-1790314604517114799/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-pz_h78l3/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-r6s76r13/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-rh7p6cna/control/diagnostic-agent/codex-preflight-1790292238149147037/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-sjm6t63n/control/diagnostic-agent/codex-preflight-1790294454608058830/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-vcmgnlpp/control/diagnostic-agent/codex-preflight-1790294618239058524/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-vcmgnlpp/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-vcu2jcds/control/diagnostic-agent/codex-preflight-1790336122864822716/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-wt_9gflr/control/diagnostic-agent/codex-preflight-1790296250793698018/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-wz5c9m06/control/diagnostic-agent/codex-preflight-1790315517161435832/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-xccj54e3/control/diagnostic-agent/codex-preflight-1790289268831591855/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-xu37lmlk/control/diagnostic-agent/codex-preflight-1790289638995773837/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-yeonqi_c/control/diagnostic-agent/codex-preflight-1790291131261740569/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-yknh1o8r/control/diagnostic-agent/codex-preflight-1790317429842775515/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-codex-report-yknh1o8r/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-010rqhy1/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790298167428124987/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-0od3snhk/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790293952548730659/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-0od3snhk/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-0t3ps03t/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790330715143784076/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-13msbg1_/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790323114294132090/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-21dzen81/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790324699389600920/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-378n1ete/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316566676857001/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-378n1ete/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-3h969422/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790329794634210185/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-4jlmiuvw/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295983849227017/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-5p_1mcxz/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790323942276003420/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-5vx0an7u/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790329248202981232/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-62rfw21m/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790345378372866180/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-7hzlll1p/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790328139298850250/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-7n4w794r/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289491251527361/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-8t4o27n8/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-8t4o27n8/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-8t4o27n8/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-8t4o27n8/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-awy3_6ow/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790297505017195856/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-c1kgaejr/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290123474367377/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-dqb741ag/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-dqb741ag/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-dqb741ag/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/codex-preflight-1790317317080889276/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/candidate-attempts/attempt-001/pre-apply-review-process/stdout.txt": {
+   "host_names": 9,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317261358844300/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790317293045287158/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-favqxfpm/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790295676322823422/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-fzyxprbu/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-hqksd8d_/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290907533870127/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-i31czcsw/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790289604219751862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-kcdqtxva/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790335667443203926/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-kuu7569b/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790292265574074539/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790314951317407341/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790315004023464536/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-ly0yv_gt/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294510478866263/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294540255227796/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-n_7txmpe/artifacts/handoff/control/incomplete-candidate-attempts/attempt-003/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-nk50pe4f/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790315535442884536/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-nw_kofwy/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790322453148485729/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-omtr4ebn/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790290538791341675/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-p9c7u9o9/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790331216739099145/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316042078016919/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790316076704907472/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-sikk6px2/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790328612129802815/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-smbivteu/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294913388484960/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-smbivteu/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294946578859083/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-smbivteu/artifacts/handoff/control/diagnostic-agent/stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-smbivteu/artifacts/handoff/control/incomplete-candidate-attempts/attempt-001/process-stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-smbivteu/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/process-stderr.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-wcqsg_ga/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790296283025734375/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-z4a7ioos/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790294434965923245/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-controller-handoff-zvvwgudl/artifacts/handoff/control/diagnostic-agent/codex-preflight-1790336320931393552/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-0_9d_kre/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-0cn19td0/control/review-process/codex-preflight-1790289683921587975/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-0mbgcchd/control/review-process/codex-preflight-1790292229625818930/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-15_d2syk/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-2pn07dx5/control/review-process/codex-preflight-1790328858017015952/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-2s_wcuzm/control/review-process/codex-preflight-1790291077413195917/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-2znhbg99/control/review-process/codex-preflight-1790317451317329566/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-2znhbg99/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-64hcc0ns/control/review-process/codex-preflight-1790295665210254800/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-6fzr8iqj/control/review-process/codex-preflight-1790315098219026549/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-6fzr8iqj/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-8ccp2n5n/control/review-process/codex-preflight-1790290731911665266/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-9m7b03to/control/review-process/codex-preflight-1790297548755028280/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-_3see1jj/control/review-process/codex-preflight-1790295762509716890/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-_zgaxlsm/control/review-process/codex-preflight-1790335930426695792/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-b0mybg4s/control/review-process/codex-preflight-1790294837975803443/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-b0mybg4s/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-b6b9gvgu/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-bdwk80xr/control/review-process/codex-preflight-1790336081707767325/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-flrt0ay0/control/review-process/codex-preflight-1790289957935021392/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-fz5st0zw/control/review-process/codex-preflight-1790330680350411909/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-gwg87vf5/control/review-process/codex-preflight-1790322391252447649/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-hgcpzan4/control/review-process/codex-preflight-1790315647725011150/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-ickkc0gt/control/review-process/codex-preflight-1790328043921098686/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-jntjlie0/control/review-process/codex-preflight-1790329293830052380/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-lf__elsv/control/review-process/codex-preflight-1790296262627069294/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-ll_9dmei/control/review-process/codex-preflight-1790294473416015773/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-md4weket/control/review-process/codex-preflight-1790322893037450127/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-mkcggc7x/control/review-process/codex-preflight-1790345350851428540/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-mtinyikf/control/review-process/codex-preflight-1790316230036980621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-mtinyikf/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-n5ld3i3b/control/review-process/codex-preflight-1790314628173155546/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-n5ld3i3b/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-nrk9cczk/control/review-process/codex-preflight-1790331527224074831/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-nvj07sxf/control/review-process/codex-preflight-1790316726082211500/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-nvj07sxf/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-o3cotjoe/control/review-process/codex-preflight-1790294133653152218/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-o3cotjoe/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-oam3tdpg/control/review-process/codex-preflight-1790298096092314362/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-oihfjh5z/control/review-process/codex-preflight-1790324724804738596/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-qwqke0yr/control/review-process/codex-preflight-1790289229060316627/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-uf3sht10/control/review-process/codex-preflight-1790328407693806455/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-um9fx9nh/control/review-process/codex-preflight-1790310875408960621/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-um9fx9nh/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-uov2u5ee/control/review-process/codex-preflight-1790329560403989853/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-znk0dwya/control/review-process/codex-preflight-1790294659209717862/identity.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/tfa-production-reviewer-report-znk0dwya/control/review-process/stderr.txt": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-68cf2bac-recheck.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-exact-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-final-preprod.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test-2.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test-3.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test-4.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test-5.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test-6.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-phase2/unit-test.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-32e-to-58d.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-58d-focused.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-asyncssl-build-3154bc.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-base-to-4d6.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-base-to-58d-again.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-base-to-58d.diff": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-buck-test-3154bc.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/phase2/tmp/tfa-review-manifest-3154bc.out": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/tfa-lane/codex-rollover/full-test.log.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/tfa-lane/external-oss-mode/DISK-HOLD-4fb8c4120739.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti-timerfd.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475235299286.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475236296488.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475238796418.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475240048871.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475240064369.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475243043222.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475243051108.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475243249473.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475243259972.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475244092464.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/281475250915202.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950211052906.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950212033102.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950213120998.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950215319283.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950216898741.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950220120091.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950242844554.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950274089363.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950354325343.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/562950361061616.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/844425193659677.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/844425197050049.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/844425202171362.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/844425205465381.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/844425263427177.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-281475236296488.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-281475243249473.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-281475244092464.txt": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-562950212033102.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-562950216898741.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-562950220120091.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/run-get-844425197050049.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/tls-meta-full.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/tls-meta.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/ti/tls-run-get.txt": {
+   "host_names": 2,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/tmp-tfa-phase2/production-full-68cf2bac-recheck.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/tmp-tfa-phase2/tfa-phase2-production-final.out": {
+   "host_names": 4,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/tmp-tfa-phase2/unit-68cf2bac-recheck.out": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/verify/acl-inspect.txt": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/verify/devbig030.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/verify/devvm895.json": {
+   "host_names": 3,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/verify/hist-asyncssl.json": {
+   "host_names": 340,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/verify/ti-hist-562950215319283.json": {
+   "host_names": 400,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/way/d121815443.json": {
+   "host_names": 11,
+   "markdown_links_unlinked": 0
+  },
+  "evidence/way/hermit-test-meta.json": {
+   "host_names": 1,
+   "markdown_links_unlinked": 0
+  }
+ },
+ "policy": "internal FQDN -> first DNS label",
+ "suffixes": [
+  "facebook.com",
+  "fb.com",
+  "thefacebook.com",
+  "fbinfra.net",
+  "facebook.net",
+  "internalfb.com",
+  "internalmeta.com",
+  "workplace.com",
+  "fburl.com",
+  "tfbnw.net",
+  "fbsv.net"
+ ]
+}

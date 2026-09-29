@@ -1,5 +1,5 @@
-[2026-09-24T15:23:41.252-07:00] Buck UI: https://www.internalfb.com/buck2/38368586-3f0a-42f5-9346-09b67bcedc0a
-[2026-09-24T15:23:42.012-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499579743
+[2026-09-24T15:23:41.252-07:00] Buck UI: https://www/buck2/38368586-3f0a-42f5-9346-09b67bcedc0a
+[2026-09-24T15:23:42.012-07:00] Test session: https://www/intern/testinfra/testrun/30680772499579743
 [2026-09-24T15:23:50.800-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (5.7s)
 [2026-09-24T15:23:50.800-07:00] test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-24T15:23:50.800-07:00]
@@ -36,12 +36,12 @@
 [2026-09-24T15:23:50.800-07:00] FAILED (failures=1)
 [2026-09-24T15:23:50.800-07:00]
 [2026-09-24T15:23:57.971-07:00] Network: up 0B  down 0B
-[2026-09-24T15:23:57.971-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499579743
+[2026-09-24T15:23:57.971-07:00] Test session: https://www/intern/testinfra/testrun/30680772499579743
 Tests finished: [mPass 1[m. [mFail 1[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 1 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
 
 Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
       ^^^ just prefix your previous command! ($ fdb !!)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499579743&expiry=2026-09-24T22%3A28%3A57Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499579743&expiry=2026-09-24T22%3A28%3A57Z&viewer=18498&signature=REDACTED]8;;\[0m

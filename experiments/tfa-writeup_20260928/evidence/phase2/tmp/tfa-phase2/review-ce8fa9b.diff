@@ -1098,10 +1098,10 @@ diff --git a/fbcode/testinfra/tfa/process.py b/fbcode/testinfra/tfa/process.py
 +_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v1"
 +_CODEX_VERSION_STDERR: tuple[str, ...] = (
 +    "",
-+    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
 +    "Using AI Gateway (Azure Codex upstream)\n",
 +    "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
-+    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
 +    "Using AI Gateway (OpenAI upstream)\n",
 +)
 +_CODEX_COMPATIBILITY: dict[tuple[str, str], tuple[str, str | None]] = {

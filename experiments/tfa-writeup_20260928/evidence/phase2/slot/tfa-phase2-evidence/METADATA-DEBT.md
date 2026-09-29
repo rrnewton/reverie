@@ -1,6 +1,6 @@
 # Slot metadata debt: tfa-phase2-cyber-opus
 
-- Host: devbig030 (hostname devbig030.atn3.facebook.com). Registry shard: devbig014.
+- Host: devbig030 (hostname devbig030). Registry shard: devbig014.
 - Cause: tracked parent `.wrkslots.yml` pins `"machine": "devbig014"`; `wrkslots register`
   without `--machine` wrote the row to `ACTIVE.devbig014.json` (event 2229) on 2026-09-24.
 - `wrkslots --machine devbig030 import-existing ... --apply` refused, rc=3:

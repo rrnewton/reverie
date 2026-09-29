@@ -2,7 +2,7 @@ notice Found 1 lint issue.
 >>> Lint for fbcode/testinfra/tfa/hermit.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              318     boundary = argv.index("--")
              319     options = list(argv[:boundary])

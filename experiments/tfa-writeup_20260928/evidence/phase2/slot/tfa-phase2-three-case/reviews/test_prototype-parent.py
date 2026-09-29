@@ -4403,7 +4403,7 @@ class ReportTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ReportError, "root_cause must be one plain-text line"
         ):
-            final_text(_loaded_case(), report, "https://www.internalfb.com/diff/123")
+            final_text(_loaded_case(), report, "https://www/diff/123")
 
     def test_rejects_patch_outside_dedicated_agent_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -4617,7 +4617,7 @@ class DraftTest(unittest.TestCase):
                 "land_job_status": "NO_LAND_RUNNING",
             }
         )
-        self.assertEqual(url, "https://www.internalfb.com/diff/123")
+        self.assertEqual(url, "https://www/diff/123")
 
     def test_rejects_reviewer_and_publish_actions(self) -> None:
         with self.assertRaisesRegex(DraftError, "reviewers"):
@@ -4654,7 +4654,7 @@ class DraftTest(unittest.TestCase):
             submit.stdout_path.write_text(
                 '{"type":"step","data":{"message":"submit"}}\n'
                 '{"type":"sublist","data":[{"item":'
-                '"created: https://www.internalfb.com/diff/D123"}]}\n'
+                '"created: https://www/diff/D123"}]}\n'
             )
             describe = ProcessResult(
                 ("meta",), 0, 0.1, False, root / "readback", root / "readback-err"
@@ -4663,7 +4663,7 @@ class DraftTest(unittest.TestCase):
                 ("meta",), 0, 0.1, False, root / "files", root / "files-err"
             )
             readback = DraftReadback(
-                "https://www.internalfb.com/diff/123",
+                "https://www/diff/123",
                 "D123",
                 "commit",
                 describe,
@@ -4691,7 +4691,7 @@ class DraftTest(unittest.TestCase):
                     [{"kind": "file", "path": "file.cpp", "sha256": "hash"}],
                     self._EXPECTED_MESSAGE,
                 )
-            self.assertEqual(mutation.url, "https://www.internalfb.com/diff/123")
+            self.assertEqual(mutation.url, "https://www/diff/123")
             verify.assert_called_once()
             run.assert_called_once()
             read.assert_called_once()
@@ -4722,7 +4722,7 @@ class DraftTest(unittest.TestCase):
             )
             (submit_dir / "stdout.txt").write_text(
                 '{"type":"sublist","data":[{"item":'
-                '"created: https://www.internalfb.com/diff/D123"}]}\n'
+                '"created: https://www/diff/D123"}]}\n'
             )
             (submit_dir / "stderr.txt").write_text("")
             payload_sentinel = submit_dir / "payload-recovered.sentinel"
@@ -4767,7 +4767,7 @@ class DraftTest(unittest.TestCase):
                 ("meta",), 0, 0.1, False, root / "files", root / "files-err"
             )
             readback = DraftReadback(
-                "https://www.internalfb.com/diff/123",
+                "https://www/diff/123",
                 "D123",
                 "commit",
                 describe,
@@ -4795,7 +4795,7 @@ class DraftTest(unittest.TestCase):
                     [{"kind": "file", "path": "file.cpp", "sha256": "hash"}],
                     self._EXPECTED_MESSAGE,
                 )
-            self.assertEqual(mutation.url, "https://www.internalfb.com/diff/123")
+            self.assertEqual(mutation.url, "https://www/diff/123")
             verify.assert_called_once()
             run.assert_not_called()
             read.assert_called_once()
@@ -7087,7 +7087,7 @@ class RunCaseTest(unittest.TestCase):
                 },
             )
             result = DraftReadback(
-                "https://www.internalfb.com/diff/123",
+                "https://www/diff/123",
                 "D123",
                 "commit",
                 ProcessResult(("meta",), 0, 0, False, root / "out", root / "err"),
@@ -7145,7 +7145,7 @@ class RunCaseTest(unittest.TestCase):
             stdout.write_text("")
             stderr.write_text("")
             readback_result = DraftReadback(
-                "https://www.internalfb.com/diff/123",
+                "https://www/diff/123",
                 "D123",
                 "commit",
                 ProcessResult(("meta",), 0, 0, False, stdout, stderr),
@@ -7175,7 +7175,7 @@ class RunCaseTest(unittest.TestCase):
             ):
                 self.assertEqual(
                     _revalidate_draft(case, case_dir, checkout),
-                    "https://www.internalfb.com/diff/123",
+                    "https://www/diff/123",
                 )
             seal.assert_called_once()
             self.assertIsNone(seal.call_args.args[6])
@@ -8000,13 +8000,13 @@ class RunCaseTest(unittest.TestCase):
 
             def draft_fix(*_args: object) -> str:
                 (case_dir / "control" / "diff-url.json").write_text(
-                    json.dumps({"url": "https://www.internalfb.com/diff/123"})
+                    json.dumps({"url": "https://www/diff/123"})
                 )
                 write_metadata(
                     case_dir / "control" / "draft-transaction.json",
                     {"phase": "published"},
                 )
-                return "https://www.internalfb.com/diff/123"
+                return "https://www/diff/123"
 
             with (
                 patch(
@@ -8036,7 +8036,7 @@ class RunCaseTest(unittest.TestCase):
                 patch("testinfra.tfa.pipeline._draft", side_effect=draft_fix) as draft,
                 patch(
                     "testinfra.tfa.pipeline._revalidate_draft",
-                    return_value="https://www.internalfb.com/diff/123",
+                    return_value="https://www/diff/123",
                 ) as revalidate_draft,
                 patch(
                     "testinfra.tfa.pipeline._comment_stage",
@@ -8109,7 +8109,7 @@ class RunCaseTest(unittest.TestCase):
                 4,
                 str(case_dir / "patch.diff"),
             )
-            url = "https://www.internalfb.com/diff/123"
+            url = "https://www/diff/123"
             committed = False
             external_mutations = 0
             draft_calls = 0

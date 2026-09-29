@@ -60,7 +60,7 @@ as `ccbe37e91` (https://github.com/rrnewton/hermit/pull/3142). The main campaign
 `4630ee2a` carries that patch; it is 50 commits after `79da5231`
 (`git -C hermit rev-list --count 79da5231..4630ee2a`).
 
-This one easy Hermit fix did matter (summarized in README.md section 5, defect 7). After it, 2 of
+This one easy Hermit fix did matter (defect 7 in [HERMIT_DEFECTS.md](HERMIT_DEFECTS.md)). After it, 2 of
 those 5 targets became successes (AsyncSSL, Thrift) and a third reached its test (TimerFD). The
 fix was necessary for those two, but not sufficient: their first configurations after it gave
 passes only, and a kernel change and 49 other Hermit commits also separate the two campaigns
@@ -174,7 +174,7 @@ are in STACK_STATE.md and WAY_FORWARD.md; this is the experiment list only.
 | 2026-09-26 09:21 | Top two diffs submitted as drafts (D121978134, D121978137) | CI for D121978137: 528 of 559 passed, 30 warnings, 0 failed; the 30 warnings are 15 tests in 2 build modes and also fail on the base revision | `$T/external-oss-mode/submit.out`; `/tmp/sub-tfa2-030/gather/stackstate.md` headlines 3-4 (copy [evidence/gather-stackstate.md](evidence/gather-stackstate.md)) |
 | 2026-09-28 11:15 | Re-check on devvm895 (an agentcloud short-lease devvm) and in CI | devvm895 containment 37 pass, 6 fail (5 stale Codex pins, 1 out-of-space error); CI TestX run 1125900439774673: 249 pass, 15 fail (9 sudo mount, 5 Codex identity, 1 missing systemd unit) | `/tmp/sub-tfa2-030/devvm895/tfa-diag/containment-local.log` line 255 (copy [evidence/devvm895/containment-local.log.txt](evidence/devvm895/containment-local.log.txt)); `…/results-dev.json` (243,313 bytes, not copied) |
 
-One of the 6 prototype witnesses differs from the campaign (summarized in README.md section 6):
+One of the 6 prototype witnesses differs from the campaign (summarized in [STACK_STATE.md](STACK_STATE.md)):
 the prototype's HTTPCoro passing witness is seed 1, with the campaign's seed 3 kept as
 `historical_pass_seed` (`fbcode/testinfra/tfa/cases.v1.json` lines 34-36 in the stack-tip copy).
 In the campaign's winning configuration seed 1 gave differing runs (CONT section 4); the records
@@ -196,7 +196,7 @@ read here do not say why the seed was changed (inference: different paths and mo
 
 ## 8. Record-keeping caveats
 
-Referenced from README.md section 7, item 6. None of these changes the success count (CAMP section 7):
+Referenced from README.md section 4, item 6. None of these changes the success count (CAMP section 7):
 
 - The "guest started" counter means different things in different roots.
 - RESULTS.md calls 28 runs "pre-guest failures" although their stderr shows the guest ran.
@@ -204,7 +204,7 @@ Referenced from README.md section 7, item 6. None of these changes the success c
 
 ## 9. Provenance of this write-up
 
-Summarized in the README's provenance block. Written 2026-09-28 by sub-tfa2-030, a read-only
+Summarized in [SOURCES.md](SOURCES.md) and [metadata.json](metadata.json). Written 2026-09-28 by sub-tfa2-030, a read-only
 Claude subagent, for the owner. No test or Hermit run was repeated for this write-up; only the
 read-only validator check of section 6 was re-run. Repository records were read
 from the local dev-hermit checkout at `1393fcda8e20c4b06f0aec5b32f071a6e9a8fd40` (branch `main`,

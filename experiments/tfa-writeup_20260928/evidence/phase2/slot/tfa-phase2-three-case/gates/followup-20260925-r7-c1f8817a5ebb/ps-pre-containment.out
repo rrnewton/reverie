@@ -256,9 +256,9 @@
 3465217     930  5436 /proc/3432132/fd/5/ci-hub/ci-hub.rs validate-run --checkout /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56 --target f7dfc7a70dca6b346fdf9e9e2e4d6f123b543
 2154849      79  3996 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790334091250-rfet10.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=ff8a6195-580e-4030-b6c
 1942040     142  3712 /bin/bash /home/newton/work/dev-hermit/worktrees/slots/narf-opus-progress/ignored/narf-evidence/fixes-r5/side-arms.sh /home/newton/work/dev-hermit/worktrees/slots/narf-opus-progr
- 674807  337925  3160 /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions/artifacts/service-host-codex-app-server/74d718cf89a5799f5c6a1c69fffbc237104ffb44e7679f4a50a182d24ce11db9/co
+ 674807  337925  3160 /home/newton/.agentcloud/node/deployments/mm/sessions/artifacts/service-host-codex-app-server/74d718cf89a5799f5c6a1c69fffbc237104ffb44e7679f4a50a182d24ce11db9/co
 2647275   42790  3056 /bin/bash -c du -sh /tmp/hermit-network-only-replay-astra-results /home/newton/work/dev-hermit/ignored /home/newton/work/dev-hermit/worktrees /home/newton/temp 2>/dev/null ps -eo
-3338137   63526  3252 /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions/artifacts/service-host-codex-app-server/5205115a80e66661b5b9094fe72899e76b6a5a27d5b258b5477030a547d5fc0e/co
+3338137   63526  3252 /home/newton/.agentcloud/node/deployments/mm/sessions/artifacts/service-host-codex-app-server/5205115a80e66661b5b9094fe72899e76b6a5a27d5b258b5477030a547d5fc0e/co
 3427432     940  3980 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790333392850-lc1ix3.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=603a38c5-6eae-41cd-ab4
 3875658    1899  4028 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790333525920-xbo2vj.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=fadf677f-d575-4ff1-846
 1942012     142  4080 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790334091250-rfet10.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=ff8a6195-580e-4030-b6c

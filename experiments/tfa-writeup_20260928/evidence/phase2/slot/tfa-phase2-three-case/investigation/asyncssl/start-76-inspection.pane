@@ -4,7 +4,7 @@
   ▝▝ ▝▝    ~/work/tfa/phase2-cases/investigators/asyncssl
 
 ▎ Introducing Agent Home v2 - a fast and reliable way to work with Claude Code on web and mobile.
-▎ Open https://www.internalfb.com/ah
+▎ Open https://www/ah
 
   ⎿  SessionStart:startup hook error
   ⎿  Failed with non-blocking status code: /bin/sh: line 1: /home/newton/.claude/scout-hooks/session-start.sh: No such file or directory

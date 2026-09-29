@@ -1,6 +1,6 @@
-[2026-09-24T15:09:39.946-07:00] Buck UI: https://www.internalfb.com/buck2/814fca77-4d1e-4687-a4a9-b1f2e15e84e9
+[2026-09-24T15:09:39.946-07:00] Buck UI: https://www/buck2/814fca77-4d1e-4687-a4a9-b1f2e15e84e9
 [2026-09-24T15:09:40.325-07:00] RE Session: reSessionID-86a980db-a5fe-4547-985f-8911b634c911
-[2026-09-24T15:09:40.839-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23643898094690328
+[2026-09-24T15:09:40.839-07:00] Test session: https://www/intern/testinfra/testrun/23643898094690328
 [2026-09-24T15:09:47.581-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
 [2026-09-24T15:09:47.581-07:00] test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
 [2026-09-24T15:09:47.581-07:00]
@@ -57,7 +57,7 @@
 [2026-09-24T15:09:47.583-07:00] FAILED (failures=1)
 [2026-09-24T15:09:47.583-07:00]
 [2026-09-24T15:09:50.349-07:00] Network: up 8.9KiB  down 0B  session reSessionID-86a980db-a5fe-4547-985f-8911b634c911
-[2026-09-24T15:09:50.349-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23643898094690328
+[2026-09-24T15:09:50.349-07:00] Test session: https://www/intern/testinfra/testrun/23643898094690328
 Tests finished: [mPass 125[m. [mFail 2[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 2 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -66,5 +66,5 @@ Tests finished: [mPass 125[m. [mFail 2[m. Timeout 0. Fatal 0. Skip 0. Omit 0
 Run [1m$ fdb buck test <args>[0m to debug one of 2 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23643898094690328&expiry=2026-09-24T22%3A14%3A48Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23643898094690328&expiry=2026-09-24T22%3A14%3A48Z&viewer=18498&signature=REDACTED]8;;\[0m

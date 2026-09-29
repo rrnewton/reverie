@@ -6,7 +6,7 @@
   oncall: ws_mdfs
   execution_type: SANDCASTLE_JOB
   execution_id: 45035996971614685
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/
+  result_uri: https://www/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -173,9 +173,9 @@ E0928 04:03:45.696166 17078 MetadataConverter.cpp:92] ctx: , fileId byte field a
 E0928 04:03:45.696212 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
 
 Test was never completed. The test process might have crashed.
-(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GL9EsDC4o3OTjvEDAKnJGAzbMp4MbswMAAAz)
+(Truncated to 18976 bytes by Tpx; full output at https://fburl/b/everpaste%20GL9EsDC4o3OTjvEDAKnJGAzbMp4MbswMAAAz)
 
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=11540474248085839.281475236296488.1790593435
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/
+  View in browser: https://www/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/

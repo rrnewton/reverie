@@ -24,7 +24,7 @@ re-run to write this; every cell below is read from records or from read-only qu
   ("Hermit produced a passing seed and a failing seed"). In one configuration, one seed
   passes twice and another seed fails twice with the failure declared in advance. The
   looser owner wording gives the same 3 successes, because no other attempted target produced
-  both a passing and a failing seed, but it would have taken less effort (README.md section 2.5).
+  both a passing and a failing seed, but it would have taken less effort.
   Under it, AsyncSSL qualified in its 3rd configuration instead of its 10th
   (`sched-continuation`: seeds 4, 11, 12 and 14 passed, and 11 seeds failed at
   `AsyncSSLSocketTest.cpp:3592` with both runs matching, `BitwiseInfoV1=matched`), and HTTPCoro
@@ -97,7 +97,7 @@ Counts are targets. Buckets are inference (see above). "Stopped by a Hermit defe
 the retained logs show a Hermit bug ended the run before the test's verdict (row 7 by strong
 inference).
 
-| Likely cause | Targets | Attempted (main) | Success | Stopped by a Hermit defect | Stopped otherwise | Not attempted | Could plausibly pass its current stop with an easy fix or setting (untested) |
+| Likely cause | Targets | Attempted (main) | Success | Stopped by a Hermit defect | Stopped by something other than a single Hermit defect | Not attempted | Could plausibly pass its current stop with an easy fix or setting (untested) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Thread-interleaving or async-ordering race | 7 | 4 | 2 (rows 4, 24) | 1 (row 7) | 1 (row 20) | 3 | 0 |
 | Timer, timeout or wall-clock | 11 | 5 | 1 (row 21) | 2 (rows 9, 13) | 2 (rows 3, 5) | 6 | 3 (rows 3, 9, 13) |
@@ -105,6 +105,8 @@ inference).
 | Kernel feature (io_uring) | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
 | Unknown or harness-only evidence | 6 | 1 | 0 | 1 (row 19) | 0 | 5 | 1 (row 19) |
 | **Total** | **30** | **10** | **3** | **4** | **3** | **20** | **4** |
+
+The revised README (section 3.2) and its Figure 1 group the same seven stops differently. The data are the same row for row. The README splits them into three groups: the loader bug (rows 9, 13, 19); another Hermit defect or limit (row 7, the stray timer signal; row 20, the TLS terminator, whose trials were all discarded because of Hermit; and row 3, EventTracker, stopped by the 120 s limit because Hermit's ptrace path is slow); and ran but never failed (row 5). Figure 1 merges the last two groups as "stopped otherwise" (4 targets). That is a different set from this table's "stopped by something other than a single Hermit defect" column (3 targets).
 
 Of the 4 in the last column, none has any evidence that it would then fail on some seed:
 rows 3 and 9 are UNKNOWN, row 19 is UNLIKELY and row 13 is HARD (see the table). Rows 9 and
@@ -126,7 +128,7 @@ Placement notes:
   inference). Why no run passed is not established. Counting it with the 4 defect-stopped
   targets, 5 of the 7 attempted targets without a success were stopped by Hermit. The
   determinism gaps are listed in the defect table in [HERMIT_DEFECTS.md](HERMIT_DEFECTS.md)
-  section 1 (summary in [README.md](README.md) section 5).
+  section 1 (summary in [README.md](README.md) section 3.4).
 - Row 7 would also be "too many threads for ptrace" (657 threads natively) even if its
   Hermit defect were fixed.
 - The pilot adds 4 targets that the main campaign did not attempt (rows 6, 12, 28, 29), so
@@ -147,7 +149,7 @@ both seeds" column above.
 
 ## CI status of the three successes on 2026-09-28
 
-Linked from [README.md](README.md) section 3.2. In CI today (2026-09-28), AsyncSSL is disabled as
+Linked from [README.md](README.md) section 3.3. In CI today (2026-09-28), AsyncSSL is disabled as
 flaky: TestInfra gives it a 60% flakiness score, and 52 of 186 stress runs (28%) failed from 09-26
 to 09-28; the two numbers measure different things. Thrift and HTTPCoro pass all recent final
 results, but the same week still shows their line-836 and line-1685 messages on non-final

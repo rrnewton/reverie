@@ -1,5 +1,5 @@
-[2026-09-24T16:01:17.660-07:00] Buck UI: https://www.internalfb.com/buck2/ab8aeb60-5f00-409d-9cb7-7b7f5cfb633d
-[2026-09-24T16:01:18.662-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/33214047289983603
+[2026-09-24T16:01:17.660-07:00] Buck UI: https://www/buck2/ab8aeb60-5f00-409d-9cb7-7b7f5cfb633d
+[2026-09-24T16:01:18.662-07:00] Test session: https://www/intern/testinfra/testrun/33214047289983603
 [2026-09-24T16:02:01.401-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (19.1s)
 [2026-09-24T16:02:01.401-07:00] test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-24T16:02:01.401-07:00]
@@ -149,7 +149,7 @@
 [2026-09-24T16:06:33.332-07:00] FAILED (errors=1)
 [2026-09-24T16:06:33.332-07:00]
 [2026-09-24T16:06:34.688-07:00] Network: up 0B  down 0B
-[2026-09-24T16:06:34.688-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/33214047289983603
+[2026-09-24T16:06:34.688-07:00] Test session: https://www/intern/testinfra/testrun/33214047289983603
 Tests finished: [mPass 35[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 4 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -160,5 +160,5 @@ Tests finished: [mPass 35[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 4 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=33214047289983603&expiry=2026-09-24T23%3A11%3A33Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=33214047289983603&expiry=2026-09-24T23%3A11%3A33Z&viewer=18498&signature=REDACTED]8;;\[0m

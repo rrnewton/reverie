@@ -1,5 +1,5 @@
-[2026-09-25T01:10:09.147-07:00] Buck UI: https://www.internalfb.com/buck2/845108fb-2d53-44f4-a476-1958935f655b
-[2026-09-25T01:10:09.888-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499736264
+[2026-09-25T01:10:09.147-07:00] Buck UI: https://www/buck2/845108fb-2d53-44f4-a476-1958935f655b
+[2026-09-25T01:10:09.888-07:00] Test session: https://www/intern/testinfra/testrun/30680772499736264
 [2026-09-25T01:10:13.766-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
 [2026-09-25T01:10:13.766-07:00] test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
 [2026-09-25T01:10:13.766-07:00]
@@ -47,7 +47,7 @@
 [2026-09-25T01:10:14.034-07:00] FAILED (failures=1)
 [2026-09-25T01:10:14.034-07:00]
 [2026-09-25T01:10:14.546-07:00] Network: up 0B  down 0B
-[2026-09-25T01:10:14.546-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499736264
+[2026-09-25T01:10:14.546-07:00] Test session: https://www/intern/testinfra/testrun/30680772499736264
 Tests finished: Pass 0. [38;5;9mFail 2[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 2 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -56,5 +56,5 @@ Tests finished: Pass 0. [38;5;9mFail 2[39m. Timeout 0. Fatal 0. Skip 0. Omit 0
 Run [1m$ fdb buck test <args>[0m to debug one of 2 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_mutated_bytes_are_provenance_mismatch (testinfra.tfa.tests.test_prototype.ProcessTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499736264&expiry=2026-09-25T08%3A15%3A14Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499736264&expiry=2026-09-25T08%3A15%3A14Z&viewer=18498&signature=REDACTED]8;;\[0m

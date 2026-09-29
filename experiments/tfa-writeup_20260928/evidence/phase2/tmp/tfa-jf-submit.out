@@ -5,7 +5,7 @@
 [5/7] No need to upload binary files...
 [6/7] Sending patches to Phabricator...
 [7/7] Waiting for all sandcastle jobs to be started and the dependencies to be set...
-warning None of the f752a62f861b parents is public or submitted for review. Is this an accidental stack? https://fburl.com/accidental-stack
+warning None of the f752a62f861b parents is public or submitted for review. Is this an accidental stack? https://fburl/accidental-stack
 success The following diffs were created, updated or skipped:
-      - created: https://www.internalfb.com/diff/D121848525 draft - [testinfra][tfa] Render follow-up root causes as caveated hypotheses
+      - created: https://www/diff/D121848525 draft - [testinfra][tfa] Render follow-up root causes as caveated hypotheses
 Done in 17.03s.

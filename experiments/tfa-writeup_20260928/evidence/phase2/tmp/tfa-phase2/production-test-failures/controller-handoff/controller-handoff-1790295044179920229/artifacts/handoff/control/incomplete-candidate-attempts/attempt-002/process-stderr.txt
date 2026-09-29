@@ -1,8 +1,8 @@
-Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Codex CLI at Meta (https://fburl/codex.cli.users)
 Using codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
-Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Codex CLI at Meta (https://fburl/codex.cli.users)
 Using codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real
 Using AI Gateway (Azure Codex upstream)
 2026-09-25T00:09:20.475711Z ERROR codex_core::tools::router: error=Exit code: 1

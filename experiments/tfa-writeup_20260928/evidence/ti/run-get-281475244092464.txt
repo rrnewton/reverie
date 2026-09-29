@@ -6,7 +6,7 @@
   oncall: logdevice
   execution_type: SANDCASTLE_JOB
   execution_id: 40532397339163504
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/
+  result_uri: https://www/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -55,7 +55,7 @@ I0928 03:59:35.455607     2 ProcessCounters.cpp:17] Bootstraping Delos process c
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20] Build Information
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built by: twsvcscm
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built on: Mon Sep 28 03:53:15 2026 (1790592795)
-I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built at: 2a9f-855b-156c-0a00.twshared7357.01.snb2.tw.fbinfra.net
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built at: 2a9f-855b-156c-0a00
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build path: /data/sandcastle/boxes/trunk-hg-full-fbsource
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Package Name: 
 I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Package Version: 
@@ -191,9 +191,9 @@ I0928 03:59:36.747346    75 PeriodicComponentInspector.cpp:22] [DefaultEngineSta
                        /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
 
 Test was never completed. The test process might have crashed.
-(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GKlBsDCQGF33_fYDAJ8jgAPMBJo1bswMAAAz)
+(Truncated to 18976 bytes by Tpx; full output at https://fburl/b/everpaste%20GKlBsDCQGF33_fYDAJ8jgAPMBJo1bswMAAAz)
 
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=25332747955886561.281475244092464.1790593181
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/
+  View in browser: https://www/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/

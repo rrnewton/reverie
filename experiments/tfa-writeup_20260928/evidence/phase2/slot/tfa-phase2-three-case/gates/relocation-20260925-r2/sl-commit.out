@@ -2,7 +2,7 @@ running code formatter: 'arc f'
 >>> Lint for fbcode/testinfra/tfa/relocation.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              174         receipt = json.loads((run / "receipt.json").read_text())
              175     except (OSError, json.JSONDecodeError) as error:
@@ -16,7 +16,7 @@ running code formatter: 'arc f'
              180         or classification.get("returncode") not in (None, 124, 125, 126)
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              231         data = summary_path.read_bytes()
              232         summary = json.loads(data)

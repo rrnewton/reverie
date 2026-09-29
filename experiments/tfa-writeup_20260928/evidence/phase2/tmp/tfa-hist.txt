@@ -6,10 +6,10 @@
 6	2026-09-28T18:03:42Z	task_dispatched
 12	2026-09-28T18:03:42Z	user_input	principal=18498 apply=after_tool_round "You are sub-tfa, the persistent owner of the TFA workstream for the dev-hermit project (Hermit d…"
 20	2026-09-28T18:04:02Z	tool_checkpoint
-32	2026-09-28T18:04:27Z	node_reserved	node=devvm895.vcn0.facebook.com lease=28a46778-1ef6-53c4-9932-51005653fed3 host=devvm895.vcn0.facebook.com
-33	2026-09-28T18:04:27Z	node_attached	node=devvm895.vcn0.facebook.com
-34	2026-09-28T18:04:27Z	tool_result	intent=2 outcome=success "provisioned node devvm895.vcn0.facebook.com on devvm895.vcn0.facebook.com — attached to this ses…"
-39	2026-09-28T18:04:27Z	harness_bound	node=devvm895.vcn0.facebook.com protocol=claude_code native_session=ef420c5e-34f0-4659-bbba-2967ac725a1a
+32	2026-09-28T18:04:27Z	node_reserved	node=devvm895 lease=28a46778-1ef6-53c4-9932-51005653fed3 host=devvm895
+33	2026-09-28T18:04:27Z	node_attached	node=devvm895
+34	2026-09-28T18:04:27Z	tool_result	intent=2 outcome=success "provisioned node devvm895 on devvm895 — attached to this ses…"
+39	2026-09-28T18:04:27Z	harness_bound	node=devvm895 protocol=claude_code native_session=ef420c5e-34f0-4659-bbba-2967ac725a1a
 43	2026-09-28T18:04:27Z	run_started
 44	2026-09-28T18:04:27Z	input_applied	input=12
 45	2026-09-28T18:04:27Z	model_call_started	run=43
@@ -18,7 +18,7 @@
 53	2026-09-28T18:04:39Z	harness_transcript
 75	2026-09-28T18:04:44Z	block	run=43 call=45 index=0 thinking "I should start by reviewing the relevant skills—phabricator-diff, ci-signals, and sl source cont…"
 79	2026-09-28T18:04:44Z	tool_intent	tool=Bash "{"command":"hostname; ls -d ~/fbsource /data/users/*/fbsource 2>/dev/null; cat /home/newton/.llm…"
-80	2026-09-28T18:04:45Z	tool_result	intent=79 outcome=success "devvm895.vcn0.facebook.com /data/users/devenvuser51b6/fbsource /data/users/newton/fbsource /home…"
+80	2026-09-28T18:04:45Z	tool_result	intent=79 outcome=success "devvm895 /data/users/devenvuser51b6/fbsource /data/users/newton/fbsource /home…"
 81	2026-09-28T18:04:45Z	harness_transcript
 82	2026-09-28T18:04:45Z	harness_transcript
 116	2026-09-28T18:04:51Z	block	run=43 call=45 index=1 thinking "I'm actually on devvm895, not devbig030, so I need to reconsider the checkout paths — there are …"
@@ -170,7 +170,7 @@
 1095	2026-09-28T18:15:30Z	block	run=43 call=45 index=27 thinking "Good news: the stack-top tree builds cleanly on master `8ffb424766c0`, and `tfa_phase2_test` pas…"
 1096	2026-09-28T18:15:30Z	tool_intent	tool=Bash "{"command":"cd /data/repos/fbsource/fbcode && timeout 2400 buck2 test fbcode//testinfra/tfa/test…"
 1097	2026-09-28T18:15:31Z	harness_transcript
-1109	2026-09-28T18:20:02Z	tool_result	intent=1096 outcome=success "rc=32 [2026-09-28T11:15:30.425-07:00] Buck UI: https://www.internalfb.com/buck2/57a77611-af88-48…"
+1109	2026-09-28T18:20:02Z	tool_result	intent=1096 outcome=success "rc=32 [2026-09-28T11:15:30.425-07:00] Buck UI: https://www/buck2/57a77611-af88-48…"
 1110	2026-09-28T18:20:02Z	harness_transcript
 1111	2026-09-28T18:20:02Z	harness_transcript
 1144	2026-09-28T18:20:11Z	block	run=43 call=45 index=28 thinking "The local run shows Pass 37, Fail 6, with 5 real_codex tests failing plus current_full_trace_ref…"
@@ -244,7 +244,7 @@
 101951	2026-09-28T19:12:19Z	options.harness_config_resolved
 101959	2026-09-28T19:14:33Z	user_input	principal=18498 apply=after_tool_round "<pasted_text>(human) Holy crap what IS this huge diff stack culminating in D121978137? We were d…"
 101960	2026-09-28T19:14:33Z	harness_unbound	reason=retuned
-101964	2026-09-28T19:14:33Z	harness_bound	node=devvm895.vcn0.facebook.com protocol=claude_code native_session=ef420c5e-34f0-4659-bbba-2967ac725a1a
+101964	2026-09-28T19:14:33Z	harness_bound	node=devvm895 protocol=claude_code native_session=ef420c5e-34f0-4659-bbba-2967ac725a1a
 101968	2026-09-28T19:14:34Z	run_started
 101969	2026-09-28T19:14:34Z	input_applied	input=101959
 101970	2026-09-28T19:14:34Z	model_call_started	run=101968
@@ -261,7 +261,7 @@
 102030	2026-09-28T19:14:56Z	harness_transcript
 102031	2026-09-28T19:14:56Z	harness_transcript
 102034	2026-09-28T19:14:59Z	tool_intent	tool=Bash "{"command":"pwd; hostname","description":"Show working directory and host"}"
-102035	2026-09-28T19:14:59Z	tool_result	intent=102034 outcome=success "/tmp/agentcloud-18498-workspace/ef420c5e-34f0-4659-bbba-2967ac725a1a devvm895.vcn0.facebook.com"
+102035	2026-09-28T19:14:59Z	tool_result	intent=102034 outcome=success "/tmp/agentcloud-18498-workspace/ef420c5e-34f0-4659-bbba-2967ac725a1a devvm895"
 102036	2026-09-28T19:15:00Z	harness_transcript
 102083	2026-09-28T19:15:09Z	block	run=101968 call=101970 index=1 thinking "I should mention pwd briefly in my final message and keep scouting. The old lane was on devbig03…"
 102100	2026-09-28T19:15:09Z	block	run=101968 call=101970 index=2 text "Working directory: `/tmp/agentcloud-18498-workspace/ef420c5e-34f0-4659-bbba-2967ac725a1a` on dev…"

@@ -6,7 +6,7 @@
   oncall: ucache
   execution_type: SANDCASTLE_JOB
   execution_id: 49539596595254631
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/
+  result_uri: https://www/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -256,9 +256,9 @@ E0926 20:53:23.356210 40815 ToasterSetup.cpp:371] Saving toaster logs to "/logs/
 I0926 20:53:23.357759 40815 LogWatchDog.cpp:61] clean up shared memory in cache dir /tmp/McTest.3eef-d145-734b-43b9
 I0926 20:53:23.359233 40815 LogWatchDog.cpp:29] McTest: stopping watchdog, pid 41274
 
-(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GPHHpzCI7qgyMxwGAG2xdK13DmpbbswMAAAz)
+(Truncated to 18976 bytes by Tpx; full output at https://fburl/b/everpaste%20GPHHpzCI7qgyMxwGAG2xdK13DmpbbswMAAAz)
 
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=281475509947637.281475243249473.1790481005
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/
+  View in browser: https://www/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/

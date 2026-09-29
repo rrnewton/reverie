@@ -1,4 +1,4 @@
 META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber
-Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Codex CLI at Meta (https://fburl/codex.cli.users)
 Using codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real
 Using AI Gateway (OpenAI upstream)

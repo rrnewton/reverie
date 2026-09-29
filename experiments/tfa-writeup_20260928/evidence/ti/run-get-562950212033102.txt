@@ -6,7 +6,7 @@
   oncall: thrift_server_investigations
   execution_type: SANDCASTLE_JOB
   execution_id: 49539596595949603
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/
+  result_uri: https://www/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -105,9 +105,9 @@ SUMMARY: ThreadSanitizer: data race (/data/sandcastle/boxes/trunk-hg-full-fbsour
 ThreadSanitizer: reported 1 warnings
 
 exit_code:"Exit code from the process: 66"
-(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GCw0rjBw-pn3zsgDANiXv-sfdwthbswMAAAz)
+(Truncated to 18976 bytes by Tpx; full output at https://fburl/b/everpaste%20GCw0rjBw-pn3zsgDANiXv-sfdwthbswMAAAz)
 
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=16888498808266881.562950212033102.1790518265
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/
+  View in browser: https://www/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/

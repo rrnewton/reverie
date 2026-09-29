@@ -2,7 +2,7 @@ notice Found 1 lint issue.
 >>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1088             )
             1089             value["packaged_executable"]["sha256"] = digest

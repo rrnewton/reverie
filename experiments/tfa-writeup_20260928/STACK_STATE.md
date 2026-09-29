@@ -2,7 +2,7 @@
 
 Read-only survey from devbig030. No diff was edited, published or commented on. Each number carries its
 source in brackets or in a Sources column. "Inference" marks reasoning that no record proves. Summarized in
-[README.md](README.md) section 9. Copies of the cited non-repository files are in [evidence/](evidence/);
+[README.md](README.md) section 5. Copies of the cited non-repository files are in [evidence/](evidence/);
 [evidence/MANIFEST.md](evidence/MANIFEST.md) maps each copy to its original path.
 
 Terms used here:
@@ -24,28 +24,28 @@ who-am-i tag found in the title or summary [A].
 
 | # | Diff | Title (Phabricator) | Lines +/− | Files | CI | Agent tag | What it adds |
 |---|---|---|---|---|---|---|---|
-| 1 | [D121244476](https://www.internalfb.com/diff/D121244476) | Add bounded phase-two prototype | +5,221 / −0 | 19 | 156 / 2 / 0 of 160 | none | Base package: a manifest of the 3 tests, a 7-stage state machine, draft-only diff and dry-run comment gates |
-| 2 | [D121244213](https://www.internalfb.com/diff/D121244213) | Use native Codex sandbox with TFA lifecycle control | +18,935 / −1,203 | 24 | 307 / 0 / **28** of 340 | none | Runs Codex agents in a sandbox; adds a reviewer agent, packaged safehermit, Hermit replay and the containment tests |
-| 3 | [D121649569](https://www.internalfb.com/diff/D121649569) | Close controller follow-up contracts | +1,108 / −49 | 2 | 315 / 28 / 0 of 344 | Codex-family agent | Fixes three gaps found by a real run on 2026-09-23 |
-| 4 | [D121848885](https://www.internalfb.com/diff/D121848885) | Make controller dependencies self-contained | +730 / −6 | 8 | 333 / 28 / 0 of 363 | Codex-family agent | Switches replay to the packaged fbsource Hermit (recorded as blocked); rejects blocked Codex versions |
-| 5 | [D121848886](https://www.internalfb.com/diff/D121848886) | Close phase-two review findings | +1,378 / −191 | 12 | 344 / 0 / **32** of 378 | gpt-5.6-sol | Hermit import receipts; refuse unqualified Hermit and Codex; recover test fixtures |
-| 6 | [D121848888](https://www.internalfb.com/diff/D121848888) | Seal Codex incompatibility provenance | +567 / −59 | 5 | 361 / 34 / 0 of 399 | tfa-phase2-cyber-opus | Binds Codex launcher, manifest and channel; records Codex 0.156.0 and 0.156.1 as blocked |
-| 7 | [D121848889](https://www.internalfb.com/diff/D121848889) | Hash-bind the Codex payload and unify deadlines | +1,036 / −92 | 6 | 414 / 32 / 0 of 450 | tfa-phase2-cyber-opus | Adds the Codex payload hash and a single deadline origin |
-| 8 | [D121848890](https://www.internalfb.com/diff/D121848890) | Refuse empty wrapper argv; byte-bind Hermit test | +127 / −21 | 3 | 421 / 30 / 0 of 454 | tfa-phase2-cyber-opus | Two small review fixes |
-| 9 | [D121848892](https://www.internalfb.com/diff/D121848892) | Render deterministic difference hints and unposted initial comments | +431 / −4 | 5 | 436 / 30 / 0 of 468 | tfa-phase2-cyber-opus | `render-evidence`: a PASS-versus-FAIL log diff and an unposted first comment |
-| 10 | [D121848893](https://www.internalfb.com/diff/D121848893) | Lead unposted initial comments with measured non-/tmp reproducers | +624 / −23 | 5 | 450 / 31 / 0 of 484 | tfa-phase2-cyber-opus | The first comment leads with commands re-measured outside `/tmp` |
-| 11 | [D121848894](https://www.internalfb.com/diff/D121848894) | Bind censored relocation attempts and resolve relocated paths | +222 / −28 | 4 | 455 / 32 / 0 of 491 | tfa-phase2-cyber-opus | Hardens the checks on those re-measured commands |
-| 12 | [D121848895](https://www.internalfb.com/diff/D121848895) | Bind relocated safehermit reports to unique keys and the manifest Hermit | +44 / −5 | 3 | 455 / 28 / 0 of 486 | tfa-phase2-cyber-opus | Refuses repeated report keys and an unexpected Hermit hash |
-| 13 | [D121848896](https://www.internalfb.com/diff/D121848896) | Render unposted candidate-fix follow-ups from re-judged witness replays | +658 / −8 | 5 | 463 / 31 / 0 of 496 | tfa-phase2-cyber-opus | `render-followup`: judges unfixed versus patched replays as SUPPORTED, NOT SUPPORTED or INCONCLUSIVE |
-| 14 | [D121848898](https://www.internalfb.com/diff/D121848898) | Bind the follow-up unfixed phase to the manifest test ELF | +21 / −6 | 3 | 476 / 31 / 0 of 510 | tfa-phase2-cyber-opus | Closes a gap where unfixed and patched runs could be swapped |
-| 15 | [D121848525](https://www.internalfb.com/diff/D121848525) | Render follow-up root causes as caveated hypotheses | +356 / −7 | 4 | 490 / 31 / 0 of 524 | tfa-phase2-cyber-opus | Shows the root cause as a ranked hypothesis |
-| 16 | [D121877477](https://www.internalfb.com/diff/D121877477) | Hash-bind every follow-up artifact in the ledger | +472 / −96 | 6 | 488 / 31 / 0 of 521 | none | The run ledger records 8 kinds of artifact by hash |
-| 17 | [D121877478](https://www.internalfb.com/diff/D121877478) | Bind follow-up replay roles to manifest seeds | +155 / −13 | 3 | 493 / 31 / 0 of 526 | none | Ties each replay to its recorded seed |
-| 18 | [D121877479](https://www.internalfb.com/diff/D121877479) | Keep task comments dry-run-only | +139 / −11 | 5 | 501 / 30 / 0 of 532 | none | Refuses every posting authorization |
-| 19 | [D121877480](https://www.internalfb.com/diff/D121877480) | Present the final comment's cause as an unproven hypothesis | +68 / −4 | 4 | 502 / 30 / 0 of 533 | none | Wording |
-| 20 | [D121877481](https://www.internalfb.com/diff/D121877481) | Exercise the eligible Codex launch with a hash-bound fixture | +576 / −12 | 4 | 506 / 33 / 0 of 540 | none | A test-only "eligible" Codex stand-in; real-Codex tests skip on the blocked release |
-| 21 | [D121978134](https://www.internalfb.com/diff/D121978134) | Pin the rolled-over owner-managed Codex releases as blocked | +24 / −23 | 4 | 506 / 30 / 0 of 538 | none | Re-pins new Codex digests, still blocked |
-| 22 | [D121978137](https://www.internalfb.com/diff/D121978137) | Add a separately labelled external OSS Hermit prototype mode for witnesses | +1,657 / −6 | 4 | 528 / 30 / 0 of 559 | none | `run-witness` with the preserved open-source Hermit binary (commit 4630ee2a) |
+| 1 | D121244476 | Add bounded phase-two prototype | +5,221 / −0 | 19 | 156 / 2 / 0 of 160 | none | Base package: a manifest of the 3 tests, a 7-stage state machine, draft-only diff and dry-run comment gates |
+| 2 | D121244213 | Use native Codex sandbox with TFA lifecycle control | +18,935 / −1,203 | 24 | 307 / 0 / **28** of 340 | none | Runs Codex agents in a sandbox; adds a reviewer agent, packaged safehermit, Hermit replay and the containment tests |
+| 3 | D121649569 | Close controller follow-up contracts | +1,108 / −49 | 2 | 315 / 28 / 0 of 344 | Codex-family agent | Fixes three gaps found by a real run on 2026-09-23 |
+| 4 | D121848885 | Make controller dependencies self-contained | +730 / −6 | 8 | 333 / 28 / 0 of 363 | Codex-family agent | Switches replay to the packaged fbsource Hermit (recorded as blocked); rejects blocked Codex versions |
+| 5 | D121848886 | Close phase-two review findings | +1,378 / −191 | 12 | 344 / 0 / **32** of 378 | gpt-5.6-sol | Hermit import receipts; refuse unqualified Hermit and Codex; recover test fixtures |
+| 6 | D121848888 | Seal Codex incompatibility provenance | +567 / −59 | 5 | 361 / 34 / 0 of 399 | tfa-phase2-cyber-opus | Binds Codex launcher, manifest and channel; records Codex 0.156.0 and 0.156.1 as blocked |
+| 7 | D121848889 | Hash-bind the Codex payload and unify deadlines | +1,036 / −92 | 6 | 414 / 32 / 0 of 450 | tfa-phase2-cyber-opus | Adds the Codex payload hash and a single deadline origin |
+| 8 | D121848890 | Refuse empty wrapper argv; byte-bind Hermit test | +127 / −21 | 3 | 421 / 30 / 0 of 454 | tfa-phase2-cyber-opus | Two small review fixes |
+| 9 | D121848892 | Render deterministic difference hints and unposted initial comments | +431 / −4 | 5 | 436 / 30 / 0 of 468 | tfa-phase2-cyber-opus | `render-evidence`: a PASS-versus-FAIL log diff and an unposted first comment |
+| 10 | D121848893 | Lead unposted initial comments with measured non-/tmp reproducers | +624 / −23 | 5 | 450 / 31 / 0 of 484 | tfa-phase2-cyber-opus | The first comment leads with commands re-measured outside `/tmp` |
+| 11 | D121848894 | Bind censored relocation attempts and resolve relocated paths | +222 / −28 | 4 | 455 / 32 / 0 of 491 | tfa-phase2-cyber-opus | Hardens the checks on those re-measured commands |
+| 12 | D121848895 | Bind relocated safehermit reports to unique keys and the manifest Hermit | +44 / −5 | 3 | 455 / 28 / 0 of 486 | tfa-phase2-cyber-opus | Refuses repeated report keys and an unexpected Hermit hash |
+| 13 | D121848896 | Render unposted candidate-fix follow-ups from re-judged witness replays | +658 / −8 | 5 | 463 / 31 / 0 of 496 | tfa-phase2-cyber-opus | `render-followup`: judges unfixed versus patched replays as SUPPORTED, NOT SUPPORTED or INCONCLUSIVE |
+| 14 | D121848898 | Bind the follow-up unfixed phase to the manifest test ELF | +21 / −6 | 3 | 476 / 31 / 0 of 510 | tfa-phase2-cyber-opus | Closes a gap where unfixed and patched runs could be swapped |
+| 15 | D121848525 | Render follow-up root causes as caveated hypotheses | +356 / −7 | 4 | 490 / 31 / 0 of 524 | tfa-phase2-cyber-opus | Shows the root cause as a ranked hypothesis |
+| 16 | D121877477 | Hash-bind every follow-up artifact in the ledger | +472 / −96 | 6 | 488 / 31 / 0 of 521 | none | The run ledger records 8 kinds of artifact by hash |
+| 17 | D121877478 | Bind follow-up replay roles to manifest seeds | +155 / −13 | 3 | 493 / 31 / 0 of 526 | none | Ties each replay to its recorded seed |
+| 18 | D121877479 | Keep task comments dry-run-only | +139 / −11 | 5 | 501 / 30 / 0 of 532 | none | Refuses every posting authorization |
+| 19 | D121877480 | Present the final comment's cause as an unproven hypothesis | +68 / −4 | 4 | 502 / 30 / 0 of 533 | none | Wording |
+| 20 | D121877481 | Exercise the eligible Codex launch with a hash-bound fixture | +576 / −12 | 4 | 506 / 33 / 0 of 540 | none | A test-only "eligible" Codex stand-in; real-Codex tests skip on the blocked release |
+| 21 | D121978134 | Pin the rolled-over owner-managed Codex releases as blocked | +24 / −23 | 4 | 506 / 30 / 0 of 538 | none | Re-pins new Codex digests, still blocked |
+| 22 | D121978137 | Add a separately labelled external OSS Hermit prototype mode for witnesses | +1,657 / −6 | 4 | 528 / 30 / 0 of 559 | none | `run-witness` with the preserved open-source Hermit binary (commit 4630ee2a) |
 
 "Codex-family agent" is the tag `unknown-agentname / codex-family-by-ancestry`. `tfa-phase2-cyber-opus`
 ran the model `claude-opus-5-5`. All tagged agents ran on devbig030 [A].

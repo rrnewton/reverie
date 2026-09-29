@@ -1,4 +1,4 @@
-[2026-09-24T15:25:22.592-07:00] Buck UI: https://www.internalfb.com/buck2/31646387-443a-4f39-872c-03fb63ba7fe3
+[2026-09-24T15:25:22.592-07:00] Buck UI: https://www/buck2/31646387-443a-4f39-872c-03fb63ba7fe3
 ovr_config//platform/linux:x86_64-fbcode-platform010-clang#512fd0a9ea51f545:
   fbcode//compilers/constraints:lazy-stubs[enabled]           (fbcode//compilers/constraints:lazy-stubs)
   fbcode//compilers/constraints:reloc-fixup[on]               (fbcode//compilers/constraints:reloc-fixup)

@@ -1,5 +1,5 @@
-[2026-09-25T19:51:44.563-07:00] Buck UI: https://www.internalfb.com/buck2/9f00c2cb-cdb5-4343-938a-500553da753a
-[2026-09-25T19:51:45.586-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/33776997243855560
+[2026-09-25T19:51:44.563-07:00] Buck UI: https://www/buck2/9f00c2cb-cdb5-4343-938a-500553da753a
+[2026-09-25T19:51:45.586-07:00] Test session: https://www/intern/testinfra/testrun/33776997243855560
 [2026-09-25T19:51:45.588-07:00] ⃠ Omitted: fbcode//testinfra/tfa:cli-info.json-test - main
 [2026-09-25T19:51:45.588-07:00] Test has been omitted from this run because of the reason: Fails label filtering because: Negative filters present: slow
 [2026-09-25T19:51:45.588-07:00] No missing positive labels.
@@ -41,5 +41,5 @@
 [2026-09-25T19:59:32.983-07:00]
 [2026-09-25T19:59:32.983-07:00] owner-managed Codex is the reviewed blocked release; these real-release assertions need an eligible release
 [2026-09-25T19:59:58.306-07:00] Network: up 0B  down 3.5MiB  session reSessionID-f7a2ad62-75e3-499b-b80d-28d6b8937baf
-[2026-09-25T19:59:58.306-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/33776997243855560
+[2026-09-25T19:59:58.306-07:00] Test session: https://www/intern/testinfra/testrun/33776997243855560
 Tests finished: [38;5;10mPass 249[39m. Fail 0. Timeout 0. Fatal 0. [38;5;11mSkip 4[39m. [38;5;13mOmit 1[39m. Infra Failure 0. Build failure 0

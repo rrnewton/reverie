@@ -1,4 +1,4 @@
-[2026-09-24T14:12:49.202-07:00] Buck UI: https://www.internalfb.com/buck2/9223b21a-26c1-4668-9037-c1b0805aab71
+[2026-09-24T14:12:49.202-07:00] Buck UI: https://www/buck2/9223b21a-26c1-4668-9037-c1b0805aab71
 [2026-09-24T14:12:49.270-07:00] RE Session: reSessionID-e7ac25f5-448d-430b-913d-e0f16a3de176
 [2026-09-24T14:12:49.557-07:00] Network: up 0B  down 0B  session reSessionID-e7ac25f5-448d-430b-913d-e0f16a3de176
 {"schema_version": 1, "cases": 3}

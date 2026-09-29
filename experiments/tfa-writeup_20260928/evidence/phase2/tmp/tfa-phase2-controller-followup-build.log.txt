@@ -1,2 +1,2 @@
-[2026-09-24T06:40:44.619-07:00] Buck UI: https://www.internalfb.com/buck2/4d7b83cc-925d-4e87-980c-44b0286b29bb
+[2026-09-24T06:40:44.619-07:00] Buck UI: https://www/buck2/4d7b83cc-925d-4e87-980c-44b0286b29bb
 [2026-09-24T06:40:44.628-07:00] Network: up 0B  down 0B

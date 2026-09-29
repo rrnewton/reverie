@@ -2,7 +2,7 @@ notice Found 5 lint issues.
 >>> Lint for fbcode/testinfra/tfa/relocation.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
               54     roots = (_FORBIDDEN_ROOT, os.path.realpath(_FORBIDDEN_ROOT))
               55     for candidate in (path, os.path.realpath(path)):
@@ -16,7 +16,7 @@ notice Found 5 lint issues.
               60 
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
               95             offset = 1
               96             if not argv[index + offset].startswith("--tmp="):
@@ -33,7 +33,7 @@ notice Found 5 lint issues.
 >>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1159     report = f"safehermit: bound.wall=APPLIED:{deadline}s\n"
             1160     if oracle == "CENSORED":
@@ -47,7 +47,7 @@ notice Found 5 lint issues.
             1165     (run / "stdout.txt").write_text(stdout)
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1164         report += "safehermit: elapsed_secs=5\nsafehermit: unit_result=success\n"
             1165     (run / "stdout.txt").write_text(stdout)
@@ -61,7 +61,7 @@ notice Found 5 lint issues.
             1170         "case_id": case.case_id,
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1342         case = _loaded_case()
             1343         forgeries: dict[str, Callable[[Path], None]] = {

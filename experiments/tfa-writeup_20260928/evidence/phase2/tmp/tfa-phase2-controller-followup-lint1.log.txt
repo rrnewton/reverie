@@ -170,7 +170,7 @@ notice Found 36 lint issues.
             3729         for line in commit_stdout.read_text().splitlines()
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              235         + re.escape(expression)
              236         + r"\(\) ?$"
@@ -184,7 +184,7 @@ notice Found 36 lint issues.
              241     ]
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1022         try:
             1023             source.relative_to(resolved_checkout)
@@ -206,7 +206,7 @@ notice Found 36 lint issues.
             1030         destination.symlink_to(source)
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1332         try:
             1333             source.relative_to(resolved_checkout)
@@ -220,7 +220,7 @@ notice Found 36 lint issues.
             1338         if runtime_value.get(logical) != runtime_target:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1337         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
             1338         if runtime_value.get(logical) != runtime_target:
@@ -234,7 +234,7 @@ notice Found 36 lint issues.
             1343         try:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1343         try:
             1344             runtime_path.relative_to(runtime_root)
@@ -248,7 +248,7 @@ notice Found 36 lint issues.
             1349         for field in ("mode", "sha256", "size"):
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1359                 "source": source_file_record,
             1360             }
@@ -266,7 +266,7 @@ notice Found 36 lint issues.
             1367     for directory, directory_names, file_names in os.walk(resource_root):
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1366     actual_files: list[str] = []
             1367     for directory, directory_names, file_names in os.walk(resource_root):
@@ -280,7 +280,7 @@ notice Found 36 lint issues.
             1372             item = current / name
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1582         copied_sizes.append(size)
             1583     resources = inventory.get("resources")
@@ -298,7 +298,7 @@ notice Found 36 lint issues.
             1590             value.get("runtime") if isinstance(value, dict) else None
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             1891         _fsync_runtime_directory(staging_tree)
             1892         if resources is not None:
@@ -312,7 +312,7 @@ notice Found 36 lint issues.
             1897             ):
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             3521                 else ("ORIGINAL_PASS" if index == 1 else "FRESH_STRESS")
             3522             )
@@ -327,7 +327,7 @@ notice Found 36 lint issues.
             3527                 _validation_base_argv(case, seed, elf, root),
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             3536                 raise RuntimeError(
             3537                     f"independent {kind} validation failed at seed {seed}"
@@ -342,7 +342,7 @@ notice Found 36 lint issues.
             3542             verify_working_directory(working_directory, working_directory_seal)
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             3698         return qualified_paths
             3699     canonical, mirrored = mirror
@@ -356,7 +356,7 @@ notice Found 36 lint issues.
             3704 
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             3756             or seal.get("files") != final_files
             3757             or seal.get("canonical") != canonical_record
@@ -369,7 +369,7 @@ notice Found 36 lint issues.
             3763         normalized: list[bytes] = []
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             4144     qualified_paths = _repository_paths(qualified_paths_value)
             4145     final_paths = _repository_paths(raw_paths)
@@ -386,7 +386,7 @@ notice Found 36 lint issues.
             4153         if (
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             4492                     )
             4493                 else:
@@ -658,7 +658,7 @@ notice Found 36 lint issues.
             5000                 pipeline_module._seal_thrift_final_commit(
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
             4989             root = Path(temporary)
             4990             checkout = root / "checkout"

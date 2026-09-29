@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="358" viewBox="0 0 860 358" role="img" aria-labelledby="t d">
+<title id="t">30 flaky test targets by likely flakiness cause, and what Hermit did with each</title>
+<desc id="d">Stacked horizontal bars, one per cause bucket, counting targets whose kernel-7.1 campaign outcome was: both seeds found, stopped by the Hermit loader bug (fix approved in PR 3374, not landed), stopped otherwise, or not attempted. Data: cause_buckets.csv.</desc>
+<style>.bg{fill:#fcfcfb}.ink{fill:#0b0b0b}.ink2{fill:#52514e}.mute{fill:#898781}.grid{stroke:#e1e0d9;stroke-width:1}.base{stroke:#c3c2b7;stroke-width:1}.s0{fill:#2a78d6}.l0{fill:#ffffff}.s1{fill:#eb6834}.l1{fill:#0b0b0b}.s2{fill:#1baf7a}.l2{fill:#0b0b0b}.s3{fill:#c3c2b7}.l3{fill:#0b0b0b}text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.ink{fill:#ffffff}.ink2{fill:#c3c2b7}.grid{stroke:#2c2c2a}.base{stroke:#383835}.s0{fill:#3987e5}.l0{fill:#ffffff}.s1{fill:#d95926}.l1{fill:#ffffff}.s2{fill:#199e70}.l2{fill:#ffffff}.s3{fill:#52514e}.l3{fill:#ffffff}}</style>
+<rect class="bg" x="0" y="0" width="860" height="358"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">What Hermit did with 30 flaky test targets, by likely cause of flakiness</text>
+<text class="ink2" x="16" y="46" font-size="12">Kernel-7.1 campaign, 2026-09-21; cause is inferred from CI failure text and test source. Counts are targets.</text>
+<rect class="s0" x="16" y="60" width="12" height="12" rx="2"/>
+<text class="ink2" x="33" y="70.5" font-size="12">Both seeds found</text>
+<rect class="s1" x="159.8" y="60" width="12" height="12" rx="2"/>
+<text class="ink2" x="176.8" y="70.5" font-size="12">Stopped by Hermit loader bug (fix approved, not landed)</text>
+<rect class="s2" x="549.3" y="60" width="12" height="12" rx="2"/>
+<text class="ink2" x="566.3" y="70.5" font-size="12">Stopped otherwise</text>
+<rect class="s3" x="699.4" y="60" width="12" height="12" rx="2"/>
+<text class="ink2" x="716.4" y="70.5" font-size="12">Not attempted</text>
+<line class="base" x1="250.0" y1="86" x2="250.0" y2="302"/>
+<text class="mute" x="250.0" y="318" font-size="11" text-anchor="middle">0</text>
+<line class="grid" x1="333.6" y1="86" x2="333.6" y2="302"/>
+<text class="mute" x="333.6" y="318" font-size="11" text-anchor="middle">2</text>
+<line class="grid" x1="417.3" y1="86" x2="417.3" y2="302"/>
+<text class="mute" x="417.3" y="318" font-size="11" text-anchor="middle">4</text>
+<line class="grid" x1="500.9" y1="86" x2="500.9" y2="302"/>
+<text class="mute" x="500.9" y="318" font-size="11" text-anchor="middle">6</text>
+<line class="grid" x1="584.5" y1="86" x2="584.5" y2="302"/>
+<text class="mute" x="584.5" y="318" font-size="11" text-anchor="middle">8</text>
+<line class="grid" x1="668.2" y1="86" x2="668.2" y2="302"/>
+<text class="mute" x="668.2" y="318" font-size="11" text-anchor="middle">10</text>
+<text class="mute" x="480.0" y="334" font-size="11" text-anchor="middle">Targets</text>
+<text class="ink" x="238" y="107.0" font-size="13" text-anchor="end">Timer, timeout or wall-clock</text>
+<rect class="s0" x="250.0" y="92.0" width="39.8" height="22"><title>Timer, timeout or wall-clock: 1 both seeds found</title></rect>
+<text class="l0" x="269.9" y="107.5" font-size="12" font-weight="600" text-anchor="middle">1</text>
+<rect class="s1" x="291.8" y="92.0" width="81.6" height="22"><title>Timer, timeout or wall-clock: 2 stopped by hermit loader bug (fix approved, not landed)</title></rect>
+<text class="l1" x="332.6" y="107.5" font-size="12" font-weight="600" text-anchor="middle">2</text>
+<rect class="s2" x="375.5" y="92.0" width="81.6" height="22"><title>Timer, timeout or wall-clock: 2 stopped otherwise</title></rect>
+<text class="l2" x="416.3" y="107.5" font-size="12" font-weight="600" text-anchor="middle">2</text>
+<path class="s3" d="M459.1,92.0 H706.0 Q710.0,92.0 710.0,96.0 V110.0 Q710.0,114.0 706.0,114.0 H459.1 Z"><title>Timer, timeout or wall-clock: 6 not attempted</title></path>
+<text class="l3" x="584.5" y="107.5" font-size="12" font-weight="600" text-anchor="middle">6</text>
+<text class="ink2" x="718.0" y="107.0" font-size="12">5 of 11 attempted</text>
+<text class="ink" x="238" y="151.0" font-size="13" text-anchor="end">Thread or async-ordering race</text>
+<rect class="s0" x="250.0" y="136.0" width="81.6" height="22"><title>Thread or async-ordering race: 2 both seeds found</title></rect>
+<text class="l0" x="290.8" y="151.5" font-size="12" font-weight="600" text-anchor="middle">2</text>
+<rect class="s2" x="333.6" y="136.0" width="81.6" height="22"><title>Thread or async-ordering race: 2 stopped otherwise</title></rect>
+<text class="l2" x="374.5" y="151.5" font-size="12" font-weight="600" text-anchor="middle">2</text>
+<path class="s3" d="M417.3,136.0 H538.7 Q542.7,136.0 542.7,140.0 V154.0 Q542.7,158.0 538.7,158.0 H417.3 Z"><title>Thread or async-ordering race: 3 not attempted</title></path>
+<text class="l3" x="480.0" y="151.5" font-size="12" font-weight="600" text-anchor="middle">3</text>
+<text class="ink2" x="550.7" y="151.0" font-size="12">4 of 7 attempted</text>
+<text class="ink" x="238" y="195.0" font-size="13" text-anchor="end">Unknown or harness-only</text>
+<rect class="s1" x="250.0" y="180.0" width="39.8" height="22"><title>Unknown or harness-only: 1 stopped by hermit loader bug (fix approved, not landed)</title></rect>
+<text class="l1" x="269.9" y="195.5" font-size="12" font-weight="600" text-anchor="middle">1</text>
+<path class="s3" d="M291.8,180.0 H496.9 Q500.9,180.0 500.9,184.0 V198.0 Q500.9,202.0 496.9,202.0 H291.8 Z"><title>Unknown or harness-only: 5 not attempted</title></path>
+<text class="l3" x="396.4" y="195.5" font-size="12" font-weight="600" text-anchor="middle">5</text>
+<text class="ink2" x="508.9" y="195.0" font-size="12">1 of 6 attempted</text>
+<text class="ink" x="238" y="239.0" font-size="13" text-anchor="end">External service or environment</text>
+<path class="s3" d="M250.0,224.0 H455.1 Q459.1,224.0 459.1,228.0 V242.0 Q459.1,246.0 455.1,246.0 H250.0 Z"><title>External service or environment: 5 not attempted</title></path>
+<text class="l3" x="354.5" y="239.5" font-size="12" font-weight="600" text-anchor="middle">5</text>
+<text class="ink2" x="467.1" y="239.0" font-size="12">0 of 5 attempted</text>
+<text class="ink" x="238" y="283.0" font-size="13" text-anchor="end">Kernel feature (io_uring)</text>
+<path class="s3" d="M250.0,268.0 H287.8 Q291.8,268.0 291.8,272.0 V286.0 Q291.8,290.0 287.8,290.0 H250.0 Z"><title>Kernel feature (io_uring): 1 not attempted</title></path>
+<text class="l3" x="270.9" y="283.5" font-size="12" font-weight="600" text-anchor="middle">1</text>
+<text class="ink2" x="299.8" y="283.0" font-size="12">0 of 1 attempted</text>
+</svg>

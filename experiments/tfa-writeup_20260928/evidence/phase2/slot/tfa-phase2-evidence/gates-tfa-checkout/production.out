@@ -1,7 +1,7 @@
 [2026-09-24T22:48:05.340-07:00] Could not connect to buck2 daemon (buck2 daemon is not running), killing daemon..
 [2026-09-24T22:48:15.598-07:00] Connected to new buck2 daemon.
-[2026-09-24T22:48:15.613-07:00] Buck UI: https://www.internalfb.com/buck2/c44ef563-75e6-43cc-a6e2-e02423bc0f76
-[2026-09-24T22:48:17.968-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27866022745471435
+[2026-09-24T22:48:15.613-07:00] Buck UI: https://www/buck2/c44ef563-75e6-43cc-a6e2-e02423bc0f76
+[2026-09-24T22:48:17.968-07:00] Test session: https://www/intern/testinfra/testrun/27866022745471435
 [2026-09-24T22:48:24.860-07:00] RE Session: reSessionID-a91b2903-4e79-4024-a063-c39c890de3e8
 [2026-09-24T22:52:04.520-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.4s)
 [2026-09-24T22:52:04.520-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
@@ -152,7 +152,7 @@
 [2026-09-24T22:54:15.053-07:00] FAILED (failures=1)
 [2026-09-24T22:54:15.053-07:00]
 [2026-09-24T22:55:06.364-07:00] Network: up 1.0MiB  down 553MiB  session reSessionID-a91b2903-4e79-4024-a063-c39c890de3e8
-[2026-09-24T22:55:06.365-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27866022745471435
+[2026-09-24T22:55:06.365-07:00] Test session: https://www/intern/testinfra/testrun/27866022745471435
 Tests finished: [38;5;10mPass 36[39m. [38;5;9mFail 4[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 4 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -163,5 +163,5 @@ Tests finished: [38;5;10mPass 36[39m. [38;5;9mFail 4[39m. Timeout 0. Fatal 0
 Run [1m$ fdb buck test <args>[0m to debug one of 4 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27866022745471435&expiry=2026-09-25T06%3A00%3A05Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27866022745471435&expiry=2026-09-25T06%3A00%3A05Z&viewer=18498&signature=REDACTED]8;;\[0m

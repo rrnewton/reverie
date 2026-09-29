@@ -60,7 +60,7 @@ ls: cannot access 'resume-4fb8c4120739.out': No such file or directory
     Skip: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck
   buck2 exit-code doc: 64 = TestNothing (build ok, tests skipped); TPX: 64 = all good with warnings (skips); 32 = failures
   prior heads 418be/dc352/2b5ed had the identical Pass 39/Skip 4 summary; their wrappers did not record rc
-  log: /home/newton/work/tfa/external-oss-mode/full-tfa_production_containment_test.log; out: /home/newton/work/tfa/external-oss-mode/resume-4fb8c4120739.out; Buck UI https://www.internalfb.com/buck2/d8953964-5316-479b-8cfc-8f7e41b267af; testrun https://www.internalfb.com/intern/testinfra/testrun/25614222932257428
+  log: /home/newton/work/tfa/external-oss-mode/full-tfa_production_containment_test.log; out: /home/newton/work/tfa/external-oss-mode/resume-4fb8c4120739.out; Buck UI https://www/buck2/d8953964-5316-479b-8cfc-8f7e41b267af; testrun https://www/intern/testinfra/testrun/25614222932257428
   awaiting coordinator decision on rc-64 acceptance; runner scripts unchanged
 2026-09-26T08:45:46-07:00 rc64 correction tested (selftest-5 rc=0, 632 PASS); head hashes in RUNNER-EVIDENCE; paused for exact-head adversarial review; avail=244069064704; no real rerun/witness/submit
 2026-09-26T08:51:20-07:00 launching approved rerun 2 (HEAD.sha256 51b9a6ca...d801) avail=244026138624

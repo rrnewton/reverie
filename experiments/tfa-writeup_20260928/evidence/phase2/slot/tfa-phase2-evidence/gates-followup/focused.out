@@ -1,5 +1,5 @@
-[2026-09-25T01:09:42.456-07:00] Buck UI: https://www.internalfb.com/buck2/0f3df411-bb30-4439-bba6-76907384bc24
-[2026-09-25T01:09:43.337-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/31243722453155814
+[2026-09-25T01:09:42.456-07:00] Buck UI: https://www/buck2/0f3df411-bb30-4439-bba6-76907384bc24
+[2026-09-25T01:09:43.337-07:00] Test session: https://www/intern/testinfra/testrun/31243722453155814
 [2026-09-25T01:09:50.268-07:00] Network: up 0B  down 0B
-[2026-09-25T01:09:50.268-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/31243722453155814
+[2026-09-25T01:09:50.268-07:00] Test session: https://www/intern/testinfra/testrun/31243722453155814
 Tests finished: [38;5;10mPass 9[39m. Fail 0. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0

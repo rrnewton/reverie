@@ -1239,7 +1239,7 @@ diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa
 +            stdout.write_text("")
 +            stderr.write_text("")
 +            readback_result = DraftReadback(
-+                "https://www.internalfb.com/diff/123",
++                "https://www/diff/123",
 +                "D123",
 +                "commit",
 +                ProcessResult(("meta",), 0, 0, False, stdout, stderr),
@@ -1269,7 +1269,7 @@ diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa
 +            ):
 +                self.assertEqual(
 +                    _revalidate_draft(case, case_dir, checkout),
-+                    "https://www.internalfb.com/diff/123",
++                    "https://www/diff/123",
 +                )
 +            seal.assert_called_once()
 +            self.assertIsNone(seal.call_args.args[6])

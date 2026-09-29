@@ -1,0 +1,247 @@
+{
+ "schema": "tfa-writeup-metadata/v1",
+ "title": "Can Hermit make real flaky tests pass and fail on demand? A small experiment on 30 Meta flaky tests",
+ "revised_utc": "2026-09-29",
+ "author": "sub-tfa2-030 (Claude, agentcloud session on devbig030) for the owner; coordinated by coord2",
+ "short_hostname": "devbig030",
+ "host": {
+  "kernel": "7.1.3-0_fbk0_0_g295ad0959f34",
+  "pilot_kernel": "6.13.2",
+  "cpu": "AMD EPYC 9D85 158-Core Processor",
+  "arch": "x86_64"
+ },
+ "hermit": {
+  "campaign_source": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+  "campaign_source_note": "main 4dcb34b4b5b0c537405ac4d97ce6ae782bd644a5 plus one patch, later landed as ccbe37e916c895215eb3240c91b3de924cb21a1a (https://github.com/rrnewton/hermit/pull/3142); never itself a main commit",
+  "campaign_binary": {
+   "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+   "bytes": 415330552
+  },
+  "pilot_source": "79da523137dbac400faca6130593361b58a01468",
+  "replication_source": "4101426afa068e87048ef4cda2f182f87d32eb4a",
+  "replication_binary": {
+   "sha256": "b4b30c7d7e9d9569184e9bc05cd7f8945640342c5ad61230f4765e81ed147537",
+   "bytes": 69063272,
+   "build": "cargo build --release -p hermit --bin hermit",
+   "version": "hermit 0.2.0 (2026-09-29, g4101426afa06)"
+  },
+  "epoch_default_fix": "402ba9737798d1b3d882b3dfaa5bca8fe21c9cb3",
+  "backend": "ptrace",
+  "mode": "--strict --chaos, strict verify (--verify --verify-strict), RCB PMU timer, no relaxations"
+ },
+ "fbsource_target_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+ "test_binaries": [
+  {
+   "target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+   "mode": "@fbcode//mode/dev-asan",
+   "bytes": 48908168,
+   "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc"
+  },
+  {
+   "target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+   "mode": "@fbcode//mode/dev-tsan",
+   "bytes": 11514064,
+   "sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc"
+  },
+  {
+   "target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+   "mode": "@fbcode//mode/libcxx",
+   "bytes": 17651096,
+   "sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46"
+  }
+ ],
+ "dev_hermit_records": {
+  "registry_commit": "ee6562142e3796bb56a1dd0e28b77c1c16a78cc2",
+  "acceptance_rule_commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+  "campaign_first_commit": "128168e1acb7216e1399aea7a032959fa87dd787",
+  "campaign_last_commit": "344f54ff8f74ce268f56e7e06686d67f5fcc4f6b",
+  "campaign_evidence_revision": "d74d1dab5dc865d8854df9649dbd9b36b1f9496a",
+  "writeup_commits": {
+   "first_draft": "24e90ece253d94776353feccd90faf87d87c46ef",
+   "phase2_evidence_copy": "30bb84e0f1e3d7343b6b2f7fa7b83cbf864768f1",
+   "round2_record": "125c1959ee53a21854fa3cbfbc173912a3aff5c1",
+   "round2_update": "9029b0d5e2568b661b0a214e3961d67c706e5509"
+  },
+  "revision_base": "deecdead1db067a94d86f0d4f574c0eac1e72414"
+ },
+ "runs": {
+  "pilot": {
+   "date": "2026-09-20",
+   "targets": 10,
+   "trials": 9,
+   "valid": 0
+  },
+  "campaign": {
+   "window_utc": [
+    "2026-09-21T14:27:14Z",
+    "2026-09-21T22:49:33Z"
+   ],
+   "targets_attempted": 10,
+   "configurations": 25,
+   "trials": 294,
+   "pass": 198,
+   "fail": 3,
+   "discarded": 93,
+   "hermit_seconds": 4562,
+   "median_trial_seconds": 5,
+   "per_trial_limit_seconds": 120,
+   "records": "experiments/tfa-kernel71-*_20260921/services/*/*/experiment.json"
+  },
+  "replication_on_main": {
+   "window_utc": [
+    "2026-09-29T15:46:25Z",
+    "2026-09-29T15:50:50Z"
+   ],
+   "tests": 3,
+   "seeds_per_test": 6,
+   "trials": 18,
+   "deterministic": 18,
+   "per_trial_limit_seconds": 300,
+   "runner": "round2/refind_seeds.py",
+   "results": "round2/runs/*/seed-*/result.json",
+   "cpu_policy": "one trial at a time under nice -n 10 ionice -c3; no cgroup CPU set or pinning (not a timing benchmark)",
+   "runner_sha256": "50f9a65d3dc43de4045971d81b9e1327d4433da7067a4ef85a4475249d8fb599",
+   "runner_note": "docstring corrected on 2026-09-29 after the runs; the code that ran is unchanged",
+   "runner_sha256_as_run": "5e048724ffe4e751eba5a0c62cc845bd92a7aeb4c54f117c403e7c34e8353a09"
+  },
+  "replication_control": {
+   "binary": "campaign binary 4630ee2a",
+   "test": "AsyncSSL, asyncssl-slice5 cell, --sched-seed 3",
+   "trials": 2,
+   "deterministic": 2,
+   "results": "round2/control-4630ee2a-rep{1,2}/"
+  }
+ },
+ "headline": {
+  "registry_targets": 30,
+  "targets_with_a_trial_incl_pilot": 13,
+  "attempted": 10,
+  "reached_test": 5,
+  "valid_pass_or_fail": 4,
+  "both_seeds": 3,
+  "stopped_by_loader_bug": 3,
+  "stopped_by_other_hermit_defect_or_limit": 3,
+  "ran_no_failing_seed": 1,
+  "not_attempted": 20,
+  "successes": {
+   "async_ssl_socket_test": {
+    "campaign": {
+     "pass": [
+      1
+     ],
+     "fail": [
+      11
+     ]
+    },
+    "main_4101426a": {
+     "pass": [
+      1,
+      3,
+      4
+     ],
+     "fail": [
+      11
+     ],
+     "other": [
+      0,
+      2
+     ]
+    }
+   },
+   "InstrumentationTest": {
+    "campaign": {
+     "pass": [
+      0
+     ],
+     "fail": [
+      1
+     ]
+    },
+    "main_4101426a": {
+     "pass": [
+      0,
+      1,
+      2,
+      5
+     ],
+     "fail": [
+      3,
+      4
+     ]
+    }
+   },
+   "HTTPCoroSessionTests": {
+    "campaign": {
+     "pass": [
+      3
+     ],
+     "fail": [
+      0
+     ]
+    },
+    "main_4101426a": {
+     "pass": [
+      1,
+      3,
+      4,
+      5
+     ],
+     "fail": [
+      0,
+      2
+     ]
+    }
+   }
+  },
+  "discarded_breakdown": {
+   "differing_runs": 44,
+   "asyncssl_line_3592": 24,
+   "httpcoro_right_failure_miswritten_pattern": 16,
+   "tls_certificate_old_default_date": 2,
+   "hermit_errors": 5,
+   "time_limit": 2,
+   "hermit_stopped": 49,
+   "differing_runs_explained_by_open_defects": 39
+  }
+ },
+ "loader_fix": {
+  "issue": "https://github.com/rrnewton/hermit/issues/3328",
+  "pr": "https://github.com/rrnewton/hermit/pull/3374",
+  "approved_heads": [
+   "558df1a7f6030f8e9f04def079a12a617fabb51a",
+   "eebc63f336466f63f973c620990779eae8cbe66a",
+   "c6867781717df87837b268a0310d901be4c5bb4c"
+  ],
+  "state_at_revision": "open, not landed. Reviewer approvals at 558df1a7f, eebc63f33 and c6867781. coord2 then rebuilt the branch as head 307a0ef1: a rustdoc fix (e2d00e65, a third commit on the PR branch, not on hermit main) plus the PR's own two commits, unchanged. coord2 is running exact-head validation.",
+  "current_head": "307a0ef13041fe00e59e445b28473428445f191e"
+ },
+ "figure": {
+  "script": "figures/make_cause_buckets.py",
+  "script_sha256": "a60b669cdb552c93c0191062a038b766c0f3e63fb4ae8dd7986a5824dbba1735",
+  "input": "targets.csv",
+  "input_sha256": "43001d392c1fc4d1d061d88d3c4e31daa301f5e4ed1214184db81555da5c2638",
+  "outputs": {
+   "figures/cause_buckets.csv": "32dee2fcf5eb867637c8d12425847f8e7e881dfc9e573e6405faf5ffcfae5f71",
+   "figures/cause_buckets.svg": "ed6a9e48696d133d266b5af1ff63bbb8d940d1f3df0139f7e900e567b0a1b976"
+  },
+  "palette": "dataviz reference categorical slots 1-3 (#2a78d6, #eb6834, #1baf7a; dark #3987e5, #d95926, #199e70) plus neutral #c3c2b7/#52514e; validate_palette.js --pairs all passes in both modes (light contrast WARN for #1baf7a relieved by direct labels and the table)"
+ },
+ "privacy": {
+  "policy": "internal host names (FQDNs) replaced by their first DNS label; internal Markdown links in top-level documents replaced by their text",
+  "tool": "tools/redact_internal_fqdns.py",
+  "tool_sha256": "8709fc955c7528cecb8a7b889d700e3112f1144a4a354aedc5b16dd9e9f6ba3f",
+  "per_file_counts": "REDACTIONS.json",
+  "files_changed": 817,
+  "host_names_replaced": 2273,
+  "links_unlinked": 22,
+  "scope": "every tracked file under experiments/tfa-writeup_20260928/ (the check skips tools/ and REDACTIONS.json, which list domain suffixes, not host names). Out of scope: the campaign records elsewhere in the repository (experiments/tfa-kernel71-*, experiments/tfa-flaky-tests_20260917, ai_docs/tfa-*), whose cells[].host fields still hold the full host name, and earlier git history."
+ },
+ "hosted_elsewhere": {
+  "phase2_large_log_archive": {
+   "path": "ignored/tfa-phase2-archive/tfa-phase2-large-text-20260929.tar.zst (devbig030, untracked)",
+   "bytes": 60864481,
+   "sha256": "92b68b4d7456bac5dae12b1a63747e97ad98e265810cf6444a17fe1f4a664c7b",
+   "files": 214
+  }
+ }
+}

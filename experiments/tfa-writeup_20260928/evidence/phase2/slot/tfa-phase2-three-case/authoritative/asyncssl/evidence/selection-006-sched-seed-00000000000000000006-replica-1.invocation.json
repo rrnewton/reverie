@@ -111,7 +111,7 @@
     ],
     "host": {
       "cpu": "AMD EPYC 9D85 158-Core Processor",
-      "hostname": "devbig030.atn3.facebook.com",
+      "hostname": "devbig030",
       "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
       "machine": "x86_64",
       "perf_event_paranoid": "1",

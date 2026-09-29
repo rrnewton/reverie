@@ -1,4 +1,4 @@
-[2026-09-24T06:23:39.842-07:00] Buck UI: https://www.internalfb.com/buck2/225da264-d0d6-4a32-aa79-19f486cd37d3
+[2026-09-24T06:23:39.842-07:00] Buck UI: https://www/buck2/225da264-d0d6-4a32-aa79-19f486cd37d3
 [2026-09-24T06:23:41.625-07:00] RE Session: reSessionID-1edb2f0c-34a6-4d18-95a9-99e01133120d
 [2026-09-24T06:23:45.721-07:00] Network: up 105KiB  down 44MiB  session reSessionID-1edb2f0c-34a6-4d18-95a9-99e01133120d
 Usage: tfa_phase2.par [OPTIONS] COMMAND [ARGS]...

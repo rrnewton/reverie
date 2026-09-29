@@ -3,16 +3,16 @@
  "research": [
   {
    "key": "old-infra",
-   "summary": "TFA stood for \"Test Flakiness Analyzer\". The Hermetic Infra team (Ryan Newton, Will Hughes, Kevin Guthrie and others) built it in 2021-2022. It was a WWW service that used Skycastle workflows on Sandcastle to re-run confirmed-flaky C++/Rust tests under different conditions: rr chaos, private tmpfs, no network, and Hermit chaos with seeds. When Hermit found a failing schedule, `hermit analyze` then pinpointed the two racing threads. Results appeared in a web report at internalfb.com/tfa, and from November 2022 a bot comment on the flaky-test task linked to that report. TFA never produced fix diffs. In December 2022 the org stopped funding Hermetic Infra and TFA was handed to Test Infra. Automatic runs are now switched off (the daily rate-limit sitevar is 0), and the code has been deleted as dead code from 2025 to 2026. A few orphaned files remain. The new fbcode/testinfra/tfa stack reuses the name and the core idea: Hermit chaos PASS/FAIL seeds for flaky TestInfra tests. It shares no code, infrastructure, service user or data with the old system. Its \"historical\" and \"phase-one\" records are Newton's own September 2026 dev-hermit experiments, not old TFA reports. Its hard-coded service user belongs to a different, current bot (AutoTestRemediation). Today's closest successors are AI agents that try to fix flaky-test tasks, and none of them use Hermit.",
+   "summary": "TFA stood for \"Test Flakiness Analyzer\". The Hermetic Infra team (Ryan Newton, Will Hughes, Kevin Guthrie and others) built it in 2021-2022. It was a WWW service that used Skycastle workflows on Sandcastle to re-run confirmed-flaky C++/Rust tests under different conditions: rr chaos, private tmpfs, no network, and Hermit chaos with seeds. When Hermit found a failing schedule, `hermit analyze` then pinpointed the two racing threads. Results appeared in a web report at internalfb/tfa, and from November 2022 a bot comment on the flaky-test task linked to that report. TFA never produced fix diffs. In December 2022 the org stopped funding Hermetic Infra and TFA was handed to Test Infra. Automatic runs are now switched off (the daily rate-limit sitevar is 0), and the code has been deleted as dead code from 2025 to 2026. A few orphaned files remain. The new fbcode/testinfra/tfa stack reuses the name and the core idea: Hermit chaos PASS/FAIL seeds for flaky TestInfra tests. It shares no code, infrastructure, service user or data with the old system. Its \"historical\" and \"phase-one\" records are Newton's own September 2026 dev-hermit experiments, not old TFA reports. Its hard-coded service user belongs to a different, current bot (AutoTestRemediation). Today's closest successors are AI agents that try to fix flaky-test tasks, and none of them use Hermit.",
    "findings": [
     {
      "claim": "TFA = 'Test Flakiness Analyzer' (bunnylol tfa). It analyzed flaky fbcode C++/Rust tests to help developers understand, debug and fix flakiness. Its owner is listed as the Hermetic Infra team.",
-     "evidence": "Wiki https://www.internalfb.com/wiki/TFA/ (created 2022-02-08): 'Test Flakiness Analyzer (bunnylol tfa) automatically analyzes C++/Rust fbcode tests... Hermetic Infra team: The team who develop TFA'",
+     "evidence": "Wiki https://www/wiki/TFA/ (created 2022-02-08): 'Test Flakiness Analyzer (bunnylol tfa) automatically analyzes C++/Rust fbcode tests... Hermetic Infra team: The team who develop TFA'",
      "confidence": "verified"
     },
     {
      "claim": "Timeline: MVP tracking task opened Nov 2021; prototype built Q4 2021; tech preview 2021-12-20; automated launches started March 2022 at a 0.5% JustKnobs rollout; production-ready by July 2022, rate-limited to 20 runs a day; task comments linking reports reached 100% visibility in November 2022; hermit analyze race stack traces shown in December 2022.",
-     "evidence": "T106084722 (created 2021-11-17 'TFA MVP'); post fb.workplace.com/groups/hermit.fyi/permalink/634412370939545 (2021-12-20); meeting notes doc 1mrIG90BYoSb3Le6IMmf3XMp9IqO7XXHcwAw-LJnG594 [2022.03.21] '0.5% rollout'; post 770911660622948 (2022-08-01) 'rate limited to 20'; H2 2022 summary post 865638134483633 ('100% visible in November'; tfa/7145)",
+     "evidence": "T106084722 (created 2021-11-17 'TFA MVP'); post fb/groups/hermit.fyi/permalink/634412370939545 (2021-12-20); meeting notes doc 1mrIG90BYoSb3Le6IMmf3XMp9IqO7XXHcwAw-LJnG594 [2022.03.21] '0.5% rollout'; post 770911660622948 (2022-08-01) 'rate limited to 20'; H2 2022 summary post 865638134483633 ('100% visible in November'; tfa/7145)",
      "confidence": "verified"
     },
     {
@@ -26,13 +26,13 @@
      "confidence": "verified"
     },
     {
-     "claim": "Outputs: a TFA report (diagnoses, rr/fdb replay recordings, hermit analyze stack traces) at internalfb.com/tfa/N, replay commands in TestX, and a bot comment on the flaky-test task. No fix diffs.",
-     "evidence": "T136311221 comment: 'View flakiness analysis report (2 diagnoses) (https://www.internalfb.com/tfa/4250) Test Flakiness Analyzer automatically analyzes tests...'; post 754651248915656 (TestX FDB replay commands). 'No diffs' is an inference: no source describes TFA creating code changes.",
+     "claim": "Outputs: a TFA report (diagnoses, rr/fdb replay recordings, hermit analyze stack traces) at internalfb/tfa/N, replay commands in TestX, and a bot comment on the flaky-test task. No fix diffs.",
+     "evidence": "T136311221 comment: 'View flakiness analysis report (2 diagnoses) (https://www/tfa/4250) Test Flakiness Analyzer automatically analyzes tests...'; post 754651248915656 (TestX FDB replay commands). 'No diffs' is an inference: no source describes TFA creating code changes.",
      "confidence": "likely"
     },
     {
      "claim": "Infrastructure: Hack code in WWW (flib/intern/hermetic_infra/tfa and the TestFlakinessAnalyzer scripts), Ent plus a MySQL tier xdb.tfa (table tfa_run with hermit_analyze_* columns), and Skycastle workflows on Sandcastle running `buck test ... --tags test-flakiness-analyzer`. It originally re-ran contbuild Sandcastle jobs instead. Controls were the SV TEST_FLAKINESS_ANALYZER_RATE_LIMIT and GK tfa_update_flaky_test_tasks. The dedicated service user was 'flakytestanalyzer' (FBID 89002005368062). I found no evidence of Tupperware or Chronos.",
-     "evidence": "tools/skycastle/workflows2/hermetic_infra/tfa/tfa_run_experiment_workflow.sky:9-20; T132389440 (AOSC xdb.tfa tfa_run schema); post 754651248915656 'Migrating Away From Contbuild Sandcastle'; wiki https://www.internalfb.com/wiki/TFA/Development/ (killswitches); `sl cat -r 04c3eaade955~1 www/flib/intern/hermetic_infra/tfa/TFAServiceUser.php` -> TFA_SERVICE_USER_ID = 89002005368062; meeting notes [2022.03.21] 'service user (called flakytestanalyzer)'",
+     "evidence": "tools/skycastle/workflows2/hermetic_infra/tfa/tfa_run_experiment_workflow.sky:9-20; T132389440 (AOSC xdb.tfa tfa_run schema); post 754651248915656 'Migrating Away From Contbuild Sandcastle'; wiki https://www/wiki/TFA/Development/ (killswitches); `sl cat -r 04c3eaade955~1 www/flib/intern/hermetic_infra/tfa/TFAServiceUser.php` -> TFA_SERVICE_USER_ID = 89002005368062; meeting notes [2022.03.21] 'service user (called flakytestanalyzer)'",
      "confidence": "verified"
     },
     {
@@ -66,8 +66,8 @@
      "confidence": "likely"
     },
     {
-     "claim": "Link 1, name: the new stack calls itself a Test Flakiness Analyzer prototype. It does not mention the old system (no references to hermetic_infra/tfa, Skycastle, TestFlakinessAnalyzer, internalfb.com/tfa, flakytestanalyzer, PFS or TestX).",
-     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/README.md:3 'bounded three-case Test Flakiness Analyzer prototype'; grep -rniE 'hermetic|skycastle|internalfb.com/tfa|flakytestanalyzer|89002005368062|PFS|TestWarden' /tmp/tfa-src -> only hermetic_infra/hermit build-target paths",
+     "claim": "Link 1, name: the new stack calls itself a Test Flakiness Analyzer prototype. It does not mention the old system (no references to hermetic_infra/tfa, Skycastle, TestFlakinessAnalyzer, internalfb/tfa, flakytestanalyzer, PFS or TestX).",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/README.md:3 'bounded three-case Test Flakiness Analyzer prototype'; grep -rniE 'hermetic|skycastle|internalfb/tfa|flakytestanalyzer|89002005368062|PFS|TestWarden' /tmp/tfa-src -> only hermetic_infra/hermit build-target paths",
      "confidence": "verified"
     },
     {
@@ -99,7 +99,7 @@
    "open_questions": [
     "When was SV_TEST_FLAKINESS_ANALYZER_RATE_LIMIT per_day_limit set to 0, i.e. when did automatic TFA runs actually stop? That needs the sitevar audit log. December 2022 notes show it was running then, and the April 2026 snapshot shows 0.",
     "Why does the new stack hard-code the AutoTestRemediation Bot's service user (4533519350210414, owned by billing_experiences_customer_success)? Did its owners approve that, or does TFA need its own service user? Posting is currently blocked anyway (comments.py:257-290).",
-    "Do the old xdb.tfa tables and TFA reports (e.g. internalfb.com/tfa/4250, /7145) still exist, or were they deleted? Not checked.",
+    "Do the old xdb.tfa tables and TFA reports (e.g. internalfb/tfa/4250, /7145) still exist, or were they deleted? Not checked.",
     "I could not check the contents of the dev-hermit 'authoritative records' (github.com/rrnewton/dev-hermit at edd96831) because GitHub is unreachable from this host and there is no local checkout."
    ]
   },
@@ -114,7 +114,7 @@
     },
     {
      "claim": "It is locked to one host. The case argv hardcode /home/newton/work/dev-hermit/bin/safehermit, a historical Hermit binary under /home/newton/work/dev-hermit/ignored/..., and ELFs under /home/newton/work/tfa/fbsource/buck-out. Because each case is hash-pinned, those paths can't be edited for another host. /home/newton/work doesn't exist on devvm895.",
-     "evidence": "manifest.py:193-194; cases.v1.json pass_argv/fail_argv; `ls /home/newton/work/tfa` -> 'No such file or directory' on devvm895.vcn0.facebook.com",
+     "evidence": "manifest.py:193-194; cases.v1.json pass_argv/fail_argv; `ls /home/newton/work/tfa` -> 'No such file or directory' on devvm895",
      "confidence": "verified"
     },
     {
@@ -270,7 +270,7 @@
     },
     {
      "claim": "Sandcastle CI results for D121978137, per build mode: 28 containment tests pass and 15 fail. 9 fail on sudo loop mount denied to twsvcscm, 1 on a missing chataccd-mount@ user unit, 5 on Codex manifest digest mismatch. This corrects the background's '10 sudo' to 9 sudo plus 1 chataccd. The failures ran on shared Tupperware hosts.",
-     "evidence": "`meta phabricator.diff.signals list --number=D121978137` -> containment Passed 62 / Warning 30; `testx --as-json results get <id>` for all 30: 'Sorry, user twsvcscm is not allowed to execute '/bin/mount -o loop .../verify.btrfs ...' as root on d2d3-cf56-1531-0a00.twshared17942.28.prn2.tw.fbinfra.net' (mode/dev; b5c0-f84c-152d-0a00.twshared32869.04.cco5.tw.fbinfra.net for mode/opt); killed_worktree test: 'Failed to start chataccd-mount@8b35ddbd552a08c5.service: Unit ... not found'; real_codex tests: 'ProcessError: Codex latest release manifest identity differs'",
+     "evidence": "`meta phabricator.diff.signals list --number=D121978137` -> containment Passed 62 / Warning 30; `testx --as-json results get <id>` for all 30: 'Sorry, user twsvcscm is not allowed to execute '/bin/mount -o loop .../verify.btrfs ...' as root on d2d3-cf56-1531-0a00' (mode/dev; b5c0-f84c-152d-0a00 for mode/opt); killed_worktree test: 'Failed to start chataccd-mount@8b35ddbd552a08c5.service: Unit ... not found'; real_codex tests: 'ProcessError: Codex latest release manifest identity differs'",
      "confidence": "verified"
     },
     {
@@ -285,12 +285,12 @@
     },
     {
      "claim": "Getting root in Sandcastle is possible only through job-level opt-in (run_as_root / user root) or the sudotest framework (adds a 'uses_sudo' label; the contbuild must allow root). A Sept 2026 RFC moves Sandcastle job containers to user namespaces, where filesystem mounts fail, and proposes VM tests instead. Inference: loop-mount tests in diff CI have no long-term future, and antlir2 VM tests are the realistic route.",
-     "evidence": "wiki https://www.internalfb.com/wiki/Sandcastle/Troubleshooting_FAQ/Security_ACL_and_Authorization/ ('Running as root ... run_as_root = true'); fbcode/tupperware/sudotest/defs.bzl:16-27 ('should work out of the box on your local devserver. For this to also work on sandcastle, you need to ensure that your contbuild allows for root priv execution'); RFC 'Userns for Sandcastle job containers' https://docs.google.com/document/d/1bsDXUWPQW55fv-NGrA55kNDk6Cyk8-rcSZ_wial9AJs ('These tests mount filesystems ... no amount of in-container privilege makes them work under a shifted userns ... migrate to vmtests', T288822939); fbcode/antlir/antlir2/antlir2_vm/bzl/test.bzl exists",
+     "evidence": "wiki https://www/wiki/Sandcastle/Troubleshooting_FAQ/Security_ACL_and_Authorization/ ('Running as root ... run_as_root = true'); fbcode/tupperware/sudotest/defs.bzl:16-27 ('should work out of the box on your local devserver. For this to also work on sandcastle, you need to ensure that your contbuild allows for root priv execution'); RFC 'Userns for Sandcastle job containers' https://docs.google.com/document/d/1bsDXUWPQW55fv-NGrA55kNDk6Cyk8-rcSZ_wial9AJs ('These tests mount filesystems ... no amount of in-container privilege makes them work under a shifted userns ... migrate to vmtests', T288822939); fbcode/antlir/antlir2/antlir2_vm/bzl/test.bzl exists",
      "confidence": "likely"
     },
     {
      "claim": "Classic OnDemand (Tupperware containers) gives no usable sudo, so it can't run the stack. The newer DSV2 OnDemand machines are devvms with sudo, so they could in principle, but they would still lack Btrfs quotas and the /home/newton paths (inference).",
-     "evidence": "post https://fb.workplace.com/groups/devenvusers/permalink/2119178785082480/ ('On Demand does not have sudo access for users'); wiki EE_Infra_Platforms_&_Tooling/Enterprise_Virtualization_Engineering/dev/on-demand ('No Root Access'); post https://fb.workplace.com/groups/1392872742159150/permalink/1685436742902747/ ('[100%] On Demand on Devservers V2: Sudo Access ... VM-based isolation')",
+     "evidence": "post https://fb/groups/devenvusers/permalink/2119178785082480/ ('On Demand does not have sudo access for users'); wiki EE_Infra_Platforms_&_Tooling/Enterprise_Virtualization_Engineering/dev/on-demand ('No Root Access'); post https://fb/groups/1392872742159150/permalink/1685436742902747/ ('[100%] On Demand on Devservers V2: Sudo Access ... VM-based isolation')",
      "confidence": "likely"
     },
     {
@@ -492,7 +492,7 @@
      "quote": "It works only on the author's devserver. / Devserver only, and in practice only your devbig030",
      "problem": "Overstated. The package builds and its test suites run on a second host (devvm895): 215/215 unit tests and 37/43 containment tests. Only the Hermit witness replay depends on author-specific files, and those are absent on devvm895.",
      "fix": "Say: 'The Hermit replay path works only where /home/newton/work/{dev-hermit,tfa} exists (devbig030). Offline tools and tests run on any devserver with passwordless sudo and Btrfs.'",
-     "evidence": "Task background: buck2 build rc 0; tfa_phase2_test 215/215; containment 37 pass / 6 fail on devvm895. hostname = devvm895.vcn0.facebook.com. The required paths are missing there: /home/newton/work/dev-hermit/bin/safehermit (manifest.py:193) and the hermit-4630ee2a binary (cases.v1.json:50)."
+     "evidence": "Task background: buck2 build rc 0; tfa_phase2_test 215/215; containment 37 pass / 6 fail on devvm895. hostname = devvm895. The required paths are missing there: /home/newton/work/dev-hermit/bin/safehermit (manifest.py:193) and the hermit-4630ee2a binary (cases.v1.json:50)."
     },
     {
      "quote": "rerun the 8 open-source-Hermit test runs (8/8 passed in D121978137)",

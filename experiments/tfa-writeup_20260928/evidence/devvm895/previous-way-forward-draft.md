@@ -46,7 +46,7 @@ No, not in this form:
 Worth keeping: the asyncssl case (others as fixtures), candidate patches, and ~0.6k lines of hint and verdict logic (hints.py; pipeline.py:119-342; followup.py:199-338).
 
 ## 5. Dev server, or Sandcastle / cloud?
-Devserver only. Tests run on any devserver with passwordless sudo and quota-enabled Btrfs (resources/bounded-run-space:95-99,191-224); devvm895 passes 215/215 unit and 37/43 containment tests. Hermit replays also need /home/newton/work files (manifest.py:193), missing on devvm895. Those files are on devbig030 (devbig030.atn3.facebook.com), where 13 of the 22 diffs were developed.
+Devserver only. Tests run on any devserver with passwordless sudo and quota-enabled Btrfs (resources/bounded-run-space:95-99,191-224); devvm895 passes 215/215 unit and 37/43 containment tests. Hermit replays also need /home/newton/work files (manifest.py:193), missing on devvm895. Those files are on devbig030 (devbig030), where 13 of the 22 diffs were developed.
 
 On Sandcastle, 9 tests fail on denied `sudo mount`, 1 on a missing devserver service, 5 on Codex hash mismatches (D121978137 signals). None reached Hermit.
 

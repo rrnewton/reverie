@@ -37,7 +37,7 @@ Android only. For FBLite/IG Lite, a user_id is required for signed properties.
 
 Example: To route Facebook to your OD:
   configure_sandbox_routing(device_id="emulator-5554", app_identifier="facebook",
-    sandbox_hosts={"www_host": {"addr": "od123.od.facebook.com"}})  (score: 0.00793651)
+    sandbox_hosts={"www_host": {"addr": "od123"}})  (score: 0.00793651)
 
 tupperware
   └── tupperware.sandbox

@@ -1,5 +1,5 @@
-[2026-09-24T17:58:20.131-07:00] Buck UI: https://www.internalfb.com/buck2/edb07e24-ad89-407d-aa06-6b0c5914af4e
-[2026-09-24T17:58:21.108-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/31525197429762504
+[2026-09-24T17:58:20.131-07:00] Buck UI: https://www/buck2/edb07e24-ad89-407d-aa06-6b0c5914af4e
+[2026-09-24T17:58:21.108-07:00] Test session: https://www/intern/testinfra/testrun/31525197429762504
 [2026-09-24T17:58:50.781-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.6s)
 [2026-09-24T17:58:50.781-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-24T17:58:50.781-07:00]
@@ -149,7 +149,7 @@
 [2026-09-24T18:03:04.693-07:00] FAILED (failures=1)
 [2026-09-24T18:03:04.693-07:00]
 [2026-09-24T18:04:02.879-07:00] Network: up 0B  down 0B
-[2026-09-24T18:04:02.879-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/31525197429762504
+[2026-09-24T18:04:02.879-07:00] Test session: https://www/intern/testinfra/testrun/31525197429762504
 Tests finished: [mPass 36[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 4 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -160,5 +160,5 @@ Tests finished: [mPass 36[m. [mFail 4[m. Timeout 0. Fatal 0. Skip 0. Omit 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 4 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=31525197429762504&expiry=2026-09-25T01%3A09%3A02Z&viewer=18498&signature=REDACTED-BY-INTEGRATOR\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=31525197429762504&expiry=2026-09-25T01%3A09%3A02Z&viewer=18498&signature=REDACTED-BY-INTEGRATOR]8;;\[0m

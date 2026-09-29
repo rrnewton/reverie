@@ -1,4 +1,4 @@
-[2026-09-24T14:17:37.516-07:00] Buck UI: https://www.internalfb.com/buck2/0c444530-b8c0-44c1-89e7-847bb0fbdb5b
+[2026-09-24T14:17:37.516-07:00] Buck UI: https://www/buck2/0c444530-b8c0-44c1-89e7-847bb0fbdb5b
 [2026-09-24T14:17:37.525-07:00] Network: up 0B  down 0B
 Traceback (most recent call last)
 /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/prelude/f131b89c4a309a34/python/tools/make_par/____run_lpar_main__.py__/__run_lpar_main__.py:46 in <module>

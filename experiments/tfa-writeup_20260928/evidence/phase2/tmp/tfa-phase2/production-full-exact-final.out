@@ -1,5 +1,5 @@
-[2026-09-24T15:39:23.497-07:00] Buck UI: https://www.internalfb.com/buck2/f3b43e94-4e72-4b8d-ba78-a2598b9aa0ff
-[2026-09-24T15:39:24.193-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/15199648944409807
+[2026-09-24T15:39:23.497-07:00] Buck UI: https://www/buck2/f3b43e94-4e72-4b8d-ba78-a2598b9aa0ff
+[2026-09-24T15:39:24.193-07:00] Test session: https://www/intern/testinfra/testrun/15199648944409807
 [2026-09-24T15:39:58.499-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_current_full_trace_refuses_internal_address_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (6.2s)
 [2026-09-24T15:39:58.499-07:00] test_current_full_trace_refuses_internal_address_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
 [2026-09-24T15:39:58.499-07:00]
@@ -168,7 +168,7 @@
 [2026-09-24T15:41:26.569-07:00] FAILED (failures=1)
 [2026-09-24T15:41:26.569-07:00]
 [2026-09-24T15:44:39.548-07:00] Network: up 0B  down 0B
-[2026-09-24T15:44:39.548-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/15199648944409807
+[2026-09-24T15:44:39.548-07:00] Test session: https://www/intern/testinfra/testrun/15199648944409807
 Tests finished: [mPass 34[m. [mFail 5[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
 5 TESTS FAILED
   ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_current_full_trace_refuses_internal_address_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
@@ -180,5 +180,5 @@ Tests finished: [mPass 34[m. [mFail 5[m. Timeout 0. Fatal 0. Skip 0. Omit 0.
 Run [1m$ fdb buck test <args>[0m to debug one of 5 failing tests
       ^^^ just prefix your previous command! ($ fdb !!)
 For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_current_full_trace_refuses_internal_address_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
-Learn more at https://fburl.com/fdb
+Learn more at https://fburl/fdb
 [32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=15199648944409807&expiry=2026-09-24T22%3A49%3A38Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=15199648944409807&expiry=2026-09-24T22%3A49%3A38Z&viewer=18498&signature=REDACTED]8;;\[0m

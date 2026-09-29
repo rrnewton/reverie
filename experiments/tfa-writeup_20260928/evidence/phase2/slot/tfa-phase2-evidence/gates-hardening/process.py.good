@@ -80,19 +80,19 @@ _CODEX_SOCKET_ISOLATION_BLOCKER: str = (
 _CODEX_VERSION_STDERR: dict[str, tuple[str, ...]] = {
     "stable": (
         "",
-        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+        "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
         "Using AI Gateway (Azure Codex upstream)\n",
         "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
-        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+        "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
         "Using AI Gateway (OpenAI upstream)\n",
     ),
     "latest": (
         "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
-        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+        "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
         "Using codex release channel 'latest' from "
         "/usr/local/bin/codex_cli/codex_latest.real\n"
         "Using AI Gateway (OpenAI upstream)\n",
-        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+        "Codex CLI at Meta (https://fburl/codex.cli.users)\n"
         "Using codex release channel 'latest' from "
         "/usr/local/bin/codex_cli/codex_latest.real\n"
         "Using AI Gateway (Azure Codex upstream)\n",

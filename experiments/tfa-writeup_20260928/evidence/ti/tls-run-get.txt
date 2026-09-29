@@ -6,7 +6,7 @@
   oncall: traffic_fwdproxy
   execution_type: SANDCASTLE_JOB
   execution_id: 58546795847855397
-  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/
+  result_uri: https://www/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/
   has_diagnostics_report: no
 
 Stack Trace / Exception Detail
@@ -88,4 +88,4 @@ Test was never completed. The test process might have crashed.
 Next Steps
 ----------
   Debug with LLM: meta testinfra.run debug --id=24488323025770817.281475238796418.1790596002
-  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/
+  View in browser: https://www/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/

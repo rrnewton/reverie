@@ -1,7 +1,7 @@
 /usr/local/bin/muse_code/muse --model kiki_gb300_mxfp8_6p2_840_nwr --reasoning-effort xhigh
 [newton@devbig030 ~/work/dev-hermit]
 $ /usr/local/bin/muse_code/muse --model kiki_gb300_mxfp8_6p2_840_nwr --reasoning-effort xhigh
-Muse Code at Meta (https://fb.workplace.com/groups/27315719428107177)
+Muse Code at Meta (https://fb/groups/27315719428107177)
 Using AI Gateway (Meta Model API upstream)
 muse: gate plugins: on (MUSE_EXPERIMENTAL_PLUGINS)
 

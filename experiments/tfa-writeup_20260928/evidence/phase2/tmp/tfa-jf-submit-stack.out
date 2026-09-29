@@ -6,20 +6,20 @@
 [6/7] Sending patches to Phabricator...
 [7/7] Waiting for all sandcastle jobs to be started and the dependencies to be set...
 success The following diffs were created, updated or skipped:
-      - updated: https://www.internalfb.com/diff/D121848525 draft - [testinfra][tfa] Render follow-up root causes as caveated hypotheses
-      - created: https://www.internalfb.com/diff/D121848898 draft - [testinfra][tfa] Bind the follow-up unfixed phase to the manifest test ELF
-      - created: https://www.internalfb.com/diff/D121848896 draft - [testinfra][tfa] Render unposted candidate-fix follow-ups from re-judged witness replays
-      - created: https://www.internalfb.com/diff/D121848895 draft - [testinfra][tfa] Bind relocated safehermit reports to unique keys and the manifest Hermit
-      - created: https://www.internalfb.com/diff/D121848894 draft - [testinfra][tfa] Bind censored relocation attempts and resolve relocated paths
-      - created: https://www.internalfb.com/diff/D121848893 draft - [testinfra][tfa] Lead unposted initial comments with measured non-/tmp reproducers
-      - created: https://www.internalfb.com/diff/D121848892 draft - [testinfra][tfa] Render deterministic difference hints and unposted initial comments
-      - created: https://www.internalfb.com/diff/D121848890 draft - [testinfra][tfa] Refuse empty wrapper argv; byte-bind Hermit test
-      - created: https://www.internalfb.com/diff/D121848889 draft - [testinfra][tfa] Hash-bind the Codex payload and unify deadlines
-      - created: https://www.internalfb.com/diff/D121848888 draft - [testinfra][tfa] Seal Codex incompatibility provenance
-      - created: https://www.internalfb.com/diff/D121848886 draft - [testinfra][tfa] Close phase-two review findings
-      - created: https://www.internalfb.com/diff/D121848885 draft - [testinfra][tfa] Make controller dependencies self-contained
-      - updated: https://www.internalfb.com/diff/D121649569 draft - [testinfra][tfa] Close controller follow-up contracts
-      - updated: https://www.internalfb.com/diff/D121244213 draft - [testinfra][tfa] Bind fatal witnesses and SafeHermit evidence
-      - skipped: https://www.internalfb.com/diff/D121244476 draft - [testinfra][tfa] Add bounded phase-two prototype
-Multi-diff link: https://www.internalfb.com/diff/multi/D121848525/D121848898/D121848896/D121848895/D121848894/D121848893/D121848892/D121848890/D121848889/D121848888/D121848886/D121848885/D121649569/D121244213/D121244476
+      - updated: https://www/diff/D121848525 draft - [testinfra][tfa] Render follow-up root causes as caveated hypotheses
+      - created: https://www/diff/D121848898 draft - [testinfra][tfa] Bind the follow-up unfixed phase to the manifest test ELF
+      - created: https://www/diff/D121848896 draft - [testinfra][tfa] Render unposted candidate-fix follow-ups from re-judged witness replays
+      - created: https://www/diff/D121848895 draft - [testinfra][tfa] Bind relocated safehermit reports to unique keys and the manifest Hermit
+      - created: https://www/diff/D121848894 draft - [testinfra][tfa] Bind censored relocation attempts and resolve relocated paths
+      - created: https://www/diff/D121848893 draft - [testinfra][tfa] Lead unposted initial comments with measured non-/tmp reproducers
+      - created: https://www/diff/D121848892 draft - [testinfra][tfa] Render deterministic difference hints and unposted initial comments
+      - created: https://www/diff/D121848890 draft - [testinfra][tfa] Refuse empty wrapper argv; byte-bind Hermit test
+      - created: https://www/diff/D121848889 draft - [testinfra][tfa] Hash-bind the Codex payload and unify deadlines
+      - created: https://www/diff/D121848888 draft - [testinfra][tfa] Seal Codex incompatibility provenance
+      - created: https://www/diff/D121848886 draft - [testinfra][tfa] Close phase-two review findings
+      - created: https://www/diff/D121848885 draft - [testinfra][tfa] Make controller dependencies self-contained
+      - updated: https://www/diff/D121649569 draft - [testinfra][tfa] Close controller follow-up contracts
+      - updated: https://www/diff/D121244213 draft - [testinfra][tfa] Bind fatal witnesses and SafeHermit evidence
+      - skipped: https://www/diff/D121244476 draft - [testinfra][tfa] Add bounded phase-two prototype
+Multi-diff link: https://www/diff/multi/D121848525/D121848898/D121848896/D121848895/D121848894/D121848893/D121848892/D121848890/D121848889/D121848888/D121848886/D121848885/D121649569/D121244213/D121244476
 Done in 36.07s.

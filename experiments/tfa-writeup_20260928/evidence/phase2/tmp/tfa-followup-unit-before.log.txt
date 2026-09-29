@@ -1,7 +1,7 @@
 [2026-09-24T14:05:17.624-07:00] RE Session: reSessionID-e1fdc144-fd24-4fe0-85d2-c2691aabf03a
-[2026-09-24T14:05:17.625-07:00] Buck UI: https://www.internalfb.com/buck2/7c7a3ef7-9300-42c2-8278-988503c8156f
+[2026-09-24T14:05:17.625-07:00] Buck UI: https://www/buck2/7c7a3ef7-9300-42c2-8278-988503c8156f
 [2026-09-24T14:06:17.630-07:00] This command has been waiting for 1m for another command to finish: [buck2 test fbcode//testinfra/tfa/tests:tfa_production_containment_test] (trace ID: a3f19c01-82a6-459d-a429-e40e7691d26e). If that command is not making progress, restarting the buck2 daemon with `buck2 kill` will unblock both
-[2026-09-24T14:08:57.267-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/14636698990959805
+[2026-09-24T14:08:57.267-07:00] Test session: https://www/intern/testinfra/testrun/14636698990959805
 [2026-09-24T14:09:39.829-07:00] Network: up 0B  down 126KiB  session reSessionID-e1fdc144-fd24-4fe0-85d2-c2691aabf03a
-[2026-09-24T14:09:39.829-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/14636698990959805
+[2026-09-24T14:09:39.829-07:00] Test session: https://www/intern/testinfra/testrun/14636698990959805
 Tests finished: [mPass 120[m. Fail 0. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0

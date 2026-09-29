@@ -12,7 +12,7 @@ Traceback (most recent call last):
            ^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3349, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
     self.assertEqual(result.returncode, 0, result.stderr_path.read_text())
-AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl/codex.cli.users)
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
 
@@ -55,7 +55,7 @@ Traceback (most recent call last):
     yield root
   File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3574, in test_real_codex_final_message_cannot_be_redirected_by_tool
     self.assertEqual(fresh.returncode, 0, fresh.stderr_path.read_text())
-AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl/codex.cli.users)
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
 
@@ -83,7 +83,7 @@ Traceback (most recent call last):
     yield root
   File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3660, in test_real_codex_reviewer_final_message_cannot_be_redirected
     self.assertEqual(review.returncode, 0, review.stderr_path.read_text())
-AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl/codex.cli.users)
 Using AI Gateway (Azure Codex upstream)
 Reading additional input from stdin...
 

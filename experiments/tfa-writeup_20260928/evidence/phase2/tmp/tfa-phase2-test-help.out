@@ -1,4 +1,4 @@
-[2026-09-24T15:52:56.126-07:00] Buck UI: https://www.internalfb.com/buck2/6fd07265-2057-4295-8e5e-8ab6cdf6b358
+[2026-09-24T15:52:56.126-07:00] Buck UI: https://www/buck2/6fd07265-2057-4295-8e5e-8ab6cdf6b358
 [2026-09-24T15:52:56.631-07:00] Network: up 0B  down 0B
 Command failed: 
 Test executor exited unexpectedly with status 1.
@@ -161,7 +161,7 @@ Caused by:
           --repository <REPOSITORY>
               Which repository does this run belong to You should provide the full qualified name of the
               repository here For example for fbsource, the repository looks like:
-              ssh://hg.vip.facebook.com//data/scm/fbsource
+              ssh://hg//data/scm/fbsource
     
           --base-rev-retry-target-run
               Enable this if you plan to do Base Revision Retry later. This automatically creates a

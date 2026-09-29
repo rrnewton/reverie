@@ -2,7 +2,7 @@ notice Found 1 lint issue.
 >>> Lint for fbcode/testinfra/tfa/pipeline.py:
 
    Error  (BLACK) format
-    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+    This code is not well-formatted. See https://fburl/fbsource-linters#black
 
              266         return sum(
              267             1
