@@ -1644,13 +1644,10 @@ impl KvmBackend {
         request: &SyscallRequest,
         memory: &GuestMemory,
     ) -> Result<i64> {
-        // Construct an observer only for the inherited-stdin zero-count
-        // candidate. Executor routing decides whether it uses owned stdin;
-        // the host endpoint then applies its numeric-address/error checks.
-        if request.number() == libc::SYS_read as u64
-            && request.args()[0] as libc::c_int == libc::STDIN_FILENO
-            && request.args()[2] == 0
-        {
+        // A zero-count host read can block even through dup or a rebound fd 0.
+        // Executor routing selects the owned endpoint after installing the
+        // shared table snapshot and excluding synthetic descriptions.
+        if request.number() == libc::SYS_read as u64 && request.args()[2] == 0 {
             let mut context = self.terminal_read_context(executor, memory);
             executor.execute_checked_with_read_context(request, memory, &mut context)
         } else {
@@ -7448,6 +7445,76 @@ mod tests {
             ),
             false,
         )
+    }
+
+    #[test]
+    fn read_zero_vm_routes_duplicated_and_rebound_stdin_through_terminal_context() {
+        for rebound in [false, true] {
+            let backend =
+                KvmBackend::new(0x10000).expect("terminal read dispatch control requires /dev/kvm");
+            let raw = unsafe { libc::eventfd(9, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+            assert!(raw >= 0);
+            let mut state =
+                crate::executor::test_loaded_state_for_vm(&std::env::current_dir().unwrap());
+            // SAFETY: successful eventfd transfers one owned descriptor.
+            state.stdin = Some(unsafe { File::from_raw_fd(raw) });
+            let mut executor = ElfExecutor::new(state, false);
+            let memory = &backend.memory;
+            let alias =
+                executor.execute(&SyscallRequest::new(libc::SYS_dup as u64, [0; 6]), memory);
+            assert_eq!(alias, 3);
+            let fd = if rebound {
+                assert_eq!(
+                    executor.execute(
+                        &SyscallRequest::new(libc::SYS_dup2 as u64, [alias as u64, 0, 0, 0, 0, 0]),
+                        memory,
+                    ),
+                    0
+                );
+                0
+            } else {
+                alias as u64
+            };
+            let flags_request = SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [fd, libc::F_GETFL as u64, 0, 0, 0, 0],
+            );
+            let flags = executor.execute(&flags_request, memory);
+            assert!(flags >= 0);
+            assert_ne!(flags & libc::O_NONBLOCK as i64, 0);
+            backend
+                .thread_group
+                .terminal_reads
+                .request_exit_group(ExitStatus::Exited(37));
+            // Eventfd makes the old missing-context branch fail promptly with
+            // EINVAL. Actual blocked entry and physical retirement are covered
+            // separately by the executor's inotify controls.
+            let request = SyscallRequest::new(
+                libc::SYS_read as u64,
+                [0x5a5a_5a5a_0000_0000 | fd, 0x100, 0, 0, 0, 0],
+            );
+            assert!(matches!(
+                backend.execute_static_elf_syscall(&mut executor, &request, memory),
+                Err(Error::TerminalReadCancelled)
+            ));
+            assert_eq!(executor.execute(&flags_request, memory), flags);
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(libc::SYS_read as u64, [fd, 0x100, 8, 0, 0, 0]),
+                    memory,
+                ),
+                8
+            );
+            let mut value = [0_u8; 8];
+            memory.read(0x100, &mut value).unwrap();
+            assert_eq!(u64::from_ne_bytes(value), 9);
+            backend
+                .thread_group
+                .terminal_reads
+                .teardown_result()
+                .unwrap();
+            backend.thread_group.terminal_reads.rearm_after_exec();
+        }
     }
 
     // Exercise the real fork preparation with different leader/worker frames.

@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Terminal disposal of the existing inherited-stdin zero-byte host read.
+//! Terminal disposal of zero-byte reads on owned host descriptors.
 //!
 //! The original Rust worker stays synchronous. Only a C entry/cleanup stack is
 //! canceled; a Canceled outcome has unknown kernel progress and is never a
@@ -523,10 +523,10 @@ impl ReadContext {
         observer: &mut TerminalObserver,
     ) -> Result<NativeReturn> {
         let (address, count) = host_buffer;
-        assert_eq!(count, 0, "terminal helper is only for inherited zero reads");
+        assert_eq!(count, 0, "terminal helper is only for zero-count reads");
         let fd = endpoint
             .as_ref()
-            .expect("prechecked stdin disappeared")
+            .expect("prechecked read endpoint disappeared")
             .as_raw_fd();
         let mut error = 0;
         // SAFETY: all arguments are scalar and count is zero. The numeric
@@ -802,6 +802,143 @@ impl Drop for ReadOwner<'_> {
         // Errors are retained in the registry; never panic a second time or
         // detach an unjoined helper during Rust unwinding.
         let _ = self.finish();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::*;
+
+    /// Kept until after dispatch returns so both physical join and disappearance
+    /// of the exact observed Linux thread generation can be asserted.
+    pub(crate) struct BlockedRead {
+        operation: Arc<Operation>,
+        tid: u32,
+        start_time: u64,
+    }
+
+    fn start_time(tid: u32) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).ok()?;
+        stat[stat.rfind(')')? + 1..]
+            .split_whitespace()
+            .nth(19)?
+            .parse()
+            .ok()
+    }
+
+    impl ReadRegistry {
+        pub(crate) fn exhaust_test_generations(&self) {
+            lock(&self.state).next = u64::MAX;
+        }
+
+        pub(crate) fn observe_blocked_test_read(
+            &self,
+            task: SignalTaskIdentity,
+            request: SyscallRequest,
+            host_fd: i32,
+        ) -> BlockedRead {
+            let operation = {
+                let state = lock(&self.state);
+                assert_eq!(state.operations.len(), 1);
+                state.operations.values().next().unwrap().clone()
+            };
+            assert_eq!(operation.identity.task, task);
+            assert_eq!(operation.identity.request, request);
+            assert_eq!(operation.identity.host_fd, host_fd);
+            assert_eq!(operation.identity.host_address, request.args()[1] as usize);
+            assert_eq!(operation.identity.host_count, 0);
+            assert_eq!(
+                lock(&operation.endpoint).as_ref().unwrap().as_raw_fd(),
+                host_fd
+            );
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let snapshot = operation.snapshot();
+                assert_eq!(snapshot.outcome, PENDING);
+                assert_eq!(snapshot.handle_published, 1);
+                assert_eq!(snapshot.error_number, 0);
+                assert!(operation.terminal().is_none());
+                for entry in std::fs::read_dir("/proc/self/task").unwrap() {
+                    let entry = entry.unwrap();
+                    let Ok(tid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                        continue;
+                    };
+                    let Some(before) = start_time(tid) else {
+                        continue;
+                    };
+                    let Ok(syscall) = std::fs::read_to_string(entry.path().join("syscall")) else {
+                        continue;
+                    };
+                    let fields: Vec<_> = syscall.split_whitespace().collect();
+                    let hex = |index: usize| {
+                        fields.get(index).and_then(|word| {
+                            u64::from_str_radix(word.trim_start_matches("0x"), 16).ok()
+                        })
+                    };
+                    if fields.first().and_then(|number| number.parse::<i64>().ok())
+                        == Some(libc::SYS_read)
+                        && hex(1) == Some(host_fd as u64)
+                        && hex(2) == Some(request.args()[1])
+                        && hex(3) == Some(0)
+                        && start_time(tid) == Some(before)
+                    {
+                        // Entry is proved by a kernel syscall snapshot, not by
+                        // elapsed time, a published pthread handle, or a poll.
+                        assert_eq!(operation.snapshot().outcome, PENDING);
+                        println!(
+                            "BLOCKED_ZERO_READ operation={} image={} task={task:?} request={request:?} host_fd={host_fd} tid={tid} start_time={before} syscall={}",
+                            operation.identity.generation,
+                            operation.identity.image_generation,
+                            syscall.trim()
+                        );
+                        return BlockedRead {
+                            operation,
+                            tid,
+                            start_time: before,
+                        };
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "no matching kernel read entry observed"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    impl BlockedRead {
+        pub(crate) fn assert_retired(self, registry: &ReadRegistry) {
+            let snapshot = self.operation.snapshot();
+            assert_eq!(snapshot.state, JOINED);
+            assert_eq!(
+                snapshot.outcome, 2,
+                "blocked reader did not publish CANCELED"
+            );
+            assert_eq!(snapshot.senders, 0);
+            assert_eq!(snapshot.error_number, 0);
+            assert!(lock(&self.operation.endpoint).is_none());
+            assert!(lock(&registry.state).operations.is_empty());
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while start_time(self.tid) == Some(self.start_time) {
+                assert!(
+                    Instant::now() < deadline,
+                    "joined helper's Linux task remains"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            println!(
+                "RETIRED_ZERO_READ operation={} tid={} start_time={} state={} senders={}",
+                self.operation.identity.generation,
+                self.tid,
+                self.start_time,
+                snapshot.state,
+                snapshot.senders
+            );
+        }
     }
 }
 
