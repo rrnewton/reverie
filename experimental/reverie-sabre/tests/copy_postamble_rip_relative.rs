@@ -53,7 +53,13 @@ fn copy_postamble_relocates_rip_relative_group1_instructions() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    for case in ["getrandom-2.39", "cmpb-negative", "cmpl-imm8", "cmpl-imm32"] {
+    for case in [
+        "getrandom-2.39",
+        "cmpb-negative",
+        "cmpb-borrow",
+        "cmpl-imm8",
+        "cmpl-imm32",
+    ] {
         let output = Command::new(&binary).arg(case).output().unwrap();
         assert!(output.status.success(), "case={case}: {output:?}");
         assert_eq!(output.stdout, format!("PASS {case}\n").as_bytes());
