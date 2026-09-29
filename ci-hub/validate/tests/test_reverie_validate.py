@@ -868,7 +868,7 @@ class ReverieValidateTest(unittest.TestCase):
             wait=60,
             hold=60,
             child_deadline=8000,
-            environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+            environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin", "FLEET_REAL_GH": sys.executable},
             repo="rrnewton/reverie",
         )
         joined = " ".join(map(str, command))
@@ -892,7 +892,7 @@ class ReverieValidateTest(unittest.TestCase):
                     target="a" * 40, agent="agent", unit="validate-test",
                     record=state / "record.json", log=state / "validate.log", pr=597,
                     validate_args=[], wait=60, hold=60, child_deadline=8000,
-                    environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+                    environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin", "FLEET_REAL_GH": sys.executable},
                     repo="rrnewton/reverie", unit_tool_prefix=prefix,
                 )
                 self.assertIn(f"DEV_HERMIT_PARENT={state}", command)
