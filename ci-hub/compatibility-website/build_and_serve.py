@@ -445,6 +445,12 @@ def _bind_export_authorities(
         }
         for relative in export_inputs._READER_PATHS
     ]
+    # The proof reader grants no canonical authority, so bind its captured
+    # bytes before any export. `serve` validates a Stage 1 build's captured
+    # proof without exporting in this process. Unbound, export_inputs would
+    # fall back to importing the on-disk file, which is not the captured
+    # generator and cannot import bounded_capture outside the capture.
+    export_inputs.finalized_proof = readers["finalized_proof"]
 
     def bind(state: dict[str, Any]) -> dict[str, Any]:
         if state["files"] != expected_files:
@@ -455,7 +461,6 @@ def _bind_export_authorities(
         export_inputs.ledger_publisher = readers["publisher"]
         export_inputs.series_store = readers["series"]
         export_inputs.validation_ledger = readers["validate_rows"]
-        export_inputs.finalized_proof = readers["finalized_proof"]
         return state
 
     def load_authorities() -> dict[str, Any]:

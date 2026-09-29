@@ -3473,6 +3473,47 @@ def test_finalized_proof_reader_is_captured_and_bound_not_ambient():
     assert "ci-hub/series/finalized_proof.py" in website.GENERATOR_PATHS
 
 
+def test_captured_proof_reader_is_bound_before_any_export_in_a_fresh_process(
+    tmp_path: Path,
+) -> None:
+    # `serve` validates a Stage 1 build, whose captured proof goes through
+    # captured_proof_objects, without exporting first. A fresh process is the
+    # only way to observe that: in this one, an earlier test's export may
+    # already have bound the reader through the cached _modules().
+    program = """
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location('compatibility_website_fresh_proof', pathlib.Path(sys.argv[1]))
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+export_inputs = module._modules().export_inputs
+bound = export_inputs.finalized_proof
+destinations = export_inputs.captured_proof_objects(
+    {"schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []})
+print(json.dumps({
+    "bound": None if bound is None else bound.__name__,
+    "used": export_inputs.finalized_proof.__name__,
+    "same": export_inputs.finalized_proof is bound,
+    "destinations": destinations,
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(SCRIPT)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "bound": "compatibility_website_combined_finalized_proof",
+        "used": "compatibility_website_combined_finalized_proof",
+        "same": True,
+        "destinations": {},
+    }
+
+
 def test_website_build_json_bound_admits_the_measured_proof_growth(tmp_path: Path) -> None:
     # 2026-09-28: a complete Stage 1 build at ledger 7d28c1f0 wrote a
     # 19,498,083-byte website build.json and the old 16 MiB reader bound then
