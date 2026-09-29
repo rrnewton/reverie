@@ -49,6 +49,7 @@
 #include <sys/resource.h>
 #include <sys/shm.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <ucontext.h>
@@ -946,8 +947,9 @@ static void mode_jit_more(void) {
 
 /* T6a, undecided: a fork through the patched site whose clone flags the
  * test makes the tracer forget, as for a Tool-injected clone, or record as
- * CLONE_VM against kcmp. Both copies of the address space read the original
- * bytes afterwards. */
+ * CLONE_VM against kcmp, or as CLONE_VFORK against the kind of new-child
+ * stop. Both copies of the address space read the original bytes
+ * afterwards. */
 static void mode_fork_undecided(void) {
   warm();
   chld_block();
@@ -967,10 +969,76 @@ static void mode_fork_undecided(void) {
   warm();
 }
 
+/* The two bytes at tp_site as the vfork_undecided child read them. */
+unsigned char tp_vfork_child_bytes[2];
+
+/* T6a, undecided: a vfork through the patched site whose recorded clone
+ * flags the test makes disagree with the vfork stop (no CLONE_VFORK). The
+ * child shares the parent's stack, so after the vfork it calls no function:
+ * in inline assembly it copies the two bytes at tp_site into a global and
+ * exits, and the parent reports them. */
+static void mode_vfork_undecided(void) {
+  warm();
+  chld_block();
+  int status;
+  long r = SITE(SYS_vfork, 0, 0, 0, 0, 0);
+  if (r == 0) {
+    __asm__ volatile("movzbl tp_site(%%rip), %%eax\n"
+                     "movb %%al, tp_vfork_child_bytes(%%rip)\n"
+                     "movzbl tp_site+1(%%rip), %%eax\n"
+                     "movb %%al, tp_vfork_child_bytes+1(%%rip)\n"
+                     "mov $231, %%eax\n"
+                     "mov $7, %%edi\n"
+                     "syscall\n" ::
+                         : "rax", "rdi", "rcx", "r11", "memory");
+    __builtin_unreachable();
+  }
+  if (r < 0)
+    die("vfork");
+  if (waitpid(r, &status, 0) != r)
+    die("wait undecided vfork");
+  say("undecided vfork child site bytes %02x %02x\n", tp_vfork_child_bytes[0],
+      tp_vfork_child_bytes[1]);
+  say("undecided vfork child exited=%d code=%d\n", WIFEXITED(status), WEXITSTATUS(status));
+  chld_unblock();
+  site_bytes("undecided vfork parent");
+  warm();
+}
+
+/* T6c: process_madvise(MADV_DONTNEED) through a pidfd for this process, on
+ * the fixture's own patched text page. The tracer reads neither the iovec
+ * nor which process the pidfd names, so every site is restored first,
+ * including the patched site of a JIT page the call does not name. The
+ * result depends on the host kernel: before Linux 6.13 a process may not
+ * pass MADV_DONTNEED for itself (EINVAL); the restore happens either way. */
+static void mode_process_madvise(void) {
+  const int rw = PROT_READ | PROT_WRITE, rx = PROT_READ | PROT_EXEC;
+  int pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+  if (pidfd < 0)
+    die("pidfd_open");
+  unsigned char *j = map_at(0x52000000, rw, MAP_FIXED_NOREPLACE);
+  emit(j, 0, SYS_getpid);
+  protect(j, rx);
+  for (int i = 0; i < 3; i++)
+    say("pm jit %d pid=%d\n", i, run_code(j) == getpid());
+  warm();
+  struct iovec iov = {(void *)((unsigned long)tp_site & ~4095UL), 4096};
+  long r = syscall(SYS_process_madvise, pidfd, &iov, 1, MADV_DONTNEED, 0);
+  int err = r < 0 ? errno : 0;
+  say("process_madvise ret=%ld errno=%d\n", r, err);
+  site_bytes("after process_madvise");
+  jit_bytes("after process_madvise jit", j + 5);
+  for (int i = 0; i < 3; i++)
+    say("pm jit2 %d pid=%d\n", i, run_code(j) == getpid());
+  warm();
+  close(pidfd);
+}
+
 /* T6a, undecided: a thread (CLONE_VM|CLONE_THREAD) through the patched
  * site, whose recorded clone flags the test makes disagree with kcmp (no
- * CLONE_VM). The thread returns from tp_site_fn on its own stack into
- * thread_entry and exits; the parent joins it without syscalls. */
+ * CLONE_VM) or with the kind of new-child stop (CLONE_VFORK). The thread
+ * returns from tp_site_fn on its own stack into thread_entry and exits; the
+ * parent joins it without syscalls. */
 static void mode_thread_mismatch(void) {
   warm();
   size_t size = 64 * 1024;
@@ -2175,6 +2243,10 @@ int main(int argc, char **argv) {
     mode_fork_undecided();
   else if (!strcmp(m, "thread_mismatch"))
     mode_thread_mismatch();
+  else if (!strcmp(m, "vfork_undecided"))
+    mode_vfork_undecided();
+  else if (!strcmp(m, "process_madvise"))
+    mode_process_madvise();
   else if (!strcmp(m, "vfork_spawn"))
     mode_vfork_spawn();
   else if (!strcmp(m, "guest_seccomp"))
