@@ -150,7 +150,34 @@ the run may use and nothing else: no bound, deadline, argument or environment
 variable. A Hermit guest cannot see the placement, because Hermit shows it a
 virtualized CPU view; read the unit's threads from the host instead.
 
-Tests: `bin/safehermit-test.sh` and `bin/safehermit-resource-test.py`.
+**Already boxed: running in place.** `systemd-run --user` starts the run in the
+user manager's slice, so from inside an agent box the run escapes that box's
+memory and CPU limits (https://github.com/rrnewton/dev-hermit/issues/393). Before
+boxing, safehermit reads its own cgroup v2 path from `/proc/self/cgroup` and
+walks from that cgroup up to the root. If one cgroup on that path has both a
+memory limit (`memory.max` or `memory.high` not `max`) and a CPU quota (the first
+`cpu.max` field not `max`), it runs the payload in place under that box. A memory
+limit on one cgroup and a CPU quota on another do not qualify. Otherwise it boxes
+exactly as before. The `boxing=` line names the mode and the cgroup that
+justified it. In place, a supervisor process takes over the protections that the
+unit used to provide:
+
+- the `--sh-deadline` wall bound;
+- killing the run's whole process tree, including orphans (it is a child
+  subreaper);
+- dying with safehermit (parent-death signals).
+
+The run's `oom_score_adj` is raised to 1000, so an OOM in the enclosing box kills
+the run first. CPU placement is applied with `sched_setaffinity`. The stderr cap
+and the retained log are unchanged. `bound.cgroup=` reports `NOT_APPLIED` and
+names the enclosing cgroup, because safehermit's own `MemoryMax`/`MemorySwapMax=0`
+is not applied. `SAFEHERMIT_BOXING=force` always boxes with `systemd-run`, and
+`--sh-resource-report` always does too, since it needs its own accounted unit.
+`bin/safehermit --sh-help` has the full list.
+
+Tests: `bin/safehermit-test.sh`, `bin/safehermit-resource-test.py`, and
+`bin/safehermit-boxing-test.py` (the already-boxed check and the in-place mode,
+with a fake cgroup tree; it needs neither systemd nor Hermit).
 
 ## Disk-bound scope
 

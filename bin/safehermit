@@ -41,11 +41,60 @@
 # untouched; everything this script says goes to stderr prefixed `safehermit:` so
 # it can never be confused with, or parsed as, hermit output.
 #
+# ALREADY BOXED: RUNNING IN PLACE
+# ===============================
+# `systemd-run --user` starts the run as a service of the user manager, so the
+# run LEAVES the caller's cgroup and mount namespace. For an agent that is
+# already confined, that is an escape rather than a bound
+# (https://github.com/rrnewton/dev-hermit/issues/393). So before boxing, this
+# reads the caller's cgroup v2 path from /proc/self/cgroup and walks it from the
+# caller's own cgroup up to the root of /sys/fs/cgroup. (The host's real root
+# cgroup has no limit files and never qualifies; the root of a container's
+# private cgroup namespace is an ordinary cgroup and can.) If ONE cgroup on
+# that path enforces BOTH
+#     memory: memory.max, or failing that memory.high, is not "max"
+#     CPU:    the quota in cpu.max is not "max"
+# the run is already boxed and runs IN PLACE, without systemd-run. A memory
+# limit on one cgroup and a CPU quota on a different one does not qualify.
+# Anything that cannot be read or parsed counts as "not boxed", which keeps the
+# old behaviour.
+#
+# In place, what systemd provided is replaced rather than dropped:
+#     wall deadline    RuntimeMaxSec         an in-place supervisor SIGKILLs
+#                                            the run's whole process tree
+#     lethal log cap   systemctl kill        the same supervisor tree kill
+#     leftover procs   unit teardown         the supervisor is a child
+#                                            subreaper and kills every
+#                                            remaining descendant at the end
+#     memory           MemoryMax=16G,        the enclosing cgroup's limit; the
+#                      MemorySwapMax=0       run's oom_score_adj is raised to
+#                                            1000 so an OOM there kills the run
+#                                            before the agent
+#     CPU placement    AllowedCPUs=          sched_setaffinity, read back
+#     environment      --setenv forwarding   inherited directly
+# The stderr cap, the retained log, the run record and every bound.* line are
+# kept in both modes. `safehermit: boxing=` names the mode on every run and, in
+# place, the cgroup that justified it.
+#
+#   SAFEHERMIT_BOXING=auto   (default) detect as above
+#   SAFEHERMIT_BOXING=force  always box with systemd-run --user, exactly as
+#                            before this detection existed
+# Any other value is a usage error (exit 2). --sh-resource-report always uses
+# systemd-run, because its accounting needs a unit of its own; when the caller
+# is already boxed, that run leaves the enclosing cgroup and the boxing= line
+# says so.
+# SAFEHERMIT_TEST_PROC_SELF_CGROUP and SAFEHERMIT_TEST_CGROUP_ROOT replace
+# /proc/self/cgroup and /sys/fs/cgroup. They exist for bin/safehermit-boxing-test.py;
+# when either is set, the boxing= line names it.
+#
 # EXIT CODES
 #   the child's exit code, verbatim, when accounting (if requested) completes
-#   2   safehermit usage error, or opted-in resource accounting refusal
-#   124 the deadline fired and the run was killed by its cgroup
-#   125 the log cap fired and the run was killed by its cgroup
+#   2   safehermit usage error, opted-in resource accounting refusal, or an
+#       in-place supervisor that could not arm its protections
+#   124 the deadline fired and the run was killed by its cgroup (in place: by
+#       the in-place supervisor)
+#   125 the log cap fired and the run was killed by its cgroup (in place: by
+#       the in-place supervisor)
 #   126 the opted-in aggregate CPU-time budget fired
 set -uo pipefail
 
@@ -196,6 +245,12 @@ if [ -n "$report_file" ]; then
 fi
 
 [ $# -ge 1 ] || die "no hermit arguments given (try --sh-help)"
+
+boxing_mode="${SAFEHERMIT_BOXING:-auto}"
+case "$boxing_mode" in
+    auto|force) ;;
+    *) die "SAFEHERMIT_BOXING must be 'auto' or 'force', got '$boxing_mode'" ;;
+esac
 
 # ---------------------------------------------------------------- pick the binary
 # The rule that makes an ARBITRARY binary as cheap as running it bare.
@@ -492,11 +547,109 @@ log_dir="$LOG_ROOT/$run_id"
 mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
 log_file="$log_dir/hermit.log"
 
+# ---------------------------------------------------------------- (10) already boxed?
+# See "ALREADY BOXED" in the header. The verdict is computed here, from files,
+# and only a positive verdict changes anything. The path components come from
+# /proc/self/cgroup and are refused if they contain "." or "..", so the walk can
+# never leave the cgroup root it was given.
+cgroup_proc_file="${SAFEHERMIT_TEST_PROC_SELF_CGROUP:-/proc/self/cgroup}"
+cgroup_fs_root="${SAFEHERMIT_TEST_CGROUP_ROOT:-/sys/fs/cgroup}"
+boxed_verdict=""; boxed_cgroup=""; boxed_memory=""; boxed_cpu=""; boxed_reason=""
+boxed_python=""
+cgroup_test_note=""
+[ -z "${SAFEHERMIT_TEST_PROC_SELF_CGROUP:-}" ] \
+    || cgroup_test_note="$cgroup_test_note; TEST OVERRIDE SAFEHERMIT_TEST_PROC_SELF_CGROUP=$cgroup_proc_file"
+[ -z "${SAFEHERMIT_TEST_CGROUP_ROOT:-}" ] \
+    || cgroup_test_note="$cgroup_test_note; TEST OVERRIDE SAFEHERMIT_TEST_CGROUP_ROOT=$cgroup_fs_root"
+if [ "$boxing_mode" = auto ]; then
+    boxed_line="$(python3 - "$cgroup_proc_file" "$cgroup_fs_root" <<'PY'
+import os
+import sys
+
+proc_file, root = sys.argv[1], sys.argv[2]
+
+
+def emit(verdict, group="", memory="", cpu="", reason=""):
+    fields = (verdict, group, memory, cpu, " ".join(reason.split()), sys.executable or "")
+    print("\x1f".join(fields))
+    raise SystemExit(0)
+
+
+def read(path):
+    try:
+        with open(path, encoding="ascii") as stream:
+            return stream.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+text = read(proc_file)
+if text is None:
+    emit("NOT_BOXED", reason=f"cannot read {proc_file}")
+entries = [line[3:] for line in text.splitlines() if line.startswith("0::")]
+if len(entries) != 1:
+    emit("NOT_BOXED", reason=f"{proc_file} has {len(entries)} cgroup v2 entries, not exactly one")
+own = entries[0]
+if not own.startswith("/") or any(part in (".", "..") for part in own.split("/")):
+    emit("NOT_BOXED", reason=f"refusing the cgroup path {own!r}: not absolute, or contains '.' or '..'")
+parts = [part for part in own.split("/") if part]
+if not os.path.isfile(os.path.join(root, "cgroup.controllers")):
+    emit("NOT_BOXED", reason=f"{root} is not a cgroup v2 hierarchy (no cgroup.controllers)")
+memory_seen = cpu_seen = None
+# Depth 0 is the root of this cgroup mount. The host's real root cgroup has no
+# memory.max, memory.high or cpu.max file, so it never qualifies; the root of a
+# private cgroup namespace (a container) is an ordinary cgroup that has them.
+for depth in range(len(parts), -1, -1):
+    group = "/" + "/".join(parts[:depth])
+    directory = os.path.join(root, *parts[:depth])
+    if not os.path.isdir(directory):
+        emit("NOT_BOXED", reason=f"the cgroup {group} is not present under {root}")
+    memory = None
+    for name in ("memory.max", "memory.high"):
+        value = read(os.path.join(directory, name))
+        if value is not None and value != "max" and value.isascii() and value.isdecimal():
+            memory = f"{name}={value}"
+            break
+    cpu = None
+    fields = (read(os.path.join(directory, "cpu.max")) or "").split()
+    if (len(fields) == 2 and fields[0] != "max" and fields[0].isascii()
+            and fields[0].isdecimal() and fields[1].isascii() and fields[1].isdecimal()):
+        cpu = f"cpu.max={fields[0]} {fields[1]}"
+    if memory and cpu:
+        emit("BOXED", group, memory, cpu)
+    memory_seen = memory_seen or (memory and (group, memory))
+    cpu_seen = cpu_seen or (cpu and (group, cpu))
+if memory_seen and cpu_seen:
+    emit("NOT_BOXED", reason=f"{memory_seen[0]} limits memory ({memory_seen[1]}) and "
+         f"{cpu_seen[0]} limits CPU ({cpu_seen[1]}), but no single cgroup limits both")
+if memory_seen:
+    emit("NOT_BOXED", reason=f"{memory_seen[0]} limits memory ({memory_seen[1]}), "
+         f"but no cgroup from {own} up to the root has a CPU quota")
+if cpu_seen:
+    emit("NOT_BOXED", reason=f"{cpu_seen[0]} limits CPU ({cpu_seen[1]}), "
+         f"but no cgroup from {own} up to the root limits memory")
+emit("NOT_BOXED", reason=f"no cgroup from {own} up to the root limits memory or CPU")
+PY
+)"
+    IFS=$'\x1f' read -r boxed_verdict boxed_cgroup boxed_memory boxed_cpu boxed_reason \
+        boxed_python <<<"$boxed_line"
+    if [ "$boxed_verdict" != BOXED ] && [ "$boxed_verdict" != NOT_BOXED ]; then
+        boxed_verdict=NOT_BOXED
+        boxed_reason="the cgroup check did not produce a verdict"
+    fi
+fi
+in_place=0
+if [ "$boxed_verdict" = BOXED ] && [ -z "$detached_report_file" ]; then
+    in_place=1
+fi
+
 # ---------------------------------------------------------------- (1)(2) killability
 # The container init is a namespace PID 1 with no SIGTERM handler and the kernel
 # DISCARDS default-disposition signals to it, so `timeout` and even
 # `timeout --kill-after` cannot reap this process shape. A cgroup kill can.
-# RuntimeMaxSec on a transient unit is that cgroup kill.
+# RuntimeMaxSec on a transient unit is that cgroup kill. In place there is no
+# unit, so the in-place supervisor below SIGKILLs each process of the tree
+# instead; SIGKILL from outside the namespace does reach its PID 1.
 unit="safehermit-$run_id"
 wall_state="APPLIED:${deadline}s"
 runner=(); runner_state="APPLIED"
@@ -508,8 +661,9 @@ fi
 # --user` works perfectly -- gating on it silently dropped BOTH the wall bound and
 # the memory bound on a machine that supports them. Caught by this script's own
 # acceptance test. So we actually start a throwaway transient unit and see.
+# In place, systemd is not used at all, so it is not probed.
 systemd_ok=0
-if command -v systemd-run >/dev/null 2>&1; then
+if [ "$in_place" = 0 ] && command -v systemd-run >/dev/null 2>&1; then
     if timeout 20 systemd-run --user "--unit=safehermit-probe-$$" --collect --quiet \
          --property=RuntimeMaxSec=10 --pipe --wait -- /bin/true >/dev/null 2>&1; then
         systemd_ok=1
@@ -530,10 +684,13 @@ fi
 #   DEV_HERMIT_EXCLUDE_CPUS=<list>  exclude exactly that kernel CPU list
 # A malformed value is a usage error (exit 2) before anything runs. APPLIED is
 # claimed only after a probe unit shows the user manager enforcing the set.
+# In place, the same set (intersected with the CPUs this process may already
+# use) is applied to this shell with sched_setaffinity, so the run inherits it,
+# and APPLIED is claimed only after reading the shell's affinity back.
 placement_args=()
 placement_state="NOT_APPLIED:systemd --user unavailable, so there is no unit to place"
 placement_dir="$ROOT/ci-hub/validate"
-if [ "$systemd_ok" = 1 ]; then
+if [ "$systemd_ok" = 1 ] || [ "$in_place" = 1 ]; then
     if [ ! -f "$placement_dir/cpu_placement.py" ]; then
         placement_state="NOT_APPLIED:$placement_dir/cpu_placement.py is absent in this checkout"
     else
@@ -563,6 +720,38 @@ PY
             placement_state="NOT_APPLIED:cpu_placement.py exited $placement_rc: $(head -c 300 "$log_dir/.cpu-placement.err" | tr '\n' ' ')"
         elif [ -z "$placement_allowed" ]; then
             placement_state="NOT_APPLIED:source=$placement_source excluded nothing: $placement_detail"
+        elif [ "$in_place" = 1 ]; then
+            placement_result="$(python3 - "$placement_dir" "$placement_allowed" "$$" 2>&1 <<'PY'
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import cpu_placement as cp
+
+allowed = cp.parse_cpu_list(sys.argv[2]) or frozenset()
+shell = int(sys.argv[3])
+current = frozenset(os.sched_getaffinity(shell))
+wanted = allowed & current
+if not wanted:
+    print("EMPTY\x1f" + cp.format_cpu_list(current))
+    raise SystemExit(0)
+try:
+    os.sched_setaffinity(shell, wanted)
+except OSError as error:
+    print("ERROR\x1f" + " ".join(str(error).split()))
+    raise SystemExit(0)
+observed = frozenset(os.sched_getaffinity(shell))
+print(("OK" if observed == wanted else "MISMATCH") + "\x1f" + cp.format_cpu_list(observed))
+PY
+)"
+            IFS=$'\x1f' read -r placement_verdict placement_observed <<<"$placement_result"
+            case "$placement_verdict" in
+                OK) placement_state="APPLIED:sched_setaffinity($placement_observed) on safehermit's shell, inherited by the run (source=$placement_source, excluded=$placement_excluded; read back Cpus_allowed_list=$placement_observed)" ;;
+                EMPTY) placement_state="NOT_APPLIED:the placement set $placement_allowed shares no CPU with this process's current set $placement_observed; the run keeps the inherited set" ;;
+                ERROR) placement_state="NOT_APPLIED:sched_setaffinity($placement_allowed) failed: $placement_observed; the run keeps the inherited set" ;;
+                MISMATCH) placement_state="NOT_APPLIED:sched_setaffinity was not honoured (read back Cpus_allowed_list=$placement_observed, wanted $placement_allowed)" ;;
+                *) placement_state="NOT_APPLIED:the in-place placement helper failed: $(printf '%s' "$placement_result" | head -c 300 | tr '\n' ' ')" ;;
+            esac
         else
             # Named under the safehermit-probe- prefix every throwaway capability
             # probe uses, so nothing treats it as the run's own safehermit-* unit.
@@ -591,7 +780,76 @@ PY
     fi
 fi
 env_state="NOT_APPLIED:no transient unit, so the child inherits this shell's environment directly"
-if [ "$systemd_ok" = 1 ]; then
+in_place_deadline_secs=none
+if [ "$in_place" = 1 ]; then
+    runner=()
+    runner_state="IN_PLACE"
+    unit="none"
+    env_state="NOT_APPLIED:running in place, so the child inherits this shell's environment directly and nothing needs forwarding"
+    # The supervisor must be a DIRECT child of this shell for PR_SET_PDEATHSIG
+    # to mean "safehermit died". On this host /usr/local/bin/python3 is a
+    # launcher that forks the real interpreter as ITS child (measured: the
+    # interpreter's getppid() was the launcher, not the shell), so the
+    # interpreter the cgroup check reported (sys.executable) is executed
+    # directly. The supervisor checks its parent and refuses (exit 2) if it is
+    # not this shell.
+    in_place_python="$boxed_python"
+    [ -n "$in_place_python" ] && [ -x "$in_place_python" ] \
+        || die "running in place needs the Python interpreter's own path (sys.executable), and python3 did not report an executable one"
+    if [ "$no_deadline" != 1 ]; then
+        # systemd would have parsed --sh-deadline as a time span (RuntimeMaxSec),
+        # so "90", "90s", "15min" and "1h 30m" all worked. The supervisor needs
+        # seconds, so the same forms are parsed here; anything else is a usage
+        # error before the run starts, never a silently missing deadline.
+        in_place_deadline_secs=""
+        [[ "$deadline" =~ ^[1-9][0-9]{0,8}$ ]] && in_place_deadline_secs="$deadline"
+        [ -n "$in_place_deadline_secs" ] || in_place_deadline_secs="$("$in_place_python" - "$deadline" <<'PY'
+import re
+import sys
+
+text = sys.argv[1].strip()
+if text == "infinity":
+    print("infinity")
+    raise SystemExit(0)
+units = {"usec": 1e-6, "us": 1e-6, "msec": 1e-3, "ms": 1e-3,
+         "seconds": 1, "second": 1, "sec": 1, "s": 1,
+         "minutes": 60, "minute": 60, "min": 60, "m": 60,
+         "hours": 3600, "hour": 3600, "hr": 3600, "h": 3600,
+         "days": 86400, "day": 86400, "d": 86400,
+         "weeks": 604800, "week": 604800, "w": 604800,
+         "months": 2629800, "month": 2629800, "M": 2629800,
+         "years": 31557600, "year": 31557600, "y": 31557600}
+component = re.compile(r"\s*([0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*([A-Za-z]*)")
+components = []
+position = 0
+while position < len(text):
+    match = component.match(text, position)
+    if match is None or match.end() == position:
+        raise SystemExit(1)
+    components.append((float(match.group(1)), match.group(2)))
+    position = match.end()
+if not components:
+    raise SystemExit(1)
+if len(components) == 1 and components[0][1] == "":
+    total = components[0][0]
+elif all(unit in units for _, unit in components):
+    total = sum(number * units[unit] for number, unit in components)
+else:
+    raise SystemExit(1)
+if not 0 < total < 10**9:
+    raise SystemExit(1)
+print(repr(total))
+PY
+)" || die "--sh-deadline '$deadline' is not a positive time span this script can enforce in place (e.g. 3600, 90s, 15min, 1h30m)"
+        if [ "$in_place_deadline_secs" = infinity ]; then
+            wall_state="NOT_APPLIED:--sh-deadline infinity asks for no wall bound"
+        else
+            wall_label="${deadline}s"
+            [ "$in_place_deadline_secs" = "$deadline" ] || wall_label="$deadline = ${in_place_deadline_secs}s"
+            wall_state="APPLIED:$wall_label (in place: the supervisor SIGKILLs the run's whole process tree)"
+        fi
+    fi
+elif [ "$systemd_ok" = 1 ]; then
     # FORWARD THE CALLER'S ENVIRONMENT EXPLICITLY. `systemd-run --user` does NOT
     # inherit the invoking shell's environment -- it starts the unit from the user
     # manager's own environment -- so without this every caller variable is
@@ -657,6 +915,25 @@ else
     wall_state="NOT_APPLIED:systemd --user unavailable; NO cgroup kill and NO wall bound -- \`timeout\` cannot kill a namespace PID 1, so none is attempted"
     unit="none"
 fi
+
+# The one line that names the mode. Every run prints it.
+if [ "$boxing_mode" = force ]; then
+    boxing_why="SAFEHERMIT_BOXING=force, so the already-boxed check was skipped"
+elif [ "$boxed_verdict" = BOXED ]; then
+    boxing_why="already boxed by $boxed_cgroup ($boxed_memory, $boxed_cpu)"
+else
+    boxing_why="not already boxed: $boxed_reason"
+fi
+if [ "$in_place" = 1 ]; then
+    boxing_state="IN_PLACE:$boxing_why; running in place"
+elif [ "$runner_state" != APPLIED ]; then
+    boxing_state="NONE:$boxing_why; systemd --user is unavailable, so the run is UNBOXED"
+elif [ "$boxed_verdict" = BOXED ]; then
+    boxing_state="SYSTEMD_RUN:$boxing_why, but --sh-resource-report needs its own accounted unit, so this run LEAVES that cgroup"
+else
+    boxing_state="SYSTEMD_RUN:$boxing_why; boxing with systemd-run --user"
+fi
+boxing_state="$boxing_state$cgroup_test_note"
 
 resolve_detached_cgroup() {
     local properties_file="$log_dir/.resource-unit-location"
@@ -998,11 +1275,17 @@ field binary_sha256 "$binary_sha256"
 field log_dir       "$log_dir"
 field log_file      "$log_file"
 field unit          "$unit"
+field boxing        "$boxing_state"
 field bound.wall      "$wall_state"
 if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
     cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0 TasksMax=$detached_tasks_max CPUQuota=$((detached_cpu_cores * 100))% CPUTimeMax=${detached_cpu_timeout_secs}s"
 elif [ "$runner_state" = APPLIED ]; then
     cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0"
+elif [ "$runner_state" = IN_PLACE ]; then
+    # NOT_APPLIED because safehermit's OWN per-run limit is not applied: the
+    # enclosing limit is shared with everything else in that cgroup and may be
+    # larger than MemoryMax=$mem_max. Saying APPLIED would overclaim.
+    cgroup_bound_state="NOT_APPLIED:in place -- safehermit's own MemoryMax=$mem_max MemorySwapMax=0 is not applied; the enclosing cgroup $boxed_cgroup bounds the run ($boxed_memory, $boxed_cpu), and the run's oom_score_adj is raised to 1000 so an OOM there kills the run first"
 else
     cgroup_bound_state="NOT_APPLIED:systemd --user unavailable"
 fi
@@ -1010,6 +1293,8 @@ field bound.cgroup    "$cgroup_bound_state"
 field bound.disk      "$disk_state"
 if [ "$runner_state" = APPLIED ]; then
     byte_bound_state="APPLIED:$max_log_bytes (LETHAL: the run is cgroup-killed at the cap)"
+elif [ "$runner_state" = IN_PLACE ]; then
+    byte_bound_state="APPLIED:$max_log_bytes (LETHAL: in place, the supervisor SIGKILLs the run's process tree at the cap)"
 else
     byte_bound_state="APPLIED:$max_log_bytes (TRUNCATION ONLY: no cgroup kill is available; stderr is still drained so the child can finish)"
 fi
@@ -1042,10 +1327,13 @@ capper() {
     # timeout or from the log hitting a low cap, so on cap we kill the run through
     # its cgroup and keep the first bytes as evidence. Without systemd there is no
     # cgroup to kill, so it degrades to truncate-and-say-so rather than pretending.
+    # In place, the in-place supervisor polls the cap-fired marker and kills the
+    # run's process tree; the capper only records that it was notified.
     python3 -u -c '
 import sys, os, subprocess, time
 cap = int(sys.argv[1]); path = sys.argv[2]; unit = sys.argv[3]
 parent_monitors = sys.argv[4] == "yes"
+in_place = sys.argv[4] == "in-place"
 written = 0; truncated = False; killed = "n/a"
 out = open(path, "wb")
 src = sys.stdin.buffer; dst = sys.stdout.buffer
@@ -1099,6 +1387,9 @@ while True:
                     out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
                 if rc != 0 and kill_error:
                     out.write(b"[safehermit] final systemctl kill error: %s\n" % kill_error.rstrip())
+            elif in_place:
+                killed = "in-place-supervisor-notified"
+                out.write(b"[safehermit] the in-place supervisor was notified to kill the process tree of the run.\n")
             else:
                 killed = "no-cgroup-available"
                 out.write(b"[safehermit] NOT killed: no systemd cgroup was available, so the cap could only truncate.\n")
@@ -1108,6 +1399,239 @@ with open(path + ".meta", "w") as m:
     m.write("bytes_written=%d\ntruncated=%s\ncap=%d\nkilled=%s\n" % (written, str(truncated).lower(), cap, killed))
 ' "$1" "$2" "$3" "$4"
 }
+
+# ---------------------------------------------------------------- (11) in-place supervisor
+# Used only when the caller is already boxed. It stands in for the transient
+# unit: it runs hermit as its child and SIGKILLs the WHOLE process tree when the
+# deadline passes, when the capper's cap-fired marker appears, when it is
+# signalled, and when hermit exits with processes still left behind (a unit's
+# teardown does the same with KillSignal=SIGKILL).
+#
+# FINDING THE TREE. It makes itself a child subreaper first, so an orphaned
+# descendant -- a daemonized or setsid'd grandchild, or the namespace PID 1
+# after hermit dies -- is reparented to it rather than to init, and so stays
+# findable by walking parent links in /proc. A process-group or session kill
+# would miss a setsid'd grandchild; this does not. It keeps killing until it has
+# no children at all, which is exact: with the subreaper set, any living
+# descendant implies a living child.
+#
+# IF safehermit ITSELF DIES. The supervisor has PR_SET_PDEATHSIG=SIGTERM, which
+# makes it kill the tree when this shell exits for any reason, SIGKILL included.
+# hermit gets PR_SET_PDEATHSIG=SIGKILL against the supervisor, so a SIGKILLed
+# supervisor still takes hermit down.
+#
+# IT NEVER WRITES TO STDERR OR STDOUT. Its stderr is the payload's stream into
+# the capper; its verdict goes to the outcome file, which this script reads.
+# stdin is passed straight through to hermit, as `python3 -c` does not read it.
+#   outcome=exit        hermit exited by itself
+#   outcome=timeout     the deadline fired and the tree was killed
+#   outcome=cap-killed  the capper's marker appeared and the tree was killed
+#   outcome=terminated  the supervisor was signalled and killed the tree
+#   outcome=refused     a protection could not be armed; nothing was run
+#   outcome=exec-failed hermit could not be executed
+#   outcome=error       the supervisor failed; it tried to kill the tree
+in_place_supervisor_py="$(cat <<'PY'
+import ctypes
+import os
+import signal
+import subprocess
+import sys
+import time
+
+PR_SET_PDEATHSIG = 1
+PR_SET_CHILD_SUBREAPER = 36
+POLL_SECONDS = 0.05
+KILL_BUDGET_SECONDS = 30.0
+
+expected_parent = int(sys.argv[1])
+deadline_text = sys.argv[2]
+marker = sys.argv[3]
+outcome_path = sys.argv[4]
+command = sys.argv[5:]
+me = os.getpid()
+libc = ctypes.CDLL(None, use_errno=True)
+record = {}
+state = {"child": None, "status": None}
+pending = []
+
+
+def publish(**fields):
+    record.update(fields)
+    temporary = outcome_path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as stream:
+        for key, value in record.items():
+            stream.write(f"{key}={' '.join(str(value).split())}\n")
+    os.replace(temporary, outcome_path)
+
+
+def prctl(option, value):
+    zero = ctypes.c_ulong(0)
+    if libc.prctl(ctypes.c_int(option), ctypes.c_ulong(value), zero, zero, zero) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number))
+
+
+def reap():
+    """Reap every exited child; return True once no child is left at all."""
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if pid == 0:
+            return False
+        if state["child"] is not None and pid == state["child"]:
+            state["status"] = status
+
+
+def descendants():
+    children = {}
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "rb") as stream:
+                data = stream.read()
+        except OSError:
+            continue
+        fields = data[data.rfind(b")") + 2:].split()
+        if len(fields) >= 2 and fields[1].isdigit():
+            children.setdefault(int(fields[1]), []).append(int(entry.name))
+    found = []
+    frontier = [me]
+    while frontier:
+        for pid in children.get(frontier.pop(), ()):
+            found.append(pid)
+            frontier.append(pid)
+    if state["child"] is not None and state["status"] is None and state["child"] not in found:
+        found.append(state["child"])
+    return found
+
+
+def kill_tree():
+    rounds = 0
+    killed = set()
+    budget = time.monotonic() + KILL_BUDGET_SECONDS
+    while not reap():
+        if time.monotonic() >= budget:
+            return rounds, len(killed), False
+        rounds += 1
+        for pid in descendants():
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.add(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(0.02)
+    return rounds, len(killed), True
+
+
+def shell_status(status):
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 125
+
+
+def main():
+    for option, value, name in ((PR_SET_CHILD_SUBREAPER, 1, "PR_SET_CHILD_SUBREAPER"),
+                                (PR_SET_PDEATHSIG, signal.SIGTERM, "PR_SET_PDEATHSIG")):
+        try:
+            prctl(option, value)
+        except OSError as error:
+            publish(outcome="refused", detail=f"{name} failed: {error}")
+            return 2
+    handled = [signal.SIGTERM]
+    restore_ignored = []
+    for number in (signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(number) is signal.SIG_IGN:
+            restore_ignored.append(number)
+        else:
+            handled.append(number)
+    if signal.getsignal(signal.SIGTERM) is signal.SIG_IGN:
+        restore_ignored.append(signal.SIGTERM)
+    for number in handled:
+        signal.signal(number, lambda number, _frame: pending.append(number))
+    if os.getppid() != expected_parent:
+        publish(outcome="refused", detail="safehermit's shell exited before PR_SET_PDEATHSIG was armed")
+        return 2
+    deadline = None
+    if deadline_text not in ("none", "infinity"):
+        deadline = time.monotonic() + float(deadline_text)
+
+    def prepare_child():
+        # Between fork and exec. An exception here aborts the launch.
+        prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        if os.getppid() != me:
+            os._exit(125)
+        try:
+            with open("/proc/self/oom_score_adj", "w", encoding="ascii") as stream:
+                stream.write("1000")
+        except OSError:
+            pass
+        for number in restore_ignored:
+            signal.signal(number, signal.SIG_IGN)
+
+    try:
+        child = subprocess.Popen(command, close_fds=True, restore_signals=True,
+                                 preexec_fn=prepare_child)
+    except FileNotFoundError as error:
+        publish(outcome="exec-failed", detail=str(error), status=127)
+        return 127
+    except PermissionError as error:
+        publish(outcome="exec-failed", detail=str(error), status=126)
+        return 126
+    except (OSError, subprocess.SubprocessError) as error:
+        publish(outcome="refused", detail=f"launch failed: {type(error).__name__}: {error}")
+        return 2
+    state["child"] = child.pid
+    try:
+        with open(f"/proc/{child.pid}/oom_score_adj", encoding="ascii") as stream:
+            record["oom_score_adj"] = stream.read().strip()
+    except OSError:
+        record["oom_score_adj"] = "unreadable"
+    while True:
+        reap()
+        if state["status"] is not None:
+            outcome = "exit"
+            break
+        if pending:
+            outcome = "terminated"
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            outcome = "timeout"
+            break
+        if os.path.exists(marker):
+            outcome = "cap-killed"
+            break
+        time.sleep(POLL_SECONDS)
+    rounds, killed, empty = kill_tree()
+    if outcome == "terminated":
+        code = 128 + pending[0]
+    elif state["status"] is not None:
+        code = shell_status(state["status"])
+    else:
+        code = 128 + signal.SIGKILL
+    publish(outcome=outcome, status=code,
+            child_status="unknown" if state["status"] is None else shell_status(state["status"]),
+            kill_rounds=rounds, killed_processes=killed, tree_empty=str(empty).lower())
+    return code
+
+
+try:
+    exit_code = main()
+except BaseException as error:
+    exit_code = 2
+    try:
+        publish(outcome="error", detail=f"{type(error).__name__}: {error}")
+        rounds, killed, empty = kill_tree()
+        publish(kill_rounds=rounds, killed_processes=killed, tree_empty=str(empty).lower())
+    except BaseException:
+        pass
+os._exit(exit_code)
+PY
+)"
 
 # ---------------------------------------------------------------- run
 # A FIFO, NOT PROCESS SUBSTITUTION. `2> >(capper …)` is not waited on, so the
@@ -1124,6 +1648,8 @@ fi
 rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null || die "cannot create fifo $fifo"
 if [ -n "$detached_report_file" ]; then
     capper_parent_monitors=yes
+elif [ "$runner_state" = IN_PLACE ]; then
+    capper_parent_monitors=in-place
 else
     capper_parent_monitors=no
 fi
@@ -1406,6 +1932,12 @@ elif [ "$runner_state" = APPLIED ]; then
     "${runner[@]}" "$hermit_bin" "$@" 2>"$fifo"
     rc=$?
     runner_rc=$rc
+elif [ "$runner_state" = IN_PLACE ]; then
+    in_place_outcome_file="$log_dir/.in-place-outcome"
+    "$in_place_python" -c "$in_place_supervisor_py" "$$" "$in_place_deadline_secs" \
+        "$log_file.cap-fired" "$in_place_outcome_file" "$hermit_bin" "$@" 2>"$fifo"
+    rc=$?
+    runner_rc=$rc
 else
     "$hermit_bin" "$@" 2>"$fifo"
     rc=$?
@@ -1438,13 +1970,50 @@ field elapsed_secs  "$elapsed"
 field bytes_written "$wrote"
 field truncated     "$trunc"
 field runner_exit_code "$runner_rc"
+in_place_outcome=""
+if [ "$runner_state" = IN_PLACE ]; then
+    # The supervisor's verdict plays the part systemd's unit Result plays below:
+    # it is what the supervisor DID, not an inference from the exit code.
+    declare -A in_place_record=()
+    if [ -f "$in_place_outcome_file" ]; then
+        while IFS='=' read -r key value; do
+            case "$key" in
+                outcome|detail|status|child_status|kill_rounds|killed_processes|tree_empty|oom_score_adj)
+                    in_place_record[$key]="$value" ;;
+            esac
+        done < "$in_place_outcome_file"
+    fi
+    in_place_outcome="${in_place_record[outcome]:-}"
+    in_place_detail="${in_place_record[detail]:+ (${in_place_record[detail]})}"
+    field in_place.outcome "${in_place_outcome:-UNREADABLE}$in_place_detail"
+    field in_place.cleanup "tree_empty=${in_place_record[tree_empty]:-unknown} kill_rounds=${in_place_record[kill_rounds]:-unknown} killed_processes=${in_place_record[killed_processes]:-unknown}"
+    field in_place.oom_score_adj "${in_place_record[oom_score_adj]:-unknown}"
+    case "$in_place_outcome" in
+        refused|error)
+            say "IN-PLACE SUPERVISOR REFUSAL: ${in_place_record[detail]:-no detail}; the run's containment could not be armed or kept."
+            rc=2 ;;
+        exec-failed)
+            say "IN-PLACE EXEC FAILED: ${in_place_record[detail]:-no detail}." ;;
+        terminated)
+            say "INTERRUPTED: the in-place supervisor was signalled and killed the run's process tree (exit $rc)." ;;
+        "")
+            say "IN-PLACE SUPERVISOR LEFT NO VERDICT (exit $rc): whether the deadline or the cap fired cannot be confirmed." ;;
+    esac
+    if [ "${in_place_record[tree_empty]:-}" = false ]; then
+        say "IN-PLACE CLEANUP INCOMPLETE: processes of this run may still be alive after 30 seconds of SIGKILL."
+    fi
+fi
 if [ "$trunc" = true ]; then
     if [ "$detached_log_cap_killed" -eq 1 ] && [ "${killed:-}" != cgroup-killed ]; then
         killed="parent-cgroup-killed"
     fi
+    if [ "$in_place_outcome" = cap-killed ]; then
+        killed="in-place-tree-killed"
+    fi
     field killed_at_cap "${killed:-unknown}"
     # A distinct code, because "255" tells a caller nothing about WHY.
-    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_killed" -eq 1 ]; then
+    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_killed" -eq 1 ] \
+        || [ "${killed:-}" = in-place-tree-killed ]; then
         rc=125
     fi
     say "LOG CAP: the run hit the ${max_log_bytes}-byte cap (${killed:-unknown}). The log is INCOMPLETE by design; the kept bytes are the evidence."
@@ -1549,6 +2118,9 @@ if [ -n "$detached_report_file" ]; then
 fi
 if [ "$unit_result" = timeout ]; then
     say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
+    rc=124
+elif [ "$in_place_outcome" = timeout ]; then
+    say "DEADLINE: the run reached ${deadline} and its process tree was killed by the in-place supervisor (child exit $rc)."
     rc=124
 elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
      && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then

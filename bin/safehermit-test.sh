@@ -22,6 +22,11 @@
 # from a longer-bound reference still running at independent eight-second
 # containment before trusting the original fifteen-second subject deadline.
 set -uo pipefail
+# These cases assert the systemd-run path and its degraded fallback. Pin it, so
+# a caller already inside an enclosing memory and CPU box does not silently
+# switch every case to the in-place mode that bin/safehermit-boxing-test.py
+# covers.
+export SAFEHERMIT_BOXING=force
 SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safehermit"
 HB="${SAFEHERMIT_TEST_BIN:-$(dirname "$SH")/hermit}"
 pass=0; fail=0

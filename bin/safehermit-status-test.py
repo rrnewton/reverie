@@ -43,6 +43,9 @@ def run(wrapper, retained, selected=None):
                 str(folder / 'report'), sys.executable, '-c', payload, name]
         environment = dict(os.environ)
         environment['SAFEHERMIT_LOG_ROOT'] = str(folder / 'logs')
+        # This asserts the systemd path, so it must not run in place when the
+        # caller happens to be inside an enclosing memory and CPU box.
+        environment['SAFEHERMIT_BOXING'] = 'force'
         record = {'argv': argv, 'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   'expected_caller_status': wanted, 'expected_runner_status': runner,
                   'expected_exec_main_code': code, 'expected_exec_main_status': status,

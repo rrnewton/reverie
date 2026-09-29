@@ -226,6 +226,7 @@ def _run(
     post_run_sleep: float = 0,
     replacement_source: Path | None = None,
     replacement_target: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     overall_deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
     operation_deadline = overall_deadline - CLEANUP_RESERVE_SECONDS
@@ -254,6 +255,7 @@ def _run(
             "FAKE_REPLACEMENT_TARGET": str(replacement_target or ""),
         }
     )
+    env.update(extra_env or {})
     safehermit = SAFEHERMIT
     if reference_failure:
         # Fault injection is confined to a test-only helper copy. Production
@@ -723,6 +725,41 @@ def test_short_success_keeps_real_terminal_accounting() -> None:
         # _run also requires the exact owned unit and cgroup to be gone.
 
 
+def test_already_boxed_caller_still_gets_its_own_accounted_unit() -> None:
+    # A caller inside a cgroup with both a memory limit and a CPU quota would
+    # normally run in place, but detached accounting needs a unit of its own.
+    # The run must still be launched as that unit, and say it leaves the box.
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        cgroup_root = temporary / "cgroup"
+        (cgroup_root / "box" / "agent").mkdir(parents=True)
+        (cgroup_root / "cgroup.controllers").write_text("memory cpu\n")
+        (cgroup_root / "box" / "memory.max").write_text("8589934592\n")
+        (cgroup_root / "box" / "cpu.max").write_text("400000 100000\n")
+        proc_file = temporary / "proc-self-cgroup"
+        proc_file.write_text("0::/box/agent\n")
+        completed = _run(
+            temporary, report, metrics_mode="real", command="exit 0",
+            extra_env={
+                "SAFEHERMIT_BOXING": "auto",
+                "SAFEHERMIT_TEST_CGROUP_ROOT": str(cgroup_root),
+                "SAFEHERMIT_TEST_PROC_SELF_CGROUP": str(proc_file),
+            },
+        )
+        assert completed.returncode == 0, completed
+        assert (
+            "safehermit: boxing=SYSTEMD_RUN:already boxed by /box (memory.max=8589934592, "
+            "cpu.max=400000 100000), but --sh-resource-report needs its own accounted unit, "
+            "so this run LEAVES that cgroup"
+        ) in completed.stderr, completed.stderr
+        assert "in_place.outcome" not in completed.stderr, completed.stderr
+        fields = _fields(report)
+        assert fields["unit"] == f"safehermit-{fields['run_id']}", fields
+        assert fields["memory_peak_bytes"].isdigit(), fields
+        assert (temporary / "runner-rc.txt").read_text() == "0"
+
+
 def test_reference_acquisition_failure_prevents_payload() -> None:
     with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
         temporary = Path(raw)
@@ -1176,6 +1213,7 @@ def main() -> int:
         signal.signal(handled_signal, _handle_suite_signal)
     tests = (
         test_short_success_keeps_real_terminal_accounting,
+        test_already_boxed_caller_still_gets_its_own_accounted_unit,
         test_reference_acquisition_failure_prevents_payload,
         test_reference_loss_refuses_and_retires_payload,
         test_reference_loss_after_real_metrics_refuses_publication,

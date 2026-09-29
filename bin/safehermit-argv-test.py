@@ -41,6 +41,9 @@ def main():
         environment = os.environ.copy()
         environment["SAFEHERMIT_ARG_SENTINEL"] = "must-remain-an-environment-value"
         environment["SAFEHERMIT_LOG_ROOT"] = str(Path(temporary) / "logs")
+        # This asserts the systemd path, so it must not run in place when the
+        # caller happens to be inside an enclosing memory and CPU box.
+        environment["SAFEHERMIT_BOXING"] = "force"
         result = subprocess.run(
             [
                 str(wrapper),

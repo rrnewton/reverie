@@ -382,6 +382,8 @@ validate: compat-envelope-fullcorpus
 # Hermit invocation. The definition-of-done build above supplies the exact
 # release binary needed by the legacy end-to-end suite; the detached-resource
 # suite supplies its own bounded fixtures and refuses leaked transient units.
+# The boxing suite covers the already-boxed check and the in-place mode with a
+# fake cgroup tree and fake systemd tools, so it needs neither.
 check-safehermit-tests:
 	@test -x hermit/target/release/hermit || { \
 		echo 'ERROR: make validate must build hermit/target/release/hermit before safehermit tests.' >&2; \
@@ -390,6 +392,7 @@ check-safehermit-tests:
 	@timeout --signal=TERM --kill-after=5s 300s \
 		env SAFEHERMIT_TEST_BIN="$(CURDIR)/hermit/target/release/hermit" bin/safehermit-test.sh
 	@timeout --signal=TERM --kill-after=5s 300s python3 bin/safehermit-resource-test.py
+	@timeout --signal=TERM --kill-after=5s 300s python3 bin/safehermit-boxing-test.py
 
 doctor:
 	@scripts/doctor.sh all
