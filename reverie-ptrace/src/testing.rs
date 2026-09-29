@@ -56,6 +56,39 @@ pub fn timer_overflow_records_expired() -> u64 {
     crate::timer::OVERFLOW_RECORDS_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of precise timer events this process has recorded as skid
+/// overshoots because a stop other than their notification decided them
+/// past their delivery point while the notification was already queued for
+/// the thread: held back by the guest's signal mask, or, with the signal
+/// unblocked, by an overflow interrupt so late that the stop's own signal
+/// was queued too and dequeued first. A stop past the target whose event's
+/// notification was lost, or cannot be told from a lost one (without
+/// overflow records), is recorded as a skid overshoot but not counted here.
+/// Concurrent tests in one process share the count.
+pub fn precise_events_overtaken_with_notification_queued() -> u64 {
+    crate::timer::OVERTAKEN_WITH_NOTIFICATION_QUEUED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Takes the events counted by
+/// [`precise_events_overtaken_with_notification_queued`] since the last call,
+/// as each one's clock target and the thread's clock at the stop that
+/// overtook it, the first 1024 at most. Concurrent tests in one process
+/// share the list.
+pub fn take_precise_events_overtaken_with_notification_queued() -> Vec<(u64, u64)> {
+    std::mem::take(
+        &mut *crate::timer::OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+/// The number of timer signals this process has discarded at their
+/// signal-delivery stop because a stop before it had cancelled their event.
+/// Concurrent tests in one process share the count.
+pub fn cancelled_timer_signals_discarded() -> u64 {
+    crate::timer::CANCELLED_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Checks that each of a run's precise timer events that a PMU notification
 /// delivered fired at its target, `target` RCBs past its request, except
 /// where Reverie witnessed a skid overshoot: `witnesses` is the change in
