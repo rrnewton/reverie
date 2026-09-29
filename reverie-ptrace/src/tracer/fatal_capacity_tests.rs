@@ -13,6 +13,7 @@ pub(super) mod fatal_capacity_tests {
     thread_local! {
         static FINISHED: std::cell::RefCell<Option<FinishedObservations>> = const { std::cell::RefCell::new(None) };
         static REPORTED_FINISHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static RETIREMENT: std::cell::RefCell<Option<CapacityRetirement>> = const { std::cell::RefCell::new(None) };
     }
 
     pub(crate) fn record_finished(stop: &FatalTaskStop) {
@@ -26,6 +27,120 @@ pub(super) mod fatal_capacity_tests {
                 ));
             }
         });
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CapacityFault {
+        None,
+        RetainSixOwners,
+        HoldOneExitHook,
+    }
+
+    struct CapacityRetirement {
+        root: Option<Pid>,
+        registered: usize,
+        completed: usize,
+        expected_child_status: ExitStatus,
+        waiter: Option<std::task::Waker>,
+        steady_fds: Option<usize>,
+        fault: CapacityFault,
+        // Only the explicit negative control retains real descriptor owners.
+        retained: Vec<Arc<FatalTaskStop>>,
+        held_hook: bool,
+        release_hook: bool,
+        hook_waiter: Option<std::task::Waker>,
+    }
+
+    pub(crate) fn record_registered(task: &Arc<FatalTaskStop>) {
+        RETIREMENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot.as_mut() else { return };
+            if state.registered == 0 {
+                assert_eq!(Some(task.tid), state.root, "first registration is the root");
+            } else {
+                assert_ne!(Some(task.tid), state.root, "root registered twice");
+                if state.fault == CapacityFault::RetainSixOwners && state.retained.len() < 6 {
+                    state.retained.push(Arc::clone(task));
+                }
+            }
+            state.registered = state.registered.checked_add(1).unwrap();
+            assert!(
+                state.registered <= TASKS + 1,
+                "extra capacity task registration"
+            );
+        });
+    }
+
+    pub(crate) fn record_body_dropped(tid: Pid, status: Option<ExitStatus>) {
+        let waiter = RETIREMENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot.as_mut() else {
+                return None;
+            };
+            assert_ne!(Some(tid), state.root, "root cannot publish a child receipt");
+            assert_eq!(
+                status,
+                Some(state.expected_child_status),
+                "child did not complete naturally"
+            );
+            state.completed = state.completed.checked_add(1).unwrap();
+            assert!(
+                state.completed <= TASKS,
+                "extra child-body completion receipt"
+            );
+            state.waiter.take()
+        });
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
+    }
+
+    async fn all_child_bodies_dropped() {
+        // One publisher continuation exists per successful ordinary child
+        // wrapper. Each such body registered once before it ran. The root has
+        // no wrapper and stays stopped in its final marker. Together the two
+        // checked counts establish this fixture's complete child set without
+        // matching reusable numeric TIDs or serializing earlier iterations.
+        futures::future::poll_fn(|cx| {
+            RETIREMENT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let state = slot.as_mut().unwrap();
+                state.waiter = Some(cx.waker().clone());
+                if state.completed != TASKS {
+                    return std::task::Poll::Pending;
+                }
+                assert_eq!(state.registered, TASKS + 1);
+                FINISHED.with(|finished| {
+                    let finished = finished.borrow();
+                    let records = finished.as_ref().unwrap();
+                    assert_eq!(records.len(), TASKS);
+                    assert!(
+                        records.iter().all(|record| {
+                            Some(Pid::from_raw(record.0)) != state.root
+                                && record.1
+                                && record.2
+                                && record.3
+                        }),
+                        "child receipt preceded terminal retirement or consuming hooks"
+                    );
+                });
+                state.waiter = None;
+                std::task::Poll::Ready(())
+            })
+        })
+        .await;
+    }
+
+    fn release_hook_for_rescue() {
+        let waiter = RETIREMENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.release_hook = true;
+            state.hook_waiter.take()
+        });
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
     }
 
     const TASKS: usize = 96;
@@ -85,13 +200,96 @@ pub(super) mod fatal_capacity_tests {
             );
             REPORTED_FINISHED.with(|reported| reported.set(end));
             guest.send_rpc((args.arg0, fds)).await;
+            if args.arg0 == TASKS - 1 {
+                // Preserve all original immediate samples and their overlap.
+                // Only the final steady-state predicate changes phase: the
+                // root remains alive here until every child body has dropped.
+                all_child_bodies_dropped().await;
+                let steady_fds = fs::read_dir("/proc/self/fd")
+                    .map_err(anyhow::Error::new)?
+                    .count();
+                RETIREMENT.with(|slot| {
+                    assert!(
+                        slot.borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .steady_fds
+                            .replace(steady_fds)
+                            .is_none()
+                    );
+                });
+                eprintln!(
+                    "capacity retirement sample: iteration={}, fds={steady_fds}, root_alive=true",
+                    args.arg0
+                );
+            }
             Ok(0)
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            tid: Pid,
+            _: &G,
+            _: (),
+            _: ExitStatus,
+        ) -> Result<(), Error> {
+            let hold = RETIREMENT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let state = slot.as_mut().unwrap();
+                if state.fault == CapacityFault::HoldOneExitHook
+                    && Some(tid) != state.root
+                    && !state.held_hook
+                {
+                    state.held_hook = true;
+                    true
+                } else {
+                    false
+                }
+            });
+            if hold {
+                futures::future::poll_fn(|cx| {
+                    RETIREMENT.with(|slot| {
+                        let mut slot = slot.borrow_mut();
+                        let state = slot.as_mut().unwrap();
+                        state.hook_waiter = Some(cx.waker().clone());
+                        if state.release_hook {
+                            state.hook_waiter = None;
+                            std::task::Poll::Ready(())
+                        } else {
+                            std::task::Poll::Pending
+                        }
+                    })
+                })
+                .await;
+            }
+            Ok(())
         }
     }
 
     async fn isolated_capacity(threads: bool, deadline: u64) {
         FINISHED.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
         REPORTED_FINISHED.with(|reported| reported.set(0));
+        let fault = match std::env::var("REVERIE_FATAL_CAPACITY_FAULT").as_deref() {
+            Err(std::env::VarError::NotPresent) => CapacityFault::None,
+            Ok("retain-six-owners") => CapacityFault::RetainSixOwners,
+            Ok("hold-one-exit-hook") => CapacityFault::HoldOneExitHook,
+            other => panic!("unknown capacity fault: {other:?}"),
+        };
+        RETIREMENT.with(|slot| {
+            *slot.borrow_mut() = Some(CapacityRetirement {
+                root: None,
+                registered: 0,
+                completed: 0,
+                expected_child_status: ExitStatus::Exited(if threads { 0 } else { 7 }),
+                waiter: None,
+                steady_fds: None,
+                fault,
+                retained: Vec::new(),
+                held_hook: false,
+                release_hook: false,
+                hook_waiter: None,
+            })
+        });
         let mut original: libc::rlimit = unsafe { std::mem::zeroed() };
         assert_eq!(
             unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
@@ -132,6 +330,7 @@ pub(super) mod fatal_capacity_tests {
         .expect("capacity spawn exceeded the original shared deadline")
         .unwrap();
         let root = tracer.guest_pid();
+        RETIREMENT.with(|slot| slot.borrow_mut().as_mut().unwrap().root = Some(root));
         let termination = tracer.termination_handle().unwrap();
         let samples = tracer.gref.0.clone();
         let mut owner = Box::pin(tracer.wait_with_output_completion());
@@ -152,10 +351,22 @@ pub(super) mod fatal_capacity_tests {
         // since the last marker, before rescue can add observations.
         let finished = FINISHED.with(|slot| slot.borrow().as_ref().unwrap().clone());
         eprintln!("capacity original checkpoint: finished_after_hooks={finished:?}");
+        let steady_fds = RETIREMENT.with(|slot| {
+            let slot = slot.borrow();
+            let state = slot.as_ref().unwrap();
+            eprintln!(
+                "capacity retirement checkpoint: registered={}, completed={}, retained={}, held_hook={}, steady_fds={:?}",
+                state.registered, state.completed, state.retained.len(), state.held_hook, state.steady_fds
+            );
+            state.steady_fds
+        });
         let complete = match result {
             Ok(ToolRunOutcome::Complete(done)) => done,
             other => {
                 let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                // Negative-control release happens only after the original
+                // outcome and checkpoint are captured. Rescue remains failure.
+                release_hook_for_rescue();
                 termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
                 let rescued = match other {
                     Err(_) => tokio::time::timeout_at(rescue_deadline.into(), &mut owner).await,
@@ -197,7 +408,8 @@ pub(super) mod fatal_capacity_tests {
             "retired tasks retained descriptors: {captured:?}"
         );
         assert!(
-            captured[TASKS - 1].1 <= baseline + 2,
+            steady_fds.expect("final marker did not observe every child-body retirement")
+                <= baseline + 2,
             "descriptor count did not return to the initial steady state"
         );
         assert_reaped("capacity root", root);
@@ -228,6 +440,73 @@ pub(super) mod fatal_capacity_tests {
             "isolated reduced-NOFILE capacity predicate failed: {status}"
         );
         let _remaining = fatal_remaining(deadline);
+    }
+
+    fn capacity_negative_control(fault: &str, failures: &[&str], checkpoint: &str) -> String {
+        let name = "tracer::tests::fatal_capacity_tests::retired_threads_release_descriptors_under_reduced_nofile";
+        // Enter the same isolated predicate directly. Its original shared 3s
+        // deadline still begins before this re-exec; retain the literal red.
+        let deadline = fatal_monotonic_ns() + 3_000_000_000;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env("REVERIE_FATAL_CAPACITY_TEST", name)
+            .env("REVERIE_FATAL_CAPACITY_DEADLINE_NS", deadline.to_string())
+            .env("REVERIE_FATAL_CAPACITY_FAULT", fault)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        eprintln!(
+            "capacity injected control: fault={fault}, literal_status={}\n{stderr}",
+            output.status
+        );
+        eprintln!(
+            "capacity injected child stdout begin\n{stdout}\ncapacity injected child stdout end"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(101),
+            "injected control did not fail: {stderr}"
+        );
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("capacity marker:"))
+                .count(),
+            TASKS
+        );
+        assert!(
+            stderr.contains(checkpoint),
+            "wrong retirement boundary: {stderr}"
+        );
+        assert!(
+            failures.iter().any(|failure| stderr.contains(failure)),
+            "wrong original predicate failed: {stderr}"
+        );
+        stderr
+    }
+
+    #[test]
+    fn retained_child_owners_falsify_capacity_bound() {
+        let stderr = capacity_negative_control(
+            "retain-six-owners",
+            &[
+                "retired tasks retained descriptors",
+                "descriptor count did not return to the initial steady state",
+            ],
+            "capacity retirement checkpoint: registered=97, completed=96, retained=6, held_hook=false, steady_fds=Some(",
+        );
+        assert!(!stderr.contains("capacity rescue only:"));
+    }
+
+    #[test]
+    fn nonretiring_child_hook_falsifies_original_deadline() {
+        let stderr = capacity_negative_control(
+            "hold-one-exit-hook",
+            &["capacity did not complete under the original shared 3s deadline"],
+            "capacity retirement checkpoint: registered=97, completed=95, retained=0, held_hook=true, steady_fds=None",
+        );
+        assert!(stderr.contains("capacity rescue only: completed=true"));
     }
 
     #[tokio::test(flavor = "current_thread")]
