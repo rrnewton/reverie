@@ -1186,6 +1186,91 @@ def test_committed_namespace_tracks_event_correction_with_unchanged_record_id(tm
             ns.verify_origin(old["parent"], old["terminal"])
 
 
+@pytest.mark.parametrize("first_call", ["shared-row", "other-row"])
+def test_committed_namespace_refuses_a_row_carried_by_two_original_events(tmp_path: Path, first_call: str):
+    # Two envelopes carry one identical row, so no single original event can be
+    # named. select() must refuse on the call that builds its identity index
+    # and on every later call that reuses it, whichever row is selected first.
+    shared = _producer_selector_row(tmp_path)
+    other = _producer_selector_row(tmp_path, run_id="other-run", record_id="other-record")
+    original = _producer_selector_event(shared, tmp_path)
+    twin = copy.deepcopy(original)
+    twin["event_id"] = "second-envelope-same-row"
+    unrelated = _producer_selector_event(other, tmp_path)
+    write_events(tmp_path, original, twin, unrelated)
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        assert len(ns.rows()) == 2  # the shared row projects once
+        if first_call == "other-row":
+            assert ns.select(**_producer_selector_args(other))["terminal"]["event_id"] == unrelated["event_id"]
+        for _ in range(2):
+            with pytest.raises(ValueError, match="terminal has ambiguous original events"):
+                ns.select(**_producer_selector_args(shared))
+        selected = ns.select(**_producer_selector_args(other))
+        assert selected["terminal"]["event_id"] == unrelated["event_id"]
+        ns.verify_origin(selected["parent"], selected["terminal"])
+        with pytest.raises(ValueError, match="terminal has ambiguous original events"):
+            ns.select(**_producer_selector_args(shared))
+        with pytest.raises(ValueError, match="terminal has ambiguous original events"):
+            ns.terminals(repo="hermit")
+
+
+def test_committed_namespace_repeated_selects_return_each_rows_own_event(tmp_path: Path):
+    # Interleaved and repeated selections, including a correction chain, must
+    # each resolve to the row's own original event and pass verify_origin().
+    rows = [_producer_selector_row(tmp_path, run_id=f"run-{index}", record_id=f"record-{index}",
+                                   result="pass" if index % 2 else "fail")
+            for index in range(4)]
+    older = _producer_selector_row(tmp_path, run_id="chain", record_id="chain-old")
+    newer = _producer_selector_row(tmp_path, run_id="chain", record_id="chain-new", corrects="chain-old")
+    events = [_producer_selector_event(row, tmp_path) for row in (*rows, older, newer)]
+    write_events(tmp_path, *events)
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        first_selection: dict[int, dict] = {}
+        for index in (2, 0, 3, 1, 2, 0):
+            selected = ns.select(**_producer_selector_args(rows[index]))
+            assert selected["row"] == rows[index]
+            assert selected["terminal"]["event_id"] == events[index]["event_id"]
+            assert selected["terminal"]["record_id"] == rows[index]["record_id"]
+            assert first_selection.setdefault(index, selected) == selected
+            ns.verify_origin(selected["parent"], selected["terminal"])
+        chained = ns.select(**_producer_selector_args(newer))
+        assert chained["terminal"]["event_id"] == events[-1]["event_id"]
+        ns.verify_origin(chained["parent"], chained["terminal"])
+        with pytest.raises(ValueError, match="terminal differs from requested record_id"):
+            ns.select(**_producer_selector_args(older))
+        assert [item["terminal"]["event_id"] for item in ns.terminals(repo="hermit")] == [
+            events[-1]["event_id"], *(event["event_id"] for event in events[:4])]
+
+
+def test_committed_namespace_projection_identity_error_raises_from_every_select(tmp_path: Path, monkeypatch):
+    # An identity failure on another row's projection must raise from each
+    # select(), and the failed calls must leave no partial index: a partial
+    # index would omit run-2's projection and refuse it as ambiguous.
+    rows = [_producer_selector_row(tmp_path, run_id=f"run-{index}", record_id=f"record-{index}")
+            for index in range(3)]
+    events = [_producer_selector_event(row, tmp_path) for row in rows]
+    write_events(tmp_path, *events)
+    commit = _commit_namespace(tmp_path)
+    real = validate_rows._admission_event_identity
+
+    def failing(value):
+        if isinstance(value, dict) and "legacy_row" not in value and value.get("record_id") == "record-1":
+            raise RuntimeError("projection identity failed")
+        return real(value)
+
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        monkeypatch.setattr(validate_rows, "_admission_event_identity", failing)
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="projection identity failed"):
+                ns.select(**_producer_selector_args(rows[2]))
+        monkeypatch.setattr(validate_rows, "_admission_event_identity", real)
+        selected = ns.select(**_producer_selector_args(rows[2]))
+        assert selected["terminal"]["event_id"] == events[2]["event_id"]
+        assert ns.select(**_producer_selector_args(rows[1]))["terminal"]["event_id"] == events[1]["event_id"]
+
+
 @pytest.mark.parametrize("kind", ["conflict", "truncated", "symlink", "gitlink", "branch"])
 def test_committed_namespace_refuses_opposing_full_namespace(tmp_path: Path, kind: str):
     source = _producer_selector_row(tmp_path)

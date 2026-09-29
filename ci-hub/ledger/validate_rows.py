@@ -1804,6 +1804,8 @@ class CommittedValidationNamespace:
                     })
         self._events = {event["event_id"]: event for event in items}
         self._projections = list(_row_projections(items, root=state))
+        # Identity -> event ids of self._projections, built by the first select().
+        self._projection_event_ids: dict[str, list[str]] | None = None
         self._rows = _rows_from_events(items, root=state)
         self._origin_cache: dict[tuple[str, str, str], bytes] = {}
 
@@ -1858,8 +1860,17 @@ class CommittedValidationNamespace:
     def select(self, **selector) -> dict:
         row = _select_finalized_row(self._rows, **selector)
         identity = _admission_event_identity(row)
-        terminals = {event_id for event_id, projected in self._projections
-                     if _admission_event_identity(projected) == identity}
+        if self._projection_event_ids is None:
+            # select() runs once per census run in the finalized-proof capture,
+            # again in verify_origin, and once per group in terminals().
+            # Serializing every projection inside each call made the capture
+            # O(selections x projections). The projections are never mutated
+            # after construction, so serialize each one once.
+            index: dict[str, list[str]] = {}
+            for event_id, projected in self._projections:
+                index.setdefault(_admission_event_identity(projected), []).append(event_id)
+            self._projection_event_ids = index
+        terminals = set(self._projection_event_ids.get(identity, ()))
         if len(terminals) != 1:
             raise ValueError("committed validation terminal has ambiguous original events")
         event_id = next(iter(terminals))
