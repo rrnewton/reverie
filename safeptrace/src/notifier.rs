@@ -456,6 +456,10 @@ struct Event {
     /// Monotonic activity state owned by this exact Event generation.
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
+    #[cfg(test)]
+    worker_done_wait_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    worker_done_lock_contended: Mutex<Option<mpsc::Sender<()>>>,
     worker_done_changed: Condvar,
     worker_done_waiters: ExitWaiters,
 
@@ -684,6 +688,10 @@ impl Event {
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
+            #[cfg(test)]
+            worker_done_wait_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_done_lock_contended: Mutex::new(None),
             worker_done_changed: Condvar::new(),
             worker_done_waiters: ExitWaiters::default(),
             cleanup_cancel_requested: AtomicBool::new(false),
@@ -1425,10 +1433,28 @@ impl Event {
         finishing
     }
 
+    fn lock_worker_done(&self) -> MutexGuard<'_, ()> {
+        #[cfg(test)]
+        if let Some(contended) = self.worker_done_lock_contended.lock().take() {
+            if let Some(guard) = self.worker_done_lock.try_lock() {
+                return guard;
+            }
+            // Receipt of an actual failed lock attempt, not a timed inference
+            // that a publisher has probably started. Default test Events and
+            // all production Events use the ordinary lock below.
+            let _ = contended.send(());
+        }
+        self.worker_done_lock.lock()
+    }
+
     fn mark_worker_done(&self) {
+        // Pair predicate publication with wait_worker_done's check-to-wait
+        // mutex, then release it before invoking wakers or other lock domains.
+        let guard = self.lock_worker_done();
         let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
         debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
         self.worker_done_changed.notify_all();
+        drop(guard);
         self.worker_done_waiters.wake_all();
         self.notify_wait_owner_change();
     }
@@ -1444,6 +1470,15 @@ impl Event {
         loop {
             if self.worker_state.load(Ordering::Acquire) == WORKER_DONE {
                 return true;
+            }
+            #[cfg(test)]
+            if let Some(pause) = self.worker_done_wait_pause.lock().take() {
+                let _ = pause.captured.send(());
+                // Same causal pause as the integration control: after the
+                // predicate check with the actual wait mutex still held.
+                let _ = pause
+                    .resume
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -3549,6 +3584,7 @@ impl Future for ExitFuture {
 #[cfg(test)]
 mod test {
     include!("stop_observation_tests.rs");
+    include!("worker_retirement_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
