@@ -834,6 +834,62 @@ pub(crate) mod test_support {
             lock(&self.state).next = u64::MAX;
         }
 
+        /// A running guest registers asynchronously with this test's controller.
+        /// Registration and handle publication are prerequisites, not evidence
+        /// of kernel entry: the existing exact syscall observer supplies that.
+        pub(crate) fn observe_registered_test_read(
+            &self,
+            task: SignalTaskIdentity,
+            request: SyscallRequest,
+            image_generation: u64,
+            status_flags: i32,
+        ) -> BlockedRead {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let operation = loop {
+                let operation = {
+                    let state = lock(&self.state);
+                    assert_eq!(state.image_generation, image_generation);
+                    assert!(state.errors.is_empty());
+                    assert!(state.root_terminal.is_none());
+                    assert!(state.operations.len() <= 1);
+                    state.operations.values().next().cloned()
+                };
+                if let Some(operation) = operation {
+                    assert_eq!(operation.identity.task, task);
+                    assert_eq!(operation.identity.request, request);
+                    assert_eq!(operation.identity.image_generation, image_generation);
+                    assert_eq!(operation.identity.generation, 1);
+                    assert!(!operation.identity.worker);
+                    let snapshot = operation.snapshot();
+                    assert_eq!(snapshot.outcome, PENDING);
+                    assert_eq!(snapshot.error_number, 0);
+                    assert!(operation.terminal().is_none());
+                    if snapshot.handle_published == 1 {
+                        break operation;
+                    }
+                    assert_eq!(snapshot.handle_published, 0);
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "guest did not publish the expected zero-read operation"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            // Derive this fd from the exact operation's owned File, never from
+            // an assumed host descriptor number or an unrelated /proc task.
+            let host_fd = lock(&operation.endpoint)
+                .as_ref()
+                .expect("registered read lost its owned endpoint")
+                .as_raw_fd();
+            assert_eq!(operation.identity.host_fd, host_fd);
+            assert!(status_flags >= 0);
+            assert_eq!(status_flags & libc::O_NONBLOCK, 0);
+            assert_eq!(unsafe { libc::fcntl(host_fd, libc::F_GETFL) }, status_flags);
+            let observed = self.observe_blocked_test_read(task, request, host_fd);
+            assert!(Arc::ptr_eq(&observed.operation, &operation));
+            observed
+        }
+
         pub(crate) fn observe_blocked_test_read(
             &self,
             task: SignalTaskIdentity,
