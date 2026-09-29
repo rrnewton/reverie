@@ -3618,6 +3618,21 @@ print(json.dumps({
     }
 
 
+def test_parity_readers_are_captured_and_bound_not_ambient():
+    # https://github.com/rrnewton/hermit/issues/3301: the parity summary
+    # checker and the ledger store it classifies with are generator bytes.
+    modules = website._modules()
+    summary = modules.export_inputs._parity_reader()
+    assert summary is modules.export_inputs.parity_summary
+    assert Path(summary.__file__) == website.REPOSITORY / "ci-hub/compatibility-website/parity_summary.py"
+    store = summary.parity_ledger_module()
+    assert Path(store.__file__) == website.REPOSITORY / "ci-hub/series/parity_ledger.py"
+    assert store is not sys.modules.get("ci_hub_series_parity_ledger")
+    for path in ("ci-hub/compatibility-website/parity_summary.py", "ci-hub/series/parity_ledger.py"):
+        assert path in website.STAGE_1_READER_PATHS
+        assert path in website.GENERATOR_PATHS
+
+
 def test_website_build_json_bound_admits_the_measured_proof_growth(tmp_path: Path) -> None:
     # 2026-09-28: a complete Stage 1 build at ledger 7d28c1f0 wrote a
     # 19,498,083-byte website build.json and the old 16 MiB reader bound then

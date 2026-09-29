@@ -670,6 +670,9 @@ def _opaque_projection_inputs(
                 "validation_ledger",
             }
         ),
+        # The ledger commit's parity summary; absent from historical inputs
+        # and from inputs exported before parity was captured.
+        optional=frozenset({"parity"}),
     )
     if canonical.get("schema_version") != 1:
         raise BuildRefused("canonical input schema_version must be 1")
@@ -1619,10 +1622,39 @@ def _build_provenance(
     return provenance
 
 
+def _parity_summary() -> Any:
+    """The exporter's parity summary checker (captured in the combined build)."""
+    return _modules().export_inputs._parity_reader()
+
+
+def _checked_parity(carriage: Any, series_commit: Any, label: str) -> dict[str, Any]:
+    """Admit one parity carriage read at the build's own ledger commit.
+
+    The summary must be `scorecard/parity.json` at exactly the ledger commit the
+    series rows came from, so the parity panel and the determinism figures
+    describe one ledger snapshot. Anything the checker refuses refuses the
+    build; nothing is repaired or dropped.
+    """
+    reader = _parity_summary()
+    try:
+        reader.validate_carriage(carriage)
+    except reader.ParitySummaryError as error:
+        raise BuildRefused(f"{label} is refused: {error}") from error
+    if series_commit is None:
+        raise BuildRefused(f"{label} has no series ledger commit to be read at")
+    if carriage["ledger_commit"] != series_commit:
+        raise BuildRefused(
+            f"{label} was read at ledger commit {carriage['ledger_commit']}, "
+            f"not the series commit {series_commit}"
+        )
+    return json.loads(_canonical_bytes(carriage))
+
+
 def _artifact_result(
     projection: Mapping[str, Any],
     reduced_bundle: Mapping[str, Any],
     provenance: Mapping[str, Any],
+    parity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest = _object(reduced_bundle["manifest"], "manifest")
     reduced = _object(reduced_bundle["reduced"], "reduced data")
@@ -1654,6 +1686,8 @@ def _artifact_result(
         "validation_history_row_count": counts["validation_history_row_count"],
         "validation_history_rows": projection["validation_history_rows"],
     }
+    if parity is not None:
+        runs["parity"] = parity
     cells = _join_manifest_data(reduced["cells"], manifest)
     output_counts = dict(_object(reduced["counts"], "reduced counts"))
     output_counts.update(
@@ -1846,9 +1880,18 @@ def _require_website_owned_text(value: Any) -> None:
 
 
 def _validated_output_runs(data: Mapping[str, Any]) -> dict[str, Any]:
-    runs = _exact_object(data.get("runs"), "runs", required=_RUN_FIELDS)
+    runs = _exact_object(
+        data.get("runs"), "runs", required=_RUN_FIELDS, optional=frozenset({"parity"})
+    )
     if runs.get("schema_version") != SCHEMA_VERSION:
         raise BuildRefused("runs.schema_version is unsupported")
+    if "parity" in runs:
+        provenance = _object(data.get("provenance"), "provenance")
+        canonical = _object(
+            provenance.get("canonical_input_provenance"),
+            "provenance.canonical_input_provenance",
+        )
+        _checked_parity(runs["parity"], canonical.get("series_commit"), "runs.parity")
     integer_fields = (
         "current_validation_run_row_count",
         "projection_admitted_physical_row_count",
@@ -2582,6 +2625,15 @@ def _build_from_captured(
                 "historical reader Hermit gitlink disagrees with the gitlink "
                 "recorded by the generator base commit"
             )
+    # Check the parity carriage before the projection runs, so a refused
+    # summary costs no projection.
+    parity = None
+    if "parity" in canonical_document.value:
+        parity = _checked_parity(
+            canonical_document.value["parity"],
+            canonical_provenance.get("series_commit"),
+            "canonical input parity",
+        )
     with phase("stage1.projection"):
         projection = _run_projection(
             manifest_document,
@@ -2601,7 +2653,7 @@ def _build_from_captured(
             commits,
         )
     with phase("stage1.validate"):
-        return _artifact_result(projection, reduced, provenance)
+        return _artifact_result(projection, reduced, provenance, parity)
 
 
 def build_data(

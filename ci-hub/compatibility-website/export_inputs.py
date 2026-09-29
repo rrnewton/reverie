@@ -33,12 +33,14 @@ CI_HUB = Path(__file__).resolve().parents[1]
 REPOSITORY = CI_HUB.parent
 LEDGER_DIR = CI_HUB / "ledger"
 SERIES_DIR = CI_HUB / "series"
+WEBSITE_DIR = CI_HUB / "compatibility-website"
 
 ledger_store: Any = None
 ledger_publisher: Any = None
 series_store: Any = None
 validation_ledger: Any = None
 finalized_proof: Any = None
+parity_summary: Any = None
 _AUTHORITY_IMPORT_READER_STATE: dict[str, Any] | None = None
 
 
@@ -62,6 +64,7 @@ _READER_PATHS = (
     Path("ci-hub/ci-hub"),
     Path("ci-hub/ci-hub.rs"),
     Path("ci-hub/compatibility-website/export_inputs.py"),
+    Path("ci-hub/compatibility-website/parity_summary.py"),
     Path("ci-hub/ledger/check-ledger-parses.rs"),
     Path("ci-hub/ledger/check-ledger-events.rs"),
     Path("ci-hub/ledger/ledger.py"),
@@ -88,6 +91,7 @@ _READER_PATHS = (
     Path("ci-hub/qualifying_receipt.py"),
     Path("ci-hub/series/check-series-rows.rs"),
     Path("ci-hub/series/finalized_proof.py"),
+    Path("ci-hub/series/parity_ledger.py"),
     Path("ci-hub/series/series.py"),
     Path("ci-hub/validate/final_validate_status.py"),
     Path("ci-hub/validate/flake_class.py"),
@@ -792,6 +796,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
     global series_store
     global validation_ledger
     global finalized_proof
+    global parity_summary
 
     before = reader_state()
     sys.path.insert(0, str(LEDGER_DIR))
@@ -828,6 +833,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
     series_store = loaded["series"]
     validation_ledger = loaded["validate_rows"]
     finalized_proof = loaded["finalized_proof"]
+    parity_summary = _load_parity_reader()
     return after
 
 
@@ -910,6 +916,95 @@ def _incomplete_data() -> list[dict[str, str]]:
             ),
         },
     ]
+
+
+def _load_parity_reader() -> Any:
+    path = WEBSITE_DIR / "parity_summary.py"
+    name = "compatibility_website_parity_summary"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ExportRefused("cannot load the parity summary reader")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as error:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise ExportRefused(f"cannot load the parity summary reader: {error}") from error
+    return module
+
+
+def _parity_reader() -> Any:
+    """`parity_summary.py`: the one checker of `scorecard/parity.json`.
+
+    The combined website build binds its captured copy here; everything else
+    loads it once from this checkout.
+    """
+    global parity_summary
+    if parity_summary is None:
+        parity_summary = _load_parity_reader()
+    return parity_summary
+
+
+def _parity_capture(ledger: Path, series_commit: str) -> dict[str, Any]:
+    """Carry the ledger commit's parity summary as its exact committed bytes.
+
+    hermit's scorecard writes `scorecard/parity.json` from the ledger's
+    `parity/` store and the mirror commits it beside the series, so it is read
+    at the same ledger commit as the series rows. The carriage also counts the
+    `parity/` and `parity-runs/` shards, so the website can tell a ledger with
+    no parity records from one whose records were never summarized. A summary
+    that breaks its contract refuses the export.
+    """
+    reader = _parity_reader()
+    summary_path = reader.LEDGER_PATH
+    listed = _git(
+        ledger,
+        ["ls-tree", "-r", "-z", series_commit, "--", summary_path, reader.ROW_STORE, reader.RUN_STORE],
+    )
+    summary_object = None
+    store_files = 0
+    run_marker_files = 0
+    for raw in listed.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            metadata, raw_path = raw.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode().split()
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ExportRefused(f"git returned malformed ls-tree entry {raw!r}") from error
+        relative = _safe_git_path(raw_path.decode(errors="strict"))
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise ExportRefused(
+                f"parity ledger path is not a regular blob: {relative} "
+                f"(mode={mode}, type={object_type})"
+            )
+        if not re.fullmatch(r"[0-9a-f]{40,64}", object_id):
+            raise ExportRefused(f"parity ledger path has invalid Git object id: {relative}")
+        top = PurePosixPath(relative).parts[0]
+        if relative == summary_path:
+            summary_object = object_id
+        elif top == reader.ROW_STORE:
+            store_files += 1
+        elif top == reader.RUN_STORE:
+            run_marker_files += 1
+        else:
+            raise ExportRefused(f"git listed an unrequested parity ledger path: {relative}")
+    try:
+        if summary_object is None:
+            return reader.absent_carriage(series_commit, store_files, run_marker_files)
+        data = _git(ledger, ["show", f"{series_commit}:{summary_path}"])
+        return reader.present_carriage(
+            series_commit, summary_object, data, store_files, run_marker_files
+        )
+    except reader.ParitySummaryError as error:
+        raise ExportRefused(
+            f"ledger commit {series_commit} {summary_path} is refused: {error}"
+        ) from error
 
 
 def _proof_reader() -> Any:
@@ -1305,9 +1400,11 @@ def build_export(
             ledger, series_commit, _snapshot_quarantine_paths(snapshot_root),
         ))
         sources = _provenance_sources(snapshot_root, git_files, mutable)
+        parity = _parity_capture(ledger, series_commit)
 
         result = {
             "incomplete_data": _incomplete_data(),
+            "parity": parity,
             "provenance": {
                 "parent_commit": commit,
                 "published_ref": commit if namespace is not None else published_ref,

@@ -2069,3 +2069,103 @@ def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commi
     assert absent["objects"] == {} and absent["missing_current_terminals"] == [selected["terminal"]]
     with pytest.raises(export_inputs.ExportRefused, match="full immutable"):
         export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"], series_commit="HEAD")
+
+
+# --- parity capture (https://github.com/rrnewton/hermit/issues/3301) -----------------
+
+PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
+
+
+def _parity_run_1953_summary_bytes() -> bytes:
+    """RUN 1953's 192 sources, wrapped and summarized as the ledger would hold them."""
+    reader = export_inputs._parity_reader()
+    ledger_store = reader.parity_ledger_module()
+    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
+    batch = ledger_store.build_batch(
+        sources, producer="validate",
+        run_id="validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
+        hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T21:40:00Z",
+        source_tree_dirty=False, host="fixturehost",
+    )
+    rows = [row for row in batch if row["event_type"] == "parity.record"]
+    return reader.encode_summary(reader.summarize_rows(rows, store_sha256="a" * 64))
+
+
+def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
+    ledger = repo / "hermit_test_ledger"
+    for relative, data in files.items():
+        path = ledger / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    git(ledger, "add", *sorted(files))
+    git(ledger, "commit", "-qm", "parity fixture")
+    git(ledger, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return git(ledger, "rev-parse", "HEAD")
+
+
+PARITY_SHARDS = {
+    "parity/rrnewton/fixturehost/2026-09.jsonl": b"{}\n",
+    "parity-runs/rrnewton/fixturehost/2026-09.jsonl": b"{}\n",
+}
+
+
+def test_export_without_parity_carries_an_absent_capture_not_zero(tmp_path: Path):
+    repo, commit = repository(tmp_path)
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    ledger_commit = result["provenance"]["series_commit"]
+    assert result["parity"] == export_inputs._parity_reader().absent_carriage(ledger_commit, 0, 0)
+    assert export_inputs._parity_reader().validate_carriage(result["parity"]) is None
+
+
+def test_export_carries_the_committed_parity_summary_bytes(tmp_path: Path):
+    repo, commit = repository(tmp_path)
+    data = _parity_run_1953_summary_bytes()
+    ledger_commit = _commit_ledger_parity(repo, {**PARITY_SHARDS, "scorecard/parity.json": data})
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    assert result["provenance"]["series_commit"] == ledger_commit
+    carriage = result["parity"]
+    assert carriage["present"] is True and carriage["ledger_commit"] == ledger_commit
+    assert carriage["summary_json"].encode() == data and carriage["bytes"] == len(data)
+    assert carriage["sha256"] == hashlib.sha256(data).hexdigest()
+    assert carriage["git_object"] == git(repo / "hermit_test_ledger", "rev-parse", f"{ledger_commit}:scorecard/parity.json")
+    assert (carriage["store_files"], carriage["run_marker_files"]) == (1, 1)
+    summary = export_inputs._parity_reader().validate_carriage(carriage)
+    assert summary["producers"][0]["line"] == (
+        "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
+        "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+    )
+
+
+def test_parity_records_without_a_summary_are_carried_as_unsummarized(tmp_path: Path):
+    repo, _commit = repository(tmp_path)
+    ledger_commit = _commit_ledger_parity(repo, PARITY_SHARDS)
+    carriage = export_inputs._parity_capture(repo / "hermit_test_ledger", ledger_commit)
+    assert carriage == export_inputs._parity_reader().absent_carriage(ledger_commit, 1, 1)
+
+
+def test_a_malformed_committed_parity_summary_refuses_the_export(tmp_path: Path):
+    repo, _commit = repository(tmp_path)
+    value = json.loads(_parity_run_1953_summary_bytes())
+    value["producers"][0]["total"]["matched"] = 1
+    data = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
+    ledger_commit = _commit_ledger_parity(repo, {**PARITY_SHARDS, "scorecard/parity.json": data})
+    with pytest.raises(
+        export_inputs.ExportRefused,
+        match=rf"ledger commit {ledger_commit} scorecard/parity\.json is refused: .*\.total: "
+              r"measured 175 is not matched \+ diverged",
+    ):
+        export_inputs._parity_capture(repo / "hermit_test_ledger", ledger_commit)
+
+
+def test_a_symlinked_parity_summary_is_refused(tmp_path: Path):
+    repo, _commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    (ledger / "scorecard").mkdir()
+    (ledger / "scorecard/parity.json").symlink_to("../series/.gitkeep")
+    git(ledger, "add", "scorecard/parity.json")
+    git(ledger, "commit", "-qm", "symlinked parity summary")
+    ledger_commit = git(ledger, "rev-parse", "HEAD")
+    with pytest.raises(export_inputs.ExportRefused,
+                       match=r"parity ledger path is not a regular blob: scorecard/parity\.json \(mode=120000"):
+        export_inputs._parity_capture(ledger, ledger_commit)

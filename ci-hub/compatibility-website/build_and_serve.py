@@ -96,6 +96,7 @@ GENERATOR_PATHS = (
     COORDINATOR_PATH,
     "ci-hub/compatibility-website/build_data.py",
     "ci-hub/compatibility-website/export_inputs.py",
+    "ci-hub/compatibility-website/parity_summary.py",
     "ci-hub/compatibility-website/reduce.py",
     "ci-hub/compatibility-website/render_page.py",
     "ci-hub/compatibility-website/nightly_publication.py",
@@ -113,6 +114,7 @@ GENERATOR_PATHS = (
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
     "ci-hub/series/finalized_proof.py",
+    "ci-hub/series/parity_ledger.py",
     "ci-hub/series/series.py",
     "ci-hub/validate/qualifying-receipt.json",
     "ci-hub/validate/retained-evidence-quarantine.json",
@@ -122,6 +124,7 @@ STAGE_1_READER_PATHS = (
     "ci-hub/ci-hub",
     "ci-hub/ci-hub.rs",
     "ci-hub/compatibility-website/export_inputs.py",
+    "ci-hub/compatibility-website/parity_summary.py",
     "ci-hub/ledger/check-ledger-parses.rs",
     "ci-hub/ledger/check-ledger-events.rs",
     "ci-hub/ledger/ledger.py",
@@ -148,6 +151,7 @@ STAGE_1_READER_PATHS = (
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
     "ci-hub/series/finalized_proof.py",
+    "ci-hub/series/parity_ledger.py",
     "ci-hub/series/series.py",
     "ci-hub/validate/final_validate_status.py",
     "ci-hub/validate/flake_class.py",
@@ -337,6 +341,8 @@ def _captured_reader_modules(
         "ledger",
         "series",
         "finalized_proof",
+        "parity_ledger",
+        "parity_summary",
         "flaky_cells",
         "flake_class",
         "gate_completeness",
@@ -368,6 +374,13 @@ def _captured_reader_modules(
         ledger = load("ledger", "ci-hub/ledger/ledger.py")
         series = load("series", "ci-hub/series/series.py")
         finalized_proof = load("finalized_proof", "ci-hub/series/finalized_proof.py")
+        parity_ledger = load("parity_ledger", "ci-hub/series/parity_ledger.py")
+        parity_summary = load(
+            "parity_summary", "ci-hub/compatibility-website/parity_summary.py"
+        )
+        # The captured summary checker classifies with the captured ledger
+        # store, never a second read of parity_ledger.py from disk.
+        parity_summary.parity_ledger_module = lambda: parity_ledger
         flaky_cells = load("flaky_cells", "ci-hub/validate/flaky_cells.py")
         flake_class = load("flake_class", "ci-hub/validate/flake_class.py")
         gate_completeness = load(
@@ -406,6 +419,8 @@ def _captured_reader_modules(
             "admission_paths": admission_paths,
             "series": series,
             "finalized_proof": finalized_proof,
+            "parity_ledger": parity_ledger,
+            "parity_summary": parity_summary,
             "validate_rows": validate_rows,
         }
     finally:
@@ -468,6 +483,7 @@ def _bind_export_authorities(
         export_inputs.ledger_publisher = readers["publisher"]
         export_inputs.series_store = readers["series"]
         export_inputs.validation_ledger = readers["validate_rows"]
+        export_inputs.parity_summary = readers["parity_summary"]
         return state
 
     def load_authorities() -> dict[str, Any]:
@@ -478,6 +494,9 @@ def _bind_export_authorities(
 
     export_inputs._load_authorities = load_authorities
     export_inputs._load_historical_authorities = load_historical_authorities
+    # The build and the renderer check a stored parity carriage through the
+    # exporter's reader, so bind the captured one before any of them runs.
+    export_inputs.parity_summary = readers["parity_summary"]
 
 
 @functools.cache

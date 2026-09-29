@@ -3376,8 +3376,13 @@ def test_backend_leaderboard_requires_typed_evidence_for_partial_credit() -> Non
     assert row["determinism"]["percentage"] is None
     assert row["parity"]["percentage"] is None
     source = render_page._backend_leaderboard(model)
-    for title in ("Determinism", "Det. w/partial", "Parity", "Parity w/partial"):
+    for title in ("Determinism", "Det. w/partial", "Parity (after determinism)", "Parity credit"):
         assert title in source
+    # The retired rerun parity no longer feeds the leaderboard: a build with
+    # no parity summary says so rather than showing a rerun-derived figure.
+    assert "Parity w/partial" not in source
+    assert "without parity evidence" not in source
+    assert source.count("no parity summary") == 2 * len(render_page._backend_rows(model))
     assert "0 / 1 cells" in source
     assert "without determinism evidence" in source
 
@@ -3579,11 +3584,13 @@ def test_backend_history_preserves_regression_then_explicit_gap() -> None:
     assert all(point["reference_cells"] == 1 for point in points.values())
     chart = render_page._backend_history_chart(model)
     assert 'aria-label="Show kvm determinism line"' in chart
-    assert "<code>kvm</code> parity (no data)" in chart
+    assert "<code>kvm</code> legacy-rerun parity (no data)" in chart
+    assert "<code>kvm</code> parity (no data)" not in chart
     assert 'stroke-dasharray="7 4"' in chart
     assert "Green percentage" in chart and "UTC" in chart
     assert "2026-09-01: 100.0% (1 / 1 recorded ptrace-result cells)" in chart
-    assert "Determinism percentage" in chart and "Parity percentage" in chart
+    assert "Determinism percentage" in chart and "Legacy-rerun parity percentage" in chart
+    assert "Dashed lines are legacy-rerun parity" in chart and 'href="#parity"' in chart
     assert "data-history-series-toggle" in chart
     assert "The chart remains visible without JavaScript" in chart
 
@@ -6372,3 +6379,73 @@ def test_writer_derived_recorded_population_keeps_failed_run_and_retry_verdicts(
         mutate(bad)
         with pytest.raises(render_page.RenderRefused):
             render_page._cell_evidence(bad)
+
+
+# --- parity panel (https://github.com/rrnewton/hermit/issues/3301) --------------------
+
+PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
+PARITY_LEDGER_COMMIT = "e" * 40
+PARITY_RUN_1953_LINE = (
+    "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
+    "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+)
+
+
+def _parity_carriage() -> dict[str, Any]:
+    reader = render_page._parity_reader()
+    ledger_store = reader.parity_ledger_module()
+    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
+    batch = ledger_store.build_batch(
+        sources, producer="validate",
+        run_id="validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
+        hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T21:40:00Z",
+        source_tree_dirty=False, host="fixturehost",
+    )
+    rows = [row for row in batch if row["event_type"] == "parity.record"]
+    data = reader.encode_summary(reader.summarize_rows(rows, store_sha256="a" * 64))
+    blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    return reader.present_carriage(PARITY_LEDGER_COMMIT, blob, data, 1, 1)
+
+
+def _data_with_parity(carriage: dict[str, Any]) -> dict[str, Any]:
+    data = representative_build_data()
+    data["provenance"]["canonical_input_provenance"].update(
+        series_repository="https://github.com/rrnewton/hermit_test_ledger.git",
+        series_commit=PARITY_LEDGER_COMMIT,
+        series_tree="d" * 40,
+    )
+    data["runs"]["parity"] = carriage
+    return data
+
+
+def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
+    data = _data_with_parity(_parity_carriage())
+    validated = _validated(data)
+    assert validated["runs"]["parity"] == data["runs"]["parity"]
+    files = render_page.render_site(_build(data), data)
+    overview = files["index.html"].decode()
+    assert '<section id="parity"><h2>Parity (measured after determinism)</h2>' in overview
+    assert f'<p class="parity-line"><code>{PARITY_RUN_1953_LINE}</code></p>' in overview
+    # The leaderboard reads the same summary, never the retired rerun figure.
+    assert "Parity w/partial" not in overview
+    # The panel follows the leaderboard and precedes the history chart.
+    assert overview.index('id="backends"') < overview.index('id="parity"') < overview.index('id="backend-history"')
+
+
+def test_build_data_refuses_parity_read_at_another_ledger_commit() -> None:
+    data = _data_with_parity(_parity_carriage())
+    data["provenance"]["canonical_input_provenance"]["series_commit"] = "f" * 40
+    module = render_page._writer()._build_data_module()
+    with pytest.raises(module.BuildRefused, match=f"runs.parity was read at ledger commit {PARITY_LEDGER_COMMIT}, "
+                                                  f"not the series commit {'f' * 40}"):
+        _validated(data)
+
+
+def test_build_data_refuses_a_tampered_parity_carriage() -> None:
+    carriage = _parity_carriage()
+    carriage["summary_json"] = carriage["summary_json"].replace('"matched": 0', '"matched": 1', 1)
+    data = _data_with_parity(carriage)
+    module = render_page._writer()._build_data_module()
+    with pytest.raises(module.BuildRefused, match=r"runs\.parity is refused: .*sha256 disagrees with the bytes carried"):
+        _validated(data)
