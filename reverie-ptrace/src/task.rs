@@ -3452,27 +3452,38 @@ impl<L: Tool + 'static> TracedTask<L> {
             // What of the event nothing else will drive, the single steps
             // toward it that the trap interrupted, a lost notification, or one
             // the injection took, is finished at the syscall's return, where
-            // the guest would have taken the notification. A guest signal the
-            // injection held is instead delivered as the guest resumes, by
-            // the resume itself, with no stop and no Tool callback. Its
-            // handler must run before the guest's next instruction, so the
-            // steps cannot come first, and stepping into the handler is not
-            // implemented: if there is anything to finish, the event is
-            // cancelled, and the Tool loses that preemption; otherwise the
-            // event is left as it was. This is a policy, not a stop's
-            // cancellation. Only a signal that Linux dequeues ahead of the
-            // step's SIGTRAP is held: a synchronous one with a positive
+            // the guest would have taken the notification.
+            //
+            // A guest signal that the injection held is instead delivered as
+            // the guest resumes. Only a signal that Linux dequeues ahead of
+            // the step's SIGTRAP is held: a synchronous one with a positive
             // si_code, such as the SIGSYS of a seccomp filter that traps the
             // injected syscall. An asynchronous signal, such as SIGCHLD or
             // one from another process, comes after the step's SIGTRAP, and
-            // is reported at a later stop.
-            let task = match disregarded.or_else(|| self.timer.take_notification()) {
-                Some(_) if self.pending_signal.is_some() => {
-                    self.timer.retire()?;
-                    task
+            // is reported at a later stop. The held signal's handler must run
+            // before the guest's next instruction, so the steps cannot come
+            // first, and stepping into the handler is not implemented. The
+            // event is therefore cancelled here, at the trap's clock, whether
+            // or not anything was handed on, and the Tool loses that
+            // preemption: `Timer::retire` records the event as a skid
+            // overshoot if no stop has decided it and the guest has reached
+            // its delivery point, and ends the programming, so that no
+            // notification arrives in the handler. Without this, the
+            // injection's step SIGTRAP, which the kernel still reports as the
+            // guest resumes (`stale_private_step_trap`), would be the next
+            // stop: `handle_sigtrap` discards it without disregarding it, so
+            // its observation would decide the event at the same clock, and
+            // the event's notification would then be discarded as cancelled.
+            // That stop is one that no Tool sees and that still cancels
+            // (https://github.com/rrnewton/reverie/issues/746).
+            let task = if self.pending_signal.is_some() {
+                self.timer.retire()?;
+                task
+            } else {
+                match disregarded.or_else(|| self.timer.take_notification()) {
+                    Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
+                    None => task,
                 }
-                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                None => task,
             };
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,

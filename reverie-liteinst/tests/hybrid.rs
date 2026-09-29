@@ -3184,9 +3184,20 @@ async fn a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event() 
     assert!(live > 0, "no notification reached an injected syscall");
 }
 
+/// What the rt_sigreturn hook tests' Tools tell their global state.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum SigreturnHookTimerNote {
+    /// A timer request's round, and the guest's RCB clock at the request.
+    Request { round: u64, clock: u64 },
+    /// A timer event's round, and the guest's RCBs from its request.
+    TimerEvent { round: u64, rcbs: u64 },
+}
+
 #[derive(Debug, Default)]
 struct SigreturnHookTimerEvents {
     requests: AtomicU64,
+    /// The round of each timer request, and the guest's RCB clock at it.
+    request_clocks: std::sync::Mutex<Vec<(u64, u64)>>,
     /// The round of each timer event's request, and the guest's RCBs from
     /// the request to the event.
     timer_events: std::sync::Mutex<Vec<(u64, u64)>>,
@@ -3194,19 +3205,20 @@ struct SigreturnHookTimerEvents {
 
 #[reverie::global_tool]
 impl GlobalTool for SigreturnHookTimerEvents {
-    /// A timer event's round and RCBs from its request, or `None` for a
-    /// request.
-    type Request = Option<(u64, u64)>;
+    type Request = SigreturnHookTimerNote;
     type Response = ();
     /// The timer's RCBs from each request to its target.
     type Config = u64;
 
-    async fn receive_rpc(&self, _from: Tid, note: Option<(u64, u64)>) {
+    async fn receive_rpc(&self, _from: Tid, note: SigreturnHookTimerNote) {
         match note {
-            None => {
+            SigreturnHookTimerNote::Request { round, clock } => {
                 self.requests.fetch_add(1, Ordering::SeqCst);
+                self.request_clocks.lock().unwrap().push((round, clock));
             }
-            Some(event) => self.timer_events.lock().unwrap().push(event),
+            SigreturnHookTimerNote::TimerEvent { round, rcbs } => {
+                self.timer_events.lock().unwrap().push((round, rcbs))
+            }
         }
     }
 }
@@ -3235,8 +3247,11 @@ impl Tool for SigreturnHookTimerTool {
         assert_eq!(syscall.number(), Sysno::getpid);
         let (_, args) = syscall.into_parts();
         if args.arg0 == 1 {
-            *guest.thread_state_mut() = (guest.read_clock()?, args.arg1 as u64);
-            guest.send_rpc(None).await;
+            let (clock, round) = (guest.read_clock()?, args.arg1 as u64);
+            *guest.thread_state_mut() = (clock, round);
+            guest
+                .send_rpc(SigreturnHookTimerNote::Request { round, clock })
+                .await;
             guest.set_timer_precise(TimerSchedule::Rcbs(*guest.config()))?;
         }
         Ok(0x4242)
@@ -3245,7 +3260,9 @@ impl Tool for SigreturnHookTimerTool {
     async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
         let (clock, round) = *guest.thread_state();
         let rcbs = guest.read_clock().unwrap() - clock;
-        guest.send_rpc(Some((round, rcbs))).await;
+        guest
+            .send_rpc(SigreturnHookTimerNote::TimerEvent { round, rcbs })
+            .await;
     }
 }
 
@@ -3275,8 +3292,11 @@ impl Tool for ExitSeenTimerTool {
         assert_eq!(syscall.number(), Sysno::getpid);
         let (_, args) = syscall.into_parts();
         if args.arg0 == 1 {
-            *guest.thread_state_mut() = (guest.read_clock()?, args.arg1 as u64);
-            guest.send_rpc(None).await;
+            let (clock, round) = (guest.read_clock()?, args.arg1 as u64);
+            *guest.thread_state_mut() = (clock, round);
+            guest
+                .send_rpc(SigreturnHookTimerNote::Request { round, clock })
+                .await;
             guest.set_timer_precise(TimerSchedule::Rcbs(*guest.config()))?;
         }
         Ok(0x4242)
@@ -3285,7 +3305,9 @@ impl Tool for ExitSeenTimerTool {
     async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
         let (clock, round) = *guest.thread_state();
         let rcbs = guest.read_clock().unwrap() - clock;
-        guest.send_rpc(Some((round, rcbs))).await;
+        guest
+            .send_rpc(SigreturnHookTimerNote::TimerEvent { round, rcbs })
+            .await;
     }
 }
 
@@ -3304,6 +3326,31 @@ async fn run_sigreturn_hook_timer(
     after: u64,
     block_timer_signal: bool,
 ) -> (Vec<(u64, u64)>, u64) {
+    let run = run_sigreturn_hook_timer_overtaken(
+        rcbs,
+        before,
+        leads,
+        stride,
+        rounds,
+        after,
+        block_timer_signal,
+    )
+    .await;
+    (run.events, run.witnesses)
+}
+
+/// Runs `hybrid_sigreturn_hook_timer.c` as `run_sigreturn_hook_timer` does,
+/// and returns the rounds whose event was overtaken with its notification
+/// queued too.
+async fn run_sigreturn_hook_timer_overtaken(
+    rcbs: u64,
+    before: u64,
+    leads: u64,
+    stride: u64,
+    rounds: u64,
+    after: u64,
+    block_timer_signal: bool,
+) -> SigreturnHookTimerRun {
     run_sigreturn_hook_timer_args(
         rcbs,
         rounds,
@@ -3333,7 +3380,7 @@ async fn run_sigreturn_hook_timer_observed(
     observe_at: u64,
     observe_after: bool,
 ) -> (Vec<(u64, u64)>, u64) {
-    run_sigreturn_hook_timer_args(
+    let run = run_sigreturn_hook_timer_args(
         rcbs,
         rounds,
         &[
@@ -3347,23 +3394,39 @@ async fn run_sigreturn_hook_timer_observed(
             u64::from(observe_after),
         ],
     )
-    .await
+    .await;
+    (run.events, run.witnesses)
+}
+
+/// A run of `hybrid_sigreturn_hook_timer.c`.
+struct SigreturnHookTimerRun {
+    /// Each timer event's round and RCBs from its request, in order.
+    events: Vec<(u64, u64)>,
+    /// The skid overshoots Reverie witnessed.
+    witnesses: u64,
+    /// The rounds whose event a stop other than its notification decided,
+    /// and Reverie witnessed, past its target while its notification was
+    /// already queued, each with the guest's RCBs from the round's request
+    /// to that stop, in the order witnessed (see
+    /// `reverie_ptrace::testing::precise_events_overtaken_with_notification_queued`).
+    overtaken: Vec<(u64, u64)>,
 }
 
 /// Runs `hybrid_sigreturn_hook_timer.c` with `args`, for `rounds` signals,
-/// with a precise timer `rcbs` RCBs past each request. Returns each timer
-/// event's round and RCBs from its request, and the skid overshoots Reverie
-/// witnessed.
+/// with a precise timer `rcbs` RCBs past each request.
 async fn run_sigreturn_hook_timer_args(
     rcbs: u64,
     rounds: u64,
     args: &[u64],
-) -> (Vec<(u64, u64)>, u64) {
+) -> SigreturnHookTimerRun {
     let (_directory, guest) = compile_fixture("hybrid_sigreturn_hook_timer.c");
     let mut command = Command::new(guest);
     command.args(args.iter().map(u64::to_string));
     // Process global; see `assert_at_target_unless_witnessed`.
     let _ = reverie::take_skid_overshoot_count();
+    let overtaken_before =
+        reverie_ptrace::testing::precise_events_overtaken_with_notification_queued();
+    let _ = reverie_ptrace::testing::take_precise_events_overtaken_with_notification_queued();
     let (output, global) = tokio::time::timeout(
         Duration::from_secs(120),
         LiteinstBackend::run_host_with_output_and_preload::<SigreturnHookTimerTool>(
@@ -3376,6 +3439,10 @@ async fn run_sigreturn_hook_timer_args(
     .expect("the rt_sigreturn hook guest did not complete")
     .unwrap();
     let witnesses = reverie::take_skid_overshoot_count();
+    let counted = reverie_ptrace::testing::precise_events_overtaken_with_notification_queued()
+        - overtaken_before;
+    let overtaken =
+        reverie_ptrace::testing::take_precise_events_overtaken_with_notification_queued();
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -3388,7 +3455,34 @@ async fn run_sigreturn_hook_timer_args(
         events.windows(2).all(|pair| pair[0].0 < pair[1].0),
         "{events:?}"
     );
-    (events, witnesses)
+    assert_eq!(
+        overtaken.len() as u64,
+        counted,
+        "every overtaken event must be listed: {overtaken:?}"
+    );
+    // Each overtaken event is one of this run's requests, the one whose
+    // target, `rcbs` past it, is the event's.
+    let requests = global.request_clocks.into_inner().unwrap();
+    let overtaken = overtaken
+        .iter()
+        .map(|&(target, clock)| {
+            let &(round, request) = requests
+                .iter()
+                .find(|&&(_, request)| request + rcbs == target)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the event overtaken at clock {clock} must have the target of one of \
+                         this run's requests, not {target}: {requests:?}"
+                    )
+                });
+            (round, clock - request)
+        })
+        .collect();
+    SigreturnHookTimerRun {
+        events,
+        witnesses,
+        overtaken,
+    }
 }
 
 /// The timer's RCBs from each handler's request to its target in the
@@ -3434,10 +3528,6 @@ async fn an_rt_sigreturn_hook_trap_keeps_the_timer_event() {
 /// EPYC 9D85, the event is cancelled from 109 branches before the keep point.
 const SIGRETURN_TRAP_BRANCHES: u64 = 200;
 
-/// How many times `sweep_sigreturn_hook_trap` runs its sweep, at most, when
-/// a notification later than the next stop cancels an event past its target.
-const SIGRETURN_SWEEP_ATTEMPTS: u32 = 3;
-
 /// Sweeps the rt_sigreturn hook's trap across `leads` distances from the
 /// handler's request, `before + j * stride` branches for `j` in `0..leads`,
 /// `repeats` times each, with the timer's target, `SIGRETURN_RCBS` past the
@@ -3462,15 +3552,20 @@ const SIGRETURN_SWEEP_ATTEMPTS: u32 = 3;
 /// witnessed (see `assert_at_target_unless_witnessed`). Returns the last
 /// distance at which the event fired.
 ///
-/// The one exception is host timing: a notification that arrives more than
-/// the skid margin late can arrive after the next round's first stop, which
-/// then cancels the event past its target, witnessed, and that round's
-/// distance seems to cancel. Then the run has more witnesses than events past
-/// the target, which no rule of Reverie's produces (every other witness is an
-/// event fired past its target), and the sweep runs again, up to
-/// `SIGRETURN_SWEEP_ATTEMPTS` times in all. The last attempt is checked in
-/// full whatever its witnesses, so a change that makes such witnesses every
-/// time still fails the test.
+/// The one exception is host timing, and the run identifies it by its cause
+/// rather than tolerating it: the notification of a kept event can be
+/// serviced so late that the next round's first stop, the guest's own
+/// signal, is dequeued before it, and that stop decides the event past its
+/// target, with its notification already queued, and witnesses it (see
+/// https://github.com/rrnewton/reverie/issues/726#issuecomment-5881024175).
+/// Reverie counts each such witness (see
+/// `reverie_ptrace::testing::precise_events_overtaken_with_notification_queued`),
+/// and the run must have exactly one witness per event fired past its target
+/// and per such overtaken event, and no other. An overtaken round must be one
+/// whose event was kept, which did not fire and was overtaken at or past its
+/// target, and every other repeat of its distance must have fired; the fate
+/// of each distance is read from the repeats that were not overtaken, of
+/// which there must be at least one. No round is run again.
 async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats: u64) -> u64 {
     let rcbs = SIGRETURN_RCBS;
     let keep_point = sigreturn_keep_point();
@@ -3479,35 +3574,70 @@ async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats
         "the sweep must start before the keep point, and every trap come before the target"
     );
     let rounds = leads * repeats;
-    let mut attempt = 1;
-    let (events, witnesses) = loop {
-        let (events, witnesses) =
-            run_sigreturn_hook_timer(rcbs, before, leads, stride, rounds, 2 * rcbs, false).await;
-        let late = events.iter().filter(|&&(_, clock)| clock > rcbs).count() as u64;
-        if witnesses <= late || attempt == SIGRETURN_SWEEP_ATTEMPTS {
-            break (events, witnesses);
-        }
+    let SigreturnHookTimerRun {
+        events,
+        witnesses,
+        overtaken,
+    } = run_sigreturn_hook_timer_overtaken(rcbs, before, leads, stride, rounds, 2 * rcbs, false)
+        .await;
+    let late = events.iter().filter(|&&(_, clock)| clock > rcbs).count() as u64;
+    assert_eq!(
+        witnesses,
+        late + overtaken.len() as u64,
+        "every witness must be an event fired past its target, or one overtaken with its \
+         notification queued: {late} fired late, overtaken {overtaken:?}, events {events:?}"
+    );
+    if !overtaken.is_empty() {
         eprintln!(
-            "attempt {attempt}: {} of {witnesses} witnessed events were cancelled past the \
-             target, by a notification later than the next stop; the sweep runs again",
-            witnesses - late
+            "{} events were overtaken with their notification queued, by round and RCBs from \
+             its request: {overtaken:?}",
+            overtaken.len()
         );
-        attempt += 1;
-    };
+    }
     let fired: std::collections::BTreeMap<u64, u64> = events.iter().copied().collect();
+    let overtaken_rounds: std::collections::BTreeMap<u64, u64> =
+        overtaken.iter().copied().collect();
+    assert_eq!(
+        overtaken_rounds.len(),
+        overtaken.len(),
+        "no round may be overtaken twice: {overtaken:?}"
+    );
+    for (&round, &clock) in &overtaken_rounds {
+        assert!(
+            round < rounds && !fired.contains_key(&round) && clock >= rcbs,
+            "an overtaken round's event must not fire, and must be overtaken at or past its \
+             target {rcbs}: round {round} at {clock}, events {events:?}"
+        );
+    }
     let fates: Vec<bool> = (0..leads)
         .map(|j| {
-            let fate = fired.contains_key(&j);
-            for repeat in 1..repeats {
+            let distance = before + j * stride;
+            let repeats: Vec<u64> = (0..repeats).map(|repeat| j + repeat * leads).collect();
+            let counted: Vec<u64> = repeats
+                .iter()
+                .copied()
+                .filter(|round| !overtaken_rounds.contains_key(round))
+                .collect();
+            assert!(
+                !counted.is_empty(),
+                "a trap {distance} branches past the handler's request must meet its fate in \
+                 at least one round not overtaken: rounds {repeats:?}, overtaken {overtaken:?}"
+            );
+            let fate = fired.contains_key(&counted[0]);
+            for round in &counted[1..] {
                 assert_eq!(
-                    fired.contains_key(&(j + repeat * leads)),
+                    fired.contains_key(round),
                     fate,
-                    "every trap {} branches past the handler's request must meet one fate: \
-                     fired in rounds {:?}",
-                    before + j * stride,
+                    "every trap {distance} branches past the handler's request must meet one \
+                     fate: fired in rounds {:?}, overtaken {overtaken:?}",
                     fired.keys().collect::<Vec<_>>()
                 );
             }
+            assert!(
+                fate || counted.len() == repeats.len(),
+                "only a kept event can be overtaken, yet the trap {distance} branches past the \
+                 handler's request cancelled it: rounds {repeats:?}, overtaken {overtaken:?}"
+            );
             fate
         })
         .collect();
@@ -3538,7 +3668,7 @@ async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats
         last_fired + stride
     );
     let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
-    assert_at_target_unless_witnessed(&clocks, rcbs, witnesses);
+    assert_at_target_unless_witnessed(&clocks, rcbs, witnesses - overtaken.len() as u64);
     last_fired
 }
 
@@ -3622,18 +3752,38 @@ async fn the_rt_sigreturn_hook_keep_point_does_not_depend_on_the_skid_margin() {
 // guest runs past the target. The next round's signal overtakes the event,
 // and Reverie witnesses a skid overshoot for it; the last round's event is
 // still undecided when the thread exits, and its exit must witness it too,
-// once, so that every round is witnessed and nothing fires.
+// once, so that every round is witnessed and nothing fires. Each overtaking
+// stop finds the event's notification queued, held back by the blocked
+// signal, and Reverie counts it so (which the sweeps rely on to identify a
+// notification held back by host latency instead); the exit cannot read the
+// pending signals and does not.
 #[tokio::test(flavor = "current_thread")]
 async fn an_event_kept_across_an_rt_sigreturn_hook_trap_and_overtaken_is_witnessed_once() {
     reverie_ptrace::ret_without_perf!();
     let rcbs = SIGRETURN_RCBS;
     let rounds = 16;
-    let (events, witnesses) =
-        run_sigreturn_hook_timer(rcbs, 5_000, 1, 0, rounds, 2 * rcbs, true).await;
+    let SigreturnHookTimerRun {
+        events,
+        witnesses,
+        overtaken,
+    } = run_sigreturn_hook_timer_overtaken(rcbs, 5_000, 1, 0, rounds, 2 * rcbs, true).await;
     assert_eq!(events, [], "no notification can deliver an event");
     assert_eq!(
         witnesses, rounds,
         "each round's kept event was overtaken, and must be witnessed once"
+    );
+    assert_eq!(
+        overtaken
+            .iter()
+            .map(|&(round, _)| round)
+            .collect::<Vec<_>>(),
+        (0..rounds - 1).collect::<Vec<_>>(),
+        "the next round's stop overtook each round's event but the last, with its notification \
+         queued: {overtaken:?}"
+    );
+    assert!(
+        overtaken.iter().all(|&(_, clock)| clock >= rcbs),
+        "{overtaken:?}"
     );
 }
 
@@ -3689,15 +3839,16 @@ async fn an_rt_sigreturn_hook_trap_past_a_delivered_event_is_not_witnessed() {
 }
 
 // Each handler requests an event, with the timer's signal blocked, and then
-// makes a getpid that the Tool sees, short of the target, which cancels the
-// event. The rt_sigreturn hook trap comes well past the target, where
+// makes a getpid that the Tool sees, short of the target, which decides the
+// event: the Tool requests nothing at it, so the event is cancelled, and its
+// status stays Armed, since the timer's signal, which the cancelled event's
+// programming still raises, is blocked and makes no stop before the trap.
+// The rt_sigreturn hook trap comes well past the target, where
 // `disregard_stop_before_period` retires the event. A stop the Tool saw had
 // already decided the event before the target, so nothing may be witnessed,
-// and nothing fires. The timer's signal is blocked so that the notification,
-// which the cancelled event's programming still raises, does not decide the
-// event again before the trap.
+// and nothing fires. (`Timer::retire` must not record an Armed event.)
 #[tokio::test(flavor = "current_thread")]
-async fn an_rt_sigreturn_hook_trap_past_the_target_of_a_cancelled_event_is_not_witnessed() {
+async fn an_rt_sigreturn_hook_trap_past_an_event_a_seen_stop_decided_is_not_witnessed() {
     reverie_ptrace::ret_without_perf!();
     let rounds = 16;
     for (rcbs, observe_at) in [(11_000, 500), (SIGRETURN_RCBS, 5_000)] {
@@ -3716,6 +3867,42 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_of_a_cancelled_event_is_not_w
             witnesses, 0,
             "a stop the Tool saw cancelled each event {observe_at} RCBs after its request, \
              short of its target {rcbs}, and nothing may witness it later"
+        );
+    }
+}
+
+// As above, but with the timer's signal unblocked: the getpid that the Tool
+// sees, short of the target, cancels the event, and the notification that
+// its programming still raises at the target, inside the handler, makes a
+// stop that finds the event cancelled, and discards the signal, so the event
+// is Cancelled when the rt_sigreturn hook trap comes well past the target.
+// `Timer::retire` must not record a Cancelled event either: nothing may be
+// witnessed, nothing fires, and every round's signal is discarded as a
+// cancelled event's, none delivered.
+#[tokio::test(flavor = "current_thread")]
+async fn an_rt_sigreturn_hook_trap_past_a_cancelled_event_is_not_witnessed() {
+    reverie_ptrace::ret_without_perf!();
+    let rounds = 16;
+    for (rcbs, observe_at) in [(11_000, 500), (SIGRETURN_RCBS, 5_000)] {
+        let discarded_before = reverie_ptrace::testing::cancelled_timer_signals_discarded();
+        let run = run_sigreturn_hook_timer_args(
+            rcbs,
+            rounds,
+            &[2 * rcbs, rounds, 1_000, 1, 0, 0, observe_at, 0],
+        )
+        .await;
+        let discarded =
+            reverie_ptrace::testing::cancelled_timer_signals_discarded() - discarded_before;
+        assert_eq!(run.events, [], "the cancelled timer must not fire");
+        assert_eq!(
+            run.witnesses, 0,
+            "a stop the Tool saw cancelled each event {observe_at} RCBs after its request, \
+             short of its target {rcbs}, and nothing may witness it later"
+        );
+        assert_eq!(run.overtaken, [], "no event reached its target undecided");
+        assert_eq!(
+            discarded, rounds,
+            "each round's notification must find its event cancelled"
         );
     }
 }
@@ -3773,6 +3960,29 @@ async fn run_held_signal_hook_timer(
     observe_at: u64,
     block_timer_signal: bool,
 ) -> (Vec<(u64, u64)>, u64) {
+    run_held_signal_hook_timer_handler(
+        rcbs,
+        before,
+        rounds,
+        after,
+        observe_at,
+        block_timer_signal,
+        0,
+    )
+    .await
+}
+
+/// As `run_held_signal_hook_timer`, with the SIGSYS handler running
+/// `handler_branches` branches before it returns.
+async fn run_held_signal_hook_timer_handler(
+    rcbs: u64,
+    before: u64,
+    rounds: u64,
+    after: u64,
+    observe_at: u64,
+    block_timer_signal: bool,
+    handler_branches: u64,
+) -> (Vec<(u64, u64)>, u64) {
     let (_directory, guest) = compile_fixture("hybrid_held_signal_hook_timer.c");
     let mut command = Command::new(guest);
     command.args([
@@ -3781,6 +3991,7 @@ async fn run_held_signal_hook_timer(
         after.to_string(),
         observe_at.to_string(),
         u64::from(block_timer_signal).to_string(),
+        handler_branches.to_string(),
     ]);
     // Process global; see `assert_at_target_unless_witnessed`.
     let _ = reverie::take_skid_overshoot_count();
@@ -3812,10 +4023,12 @@ async fn run_held_signal_hook_timer(
 }
 
 // An unsubscribed hook trap whose injected syscall ends at a guest signal,
-// which Reverie holds for the guest's resume, calls `Timer::retire` only for
-// an event that the trap left unfinished. An event delivered on time, before
-// the trap, and one that a stop the Tool sees cancelled before its target,
-// are neither: the trap past their old targets must not witness them.
+// which Reverie holds for the guest's resume, cancels the timer event with
+// `Timer::retire` whatever its state, and `Timer::retire` records only an
+// event that no stop has decided. An event delivered on time, before the
+// trap, and one that a stop the Tool sees cancelled before its target, whose
+// notification then finds it cancelled, have both been decided: the trap
+// past their old targets must not witness them.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_signal_past_a_delivered_or_cancelled_event_is_not_witnessed() {
     reverie_ptrace::ret_without_perf!();
@@ -3858,14 +4071,16 @@ const HELD_SIGNAL_STEPS_TEST: &str =
 // getpid hook's own return path and the round's lead, past it. At a skid
 // margin of 1000, as on AMD processors, the timer is delivered with an
 // artificial signal at the request, the steps start there, and the trap
-// interrupts them. The held SIGSYS's handler must run before the guest's
-// next instruction, so the steps cannot be continued first: the event must
-// be cancelled, unwitnessed since its target was not reached, and the handler
-// must run before the rt_sigsuspend returns, which the guest checks. At a
-// skid margin of 100, as on Intel processors, the trap comes before the
-// period and leaves the event, and the handler's rt_sigreturn hook trap,
-// which cancels any event this close to its target, cancels it instead. The
-// outcome is the same at both margins; each needs a process of its own.
+// interrupts them. At a skid margin of 100, as on Intel processors, the trap
+// comes before the period. At both, the held SIGSYS's handler must run
+// before the guest's next instruction, so nothing of the event can be
+// continued first: the trap cancels the event with `Timer::retire`,
+// unwitnessed since its target was not reached, and the handler must run
+// before the rt_sigsuspend returns, which the guest checks. (Were the trap
+// not to cancel it, the stale single step SIGTRAP of the injected syscall,
+// which Reverie discards, would be the next stop, and decide the event at
+// the same clock.) The outcome is the same at both margins; each needs a
+// process of its own.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_signal_at_a_hook_trap_in_the_timer_steps_cancels_the_event() {
     reverie_ptrace::ret_without_perf!();
@@ -3888,6 +4103,52 @@ async fn a_held_signal_at_a_hook_trap_in_the_timer_steps_cancels_the_event() {
                     run_held_signal_hook_timer(rcbs, before, rounds, 1_000, 0, false).await;
                 assert_eq!(events, [], "each event must be cancelled");
                 assert_eq!(witnesses, 0, "no event reached its target");
+            }
+        }
+    }
+}
+
+/// This test's name, which its re-runs select.
+const HELD_SIGNAL_LONG_HANDLER_TEST: &str =
+    "a_held_signal_cancels_the_event_before_a_handler_that_runs_past_the_target";
+
+// As above, with the SIGSYS handler running 5000 branches, past the target:
+// the trap's cancellation must also end the event's programming, so that no
+// notification arrives inside the handler, whose signal a stop would find
+// for a cancelled event and discard. Nothing fires, nothing is witnessed,
+// and no timer signal is discarded, at both skid margins.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_signal_cancels_the_event_before_a_handler_that_runs_past_the_target() {
+    reverie_ptrace::ret_without_perf!();
+    let rcbs = 400;
+    let rounds = 16;
+    match reverie_ptrace::testing::rerun_skid_margin() {
+        None => {
+            for margin in [100, 1_000] {
+                reverie_ptrace::testing::rerun_at_skid_margin(
+                    &[HELD_SIGNAL_LONG_HANDLER_TEST, "--exact"],
+                    margin,
+                    1,
+                    Duration::from_secs(300),
+                );
+            }
+        }
+        Some(_) => {
+            for before in [1, 150] {
+                let discarded_before = reverie_ptrace::testing::cancelled_timer_signals_discarded();
+                let (events, witnesses) = run_held_signal_hook_timer_handler(
+                    rcbs, before, rounds, 1_000, 0, false, 5_000,
+                )
+                .await;
+                let discarded =
+                    reverie_ptrace::testing::cancelled_timer_signals_discarded() - discarded_before;
+                assert_eq!(events, [], "each event must be cancelled");
+                assert_eq!(witnesses, 0, "no event reached its target undecided");
+                assert_eq!(
+                    discarded, 0,
+                    "the trap must end each event's programming, before the handler runs \
+                     past its target"
+                );
             }
         }
     }
