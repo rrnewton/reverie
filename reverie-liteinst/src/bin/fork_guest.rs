@@ -157,17 +157,27 @@ fn probe_unsafe_process_creation() {
             }
         }
         if result > 0 {
-            // Reap any accidentally created child before failing.
+            // The refusal failed and created a task. Kill it before reaping it
+            // rather than wait for it to exit: a child started on its own stack
+            // inside the forwarding code can spin forever, which would hang
+            // this probe instead of failing it. SIGKILL cannot be blocked, so
+            // the wait below is bounded.
+            let child = result as libc::pid_t;
+            assert_eq!(
+                unsafe { libc::kill(child, libc::SIGKILL) },
+                0,
+                "failed to kill unexpected {name} child {child}"
+            );
             let mut status = 0;
             loop {
-                let waited = unsafe { libc::waitpid(result as libc::pid_t, &mut status, 0) };
-                if waited == result as libc::pid_t {
+                let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+                if waited == child {
                     break;
                 }
                 assert!(
                     waited == -1
                         && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR),
-                    "failed to reap unexpected {name} child {result}"
+                    "failed to reap unexpected {name} child {child}"
                 );
             }
         }

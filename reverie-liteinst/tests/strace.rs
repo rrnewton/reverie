@@ -34,17 +34,87 @@ fn enable_concurrent_patch_testing(command: &mut Command) {
     );
 }
 
-fn run_guest(program: &str, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"))
+fn strace_guest_command(program: &str, arguments: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
+    command
         .env("REVERIE_LITEINST_PRELOAD", preload_path())
         .env(
             STRADDLER_STALENESS_TICKS_ENV,
             TEST_STRADDLER_STALENESS_TICKS,
         )
         .arg(program)
-        .args(arguments)
-        .output()
-        .unwrap()
+        .args(arguments);
+    command
+}
+
+fn run_guest(program: &str, arguments: &[&str]) -> Output {
+    strace_guest_command(program, arguments).output().unwrap()
+}
+
+/// Run `command` in a process group of its own and collect its output, killing
+/// the whole group once the command exits or `limit` passes, whichever is
+/// first. A command that has not exited within `limit` fails the calling test
+/// instead of stalling the test run. A task it leaves behind in the group is
+/// killed with the group, so it cannot hold the output pipes open; that alone
+/// does not fail the test.
+fn output_within(command: &mut Command, limit: Duration) -> Output {
+    fn read_to_end_in_background(
+        mut pipe: impl Read + Send + 'static,
+    ) -> thread::JoinHandle<Vec<u8>> {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).unwrap();
+            bytes
+        })
+    }
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let group = libc::pid_t::try_from(child.id()).unwrap();
+    let stdout = read_to_end_in_background(child.stdout.take().unwrap());
+    let stderr = read_to_end_in_background(child.stderr.take().unwrap());
+    let deadline = Instant::now() + limit;
+    let exited = loop {
+        // WNOWAIT leaves the exited command unreaped, so its pid still names
+        // the process group when the group is killed below.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                group as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(waited, 0, "waitid: {}", std::io::Error::last_os_error());
+        if unsafe { info.si_pid() } != 0 {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    // Kill anything left in the group, such as a task that a forwarded clone3
+    // created, so that the pipe readers reach end of file.
+    unsafe {
+        libc::kill(-group, libc::SIGKILL);
+    }
+    let status = child.wait().unwrap();
+    let output = Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    assert!(
+        exited,
+        "guest did not exit within {limit:?}; killed its process group: {output:?}"
+    );
+    output
 }
 
 fn run_compat_guest(program: &str, arguments: &[&str]) -> Output {
@@ -88,6 +158,16 @@ fn run_builtin_guest(tool: BuiltinTool, program: &str, arguments: &[&str]) -> Ou
 }
 
 fn run_compat_guest_with_event_pipe(program: &str, arguments: &[&str]) -> (Output, Vec<u8>) {
+    run_compat_guest_with_event_pipe_within(program, arguments, None)
+}
+
+/// As [`run_compat_guest_with_event_pipe`], but with `Some(limit)` the guest
+/// runs through [`output_within`].
+fn run_compat_guest_with_event_pipe_within(
+    program: &str,
+    arguments: &[&str],
+    limit: Option<Duration>,
+) -> (Output, Vec<u8>) {
     let mut descriptors = [0; 2];
     assert_eq!(
         unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
@@ -121,9 +201,20 @@ fn run_compat_guest_with_event_pipe(program: &str, arguments: &[&str]) -> (Outpu
         File::from(read_fd).read_to_end(&mut events).unwrap();
         events
     });
-    let child = command.spawn().unwrap();
-    drop(write_fd);
-    let output = child.wait_with_output().unwrap();
+    let output = match limit {
+        None => {
+            let child = command.spawn().unwrap();
+            drop(write_fd);
+            child.wait_with_output().unwrap()
+        }
+        Some(limit) => {
+            // The reader drains the event pipe while the guest runs, so holding
+            // this end open until the guest's group is gone cannot block it.
+            let output = output_within(&mut command, limit);
+            drop(write_fd);
+            output
+        }
+    };
     let events = reader.join().unwrap();
     (output, events)
 }
@@ -548,6 +639,12 @@ fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
     );
 }
 
+/// Longest a guest in the vfork/clone3 refusal test may run. The probe takes
+/// milliseconds. A regression that forwards one of the probed calls can leave
+/// the guest, or a task it created, running forever; the test must then fail
+/// rather than hang.
+const PROCESS_CREATION_PROBE_LIMIT: Duration = Duration::from_secs(30);
+
 // https://github.com/rrnewton/reverie/issues/758: a raw vfork that
 // strace/compatibility mode forwards from the dispatcher runs a child through
 // the parent's suspended dispatcher frames, and a forwarded clone3 can do the
@@ -565,7 +662,11 @@ fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
         libc::ENOTSUP
     );
 
-    let (compatibility, events) = run_compat_guest_with_event_pipe(guest, &["--unsafe-process"]);
+    let (compatibility, events) = run_compat_guest_with_event_pipe_within(
+        guest,
+        &["--unsafe-process"],
+        Some(PROCESS_CREATION_PROBE_LIMIT),
+    );
     assert!(compatibility.status.success(), "{compatibility:?}");
     assert_eq!(
         compatibility.stdout,
@@ -589,7 +690,10 @@ fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
         .collect();
     assert_eq!(pids.len(), 1, "only the parent may emit events:\n{events}");
 
-    let strace = run_guest(guest, &["--unsafe-process"]);
+    let strace = output_within(
+        &mut strace_guest_command(guest, &["--unsafe-process"]),
+        PROCESS_CREATION_PROBE_LIMIT,
+    );
     assert!(strace.status.success(), "{strace:?}");
     assert_eq!(strace.stdout, expected.as_bytes(), "{strace:?}");
     let stderr = String::from_utf8(strace.stderr).unwrap();
