@@ -297,6 +297,15 @@ fn nix_pid(pid: reverie::Pid) -> nix::unistd::Pid {
 /// Numbers whose site is never patched: executing them changes the table or
 /// the address space (P2 spec section 3 rule 3).
 ///
+/// Every number [`mapping_ranges`] can give a range for is one of them,
+/// `process_madvise` included (a unit test checks this). A site is patched
+/// after the Tool has handled its stop, but a tail-injected call runs only
+/// at the final resume, after the patch: a first `process_madvise` through
+/// a site, with `MADV_DONTNEED` on that site's own page and a pidfd for the
+/// caller, would drop the private copy of the page that has just received
+/// the patch. The site would then read `0f 05` while the table holds it as
+/// live.
+///
 /// This screens only the number a site carries at the stop that would patch
 /// it. A generic site (a libc `syscall()` wrapper, say) can later carry any
 /// number through its `int 0x80`. Such a call is routed like any other
@@ -322,6 +331,7 @@ fn is_patchable_number(nr: Sysno) -> bool {
             | Sysno::mprotect
             | Sysno::pkey_mprotect
             | Sysno::madvise
+            | Sysno::process_madvise
             | Sysno::shmat
             | Sysno::remap_file_pages
             | Sysno::seccomp
@@ -1867,6 +1877,43 @@ mod mapping_range_tests {
             ranges(Sysno::madvise, [0x5000_0010, 1, dontneed, 0, 0]),
             vec![(0x5000_0000, 0x5000_1000)]
         );
+    }
+
+    /// A site is never patched with a number whose call can change a mapping
+    /// (`process_madvise` among them). The numbers are the ones for which
+    /// `mapping_ranges` gives a range, over every syscall number: each of its
+    /// guards tests a flag bit, which all-ones arguments set and zero
+    /// arguments clear, so the two argument sets reach every arm.
+    #[test]
+    fn every_number_with_a_mapping_range_is_never_patched() {
+        assert!(!is_patchable_number(Sysno::process_madvise));
+        let reached: Vec<Sysno> = Sysno::iter()
+            .filter(|nr| {
+                [[0; 5], [usize::MAX; 5]]
+                    .into_iter()
+                    .any(|args| !ranges(*nr, args).is_empty())
+            })
+            .collect();
+        for nr in &reached {
+            assert!(
+                !is_patchable_number(*nr),
+                "{nr} can change a mapping, but its site may be patched"
+            );
+        }
+        // The arms found, so that the loop above cannot pass by finding none.
+        let mut arms = vec![
+            Sysno::mmap,
+            Sysno::mprotect,
+            Sysno::pkey_mprotect,
+            Sysno::munmap,
+            Sysno::madvise,
+            Sysno::process_madvise,
+            Sysno::remap_file_pages,
+            Sysno::mremap,
+            Sysno::shmat,
+        ];
+        arms.sort_by_key(|nr| nr.id());
+        assert_eq!(reached, arms);
     }
 }
 
