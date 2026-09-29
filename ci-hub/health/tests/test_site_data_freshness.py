@@ -911,7 +911,12 @@ def test_reason_strings_match_the_rust_builder():
     # Every reason the builder can produce: four literals, the manifest reason,
     # and hermit's projection reason (checked against hermit below).
     assert len(inserts) == 6, inserts
-    assert computed == ["cell_not_in_manifest_reason(&row.cell)", "reason.clone()"], computed
+    # Since ec3843c617b46fe545fb8439f9cf5f7e632a4975 the builder joins a retired
+    # Hermit test id to its successor before the manifest check, and both the
+    # check and the reason name that resolved id. The gate only parses the cell
+    # after the prefix, so it reports the successor id; the prefix is unchanged.
+    assert computed == ["cell_not_in_manifest_reason(&row.resolved_cell)", "reason.clone()"], computed
+    assert "if !allowed_cells.contains(&row.resolved_cell) {" in body
     assert literals == sorted([sdf.SCHEMA_REASON, sdf.NO_TERMINAL_REASON, sdf.COMMIT_MISMATCH_REASON, sdf.CELL_NOT_SELECTED_REASON])
     assert literals == sorted([SCHEMA, NO_TERMINAL, COMMIT_MISMATCH, CELL_NOT_SELECTED])
     assert "if let Some(reason) = &row.projection_reason {" in body
