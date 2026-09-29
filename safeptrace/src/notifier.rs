@@ -594,6 +594,8 @@ struct Event {
     worker_identity_retirement_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_echild_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    exit_report_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -1007,6 +1009,8 @@ impl Event {
             worker_identity_retirement_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_echild_pause: Mutex::new(None),
+            #[cfg(test)]
+            exit_report_pause: Mutex::new(None),
         }
     }
 
@@ -1077,18 +1081,39 @@ impl Event {
         }
     }
 
-    /// Publishes an out-of-band exit stop and records the statuses queued
-    /// before it.
+    /// Handles a reported exit stop: queues it if
+    /// [`Self::queue_exit_stop_after_exit`] takes it, and otherwise publishes
+    /// it out of band and records the statuses queued before it.
+    ///
+    /// The decision and the publication are made under one
+    /// `exit_publication` hold. A status waiter that retires a dead Exec
+    /// calls [`Self::forward_exit_stop_after_dead_exec`], which takes the
+    /// same lock, so it runs either before the decision, which then queues
+    /// this exit stop, or after the publication, which it then moves to the
+    /// FIFO. With the lock released in between, the forward could find no
+    /// exit stop and leave its forward for a later one, and this exit stop
+    /// would be published into an epoch no consumer claims.
     ///
     /// Lock order: takes `exit_publication`, then `status` while still holding
     /// it. The caller must not hold `status` (for example through a live
     /// status reservation): that would invert the order and can deadlock
     /// against another publisher.
     fn publish_exit_stop(&self, between_status_and_capability: impl FnOnce()) {
+        let publication = self.exit_publication.lock();
+        let Some(publication) = self.queue_exit_stop_after_exit(publication) else {
+            return;
+        };
+        #[cfg(test)]
+        if let Some(pause) = self.exit_report_pause.lock().take() {
+            // Test-only interval after the decision to publish and before
+            // the publication, with exit_publication held. Disconnection
+            // also releases the publisher.
+            let _ = pause.captured.send(());
+            let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+        }
         // Publish STOPPED first. A waiter that observes this half-published
         // state is already registered and returns Pending until AVAILABLE is
         // released and wake_all runs below.
-        let publication = self.exit_publication.lock();
         let previous = self.exit_status.compare_exchange(
             EXIT_PENDING,
             EXIT_STOPPED,
@@ -1188,8 +1213,9 @@ impl Event {
     }
 
     /// Queues an exit stop reported while an earlier exit stop of the same
-    /// exec epoch is still published. Returns false, and changes nothing, if
-    /// no exit stop is published.
+    /// exec epoch is still published. Returns the `exit_publication` guard,
+    /// and changes nothing, if no exit stop is published; the caller then
+    /// publishes this exit stop under that same guard.
     ///
     /// A tracee is in at most one ptrace stop at a time, so a real
     /// `PTRACE_EVENT_EXIT` report proves the earlier exit stop was left. With
@@ -1201,37 +1227,39 @@ impl Event {
     /// FIFO behind every status reported before it, as on a synchronous wait,
     /// so this PID's status waiter receives it in order. Nothing is retired.
     ///
-    /// Lock order: `exit_publication`, then `status`, as in
-    /// [`Event::publish_exit_stop`].
+    /// Lock order: `exit_publication` (held by the caller), then `status`,
+    /// as in [`Event::publish_exit_stop`].
     ///
     /// It also queues the exit stop, and changes no exit state, if a status
     /// waiter retired an Exec status of this tracee before this exit stop
     /// was reported; see [`Event::forward_exit_stop_after_dead_exec`].
-    fn queue_exit_stop_after_exit(&self, status: i32) -> bool {
-        let publication = self.exit_publication.lock();
+    fn queue_exit_stop_after_exit<'a>(
+        &'a self,
+        publication: MutexGuard<'a, ()>,
+    ) -> Option<MutexGuard<'a, ()>> {
         if self
             .exit_stop_follows_dead_exec
             .swap(false, Ordering::AcqRel)
         {
-            self.status.lock().pending.push_back(status);
+            self.status.lock().pending.push_back(PTRACE_EVENT_EXIT_STOP);
             drop(publication);
             self.status_changed.notify_all();
             self.status_waker.wake();
-            return true;
+            return None;
         }
         if self.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
-            return false;
+            return Some(publication);
         }
         self.exit_epoch.fetch_add(1, Ordering::AcqRel);
         self.exit_capability
             .store(EXIT_CAP_PENDING, Ordering::Release);
         self.exit_status.store(EXIT_PENDING, Ordering::Release);
-        self.status.lock().pending.push_back(status);
+        self.status.lock().pending.push_back(PTRACE_EVENT_EXIT_STOP);
         drop(publication);
         self.status_changed.notify_all();
         self.status_waker.wake();
         self.exit_waiters.wake_all();
-        true
+        None
     }
 
     /// Makes the exit stop that follows a retired dead Exec status reachable
@@ -1312,9 +1340,7 @@ impl Event {
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
         if status == PTRACE_EVENT_EXIT_STOP {
-            if !self.queue_exit_stop_after_exit(status) {
-                self.publish_exit_stop(|| {});
-            }
+            self.publish_exit_stop(|| {});
             return None;
         }
 
@@ -6022,6 +6048,92 @@ mod test {
         );
         event.update(libc::SIGKILL);
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(libc::SIGKILL)));
+    }
+
+    /// Interleaving X with the exit stop reported during the retirement: the
+    /// notifier worker has decided to publish the fatal signal's exit stop,
+    /// and has not yet published it, when a status waiter retires the dead
+    /// Exec. The waiter's forward must wait for that publication and then
+    /// move the exit stop to the FIFO, exactly as when it was published
+    /// first. If the forward runs in between, it finds no exit stop, leaves
+    /// its forward for a later one, and this exit stop is published for
+    /// epoch 1, which no consumer claims, while the FIFO stays empty.
+    #[test]
+    fn dead_epoch_exec_forwards_an_exit_stop_published_during_its_retirement() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let (handle, token) = dead_epoch_exec_at_front();
+        let event = handle.event();
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        let (captured, paused_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume) = mpsc::sync_channel(1);
+        *event.exit_report_pause.lock() = Some(BoundedTestPause { captured, resume });
+        let publisher_handle = handle.clone();
+        let publisher = thread::spawn(move || {
+            publisher_handle.event().update(PTRACE_EVENT_EXIT_STOP);
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the exit stop report did not reach its publication");
+
+        let (retired_tx, retired_rx) = mpsc::sync_channel(1);
+        let retirer_handle = handle.clone();
+        let retirer_token = token.clone();
+        let retirer = thread::spawn(move || {
+            let retired = matches!(
+                notifier_decode_front(&retirer_handle, &retirer_token),
+                Ok(StatusReturn::RetiredDeadExec)
+            );
+            let _ = retired_tx.send(retired);
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while event.status.lock().retired_dead_exec == 0 {
+            assert!(Instant::now() < deadline, "the dead Exec was not retired");
+            thread::sleep(Duration::from_millis(1));
+        }
+        let forwarded_before_publication = retired_rx.recv_timeout(Duration::from_millis(50)).ok();
+        resume_tx
+            .send(())
+            .expect("release the exit stop publication");
+        publisher.join().expect("join the exit stop publisher");
+        let retired = match forwarded_before_publication {
+            Some(retired) => retired,
+            None => retired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the retirement did not finish after the publication"),
+        };
+        retirer.join().expect("join the retirer");
+        assert!(
+            retired,
+            "the dead Exec decode did not return RetiredDeadExec"
+        );
+
+        assert_eq!(queued(event), [PTRACE_EVENT_EXIT_STOP]);
+        assert!(!event.exit_stop_follows_dead_exec.load(Ordering::Acquire));
+        assert_eq!(event.exit_epoch.load(Ordering::Acquire), 2);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_PENDING
+        );
+        assert_eq!(event.status.lock().retired_dead_exec, 1);
+        let epoch_one = Arc::new(ExitWaiter {
+            epoch: 1,
+            ..ExitWaiter::default()
+        });
+        assert_eq!(
+            event.poll_exit(&epoch_one, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PTRACE_EVENT_EXIT_STOP))
+        );
+        event.update(libc::SIGKILL);
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(libc::SIGKILL)));
+        assert!(
+            forwarded_before_publication.is_none(),
+            "the forward finished while the exit stop publication was pending"
+        );
     }
 
     /// An Exec whose report did not advance the exit epoch, here a leader's
