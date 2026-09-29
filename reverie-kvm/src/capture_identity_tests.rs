@@ -336,6 +336,13 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
         let root = TestDir::new();
         let owner = CapturedOutput::try_new().unwrap();
         let descriptors = owner.identities.descriptors();
+        let physical_pins = owner.identities.physical_stdio().collect::<Vec<_>>();
+        assert_eq!(physical_pins.len(), 2);
+        for &pin in &physical_pins {
+            assert!(pin >= 3);
+            assert_eq!(unsafe { libc::fcntl(pin, libc::F_GETFD) }, libc::FD_CLOEXEC);
+        }
+        let pins_at_drop = physical_pins.clone();
         let tokens = [
             owner.stdout_description.token.as_raw_fd(),
             owner.stderr_description.token.as_raw_fd(),
@@ -368,6 +375,9 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
                 .try_lock()
                 .expect("final capture close held the signal guard");
             assert_eq!(actual, descriptors);
+            for pin in pins_at_drop {
+                assert_eq!(unsafe { libc::fcntl(pin, libc::F_GETFD) }, libc::FD_CLOEXEC);
+            }
             for (fd, expected) in actual.into_iter().zip(metadata) {
                 let live = capture_native_stat(fd);
                 assert_eq!(
@@ -397,7 +407,7 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
         drop(owner);
         assert!(observed.load(Ordering::SeqCst));
         assert!(weak.upgrade().is_none());
-        for fd in descriptors.into_iter().chain(tokens) {
+        for fd in descriptors.into_iter().chain(tokens).chain(physical_pins) {
             assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
             assert_eq!(
                 std::io::Error::last_os_error().raw_os_error(),
@@ -479,7 +489,10 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         rlim_cur: original.rlim_cur.min(highest + 32),
         rlim_max: original.rlim_max,
     };
-    for free_slots in [0, 2, 4, 5] {
+    // Two new retained physical pins add two descriptors before the original
+    // pipe/token stages. Absolute 0/1 exercise first/second-pin failure; 2/4/6/7
+    // retain the original 0/2/4/5 pipe/token failure predicates.
+    for free_slots in [0, 1, 2, 4, 6, 7] {
         let mut fillers = Vec::new();
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
         let exhausted = loop {
@@ -491,9 +504,10 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         for _ in 0..free_slots {
             drop(fillers.pop().expect("descriptor budget has enough fillers"));
         }
-        // Two free slots prepare only stdout's pair; four prepare both
-        // pairs but no token; five also prepare the first token. Every partial
-        // failure must recover all free slots and preserve the original image.
+        // After both physical pins: two more slots prepare stdout's pair;
+        // four prepare both pairs; five also prepare the first token. Every
+        // partial failure must recover all slots and preserve the image.
+        let before_pins = capture_identity::physical_pins_prepared();
         let before_prepared = capture_identity::pipes_prepared();
         let error = futures::executor::block_on(
             backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
@@ -515,11 +529,16 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         assert_eq!(after_error, Some(libc::EMFILE));
         assert_eq!(recovered.len(), free_slots);
         assert_eq!(
+            capture_identity::physical_pins_prepared() - before_pins,
+            free_slots.min(2)
+        );
+        assert_eq!(
             capture_identity::pipes_prepared() - before_prepared,
             match free_slots {
-                0 => 0,
-                2 => 1,
-                _ => 2,
+                0..=2 => 0,
+                4 => 1,
+                6 | 7 => 2,
+                _ => unreachable!(),
             }
         );
         assert!(
@@ -537,8 +556,9 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
             );
         }
     }
-    // Only closed standard-number slots remain available. pipe2 succeeds in
-    // 0/1, but relocating the first retained endpoint with min=3 must fail.
+    // One >=3 slot is available only for the still-open stderr pin. Once
+    // pinned, only closed 0/1 remain: pipe2 succeeds there, but relocating its
+    // first endpoint with min=3 must still fail exactly as before.
     let saved = [0, 1].map(|fd| {
         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         assert!(copy >= 3);
@@ -552,15 +572,31 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
             Err(error) => break error.raw_os_error(),
         }
     };
+    drop(fillers.pop().expect("one private slot for the stderr pin"));
     for fd in [0, 1] {
         assert_eq!(unsafe { libc::close(fd) }, 0);
     }
+    let before_pins = capture_identity::physical_pins_prepared();
     let before_relocation = capture_identity::relocation_failures();
     let error = futures::executor::block_on(
         backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
     )
     .err()
     .expect("private descriptor relocation must fail");
+    assert_eq!(capture_identity::physical_pins_prepared() - before_pins, 1);
+    // The failed capture returned the one >=3 slot, without borrowing 0/1.
+    let recovered = unsafe { libc::fcntl(saved[0].as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    assert!(recovered >= 3);
+    let recovered = unsafe { std::os::fd::OwnedFd::from_raw_fd(recovered) };
+    assert_eq!(
+        unsafe { libc::fcntl(saved[0].as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EMFILE)
+    );
+    drop(recovered);
     let closed = [0, 1].map(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1
         && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF));
     assert_eq!(

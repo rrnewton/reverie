@@ -288,6 +288,7 @@ fn qualify_physical_stdio_query(
     )
 }
 
+#[cfg(test)]
 fn physical_stdio_is_open(fd: RawFd) -> Result<bool, i64> {
     // SAFETY: F_GETFD only checks the descriptor. External concurrent stdio
     // replacement remains outside the inherited-stdio lifetime contract.
@@ -300,6 +301,66 @@ fn physical_stdio_is_open(fd: RawFd) -> Result<bool, i64> {
     } else {
         Err(io_error(error))
     }
+}
+
+// Fixed proc snapshots are bearer capabilities, not ordinary host files. A
+// proc_files inode or a reserved-looking name alone cannot authorize bypassing
+// the physical-stdio guard: authenticate this exact pinned read-only carrier.
+fn authenticated_fixed_proc_donation(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    budget: &mut crate::proc_carrier::CarrierAuthBudget,
+    cache: &mut crate::proc_carrier::CarrierAuthCache,
+) -> Result<bool, i64> {
+    let Some(owner) = &state.capture_owner else {
+        return Ok(false);
+    };
+    let Some(expected_path) = state
+        .proc_files
+        .get(&guest_fd)
+        .and_then(|&inode| synthetic_proc_path_for_inode(inode))
+        .filter(|path| fixed_synthetic_proc_path(path))
+    else {
+        return Ok(false);
+    };
+    let file = state
+        .files
+        .get(&guest_fd)
+        .ok_or_else(|| negative_errno(libc::EBADMSG))?;
+    if state
+        .proc_carrier_authority
+        .candidate_kind(file)
+        .map_err(negative_errno)?
+        != crate::proc_carrier::ProcCarrierCandidate::Reserved
+    {
+        return Err(negative_errno(libc::EBADMSG));
+    }
+    ensure_proc_carrier_readonly_or_path(file)?;
+    let inspection = state
+        .proc_carrier_authority
+        .open_inspection_alias(file)
+        .map(|file| state.file_retirement.stage(file))
+        .map_err(negative_errno)?;
+    let authenticated = state
+        .proc_carrier_authority
+        .authenticate_reserved(file, inspection.as_file(), budget, cache)
+        .map_err(negative_errno)?;
+    if authenticated.canonical_path.as_slice() != expected_path
+        || authenticated.virtual_nofollow != state.synthetic_proc_nofollow_fds.contains(&guest_fd)
+    {
+        return Err(negative_errno(libc::EBADMSG));
+    }
+    // This is refusal only, after full authentication. A private sealed
+    // carrier used as capture-entry physical stdio must not leak that OFD.
+    // Compare against pinned entry identities, including recorded absence;
+    // never inspect live fd 1/2 or mistake an inspection alias for stdio.
+    let carrier_key = host_file_key(file.as_raw_fd())?;
+    for physical in owner.physical_stdio() {
+        if host_file_key(physical)? == carrier_key {
+            return Err(negative_errno(libc::ENOSYS));
+        }
+    }
+    Ok(true)
 }
 
 fn unlabelled_capture_carrier(state: &LoadedStaticElf, fd: RawFd) -> Result<bool, i64> {
@@ -319,14 +380,12 @@ fn unlabelled_capture_carrier(state: &LoadedStaticElf, fd: RawFd) -> Result<bool
             return Ok(true);
         }
     }
-    // Physical regular files/devices need actual OFD identity: independent
-    // opens of the same inode remain ordinary transferable descriptions. This
-    // checks current descriptors, not startup provenance: initially closed
-    // stdio numbers subsequently reused by internal opens need a separate
-    // reservation design, as does external concurrent stdio replacement.
-    // See https://github.com/rrnewton/reverie/issues/766.
-    for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-        if physical_stdio_is_open(standard)? && query.same(fd, standard)? {
+    // Compare only OFDs present at capture entry. The pins survive later
+    // closes/reuse of their standard numbers; independent opens of the same
+    // inode stay ordinary. Uniform query qualification above still precedes
+    // an empty pin set, and later query errors remain errors, never permission.
+    for standard in owner.physical_stdio() {
+        if query.same(fd, standard)? {
             return Ok(true);
         }
     }

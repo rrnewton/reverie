@@ -284,6 +284,7 @@ impl CaptureDescription {
     #[cfg(test)]
     pub(crate) fn retirement_descriptors(&self) -> Vec<RawFd> {
         let mut descriptors = self.identities.descriptors().to_vec();
+        descriptors.extend(self.identities.physical_stdio());
         descriptors.push(self.io.as_raw_fd());
         descriptors.push(self.token.as_raw_fd());
         descriptors
@@ -12696,6 +12697,11 @@ fn translate_outgoing_rights(
     transfers: &mut Vec<OutgoingTransfer>,
 ) -> Result<(), i64> {
     let mut translations = Vec::new();
+    // One sendmsg translation owns one authentication budget and cache. Fixed
+    // aliases share a cached proof only within this message; receive retains
+    // its independent syscall-wide budget and authentication boundary.
+    let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+    let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
     for message in control_messages(control)? {
         if message.level != libc::SOL_SOCKET || message.kind != libc::SCM_RIGHTS {
             return Err(negative_errno(libc::EOPNOTSUPP));
@@ -12729,7 +12735,14 @@ fn translate_outgoing_rights(
                 || signalfd_mask(state, fd).is_some()
                 || state.random_device_fds.contains(&fd)
                 || state.loginuid_fds.contains(&fd)
-                || unlabelled_capture_carrier(state, host)?
+            {
+                return Err(negative_errno(libc::ENOSYS));
+            } else if !authenticated_fixed_proc_donation(
+                state,
+                fd,
+                &mut auth_budget,
+                &mut auth_cache,
+            )? && unlabelled_capture_carrier(state, host)?
             {
                 return Err(negative_errno(libc::ENOSYS));
             }
