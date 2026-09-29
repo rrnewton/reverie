@@ -29,7 +29,10 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
         (native_pipe.st_dev, native_pipe.st_ino)
     );
     let mut captured_inodes = Vec::new();
-    for (fd, keeper) in [1, 2].into_iter().zip(output.identities.descriptors()) {
+    for (fd, keeper) in [1, 2]
+        .into_iter()
+        .zip(output.identities.metadata_descriptors())
+    {
         let native_capture = capture_native_stat(keeper);
         assert_eq!(
             unsafe { libc::fcntl(keeper, libc::F_GETFD) },
@@ -132,7 +135,7 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     let raw = capture_native_stat(regular.as_raw_fd());
     let ordinary = insert_file_with_flags(&mut state, regular, false, None) as i32;
     assert!(ordinary >= 3);
-    let mut parent = ElfExecutor::with_output(state, Some(owner.clone()));
+    let mut parent = ElfExecutor::with_test_output(state, Some(owner.clone()));
     let mut memory = GuestMemory::new(0, 0x4000).unwrap();
     let stdout = capture_executor_stat(&mut parent, &memory, 1);
     let stderr = capture_executor_stat(&mut parent, &memory, 2);
@@ -333,18 +336,34 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
         let root = TestDir::new();
         let owner = CapturedOutput::try_new().unwrap();
         let descriptors = owner.identities.descriptors();
+        let tokens = [
+            owner.stdout_description.token.as_raw_fd(),
+            owner.stderr_description.token.as_raw_fd(),
+        ];
+        for token in tokens {
+            assert!(token >= 3);
+            assert_eq!(
+                unsafe { libc::fcntl(token, libc::F_GETFD) },
+                libc::FD_CLOEXEC
+            );
+        }
         let metadata = descriptors.map(capture_native_stat);
         let weak = Arc::downgrade(&owner.identities);
-        let mut parent = ElfExecutor::with_output(test_state(&root.0), Some(owner.clone()));
+        let mut parent = ElfExecutor::with_test_output(test_state(&root.0), Some(owner.clone()));
         let child = parent.thread_child(2).unwrap();
-        let files = parent.file_table.clone();
+        // A strong table reference would now form a test-only cycle through
+        // capture descriptions. A retired table cannot hold a live guard.
+        let files = Arc::downgrade(&parent.file_table);
         let transaction = parent.state.signal_transaction.clone();
         let observed = Arc::new(AtomicBool::new(false));
         let observed_by_drop = observed.clone();
         *owner.identities.drop_probe.lock().unwrap() = Some(Box::new(move |actual| {
-            let _files = files
-                .try_lock()
-                .expect("final capture close held the file-table guard");
+            let files = files.upgrade();
+            let _files = files.as_ref().map(|files| {
+                files
+                    .try_lock()
+                    .expect("final capture close held the file-table guard")
+            });
             let _transaction = transaction
                 .try_lock()
                 .expect("final capture close held the signal guard");
@@ -378,7 +397,7 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
         drop(owner);
         assert!(observed.load(Ordering::SeqCst));
         assert!(weak.upgrade().is_none());
-        for fd in descriptors {
+        for fd in descriptors.into_iter().chain(tokens) {
             assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
             assert_eq!(
                 std::io::Error::last_os_error().raw_os_error(),
@@ -460,7 +479,7 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         rlim_cur: original.rlim_cur.min(highest + 32),
         rlim_max: original.rlim_max,
     };
-    for free_slots in [0, 2] {
+    for free_slots in [0, 2, 4, 5] {
         let mut fillers = Vec::new();
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
         let exhausted = loop {
@@ -472,8 +491,9 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         for _ in 0..free_slots {
             drop(fillers.pop().expect("descriptor budget has enough fillers"));
         }
-        // Two free slots let the first real pipe succeed; its keeper then
-        // leaves only one free slot, so the SECOND pipe2 fails atomically.
+        // Two free slots prepare only stdout's pair; four prepare both
+        // pairs but no token; five also prepare the first token. Every partial
+        // failure must recover all free slots and preserve the original image.
         let before_prepared = capture_identity::pipes_prepared();
         let error = futures::executor::block_on(
             backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
@@ -496,7 +516,11 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         assert_eq!(recovered.len(), free_slots);
         assert_eq!(
             capture_identity::pipes_prepared() - before_prepared,
-            usize::from(free_slots == 2)
+            match free_slots {
+                0 => 0,
+                2 => 1,
+                _ => 2,
+            }
         );
         assert!(
             matches!(error, crate::Error::HostIo(ref io) if io.raw_os_error() == Some(libc::EMFILE))
@@ -514,7 +538,7 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         }
     }
     // Only closed standard-number slots remain available. pipe2 succeeds in
-    // 0/1, its unused end closes, but F_DUPFD_CLOEXEC(min=3) must fail.
+    // 0/1, but relocating the first retained endpoint with min=3 must fail.
     let saved = [0, 1].map(|fd| {
         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         assert!(copy >= 3);
@@ -564,4 +588,250 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         assert!(fd >= 3);
     }
     eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn captured_private_writer_reopen_refuses_readers_and_preserves_keeper_privacy() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
+    for flags in [
+        libc::O_RDONLY,
+        libc::O_RDWR,
+        libc::O_RDWR | libc::O_NONBLOCK,
+    ] {
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_open as u64, [0x100, flags as u64, 0, 0, 0, 0]),
+                &memory
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+    }
+    let fd = executor.execute(
+        &SyscallRequest::new(
+            libc::SYS_open as u64,
+            [
+                0x100,
+                (libc::O_WRONLY | libc::O_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        ),
+        &memory,
+    ) as i32;
+    assert!(fd >= 3);
+    let owner = executor.output.as_ref().unwrap();
+    let keepers = owner.identities.metadata_descriptors();
+    for guest in [1, 2, fd] {
+        let host = host_fd(&executor.state, guest).unwrap();
+        assert!(
+            !keepers.contains(&host),
+            "metadata keeper became a guest endpoint"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
+            libc::O_WRONLY
+        );
+    }
+}
+
+#[test]
+fn captured_reopen_final_close_uses_removing_forks_retirement_scope() {
+    for through_exec in [false, true] {
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), true);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
+        let flags = libc::O_WRONLY | if through_exec { libc::O_CLOEXEC } else { 0 };
+        let fd = parent.execute(
+            &SyscallRequest::new(libc::SYS_open as u64, [0x100, flags as u64, 0, 0, 0, 0]),
+            &memory,
+        ) as i32;
+        assert!(fd >= 3);
+        let private_io = parent.state.capture_descriptions[&fd].io.as_raw_fd();
+        let weak = Arc::downgrade(&parent.state.capture_descriptions[&fd]);
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        drop(parent);
+        let table = Arc::downgrade(&child.file_table);
+        let transaction = child.state.signal_transaction.clone();
+        let observed = Arc::new(AtomicBool::new(false));
+        let seen = observed.clone();
+        child
+            .state
+            .file_retirement
+            .set_probe(Some(Arc::new(move |descriptors| {
+                if descriptors.contains(&private_io) {
+                    let table = table.upgrade().expect("executor table remains live");
+                    let _table = table
+                        .try_lock()
+                        .expect("capture close held file-table guard");
+                    let _transaction = transaction
+                        .try_lock()
+                        .expect("capture close held signal guard");
+                    assert!(unsafe { libc::fcntl(private_io, libc::F_GETFD) } >= 0);
+                    seen.store(true, Ordering::SeqCst);
+                }
+            })));
+        if through_exec {
+            let replacement = test_exec_replacement(&root.0, &child.state);
+            child.replace_after_exec(replacement);
+        } else {
+            assert_eq!(
+                child.execute(
+                    &SyscallRequest::new(libc::SYS_close as u64, [fd as u64, 0, 0, 0, 0, 0]),
+                    &memory
+                ),
+                0
+            );
+        }
+        child.state.file_retirement.set_probe(None);
+        assert!(observed.load(Ordering::SeqCst));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(unsafe { libc::fcntl(private_io, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+}
+
+#[test]
+fn capture_initial_alias_clone_failure_is_transactional_and_wrong_owner_is_fallible() {
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let alias = insert_file_with_flags(
+        &mut state,
+        std::fs::File::open("/dev/null").unwrap(),
+        false,
+        Some(OutputAlias::Stdout),
+    ) as i32;
+    assert!(alias >= 3);
+    let before = state.files[&alias].as_raw_fd();
+    let owner = CapturedOutput::try_new().unwrap();
+    state.file_retirement.fail_clone_after(Some(0));
+    assert_eq!(
+        initialize_capture_descriptions(&mut state, &owner),
+        Err(negative_errno(libc::EMFILE))
+    );
+    state.file_retirement.fail_clone_after(None);
+    assert_eq!(state.files[&alias].as_raw_fd(), before);
+    assert!(state.capture_owner.is_none());
+    assert!(state.capture_descriptions.is_empty());
+    initialize_capture_descriptions(&mut state, &owner).unwrap();
+    let private = state.files[&alias].as_raw_fd();
+    let wrong = CapturedOutput::try_new().unwrap();
+    assert_eq!(
+        initialize_capture_descriptions(&mut state, &wrong),
+        Err(negative_errno(libc::ENOSYS))
+    );
+    assert_eq!(state.files[&alias].as_raw_fd(), private);
+    assert!(Arc::ptr_eq(
+        state.capture_owner.as_ref().unwrap(),
+        &owner.identities
+    ));
+}
+
+#[test]
+fn captured_reopen_refusal_preserves_native_magic_link_error_order() {
+    let root = TestDir::new();
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    write_c_string(&mut m, 0x100, "/proc/self/fd/1");
+    let host = host_fd(&e.state, 1).unwrap();
+    for access in [libc::O_RDONLY, libc::O_RDWR] {
+        for flags in [
+            libc::O_NOFOLLOW,
+            libc::O_DIRECTORY,
+            libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            libc::O_CREAT | libc::O_EXCL,
+        ] {
+            let flags = (access | flags) as u64;
+            let native = open_host_fd_path(host, flags).unwrap_err();
+            assert!(matches!(
+                -native as i32,
+                libc::ELOOP | libc::ENOTDIR | libc::EEXIST
+            ));
+            assert_eq!(
+                e.execute(
+                    &SyscallRequest::new(libc::SYS_open as u64, [0x100, flags, 0, 0, 0, 0]),
+                    &m
+                ),
+                native,
+                "flags={flags:#x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn captured_path_only_vectored_io_matches_native_ebadf_before_seek_and_import() {
+    let root = TestDir::new();
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    write_c_string(&mut m, 0x100, "/proc/self/fd/1");
+    let native = open_host_fd_path(host_fd(&e.state, 1).unwrap(), libc::O_PATH as u64).unwrap();
+    let fd = e.execute(
+        &SyscallRequest::new(
+            libc::SYS_open as u64,
+            [0x100, libc::O_PATH as u64, 0, 0, 0, 0],
+        ),
+        &m,
+    );
+    assert!(fd >= 3);
+    m.write(0x300, b"unmodified").unwrap();
+    write_guest_iovecs(&mut m, 0x200, &[(0x300, 10)]);
+    let mut native_bytes = *b"unmodified";
+    let native_iov = libc::iovec {
+        iov_base: native_bytes.as_mut_ptr().cast(),
+        iov_len: 10,
+    };
+    for (number, offset) in [
+        (libc::SYS_writev, 0),
+        (libc::SYS_readv, 0),
+        (libc::SYS_pwritev, 0),
+        (libc::SYS_preadv, 0),
+        (libc::SYS_pwritev2, 0),
+        (libc::SYS_preadv2, 0),
+        (libc::SYS_pwritev2, u64::MAX),
+        (libc::SYS_preadv2, u64::MAX),
+    ] {
+        for valid_iov in [false, true] {
+            let host_iov = if valid_iov {
+                &native_iov as *const libc::iovec
+            } else {
+                std::ptr::null()
+            };
+            let native_result = unsafe {
+                libc::syscall(
+                    number,
+                    native.as_raw_fd(),
+                    host_iov,
+                    1usize,
+                    offset as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                )
+            };
+            assert_eq!(native_result, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+            let guest_iov = if valid_iov { 0x200 } else { u64::MAX };
+            assert_eq!(
+                e.execute(
+                    &SyscallRequest::new(number as u64, [fd as u64, guest_iov, 1, offset, 0, 0]),
+                    &m
+                ),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(read_guest_bytes::<10>(&m, 0x300).unwrap(), *b"unmodified");
+            assert_eq!(native_bytes, *b"unmodified");
+            assert_eq!(e.take_output(), (Vec::new(), Vec::new()));
+        }
+    }
 }
