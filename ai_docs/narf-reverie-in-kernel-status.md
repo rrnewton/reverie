@@ -1,7 +1,7 @@
 # Narf: unmodified Reverie tools inside the kernel (status)
 
 Maintained by sub-narf-opus, a worker under the dev-hermit coordinator
-coord2. Last updated 2026-09-29 at 21:35Z. This file is the Narf lane's durable
+coord2. Last updated 2026-09-29 at 21:10Z. This file is the Narf lane's durable
 record from 2026-09-29 on.
 
 Narf is Daniel Hodges' kernel, https://github.com/hodgesds/narf. On
