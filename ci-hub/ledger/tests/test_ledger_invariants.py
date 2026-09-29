@@ -401,7 +401,7 @@ def test_shared_checker_post_execution_tamper_discards_success(tmp_path, monkeyp
     monkeypatch.delenv("DEV_HERMIT_TOOL_AUTHORITY", raising=False)
 
     def mutate_then_succeed(argv, **_kwargs):
-        checker = Path(argv[0])
+        checker = Path(argv[1])
         checker.chmod(0o755)
         checker.write_bytes(checker.read_bytes() + b"\n// post-check tamper\n")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -411,6 +411,42 @@ def test_shared_checker_post_execution_tamper_discards_success(tmp_path, monkeyp
     assert len(codes) == 1 and len(codes[0]) == 1
     assert codes[0][0].startswith("shared-ledger-event-check-unavailable:")
     assert "cached checker source" in codes[0][0]
+
+
+def test_shared_checker_runs_its_content_addressed_alias_without_force(
+    tmp_path, monkeypatch
+):
+    needs_impl("a built checker is reused without a cargo run, and only by its bytes")
+    # Through the --force shebang, every check ran cargo, which waits for the
+    # host-wide Cargo locks; see _CONTENT_ADDRESSED_CHECKER_RUNNER. Without
+    # --force, rust-script reuses the binary it built for this exact path, so the
+    # path must be the content address of both sources.
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("CI_HUB_LEDGER_EVENT_CHECKER_CACHE", str(cache))
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    monkeypatch.delenv("DEV_HERMIT_TOOL_AUTHORITY", raising=False)
+    calls: list[list[str]] = []
+
+    def record(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(impl.subprocess, "run", record)
+    assert impl._shared_type_codes([result("01A", SHA_1, "pass")]) == [[]]
+    impl.prepare_shared_checker()
+
+    repository = Path(__file__).resolve().parents[3]
+    alias = impl._materialized_shared_type_checker(cache_root=cache)
+    assert calls == [
+        ["rust-script", str(alias)],
+        ["rust-script", str(alias), "--help"],
+    ]
+    assert alias.parents[2].name == impl._stable_checker_digest(
+        impl._stable_checker_source_bytes(repository)
+    )
+    assert alias.relative_to(alias.parents[2]) == impl._SHARED_TYPE_CHECKER_RELATIVE
+    # A direct run of a checkout's checker still rebuilds a changed dependency.
+    assert alias.read_bytes().startswith(b"#!/usr/bin/env -S rust-script --force\n")
 
 
 @pytest.mark.parametrize(

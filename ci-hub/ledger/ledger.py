@@ -483,11 +483,13 @@ def _locked_materialized_shared_type_checker(
     0.03s wall / 0.03s CPU. The two producer-owned Rust sources instead live at
     a stable path keyed by their bytes and normalized tracked modes.
 
-    ``--force`` remains load-bearing. The cache is checked before and after
-    execution, and a mismatch is refused rather than repaired or hidden behind
-    a compiled binary. The lock covers cooperating writers. As with the shared
-    Cargo cache, a deliberately hostile same-uid process can still perform an
-    ABA replacement; same-uid processes are inside this host's cache boundary.
+    The cache is checked before and after execution, and a mismatch is refused
+    rather than repaired or hidden behind a compiled binary. The yielded path
+    names the bytes of both sources, which is what lets _run_shared_type_checker
+    run it without ``--force`` (see _CONTENT_ADDRESSED_CHECKER_RUNNER). The lock
+    covers cooperating writers. As with the shared Cargo cache, a deliberately
+    hostile same-uid process can still perform an ABA replacement; same-uid
+    processes are inside this host's cache boundary.
     """
     source_root = (source_root or Path(__file__).resolve().parents[2]).resolve()
     cache_root = cache_root or _stable_checker_cache_root()
@@ -608,15 +610,50 @@ def read_shard(path: Any, *, object_pairs_hook=None) -> list[dict]:
             for line in text.splitlines() if line.strip()]
 
 
+# HOW THE CONTENT-ADDRESSED CHECKER IS RUN: `rust-script <alias>`, not the
+# `rust-script --force` shebang.
+#
+# --force stays in the shebang, where it is load-bearing. A checkout's
+# check-ledger-events.rs sits at a fixed path, its #[path] dependency
+# ci-hub/lib/ledger_event.rs can change while the main file does not, and
+# rust-script 0.36 judges a cached binary fresh from the main file's mtime
+# alone. The alias this module runs cannot have that problem. Its path contains
+# the digest of both sources' bytes and tracked modes, both files are read-only
+# and are checked against that digest before and after every run, and
+# rust-script keys the package and binary it builds by that path. So a binary
+# rust-script built for the alias was built from exactly these bytes, and
+# rust-script still rebuilds it when it is missing or older than the alias
+# (a retired and re-created alias is newer). Checked on devbig014 on 2026-09-29
+# with a toy script: without --force a changed #[path] module ran the old binary
+# at the same path, while a new path or a newer main file rebuilt.
+#
+# What --force added here was a cargo run on every replay, and that run is what
+# waited. Every rust-script on the host builds into ~/.cache/rust-script/binaries
+# under one Cargo build-directory lock and also takes Cargo's package-cache lock.
+# On devbig014 on 2026-09-29, at load 80-140, three runs of the already-built
+# checker's --help took 44.12, 114.33 and 26.70 s through --force, printing
+# "Blocking waiting for file lock on build directory" (and "... on package
+# cache"), with 0.05 s of CPU or less. The same --help took 0.00 s without it.
+# Each replay's checker run holds the checker cache lock, so other replays
+# queued behind that wait too. Earlier that day, 7 of 24 timed runs of the
+# health gates that replay the ledger took 34.76-88.82 s instead of 14-15 s,
+# with the same 13 s of CPU, and one replay took 428 s
+# (https://github.com/rrnewton/dev-hermit/issues/390).
+#
+# A first run for a new alias still builds through cargo and can still wait for
+# those locks, once per alias per rust-script cache.
+_CONTENT_ADDRESSED_CHECKER_RUNNER = ("rust-script",)
+
+
 def _run_shared_type_checker(payload: str, arguments: Sequence[str] = ()):
     """Use one source and authority boundary for preparation and real checks."""
     # The override is a fixture seam for isolated linked-worktree tests whose
     # deliberately minimal repository copy does not include this checker. An
     # immutable operational run has the complete source tree and must never let
     # inherited health.env content replace the producer-owned type.
-    def run(checker: Path):
+    def run(command: Sequence[str]):
         return subprocess.run(
-            [str(checker), *arguments],
+            [*command, *arguments],
             input=payload,
             capture_output=True,
             text=True,
@@ -630,9 +667,9 @@ def _run_shared_type_checker(payload: str, arguments: Sequence[str] = ()):
             raise SharedTypeCheckerUnavailable(
                 "fixture checker override is forbidden in immutable tool runs"
             )
-        return run(Path(configured_checker))
+        return run((configured_checker,))
     with _locked_materialized_shared_type_checker() as checker:
-        return run(checker)
+        return run((*_CONTENT_ADDRESSED_CHECKER_RUNNER, str(checker)))
 
 
 def prepare_shared_checker() -> None:
@@ -640,7 +677,8 @@ def prepare_shared_checker() -> None:
 
     Its --help branch returns before reading stdin. Empty validation remains an
     empty operation; it cannot stand in for actually preparing the compiler.
-    Real checks still use the same source-bound --force entrypoint afterwards.
+    Real checks afterwards run the same content-addressed alias with the same
+    rust-script command, so they reuse the binary this call built.
     """
     try:
         result = _run_shared_type_checker("", ("--help",))
