@@ -2274,8 +2274,9 @@ struct RestartPlan {
 /// return, and well within the fixture's `-spin` loop after the read.
 const SIGNAL_TIMER_RCBS: u64 = 50_000;
 
-/// Near enough that the timer's skid-margin single-step window covers the
-/// quiet handler's return, so the step loop reaches a restart landing.
+/// Near enough that, with the skid margin pinned to `TIMER_TEST_SKID_MARGIN`,
+/// the timer's single-step window covers the quiet handler's return, so the
+/// step loop reaches a restart landing.
 const SIGNAL_TIMER_NEAR_RCBS: u64 = 1000;
 
 /// A syscall `RestartTool` injects inside the first magic invocation.
@@ -2717,69 +2718,293 @@ async fn restart_parity(
 /// Attempts `timer_restart_parity` may make when an attempt diverges.
 const SKID_ATTEMPTS: usize = 3;
 
-/// As `restart_parity`, for a plan whose Tool requests a precise timer, and
-/// also requiring plain ptrace's events to equal `expected` exactly. A
-/// precise timer that the PMU delivers past its programmed target
+/// Skid margin the precise-timer restart tests pin in their child process,
+/// through reverie-ptrace's `REVERIE_SKID_MARGIN_OVERRIDE`. A precise timer
+/// single-steps its last `skid margin` RCBs, so with this margin the window
+/// of a timer due `SIGNAL_TIMER_NEAR_RCBS` after its request starts at the
+/// request and covers the quiet handler's return on every host. The
+/// processor defaults differ (100 or 125 RCBs on the Intel profiles), and
+/// with them the landing would come before the window.
+const TIMER_TEST_SKID_MARGIN: u64 = SIGNAL_TIMER_NEAR_RCBS;
+
+/// Names the precise-timer restart test that a child test process runs.
+const TIMER_TEST_CHILD_ENV: &str = "REVERIE_LITEINST_TIMER_TEST_CHILD";
+
+/// Whether this process is the child test process that runs `test`. If it
+/// is not, runs `test` in a fresh exact-test child process with one test
+/// thread and the skid margin pinned to `TIMER_TEST_SKID_MARGIN`, and
+/// requires it to pass. The skid-overshoot count and the reverie-ptrace
+/// test counters `timer_restart_parity` reads are process-global, so only a
+/// process that runs one test at a time can attribute them to one backend's
+/// run.
+fn in_timer_test_child(test: &str) -> bool {
+    if std::env::var(TIMER_TEST_CHILD_ENV).as_deref() == Ok(test) {
+        let args: Vec<String> = std::env::args().collect();
+        assert!(
+            args.iter().any(|arg| arg == "--exact")
+                && args.iter().any(|arg| arg == "--test-threads=1"),
+            "{test} must run as the only test of its process: {args:?}"
+        );
+        return true;
+    }
+    let status = ProcessCommand::new(std::env::current_exe().unwrap())
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
+        .env(TIMER_TEST_CHILD_ENV, test)
+        .env(
+            "REVERIE_SKID_MARGIN_OVERRIDE",
+            TIMER_TEST_SKID_MARGIN.to_string(),
+        )
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "isolated precise-timer test {test} failed: {status}"
+    );
+    false
+}
+
+/// One backend's run in a `timer_restart_parity` attempt.
+struct TimerRun {
+    stdout: String,
+    events: Vec<String>,
+    /// Skid overshoots recorded during the run
+    /// (`reverie::take_skid_overshoot_count`).
+    overshoots: u64,
+    /// Restart landings resolved inside a precise timer's step window.
+    step_landings: u64,
+    /// SIGTRAP stops resumed with nothing claiming them.
+    unclaimed_sigtraps: u64,
+}
+
+async fn run_timer_fixture(backend: RestartBackend, mode: &str, plan: RestartPlan) -> TimerRun {
+    let _ = reverie::take_skid_overshoot_count();
+    let step_landings = reverie_ptrace::testing::liteinst_timer_step_landings_resolved();
+    let unclaimed_sigtraps = reverie_ptrace::testing::unclaimed_sigtraps_suppressed();
+    let (stdout, events) = run_restart_fixture(backend, mode, plan).await.unwrap();
+    TimerRun {
+        stdout,
+        events,
+        overshoots: reverie::take_skid_overshoot_count(),
+        step_landings: reverie_ptrace::testing::liteinst_timer_step_landings_resolved()
+            - step_landings,
+        unclaimed_sigtraps: reverie_ptrace::testing::unclaimed_sigtraps_suppressed()
+            - unclaimed_sigtraps,
+    }
+}
+
+/// Whether `events` differ from `expected` only in the last event, and that
+/// event is `timer +N` for an `expected` last event `timer +R` with N > R:
+/// the timer fired late, the one divergence a skid overshoot causes.
+fn is_late_timer(events: &[String], expected: &[&str]) -> bool {
+    let (Some((last, prefix)), Some((expected_last, expected_prefix))) =
+        (events.split_last(), expected.split_last())
+    else {
+        return false;
+    };
+    let rcbs = |event: &str| {
+        event
+            .strip_prefix("timer +")
+            .and_then(|rcbs| rcbs.parse::<u64>().ok())
+    };
+    prefix == expected_prefix
+        && matches!((rcbs(last), rcbs(expected_last)), (Some(late), Some(requested)) if late > requested)
+}
+
+/// Whether skid explains every difference between the two runs' events and
+/// `expected`: each run's events equal `expected`, or that same run recorded
+/// a skid overshoot and its events differ only in a late last timer event
+/// (`is_late_timer`). The caller has already required everything else to
+/// match exactly.
+fn skid_explains_divergence(ptrace: &TimerRun, hybrid: &TimerRun, expected: &[&str]) -> bool {
+    let explained = |run: &TimerRun| {
+        run.events == expected || (run.overshoots > 0 && is_late_timer(&run.events, expected))
+    };
+    explained(ptrace) && explained(hybrid)
+}
+
+/// As `restart_parity`, for a plan whose Tool requests a precise timer, run
+/// inside `in_timer_test_child`. Requires plain ptrace's output to equal
+/// `expected_stdout` and its events to equal `expected`, host-hybrid to
+/// match (up to the site counters, with `hooks` hook entries), host-hybrid to
+/// resolve exactly `step_landings` restart landings inside a timer step
+/// window (plain ptrace none), and neither backend to resume an unclaimed
+/// SIGTRAP stop, which is what a single-step trap flag left set in the guest
+/// produces.
+///
+/// A precise timer that the PMU delivers past its programmed target
 /// (`reverie::SKID_OVERSHOOT_MARKER`) fires late, so its `timer +N` event
 /// exceeds the requested distance. The skid tail is heavy and no fixed
-/// margin covers it; reverie's documented policy is that a divergence may be
-/// retried if and only if the same run recorded an overshoot. An attempt
-/// that differs in any way is therefore retried only when
-/// `reverie::take_skid_overshoot_count` shows an overshoot during that
-/// attempt (both backends run in this process); any other divergence, and
-/// the last attempt, fails on the exact comparisons.
+/// margin covers it; reverie's documented policy is that a divergence caused
+/// by skid may be retried. An attempt is therefore retried, up to
+/// `SKID_ATTEMPTS`, only when `skid_explains_divergence`: the only
+/// difference is a late last timer event of a backend whose own run recorded
+/// an overshoot. Any other difference fails the attempt at once.
 async fn timer_restart_parity(
     mode: &str,
     plan: RestartPlan,
     hooks: u64,
-    label: &str,
+    expected_stdout: &str,
     expected: &[&str],
-) -> String {
+    step_landings: u64,
+) {
+    assert!(
+        std::env::var_os(TIMER_TEST_CHILD_ENV).is_some(),
+        "timer_restart_parity runs only inside in_timer_test_child"
+    );
+    let expected_hybrid_stdout = expected_stdout.replace(
+        &restart_counts(RestartBackend::Ptrace, 1),
+        &restart_counts(RestartBackend::HostHybrid, hooks),
+    );
     for attempt in 1..=SKID_ATTEMPTS {
-        let _ = reverie::take_skid_overshoot_count();
-        let (ptrace_stdout, ptrace_events) =
-            run_restart_fixture(RestartBackend::Ptrace, mode, plan)
-                .await
-                .unwrap();
-        let (hybrid_stdout, hybrid_events) =
-            run_restart_fixture(RestartBackend::HostHybrid, mode, plan)
-                .await
-                .unwrap();
-        let overshoots = reverie::take_skid_overshoot_count();
-        let expected_hybrid_stdout = ptrace_stdout.replace(
-            &restart_counts(RestartBackend::Ptrace, 1),
-            &restart_counts(RestartBackend::HostHybrid, hooks),
+        let ptrace = run_timer_fixture(RestartBackend::Ptrace, mode, plan).await;
+        let hybrid = run_timer_fixture(RestartBackend::HostHybrid, mode, plan).await;
+        let context = format!(
+            "{mode}: attempt {attempt}, skid overshoots: plain ptrace {}, host-hybrid {}",
+            ptrace.overshoots, hybrid.overshoots
         );
-        if hybrid_stdout == expected_hybrid_stdout
-            && hybrid_events == ptrace_events
-            && ptrace_events == expected
-        {
-            return ptrace_stdout;
+        assert_eq!(
+            ptrace.stdout, expected_stdout,
+            "{context}: plain ptrace output differs from the expected"
+        );
+        assert_eq!(
+            hybrid.stdout, expected_hybrid_stdout,
+            "{context}: host-hybrid output differs from plain ptrace"
+        );
+        assert_eq!(
+            (ptrace.step_landings, hybrid.step_landings),
+            (0, step_landings),
+            "{context}: restart landings resolved inside a timer step window \
+             (plain ptrace, host-hybrid)"
+        );
+        assert_eq!(
+            (ptrace.unclaimed_sigtraps, hybrid.unclaimed_sigtraps),
+            (0, 0),
+            "{context}: unclaimed SIGTRAP stops resumed (plain ptrace, host-hybrid); \
+             a single-step trap flag was left set"
+        );
+        if ptrace.events == expected && hybrid.events == expected {
+            return;
         }
-        if overshoots > 0 && attempt < SKID_ATTEMPTS {
+        if attempt < SKID_ATTEMPTS && skid_explains_divergence(&ptrace, &hybrid, expected) {
             eprintln!(
-                "{label}: attempt {attempt} recorded {overshoots} skid overshoot(s) and \
-                 diverged (ptrace {ptrace_events:?}, host-hybrid {hybrid_events:?}); retrying"
+                "{context}: only a late timer event of a backend that overshot differs \
+                 (plain ptrace {:?}, host-hybrid {:?}); retrying",
+                ptrace.events, hybrid.events
             );
             continue;
         }
         assert_eq!(
-            hybrid_stdout, expected_hybrid_stdout,
-            "{label}: host-hybrid output differs from plain ptrace \
-             (attempt {attempt}, {overshoots} skid overshoot(s))"
+            hybrid.events, ptrace.events,
+            "{context}: host-hybrid Tool events differ from plain ptrace"
         );
         assert_eq!(
-            hybrid_events, ptrace_events,
-            "{label}: host-hybrid Tool events differ from plain ptrace \
-             (attempt {attempt}, {overshoots} skid overshoot(s))"
-        );
-        assert_eq!(
-            ptrace_events, expected,
-            "{label}: plain ptrace Tool events differ from the expected \
-             (attempt {attempt}, {overshoots} skid overshoot(s))"
+            ptrace.events, expected,
+            "{context}: plain ptrace Tool events differ from the expected"
         );
     }
     unreachable!("the last attempt returns or fails an assertion")
+}
+
+fn timer_run(events: &[&str], overshoots: u64) -> TimerRun {
+    TimerRun {
+        stdout: String::new(),
+        events: events.iter().map(|event| event.to_string()).collect(),
+        overshoots,
+        step_landings: 0,
+        unclaimed_sigtraps: 0,
+    }
+}
+
+/// `timer_restart_parity` retries only a late last timer event of a backend
+/// whose own run recorded a skid overshoot.
+#[test]
+fn skid_explains_only_a_late_timer_of_the_backend_that_overshot() {
+    let expected = ["read(warm)", "signal SIGUSR1", "timer +50000"];
+    let exact = ["read(warm)", "signal SIGUSR1", "timer +50000"];
+    let late = ["read(warm)", "signal SIGUSR1", "timer +50075"];
+    let early = ["read(warm)", "signal SIGUSR1", "timer +49990"];
+    let extra = ["read(warm)", "signal SIGUSR1", "timer +50000", "bogus"];
+    let late_and_extra = ["read(warm)", "signal SIGUSR2", "timer +50075"];
+    let missing = ["read(warm)", "signal SIGUSR1"];
+    for (ptrace, hybrid, explained, case) in [
+        (
+            timer_run(&exact, 0),
+            timer_run(&late, 1),
+            true,
+            "host-hybrid late, overshot",
+        ),
+        (
+            timer_run(&late, 1),
+            timer_run(&exact, 0),
+            true,
+            "ptrace late, overshot",
+        ),
+        (
+            timer_run(&late, 1),
+            timer_run(&late, 1),
+            true,
+            "both late, both overshot",
+        ),
+        (
+            timer_run(&late, 1),
+            timer_run(&late, 0),
+            false,
+            "host-hybrid late, only ptrace overshot",
+        ),
+        (
+            timer_run(&exact, 1),
+            timer_run(&late, 0),
+            false,
+            "host-hybrid late, only ptrace overshot",
+        ),
+        (
+            timer_run(&exact, 0),
+            timer_run(&late, 0),
+            false,
+            "late with no overshoot",
+        ),
+        (
+            timer_run(&exact, 0),
+            timer_run(&early, 1),
+            false,
+            "early timer",
+        ),
+        (
+            timer_run(&exact, 0),
+            timer_run(&extra, 1),
+            false,
+            "extra event, host-hybrid overshot",
+        ),
+        (
+            timer_run(&exact, 1),
+            timer_run(&extra, 0),
+            false,
+            "extra event, ptrace overshot",
+        ),
+        (
+            timer_run(&exact, 0),
+            timer_run(&missing, 1),
+            false,
+            "missing timer",
+        ),
+        (
+            timer_run(&exact, 0),
+            timer_run(&late_and_extra, 1),
+            false,
+            "late timer and another difference",
+        ),
+    ] {
+        assert_eq!(
+            skid_explains_divergence(&ptrace, &hybrid, &expected),
+            explained,
+            "{case}"
+        );
+    }
+    let restarted = ["read(warm)", "signal SIGUSR1", "magic read(0x7e57,1)"];
+    assert!(
+        !skid_explains_divergence(&timer_run(&restarted, 0), &timer_run(&late, 1), &restarted),
+        "a timer where none is expected"
+    );
 }
 
 /// A restart code with a signal whose guest handler lacks `SA_RESTART`
@@ -3301,9 +3526,14 @@ async fn host_hybrid_fork_inside_the_deciding_handler_resolves_the_child_restart
 /// delivery and the timer when the read is interrupted, so the timer fires;
 /// the host-hybrid landing stop in between must not cancel or re-arm it, so
 /// it fires exactly `SIGNAL_TIMER_RCBS` after the request. A restarted read's
-/// re-entry is a stop on both backends, so the timer is cancelled.
+/// re-entry is a stop on both backends, so the timer is cancelled. The
+/// landing comes long before the timer's step window, so the run loop, not
+/// the step window, resolves it.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
+    if !in_timer_test_child("host_hybrid_landing_stop_does_not_cancel_a_timer") {
+        return;
+    }
     for (mode, restarted) in [
         ("handler-quiet-spin", false),
         ("handler-quiet-spin-restart", true),
@@ -3326,26 +3556,26 @@ async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
             "signal SIGUSR1",
             last.as_str(),
         ];
-        let stdout = timer_restart_parity(mode, plan, 1, mode, &expected).await;
         let result = if restarted { RESTART_RESULT } else { -4 };
-        assert_eq!(
-            stdout,
-            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
-            "{mode}"
-        );
+        let stdout = format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n");
+        timer_restart_parity(mode, plan, 1, &stdout, &expected, 0).await;
     }
 }
 
 /// As `host_hybrid_landing_stop_does_not_cancel_a_timer`, with the timer due
-/// `SIGNAL_TIMER_NEAR_RCBS` after the deciding signal, so the timer's
-/// single-step window covers the handler's return and the precise timer, not
-/// the run loop, executes the restart landing. The landing must be resolved
-/// inside the step loop: an interrupted read continues and the timer fires
-/// in the spin loop exactly `SIGNAL_TIMER_NEAR_RCBS` after the request, as
-/// under plain ptrace; a restarted read stops at its re-entry on both
-/// backends.
+/// `SIGNAL_TIMER_NEAR_RCBS` after the deciding signal. With the skid margin
+/// pinned to `TIMER_TEST_SKID_MARGIN`, the timer's single-step window starts
+/// at the request and covers the handler's return, so the precise timer, not
+/// the run loop, executes the restart landing; the test requires exactly one
+/// landing resolved inside the step window. The landing must be resolved
+/// there: an interrupted read continues and the timer fires in the spin loop
+/// exactly `SIGNAL_TIMER_NEAR_RCBS` after the request, as under plain ptrace;
+/// a restarted read stops at its re-entry on both backends.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
+    if !in_timer_test_child("host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer") {
+        return;
+    }
     for (mode, restarted) in [
         ("handler-quiet-spin", false),
         ("handler-quiet-spin-restart", true),
@@ -3369,13 +3599,9 @@ async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
             "signal SIGUSR1",
             last.as_str(),
         ];
-        let stdout = timer_restart_parity(mode, plan, 1, mode, &expected).await;
         let result = if restarted { RESTART_RESULT } else { -4 };
-        assert_eq!(
-            stdout,
-            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
-            "{mode}"
-        );
+        let stdout = format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n");
+        timer_restart_parity(mode, plan, 1, &stdout, &expected, 1).await;
     }
 }
 
