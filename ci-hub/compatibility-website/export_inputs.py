@@ -1004,20 +1004,9 @@ def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[
     candidates = namespace.terminals(repo="hermit", schema_version=10)
     # Historical schema-5 absence remains unavailable; it does not acquire a
     # modern stable-run requirement merely because another run has a census.
-    # Select whole groups only for the new explicit producer claim, and still
-    # let the canonical selector judge every predecessor/opposing successor.
-    # This capture only reads rows, so it takes the shared read-only view
-    # instead of a private deep copy.
-    rows = [row for row in namespace.rows_view()
-            if validation_ledger._ledger_team(row.get("repo")) == "hermit"]
-    census_runs = {row.get("run_id") for row in rows if row.get("schema_version") == 5
-                   and "raw_result_input_census_v1" in row}
-    if any(not isinstance(run, str) or not run.strip() for run in census_runs):
-        raise ExportRefused("claimed derived census lacks a stable run identity")
-    for row in validation_ledger.current_validation_run_rows(rows):
-        if row.get("run_id") in census_runs:
-            candidates.append(namespace.select(**{key: row.get(key) for key in
-                ("repo", "run_id", "record_id", "commit", "cwd", "started_at")}))
+    # The canonical reader, not this exporter, selects whole groups for the
+    # explicit producer claim and judges every predecessor/opposing successor.
+    candidates.extend(namespace.census_terminals(repo="hermit"))
     selections = {}
     for selected in candidates:
         identity = tuple(selected["terminal"][key] for key in

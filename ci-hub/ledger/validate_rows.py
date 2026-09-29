@@ -2033,6 +2033,37 @@ class CommittedValidationNamespace:
             )}))
         return sorted(selected, key=lambda item: item["terminal"]["run_id"])
 
+    def census_terminals(self, *, repo: str) -> list[dict]:
+        """Select current rows of runs that claim a schema-5 derived census.
+
+        A run claims one when any of its rows has schema_version 5 and a
+        raw_result_input_census_v1 field. Only those runs acquire the stable
+        run identity requirement; historical schema-5 rows without a census
+        keep their existing absence. The repository's rows are reduced with
+        current_validation_run_rows, which leaves a malformed or ambiguous
+        correction group visible rather than guessing, and each remaining row
+        of a claiming run is resolved through select(), which judges its
+        predecessors and opposing successors. Like terminals(), this grants no
+        admission: callers must still apply the native proof verifier.
+        """
+        if not isinstance(repo, str) or not repo.strip():
+            raise ValueError("canonical producer selector requires nonempty repo")
+        team = _ledger_team(repo)
+        # Only reads rows, so it takes the shared read-only view instead of a
+        # private deep copy.
+        rows = [row for row in self.rows_view() if _ledger_team(row.get("repo")) == team]
+        census_runs = {row.get("run_id") for row in rows if row.get("schema_version") == 5
+                       and "raw_result_input_census_v1" in row}
+        if any(not isinstance(run, str) or not run.strip() for run in census_runs):
+            raise ValueError("claimed derived census lacks a stable run identity")
+        return [
+            self.select(**{key: row.get(key) for key in (
+                "repo", "run_id", "record_id", "commit", "cwd", "started_at",
+            )})
+            for row in current_validation_run_rows(rows)
+            if row.get("run_id") in census_runs
+        ]
+
     def select(self, **selector) -> dict:
         row = _select_finalized_row(self._rows, **selector)
         identity = _admission_event_identity(row)

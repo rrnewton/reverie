@@ -1694,6 +1694,52 @@ def test_committed_terminals_keep_complete_cross_schema_groups_and_failures(tmp_
         assert ns.terminals(repo="hermit", schema_version=10)[0]["row"] == latest
 
 
+def test_committed_census_terminals_select_current_rows_of_claiming_runs(tmp_path: Path):
+    # Only a run with a schema-5 raw_result_input_census_v1 row is selected,
+    # and it is selected at its current row, even when that row has another
+    # schema and no census. A schema-5 run without the field stays absent.
+    census = {"schema": 1, "files": []}
+    claimed = _producer_selector_row(tmp_path, run_id="census-run", record_id="census-old",
+                                     schema_version=5, raw_result_input_census_v1=census)
+    current = _producer_selector_row(tmp_path, run_id="census-run", record_id="census-new",
+                                     schema_version=6, corrects="census-old")
+    plain = _producer_selector_row(tmp_path, run_id="plain-run", record_id="plain", schema_version=5)
+    other = _producer_selector_row(tmp_path, repo="reverie", run_id="reverie-run",
+                                   record_id="reverie-census", schema_version=5,
+                                   raw_result_input_census_v1=census)
+    write_events(tmp_path, *[_producer_selector_event(row, tmp_path) for row in (claimed, current, plain)])
+    write_events(tmp_path, _producer_selector_event(other, tmp_path))
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        selected = ns.census_terminals(repo="rrnewton/hermit")
+        assert selected == [ns.select(**_producer_selector_args(current))]
+        assert selected[0]["row"] == current and "raw_result_input_census_v1" not in selected[0]["row"]
+        assert [item["row"]["record_id"] for item in ns.census_terminals(repo="reverie")] == [
+            "reverie-census"]
+        selected[0]["row"]["result"] = "pass"
+        assert ns.census_terminals(repo="hermit")[0]["row"] == current
+        with pytest.raises(ValueError, match="nonempty repo"):
+            ns.census_terminals(repo=" ")
+
+
+def test_committed_census_terminals_refuse_a_census_without_stable_run_identity(tmp_path: Path):
+    unstable = _producer_selector_row(tmp_path, record_id="census-without-run", schema_version=5,
+                                      raw_result_input_census_v1={"schema": 1, "files": []})
+    del unstable["run_id"]
+    historical = _producer_selector_row(tmp_path, record_id="historical", schema_version=5)
+    del historical["run_id"]
+    write_events(tmp_path, *[_producer_selector_event(row, tmp_path) for row in (unstable, historical)])
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        with pytest.raises(ValueError, match="claimed derived census lacks a stable run identity"):
+            ns.census_terminals(repo="hermit")
+    # Historical schema-5 rows without a census do not acquire the requirement.
+    write_events(tmp_path, _producer_selector_event(historical, tmp_path))
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        assert ns.census_terminals(repo="hermit") == []
+
+
 @pytest.mark.parametrize("opponent", ["missing", "branched", "disconnected"])
 def test_committed_terminals_schema_filter_cannot_hide_opposing_chain(tmp_path: Path, opponent):
     first = _producer_selector_row(tmp_path, record_id="old", schema_version=6)

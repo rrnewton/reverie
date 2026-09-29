@@ -1573,6 +1573,10 @@ class TransportNamespace:
     def rows_view(self):
         return self.rows()
 
+    # The canonical census selector itself, run over this double's rows_view()
+    # and select(), so these transport tests still exercise the real selection.
+    census_terminals = export_inputs.validation_ledger.CommittedValidationNamespace.census_terminals
+
     def select(self, **selector):
         assert all(self.selection["row"].get(key) == value for key, value in selector.items())
         return self.selection
