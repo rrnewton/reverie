@@ -34855,6 +34855,492 @@ mod tests {
         receive_header_cases(true);
     }
 
+    fn receive_identity_overflow_follows_payload_without_publication(batch: bool) {
+        use std::os::unix::net::UnixDatagram;
+
+        const HEADER: u64 = 0x100;
+        const IOV: u64 = 0x200;
+        const PAYLOAD: u64 = 0x400;
+        const CONTROL: u64 = 0x600;
+        const CONTROL_LENGTH: usize = 64;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        assert_eq!(
+            insert_file_with_flags(
+                &mut state,
+                std::fs::File::from(std::os::fd::OwnedFd::from(receiver)),
+                false,
+                None,
+            ),
+            3,
+        );
+        let donated = std::fs::File::create(root.0.join("overflow-right")).unwrap();
+        let mut payload = *b"x";
+        let mut vector = libc::iovec {
+            iov_base: payload.as_mut_ptr().cast(),
+            iov_len: payload.len(),
+        };
+        let mut control = rights_control(&[donated.as_raw_fd()]);
+        let host_message = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: &mut vector,
+            msg_iovlen: 1,
+            msg_control: control.as_mut_ptr().cast(),
+            msg_controllen: control.len(),
+            msg_flags: 0,
+        };
+        // SAFETY: all host buffers and owned descriptors outlive the call.
+        assert_eq!(
+            unsafe { libc::sendmsg(sender.as_raw_fd(), &host_message, libc::MSG_NOSIGNAL) },
+            1,
+        );
+        memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
+        let vector = libc::iovec {
+            iov_base: PAYLOAD as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, IOV, &vector), 0);
+        let header = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: IOV as usize as *mut libc::iovec,
+            msg_iovlen: 1,
+            msg_control: CONTROL as usize as *mut libc::c_void,
+            msg_controllen: CONTROL_LENGTH,
+            msg_flags: 0,
+        };
+        let header_length = if batch {
+            let message = libc::mmsghdr {
+                msg_hdr: header,
+                msg_len: 0xa5a5_a5a5,
+            };
+            assert_eq!(write_struct(&mut memory, HEADER, &message), 0);
+            std::mem::size_of::<libc::mmsghdr>()
+        } else {
+            assert_eq!(write_struct(&mut memory, HEADER, &header), 0);
+            std::mem::size_of::<libc::msghdr>()
+        };
+        memory
+            .map_user_permissions(0, PAGE_SIZE, true, true)
+            .unwrap();
+        memory.enable_user_access();
+        let mut before = vec![0; PAGE_SIZE as usize];
+        memory.read(0, &mut before).unwrap();
+        state.file_identity_table.lock().unwrap().next_inode = u64::MAX;
+        let mut executor = ElfExecutor::new(state, false);
+        let original_files = executor.state.files.keys().copied().collect::<Vec<_>>();
+        let request = if batch {
+            SyscallRequest::new(
+                libc::SYS_recvmmsg as u64,
+                [3, HEADER, 1, libc::MSG_DONTWAIT as u64, 0, 0],
+            )
+        } else {
+            SyscallRequest::new(
+                libc::SYS_recvmsg as u64,
+                [3, HEADER, libc::MSG_DONTWAIT as u64, 0, 0, 0],
+            )
+        };
+        assert_eq!(
+            executor.execute_checked(&request, &memory).unwrap(),
+            negative_errno(libc::EOVERFLOW),
+        );
+        let mut expected = before;
+        expected[PAYLOAD as usize] = b'x';
+        let mut after = vec![0; PAGE_SIZE as usize];
+        memory.read(0, &mut after).unwrap();
+        assert_eq!(after, expected, "only the received payload may change");
+        assert_eq!(
+            &after[HEADER as usize..HEADER as usize + header_length],
+            &expected[HEADER as usize..HEADER as usize + header_length],
+        );
+        assert_eq!(
+            executor.state.files.keys().copied().collect::<Vec<_>>(),
+            original_files,
+        );
+        assert_eq!(
+            executor
+                .file_table
+                .lock()
+                .unwrap()
+                .files
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            original_files,
+        );
+        assert_eq!(
+            executor
+                .state
+                .file_identity_table
+                .lock()
+                .unwrap()
+                .next_inode,
+            u64::MAX
+        );
+        assert_eq!(
+            executor.execute_checked(&request, &memory).unwrap(),
+            negative_errno(libc::EAGAIN),
+            "allocator exhaustion occurs after the host datagram was consumed",
+        );
+        memory.read(0, &mut after).unwrap();
+        assert_eq!(
+            after, expected,
+            "empty-queue receive must preserve every byte"
+        );
+        assert_eq!(
+            executor
+                .state
+                .file_identity_table
+                .lock()
+                .unwrap()
+                .next_inode,
+            u64::MAX
+        );
+        assert_eq!(
+            executor.state.files.keys().copied().collect::<Vec<_>>(),
+            original_files
+        );
+    }
+
+    #[derive(Debug)]
+    struct ReceiveIdentityWakeObservation {
+        files_free: bool,
+        identities_free: bool,
+        pristine_control: bool,
+        copies: usize,
+        allocated: Option<Result<u64, i64>>,
+    }
+
+    struct ReceiveIdentityProbe {
+        memory: GuestMemory,
+        child: ElfExecutor,
+        sibling: std::fs::File,
+        payload: u64,
+        control: u64,
+        watches: Mutex<Vec<std::pin::Pin<Box<crate::entry::ObservedChange>>>>,
+        bad_arm: AtomicBool,
+        observed: Mutex<Option<ReceiveIdentityWakeObservation>>,
+    }
+
+    // The receiver futures retain their wakers. A weak reference avoids a cycle
+    // even if the receive or an assertion unwinds before explicit disarming.
+    struct ReceiveIdentityWake(std::sync::Weak<ReceiveIdentityProbe>);
+
+    impl std::task::Wake for ReceiveIdentityWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            if let Some(probe) = self.0.upgrade() {
+                probe.observe();
+            }
+        }
+    }
+
+    impl ReceiveIdentityProbe {
+        fn arm(self: &Arc<Self>) {
+            use std::future::Future;
+
+            let mut change = Box::pin(self.memory.entry_gate().subscribe());
+            let waker = std::task::Waker::from(Arc::new(ReceiveIdentityWake(Arc::downgrade(self))));
+            let pending = change
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending();
+            if pending {
+                // Do not destroy an earlier subscription from its own callback.
+                self.watches.lock().unwrap().push(change);
+            } else {
+                self.bad_arm.store(true, Ordering::SeqCst);
+            }
+        }
+
+        fn observe(self: &Arc<Self>) {
+            if self.observed.lock().unwrap().is_some() {
+                return;
+            }
+            // SAFETY: only this thread accesses this fixed base-zero mapping;
+            // no KVM run, remap, or other worker exists, and memory pins it.
+            // Using a GuestMemory copy API here would itself notify the gate.
+            let base = self.memory.host_address();
+            let payload = unsafe { std::ptr::read_volatile((base + self.payload) as *const u8) };
+            if payload != b'x' {
+                self.arm();
+                return;
+            }
+            let pristine_control = (0..64).all(|offset| unsafe {
+                std::ptr::read_volatile((base + self.control + offset) as *const u8) == 0xa5
+            });
+            let files_free = self.child.file_table.try_lock().is_ok();
+            let identities_free = self.child.state.file_identity_table.try_lock().is_ok();
+            let copies = self.memory.entry_gate().test_state().copies;
+            // Both temporary guards above have retired. With no other executing
+            // thread in this fixture, the real allocator cannot lose the probe
+            // to a competitor. A refused probe records the defect without ever
+            // entering the blocking allocator on the unfixed receive path.
+            let allocated = (files_free && identities_free).then(|| {
+                allocate_fd_object_inode(&self.child.state, &self.sibling)
+                    .map(|identity| identity.inode)
+            });
+            *self.observed.lock().unwrap() = Some(ReceiveIdentityWakeObservation {
+                files_free,
+                identities_free,
+                pristine_control,
+                copies,
+                allocated,
+            });
+            // Do not rearm after the first actual payload-copy retirement.
+        }
+    }
+
+    fn receive_payload_wake_allows_fork_identity_allocation(batch: bool) {
+        const PAIR: u64 = 0x80;
+        const HEADER: u64 = 0x100;
+        const IOV: u64 = 0x200;
+        const PAYLOAD: u64 = 0x280;
+        const CONTROL: u64 = 0x300;
+        const READBACK: u64 = 0x400;
+        const CAPACITY: usize = 64;
+        for with_right in [false, true] {
+            let native = native_unused_control_receive(batch, with_right);
+            let root = TestDir::new();
+            std::fs::write(root.0.join("wake-sibling"), b"sibling").unwrap();
+            let sibling = std::fs::File::open(root.0.join("wake-sibling")).unwrap();
+            let mut parent = ElfExecutor::new(test_state(&root.0), false);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            assert_eq!(
+                parent.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_socketpair as u64,
+                        [libc::AF_UNIX as u64, libc::SOCK_DGRAM as u64, 0, PAIR, 0, 0],
+                    ),
+                    &memory,
+                ),
+                0,
+            );
+            let sockets: [libc::c_int; 2] = read_struct(&memory, PAIR);
+            assert_eq!(sockets, [3, 4]);
+            let child = parent.fork_child(2, false, false).unwrap();
+            assert!(!Arc::ptr_eq(&parent.file_table, &child.file_table));
+            assert!(Arc::ptr_eq(
+                &parent.state.file_identity_table,
+                &child.state.file_identity_table,
+            ));
+            let before = parent.state.files.keys().copied().collect::<Vec<_>>();
+            assert_eq!(before, [3, 4]);
+            let next_inode = parent.state.file_identity_table.lock().unwrap().next_inode;
+            send_unused_control_datagram(host_fd(&parent.state, sockets[0]).unwrap(), with_right);
+
+            let iov = libc::iovec {
+                iov_base: PAYLOAD as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, IOV, &iov), 0);
+            let iov_before = read_guest_bytes::<16>(&memory, IOV).unwrap();
+            memory.write(PAYLOAD, &[0xa5; 8]).unwrap();
+            memory.write(CONTROL, &[0xa5; CAPACITY]).unwrap();
+            memory.write(READBACK, &[0xa5; 8]).unwrap();
+            // Initialize input and padding bytes explicitly, as in the existing
+            // native-first header fixture; compare the entire arena afterward.
+            let mut header = [0xa5; 64];
+            header[0..8].copy_from_slice(&0u64.to_ne_bytes());
+            header[8..12].copy_from_slice(&0u32.to_ne_bytes());
+            header[16..24].copy_from_slice(&IOV.to_ne_bytes());
+            header[24..32].copy_from_slice(&1u64.to_ne_bytes());
+            header[32..40].copy_from_slice(&CONTROL.to_ne_bytes());
+            header[40..48].copy_from_slice(&(CAPACITY as u64).to_ne_bytes());
+            header[48..52].copy_from_slice(&0x1357_9bdf_i32.to_ne_bytes());
+            memory.write(HEADER, &header).unwrap();
+            memory
+                .map_user_permissions(0, PAGE_SIZE, true, true)
+                .unwrap();
+            memory.enable_user_access();
+
+            let probe = Arc::new(ReceiveIdentityProbe {
+                memory: memory.clone(),
+                child,
+                sibling,
+                payload: PAYLOAD,
+                control: CONTROL,
+                watches: Mutex::new(Vec::new()),
+                bad_arm: AtomicBool::new(false),
+                observed: Mutex::new(None),
+            });
+            let flags = (libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC) as u64;
+            let (number, args) = if batch {
+                (
+                    libc::SYS_recvmmsg,
+                    [sockets[1] as u64, HEADER, 1, flags, 0, 0],
+                )
+            } else {
+                (
+                    libc::SYS_recvmsg,
+                    [sockets[1] as u64, HEADER, flags, 0, 0, 0],
+                )
+            };
+            probe.arm();
+            let result = parent.execute_checked(&SyscallRequest::new(number as u64, args), &memory);
+            let watches = std::mem::take(&mut *probe.watches.lock().unwrap());
+            drop(watches);
+            assert_eq!(result.unwrap(), 1, "batch={batch} with_right={with_right}");
+            assert!(!probe.bad_arm.load(Ordering::SeqCst));
+
+            let record = rights_control(&[5]);
+            let record_length = if with_right { record.len() } else { 0 };
+            let written_length = if with_right {
+                control_messages(&record).unwrap()[0].end
+            } else {
+                0
+            };
+            let mut expected_control = [0xa5; CAPACITY];
+            expected_control[..written_length].copy_from_slice(&record[..written_length]);
+            let control = read_guest_bytes::<CAPACITY>(&memory, CONTROL).unwrap();
+            assert_eq!(control, expected_control);
+            let rights = control_rights(&control[..record_length]);
+            assert_eq!(rights, if with_right { vec![5] } else { vec![] });
+            header[40..48].copy_from_slice(&(record_length as u64).to_ne_bytes());
+            header[48..52].copy_from_slice(&libc::MSG_CMSG_CLOEXEC.to_ne_bytes());
+            if batch {
+                header[56..60].copy_from_slice(&1u32.to_ne_bytes());
+            }
+            assert_eq!(read_guest_bytes::<64>(&memory, HEADER).unwrap(), header);
+            assert_eq!(read_guest_bytes::<16>(&memory, IOV).unwrap(), iov_before);
+            let payload = [b'x', 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5];
+            assert_eq!(read_guest_bytes::<8>(&memory, PAYLOAD).unwrap(), payload);
+            assert_eq!(
+                UnusedControlObservation {
+                    payload: payload[0],
+                    control_length: record_length,
+                    flags: libc::MSG_CMSG_CLOEXEC,
+                    rights: rights.len(),
+                    unused_tail: control[written_length..].to_vec(),
+                },
+                native,
+            );
+            let mut expected_fds = before.clone();
+            expected_fds.extend_from_slice(&rights);
+            assert_eq!(
+                parent.state.files.keys().copied().collect::<Vec<_>>(),
+                expected_fds
+            );
+            assert_eq!(
+                parent
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .files
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                expected_fds,
+            );
+            assert_eq!(
+                probe.child.state.files.keys().copied().collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                probe
+                    .child
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .files
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                before,
+            );
+            for &fd in &rights {
+                assert!(parent.state.cloexec_fds.contains(&fd));
+                let shared = parent.file_table.lock().unwrap();
+                assert!(shared.cloexec_fds.contains(&fd));
+                assert!(Arc::ptr_eq(
+                    &parent.state.fd_object_inodes[&fd],
+                    &shared.fd_object_inodes[&fd]
+                ));
+                drop(shared);
+                // SAFETY: parent still owns this exact received descriptor.
+                assert_eq!(
+                    unsafe { libc::fcntl(host_fd(&parent.state, fd).unwrap(), libc::F_GETFD) },
+                    libc::FD_CLOEXEC
+                );
+                assert_eq!(
+                    parent.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_read as u64,
+                            [fd as u64, READBACK, 8, 0, 0, 0]
+                        ),
+                        &memory,
+                    ),
+                    0,
+                );
+                assert_eq!(read_guest_bytes::<8>(&memory, READBACK).unwrap(), [0xa5; 8]);
+            }
+            assert_eq!(
+                parent.execute(&SyscallRequest::new(number as u64, args), &memory),
+                negative_errno(libc::EAGAIN),
+            );
+            assert_eq!(read_guest_bytes::<64>(&memory, HEADER).unwrap(), header);
+            assert_eq!(read_guest_bytes::<8>(&memory, PAYLOAD).unwrap(), payload);
+            assert_eq!(
+                read_guest_bytes::<CAPACITY>(&memory, CONTROL).unwrap(),
+                control
+            );
+            assert_eq!(
+                parent.state.files.keys().copied().collect::<Vec<_>>(),
+                expected_fds
+            );
+
+            let observation = probe
+                .observed
+                .lock()
+                .unwrap()
+                .take()
+                .expect("payload retirement never woke observer");
+            assert!(
+                observation.pristine_control,
+                "observer fired after ancillary copyout"
+            );
+            assert_eq!(observation.copies, 0);
+            assert!(
+                observation.files_free,
+                "fork child unexpectedly shared receiving descriptor lock"
+            );
+            assert!(
+                observation.identities_free,
+                "payload retirement woke while identity allocator was locked"
+            );
+            let sibling_inode = observation
+                .allocated
+                .expect("sibling allocator was skipped")
+                .unwrap();
+            assert_eq!(sibling_inode, next_inode);
+            for fd in rights {
+                assert_ne!(parent.state.fd_object_inodes[&fd].inode, sibling_inode);
+            }
+            assert_eq!(
+                parent.state.file_identity_table.lock().unwrap().next_inode,
+                next_inode + 1 + u64::from(with_right),
+            );
+        }
+    }
+
+    #[test]
+    fn recvmsg_payload_wake_allows_fork_identity_allocation() {
+        receive_payload_wake_allows_fork_identity_allocation(false);
+        receive_identity_overflow_follows_payload_without_publication(false);
+    }
+
+    #[test]
+    fn recvmmsg_payload_wake_allows_fork_identity_allocation() {
+        receive_payload_wake_allows_fork_identity_allocation(true);
+        receive_identity_overflow_follows_payload_without_publication(true);
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct UnusedControlObservation {
         payload: u8,
