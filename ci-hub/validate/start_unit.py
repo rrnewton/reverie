@@ -1515,9 +1515,15 @@ def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     return base / "e2e", base / "safe-ci-dag-runner"
 
 
-def _unwrapped_git_directory(root: Path, unit: str) -> Path:
-    """This unit's private PATH entry holding only a `git` symlink."""
-    return root / "ignored/validate/artifacts" / unit / "unwrapped-git"
+def _unwrapped_git_directory(runtime_root: Path) -> Path:
+    """This run's private PATH entry holding only a `git` symlink.
+
+    It lives in the run's private runtime root, so every path that removes
+    that root (a refused launch, normal completion, orphan recovery) removes
+    it too, and nothing appears under the unit's artifact root before systemd
+    accepts the unit.
+    """
+    return runtime_root / "unwrapped-git"
 
 
 def _carries_nosuid_or_nodev(path: Path) -> bool:
@@ -13033,14 +13039,32 @@ def main(
                 "producer_files": reverie_node.count_source_hashes(tool_root),
             }
         placement: cpu_placement.CpuPlacement | None = None
+        git_substitution: unwrapped_git.GitSubstitution | None = None
+        unit_environment: Mapping[str, str] = environment
         if repo == "rrnewton/hermit":
             # Derived from this host at launch; a malformed operator override
             # raises here (CpuPlacementError is a ValueError) before any unit
             # exists. Recorded whether or not anything was excluded.
             placement = cpu_placement.derive(environ=environment)
+            # Run the validation's git as the binary the host telemetry
+            # wrapper execs, when PATH's git is provably that wrapper and both
+            # report the same version (ci-hub/validate/unwrapped_git.py). The
+            # directory holds one `git` symlink inside this run's private
+            # runtime root, which every refusal and completion path removes.
+            # A dry run plans without creating it. Any failed check leaves
+            # PATH unchanged; the run handle and the retained log say which.
+            git_substitution = unwrapped_git.plan(
+                environment.get("PATH", ""),
+                _unwrapped_git_directory(runtime_root),
+                env=environment,
+            )
+            if not args.dry_run:
+                git_substitution = unwrapped_git.materialize(git_substitution)
+            unit_environment = {**environment, "PATH": git_substitution.path}
             output_fields.update(
                 {
                     "cpu_placement": placement.record(),
+                    "git_substitution": git_substitution.record(),
                     "e2e_result_root": str(e2e_result_root),
                     "safe_ci_dag_runner_log_dir": str(runner_log_dir),
                     "hermit_run_timeout_seconds": hermit_run_timeout,
@@ -13051,23 +13075,6 @@ def main(
                     ),
                 }
             )
-        git_substitution: unwrapped_git.GitSubstitution | None = None
-        unit_environment: Mapping[str, str] = environment
-        if repo == "rrnewton/hermit":
-            # Run the validation's git as the binary the host telemetry
-            # wrapper execs, when PATH's git is provably that wrapper and both
-            # report the same version (ci-hub/validate/unwrapped_git.py). The
-            # directory sits beside this unit's other artifacts and holds one
-            # `git` symlink. A dry run plans without creating it. Any failed
-            # check leaves PATH unchanged; the retained log says which.
-            git_substitution = unwrapped_git.plan(
-                environment.get("PATH", ""),
-                _unwrapped_git_directory(state_root, unit),
-                env=environment,
-            )
-            if not args.dry_run:
-                git_substitution = unwrapped_git.materialize(git_substitution)
-            unit_environment = {**environment, "PATH": git_substitution.path}
         started_at = datetime.now(timezone.utc).isoformat()
         command = build_systemd_command(
             root=tool_root,

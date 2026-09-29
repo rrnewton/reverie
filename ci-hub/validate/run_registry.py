@@ -142,6 +142,18 @@ class CpuPlacementRecord(TypedDict):
     override_env: str
 
 
+class GitSubstitutionRecord(TypedDict):
+    applied: bool
+    code: str
+    reason: str
+    resolved_git: str | None
+    resolved_git_realpath: str | None
+    real_git: str
+    effective_git: str | None
+    effective_version: str | None
+    directory: str | None
+
+
 class TerminationRequestRecord(TypedDict, total=False):
     requested_at: str
     agent: str
@@ -217,6 +229,7 @@ class RunRecord(TypedDict, total=False):
     commit_status_publication: CommitStatusPublicationRecord
     ledger_mirror: LedgerMirrorRecord
     cpu_placement: CpuPlacementRecord
+    git_substitution: GitSubstitutionRecord
     termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
@@ -398,11 +411,12 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "host",
         "termination_requests",
         "cpu_placement",
+        "git_substitution",
     }
 )
 
 BENCH_FIELDS = COMMON_FIELDS | frozenset(
-    {"results", "cleanup_error", "cpu_placement"}
+    {"results", "cleanup_error", "cpu_placement", "git_substitution"}
 )
 
 # Written by ci-hub/validate/cpu_placement.py (CpuPlacement.record). Checked
@@ -461,6 +475,39 @@ def _cpu_list_set(field: str, text: str) -> frozenset[int]:
             raise _error(f"cpu_placement.{field}", "must be a kernel CPU list")
         cpus.update(range(low, high + 1))
     return frozenset(cpus)
+
+
+# Written by ci-hub/validate/unwrapped_git.py (GitSubstitution.record): which
+# git a run's PATH reaches and why. Checked structurally here for the same
+# fixed-dependency reason as cpu_placement; tests/test_unwrapped_git.py pins
+# these sets to unwrapped_git's record fields and CODES.
+GIT_SUBSTITUTION_FIELDS = frozenset(
+    {
+        "applied",
+        "code",
+        "reason",
+        "resolved_git",
+        "resolved_git_realpath",
+        "real_git",
+        "effective_git",
+        "effective_version",
+        "directory",
+    }
+)
+GIT_SUBSTITUTION_CODES = frozenset(
+    {
+        "applied",
+        "no-git-on-path",
+        "relative-path-entry",
+        "unusable-directory",
+        "real-git-unavailable",
+        "already-unwrapped",
+        "not-the-wrapper",
+        "version-probe-failed",
+        "version-mismatch",
+        "materialize-failed",
+    }
+)
 
 
 _OPTIONAL_TEXT_FIELDS = frozenset(
@@ -614,6 +661,72 @@ def _cpu_placement(value: Any) -> None:
         raise _error(
             "cpu_placement", "allowed_cpus must equal online_cpus minus excluded_cpus"
         )
+
+
+def _git_substitution(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise _error("git_substitution", "must be an object")
+    if set(value) != GIT_SUBSTITUTION_FIELDS:
+        raise _error(
+            "git_substitution",
+            f"must contain exactly {', '.join(sorted(GIT_SUBSTITUTION_FIELDS))}",
+        )
+    applied = value["applied"]
+    if not isinstance(applied, bool):
+        raise _error("git_substitution.applied", "must be a boolean")
+    code = value["code"]
+    if not isinstance(code, str) or code not in GIT_SUBSTITUTION_CODES:
+        raise _error(
+            "git_substitution.code",
+            f"{code!r} is not one of {', '.join(sorted(GIT_SUBSTITUTION_CODES))}",
+        )
+    for field in ("reason", "real_git"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise _error(f"git_substitution.{field}", "must be a non-empty string")
+    for field in (
+        "resolved_git",
+        "resolved_git_realpath",
+        "effective_git",
+        "effective_version",
+        "directory",
+    ):
+        item = value[field]
+        if item is not None and (not isinstance(item, str) or not item):
+            raise _error(
+                f"git_substitution.{field}", "must be null or a non-empty string"
+            )
+    if applied != (code == "applied"):
+        raise _error(
+            "git_substitution", "applied must be true exactly when code is 'applied'"
+        )
+    if applied:
+        directory = value["directory"]
+        if directory is None or not Path(directory).is_absolute():
+            raise _error(
+                "git_substitution.directory",
+                "an applied substitution must name its absolute directory",
+            )
+        if value["resolved_git"] is None or value["effective_version"] is None:
+            raise _error(
+                "git_substitution",
+                "an applied substitution must name PATH's git and the version",
+            )
+        if value["effective_git"] != value["real_git"]:
+            raise _error(
+                "git_substitution.effective_git",
+                "an applied substitution runs real_git",
+            )
+    else:
+        if value["directory"] is not None:
+            raise _error(
+                "git_substitution.directory",
+                "must be null when the substitution was not applied",
+            )
+        if value["effective_git"] != value["resolved_git"]:
+            raise _error(
+                "git_substitution.effective_git",
+                "a substitution that was not applied runs PATH's git",
+            )
 
 
 def _ledger_mirror(value: Any) -> None:
@@ -1228,6 +1341,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         _ledger_mirror(value.get("ledger_mirror"))
     if "cpu_placement" in value:
         _cpu_placement(value.get("cpu_placement"))
+    if "git_substitution" in value:
+        _git_substitution(value.get("git_substitution"))
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":

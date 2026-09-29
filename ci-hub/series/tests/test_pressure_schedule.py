@@ -736,7 +736,7 @@ class PressureScheduleTest(unittest.TestCase):
 class UnwrappedGitLaunchTest(unittest.TestCase):
     """launch() hands the unit a PATH whose git is git.meta.real, or PATH unchanged."""
 
-    def launch(self, root, path, **patches):
+    def launch(self, root, path, systemd_rc=0, **patches):
         calls = []
 
         def run(command, **kwargs):
@@ -745,6 +745,10 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 3, "", "")
             if "rev-parse" in command:
                 return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            if command[0] == "/bin/systemd-run" and systemd_rc:
+                return subprocess.CompletedProcess(
+                    command, systemd_rc, "", "unit fixture refused\n"
+                )
             return subprocess.CompletedProcess(command, 0, "", "")
 
         output = io.StringIO()
@@ -791,6 +795,15 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
     def path_values(self, command):
         return [arg for arg in command if arg.startswith("--setenv=PATH=")]
 
+    def network_git_values(self, command):
+        prefix = f"--setenv={pressure_schedule.NETWORK_GIT_ENV}="
+        return [arg for arg in command if arg.startswith(prefix)]
+
+    def recorded(self, root):
+        return pressure_schedule.run_registry.read_record(
+            pressure_schedule.run_registry.record_path(root, pressure_schedule.UNIT)
+        )
+
     def test_launch_runs_unwrapped_git_when_path_git_is_the_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -810,6 +823,19 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
             log = pressure_schedule.log_path(root).read_text()
             self.assertIn(f"pressure_schedule: slot={slot} git substitution APPLIED: ", log)
             self.assertIn(f'"effective_git": "{real}"', log)
+            # The submodule fetch, the campaign's one network git call, keeps
+            # PATH's original git (the wrapper, with its 429 retry).
+            self.assertEqual(
+                [f"--setenv={pressure_schedule.NETWORK_GIT_ENV}={local / 'git'}"],
+                self.network_git_values(launched[0]),
+            )
+            # The run handle carries the decision, machine-readably.
+            substitution = self.recorded(root)["git_substitution"]
+            self.assertEqual(True, substitution["applied"])
+            self.assertEqual("applied", substitution["code"])
+            self.assertEqual(str(git_directory), substitution["directory"])
+            self.assertEqual(str(real), substitution["effective_git"])
+            self.assertEqual(str(local / "git"), substitution["resolved_git"])
             # stdout stays the health tick's two-line protocol.
             self.assertEqual(
                 ["state=launched", "summary"],
@@ -831,6 +857,10 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
             self.assertIn("git substitution NOT-APPLIED: ", log)
             self.assertIn('"code": "not-the-wrapper"', log)
             self.assertIn('"effective_version": "git version 2.52.0"', log)
+            self.assertEqual([], self.network_git_values(launched[0]))
+            substitution = self.recorded(root)["git_substitution"]
+            self.assertEqual("not-the-wrapper", substitution["code"])
+            self.assertIsNone(substitution["directory"])
 
     def test_directory_failure_launches_with_path_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -848,8 +878,119 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
 
             self.assertEqual(0, rc, output)
             self.assertEqual([f"--setenv=PATH={path}"], self.path_values(launched[0]))
+            self.assertEqual([], self.network_git_values(launched[0]))
             log = pressure_schedule.log_path(root).read_text()
             self.assertIn('"code": "materialize-failed"', log)
+            self.assertEqual(
+                "materialize-failed", self.recorded(root)["git_substitution"]["code"]
+            )
+
+    def test_systemd_refusal_removes_the_git_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            rc, launched, output = self.launch(
+                root, f"{local}:/bin", systemd_rc=1, real=real
+            )
+
+            self.assertEqual(1, rc, output)
+            self.assertEqual(1, len(launched))
+            self.assertIn("state=refused", output)
+            self.assertNotIn("cleanup_error", output)
+            slot = self.slot(root)
+            self.assertFalse(
+                (root / "ignored/ci-hub/pressure-test-git" / slot).exists()
+            )
+            record = self.recorded(root)
+            self.assertEqual("refused", record["state"])
+            self.assertEqual("applied", record["git_substitution"]["code"])
+            self.assertNotIn("cleanup_error", record)
+
+    def test_record_write_failure_removes_the_git_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            with mock.patch.object(
+                pressure_schedule.run_registry,
+                "write_current_record",
+                side_effect=RuntimeError("record fixture refused"),
+            ), self.assertRaisesRegex(RuntimeError, "record fixture refused"):
+                self.launch(root, f"{local}:/bin", real=real)
+
+            # The directory was created (the log says APPLIED) and removed.
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn("git substitution APPLIED: ", log)
+            parent = root / "ignored/ci-hub/pressure-test-git"
+            self.assertEqual([], sorted(parent.iterdir()))
+
+    def test_systemd_run_start_failure_removes_the_git_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            def launch_with_missing_systemd_run():
+                calls = []
+
+                def run(command, **kwargs):
+                    calls.append(command)
+                    if command[0] == "/bin/systemctl":
+                        return subprocess.CompletedProcess(command, 3, "", "")
+                    if "rev-parse" in command:
+                        return subprocess.CompletedProcess(
+                            command, 0, "a" * 40 + "\n", ""
+                        )
+                    if command[0] == "/bin/systemd-run":
+                        raise FileNotFoundError(2, "No such file", command[0])
+                    return subprocess.CompletedProcess(command, 0, "", "")
+
+                with mock.patch.dict(
+                    pressure_schedule.os.environ, {"PATH": f"{local}:/bin"}, clear=True
+                ), mock.patch.object(
+                    pressure_schedule.shutil,
+                    "which",
+                    side_effect=lambda name: f"/bin/{name}",
+                ), mock.patch.object(
+                    pressure_schedule.unwrapped_git, "REAL_GIT", real
+                ), mock.patch.object(
+                    pressure_schedule.unwrapped_git,
+                    "probe_version",
+                    ORIGINAL_PROBE_VERSION,
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    pressure_schedule.launch(root, run)
+
+            with self.assertRaises(FileNotFoundError):
+                launch_with_missing_systemd_run()
+            parent = root / "ignored/ci-hub/pressure-test-git"
+            self.assertEqual([], sorted(parent.iterdir()))
+
+    def test_systemd_refusal_records_a_git_directory_it_cannot_remove(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            original_materialize = pressure_schedule.unwrapped_git.materialize
+
+            def materialize_then_intrude(planned):
+                made = original_materialize(planned)
+                (Path(made.directory) / "intruder").write_text("not ours\n")
+                return made
+
+            with mock.patch.object(
+                pressure_schedule.unwrapped_git,
+                "materialize",
+                side_effect=materialize_then_intrude,
+            ):
+                rc, _launched, output = self.launch(
+                    root, f"{local}:/bin", systemd_rc=1, real=real
+                )
+
+            self.assertEqual(1, rc, output)
+            slot = self.slot(root)
+            git_directory = root / "ignored/ci-hub/pressure-test-git" / slot
+            self.assertEqual(
+                ["git", "intruder"], sorted(p.name for p in git_directory.iterdir())
+            )
+            record = self.recorded(root)
+            self.assertIn("left in place", record["cleanup_error"])
+            self.assertIn("cleanup_error=", output)
 
     def test_refused_handoff_creates_no_git_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -889,6 +1030,117 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
             self.assertIn("incomplete operational-tool handoff", output.getvalue())
             self.assertFalse(any(command[0] == "/bin/systemd-run" for command in calls))
             self.assertFalse((root / "ignored/ci-hub/pressure-test-git").exists())
+
+
+
+class RunCampaignGitDirectoryTest(unittest.TestCase):
+    """run_campaign removes launch()'s git directory and uses NETWORK_GIT_ENV."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.local, self.real, _plain = fake_host_gits(self.root)
+        self.slot = "pressure-aaaaaaaaaaaa-20260929000000-0123abcd"
+        self.git_directory = pressure_schedule.unwrapped_git_directory(
+            self.root, self.slot
+        )
+        planned = pressure_schedule.unwrapped_git.plan(
+            f"{self.local}:/bin", self.git_directory, real_git=self.real
+        )
+        self.substitution = pressure_schedule.unwrapped_git.materialize(planned)
+        self.assertTrue(self.substitution.applied, self.substitution.reason)
+        self.record = pressure_schedule.run_registry.record_path(
+            self.root, pressure_schedule.UNIT
+        )
+        pressure_schedule.run_registry.write_record(
+            self.record,
+            {
+                "schema_version": 1,
+                "kind": "bench",
+                "state": "running",
+                "unit": f"{pressure_schedule.UNIT}.service",
+                "target": "a" * 40,
+                "repo": "rrnewton/hermit",
+                "checkout": str(self.root / "worktrees/validate" / self.slot),
+                "log": str(self.root / "ignored/ci-hub/pressure-test.log"),
+                "agent": "tick-pressure-test",
+                "started_at": "2026-09-29T00:00:00Z",
+                "producer": pressure_schedule.run_registry.PRODUCER,
+                "admission": "ci-hub validate-lock",
+                "git_substitution": self.substitution.record(),
+            },
+        )
+
+    def campaign(self, create_rc=0):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if "create" in command and command[0].endswith("ci-hub/bin/wrkslots"):
+                return subprocess.CompletedProcess(command, create_rc, "", "no slot\n")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.dict(
+            pressure_schedule.os.environ,
+            {pressure_schedule.NETWORK_GIT_ENV: str(self.local / "git")},
+        ), mock.patch.object(
+            pressure_schedule.subprocess, "run", side_effect=run
+        ), contextlib.redirect_stdout(io.StringIO()):
+            if create_rc:
+                with self.assertRaises(RuntimeError):
+                    pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+                rc = None
+            else:
+                rc = pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+        return rc, calls
+
+    def test_campaign_removes_the_git_directory(self):
+        rc, calls = self.campaign()
+
+        self.assertEqual(0, rc)
+        self.assertFalse(self.git_directory.exists())
+        submodule = next(command for command in calls if "submodule" in command)
+        self.assertEqual(str(self.local / "git"), submodule[0])
+        state = pressure_schedule.read_state(self.root)
+        self.assertEqual("passed", state["state"])
+        self.assertNotIn("cleanup_error", state)
+        finished = pressure_schedule.run_registry.read_record(self.record)
+        self.assertEqual("completed", finished["state"])
+        self.assertIsNone(finished.get("cleanup_error"))
+
+    def test_campaign_leaves_and_reports_a_foreign_git_directory(self):
+        (self.git_directory / "intruder").write_text("not ours\n")
+        rc, _calls = self.campaign()
+
+        self.assertEqual(1, rc)
+        self.assertEqual(
+            ["git", "intruder"],
+            sorted(p.name for p in self.git_directory.iterdir()),
+        )
+        state = pressure_schedule.read_state(self.root)
+        self.assertEqual("failed", state["state"])
+        self.assertIn("left in place", state["cleanup_error"])
+        finished = pressure_schedule.run_registry.read_record(self.record)
+        self.assertEqual(state["cleanup_error"], finished["cleanup_error"])
+
+    def test_failed_slot_creation_removes_the_git_directory(self):
+        _rc, calls = self.campaign(create_rc=1)
+
+        self.assertFalse(any("submodule" in command for command in calls))
+        self.assertFalse(self.git_directory.exists())
+        state = pressure_schedule.read_state(self.root)
+        self.assertEqual("failed", state["state"])
+        self.assertNotIn("cleanup_error", state)
+
+    def test_network_git_is_the_recorded_absolute_path_or_plain_git(self):
+        env = pressure_schedule.NETWORK_GIT_ENV
+        self.assertEqual("/usr/local/bin/git", pressure_schedule.network_git(
+            {env: "/usr/local/bin/git"}
+        ))
+        self.assertEqual("git", pressure_schedule.network_git({}))
+        self.assertEqual("git", pressure_schedule.network_git({env: ""}))
+        self.assertEqual("git", pressure_schedule.network_git({env: "bin/git"}))
 
 
 if __name__ == "__main__":

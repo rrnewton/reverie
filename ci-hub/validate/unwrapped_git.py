@@ -10,9 +10,17 @@ detached logger on every call. One complete `gate.manifest` step runs about
 Local validate run 1961 (target 9d16823f) was killed at 901.5 CPU-seconds of
 that step's 900-second CPU budget. Measured at a load average near 200, a
 wrapped call cost about 164 ms against 19 ms for git.meta.real, so 4011 calls
-carry roughly 580 CPU-seconds of wrapper overhead. The remedy here is to run the
-same git without the wrapper, not to raise the budget: no cap, timeout, audit
-or verdict reads anything here.
+carry roughly 580 CPU-seconds of wrapper overhead. This module removes that
+overhead by running the same git without the wrapper; it does not raise the
+budget, and no cap, timeout, audit or verdict reads anything here.
+
+It is a mitigation, not a fix. In one paired measurement at Hermit 98a621f4
+and load average 191-213, gate.manifest used 2292.6 CPU-seconds wrapped and
+1559.7 unwrapped: 32 % less, and both still over the 900 CPU-second budget.
+https://github.com/rrnewton/hermit/issues/3381 stays open until a local
+validate of main finishes gate.manifest's six audits inside 900 seconds of
+wall time and 900 CPU-seconds; cutting the number of git calls is
+https://github.com/rrnewton/hermit/issues/3382.
 
 What it does, at launch, before the validation's DAG starts:
 
@@ -26,7 +34,7 @@ What it does, at launch, before the validation's DAG starts:
 4. Require `<unwrapped> --version` to equal `<PATH's git> --version`.
 
 When all four hold, a run-private directory (the caller names it, under the
-run's own artifacts or state directory) is created with exactly one entry, a
+run's own runtime or state directory) is created with exactly one entry, a
 `git` symlink to the unwrapped binary, and that directory is put first on the
 PATH handed to the run. When any check fails PATH is returned unchanged. Either
 way the decision is summarised in one line that names the git the DAG will run,
@@ -166,27 +174,41 @@ def probe_version(
     env: Mapping[str, str] | None = None,
     timeout: float = PROBE_TIMEOUT_SECONDS,
 ) -> tuple[str | None, str]:
-    """Return (first line of `executable --version`, failure detail)."""
-    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
-        try:
-            process = subprocess.Popen(
-                [executable, "--version"],
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=err,
-                env=None if env is None else dict(env),
-            )
-        except OSError as error:
-            return None, f"{executable} --version could not start: {error}"
-        code = _wait_bounded(process, timeout)
-        if code is None:
+    """Return (first line of `executable --version`, failure detail).
+
+    Never raises OSError: a probe that cannot create its capture files, start,
+    be waited for, or be read back is a failed probe, and the caller leaves
+    PATH unchanged.
+    """
+    process: subprocess.Popen | None = None
+    try:
+        with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile(
+            "w+b"
+        ) as err:
+            try:
+                process = subprocess.Popen(
+                    [executable, "--version"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=err,
+                    env=None if env is None else dict(env),
+                )
+            except OSError as error:
+                return None, f"{executable} --version could not start: {error}"
+            code = _wait_bounded(process, timeout)
+            if code is None:
+                process.kill()
+                process.wait()
+                return None, f"{executable} --version did not finish in {timeout:g}s"
+            out.seek(0)
+            err.seek(0)
+            stdout = out.read().decode("utf-8", "replace")
+            stderr = err.read().decode("utf-8", "replace")
+    except OSError as error:
+        if process is not None and process.poll() is None:
             process.kill()
             process.wait()
-            return None, f"{executable} --version did not finish in {timeout:g}s"
-        out.seek(0)
-        err.seek(0)
-        stdout = out.read().decode("utf-8", "replace")
-        stderr = err.read().decode("utf-8", "replace")
+        return None, f"{executable} --version could not be probed: {error}"
     lines = stdout.strip().splitlines()
     if code != 0 or not lines:
         detail = stderr.strip()[:200] or "no output"
@@ -316,34 +338,93 @@ def materialize(substitution: GitSubstitution) -> GitSubstitution:
     """Create the planned directory; on any failure return PATH unchanged.
 
     The directory must not exist yet: it belongs to exactly one run. Its only
-    entry is `git`, a symlink to the unwrapped binary.
+    entry is `git`, a symlink to the unwrapped binary. If the result is not
+    exactly that, what this call created is removed again (by `remove`, so
+    only the exact shape goes) and the reason says whether anything was left.
     """
     if not substitution.applied:
         return substitution
     assert substitution.directory is not None
     directory = Path(substitution.directory)
     link = directory / "git"
+    created = False
     try:
         directory.parent.mkdir(parents=True, exist_ok=True)
         directory.mkdir()
+        created = True
         link.symlink_to(substitution.real_git)
         entries = sorted(entry.name for entry in directory.iterdir())
         if entries != ["git"] or not _same_file(link, substitution.real_git):
             raise OSError(f"{directory} holds {entries}, not one git symlink")
     except OSError as error:
+        problem = _undo_materialize(directory, substitution.real_git) if created else None
+        leftover = "" if problem is None else f"; {problem}"
         return replace(
             substitution,
             applied=False,
             code=MATERIALIZE_FAILED,
             reason=(
                 f"could not create {directory} with one git symlink to "
-                f"{substitution.real_git} ({error}); PATH unchanged"
+                f"{substitution.real_git} ({error}){leftover}; PATH unchanged"
             ),
             effective_git=substitution.resolved_git,
             directory=None,
             path=substitution.inherited_path,
         )
     return substitution
+
+
+def _undo_materialize(directory: Path, real_git: str) -> str | None:
+    """Remove the directory a failed `materialize` created; None means gone.
+
+    An empty directory is removed. So is one whose only entry is a `git`
+    symlink, whatever it points at, because this call made that link. Any
+    other entry is not this call's, so the directory is left in place.
+    """
+    link = directory / "git"
+    try:
+        if not os.listdir(directory):
+            directory.rmdir()
+            return None
+        target = os.readlink(link) if link.is_symlink() else real_git
+    except OSError as error:
+        return f"could not remove {directory}: {error}"
+    return remove(directory, target)
+
+
+def remove(directory: Path, real_git: str | os.PathLike[str]) -> str | None:
+    """Remove a directory `materialize` created. None means it is gone.
+
+    Only the exact shape `materialize` makes is removed: a directory whose
+    only entry is `git`, a symlink whose target is `real_git`. Anything else
+    is left in place and the returned text says what was found. An absent
+    directory is not an error.
+    """
+    try:
+        metadata = os.lstat(directory)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return f"cannot inspect {directory}: {error}"
+    if not stat.S_ISDIR(metadata.st_mode):
+        return f"{directory} is not a directory; left in place"
+    link = directory / "git"
+    try:
+        entries = sorted(os.listdir(directory))
+        if (
+            entries != ["git"]
+            or not link.is_symlink()
+            or os.readlink(link) != os.fspath(real_git)
+        ):
+            return (
+                f"{directory} holds {entries}, not one git symlink to "
+                f"{os.fspath(real_git)}; left in place"
+            )
+        link.unlink()
+        directory.rmdir()
+    except OSError as error:
+        return f"could not remove {directory}: {error}"
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -128,12 +128,12 @@ selection, or verdict.
   placed. Core collisions between concurrent cells and the other unplaced
   launch paths are tracked in https://github.com/rrnewton/hermit/issues/3347.
 - **Older readers.** `run_registry.parse_current_record` refuses a field it
-  does not know, and `cpu_placement` is new. A run handle written by this
-  revision or later is therefore unreadable to a `run_registry.py` from an
-  older revision: `ci-hub validate-status` lists it as unreadable, and an
-  older `validate-run` treats it the way it treats any unreadable handle,
-  which retains storage and can refuse admission. It is never read as a
-  pass. The health tick and the integration-tip validation run through
+  does not know, and `cpu_placement` is new, as is `git_substitution` (next
+  section). A run handle carrying either is therefore unreadable to a
+  `run_registry.py` from a revision before that field: `ci-hub validate-status`
+  lists it as unreadable, and an older `validate-run` treats it the way it
+  treats any unreadable handle, which retains storage and can refuse
+  admission. It is never read as a pass. The health tick and the integration-tip validation run through
   `operational-tool --run-current-tool`, so they read with the current
   parser. Anything else that reads the registry, including the shared
   parent checkout's `ci-hub`, must run from a tool root at or after this
@@ -161,6 +161,14 @@ This changes which git binary runs. It does not change any budget, timeout,
 cell selection, or verdict. The unit gives up the wrapper's telemetry, its
 extra HTTP headers, and its retry on HTTP 429.
 
+It is a mitigation, not a fix for https://github.com/rrnewton/hermit/issues/3381.
+One paired measurement at Hermit `98a621f4`, load average 191-213, put
+`gate.manifest` at 2292.6 CPU-s through the wrapper and 1559.7 CPU-s
+unwrapped: 32 % less, and both still over the 900 CPU-s budget. That issue
+stays open until a local validate of `main` finishes `gate.manifest`'s six
+audits inside 900 s of wall time and 900 CPU-s. Making fewer git calls is
+https://github.com/rrnewton/hermit/issues/3382.
+
 - **Checks.** The substitution applies only when all of these hold:
   - PATH's `git` is the same file (`os.path.samefile`) as the `git` beside
     `git.meta.real`. A same-named copy does not count.
@@ -172,19 +180,50 @@ extra HTTP headers, and its retry on HTTP 429.
   `version-probe-failed`, `no-git-on-path`, `relative-path-entry`,
   `unusable-directory` or `materialize-failed`. The version probes write to
   temporary files, not pipes, because the wrapper's detached logger keeps
-  inherited descriptors open.
-- **Where.** A validation uses
-  `ignored/validate/artifacts/<unit>/unwrapped-git/`. A pressure test uses
-  `ignored/ci-hub/pressure-test-git/<slot>/`. A directory is created only if
-  it does not exist yet, and never reused. `validate-run --dry-run` prints the planned
-  PATH without creating anything.
-- **Evidence.** The retained validate log gets a
-  `validate-run: git substitution APPLIED|NOT-APPLIED: {...}` line. The
-  pressure log gets `pressure_schedule: slot=<slot> git substitution ...`.
-  Each line carries the resolved git, its realpath, the effective git and its
-  version, the directory and the reason. The run handle has no new field,
-  because `run_registry.parse_current_record` refuses unknown fields (see
-  **Older readers** above).
+  inherited descriptors open. A probe that cannot create those files, start,
+  or be waited for is `version-probe-failed`, never an exception.
+- **Where.** A validation uses `<runtime root>/unwrapped-git/`, inside the
+  run's private runtime root (the `mkdtemp` directory that is also the unit's
+  `TMPDIR`, recorded as the handle's `runtime_root`). Every path that removes
+  that root removes it too: a refused launch (for example an existing log),
+  normal completion, and orphan recovery. Nothing is created under
+  `ignored/validate/artifacts/<unit>/` before systemd accepts the unit. A
+  pressure test uses `ignored/ci-hub/pressure-test-git/<slot>/`. `launch`
+  removes it if the run record cannot be written or systemd refuses the unit,
+  and `run_campaign` removes it when the campaign ends, after the worktree.
+  Both remove only the exact shape (a directory whose only entry is a `git`
+  symlink to the recorded `git.meta.real`). Anything else is left in place
+  and reported as `cleanup_error` in the pressure state and run record, which
+  marks the campaign failed. A directory is created only if it does not
+  exist yet, and never reused. If creation or its check fails, what the
+  launcher created is removed and PATH is unchanged (`materialize-failed`).
+  If a step deletes the directory mid-run, PATH lookup falls through to the
+  next `git`, the wrapper. `validate-run --dry-run` prints the planned PATH
+  without creating anything.
+- **Evidence.** Both run handles (validation and the pressure test's bench
+  handle) carry a `git_substitution` object: `applied`, `code`, `reason`,
+  `resolved_git`, `resolved_git_realpath`, `real_git`, `effective_git`,
+  `effective_version` and `directory`. `run_registry` checks it structurally
+  (`applied` exactly when `code` is `applied`; an applied substitution names
+  its absolute directory and runs `real_git`; otherwise the directory is null
+  and PATH's git runs). The retained validate log gets a
+  `validate-run: git substitution APPLIED|NOT-APPLIED: {...}` line with the
+  same object, and the pressure log gets
+  `pressure_schedule: slot=<slot> git substitution ...`. `git_substitution`
+  is a new handle field, so the **Older readers** note above applies to it
+  exactly as it does to `cpu_placement`.
+- **Network git calls.** The substitution also drops the wrapper's HTTP 429
+  retry for the calls that use the network. There are two:
+  - The pressure campaign's `git submodule update --init --recursive`.
+    `launch` passes PATH's original git to the unit as
+    `DEV_HERMIT_NETWORK_GIT` when it substitutes, and `run_campaign` runs
+    that one call with it, so it keeps the wrapper and its retry.
+  - Cargo's git fetches during a validation, when the seeded git database
+    is missing a revision. `validate-run` gives the unit a private
+    `CARGO_HOME` with a copy of `~/.cargo/config.toml`; where that sets
+    `net.git-fetch-with-cli = true` (it does on devbig014), cargo runs `git`
+    from PATH, now the unwrapped binary, to fetch Reverie. Those fetches
+    have no 429 retry, and nothing in this change adds one.
 - **Not covered.** Reverie validations, `bin/safehermit`, and any other launch
   path keep the inherited PATH.
 

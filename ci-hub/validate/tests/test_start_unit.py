@@ -2587,28 +2587,65 @@ else:
         return values[0]
 
     def unwrapped_git_directory(self) -> Path:
-        return self.root / "ignored/validate/artifacts/validate-test/unwrapped-git"
+        # Inside the launch's private runtime root, which every refusal,
+        # completion and orphan-recovery path removes.
+        self.assertTrue(self.runtime_roots)
+        return self.runtime_roots[-1] / "unwrapped-git"
 
-    def test_launch_runs_unwrapped_git_when_path_git_is_the_wrapper(self) -> None:
-        local, real, _plain = self.fake_host_gits()
-        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
-        rc, _output, error = self.invoke(["--", "full"], environment=environment)
-
-        self.assertEqual(0, rc, error)
-        systemd = next(
+    def launched_systemd_command(self) -> list[str]:
+        return next(
             command
             for command in self.fake.commands
             if command[0] == "systemd-run" and "validate-lock" in command
         )
+
+    def record_git_substitution(self) -> dict[str, object]:
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        return record["git_substitution"]
+
+    def test_launch_runs_unwrapped_git_when_path_git_is_the_wrapper(self) -> None:
+        local, real, _plain = self.fake_host_gits()
+        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
+        # The observer pane is created after systemd-run and before the run
+        # completes, so this is the directory the running unit sees.
+        seen: dict[str, object] = {}
+
+        def observe_directory(*_args: object, **_kwargs: object) -> None:
+            directory = self.unwrapped_git_directory()
+            seen["entries"] = sorted(entry.name for entry in directory.iterdir())
+            seen["link"] = os.readlink(directory / "git")
+            return None
+
+        with mock.patch.object(
+            start_unit.pane_owner, "create_pane", side_effect=observe_directory
+        ):
+            rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(0, rc, error)
         directory = self.unwrapped_git_directory()
-        self.assertEqual(f"{directory}:{local}:/usr/bin:/bin", self.unit_path_value(systemd))
-        self.assertEqual(["git"], sorted(entry.name for entry in directory.iterdir()))
-        self.assertEqual(str(real), os.readlink(directory / "git"))
+        self.assertEqual(
+            f"{directory}:{local}:/usr/bin:/bin",
+            self.unit_path_value(self.launched_systemd_command()),
+        )
+        self.assertEqual({"entries": ["git"], "link": str(real)}, seen)
+        # Removed with the runtime root when the run completed.
+        self.assertFalse(directory.exists())
         log = (self.root / "run.log").read_text(encoding="utf-8")
         self.assertIn("validate-run: git substitution APPLIED: ", log)
         self.assertIn(f'"effective_git": "{real}"', log)
         self.assertIn('"effective_version": "git version 2.53.0-Meta"', log)
         self.assertIn(f'"resolved_git": "{local / "git"}"', log)
+        # The run handle carries the same decision, machine-readably.
+        substitution = self.record_git_substitution()
+        self.assertEqual(True, substitution["applied"])
+        self.assertEqual("applied", substitution["code"])
+        self.assertEqual(str(directory), substitution["directory"])
+        self.assertEqual(str(real), substitution["real_git"])
+        self.assertEqual(str(real), substitution["effective_git"])
+        self.assertEqual(str(local / "git"), substitution["resolved_git"])
+        self.assertEqual("git version 2.53.0-Meta", substitution["effective_version"])
 
     def test_launch_leaves_path_unchanged_when_git_is_not_the_wrapper(self) -> None:
         local, _real, plain = self.fake_host_gits()
@@ -2617,27 +2654,138 @@ else:
         rc, _output, error = self.invoke(["--", "full"], environment=environment)
 
         self.assertEqual(0, rc, error)
-        systemd = next(
-            command
-            for command in self.fake.commands
-            if command[0] == "systemd-run" and "validate-lock" in command
-        )
-        self.assertEqual(path, self.unit_path_value(systemd))
+        self.assertEqual(path, self.unit_path_value(self.launched_systemd_command()))
         self.assertFalse(self.unwrapped_git_directory().exists())
         log = (self.root / "run.log").read_text(encoding="utf-8")
         self.assertIn("validate-run: git substitution NOT-APPLIED: ", log)
         self.assertIn('"code": "not-the-wrapper"', log)
         self.assertIn(f'"effective_git": "{plain / "git"}"', log)
         self.assertIn('"effective_version": "git version 2.52.0"', log)
+        substitution = self.record_git_substitution()
+        self.assertEqual(False, substitution["applied"])
+        self.assertEqual("not-the-wrapper", substitution["code"])
+        self.assertIsNone(substitution["directory"])
+        self.assertEqual(str(plain / "git"), substitution["effective_git"])
+
+    def test_directory_failure_launches_with_path_unchanged(self) -> None:
+        local, _real, _plain = self.fake_host_gits()
+        path = f"{local}:/usr/bin:/bin"
+        environment = {**self.environment, "PATH": path}
+
+        def under_a_file(runtime_root: Path) -> Path:
+            blocker = runtime_root / "blocker"
+            blocker.write_text("a file, not a directory\n", encoding="utf-8")
+            return blocker / "unwrapped-git"
+
+        with mock.patch.object(
+            start_unit, "_unwrapped_git_directory", side_effect=under_a_file
+        ):
+            rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(0, rc, error)
+        self.assertEqual(path, self.unit_path_value(self.launched_systemd_command()))
+        log = (self.root / "run.log").read_text(encoding="utf-8")
+        self.assertIn("validate-run: git substitution NOT-APPLIED: ", log)
+        self.assertIn('"code": "materialize-failed"', log)
+        substitution = self.record_git_substitution()
+        self.assertEqual("materialize-failed", substitution["code"])
+        self.assertIsNone(substitution["directory"])
+        self.assertEqual(str(local / "git"), substitution["effective_git"])
+
+    def test_log_collision_refusal_leaves_no_unwrapped_git_directory(self) -> None:
+        # The substitution directory lives in the runtime root, not under
+        # ignored/validate/artifacts/<unit>, whose absence
+        # correct_owner_watch_handles.py requires of a refused launch.
+        local, _real, _plain = self.fake_host_gits()
+        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
+        log = self.root / "run.log"
+        log.write_text("launcher-owned collision\n")
+
+        rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(f"validation log already exists: {log}", error)
+        self.assertEqual("launcher-owned collision\n", log.read_text())
+        artifacts = self.root / "ignored/validate/artifacts/validate-test"
+        self.assertFalse(artifacts.exists() or artifacts.is_symlink(), artifacts)
+        self.assertFalse(self.unwrapped_git_directory().exists())
+        self.assertFalse(self.runtime_roots[-1].exists())
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("refused", record["state"])
+        self.assertEqual("applied", record["git_substitution"]["code"])
+
+    def test_reverie_launch_leaves_path_and_git_alone(self) -> None:
+        local, _real, _plain = self.fake_host_gits()
+        path = f"{local}:/usr/bin:/bin"
+        environment = {**self.environment, "PATH": path}
+        materialize_hermit_shape = self.fake._materialize_fresh_checkout
+
+        def add_validate_sh(checkout: Path) -> None:
+            validate_sh = checkout / "validate.sh"
+            validate_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            validate_sh.chmod(0o755)
+
+        def materialize_reverie_shape() -> None:
+            materialize_hermit_shape()
+            assert self.fake.fresh is not None
+            add_validate_sh(self.fake.fresh)
+
+        add_validate_sh(self.checkout)
+
+        self.fake._materialize_fresh_checkout = materialize_reverie_shape  # type: ignore[method-assign]
+        # The managed source repository a Reverie launch looks for beneath the
+        # state root; this fixture's checkout stands in for it.
+        (self.root / "reverie").symlink_to(self.checkout)
+        # Reverie's current-main admission and count-producer hashes are not
+        # what this test is about: bypass the one, hash the real tool's files.
+        hash_sources = start_unit.reverie_node.count_source_hashes
+        tool_root = Path(start_unit.__file__).resolve().parents[2]
+        with mock.patch.object(start_unit, "preflight", return_value=None), \
+                mock.patch.object(
+                    start_unit.reverie_node,
+                    "count_source_hashes",
+                    side_effect=lambda _root: hash_sources(tool_root),
+                ):
+            _rc, _output, error = self.invoke(
+                ["--repo", "rrnewton/reverie"], environment=environment
+            )
+
+        # This fixture does not model a Reverie verdict (no count sidecar, no
+        # ledger row), so the exit code is not asserted; the unit launched.
+        systemd = [
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        ]
+        self.assertEqual(1, len(systemd), error)
+        self.assertEqual(path, self.unit_path_value(systemd[0]))
+        self.assertFalse(self.unwrapped_git_directory().exists())
+        self.assertNotIn("git substitution", (self.root / "run.log").read_text())
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("rrnewton/reverie", record["repo"])
+        self.assertNotIn("git_substitution", record)
 
     def test_dry_run_plans_unwrapped_git_without_creating_it(self) -> None:
         local, _real, _plain = self.fake_host_gits()
         environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
-        rc, output, error = self.invoke(
-            ["--dry-run", "--", "full"], environment=environment
-        )
+        created: list[Path] = []
+        original_materialize = start_unit.unwrapped_git.materialize
+
+        def forbid(substitution: object) -> object:
+            created.append(Path(str(getattr(substitution, "directory"))))
+            return original_materialize(substitution)
+
+        with mock.patch.object(start_unit.unwrapped_git, "materialize", side_effect=forbid):
+            rc, output, error = self.invoke(
+                ["--dry-run", "--", "full"], environment=environment
+            )
 
         self.assertEqual(0, rc, error)
+        self.assertEqual([], created)
         command_lines = [
             line.removeprefix("COMMAND ")
             for line in output.splitlines()

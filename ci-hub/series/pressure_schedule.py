@@ -60,6 +60,11 @@ UNIT_RUNTIME_SECONDS = (
 # https://github.com/rrnewton/dev-hermit/commit/84ff6369d7f806fdac0bf5d7962aa20f534bcae3.
 UNIT_GIT_SETENV: Mapping[str, str] = {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+# PATH's original git, handed to the unit only when launch() replaced PATH's
+# git with the unwrapped binary. run_campaign uses it for its one network
+# call, the submodule fetch, so that call keeps the telemetry wrapper and its
+# retry of HTTP 429 responses, as it had before the substitution.
+NETWORK_GIT_ENV = "DEV_HERMIT_NETWORK_GIT"
 
 
 def utc_now() -> str:
@@ -81,6 +86,37 @@ def launch_lock_path(root: Path) -> Path:
 def unwrapped_git_directory(root: Path, slot: str) -> Path:
     """This run's private PATH entry holding only a `git` symlink."""
     return root / "ignored" / "ci-hub" / "pressure-test-git" / slot
+
+
+def network_git(environment: Mapping[str, str] | None = None) -> str:
+    """The git for the campaign's submodule fetch: see NETWORK_GIT_ENV."""
+    environment = os.environ if environment is None else environment
+    value = environment.get(NETWORK_GIT_ENV, "")
+    return value if os.path.isabs(value) else "git"
+
+
+def remove_unwrapped_git_directory(
+    root: Path, slot: str, substitution: object
+) -> str | None:
+    """Remove this slot's git directory when launch() created it.
+
+    `substitution` is the run record's `git_substitution`. Nothing is touched
+    unless it records an applied substitution whose directory is exactly this
+    slot's; unwrapped_git.remove then deletes only a directory whose only
+    entry is a `git` symlink to the recorded binary.
+    """
+    if not isinstance(substitution, Mapping) or substitution.get("applied") is not True:
+        return None
+    directory = unwrapped_git_directory(root, slot)
+    if substitution.get("directory") != str(directory):
+        return (
+            f"run record names git directory {substitution.get('directory')!r}, "
+            f"not {directory}; left in place"
+        )
+    real_git = substitution.get("real_git")
+    if not isinstance(real_git, str) or not real_git:
+        return f"run record names no unwrapped git for {directory}; left in place"
+    return unwrapped_git.remove(directory, real_git)
 
 
 def emit(state: str, summary: str) -> None:
@@ -113,6 +149,7 @@ def launch_command(
     environment: Mapping[str, str] | None = None,
     placement: cpu_placement.CpuPlacement | None = None,
     path: str | None = None,
+    network_git_path: str | None = None,
 ) -> list[str]:
     environment = os.environ if environment is None else environment
     if path is None:
@@ -180,6 +217,11 @@ def launch_command(
         ),
         f"--working-directory={working_directory}",
         f"--setenv=PATH={path}",
+        *(
+            [f"--setenv={NETWORK_GIT_ENV}={network_git_path}"]
+            if network_git_path
+            else []
+        ),
         "--setenv=PYTHONUNBUFFERED=1",
         f"--setenv=DEV_HERMIT_PARENT={root}",
         f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
@@ -383,8 +425,12 @@ def launch(
             emit("refused", str(error))
             return 1
         git_substitution = unwrapped_git.materialize(planned)
-        if git_substitution.path != planned.path:
-            # The directory could not be created: launch with PATH unchanged.
+        previous = read_state(root)
+        started_at = utc_now()
+        try:
+            # Rebuilt from the outcome: PATH is unchanged if the directory
+            # could not be created, and when it was, the submodule fetch keeps
+            # PATH's original git (NETWORK_GIT_ENV).
             command = launch_command(
                 root,
                 systemd_run,
@@ -393,44 +439,58 @@ def launch(
                 record,
                 placement=placement,
                 path=git_substitution.path,
+                network_git_path=(
+                    git_substitution.resolved_git if git_substitution.applied else None
+                ),
             )
-        # The unit appends its own output to this log; stdout here is the
-        # health tick's state/summary protocol and must stay two lines.
-        with log.open("a", encoding="utf-8") as retained:
-            print(
-                f"{utc_now()} pressure_schedule: slot={slot} "
-                f"{git_substitution.summary()}",
-                file=retained,
+            # The unit appends its own output to this log; stdout here is the
+            # health tick's state/summary protocol and must stay two lines.
+            with log.open("a", encoding="utf-8") as retained:
+                print(
+                    f"{utc_now()} pressure_schedule: slot={slot} "
+                    f"{git_substitution.summary()}",
+                    file=retained,
+                )
+            run_registry.write_current_record(
+                record,
+                {
+                    "schema_version": run_registry.SCHEMA_VERSION,
+                    "kind": "bench",
+                    "state": "launching",
+                    "unit": f"{UNIT}.service",
+                    "target": target,
+                    "repo": "rrnewton/hermit",
+                    "checkout": str(root / "worktrees" / "validate" / slot),
+                    "log": str(log),
+                    "agent": "tick-pressure-test",
+                    "started_at": started_at,
+                    "producer": run_registry.PRODUCER,
+                    "admission": "ci-hub validate-lock",
+                    "cpu_placement": placement.record(),
+                    "git_substitution": git_substitution.record(),
+                },
             )
-
-        previous = read_state(root)
-        started_at = utc_now()
-        run_registry.write_current_record(
-            record,
-            {
-                "schema_version": run_registry.SCHEMA_VERSION,
-                "kind": "bench",
-                "state": "launching",
-                "unit": f"{UNIT}.service",
-                "target": target,
-                "repo": "rrnewton/hermit",
-                "checkout": str(root / "worktrees" / "validate" / slot),
-                "log": str(log),
-                "agent": "tick-pressure-test",
-                "started_at": started_at,
-                "producer": run_registry.PRODUCER,
-                "admission": "ci-hub validate-lock",
-                "cpu_placement": placement.record(),
-            },
-        )
-        started = run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        except BaseException:
+            # No unit can exist yet: do not leave this slot's directory behind.
+            remove_unwrapped_git_directory(root, slot, git_substitution.record())
+            raise
+        try:
+            started = run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            # systemd-run itself could not be started, so no unit exists.
+            remove_unwrapped_git_directory(root, slot, git_substitution.record())
+            raise
         if started.returncode != 0:
             detail = (started.stderr or started.stdout).strip() or "no output"
+            # systemd refused the unit, so nothing will run in this slot.
+            cleanup_error = remove_unwrapped_git_directory(
+                root, slot, git_substitution.record()
+            )
             run_registry.update_record(
                 record,
                 state="refused",
@@ -438,8 +498,13 @@ def launch(
                 exit_code=started.returncode,
                 detail=detail,
                 finished_at=utc_now(),
+                **({"cleanup_error": cleanup_error} if cleanup_error else {}),
             )
-            emit("refused", f"recurring pressure test was not launched: {detail}")
+            emit(
+                "refused",
+                f"recurring pressure test was not launched: {detail}"
+                + (f" cleanup_error={cleanup_error}" if cleanup_error else ""),
+            )
             return 1
         run_registry.update_record(record, state="running")
 
@@ -571,6 +636,11 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
         state.update(
             state="failed", finished_at=utc_now(), detail=f"wrkslots create: {detail}"
         )
+        git_cleanup_error = remove_unwrapped_git_directory(
+            root, slot, durable.get("git_substitution")
+        )
+        if git_cleanup_error:
+            state["cleanup_error"] = git_cleanup_error
         write_state(root, state)
         raise RuntimeError(state["detail"])
 
@@ -578,7 +648,9 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
     try:
         submodules = subprocess.run(
             [
-                "git",
+                # This function's only git call that uses the network; see
+                # NETWORK_GIT_ENV.
+                network_git(),
                 "-C",
                 str(checkout),
                 "submodule",
@@ -606,7 +678,17 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
     except Exception as error:
         state.update(state="failed", finished_at=utc_now(), detail=str(error))
     finally:
-        cleanup_error = remove_worktree(root, slot, machine)
+        cleanup_errors = [
+            error
+            for error in (
+                remove_worktree(root, slot, machine),
+                remove_unwrapped_git_directory(
+                    root, slot, durable.get("git_substitution")
+                ),
+            )
+            if error
+        ]
+        cleanup_error = "; ".join(cleanup_errors) or None
         if cleanup_error:
             state["cleanup_error"] = cleanup_error
             state["state"] = "failed"
