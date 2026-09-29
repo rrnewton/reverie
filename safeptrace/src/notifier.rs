@@ -1419,9 +1419,15 @@ impl Event {
     }
 
     fn mark_worker_done(&self) {
-        let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
-        debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
-        self.worker_done_changed.notify_all();
+        {
+            // Serialize DONE publication with the waiter's predicate check
+            // and atomic unlock-and-park, so notification cannot be lost.
+            let _guard = self.worker_done_lock.lock();
+            let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
+            debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+            self.worker_done_changed.notify_all();
+        }
+        // Do not hold worker_done_lock while acquiring wait_owner_lock.
         self.notify_wait_owner_change();
     }
 
