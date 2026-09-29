@@ -431,6 +431,11 @@ class UpstreamAbsence:
                 absent[commit] = answer
                 self._entries[key] = replace(answer, source="cache")
                 self._dirty = True
+                # Written now, not only in build()'s finally: tick-hub ends a
+                # timed-out gate with SIGKILL, which skips every finally, and
+                # an answer held only in memory would then be asked for again
+                # by every later run that also got killed.
+                self.save()
             else:
                 unresolved[commit] = answer
         return absent, unresolved

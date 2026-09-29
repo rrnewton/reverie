@@ -892,6 +892,40 @@ def test_the_lookup_budget_bounds_one_run_and_the_next_run_resumes(monkeypatch,
     assert (nxt.cache_hits, nxt.lookups) == (1, 1)
 
 
+def test_each_absence_is_on_disk_before_the_next_lookup_starts(monkeypatch,
+                                                              tmp_path):
+    """tick-hub's SIGKILL skips build()'s finally, so save() there can be lost.
+
+    The second lookup reads the cache file at the moment it starts, which is
+    the latest moment a kill could land and still leave the first answer
+    unwritten. No save() is called by the test.
+    """
+    first, second = sorted((LOCAL_ONLY, UNFETCHED))
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY),
+                                         UNFETCHED: gh_absent(UNFETCHED)},
+                 missing=(LOCAL_ONLY, UNFETCHED))
+    cache = tmp_path / "absent.json"
+    on_disk_when_asked = {}
+
+    def recording_lookup(argv, **kwargs):
+        sha = argv[-1].rsplit("/", 1)[1]
+        on_disk_when_asked[sha] = (set(json.loads(cache.read_text())["entries"])
+                                   if cache.exists() else set())
+        return FakeHost.run(host, argv, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", recording_lookup)
+    upstream = ws.UpstreamAbsence(cache)
+
+    absent, unresolved = upstream.classify(ws.REVERIE_REPOSITORY, [first, second])
+
+    assert unresolved == {}
+    assert set(absent) == {first, second}
+    assert on_disk_when_asked == {
+        first: set(), second: {f"{ws.REVERIE_REPOSITORY}:{first}"}}
+    assert set(json.loads(cache.read_text())["entries"]) == {
+        f"{ws.REVERIE_REPOSITORY}:{first}", f"{ws.REVERIE_REPOSITORY}:{second}"}
+
+
 def _ready_rows(candidate_wall):
     """A series that meets BOTH readiness preconditions, next to excluded rows.
 
