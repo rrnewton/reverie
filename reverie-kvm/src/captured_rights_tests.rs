@@ -1160,8 +1160,7 @@ fn captured_rights_never_mutate_shared_physical_stdout_stderr() {
 
 #[test]
 fn captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked() {
-    const TEST: &str =
-        "executor::tests::captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked";
+    const TEST: &str = "executor::tests::captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked";
     const CHILD_ENV: &str = "REVERIE_CAPTURE_IDENTITY_CHILD";
     const COMPLETE: &str = "captured receive retirement clone failures 0 and 1 completed";
     if std::env::var(CHILD_ENV).as_deref() != Ok(TEST) {
@@ -1865,4 +1864,876 @@ fn captured_reopen_token_relocation_emfile_closes_outside_guards() {
     assert!(e.state.files.is_empty());
     assert!(e.file_table.lock().unwrap().files.is_empty());
     eprintln!("{COMPLETE}");
+}
+
+fn captured_rights_closed_number_probe(test: &str, done: &str, receive_first: bool) {
+    if !capture_test_child(test, done) {
+        return;
+    }
+    struct Restore([(std::fs::File, i32); 2]);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (fd, (file, flags)) in [1, 2].into_iter().zip(&self.0) {
+                assert_eq!(unsafe { libc::dup2(file.as_raw_fd(), fd) }, fd);
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, *flags) }, 0);
+            }
+        }
+    }
+    // Declare the restoration guard before every object that could later own
+    // raw 1/2. Unwinding must drop those owners before restoring the numbers.
+    let restore = Restore([1, 2].map(|fd| {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0);
+        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(copy >= 3);
+        (unsafe { std::fs::File::from_raw_fd(copy) }, flags)
+    }));
+    let before = [1, 2].map(|fd| {
+        (
+            capture_native_stat(fd),
+            unsafe { libc::fcntl(fd, libc::F_GETFL) },
+            unsafe { libc::fcntl(fd, libc::F_GETFD) },
+        )
+    });
+    let root = TestDir::new();
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+    let pair = capture_rights_pair(&mut e, &mut memory);
+    qualify_physical_stdio_query(e.state.capture_owner.as_ref().unwrap()).unwrap();
+    write_c_string(&mut memory, 0xc00, "/dev/null");
+    let open = |e: &mut ElfExecutor, memory: &GuestMemory| {
+        let fd = capture_rights_call(
+            e,
+            memory,
+            libc::SYS_open,
+            [0xc00, (libc::O_RDONLY | libc::O_CLOEXEC) as u64, 0, 0, 0, 0],
+        );
+        assert!(fd >= 0);
+        fd as i32
+    };
+    // For the receive variant, queue the ordinary right while standards are
+    // still open. This isolates recvmsg allocation from the open variant.
+    let mut donor = None;
+    if receive_first {
+        let fd = open(&mut e, &memory);
+        assert!(e.state.files[&fd].as_raw_fd() >= 3);
+        assert_eq!(capture_rights_send(&mut e, &mut memory, pair[0], &[fd]), 1);
+        donor = Some(fd);
+    }
+    for standard in [1, 2] {
+        assert_eq!(unsafe { libc::close(standard) }, 0);
+    }
+    if !receive_first {
+        let fd = open(&mut e, &memory);
+        assert_eq!(
+            e.state.files[&fd].as_raw_fd(),
+            1,
+            "actual guest open reused host 1"
+        );
+        assert_eq!(capture_rights_send(&mut e, &mut memory, pair[0], &[fd]), 1);
+        donor = Some(fd);
+    }
+    let received = capture_rights_receive(&mut e, &mut memory, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(received.len(), 1);
+    let received = received[0];
+    assert_eq!(
+        e.state.files[&received].as_raw_fd(),
+        if receive_first { 1 } else { 2 }
+    );
+    assert_eq!(
+        capture_rights_call(
+            &mut e,
+            &memory,
+            libc::SYS_fcntl,
+            [received as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+        ),
+        libc::FD_CLOEXEC as i64
+    );
+    assert_eq!(
+        capture_rights_send(&mut e, &mut memory, pair[0], &[received]),
+        1
+    );
+    let forwarded = capture_rights_receive(&mut e, &mut memory, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(forwarded.len(), 1);
+    assert_eq!(
+        capture_rights_call(
+            &mut e,
+            &memory,
+            libc::SYS_read,
+            [forwarded[0] as u64, 0xe00, 1, 0, 0, 0]
+        ),
+        0
+    );
+    for fd in [donor.unwrap(), received, forwarded[0], pair[0], pair[1]] {
+        assert_eq!(
+            capture_rights_call(&mut e, &memory, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
+    assert_eq!(capture_rights_count(&e), 0);
+    // Drop every guest/File owner before dup2 restores the raw numbers they
+    // reused. Otherwise a late Rust File drop could close restored stdio.
+    drop(e);
+    drop(restore);
+    for (fd, (metadata, flags, descriptor_flags)) in [1, 2].into_iter().zip(before) {
+        let after = capture_native_stat(fd);
+        assert_eq!(
+            (after.st_dev, after.st_ino, after.st_mode, after.st_size),
+            (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size
+            )
+        );
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) }, flags);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, descriptor_flags);
+    }
+    eprintln!("{done}");
+}
+
+#[test]
+fn captured_rights_guest_open_in_closed_host_stdout_remains_ordinary() {
+    captured_rights_closed_number_probe(
+        "executor::tests::captured_rights_guest_open_in_closed_host_stdout_remains_ordinary",
+        "closed stdout ordinary open and forwarding checked",
+        false,
+    );
+}
+
+#[test]
+fn captured_rights_received_fd_in_closed_host_stdout_remains_ordinary() {
+    captured_rights_closed_number_probe(
+        "executor::tests::captured_rights_received_fd_in_closed_host_stdout_remains_ordinary",
+        "closed stdout ordinary receive and forwarding checked",
+        true,
+    );
+}
+
+// Exercise real guest open/dup/proc-fd reopen/sendmsg/recvmsg under native
+// query denial. No successful identity/authentication result is mocked.
+#[test]
+fn captured_rights_fixed_proc_transfers_with_identity_queries_denied() {
+    const TEST: &str =
+        "executor::tests::captured_rights_fixed_proc_transfers_with_identity_queries_denied";
+    const DONE: &str = "fixed proc rights under denied OFD queries completed";
+    if !capture_test_child(TEST, DONE) {
+        return;
+    }
+    let root = TestDir::new();
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    let pair = capture_rights_pair(&mut e, &mut m);
+    capture_deny_ofd_queries_in_child();
+    assert_eq!(
+        qualify_physical_stdio_query(e.state.capture_owner.as_ref().unwrap()),
+        Err([negative_errno(libc::EINVAL), negative_errno(libc::ENOSYS)])
+    );
+    for flags in [libc::O_RDONLY | libc::O_NOFOLLOW, libc::O_PATH] {
+        write_c_string(&mut m, 0xc00, "/proc/uptime");
+        let opened = capture_rights_call(
+            &mut e,
+            &m,
+            libc::SYS_open,
+            [0xc00, (flags | libc::O_CLOEXEC) as u64, 0, 0, 0, 0],
+        ) as i32;
+        assert!(opened >= 3);
+        let original_status = capture_rights_flags(&mut e, &m, opened);
+        let duplicate =
+            capture_rights_call(&mut e, &m, libc::SYS_dup, [opened as u64, 0, 0, 0, 0, 0]) as i32;
+        assert!(duplicate >= 3);
+        write_c_string(&mut m, 0xc00, &format!("/proc/self/fd/{opened}"));
+        let reopened = capture_rights_call(
+            &mut e,
+            &m,
+            libc::SYS_open,
+            [0xc00, (libc::O_RDONLY | libc::O_CLOEXEC) as u64, 0, 0, 0, 0],
+        ) as i32;
+        assert!(reopened >= 3);
+        write_c_string(&mut m, 0xc00, "/proc/self/status");
+        let process = capture_rights_call(
+            &mut e,
+            &m,
+            libc::SYS_open,
+            [0xc00, libc::O_RDONLY as u64, 0, 0, 0, 0],
+        ) as i32;
+        assert!(process >= 3);
+        assert_eq!(
+            capture_rights_send(
+                &mut e,
+                &mut m,
+                pair[0],
+                &[1, opened, duplicate, reopened, process]
+            ),
+            1
+        );
+        // Only capture and live-process descriptions use the in-flight registry.
+        assert_eq!(capture_rights_count(&e), 2);
+        for fd in [opened, duplicate, reopened, process] {
+            assert_eq!(
+                capture_rights_call(&mut e, &m, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+                0
+            );
+            assert!(!e.state.proc_files.contains_key(&fd));
+            assert!(!e.file_table.lock().unwrap().proc_files.contains_key(&fd));
+        }
+        let received = capture_rights_receive(&mut e, &mut m, pair[1], libc::MSG_CMSG_CLOEXEC);
+        assert_eq!(received.len(), 5);
+        assert_eq!(read_guest_bytes::<1>(&m, 0xa00).unwrap(), *b"R");
+        assert_eq!(capture_rights_count(&e), 0);
+        for &fd in &received {
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                libc::FD_CLOEXEC as i64
+            );
+        }
+        for (index, &fd) in received[1..4].iter().enumerate() {
+            assert_eq!(
+                e.state.proc_files.get(&fd),
+                Some(&synthetic_proc_inode(b"/proc/uptime"))
+            );
+            assert_eq!(
+                e.file_table.lock().unwrap().proc_files.get(&fd),
+                e.state.proc_files.get(&fd)
+            );
+            assert_eq!(output_alias(&e.state, fd), None);
+            assert!(!e.state.capture_descriptions.contains_key(&fd));
+            assert!(!e.state.fdinfo_files.contains_key(&fd));
+            assert_eq!(
+                e.state.synthetic_proc_nofollow_fds.contains(&fd),
+                index < 2 && flags & libc::O_NOFOLLOW != 0
+            );
+            write_c_string(&mut m, 0xc00, &format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                capture_rights_call(&mut e, &m, libc::SYS_readlink, [0xc00, 0xd00, 64, 0, 0, 0]),
+                12
+            );
+            assert_eq!(read_guest_bytes::<12>(&m, 0xd00).unwrap(), *b"/proc/uptime");
+        }
+        assert_eq!(
+            capture_rights_flags(&mut e, &m, received[1]),
+            original_status
+        );
+        assert_eq!(
+            capture_rights_flags(&mut e, &m, received[2]),
+            original_status
+        );
+        assert!(matches!(
+            e.state.fdinfo_files[&received[4]].source,
+            SeqProcSource::Process { .. }
+        ));
+        if flags & libc::O_PATH != 0 {
+            for &fd in &received[1..3] {
+                assert_eq!(
+                    capture_rights_call(
+                        &mut e,
+                        &m,
+                        libc::SYS_read,
+                        [fd as u64, 0x1000, 10, 0, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF)
+                );
+            }
+        } else {
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_read,
+                    [received[1] as u64, 0x1000, 2, 0, 0, 0]
+                ),
+                2
+            );
+            assert_eq!(read_guest_bytes::<2>(&m, 0x1000).unwrap(), *b"0.");
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_lseek,
+                    [received[2] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                ),
+                2
+            );
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_read,
+                    [received[2] as u64, 0x1000, 8, 0, 0, 0]
+                ),
+                8
+            );
+            assert_eq!(read_guest_bytes::<8>(&m, 0x1000).unwrap(), *b"00 0.00\n");
+        }
+        // The proc-fd reopen is a distinct OFD at zero even after the donor dies.
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_read,
+                [received[3] as u64, 0x1000, 10, 0, 0, 0]
+            ),
+            10
+        );
+        assert_eq!(read_guest_bytes::<10>(&m, 0x1000).unwrap(), *b"0.00 0.00\n");
+        m.write(0xb00, b"F").unwrap();
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_write,
+                [received[0] as u64, 0xb00, 1, 0, 0, 0]
+            ),
+            1
+        );
+        assert_eq!(e.take_output(), (b"F".to_vec(), Vec::new()));
+        // Forward every received kind while both host query APIs remain
+        // denied. Give the fixed descriptions distinct nonzero offsets so
+        // reauthentication cannot silently consume or reset their positions.
+        if flags & libc::O_PATH == 0 {
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_lseek,
+                    [received[1] as u64, 3, libc::SEEK_SET as u64, 0, 0, 0]
+                ),
+                3
+            );
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_lseek,
+                    [received[2] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                ),
+                3
+            );
+        }
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_lseek,
+                [received[3] as u64, 1, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            1
+        );
+        let process_content = proc_self_status_content(&e.state);
+        assert!(process_content.len() > 1 && process_content.len() < 0x1000);
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_read,
+                [received[4] as u64, 0x1300, 1, 0, 0, 0]
+            ),
+            1
+        );
+        assert_eq!(
+            read_guest_bytes::<1>(&m, 0x1300).unwrap(),
+            [process_content[0]]
+        );
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_lseek,
+                [received[4] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            1
+        );
+        let mut identities = Vec::new();
+        let mut statuses = Vec::new();
+        let mut links = Vec::new();
+        for &fd in &received {
+            identities.push(capture_executor_stat(&mut e, &m, fd));
+            statuses.push(capture_rights_flags(&mut e, &m, fd));
+            write_c_string(&mut m, 0xc00, &format!("/proc/self/fd/{fd}"));
+            let length =
+                capture_rights_call(&mut e, &m, libc::SYS_readlink, [0xc00, 0xd00, 128, 0, 0, 0]);
+            assert!((1..128).contains(&length));
+            let mut link = vec![0; length as usize];
+            m.read(0xd00, &mut link).unwrap();
+            links.push(link);
+            // Clear descriptor flags after the first-generation assertions.
+            // MSG_CMSG_CLOEXEC must set a fresh flag on the second receive.
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_SETFD as u64, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            qualify_physical_stdio_query(e.state.capture_owner.as_ref().unwrap()),
+            Err([negative_errno(libc::EINVAL), negative_errno(libc::ENOSYS)])
+        );
+        let first_generation_fds = received.clone();
+        assert_eq!(capture_rights_send(&mut e, &mut m, pair[0], &received), 1);
+        assert_eq!(capture_rights_count(&e), 2);
+        for fd in received {
+            assert_eq!(
+                capture_rights_call(&mut e, &m, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+                0
+            );
+        }
+        // Every first-generation guest donor is closed before the second
+        // receive. Only queued rights / transfer registrations may retain it.
+        assert_eq!(capture_rights_count(&e), 2);
+        for fd in first_generation_fds {
+            assert!(!e.state.files.contains_key(&fd));
+            assert!(!e.state.proc_files.contains_key(&fd));
+            assert!(!e.state.capture_descriptions.contains_key(&fd));
+            assert!(!e.state.fdinfo_files.contains_key(&fd));
+            let shared = e.file_table.lock().unwrap();
+            assert!(!shared.files.contains_key(&fd));
+            assert!(!shared.proc_files.contains_key(&fd));
+            assert!(!shared.capture_descriptions.contains_key(&fd));
+            assert!(!shared.fdinfo_files.contains_key(&fd));
+        }
+        let forwarded = capture_rights_receive(&mut e, &mut m, pair[1], libc::MSG_CMSG_CLOEXEC);
+        assert_eq!(forwarded.len(), 5);
+        assert_eq!(read_guest_bytes::<1>(&m, 0xa00).unwrap(), *b"R");
+        assert_eq!(capture_rights_count(&e), 0);
+        for (index, &fd) in forwarded.iter().enumerate() {
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                libc::FD_CLOEXEC as i64
+            );
+            assert_eq!(capture_executor_stat(&mut e, &m, fd), identities[index]);
+            assert_eq!(capture_rights_flags(&mut e, &m, fd), statuses[index]);
+            write_c_string(&mut m, 0xc00, &format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                capture_rights_call(&mut e, &m, libc::SYS_readlink, [0xc00, 0xd00, 128, 0, 0, 0]),
+                links[index].len() as i64
+            );
+            let mut link = vec![0; links[index].len()];
+            m.read(0xd00, &mut link).unwrap();
+            assert_eq!(link, links[index]);
+        }
+        assert_eq!(
+            output_alias(&e.state, forwarded[0]),
+            Some(OutputAlias::Stdout)
+        );
+        for (index, &fd) in forwarded[1..4].iter().enumerate() {
+            assert_eq!(
+                e.state.proc_files.get(&fd),
+                Some(&synthetic_proc_inode(b"/proc/uptime"))
+            );
+            assert_eq!(
+                e.file_table.lock().unwrap().proc_files.get(&fd),
+                e.state.proc_files.get(&fd)
+            );
+            assert_eq!(output_alias(&e.state, fd), None);
+            assert!(!e.state.capture_descriptions.contains_key(&fd));
+            assert!(!e.state.fdinfo_files.contains_key(&fd));
+            assert_eq!(
+                e.state.synthetic_proc_nofollow_fds.contains(&fd),
+                index < 2 && flags & libc::O_NOFOLLOW != 0
+            );
+        }
+        assert!(matches!(
+            e.state.fdinfo_files[&forwarded[4]].source,
+            SeqProcSource::Process { .. }
+        ));
+        if flags & libc::O_PATH != 0 {
+            for &fd in &forwarded[1..3] {
+                assert_eq!(
+                    capture_rights_call(
+                        &mut e,
+                        &m,
+                        libc::SYS_read,
+                        [fd as u64, 0x1000, 10, 0, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF)
+                );
+                assert_eq!(
+                    capture_rights_call(
+                        &mut e,
+                        &m,
+                        libc::SYS_lseek,
+                        [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF)
+                );
+            }
+        } else {
+            for &fd in &forwarded[1..3] {
+                assert_eq!(
+                    capture_rights_call(
+                        &mut e,
+                        &m,
+                        libc::SYS_lseek,
+                        [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                    ),
+                    3
+                );
+            }
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_read,
+                    [forwarded[1] as u64, 0x1000, 2, 0, 0, 0]
+                ),
+                2
+            );
+            assert_eq!(read_guest_bytes::<2>(&m, 0x1000).unwrap(), *b"0 ");
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_lseek,
+                    [forwarded[2] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                ),
+                5
+            );
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_read,
+                    [forwarded[2] as u64, 0x1000, 5, 0, 0, 0]
+                ),
+                5
+            );
+            assert_eq!(read_guest_bytes::<5>(&m, 0x1000).unwrap(), *b"0.00\n");
+        }
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_lseek,
+                [forwarded[3] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            1
+        );
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_read,
+                [forwarded[3] as u64, 0x1000, 9, 0, 0, 0]
+            ),
+            9
+        );
+        assert_eq!(read_guest_bytes::<9>(&m, 0x1000).unwrap(), *b".00 0.00\n");
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_lseek,
+                [forwarded[4] as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            1
+        );
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_read,
+                [
+                    forwarded[4] as u64,
+                    0x1400,
+                    (process_content.len() - 1) as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            (process_content.len() - 1) as i64
+        );
+        let mut process_tail = vec![0; process_content.len() - 1];
+        m.read(0x1400, &mut process_tail).unwrap();
+        assert_eq!(process_tail.as_slice(), &process_content[1..]);
+        m.write(0xb00, b"G").unwrap();
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_write,
+                [forwarded[0] as u64, 0xb00, 1, 0, 0, 0]
+            ),
+            1
+        );
+        assert_eq!(e.take_output(), (b"G".to_vec(), Vec::new()));
+        for fd in forwarded {
+            assert_eq!(
+                capture_rights_call(&mut e, &m, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+                0
+            );
+        }
+        assert_eq!(capture_rights_count(&e), 0);
+    }
+    eprintln!("{DONE}");
+}
+
+#[test]
+fn captured_rights_fixed_proc_query_bypass_requires_authenticated_provenance() {
+    const TEST: &str = "executor::tests::captured_rights_fixed_proc_query_bypass_requires_authenticated_provenance";
+    const DONE: &str = "fixed proc query bypass rejected untrusted provenance";
+    if !capture_test_child(TEST, DONE) {
+        return;
+    }
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let authority = state.proc_carrier_authority.clone();
+    let foreign = crate::proc_carrier::ProcCarrierAuthority::new_for_tests().unwrap();
+    struct Restore(std::fs::File);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            assert_eq!(
+                unsafe { libc::dup2(self.0.as_raw_fd(), libc::STDOUT_FILENO) },
+                libc::STDOUT_FILENO
+            );
+        }
+    }
+    let raw = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    assert!(raw >= 3);
+    let restore = Restore(unsafe { std::fs::File::from_raw_fd(raw) });
+    let physical = authority
+        .mint(
+            b"/proc/uptime",
+            b"0.00 0.00\n",
+            false,
+            false,
+            libc::O_RDONLY,
+        )
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::dup2(physical.as_raw_fd(), libc::STDOUT_FILENO) },
+        libc::STDOUT_FILENO
+    );
+    let output = CapturedOutput::try_new().unwrap();
+    // Restore the numeric descriptor: the captured owner must retain the
+    // original physical identity, not rediscover the current fd 1 later.
+    drop(restore);
+    let physical_flags = unsafe { libc::fcntl(physical.as_raw_fd(), libc::F_GETFL) };
+    let physical_offset = unsafe { libc::lseek(physical.as_raw_fd(), 0, libc::SEEK_CUR) };
+    assert!(physical_flags >= 0 && physical_offset >= 0);
+    let private = output.identities.writer(OutputAlias::Stdout);
+    let forged_raw = unsafe {
+        libc::memfd_create(
+            c"reverie-kvm.proc-carrier.v1.forged".as_ptr(),
+            libc::MFD_CLOEXEC,
+        )
+    };
+    assert!(forged_raw >= 0);
+    let forged = unsafe { std::fs::File::from_raw_fd(forged_raw) };
+    let writable_source = authority
+        .mint(
+            b"/proc/uptime",
+            b"0.00 0.00\n",
+            false,
+            false,
+            libc::O_RDONLY,
+        )
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::fchmod(writable_source.as_raw_fd(), 0o600) },
+        0
+    );
+    let writable = open_host_fd_path(writable_source.as_raw_fd(), libc::O_RDWR as u64).unwrap();
+    assert_eq!(
+        unsafe { libc::fchmod(writable_source.as_raw_fd(), 0o444) },
+        0
+    );
+    // Fixture-only corrupted metadata is installed before constructing the
+    // executor, so the real shared-table snapshot contains the attack inputs.
+    let cases = [
+        (physical.try_clone().unwrap(), false, false, libc::ENOSYS),
+        (physical.try_clone().unwrap(), true, false, libc::ENOSYS),
+        (
+            std::fs::File::open("/dev/null").unwrap(),
+            true,
+            false,
+            libc::EBADMSG,
+        ),
+        (private.try_clone().unwrap(), false, false, libc::ENOSYS),
+        (private.try_clone().unwrap(), true, false, libc::EBADMSG),
+        (forged, true, false, libc::EBADMSG),
+        (
+            foreign
+                .mint(
+                    b"/proc/uptime",
+                    b"0.00 0.00\n",
+                    false,
+                    false,
+                    libc::O_RDONLY,
+                )
+                .unwrap(),
+            true,
+            false,
+            libc::EBADMSG,
+        ),
+        (
+            authority
+                .mint(
+                    b"/proc/meminfo",
+                    b"different path\n",
+                    false,
+                    false,
+                    libc::O_RDONLY,
+                )
+                .unwrap(),
+            true,
+            false,
+            libc::EBADMSG,
+        ),
+        (
+            authority
+                .mint(
+                    b"/proc/uptime",
+                    b"0.00 0.00\n",
+                    false,
+                    false,
+                    libc::O_RDONLY,
+                )
+                .unwrap(),
+            true,
+            true,
+            libc::EBADMSG,
+        ),
+        (writable, true, false, libc::EBADMSG),
+    ];
+    let mut descriptors = Vec::new();
+    for (file, marked_proc, nofollow, errno) in cases {
+        let fd = insert_file_with_flags(&mut state, file, false, None) as i32;
+        assert!(fd >= 3);
+        if marked_proc {
+            state
+                .proc_files
+                .insert(fd, synthetic_proc_inode(b"/proc/uptime"));
+        }
+        if nofollow {
+            state.synthetic_proc_nofollow_fds.insert(fd);
+        }
+        descriptors.push((fd, errno));
+    }
+    let mut e = ElfExecutor::with_test_output(state, Some(output));
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    let pair = capture_rights_pair(&mut e, &mut m);
+    capture_deny_ofd_queries_in_child();
+    assert!(qualify_physical_stdio_query(e.state.capture_owner.as_ref().unwrap()).is_err());
+    for (fd, errno) in descriptors {
+        assert_eq!(
+            capture_rights_send(&mut e, &mut m, pair[0], &[1, fd]),
+            negative_errno(errno)
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(physical.as_raw_fd(), libc::F_GETFL) },
+            physical_flags
+        );
+        assert_eq!(
+            unsafe { libc::lseek(physical.as_raw_fd(), 0, libc::SEEK_CUR) },
+            physical_offset
+        );
+        assert_eq!(capture_rights_count(&e), 0);
+        let expected = rights_control(&[1, fd]);
+        let mut observed = vec![0; expected.len()];
+        m.read(0x500, &mut observed).unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(
+            capture_rights_call(
+                &mut e,
+                &m,
+                libc::SYS_recvfrom,
+                [pair[1] as u64, 0xa00, 1, libc::MSG_DONTWAIT as u64, 0, 0]
+            ),
+            negative_errno(libc::EAGAIN)
+        );
+    }
+    eprintln!("{DONE}");
+}
+
+#[test]
+fn captured_rights_fixed_proc_send_auth_budget_is_message_wide() {
+    const TEST: &str =
+        "executor::tests::captured_rights_fixed_proc_send_auth_budget_is_message_wide";
+    const DONE: &str = "fixed proc outgoing authentication budget checked";
+    if !capture_test_child(TEST, DONE) {
+        return;
+    }
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let content = vec![b'x'; crate::proc_carrier::MAX_AUTHENTICATED_BYTES / 2 + 1];
+    let mut descriptors = Vec::new();
+    for _ in 0..2 {
+        let file = state
+            .proc_carrier_authority
+            .mint(b"/proc/uptime", &content, false, false, libc::O_RDONLY)
+            .unwrap();
+        let fd = insert_file_with_flags(&mut state, file, false, None) as i32;
+        assert!(fd >= 3);
+        state
+            .proc_files
+            .insert(fd, synthetic_proc_inode(b"/proc/uptime"));
+        descriptors.push(fd);
+    }
+    let mut e = ElfExecutor::new(state, true);
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    let pair = capture_rights_pair(&mut e, &mut m);
+    capture_deny_ofd_queries_in_child();
+    assert_eq!(
+        capture_rights_send(
+            &mut e,
+            &mut m,
+            pair[0],
+            &[1, descriptors[0], descriptors[1]]
+        ),
+        negative_errno(libc::EFBIG)
+    );
+    assert_eq!(capture_rights_count(&e), 0);
+    assert_eq!(
+        capture_rights_call(
+            &mut e,
+            &m,
+            libc::SYS_recvfrom,
+            [pair[1] as u64, 0xa00, 1, libc::MSG_DONTWAIT as u64, 0, 0]
+        ),
+        negative_errno(libc::EAGAIN)
+    );
+    // Same object twice consumes one message-local authentication, while a
+    // fresh send and receive each obtain their own independent bounded proof.
+    assert_eq!(
+        capture_rights_send(&mut e, &mut m, pair[0], &[descriptors[0], descriptors[0]]),
+        1
+    );
+    let received = capture_rights_receive(&mut e, &mut m, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(received.len(), 2);
+    for &fd in &received {
+        assert_eq!(
+            e.state.proc_files.get(&fd),
+            Some(&synthetic_proc_inode(b"/proc/uptime"))
+        );
+    }
+    assert!(Arc::ptr_eq(
+        &e.state.fd_object_inodes[&received[0]],
+        &e.state.fd_object_inodes[&received[1]]
+    ));
+    assert_eq!(capture_rights_count(&e), 0);
+    eprintln!("{DONE}");
 }

@@ -9,8 +9,14 @@ use super::OutputAlias;
 
 #[cfg(test)]
 thread_local! {
+    static PHYSICAL_PINS_PREPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PIPES_PREPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static RELOCATION_FAILURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn physical_pins_prepared() -> usize {
+    PHYSICAL_PINS_PREPARED.get()
 }
 
 #[cfg(test)]
@@ -102,6 +108,10 @@ impl CapturePipe {
 }
 
 pub(crate) struct CapturedPipeIdentities {
+    // Capture-entry physical OFDs, retained above 2. Absence is authoritative:
+    // later internal/guest opens may reuse 1/2 without becoming supervisor IO.
+    physical_stdout: Option<std::fs::File>,
+    physical_stderr: Option<std::fs::File>,
     stdout: CapturePipe,
     stderr: CapturePipe,
     #[cfg(test)]
@@ -117,14 +127,42 @@ impl std::fmt::Debug for CapturedPipeIdentities {
 
 impl CapturedPipeIdentities {
     pub(super) fn try_new() -> std::io::Result<Self> {
+        let pin = |standard| -> std::io::Result<Option<std::fs::File>> {
+            // No status/offset/content mutation and no occupancy of a closed
+            // standard number. Failure after the first pin drops it normally.
+            let raw = unsafe { libc::fcntl(standard, libc::F_DUPFD_CLOEXEC, 3) };
+            if raw < 0 {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(libc::EBADF) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+            #[cfg(test)]
+            PHYSICAL_PINS_PREPARED.set(PHYSICAL_PINS_PREPARED.get() + 1);
+            Ok(Some(unsafe { std::fs::File::from_raw_fd(raw) }))
+        };
+        // Snapshot before creating any private pipes/tokens or fallback stdin.
+        let physical_stdout = pin(libc::STDOUT_FILENO)?;
+        let physical_stderr = pin(libc::STDERR_FILENO)?;
         let stdout = CapturePipe::try_new()?;
         let stderr = CapturePipe::try_new()?;
         Ok(Self {
+            physical_stdout,
+            physical_stderr,
             stdout,
             stderr,
             #[cfg(test)]
             drop_probe: std::sync::Mutex::new(None),
         })
+    }
+
+    pub(super) fn physical_stdio(&self) -> impl Iterator<Item = std::os::fd::RawFd> + '_ {
+        self.physical_stdout
+            .iter()
+            .chain(self.physical_stderr.iter())
+            .map(AsRawFd::as_raw_fd)
     }
 
     pub(super) fn metadata(&self) -> CaptureMetadata {
