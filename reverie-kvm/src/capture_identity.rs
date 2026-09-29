@@ -3,6 +3,7 @@
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
+use std::sync::Arc;
 
 use super::OutputAlias;
 
@@ -23,7 +24,7 @@ pub(super) fn relocation_failures() -> usize {
 }
 
 #[cfg(test)]
-pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 2]) + Send>;
+pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 4]) + Send>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CaptureObjectIdentity {
@@ -33,8 +34,10 @@ pub(super) struct CaptureObjectIdentity {
 
 struct CapturePipe {
     identity: CaptureObjectIdentity,
-    // Never installed in a guest file table, used for I/O, or exported.
+    // Private read endpoint keeps writable aliases ready. Neither endpoint is
+    // supervisor stdio; capture writes still go exclusively to the memory sink.
     _keeper: OwnedFd,
+    writer: Arc<std::fs::File>,
 }
 
 impl CapturePipe {
@@ -46,26 +49,22 @@ impl CapturePipe {
         }
         // SAFETY: a successful pipe2 created both descriptors exclusively here.
         let keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
-        let unused = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
-        // A caller may have closed fd 0, 1 or 2. Never retain a private pipe in
-        // the executor's implicit host-standard-descriptor namespace. Closing
-        // the unused endpoint first bounds this relocation's descriptor peak.
-        drop(unused);
-        let keeper = if keeper.as_raw_fd() < 3 {
-            // SAFETY: keeper is live; the returned descriptor is newly owned.
-            let private = unsafe { libc::fcntl(keeper.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        let writer = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+        let relocate = |descriptor: OwnedFd| -> std::io::Result<OwnedFd> {
+            if descriptor.as_raw_fd() >= 3 {
+                return Ok(descriptor);
+            }
+            // SAFETY: the owned source is live; success creates a private fd.
+            let private = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
             if private < 0 {
-                let error = std::io::Error::last_os_error();
                 #[cfg(test)]
                 RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
-                return Err(error);
+                return Err(std::io::Error::last_os_error());
             }
-            let private = unsafe { OwnedFd::from_raw_fd(private) };
-            drop(keeper);
-            private
-        } else {
-            keeper
+            Ok(unsafe { OwnedFd::from_raw_fd(private) })
         };
+        let keeper = relocate(keeper)?;
+        let writer = relocate(writer)?;
         let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
         // SAFETY: keeper is live and stat is writable storage.
         if unsafe { libc::fstat(keeper.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
@@ -76,8 +75,19 @@ impl CapturePipe {
         if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
             return Err(std::io::Error::other("capture identity is not a pipe"));
         }
-        // No writer or buffered data exists. Keep one endpoint to prevent inode
-        // reuse; do not retain an extra descriptor merely to reserve its peer.
+        let mut writer_stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        if unsafe { libc::fstat(writer.as_raw_fd(), writer_stat.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let writer_stat = unsafe { writer_stat.assume_init() };
+        if (stat.st_dev, stat.st_ino) != (writer_stat.st_dev, writer_stat.st_ino)
+            || unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE
+                != libc::O_WRONLY
+        {
+            return Err(std::io::Error::other("invalid private capture writer"));
+        }
+        // Neither endpoint carries captured payload. The reader pins identity
+        // and prevents a missing-peer error on private writable aliases.
         #[cfg(test)]
         PIPES_PREPARED.set(PIPES_PREPARED.get() + 1);
         Ok(Self {
@@ -86,11 +96,12 @@ impl CapturePipe {
                 inode: stat.st_ino,
             },
             _keeper: keeper,
+            writer: Arc::new(writer.into()),
         })
     }
 }
 
-pub(super) struct CapturedPipeIdentities {
+pub(crate) struct CapturedPipeIdentities {
     stdout: CapturePipe,
     stderr: CapturePipe,
     #[cfg(test)]
@@ -116,11 +127,28 @@ impl CapturedPipeIdentities {
         }
     }
 
+    pub(super) fn writer(&self, alias: OutputAlias) -> Arc<std::fs::File> {
+        match alias {
+            OutputAlias::Stdout => self.stdout.writer.clone(),
+            OutputAlias::Stderr => self.stderr.writer.clone(),
+        }
+    }
+
     #[cfg(test)]
-    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 2] {
+    pub(super) fn metadata_descriptors(&self) -> [std::os::fd::RawFd; 2] {
         [
             self.stdout._keeper.as_raw_fd(),
             self.stderr._keeper.as_raw_fd(),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 4] {
+        [
+            self.stdout._keeper.as_raw_fd(),
+            self.stdout.writer.as_raw_fd(),
+            self.stderr._keeper.as_raw_fd(),
+            self.stderr.writer.as_raw_fd(),
         ]
     }
 }

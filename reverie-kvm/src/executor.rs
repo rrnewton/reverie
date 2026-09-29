@@ -77,7 +77,7 @@ mod entry_host_wait_tests;
 
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
-use capture_identity::CapturedPipeIdentities;
+pub(crate) use capture_identity::CapturedPipeIdentities;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
@@ -257,6 +257,137 @@ struct CapturedOutputInner {
 pub(crate) struct CapturedOutput {
     inner: Arc<Mutex<CapturedOutputInner>>,
     identities: Arc<CapturedPipeIdentities>,
+    stdout_description: Arc<CaptureDescription>,
+    stderr_description: Arc<CaptureDescription>,
+}
+
+/// A virtual captured open description. Dup/fork/SCM share this object;
+/// reopening the stream creates a fresh status object and private host OFD.
+pub(crate) struct CaptureDescription {
+    alias: OutputAlias,
+    status: AtomicI32,
+    io: Arc<std::fs::File>,
+    identities: Arc<CapturedPipeIdentities>,
+    sink: Arc<Mutex<CapturedOutputInner>>,
+    token: Arc<std::fs::File>,
+}
+
+impl std::fmt::Debug for CaptureDescription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureDescription")
+            .field("alias", &self.alias)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CaptureDescription {
+    #[cfg(test)]
+    pub(crate) fn retirement_descriptors(&self) -> Vec<RawFd> {
+        let mut descriptors = self.identities.descriptors().to_vec();
+        descriptors.push(self.io.as_raw_fd());
+        descriptors.push(self.token.as_raw_fd());
+        descriptors
+    }
+
+    fn reopened(
+        &self,
+        io: crate::elf::StagedFile,
+        retirement: &crate::elf::FileRetirement,
+    ) -> std::io::Result<Arc<Self>> {
+        let status = unsafe { libc::fcntl(io.as_file().as_raw_fd(), libc::F_GETFL) };
+        if status < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token = Arc::new(capture_token_in(retirement)?);
+        Ok(Arc::new(Self {
+            alias: self.alias,
+            status: AtomicI32::new(status),
+            io: Arc::new(io.into_file()),
+            identities: self.identities.clone(),
+            sink: self.sink.clone(),
+            token,
+        }))
+    }
+}
+
+// Newly staged descriptions may become the final owner on failure. Keep their
+// file owners alive through the current executor's guard-release boundary.
+struct StagedCaptureDescription {
+    description: Option<Arc<CaptureDescription>>,
+    retirement: crate::elf::FileRetirement,
+}
+
+impl StagedCaptureDescription {
+    fn new(description: Arc<CaptureDescription>, retirement: &crate::elf::FileRetirement) -> Self {
+        Self {
+            description: Some(description),
+            retirement: retirement.clone(),
+        }
+    }
+
+    fn description(&self) -> &Arc<CaptureDescription> {
+        self.description
+            .as_ref()
+            .expect("live staged capture description")
+    }
+
+    fn into_description(mut self) -> Arc<CaptureDescription> {
+        self.description
+            .take()
+            .expect("live staged capture description")
+    }
+}
+
+impl Drop for StagedCaptureDescription {
+    fn drop(&mut self) {
+        self.retirement.retire_capture(self.description.take());
+    }
+}
+
+pub(crate) fn initialize_capture_descriptions(
+    state: &mut LoadedStaticElf,
+    output: &CapturedOutput,
+) -> Result<(), i64> {
+    if let Some(owner) = &state.capture_owner {
+        if !Arc::ptr_eq(owner, &output.identities) {
+            return Err(negative_errno(libc::ENOSYS));
+        }
+        return Ok(());
+    }
+    // Stage every clone before changing any pre-existing descriptor. Most root
+    // images have only implicit stdout/stderr and need no host clone here.
+    let candidates = state
+        .files
+        .keys()
+        .copied()
+        .chain([1, 2])
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut prepared = Vec::new();
+    for fd in candidates {
+        if let Some(alias) = output_alias(state, fd) {
+            let description = output.description(alias);
+            let file = if state.files.contains_key(&fd) {
+                Some(
+                    state
+                        .file_retirement
+                        .stage_clone(&description.io)
+                        .map_err(io_error)?,
+                )
+            } else {
+                None
+            };
+            prepared.push((fd, description, file));
+        }
+    }
+    for (fd, description, file) in prepared {
+        if let Some(file) = file {
+            let retired = state.insert_file(fd, file.into_file());
+            state.file_retirement.retire(retired);
+        }
+        state.capture_descriptions.insert(fd, description);
+    }
+    state.capture_owner = Some(output.identities.clone());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -271,10 +402,30 @@ impl CapturedOutput {
         // Root setup calls this before consuming the image or initializing the
         // Tool. Failure never publishes partial output or a fallback identity.
         let identities = Arc::new(CapturedPipeIdentities::try_new()?);
+        let inner = Arc::new(Mutex::new(CapturedOutputInner::default()));
+        let description = |alias| -> std::io::Result<Arc<CaptureDescription>> {
+            Ok(Arc::new(CaptureDescription {
+                alias,
+                status: AtomicI32::new(libc::O_WRONLY),
+                io: identities.writer(alias),
+                identities: identities.clone(),
+                sink: inner.clone(),
+                token: Arc::new(capture_token()?),
+            }))
+        };
         Ok(Self {
-            inner: Arc::new(Mutex::new(CapturedOutputInner::default())),
+            stdout_description: description(OutputAlias::Stdout)?,
+            stderr_description: description(OutputAlias::Stderr)?,
+            inner,
             identities,
         })
+    }
+
+    fn description(&self, alias: OutputAlias) -> Arc<CaptureDescription> {
+        match alias {
+            OutputAlias::Stdout => self.stdout_description.clone(),
+            OutputAlias::Stderr => self.stderr_description.clone(),
+        }
     }
 
     fn metadata(&self) -> CaptureMetadata {
@@ -290,21 +441,46 @@ impl CapturedOutput {
     }
 
     fn append(&self, stderr: bool, bytes: &[u8]) -> bool {
-        let mut inner = self.inner.lock().expect("captured output lock poisoned");
-        let destination = if stderr {
-            &mut inner.stderr
-        } else {
-            &mut inner.stdout
-        };
-        if destination
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|length| length > MAX_CAPTURED_OUTPUT)
-        {
-            return false;
-        }
-        destination.extend_from_slice(bytes);
-        true
+        append_capture_sink(&self.inner, stderr, bytes)
+    }
+}
+
+fn append_capture_sink(sink: &Mutex<CapturedOutputInner>, stderr: bool, bytes: &[u8]) -> bool {
+    let mut inner = sink.lock().expect("captured output lock poisoned");
+    let destination = if stderr {
+        &mut inner.stderr
+    } else {
+        &mut inner.stdout
+    };
+    if destination
+        .len()
+        .checked_add(bytes.len())
+        .is_none_or(|length| length > MAX_CAPTURED_OUTPUT)
+    {
+        return false;
+    }
+    destination.extend_from_slice(bytes);
+    true
+}
+
+// An authenticated donated description retains its original sink and stream.
+// The fallback exists for the pre-existing raw syscall test helpers, which do
+// not initialize capture descriptions and cannot donate captured rights.
+fn append_captured_descriptor(
+    state: &LoadedStaticElf,
+    fd: i32,
+    output: &CapturedOutput,
+    destination: OutputAlias,
+    bytes: &[u8],
+) -> bool {
+    if let Some(description) = state.capture_descriptions.get(&fd) {
+        append_capture_sink(
+            &description.sink,
+            description.alias == OutputAlias::Stderr,
+            bytes,
+        )
+    } else {
+        output.append(destination == OutputAlias::Stderr, bytes)
     }
 }
 
@@ -2035,6 +2211,7 @@ pub(crate) struct FileTableState {
     loginuid_fds: std::collections::BTreeSet<i32>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
+    capture_descriptions: std::collections::BTreeMap<i32, Arc<CaptureDescription>>,
     cloexec_fds: std::collections::BTreeSet<i32>,
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
@@ -2054,6 +2231,8 @@ pub(crate) struct FdinfoDescription {
     nofollow_status: bool,
     sequence: Mutex<crate::fdinfo::FdinfoSequence>,
 }
+
+include!("captured_rights.rs");
 
 /// A `/proc/<pid>/stat` or `status` description carried by SCM_RIGHTS. The host
 /// passes only the empty backing memfd, so the receiver finds the description
@@ -2080,7 +2259,7 @@ fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
     Ok((stat.st_dev, stat.st_ino))
 }
 
-/// Bounds the process proc rights in flight across the namespace. Linux bounds
+/// Bounds process-proc and captured rights together across the namespace. Linux bounds
 /// a user's in-flight rights by RLIMIT_NOFILE and fails the send with
 /// ETOOMANYREFS; here each tracked description also pins a host descriptor, and
 /// a right the host discards unreceived is never released, so the bound is small.
@@ -2102,11 +2281,7 @@ fn register_proc_transfer(
         .file_identity_table
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let in_flight: usize = table
-        .proc_transfers
-        .values()
-        .map(|transfer| transfer.in_flight)
-        .sum();
+    let in_flight = virtual_transfers_in_flight(&table);
     if in_flight >= PROC_TRANSFER_LIMIT {
         return Err(negative_errno(libc::ETOOMANYREFS));
     }
@@ -2159,17 +2334,6 @@ fn received_proc_transfer(
         }));
     }
     Ok(take_proc_transfer(&mut table, key))
-}
-
-/// Undoes registrations whose rights the host never queued.
-fn release_proc_transfers(state: &LoadedStaticElf, keys: &[(libc::dev_t, libc::ino_t)]) {
-    let mut table = state
-        .file_identity_table
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for key in keys {
-        take_proc_transfer(&mut table, *key);
-    }
 }
 
 /// Consumes one in-flight right, returning its description state.
@@ -2788,6 +2952,7 @@ fn open_process_proc(
 impl FileTableState {
     fn retire(self, retirement: &crate::elf::FileRetirement) {
         retirement.retire(self.stdin.into_iter().chain(self.files.into_values()));
+        retirement.retire_capture(self.capture_descriptions.into_values());
     }
 
     fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
@@ -2840,6 +3005,7 @@ impl FileTableState {
             loginuid_fds: state.loginuid_fds.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
+            capture_descriptions: state.capture_descriptions.clone(),
             cloexec_fds: state.cloexec_fds.clone(),
             closed_standard_fds: state.closed_standard_fds.clone(),
             proc_files: state.proc_files.clone(),
@@ -2919,6 +3085,13 @@ impl FileTableState {
         state.loginuid_fds.clone_from(&self.loginuid_fds);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
+        let retired_capture = std::mem::replace(
+            &mut state.capture_descriptions,
+            self.capture_descriptions.clone(),
+        );
+        state
+            .file_retirement
+            .retire_capture(retired_capture.into_values());
         state.cloexec_fds.clone_from(&self.cloexec_fds);
         state
             .closed_standard_fds
@@ -3050,9 +3223,20 @@ impl ElfExecutor {
     #[cfg(test)]
     pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
         let output = capture_output.then(CapturedOutput::default);
+        Self::with_test_output(state, output)
+    }
+
+    #[cfg(test)]
+    fn with_test_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+        if let Some(output) = &output {
+            initialize_capture_descriptions(&mut state, output)
+                .expect("prepare unit-test capture descriptions");
+        }
         Self::with_output(state, output)
     }
 
+    // Production capture setup has already completed fallibly before consuming
+    // the installed image or constructing Tool state.
     pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
         let file_table;
         let _retirement = state.file_retirement.hold();
@@ -3952,6 +4136,10 @@ impl ElfExecutor {
         let stdin = self.state.take_stdin();
         let retired = std::mem::take(&mut self.state.files);
         self.state.fd_entry_ids.clear();
+        let captures = std::mem::take(&mut self.state.capture_descriptions);
+        self.state
+            .file_retirement
+            .retire_capture(captures.into_values());
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
         let action = self.process_action.take();
         self.state
@@ -6799,7 +6987,7 @@ fn write(
 
     if let Some(output_destination) = output_destination {
         if let Some(output) = output {
-            if !output.append(matches!(output_destination, OutputAlias::Stderr), &bytes) {
+            if !append_captured_descriptor(state, fd, output, output_destination, &bytes) {
                 return negative_errno(libc::EFBIG);
             }
             return bytes.len() as i64;
@@ -7921,6 +8109,8 @@ fn capture_vectored_write(
     iovecs: &[GuestIoVec],
     destination: OutputAlias,
     output: &CapturedOutput,
+    state: &LoadedStaticElf,
+    guest_fd: i32,
 ) -> i64 {
     let mut bytes = Vec::new();
     for iovec in iovecs {
@@ -7936,7 +8126,7 @@ fn capture_vectored_write(
             return negative_errno(libc::EFAULT);
         }
     }
-    if !output.append(matches!(destination, OutputAlias::Stderr), &bytes) {
+    if !append_captured_descriptor(state, guest_fd, output, destination, &bytes) {
         negative_errno(libc::EFBIG)
     } else {
         bytes.len() as i64
@@ -7991,6 +8181,16 @@ fn vectored_io(
         return negative_errno(libc::EBADF);
     }
 
+    // Linux fdget rejects O_PATH before seekability and iovec import. A
+    // captured alias must not bypass that access gate via its memory sink.
+    if captured_output && let Some(file) = state.files.get(&guest_fd) {
+        match fd_status_flags(file.as_raw_fd()) {
+            Ok(flags) if flags & libc::O_PATH != 0 => return negative_errno(libc::EBADF),
+            Ok(_) => {}
+            Err(error) => return error,
+        }
+    }
+
     let current_position = !positioned
         || matches!(number, libc::SYS_preadv2 | libc::SYS_pwritev2) && args[3] as i64 == -1;
     if !current_position {
@@ -8035,6 +8235,8 @@ fn vectored_io(
     } else if captured_output {
         if reading {
             Err(negative_errno(libc::EBADF))
+        } else if let Some(file) = state.files.get(&guest_fd) {
+            ensure_writable(file)
         } else {
             Ok(())
         }
@@ -8100,6 +8302,8 @@ fn vectored_io(
             &guest_iovecs,
             output_destination.expect("captured output has no destination"),
             output.expect("captured output disappeared"),
+            state,
+            guest_fd,
         );
     }
     let host_fd = descriptor.expect("validated guest descriptor disappeared");
@@ -8522,7 +8726,7 @@ fn sendfile(
     let written = match output_alias(state, out_fd) {
         Some(alias) => {
             if let Some(output) = output {
-                if !output.append(matches!(alias, OutputAlias::Stderr), &bytes) {
+                if !append_captured_descriptor(state, out_fd, output, alias, &bytes) {
                     return negative_errno(libc::EFBIG);
                 }
                 bytes.len() as i64
@@ -8573,7 +8777,9 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         Ok(name) => name,
         Err(error) => return read_c_string_errno(error),
     };
-    if crate::proc_carrier::ProcCarrierAuthority::reserved_guest_name(&name) {
+    if crate::proc_carrier::ProcCarrierAuthority::reserved_guest_name(&name)
+        || name.starts_with(CAPTURE_TOKEN_PREFIX)
+    {
         return negative_errno(libc::EINVAL);
     }
     let Ok(name) = std::ffi::CString::new(name) else {
@@ -9429,10 +9635,11 @@ fn open_guest_fd_path(
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     let regular_proc =
         source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode));
+    let capture_description = state.capture_descriptions.get(&guest_fd).cloned();
     let path_only = flags & libc::O_PATH as u64 != 0;
     let create_exclusive = !path_only
         && flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64;
-    if regular_proc
+    if (regular_proc || capture_description.is_some())
         && (flags & (libc::O_DIRECTORY | libc::O_NOFOLLOW) as u64 != 0 || create_exclusive)
     {
         // These flags are resolved against the proc-fd magic link or target
@@ -9440,7 +9647,7 @@ fn open_guest_fd_path(
         // combinations retain Linux's ENOTDIR/ELOOP/EEXIST precedence.
         match open_host_fd_path(source_host_fd, flags) {
             Err(error) => return error,
-            Ok(probe) => drop(probe),
+            Ok(probe) => state.file_retirement.retire([probe]),
         }
         // Bare O_PATH|O_NOFOLLOW is the only supported host-success shape in
         // this group. Refuse its supervisor procfs magic-link inode explicitly.
@@ -9491,6 +9698,12 @@ fn open_guest_fd_path(
         return negative_errno(libc::ENOSYS);
     }
     let source_alias = output_alias(state, guest_fd);
+    if capture_description.is_some()
+        && !path_only
+        && flags & libc::O_ACCMODE as u64 != libc::O_WRONLY as u64
+    {
+        return negative_errno(libc::ENOSYS);
+    }
     if regular_proc && !path_only {
         if flags & libc::O_TRUNC as u64 != 0
             || flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
@@ -9590,8 +9803,28 @@ fn open_guest_fd_path(
         Ok(None) => {}
         Err(error) => return error,
     }
+    let (file, capture_description) = if let Some(source) = capture_description {
+        let description =
+            match source.reopened(state.file_retirement.stage(file), &state.file_retirement) {
+                Ok(value) => value,
+                Err(error) => return io_error(error),
+            };
+        let description = StagedCaptureDescription::new(description, &state.file_retirement);
+        let file = match description.description().io.try_clone() {
+            Ok(value) => value,
+            Err(error) => return io_error(error),
+        };
+        (file, Some(description))
+    } else {
+        (file, None)
+    };
     let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
     if new_fd >= 0 {
+        if let Some(description) = capture_description {
+            state
+                .capture_descriptions
+                .insert(new_fd as i32, description.into_description());
+        }
         state
             .fd_object_inodes
             .insert(new_fd as libc::c_int, source_object_inode);
@@ -9746,7 +9979,7 @@ fn ensure_mutation_dirfd_not_synthetic_procfs(
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Preserve captured stdio identity across descriptor duplication.
 // TODO-HUMAN-REVIEW(#91): Review output alias lifecycle across dup, close, fork, and exec.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputAlias {
     Stdout,
     Stderr,
@@ -9786,7 +10019,11 @@ fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<
         Some(OutputAlias::Stderr) => {
             state.stderr_alias_fds.insert(fd);
         }
-        None => {}
+        None => {
+            state
+                .file_retirement
+                .retire_capture(state.capture_descriptions.remove(&fd));
+        }
     }
 }
 
@@ -9932,6 +10169,7 @@ fn insert_file_with_flags(
 // TODO-HUMAN-REVIEW(PR-136): Review fcntl duplicate object identity propagation.
 struct DuplicateFdSource {
     output_alias: Option<OutputAlias>,
+    capture_description: Option<Arc<CaptureDescription>>,
     proc_inode: Option<u64>,
     synthetic_proc_nofollow: bool,
     fdinfo: Option<Arc<FdinfoDescription>>,
@@ -10070,6 +10308,9 @@ fn duplicate_fd_at_or_above(
         state.closed_standard_fds.remove(&fd);
     }
     set_output_alias(state, fd, source.output_alias);
+    if let Some(description) = source.capture_description {
+        state.capture_descriptions.insert(fd, description);
+    }
     if let Some(inode) = source.proc_inode {
         state.proc_files.insert(fd, inode);
     }
@@ -10106,6 +10347,7 @@ fn duplicate_fd(
     }
     let old_fd = raw_old_fd as libc::c_int;
     let source_alias = output_alias(state, old_fd);
+    let source_capture_description = state.capture_descriptions.get(&old_fd).cloned();
     let source_proc_inode = state.proc_files.get(&old_fd).copied();
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&old_fd);
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
@@ -10179,6 +10421,9 @@ fn duplicate_fd(
             state.fdinfo_files.remove(&new_fd);
         }
         set_output_alias(state, new_fd, source_alias);
+        if let Some(description) = source_capture_description.clone() {
+            state.capture_descriptions.insert(new_fd, description);
+        }
         if let Some(inode) = source_proc_inode {
             state.proc_files.insert(new_fd, inode);
         } else {
@@ -10195,6 +10440,11 @@ fn duplicate_fd(
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
         if new_fd >= 0 {
+            if let Some(description) = source_capture_description {
+                state
+                    .capture_descriptions
+                    .insert(new_fd as i32, description);
+            }
             if let Some(description) = source_random_description {
                 state
                     .random_device_descriptions
@@ -12424,17 +12674,16 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
         )
 }
 
-/// Returns the process proc transfers registered for `control`. The caller
-/// releases them if the host does not queue the message.
+/// Registers virtual descriptions for the host message. Every failure rolls
+/// back all registrations; guest control memory is never rewritten.
 fn translate_outgoing_control(
     control: &mut [u8],
     state: &LoadedStaticElf,
     capture_output: bool,
-) -> Result<Vec<(libc::dev_t, libc::ino_t)>, i64> {
+) -> Result<Vec<OutgoingTransfer>, i64> {
     let mut transfers = Vec::new();
-    let result = translate_outgoing_rights(control, state, capture_output, &mut transfers);
-    if let Err(error) = result {
-        release_proc_transfers(state, &transfers);
+    if let Err(error) = translate_outgoing_rights(control, state, capture_output, &mut transfers) {
+        release_outgoing_transfers(state, &transfers);
         return Err(error);
     }
     Ok(transfers)
@@ -12444,47 +12693,58 @@ fn translate_outgoing_rights(
     control: &mut [u8],
     state: &LoadedStaticElf,
     capture_output: bool,
-    transfers: &mut Vec<(libc::dev_t, libc::ino_t)>,
+    transfers: &mut Vec<OutgoingTransfer>,
 ) -> Result<(), i64> {
+    let mut translations = Vec::new();
     for message in control_messages(control)? {
-        // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
-        // the guest descriptor namespace. Other control inputs (credentials,
-        // pidfds, interface selectors, and queue metadata) need their own
-        // virtualization rules; fail before sendmsg rather than forwarding
-        // guest/host identity bytes under an accidental pass-through policy.
         if message.level != libc::SOL_SOCKET || message.kind != libc::SCM_RIGHTS {
             return Err(negative_errno(libc::EOPNOTSUPP));
         }
-        let data_length = message.end - message.data_offset;
-        if data_length == 0 || data_length % std::mem::size_of::<libc::c_int>() != 0 {
+        let length = message.end - message.data_offset;
+        if length == 0 || length % std::mem::size_of::<libc::c_int>() != 0 {
             return Err(negative_errno(libc::EINVAL));
         }
         for offset in (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
         {
-            let guest_fd = read_control_fd(control, offset)?;
-            let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
-            if state
-                .fdinfo_files
-                .get(&guest_fd)
-                .is_some_and(|description| {
-                    matches!(description.source, SeqProcSource::Process { .. })
-                })
+            let fd = read_control_fd(control, offset)?;
+            if state.capture_descriptions.contains_key(&fd)
+                || (capture_output && output_alias(state, fd).is_some())
             {
-                // The receiver restores this description from the registry.
-                transfers.push(register_proc_transfer(state, guest_fd, host_fd)?);
-            } else if state.fdinfo_files.contains_key(&guest_fd)
-                || signalfd_mask(state, guest_fd).is_some()
-                || state.random_device_fds.contains(&guest_fd)
-                || state.loginuid_fds.contains(&guest_fd)
-                || (capture_output && output_alias(state, guest_fd).is_some())
+                if !capture_output {
+                    return Err(negative_errno(libc::ENOSYS));
+                }
+                let (key, token) = register_capture_transfer(state, fd)?;
+                transfers.push(OutgoingTransfer::Capture(key));
+                translations.push((offset, token));
+                continue;
+            }
+            let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            if state.fdinfo_files.get(&fd).is_some_and(|description| {
+                matches!(description.source, SeqProcSource::Process { .. })
+            }) {
+                transfers.push(OutgoingTransfer::Proc(register_proc_transfer(
+                    state, fd, host,
+                )?));
+            } else if state.fdinfo_files.contains_key(&fd)
+                || signalfd_mask(state, fd).is_some()
+                || state.random_device_fds.contains(&fd)
+                || state.loginuid_fds.contains(&fd)
+                || unlabelled_capture_carrier(state, host)?
             {
-                // The receiver cannot reconstruct private virtual metadata.
-                // Refuse before host sendmsg so no datagram or descriptor is
-                // delivered with a supervisor-only carrier identity.
                 return Err(negative_errno(libc::ENOSYS));
             }
-            write_control_fd(control, offset, host_fd)?;
+            // A token installed without its trusted metadata is never an
+            // ordinary right, including when capture is disabled at this call.
+            if let Some(file) = state.files.get(&fd)
+                && capture_token_candidate(file)?
+            {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            translations.push((offset, host));
         }
+    }
+    for (offset, host) in translations {
+        write_control_fd(control, offset, host)?;
     }
     Ok(())
 }
@@ -12672,6 +12932,9 @@ fn rollback_received_rights_with_table(
         shared.proc_files.remove(&fd);
         shared.fdinfo_files.remove(&fd);
         shared.random_device_descriptions.remove(&fd);
+        state
+            .file_retirement
+            .retire_capture(shared.capture_descriptions.remove(&fd));
         for set in [
             &mut shared.random_device_fds,
             &mut shared.loginuid_fds,
@@ -12695,6 +12958,7 @@ struct StagedReceivedRight {
     entry_id: Arc<()>,
     proc_inode: Option<u64>,
     process_description: Option<Arc<FdinfoDescription>>,
+    capture_description: Option<StagedCaptureDescription>,
     synthetic_proc_nofollow: bool,
     identity: PreparedFileIdentity,
 }
@@ -12798,42 +13062,60 @@ fn prepare_received_rights_with_peek(
         }
 
         let mut staged = Vec::with_capacity(rights.len());
-        for ((_, local_file), guest_fd) in rights.into_iter().zip(guest_fds) {
+        for ((_, transport_file), guest_fd) in rights.into_iter().zip(guest_fds) {
+            let capture_description = received_capture_transfer(state, transport_file.as_file())?
+                .map(|description| {
+                    StagedCaptureDescription::new(description, &state.file_retirement)
+                });
+            // Never publish the SCM token as a readable guest description.
+            // Retain its description before releasing consuming registrations.
+            let local_file = if let Some(description) = &capture_description {
+                state
+                    .file_retirement
+                    .stage_clone(&description.description().io)
+                    .map_err(io_error)?
+            } else {
+                transport_file
+            };
             let shared_file = state
                 .file_retirement
                 .stage_clone(local_file.as_file())
                 .map_err(io_error)?;
-            let (mut proc_inode, mut synthetic_proc_nofollow) = match state
-                .proc_carrier_authority
-                .candidate_kind(local_file.as_file())
-                .map_err(negative_errno)?
-            {
-                crate::proc_carrier::ProcCarrierCandidate::Ordinary => {
-                    (received_proc_inode(local_file.as_file())?, false)
-                }
-                crate::proc_carrier::ProcCarrierCandidate::Reserved => {
-                    ensure_proc_carrier_readonly_or_path(local_file.as_file())?;
-                    let inspection = state
-                        .proc_carrier_authority
-                        .open_inspection_alias(local_file.as_file())
-                        .map(|file| state.file_retirement.stage(file))
-                        .map_err(negative_errno)?;
-                    let authenticated = state
-                        .proc_carrier_authority
-                        .authenticate_reserved(
-                            local_file.as_file(),
-                            inspection.as_file(),
-                            auth_budget,
-                            auth_cache,
-                        )
-                        .map_err(negative_errno)?;
-                    if !fixed_synthetic_proc_path(&authenticated.canonical_path) {
-                        return Err(negative_errno(libc::EBADMSG));
+            let (mut proc_inode, mut synthetic_proc_nofollow) = if capture_description.is_some() {
+                (None, false)
+            } else {
+                match state
+                    .proc_carrier_authority
+                    .candidate_kind(local_file.as_file())
+                    .map_err(negative_errno)?
+                {
+                    crate::proc_carrier::ProcCarrierCandidate::Ordinary => {
+                        (received_proc_inode(local_file.as_file())?, false)
                     }
-                    (
-                        Some(synthetic_proc_inode(&authenticated.canonical_path)),
-                        authenticated.virtual_nofollow,
-                    )
+                    crate::proc_carrier::ProcCarrierCandidate::Reserved => {
+                        ensure_proc_carrier_readonly_or_path(local_file.as_file())?;
+                        let inspection = state
+                            .proc_carrier_authority
+                            .open_inspection_alias(local_file.as_file())
+                            .map(|file| state.file_retirement.stage(file))
+                            .map_err(negative_errno)?;
+                        let authenticated = state
+                            .proc_carrier_authority
+                            .authenticate_reserved(
+                                local_file.as_file(),
+                                inspection.as_file(),
+                                auth_budget,
+                                auth_cache,
+                            )
+                            .map_err(negative_errno)?;
+                        if !fixed_synthetic_proc_path(&authenticated.canonical_path) {
+                            return Err(negative_errno(libc::EBADMSG));
+                        }
+                        (
+                            Some(synthetic_proc_inode(&authenticated.canonical_path)),
+                            authenticated.virtual_nofollow,
+                        )
+                    }
                 }
             };
             // Lookup is nonconsuming; release all consumed registrations once below.
@@ -12854,13 +13136,14 @@ fn prepare_received_rights_with_peek(
                 entry_id: Arc::new(()),
                 proc_inode,
                 process_description,
+                capture_description,
                 synthetic_proc_nofollow,
                 identity,
             });
         }
         Ok(StagedReceivedRights { rights: staged })
     })();
-    release_proc_transfers(state, &consumed_keys);
+    release_received_virtual_transfers(state, &consumed_keys);
     result
 }
 
@@ -12948,6 +13231,26 @@ fn commit_received_rights(
         }
         state.random_device_descriptions.remove(&fd);
         shared.random_device_descriptions.remove(&fd);
+        state
+            .file_retirement
+            .retire_capture(state.capture_descriptions.remove(&fd));
+        state
+            .file_retirement
+            .retire_capture(shared.capture_descriptions.remove(&fd));
+        if let Some(description) = right.capture_description {
+            let description = description.into_description();
+            set_output_alias(state, fd, Some(description.alias));
+            match description.alias {
+                OutputAlias::Stdout => {
+                    shared.stdout_alias_fds.insert(fd);
+                }
+                OutputAlias::Stderr => {
+                    shared.stderr_alias_fds.insert(fd);
+                }
+            }
+            state.capture_descriptions.insert(fd, description.clone());
+            shared.capture_descriptions.insert(fd, description);
+        }
         if let Some(description) = right.process_description {
             state.fdinfo_files.insert(fd, description.clone());
             shared.fdinfo_files.insert(fd, description);
@@ -13161,7 +13464,7 @@ fn sendmsg(
     if result < 0 {
         let error = std::io::Error::last_os_error();
         // A failed sendmsg queues no rights.
-        release_proc_transfers(state, &transfers);
+        release_outgoing_transfers(state, &transfers);
         io_error(error)
     } else {
         result as i64
@@ -13373,6 +13676,13 @@ fn recvmsg_with_table(
     // retries EAGAIN, while already-queued datagrams are returned immediately.
     // Always ask the host for CLOEXEC descriptors so a supervisor exec cannot
     // leak them; guest CLOEXEC state is modeled from the caller's original flag.
+    // Admission ends after metadata owns every received capture right,
+    // before guest copyout can wake a forked receiver. Host recv is forced
+    // nonblocking below; input user-memory imports are already complete.
+    let capture_gate = capture_receive_gate(state);
+    let capture_admission = capture_gate
+        .as_ref()
+        .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
     let received = unsafe {
         libc::recvmsg(
             host_fd,
@@ -13383,6 +13693,9 @@ fn recvmsg_with_table(
     if received < 0 {
         return io_error(std::io::Error::last_os_error());
     }
+
+    #[cfg(test)]
+    capture_receive_after_host();
 
     let used_control = host_header.msg_controllen.min(control.len());
     let SanitizedReceivedControl {
@@ -13408,6 +13721,9 @@ fn recvmsg_with_table(
         Ok(staged) => staged,
         Err(error) => return error,
     };
+    drop(capture_admission);
+    #[cfg(test)]
+    capture_receive_after_release();
     let copied_length = (received as usize).min(payload.len());
     let mut copied = 0usize;
     for iov in &guest_iovecs {
@@ -13670,6 +13986,13 @@ fn recvmmsg_with_table(
         let flags = args[3] as libc::c_int & !libc::MSG_WAITFORONE;
         // Keep the VM executor cooperative. Detcore retries EAGAIN through its
         // scheduler, while already queued datagrams are returned immediately.
+        // Admission ends after metadata owns every received capture right,
+        // before guest copyout can wake a forked receiver. Host recv is forced
+        // nonblocking below; input user-memory imports are already complete.
+        let capture_gate = capture_receive_gate(state);
+        let capture_admission = capture_gate
+            .as_ref()
+            .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
         let received = unsafe {
             libc::recvmsg(
                 host_fd,
@@ -13685,6 +14008,9 @@ fn recvmmsg_with_table(
                 delivered as i64
             };
         }
+
+        #[cfg(test)]
+        capture_receive_after_host();
 
         let used_control = host_header.msg_controllen.min(control.len());
         let SanitizedReceivedControl {
@@ -13720,6 +14046,9 @@ fn recvmmsg_with_table(
                 };
             }
         };
+        drop(capture_admission);
+        #[cfg(test)]
+        capture_receive_after_release();
         let copied_length = (received as usize).min(payload.len());
         let mut copied = 0usize;
         for iov in &guest_iovecs {
@@ -16225,7 +16554,12 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
             } else if guest_fd == libc::STDIN_FILENO {
                 state.stdin.as_ref().map(AsRawFd::as_raw_fd)
             } else {
-                Some(guest_fd)
+                Some(
+                    state
+                        .capture_descriptions
+                        .get(&guest_fd)
+                        .map_or(guest_fd, |description| description.io.as_raw_fd()),
+                )
             }
         })
 }
@@ -16234,6 +16568,7 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
 fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
+    let source_capture_description = state.capture_descriptions.get(&guest_fd).cloned();
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&guest_fd);
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
@@ -16253,6 +16588,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             false,
             DuplicateFdSource {
                 output_alias: source_alias,
+                capture_description: source_capture_description.clone(),
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
@@ -16270,6 +16606,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             true,
             DuplicateFdSource {
                 output_alias: source_alias,
+                capture_description: source_capture_description.clone(),
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
@@ -16280,7 +16617,11 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 signalfd_mask: source_signalfd_mask,
             },
         ),
-        libc::F_GETFL => match fd_status_flags(host_fd) {
+        libc::F_GETFL => match source_capture_description
+            .as_ref()
+            .map(|description| Ok(description.status.load(Ordering::SeqCst)))
+            .unwrap_or_else(|| fd_status_flags(host_fd))
+        {
             Ok(flags) => i64::from(
                 flags
                     | if source_synthetic_proc_nofollow {
@@ -16338,6 +16679,16 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 // Blocking virtual signalfd waits require scheduler ownership;
                 // reject before changing the shared open-file description.
                 return negative_errno(libc::ENOSYS);
+            }
+            if let Some(description) = source_capture_description {
+                let current = description.status.load(Ordering::SeqCst);
+                if current & libc::O_PATH != 0 {
+                    return negative_errno(libc::EBADF);
+                }
+                description
+                    .status
+                    .store((current & !settable) | flags, Ordering::SeqCst);
+                return 0;
             }
             // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
             zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
@@ -19391,6 +19742,8 @@ pub(crate) fn native_loaded_state_with_authority(
         loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
+        capture_descriptions: std::collections::BTreeMap::new(),
+        capture_owner: None,
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: ChildWaitContext::default(),
@@ -19408,6 +19761,8 @@ pub(crate) fn native_loaded_state_with_authority(
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
+            capture_receive_gate: Arc::new(std::sync::Mutex::new(())),
+            capture_transfers: std::collections::BTreeMap::new(),
         })),
     }
 }
@@ -19719,6 +20074,7 @@ mod tests {
     }
 
     include!("capture_identity_tests.rs");
+    include!("captured_rights_tests.rs");
     include!("pipe_fionread_tests.rs");
     include!("child_exit_signal_tests.rs");
     include!("process_alarm_signal_tests.rs");
