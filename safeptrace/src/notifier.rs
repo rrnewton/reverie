@@ -488,6 +488,8 @@ struct Event {
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_echild_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    worker_done_wait_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -893,6 +895,8 @@ impl Event {
             terminal_publish_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_echild_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_done_wait_pause: Mutex::new(None),
         }
     }
 
@@ -1787,6 +1791,12 @@ impl Event {
     fn mark_worker_done(&self) {
         let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
         debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+        // A waiter checks the state and waits under worker_done_lock. Taking
+        // it here orders this notification after that waiter has started
+        // waiting, or after its check sees WORKER_DONE; without it the
+        // notification can land between the check and the wait and is lost,
+        // and the waiter sleeps for its whole timeout.
+        drop(self.worker_done_lock.lock());
         self.worker_done_changed.notify_all();
         self.notify_wait_owner_change();
     }
@@ -1806,6 +1816,14 @@ impl Event {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
+            }
+            #[cfg(test)]
+            if let Some(pause) = self.worker_done_wait_pause.lock().take() {
+                // Test-only interval after the state check and before the
+                // wait, with worker_done_lock held. Disconnection also
+                // releases the waiter.
+                let _ = pause.captured.send(());
+                let _ = pause.resume.recv_timeout(Duration::from_secs(2));
             }
             self.worker_done_changed.wait_for(&mut guard, remaining);
         }
@@ -6352,7 +6370,15 @@ mod test {
                 crate::ExitStatus::Signaled(Signal::SIGKILL, false)
             )
         );
+        // A lost worker-done wakeup still returns true, but only after the
+        // rest of the 3 s deadline; bounding the wait makes it fail instead.
+        let retirement_wait = Instant::now();
         assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        let retirement_wait = retirement_wait.elapsed();
+        assert!(
+            retirement_wait < Duration::from_secs(1),
+            "the notifier worker's retirement took {retirement_wait:?} to reach the waiter"
+        );
         root_cleanup.disarm();
     }
 
@@ -6464,7 +6490,15 @@ mod test {
                 crate::ExitStatus::Signaled(Signal::SIGKILL, false)
             )
         );
+        // A lost worker-done wakeup still returns true, but only after the
+        // rest of the 3 s deadline; bounding the wait makes it fail instead.
+        let retirement_wait = Instant::now();
         assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        let retirement_wait = retirement_wait.elapsed();
+        assert!(
+            retirement_wait < Duration::from_secs(1),
+            "the notifier worker's retirement took {retirement_wait:?} to reach the waiter"
+        );
         root_cleanup.disarm();
     }
 
@@ -6886,6 +6920,59 @@ mod test {
             Poll::Ready(Err(Errno::EALREADY))
         );
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    /// The worker finishes after a `wait_worker_done` caller has checked the
+    /// state and before it waits. The caller is paused in that interval with
+    /// `worker_done_lock` held, and the worker's `mark_worker_done` runs
+    /// then. It must not complete inside that interval, and the caller must
+    /// return promptly once released. A notification sent inside the
+    /// interval reaches nobody, and the caller then sleeps for its whole
+    /// 10 s timeout before its re-check returns true.
+    #[test]
+    fn worker_done_wakes_a_waiter_between_its_check_and_its_wait() {
+        let event = Arc::new(Event::new());
+        event.worker_state.store(WORKER_RUNNING, Ordering::Release);
+        let (captured, paused_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume) = mpsc::sync_channel(1);
+        *event.worker_done_wait_pause.lock() = Some(BoundedTestPause { captured, resume });
+        let (waited_tx, waited_rx) = mpsc::sync_channel(1);
+        let waiter_event = Arc::clone(&event);
+        let waiter = thread::spawn(move || {
+            let waited = waiter_event.wait_worker_done(Duration::from_secs(10));
+            let _ = waited_tx.send(waited);
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the waiter did not reach the interval before its wait");
+
+        let (marked_tx, marked_rx) = mpsc::sync_channel(1);
+        let marker_event = Arc::clone(&event);
+        let marker = thread::spawn(move || {
+            marker_event.mark_worker_done();
+            let _ = marked_tx.send(());
+        });
+        let marked_in_gap = marked_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        resume_tx.send(()).expect("release the waiter");
+
+        let waited = waited_rx.recv_timeout(Duration::from_secs(2));
+        assert_eq!(
+            waited,
+            Ok(true),
+            "the waiter did not return within 2 s of its release \
+             (mark_worker_done completed inside its check-to-wait interval: \
+             {marked_in_gap})"
+        );
+        assert!(
+            !marked_in_gap,
+            "mark_worker_done completed while the waiter held worker_done_lock"
+        );
+        marked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("mark_worker_done did not complete after the waiter waited");
+        waiter.join().expect("join the waiter");
+        marker.join().expect("join the marker");
+        assert_eq!(event.worker_state.load(Ordering::Acquire), WORKER_DONE);
     }
 
     /// A terminal `update` stores the final status before a missing exit
