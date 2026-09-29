@@ -86,6 +86,17 @@ ALLOWED: dict[str, str] = {
         "periodic reporter; delegates green/completeness to authoritative_row_qualification "
         "and exposes the count only as a diagnostic/null refusal"
     ),
+    # A TEST FIXTURE in a production file, not a consumer. The file's only
+    # mention is in its #[cfg(test)] module: the lost-run quarantine test
+    # schema10_exact_quarantine_is_answered_without_reading_and_never_verifies
+    # changes the recorded row's count, as it changes every other field, to
+    # prove that the quarantine binds the whole row. No production code in the
+    # file reads the field. Rust unit tests sit beside the code, so the
+    # file-level derivation below cannot exclude them as it excludes tests/.
+    "ci-hub/lib/validation_evidence.rs": (
+        "unit-test fixture only; the quarantine test changes the count to prove "
+        "the whole recorded row is bound"
+    ),
 }
 
 
