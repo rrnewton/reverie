@@ -5529,6 +5529,7 @@ mod tests {
     include!("vm/entry_eintr_tests.rs");
     include!("vm/inline_interrupt_tests.rs");
     include!("vm/memory_publication_tests.rs");
+    include!("vm/read_zero_guest_tests.rs");
 
     #[test]
     fn action_parent_captures_yield_for_close_and_keep_stop_and_validation() {

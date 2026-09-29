@@ -38009,18 +38009,31 @@ mod tests {
                 state.random_device_fds.contains(&(fd as i32))
                     || state.proc_files.contains_key(&(fd as i32))
             );
-            let expected = random_stream_carrier_bytes(&state, fd, 0, 16);
-            if path == "/proc/self/status" {
-                assert!(expected.starts_with(b"Name:\ttest\n"));
-            }
+            let process_status = path == "/proc/self/status";
+            let expected = if process_status {
+                // Process status is a live seq description with an empty
+                // metadata carrier. Its independent literal prefix must come
+                // from the description, never from that private host file.
+                assert!(state.fdinfo_files.contains_key(&(fd as i32)));
+                assert_eq!(state.files[&(fd as i32)].metadata().unwrap().len(), 0);
+                b"Name:\ttest\nUmask".to_vec()
+            } else {
+                random_stream_carrier_bytes(&state, fd, 0, 16)
+            };
             memory.write(READ_ZERO_BUFFER, &[0x5a; 16]).unwrap();
             for address in READ_ZERO_ADDRESSES {
-                // Preserve a known divergence: at the canonical 3 * PAGE_SIZE
-                // address beyond this arena, these synthetic routes return
-                // EFAULT while native read(..., 0) returns zero. Random reads
-                // dispatch earlier, so the ordinary path's random exclusion is
-                // defensive and is not exercised by this dispatcher test.
-                let expected_result = if address <= memory.guest_end() {
+                // Random dispatch retains its guest-arena admission: the
+                // canonical address beyond this arena returns EFAULT. Live
+                // process seq reads instead admit a zero-length userspace
+                // interval without touching a page, like the fdinfo control.
+                // Both routes must preserve position and all canaries.
+                let expected_result = if process_status {
+                    if address >= 0x8000_0000_0000_0000 {
+                        negative_errno(libc::EFAULT)
+                    } else {
+                        0
+                    }
+                } else if address <= memory.guest_end() {
                     0
                 } else {
                     negative_errno(libc::EFAULT)
