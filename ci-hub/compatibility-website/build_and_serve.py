@@ -1725,11 +1725,25 @@ def _materialize(
             os.close(root)
 
 
-def _git_oid(checkout: Path, reference: str) -> str:
+def _git_environment() -> dict[str, str]:
+    """Return the environment for local, read-only Git object reads.
+
+    GIT_NO_LAZY_FETCH stops a partial clone from contacting its promisor remote
+    for a missing object. Without it, a read of an absent object in a
+    blob:none checkout starts a network fetch whose diagnostics can exceed the
+    stderr bound below, and the website build would depend on the network.
+    """
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("GIT_")
     }
-    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    environment.update(
+        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1"
+    )
+    return environment
+
+
+def _git_oid(checkout: Path, reference: str) -> str:
+    environment = _git_environment()
     export_inputs = _modules().export_inputs
     try:
         result = export_inputs.capture_bounded_process(
@@ -1885,8 +1899,7 @@ def capture_presentation(
             repositories["hermit_test_ledger"] = modules.series.ledger_root(state_root or parent)
         except modules.series.SeriesError as error:
             raise WebsiteRefused(f"cannot resolve recorded cell ledger: {error}") from error
-    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
-    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    environment = _git_environment()
     rows = []
     for repository, commit in identities:
         if len(commit) != 40 or any(value not in "0123456789abcdef" for value in commit):

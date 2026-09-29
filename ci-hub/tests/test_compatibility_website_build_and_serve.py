@@ -250,6 +250,7 @@ def test_git_oid_uses_the_captured_shared_bounded_process(
     assert arguments["stderr_limit"] == website.MAX_GIT_OID_STDERR_BYTES
     assert arguments["environment"]["GIT_CONFIG_NOSYSTEM"] == "1"
     assert arguments["environment"]["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert arguments["environment"]["GIT_NO_LAZY_FETCH"] == "1"
 
 
 def write_read_only_tree(root: Path, files: dict[str, bytes]) -> None:
@@ -3402,6 +3403,29 @@ def test_capture_presentation_reads_exact_commit_objects_not_head(tmp_path: Path
     assert actual == {"repository": "dev-hermit", "commit": commit, "committed_at": "2026-08-20T12:00:00+00:00"}
     assert all(row["committed_at"] is None for row in result["commits"] if row["repository"] == "hermit")
     assert result["build_started_at"] == "2026-09-21T20:00:00Z"
+
+
+def test_capture_presentation_never_fetches_an_absent_object_from_a_promisor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A blob:none clone, such as a CI checkout of hermit, is a promisor
+    # repository: reading an absent object starts a network fetch unless
+    # GIT_NO_LAZY_FETCH is set. The fake remote helper records any such fetch.
+    data = build_data(tmp_path, monkeypatch)
+    marker = tmp_path / "promisor-fetches"
+    helpers = tmp_path / "remote-helpers"
+    helpers.mkdir()
+    helper = helpers / "git-remote-fixture"
+    helper.write_text("#!/bin/sh\necho \"$*\" >> \"$WEBSITE_PROMISOR_MARKER\"\nexit 1\n")
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{helpers}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("WEBSITE_PROMISOR_MARKER", str(marker))
+    repo = tmp_path / "partial-clone"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
+                       ("remote.origin.url", "fixture::unreachable"), ("remote.origin.promisor", "true")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+    result = website.capture_presentation(data, "2026-09-21T20:00:00Z", parent=repo, hermit=repo)
+    assert result["commits"] and all(row["committed_at"] is None for row in result["commits"])
+    assert not marker.exists(), marker.read_text()
 
 
 def test_presentation_cell_ledger_date_uses_explicit_state_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
