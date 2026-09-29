@@ -1460,6 +1460,101 @@ def test_a_selected_by_fact_still_binds_only_to_the_id_its_run_selected(
         render_page._site_model(_build(data), data, wording="fixture")
 
 
+def _record_event_1_under_a_folded_category(
+    data: dict[str, Any],
+    *,
+    recorded_test: str,
+    recorded_category: str,
+    recorded_lane: str | None = None,
+) -> dict[str, Any]:
+    """Shape fixture event-1 like a row from a test folded into another category.
+
+    Hermit folded backend-parity-c/<name> into c-programs/<name>
+    (https://github.com/rrnewton/hermit/issues/3301).  A run from before the
+    fold names the retired test and its category in both its selection and its
+    recorded verdicts; the projection publishes the row under the successor's
+    cell and keeps the recorded id as ``series.recorded_cell``.
+    """
+    runs = data["runs"]
+    (row,) = [row for row in runs["series_rows"] if row["event_id"] == "event-1"]
+    row["series"]["recorded_cell"] = _identity("old-tests/hello")
+    # A current row may share its evidence objects with its history row.
+    selected: list[dict[str, Any]] = []
+    recorded: list[dict[str, Any]] = []
+    for field in ("validation_history_rows", "current_validation_run_rows"):
+        for history in runs[field]:
+            evidence = render_page._cell_evidence(history)
+            selected.extend(evidence["selected_by"]["super"]["cells"])
+            recorded.extend(evidence["recorded"]["cells"])
+    assert selected and {cell["test"] for cell in selected} == {"tests/hello"}
+    assert recorded and {cell["test"] for cell in recorded} == {"tests/hello"}
+    for cell in selected:
+        cell.update(test="old-tests/hello", category="old-tests")
+    for cell in recorded:
+        cell.update(test=recorded_test, category=recorded_category)
+        if recorded_lane is not None:
+            cell["lane"] = recorded_lane
+    _refresh_projection_digests(data)
+    return data
+
+
+def test_a_folded_category_row_joins_the_verdict_its_run_recorded() -> None:
+    data = _record_event_1_under_a_folded_category(
+        representative_build_data(),
+        recorded_test="old-tests/hello",
+        recorded_category="old-tests",
+    )
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = model.cell_by_id[_identity("tests/hello")]
+
+    recorded = render_page._exact_validation_cell(model, cell, "event-1")
+    assert recorded is not None
+    assert (recorded["test"], recorded["category"]) == ("old-tests/hello", "old-tests")
+    # Determinism credit and its history replay read the same join.
+    assert render_page._cell_metrics(model, cell)["determinism"] == {
+        "state": "matched",
+        "partial": Fraction(1),
+    }
+    (ptrace,) = [row for row in render_page._backend_rows(model) if row["backend"] == "ptrace"]
+    assert (ptrace["determinism"]["full"], ptrace["determinism"]["unavailable"]) == (1, 0)
+    assert [
+        point["determinism"]
+        for point in render_page._compute_backend_history(model)
+        if point["backend"] == "ptrace"
+    ] == [{"green_cells": 1, "unavailable_cells": 0}]
+
+
+@pytest.mark.parametrize(
+    ("recorded_test", "recorded_category", "recorded_lane"),
+    (
+        # The run selected the retired id but recorded its verdict under the
+        # successor id.
+        ("tests/hello", "tests", None),
+        # The verdict names the retired id under the successor's category.
+        ("old-tests/hello", "tests", None),
+        # The verdict belongs to another test of the retired category.
+        ("old-tests/other", "old-tests", None),
+        # The verdict names the retired id in another lane.
+        ("old-tests/hello", "old-tests", "privileged"),
+    ),
+)
+def test_a_folded_category_row_does_not_join_a_verdict_under_another_identity(
+    recorded_test: str, recorded_category: str, recorded_lane: str | None
+) -> None:
+    data = _record_event_1_under_a_folded_category(
+        representative_build_data(),
+        recorded_test=recorded_test,
+        recorded_category=recorded_category,
+        recorded_lane=recorded_lane,
+    )
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = model.cell_by_id[_identity("tests/hello")]
+
+    assert cell["lane"] == "portable"
+    assert render_page._exact_validation_cell(model, cell, "event-1") is None
+    assert render_page._cell_metrics(model, cell)["determinism"]["state"] == "unavailable"
+
+
 def test_selected_cell_identity_refuses_events_outside_the_cell_or_mixed_ids() -> None:
     rows = {
         "a": {"series": {"cell": "c/x/verify/ptrace"}},

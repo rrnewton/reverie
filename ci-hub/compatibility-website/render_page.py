@@ -4006,6 +4006,17 @@ def _exact_validation_cell(
             matching_facts.append(fact)
     if len(matching_facts) != 1:
         return None
+    # The projection publishes a row recorded under a retired Hermit test id
+    # under its successor's cell, but the run's history verdict still names the
+    # id the run recorded.
+    recorded_identity = _selected_cell_identity(
+        str(cell["cell"]), matching_facts[0], model.series_by_event
+    )
+    recorded_category = (
+        cell.get("category")
+        if recorded_identity == str(cell["cell"])
+        else recorded_identity.split("/", 1)[0]
+    )
     history_indices = [
         index
         for index, candidate_path in enumerate(model.history_paths)
@@ -4025,8 +4036,8 @@ def _exact_validation_cell(
     verdict_rows = [
         candidate
         for candidate in _cell_evidence(history)["recorded"]["cells"]
-        if _cell_identity(candidate) == str(cell["cell"])
-        and candidate.get("category") == cell.get("category")
+        if _cell_identity(candidate) == recorded_identity
+        and candidate.get("category") == recorded_category
         and candidate.get("lane") == cell.get("lane")
     ]
     return verdict_rows[0] if len(verdict_rows) == 1 else None
