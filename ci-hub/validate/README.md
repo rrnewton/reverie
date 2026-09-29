@@ -75,6 +75,61 @@ covers finalization separately. An enclosing caller must leave room for both
 service phases and its own setup/status work. Hitting any backstop is a failed
 run, not successful qualification.
 
+## Cleanup quarantine: what a queued validation waits for
+
+When a run's payload leaves processes behind, or its supervisor dies before
+proving the payload gone, the slot keeps a cleanup record. `validate-lock
+status` prints it. No new validation starts while any record exists, and that
+includes records in this repository's other slots.
+
+At normal exit, teardown sends SIGTERM, waits 5 s, and then sends SIGKILL to
+two sets of processes: those that carry the run's payload token
+(`CI_HUB_PAYLOAD_DOMAIN`), and those still in the payload's original process
+group. A process that left the group and also dropped the token is not
+reached. <https://github.com/rrnewton/dev-hermit/issues/428> tracks
+cgroup-based teardown for that case.
+
+An acquirer with `--wait N` (N > 0) classifies the record on every poll:
+
+- **Waits, keeping its queue place.** Either the holder's supervisor is alive
+  and will release, or the supervisor is dead, its census was complete, and
+  the recorded residual processes are still running.
+- **Discharges the record itself.** Payload absence is proven and the holder's
+  supervisor is proven dead, which is the same proof `reclaim-dead` requires.
+  The release record says `released_by=auto-reclaim:<agent>`. Since
+  <https://github.com/rrnewton/dev-hermit/issues/419> this replaces the manual
+  `reclaim-dead` step in that one case. `reclaim-dead` still works.
+- **Refuses at once (exit 3).** This happens when the record cannot be
+  verified, when the supervisor's liveness cannot be established (for example
+  a holder on another host), or when a dead supervisor's census was incomplete
+  or never ran. The message ends with "this quarantine cannot be recovered by
+  waiting" and says why. Follow the printed recovery command
+  (`census-orphaned-domain`, then `reclaim-dead`).
+
+Two consequences are easy to miss:
+
+- **A discharge is not an admission.** The discharge writes a release record,
+  and that record starts the 90 s owner-watch yield. An attempt made with
+  `--wait 0` or `--no-wait` can therefore discharge the record and still exit
+  3 on the yield it just started. An attempt made after the yield ends is
+  admitted. A waiting `run` drops its slot anchors while it yields, so the
+  owner watch can start.
+- **A residual the census froze cannot exit.** The census stops (SIGSTOP) the
+  residual processes it records, and a supervisor that dies after doing so
+  leaves them stopped (state `T`). The waiter's message names each stopped
+  process as `pid@start-ticks`. An operator must SIGKILL exactly those
+  processes, or an outer bound such as the service's `RuntimeMaxSec` must end
+  them. The next attempt then discharges the record. A waiter never signals
+  processes that its own run did not start.
+
+`run` spends one `--wait` budget, measured from its start, across the
+owner-watch yield, the global queue, quarantine waits in any slot, and local
+acquisition. It does not restart the clock for each phase. Each phase can
+overrun by one 3 s poll. After the child exits, teardown adds at most 16 s:
+5 s of SIGTERM grace, 3 kill rounds of 2 s each, and a 5 s check that the
+payload domain is empty. The Hermit service's `RuntimeMaxSec` is `--wait` plus
+the child deadline plus 600 s, which covers all of these.
+
 ## CPU placement: validation stays off PMU-bound CPUs
 
 On devbig014 a ptrace-stop-heavy cell costs 7.6-7.9x the CPU on host CPU 0

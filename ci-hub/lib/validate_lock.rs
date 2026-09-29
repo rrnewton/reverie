@@ -47,8 +47,10 @@ use crate::landing_lock::census_recorded_domain;
 use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, census_cleanup_domain,
     census_disposition, current_host, describe_identities, enable_child_subreaper,
-    exact_process_liveness, exit_status_code, foreign_box_claim, foreign_box_quarantine,
-    heartbeat_test_helper_delay, kill_payload_domain, print_census_recovery, print_cleanup_record,
+    exact_process_liveness, exact_process_state, exit_status_code, foreign_box_claim_excluding,
+    foreign_box_quarantine_excluding,
+    heartbeat_test_helper_delay, kill_payload_domain, operation_is_validation,
+    print_census_recovery, print_cleanup_record,
     process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
     register_box_claim, remove_cleanup_record_and_claim, repository_lock_root, signal_group,
     signal_payload_domain, spawn_gated_child, suffix, tear_down_payload_domain,
@@ -2800,6 +2802,7 @@ fn settle_empty_payload_domain(
             supervisor_pid,
             leader.start_ticks,
             domain_token,
+            pgid,
             "validate-lock",
         );
     }
@@ -2838,15 +2841,151 @@ enum AcquireToken {
         head: String,
         ahead: usize,
     },
-    /// A cleanup quarantine holds the box, but it can clear without operator
-    /// action: its supervisor is still alive, its exact recorded residuals may
-    /// still exit, or its absence is already proven. The waiter keeps its queue
-    /// place and polls within `--wait`; nothing is admitted until the record is
-    /// discharged by the same proof `reclaim-dead` uses.
+    /// A cleanup quarantine holds the box, and waiting may see it clear: its
+    /// supervisor is still alive, its exact recorded residuals are still alive
+    /// (running ones may exit on their own; STOPPED ones need an operator or
+    /// an outer bound to kill them), or its absence is already proven. The
+    /// waiter keeps its queue place and polls within `--wait`; nothing is
+    /// admitted until the record is discharged by the same proof
+    /// `reclaim-dead` uses.
     QuarantineWait {
         reason: String,
         ahead: usize,
     },
+}
+
+/// What must happen before a dead holder's complete residual census becomes
+/// proven-absent, read from the CURRENT state of each exact recorded identity.
+///
+/// ⚠️ A FROZEN RESIDUAL DOES NOT EXIT ON ITS OWN. The census freezes what it
+/// records with SIGSTOP, and supervisors before
+/// https://github.com/rrnewton/dev-hermit/issues/419 never followed the freeze
+/// with SIGKILL. Once that supervisor is dead nothing resumes or kills those
+/// processes, so a waiter that is told "this clears when they exit" would spend
+/// its whole `--wait` on a record only an operator or an outer bound (such as
+/// the payload unit's `RuntimeMaxSec`) can clear. This names each stopped
+/// `pid@start_ticks` so the waiter's transcript says exactly what to kill.
+fn describe_orphaned_residuals(pgid: u32, residuals: &[ProcessIdentity]) -> String {
+    let mut stopped = Vec::new();
+    let mut running = Vec::new();
+    let mut unreadable = Vec::new();
+    for identity in residuals {
+        let name = format!("{}@{}", identity.pid, identity.start_ticks);
+        match exact_process_state(identity) {
+            Ok(None) => {}
+            Ok(Some('T' | 't')) => stopped.push(name),
+            Ok(Some(state)) => running.push(format!("{name} (state {state})")),
+            Err(reason) => unreadable.push(reason),
+        }
+    }
+    let mut parts = Vec::new();
+    if !stopped.is_empty() {
+        parts.push(format!(
+            "the STOPPED residual(s) {} are killed: they cannot exit on their own, because the \
+             census froze them and nothing resumes them; an operator must SIGKILL exactly those \
+             processes (or an outer bound such as the payload unit's RuntimeMaxSec must end \
+             them), after which the next attempt discharges the record itself",
+            stopped.join(", ")
+        ));
+    }
+    if !running.is_empty() {
+        parts.push(format!(
+            "the running residual(s) {} exit on their own",
+            running.join(", ")
+        ));
+    }
+    if !unreadable.is_empty() {
+        parts.push(format!(
+            "residual state could not be read ({}), so whether they can exit is unknown",
+            unreadable.join("; ")
+        ));
+    }
+    if parts.is_empty() {
+        parts.push(format!(
+            "original process group {pgid} empties: no recorded identity is alive, so the group \
+             is populated by process(es) the record does not name"
+        ));
+    }
+    parts.join("; and ")
+}
+
+/// Outcome of [`ValidateLock::acquire_ordered`].
+enum OrderedAcquire {
+    /// Final status: 0 acquired, otherwise the exit code to return.
+    Status(i32),
+    /// Run path only: the local lock is free but the owner-watch yield
+    /// applies. The caller must drop its slot anchors and wait out the yield
+    /// outside them.
+    LocalYield { reason: String, seconds_left: i64 },
+}
+
+/// What is left of one `--wait` for the whole of `run` admission.
+///
+/// Every admission phase that can wait takes [`Self::remaining`] instead of
+/// the original `--wait`, so a run that waits out the owner-watch yield, then
+/// the global queue, then a quarantine, then the yield again cannot spend
+/// several times `--wait` before its child starts. The payload unit's
+/// RuntimeMaxSec is `--wait + --child-deadline + 600 s`
+/// (ci-hub/validate/start_unit.py), so that overspend came out of the child's
+/// own deadline (review of https://github.com/rrnewton/dev-hermit/issues/419).
+struct WaitBudget {
+    started: Instant,
+    wait: u64,
+}
+
+impl WaitBudget {
+    fn start(wait: u64) -> Self {
+        Self {
+            started: Instant::now(),
+            wait,
+        }
+    }
+
+    /// Seconds left, never below 1 once `--wait` was nonzero. Zero means
+    /// "never wait" to every phase and makes it refuse (exit 3) instead of
+    /// timing out (exit 1); an exhausted budget is a timeout, so each later
+    /// phase gets one poll and then reports its own timeout. That is the one
+    /// POLL_SECONDS overshoot per phase the caller documents.
+    fn remaining(&self) -> u64 {
+        if self.wait == 0 {
+            return 0;
+        }
+        self.wait
+            .saturating_sub(self.started.elapsed().as_secs())
+            .max(1)
+    }
+
+    fn args(&self, args: &RunArgs) -> RunArgs {
+        let mut budgeted = args.clone();
+        budgeted.wait = self.remaining();
+        budgeted
+    }
+}
+
+/// Outcome of settling this repository's OTHER validation slots before a run
+/// takes its own; see [`ValidateLock::sibling_slot_quarantine_admission`].
+enum SiblingQuarantine {
+    /// No sibling slot carries a quarantine this run must respect.
+    Clear,
+    /// This run discharged a sibling's proven-empty quarantine; the release
+    /// record it wrote starts the owner-watch yield, so admission must go
+    /// back through the yield boundary.
+    Reclaimed,
+}
+
+/// A sibling slot's record that validation may coexist with: the same rule
+/// `foreign_box_quarantine_excluding` applies to another repository's
+/// validation (an armed run whose child has not started, or a published
+/// payload).
+fn coexisting_validation_cleanup(verification: &CleanupVerification) -> bool {
+    match verification {
+        CleanupVerification::Armed { record, .. } => operation_is_validation(&record.operation),
+        CleanupVerification::Active { record, .. } => {
+            operation_is_validation(&record.operation)
+                && matches!(record.phase, CleanupPhase::Published { .. })
+        }
+        _ => false,
+    }
 }
 
 /// How a cleanup record bears on one acquisition attempt.
@@ -2857,7 +2996,9 @@ enum QuarantineAdmission {
     /// holder (`auto-reclaim:<agent>`); ordinary admission applies to the
     /// now-free lock, owner-watch yield included.
     Reclaimed,
-    /// The quarantine can clear without operator action; keep waiting.
+    /// Waiting may see the quarantine clear, so keep the queue place and poll
+    /// within `--wait`. That is not a promise it clears without an operator:
+    /// the reason says what has to happen (see [`describe_orphaned_residuals`]).
     Wait(String),
 }
 
@@ -2905,6 +3046,15 @@ enum GlobalWait {
     /// The queue entry is removed and no slot was taken. The caller publishes
     /// it as the pre-queue check would have.
     FreshnessRefused(ValidateLockError),
+}
+
+/// How a return to the global queue after an owner-watch yield ended.
+enum WaitAgain {
+    /// The owner-watch yield refused with this exit status before the run
+    /// re-entered the queue. The queue entry is removed.
+    YieldRefused(i32),
+    /// The yield cleared and the global wait ended this way.
+    Global(GlobalWait),
 }
 
 fn parse_mem_available_bytes(content: &str) -> Result<u64, String> {
@@ -3006,13 +3156,30 @@ pub fn execute(
                     }
                 }
             }
+            // This repository's other slots (bare acquire leases slot 0). Their
+            // records used to reach this path only through the foreign check
+            // below, as "another repository's"; settle them through the same
+            // quarantine admission, with no coexistence, as before. A
+            // discharge here is followed by `acquire`, which applies the
+            // owner-watch yield it starts.
+            let sibling_budget = WaitBudget::start(args.wait);
+            while let SiblingQuarantine::Reclaimed = lock.sibling_slot_quarantine_admission(
+                &args.agent,
+                false,
+                0,
+                args.wait == 0,
+                &sibling_budget,
+            )? {}
             // The anchor is a live-process signal; this is the durable one. A
             // supervisor that died leaving its payload alive released the anchor,
             // but its quarantine record is still outstanding, and now visible from
             // here. ONE MORE necessary condition -- `require_no_cleanup` inside
             // `acquire` still runs for this repository's own record.
+            let own_cleanups: Vec<PathBuf> = (0..VALIDATE_SLOT_COUNT)
+                .map(|candidate| lock.paths.for_slot(candidate).cleanup)
+                .collect();
             if let Some(reason) =
-                foreign_box_claim(&lock.paths.global_anchor(), &lock.paths.cleanup)
+                foreign_box_claim_excluding(&lock.paths.global_anchor(), &own_cleanups)
             {
                 eprintln!("REFUSED: {reason}");
                 return Ok(REFUSED_EXIT_CODE);
@@ -5189,19 +5356,226 @@ impl ValidateLock {
         })
     }
 
+    /// Remove this exact run's global queue entry and return it, so a caller
+    /// that must go back to waiting can restore the SAME position with
+    /// [`Self::restore_own_global_waiter`].
     fn remove_own_global_waiter(
         &self,
         args: &RunArgs,
         owner: &ProcessOwner,
-    ) -> Result<(), ValidateLockError> {
+    ) -> Result<Option<GlobalQueueEntry>, ValidateLockError> {
         self.with_global_queue_guard(|| {
             let mut queue = self.read_global_queue()?;
+            let mut removed = None;
             queue.retain(|entry| {
-                !(entry.matches(&args.agent, args.kind, &args.target)
-                    && entry.owner.as_ref() == Some(owner))
+                let own = entry.matches(&args.agent, args.kind, &args.target)
+                    && entry.owner.as_ref() == Some(owner);
+                if own && removed.is_none() {
+                    removed = Some(entry.clone());
+                }
+                !own
             });
+            self.write_global_queue(&queue)?;
+            Ok(removed)
+        })
+    }
+
+    /// Put back an entry [`Self::remove_own_global_waiter`] returned, with its
+    /// original `enqueued_at` and priority, unless the run is already queued.
+    /// Used when a run that left the queue at a settled boundary must wait
+    /// again: it keeps its place instead of going to the tail.
+    fn restore_own_global_waiter(
+        &self,
+        entry: GlobalQueueEntry,
+    ) -> Result<(), ValidateLockError> {
+        let now = epoch_seconds()?;
+        self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            if !queue.iter().any(|queued| {
+                queued.matches(&entry.agent, entry.kind, &entry.target)
+                    && queued.owner == entry.owner
+            }) {
+                queue.push(entry.clone());
+            }
+            self.prune_and_sort_global_queue(&mut queue, now)?;
             self.write_global_queue(&queue)
         })
+    }
+
+    /// Go back to waiting after dropping the slot anchors at a yield: wait out
+    /// the owner-watch yield outside the anchors, then wait for this run's
+    /// global turn again, both within what is left of `--wait`. The run's
+    /// queue entry must already be in place (it keeps its position).
+    /// `freshness_deferred`, `timing` and `report` are passed through to
+    /// [`Self::wait_for_global_turn`] unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn wait_again_for_global_turn(
+        &self,
+        args: &RunArgs,
+        owner: &ProcessOwner,
+        attribution: &str,
+        root: &Path,
+        budget: &WaitBudget,
+        freshness_deferred: bool,
+        timing: QueueTiming,
+        report: LockWaitReport<'_>,
+    ) -> Result<WaitAgain, ValidateLockError> {
+        let yield_status =
+            self.wait_for_owner_watch_yield(&args.agent, budget.remaining(), args.no_wait)?;
+        if yield_status != 0 {
+            self.remove_own_global_waiter(args, owner)?;
+            return Ok(WaitAgain::YieldRefused(yield_status));
+        }
+        Ok(WaitAgain::Global(self.wait_for_global_turn(
+            &budget.args(args),
+            owner,
+            attribution,
+            false,
+            root,
+            freshness_deferred,
+            timing,
+            report,
+        )?))
+    }
+
+    /// Read-only form of [`Self::sibling_slot_quarantine_admission`] for the
+    /// admission status query: the first sibling slot whose cleanup record
+    /// would hold `run` up, as the status to report. Nothing is discharged.
+    fn observe_sibling_slot_quarantine(
+        &self,
+        kind: Kind,
+        slot: usize,
+    ) -> Result<Option<(ImmediateAdmissionState, String)>, ValidateLockError> {
+        for sibling in (0..VALIDATE_SLOT_COUNT).filter(|candidate| *candidate != slot) {
+            let lock = ValidateLock {
+                paths: self.paths.for_slot(sibling),
+            };
+            if matches!(
+                fs::symlink_metadata(&lock.paths.cleanup),
+                Err(error) if error.kind() == io::ErrorKind::NotFound
+            ) {
+                continue;
+            }
+            let verification =
+                lock.with_guard(|| Ok(lock.cleanup_verification(lock.read_holder()?.as_ref())))?;
+            if kind != Kind::Bench && coexisting_validation_cleanup(&verification) {
+                continue;
+            }
+            let (state, reason) = match verification {
+                CleanupVerification::None => continue,
+                CleanupVerification::Unknown { reason, .. } => {
+                    (ImmediateAdmissionState::Unknown, reason)
+                }
+                CleanupVerification::Armed { reason, .. }
+                | CleanupVerification::Active { reason, .. }
+                | CleanupVerification::Uncensused { reason, .. }
+                | CleanupVerification::Recoverable { reason, .. } => {
+                    (ImmediateAdmissionState::Quarantined, reason)
+                }
+            };
+            return Ok(Some((
+                state,
+                format!("same-repository validation slot {sibling}: {reason}"),
+            )));
+        }
+        Ok(None)
+    }
+
+    /// Settle this repository's OTHER validation slots, with the run's slot
+    /// anchors held.
+    ///
+    /// Every slot registers its cleanup record in the same box-global claim
+    /// directory as another repository's, and the run used to meet a record
+    /// in sibling slot k only through the foreign-claim check: refused at
+    /// once as "another repository's", with no wait and no auto-reclaim,
+    /// although it is exactly the record the local acquisition of slot k would
+    /// have waited out (review of
+    /// https://github.com/rrnewton/dev-hermit/issues/419). Each sibling record
+    /// now goes through the same [`QuarantineAdmission`] under that slot's own
+    /// guard: Wait polls within the budget, Reclaimed discharges it, and an
+    /// unrecoverable record refuses naming the slot. A validation run still
+    /// coexists with a sibling validation that is armed or published, as the
+    /// foreign check allowed (`allow_coexisting_validation`); a bench run and
+    /// a bare `acquire` do not, again as before.
+    fn sibling_slot_quarantine_admission(
+        &self,
+        agent: &str,
+        allow_coexisting_validation: bool,
+        slot: usize,
+        no_wait: bool,
+        budget: &WaitBudget,
+    ) -> Result<SiblingQuarantine, ValidateLockError> {
+        let limit = budget.remaining();
+        let started = Instant::now();
+        let mut last = String::new();
+        loop {
+            let mut waiting = Vec::new();
+            for sibling in (0..VALIDATE_SLOT_COUNT).filter(|candidate| *candidate != slot) {
+                let lock = ValidateLock {
+                    paths: self.paths.for_slot(sibling),
+                };
+                // Skip the guard only on a proven-absent record; any other
+                // error goes through the guarded check, which fails closed.
+                if matches!(
+                    fs::symlink_metadata(&lock.paths.cleanup),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound
+                ) {
+                    continue;
+                }
+                let admission = lock.with_guard(|| {
+                    let holder = lock.read_holder()?;
+                    if allow_coexisting_validation
+                        && coexisting_validation_cleanup(
+                            &lock.cleanup_verification(holder.as_ref()),
+                        )
+                    {
+                        return Ok(QuarantineAdmission::Clear);
+                    }
+                    let now = epoch_seconds()?;
+                    lock.quarantine_admission(holder.as_ref(), agent, now)
+                });
+                match admission {
+                    Ok(QuarantineAdmission::Clear) => {}
+                    Ok(QuarantineAdmission::Reclaimed) => {
+                        return Ok(SiblingQuarantine::Reclaimed)
+                    }
+                    Ok(QuarantineAdmission::Wait(reason)) => {
+                        waiting.push(format!("same-repository validation slot {sibling}: {reason}"))
+                    }
+                    Err(ValidateLockError::CleanupQuarantined(message)) => {
+                        return Err(ValidateLockError::CleanupQuarantined(format!(
+                            "same-repository validation slot {sibling}: {message}"
+                        )))
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
+            if waiting.is_empty() {
+                return Ok(SiblingQuarantine::Clear);
+            }
+            let reason = waiting.join("; ");
+            if no_wait || limit == 0 {
+                // --wait 0 / --no-wait keep the historical immediate refusal.
+                return Err(ValidateLockError::CleanupQuarantined(reason));
+            }
+            if started.elapsed() >= Duration::from_secs(limit) {
+                return Err(ValidateLockError::CleanupQuarantined(format!(
+                    "quarantine did not clear within --wait {}s: {reason}",
+                    budget.wait
+                )));
+            }
+            if reason != last {
+                eprintln!(
+                    "validate-lock: waiting, with validation slot anchor(s) held, on a \
+                     same-repository cleanup quarantine that may clear within --wait {}s (the \
+                     reason says what must happen first): {reason}",
+                    budget.wait
+                );
+                last = reason;
+            }
+            reap_exited_children();
+            thread::sleep(Duration::from_secs(POLL_SECONDS));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5442,9 +5816,17 @@ impl ValidateLock {
                      {reason}"
                 )),
             ),
+            // Since https://github.com/rrnewton/dev-hermit/issues/419 an
+            // acquirer that is waiting discharges this record itself once the
+            // holder's supervisor is proven dead (released_by
+            // `auto-reclaim:<agent>`); see `quarantine_admission`. This text
+            // is what a caller that does not wait (or cannot prove the death)
+            // sees, so it names both ways out.
             CleanupVerification::Recoverable { reason, .. } => Err(
                 ValidateLockError::CleanupQuarantined(format!(
-                    "payload absence is proven but explicit reclaim-dead recovery is required: {reason}"
+                    "payload absence is proven but the record remains; an acquirer waiting with \
+                     --wait discharges it once the holder's supervisor is proven dead (released_by \
+                     auto-reclaim:<agent>), or run `validate-lock reclaim-dead`: {reason}"
                 )),
             ),
             CleanupVerification::Unknown { reason, .. } => Err(
@@ -5471,14 +5853,30 @@ impl ValidateLock {
     /// https://github.com/rrnewton/reverie/pull/774), while the quarantine
     /// itself cleared 23.5 minutes later.
     ///
-    /// Waitable, because the record can clear with no operator action:
+    /// Waitable, because the record can clear while the caller waits:
     ///   - the holder's supervisor is alive, so it is still tearing down or
     ///     censusing its own payload and will release or quarantine;
     ///   - the supervisor is proven dead and its residual census was complete,
-    ///     but those exact identities are still alive: once they exit the
-    ///     record becomes proven-absent;
+    ///     but those exact identities (or unnamed members of the original
+    ///     group) are still alive: once they are gone the record becomes
+    ///     proven-absent. Running residuals may exit on their own; STOPPED
+    ///     ones cannot, because the census froze them, so they clear only
+    ///     when an operator or an outer bound kills them. The wait reason
+    ///     reads each identity's current state and names the stopped
+    ///     `pid@start_ticks` ([`describe_orphaned_residuals`]);
+    ///   - proven absence (`Recoverable`) with a live owner, which will
+    ///     release;
     ///   - proven absence (`Recoverable`) with a proven-dead owner: this
-    ///     attempt discharges it itself, recording `auto-reclaim:<agent>`.
+    ///     attempt discharges it itself, recording `auto-reclaim:<agent>`,
+    ///     and returns [`QuarantineAdmission::Reclaimed`].
+    ///
+    /// ⚠️ A DISCHARGE IS NOT AN ADMISSION. The discharge writes a release
+    /// record, and a release record starts the owner-watch yield
+    /// (`OWNER_WATCH_YIELD_SECONDS`) for every background acquirer, this one
+    /// included. So an attempt with `--wait 0` can discharge the record and
+    /// still exit 3 on the yield it just started; the next attempt then finds
+    /// no record at all. With a positive `--wait` the caller waits out the
+    /// yield like any other.
     ///
     /// Refused, because only an operator can clear it: an unverifiable
     /// record, an incomplete census, a dead supervisor whose record never
@@ -5561,20 +5959,26 @@ impl ValidateLock {
                     holder.agent
                 )))
             }
-            (OwnerLiveness::Dead(_), CleanupVerification::Active { record, reason })
-                if matches!(
-                    record.phase,
-                    CleanupPhase::Residual {
-                        domain_complete: true,
-                        ..
-                    }
-                ) =>
-            {
-                Ok(QuarantineAdmission::Wait(format!(
-                    "ACTIVE: {reason}; the holder's supervisor is dead and its census was \
-                     complete, so this clears once those exact identities exit"
-                )))
-            }
+            (
+                OwnerLiveness::Dead(_),
+                CleanupVerification::Active {
+                    record:
+                        CleanupRecord {
+                            phase:
+                                CleanupPhase::Residual {
+                                    pgid,
+                                    domain_complete: true,
+                                    residuals,
+                                },
+                            ..
+                        },
+                    reason,
+                },
+            ) => Ok(QuarantineAdmission::Wait(format!(
+                "ACTIVE: {reason}; the holder's supervisor is dead and its census was complete, \
+                 so the record becomes proven-absent once {}",
+                describe_orphaned_residuals(*pgid, residuals)
+            ))),
             (OwnerLiveness::Unknown(why), _) => refuse(&format!(
                 "the holder's supervisor liveness cannot be established ({why}), so even an \
                  empty payload domain would not permit reclaim"
@@ -5888,9 +6292,20 @@ impl ValidateLock {
         wait: u64,
         hold: u64,
     ) -> Result<i32, ValidateLockError> {
-        self.acquire_ordered(agent, kind, target, wait, hold, true)
+        match self.acquire_ordered(agent, kind, target, wait, hold, true)? {
+            OrderedAcquire::Status(code) => Ok(code),
+            OrderedAcquire::LocalYield { .. } => Err(ValidateLockError::InvalidState(
+                "bare acquire returned a run-path local yield".into(),
+            )),
+        }
     }
 
+    /// The run path's local acquisition, after its global turn granted the
+    /// slot anchors. Unlike bare `acquire`, a free-boundary owner-watch yield
+    /// is handed straight back as [`OrderedAcquire::LocalYield`] instead of
+    /// being slept out here: the caller holds the slot anchors, and sleeping
+    /// with them would block the very watch the yield exists for (review of
+    /// https://github.com/rrnewton/dev-hermit/issues/419).
     fn acquire_after_global_turn(
         &self,
         agent: &str,
@@ -5898,7 +6313,7 @@ impl ValidateLock {
         target: &str,
         wait: u64,
         hold: u64,
-    ) -> Result<i32, ValidateLockError> {
+    ) -> Result<OrderedAcquire, ValidateLockError> {
         self.acquire_ordered(agent, kind, target, wait, hold, false)
     }
 
@@ -5910,33 +6325,46 @@ impl ValidateLock {
         wait: u64,
         hold: u64,
         honor_repository_fifo: bool,
-    ) -> Result<i32, ValidateLockError> {
+    ) -> Result<OrderedAcquire, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
         let mut quarantined: Option<String> = None;
         loop {
-            let token = self.with_guard(|| {
+            let token = match self.with_guard(|| {
                 self.try_acquire_ordered(agent, kind, target, hold, honor_repository_fifo)
-            })?;
+            }) {
+                Ok(token) => token,
+                Err(error) => {
+                    // An earlier attempt may have queued this waiter (a
+                    // quarantine wait keeps its FIFO place). A later refusal
+                    // must not leave that entry at the head of the queue,
+                    // where every other waiter would sit behind a departed
+                    // agent until the retention cutoff (review of
+                    // https://github.com/rrnewton/dev-hermit/issues/419).
+                    // Best effort: the refusal is what the caller must see.
+                    if honor_repository_fifo {
+                        let _ = self.with_guard(|| self.remove_from_queue(agent));
+                    }
+                    return Err(error);
+                }
+            };
             if !matches!(&token, AcquireToken::QuarantineWait { .. }) {
                 quarantined = None;
             }
-            #[cfg(test)]
-            let observed_local_yield = matches!(&token, AcquireToken::Yield { .. });
             match token {
                 AcquireToken::Acquired => {
                     eprintln!(
                         "validate-lock: ACQUIRED by {agent} running {} {target} (lease {hold}s)",
                         kind.as_str()
                     );
-                    return Ok(0);
+                    return Ok(OrderedAcquire::Status(0));
                 }
                 AcquireToken::AcquiredReclaimed(previous) => {
                     eprintln!(
                         "validate-lock: ACQUIRED by {agent} running {} {target}; evidence-reclaimed lease from {previous}",
                         kind.as_str()
                     );
-                    return Ok(0);
+                    return Ok(OrderedAcquire::Status(0));
                 }
                 AcquireToken::Yield {
                     reason,
@@ -5951,14 +6379,20 @@ impl ValidateLock {
                     }
                     if wait == 0 {
                         eprintln!("REFUSED: owner watch has priority at this free boundary");
-                        return Ok(REFUSED_EXIT_CODE);
+                        return Ok(OrderedAcquire::Status(REFUSED_EXIT_CODE));
+                    }
+                    if !honor_repository_fifo {
+                        return Ok(OrderedAcquire::LocalYield {
+                            reason,
+                            seconds_left,
+                        });
                     }
                 }
                 AcquireToken::YieldUnknown { reason } => {
                     eprintln!(
                         "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return Ok(OrderedAcquire::Status(REFUSED_EXIT_CODE));
                 }
                 AcquireToken::Held {
                     agent: holder,
@@ -5995,8 +6429,9 @@ impl ValidateLock {
                     let token = format!("QUARANTINE:{reason}:{position}");
                     if token != last {
                         eprintln!(
-                            "validate-lock: waiting: cleanup quarantine can clear without \
-                             operator action; keeping queued position {position}: {reason}"
+                            "validate-lock: waiting on a cleanup quarantine that may clear \
+                             within --wait {wait}s (the reason says what must happen first); \
+                             keeping queued position {position}: {reason}"
                         );
                         last = token;
                     }
@@ -6014,19 +6449,11 @@ impl ValidateLock {
                     )));
                 }
                 eprintln!("validate-lock: TIMEOUT after {wait}s");
-                return Ok(1);
+                return Ok(OrderedAcquire::Status(1));
             }
             // No payload Child exists until this acquisition succeeds.
             reap_exited_children();
             thread::sleep(Duration::from_secs(POLL_SECONDS));
-            #[cfg(test)]
-            if observed_local_yield {
-                ADMISSION_BOUNDARY_AFTER_LOCAL_YIELD_HOOK.with(|slot| {
-                    if let Some(hook) = slot.borrow_mut().take() {
-                        hook();
-                    }
-                });
-            }
         }
     }
 
@@ -6497,8 +6924,24 @@ impl ValidateLock {
             let active = ValidateLock {
                 paths: self.paths.for_slot(slot),
             };
+            // This repository's other slots first, read-only (a status query
+            // never discharges anything): `run` settles them through the same
+            // quarantine admission as its own slot, so a record there is
+            // same-repository, not "another repository's".
+            if let Some((state, reason)) = self.observe_sibling_slot_quarantine(args.kind, slot)? {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    state,
+                    "validation-slot-not-ready",
+                    reason,
+                )
+                .with_capacity(live_validate_jobs, Some(available)));
+            }
+            let own_cleanups: Vec<PathBuf> = (0..VALIDATE_SLOT_COUNT)
+                .map(|candidate| self.paths.for_slot(candidate).cleanup)
+                .collect();
             if let Some(reason) =
-                foreign_box_quarantine(&active.paths.global_anchor(), &active.paths.cleanup)
+                foreign_box_quarantine_excluding(&active.paths.global_anchor(), &own_cleanups)
             {
                 return Ok(ImmediateAdmissionStatus::not_admissible(
                     args,
@@ -7192,7 +7635,10 @@ impl ValidateLock {
                 print_cleanup_record(&record, &reason);
             }
             CleanupVerification::Recoverable { record, reason } => {
-                println!("QUARANTINED (absence proven; run reclaim-dead):");
+                println!(
+                    "QUARANTINED (absence proven; a waiting acquirer discharges it once the \
+                     holder's supervisor is proven dead, or run reclaim-dead):"
+                );
                 print_cleanup_record(&record, &reason);
             }
             CleanupVerification::Uncensused { record, reason } => {
@@ -7708,10 +8154,26 @@ impl ValidateLock {
             record_text,
         );
 
+        // ONE `--wait` BUDGET FOR ALL OF ADMISSION. Every phase below that can
+        // wait -- the owner-watch yield, the global turn, a same-repository
+        // sibling slot's quarantine, the local acquisition, and any return to
+        // the queue after a yield -- draws on what is left of `--wait`,
+        // measured from here, instead of restarting it. The payload unit's
+        // RuntimeMaxSec is `--wait + --child-deadline + 600 s`
+        // (ci-hub/validate/start_unit.py), so an admission that could spend
+        // 2x `--wait` or more would leave the child less than its deadline and
+        // get it killed mid-run (review of
+        // https://github.com/rrnewton/dev-hermit/issues/419). Each phase can
+        // overshoot its share by one POLL_SECONDS sleep. After the child,
+        // teardown adds at most 5 s TERM grace + 6 s kill settling + 5 s
+        // empty-domain settle.
+        let budget = WaitBudget::start(args.wait);
+
         // Yield BEFORE taking the box-global anchor. A background waiter that
         // holds the anchor while sleeping would block the very watch this rule
         // exists to prioritize.
-        let yield_status = self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
+        let yield_status =
+            self.wait_for_owner_watch_yield(&args.agent, budget.remaining(), args.no_wait)?;
         if yield_status != 0 {
             return refusal_before_admission(tool_root, &attribution, yield_status);
         }
@@ -7731,7 +8193,7 @@ impl ValidateLock {
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
         let (mut box_anchors, mut slot) = match self.wait_for_global_turn(
-            &args,
+            &budget.args(&args),
             &owner,
             &anchor_attribution,
             false,
@@ -7748,199 +8210,318 @@ impl ValidateLock {
                 return stale_base_refusal_with_record(tool_root, &attribution, error);
             }
         };
-        loop {
-            let held = box_anchors
-                .iter()
-                .map(|anchor| anchor.path().display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            eprintln!("validate-lock: validation slot anchor(s) held at {held}");
+        let active = 'admission: loop {
+            let mut own_queue_entry = loop {
+                let held = box_anchors
+                    .iter()
+                    .map(|anchor| anchor.path().display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("validate-lock: validation slot anchor(s) held at {held}");
 
-            // The anchor wait may have spanned a new background release. Keep
-            // this exact waiter in the global queue until the boundary is
-            // settled. On YIELD, drop only the anchor: the owner-watch agent
-            // ranks ahead of every queued priority and can acquire naturally,
-            // while this caller retains its position instead of being disposed
-            // and sent to the tail. UNKNOWN still refuses fail-closed.
-            let now = epoch_seconds()?;
-            let boundary = self.with_guard(|| Ok(self.yield_status_for_agent(&args.agent, now)))?;
-            match boundary.state {
-                YieldState::Allow => {
-                    // `origin/main` may have advanced during the queue wait.
-                    // Re-fetch before removing this waiter. Local acquisition
-                    // can still yield after another slot releases, so this is
-                    // an eviction check, not the final admission floor.
-                    run_current_main_between_checks_hook();
-                    match current_main_freshness_check(state_root, &args.target, args.kind) {
-                        Ok(_) => {}
-                        Err(error) => {
-                            drop(box_anchors);
-                            self.remove_own_global_waiter(&args, &owner)?;
-                            return stale_base_refusal_with_record(tool_root, &attribution, error);
+                // The anchor wait may have spanned a new background release. Keep
+                // this exact waiter in the global queue until the boundary is
+                // settled. On YIELD, drop only the anchor: the owner-watch agent
+                // ranks ahead of every queued priority and can acquire naturally,
+                // while this caller retains its position instead of being disposed
+                // and sent to the tail. UNKNOWN still refuses fail-closed.
+                let now = epoch_seconds()?;
+                let boundary =
+                    self.with_guard(|| Ok(self.yield_status_for_agent(&args.agent, now)))?;
+                match boundary.state {
+                    YieldState::Allow => {
+                        // `origin/main` may have advanced during the queue wait.
+                        // Re-fetch before removing this waiter. Local acquisition
+                        // can still yield after another slot releases, so this is
+                        // an eviction check, not the final admission floor.
+                        run_current_main_between_checks_hook();
+                        match current_main_freshness_check(state_root, &args.target, args.kind) {
+                            Ok(_) => {}
+                            Err(error) => {
+                                drop(box_anchors);
+                                self.remove_own_global_waiter(&args, &owner)?;
+                                return stale_base_refusal_with_record(
+                                    tool_root,
+                                    &attribution,
+                                    error,
+                                );
+                            }
                         }
+                        break self.remove_own_global_waiter(&args, &owner)?;
                     }
-                    self.remove_own_global_waiter(&args, &owner)?;
-                    break;
-                }
-                YieldState::Unknown => {
-                    drop(box_anchors);
-                    self.remove_own_global_waiter(&args, &owner)?;
-                    eprintln!(
-                        "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
-                        boundary.reason_code, boundary.detail
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                YieldState::Yield => {
-                    eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
-                    drop(box_anchors);
-                    let yield_status =
-                        self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
-                    if yield_status != 0 {
+                    YieldState::Unknown => {
+                        drop(box_anchors);
                         self.remove_own_global_waiter(&args, &owner)?;
-                        return refusal_before_admission(tool_root, &attribution, yield_status);
+                        eprintln!(
+                            "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
+                            boundary.reason_code, boundary.detail
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
                     }
-                    (box_anchors, slot) = match self.wait_for_global_turn(
+                    YieldState::Yield => {
+                        eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
+                        drop(box_anchors);
+                        (box_anchors, slot) = match self.wait_again_for_global_turn(
+                            &args,
+                            &owner,
+                            &anchor_attribution,
+                            state_root,
+                            &budget,
+                            freshness_deferred,
+                            timing,
+                            &report_to_stderr,
+                        )? {
+                            WaitAgain::Global(GlobalWait::Granted { anchors, slot }) => (anchors, slot),
+                            WaitAgain::Global(GlobalWait::Refused) => {
+                                return refusal_before_admission(
+                                    tool_root,
+                                    &attribution,
+                                    REFUSED_EXIT_CODE,
+                                )
+                            }
+                            WaitAgain::Global(GlobalWait::FreshnessRefused(error)) => {
+                                return stale_base_refusal_with_record(tool_root, &attribution, error);
+                            }
+                            WaitAgain::YieldRefused(code) => {
+                                return refusal_before_admission(tool_root, &attribution, code)
+                            }
+                        };
+                    }
+                }
+            };
+            if args.skip_if_recorded {
+                match exact_record_count_after_admission(tool_root, state_root, &args.target) {
+                    Ok(0) => {}
+                    Ok(count) => {
+                        drop(box_anchors);
+                        eprintln!(
+                            "REFUSED: exact target {} gained {count} validation ledger record(s) before admission; no validation child started",
+                            args.target
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                    Err(reason) => {
+                        drop(box_anchors);
+                        eprintln!(
+                            "REFUSED: exact-target validation ledger recheck is UNKNOWN for {}: {reason}; no validation child started",
+                            args.target
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                }
+            }
+            let active = ValidateLock {
+                paths: self.paths.for_slot(slot),
+            };
+
+            // This repository's OTHER validation slots. Their cleanup records
+            // are registered in the same box-global claim directory as another
+            // repository's, so the foreign check below used to refuse a
+            // quarantine in sibling slot k as "another repository's", with no
+            // wait and no auto-reclaim, although it is exactly the kind of
+            // record the local acquisition waits out (review of
+            // https://github.com/rrnewton/dev-hermit/issues/419). They go
+            // through the same QuarantineAdmission instead, with the anchors
+            // held so a sibling cannot be re-admitted meanwhile.
+            match self.sibling_slot_quarantine_admission(
+                &args.agent,
+                args.kind != Kind::Bench,
+                slot,
+                args.no_wait,
+                &budget,
+            )? {
+                SiblingQuarantine::Clear => {}
+                SiblingQuarantine::Reclaimed => {
+                    // The discharge wrote a release record, so the owner-watch
+                    // yield now applies. Put this run back at its queue place;
+                    // the boundary check drops the anchors and waits.
+                    if let Some(entry) = own_queue_entry.take() {
+                        self.restore_own_global_waiter(entry)?;
+                    }
+                    continue 'admission;
+                }
+            }
+
+            // Durable half of box exclusion, checked WITH the anchor held so the
+            // answer cannot change under us. The anchor proves no LIVE supervisor
+            // holds the box; this proves no DEAD supervisor left a live payload
+            // behind in some other repository. This repository's own slots were
+            // settled just above and are excluded here.
+            let own_cleanups: Vec<PathBuf> = (0..VALIDATE_SLOT_COUNT)
+                .map(|candidate| self.paths.for_slot(candidate).cleanup)
+                .collect();
+            let foreign = if args.kind == Kind::Bench {
+                foreign_box_claim_excluding(&active.paths.global_anchor(), &own_cleanups)
+            } else {
+                foreign_box_quarantine_excluding(&active.paths.global_anchor(), &own_cleanups)
+            };
+            if let Some(reason) = foreign {
+                eprintln!("REFUSED: {reason}");
+                return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
+            }
+
+            // Admission: block FIFO, or refuse immediately under --no-wait. Never
+            // silently admit more holders than the selected validation slots allow.
+            if args.no_wait {
+                let token = active.with_guard(|| {
+                    active.try_acquire_after_global_turn(
+                        &args.agent,
+                        args.kind,
+                        &args.target,
+                        args.hold,
+                    )
+                })?;
+                match token {
+                    AcquireToken::Acquired => eprintln!(
+                        "validate-lock: ACQUIRED by {} running {} {} (lease {}s)",
+                        args.agent,
+                        args.kind.as_str(),
+                        args.target,
+                        args.hold
+                    ),
+                    AcquireToken::AcquiredReclaimed(previous) => eprintln!(
+                        "validate-lock: ACQUIRED by {} running {} {}; evidence-reclaimed lease from {previous}",
+                        args.agent,
+                        args.kind.as_str(),
+                        args.target
+                    ),
+                    AcquireToken::Yield {
+                        reason,
+                        seconds_left,
+                    } => {
+                        eprintln!(
+                            "REFUSED: owner watch has priority at this free boundary (~{seconds_left}s): {reason}"
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                    AcquireToken::YieldUnknown { reason } => {
+                        eprintln!(
+                            "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                    AcquireToken::Held {
+                        agent,
+                        kind,
+                        target,
+                        seconds_left,
+                        ahead,
+                    } => {
+                        eprintln!(
+                            "REFUSED: box-exclusive lock held by {agent} running {kind} {target}, ~{seconds_left}s left; {ahead} ahead in queue"
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                    AcquireToken::WaitTurn { head, ahead } => {
+                        eprintln!(
+                            "REFUSED: box-exclusive lock free but {head} is ahead of {} in the FIFO queue, ~0s left; {ahead} ahead in queue",
+                            args.agent
+                        );
+                        return refusal_before_admission(
+                            tool_root,
+                            &attribution,
+                            REFUSED_EXIT_CODE,
+                        );
+                    }
+                    // --no-wait never waits: the historical immediate refusal.
+                    AcquireToken::QuarantineWait { reason, .. } => {
+                        return Err(ValidateLockError::CleanupQuarantined(reason));
+                    }
+                }
+                break 'admission active;
+            }
+            match active.acquire_after_global_turn(
+                &args.agent,
+                args.kind,
+                &args.target,
+                budget.remaining(),
+                args.hold,
+            )? {
+                OrderedAcquire::Status(0) => break 'admission active,
+                OrderedAcquire::Status(code) => {
+                    return refusal_before_admission(tool_root, &attribution, code);
+                }
+                OrderedAcquire::LocalYield {
+                    reason,
+                    seconds_left,
+                } => {
+                    // The local lock came free behind a release record (most
+                    // often this run's own auto-reclaim), so the owner-watch
+                    // yield applies. Before
+                    // https://github.com/rrnewton/dev-hermit/issues/419's
+                    // review this slept out the yield right here, holding
+                    // every slot anchor for up to OWNER_WATCH_YIELD_SECONDS
+                    // while the watch it was yielding to could not start.
+                    eprintln!(
+                        "validate-lock: YIELD for owner watch after local acquisition \
+                         (~{seconds_left}s): {reason}; releasing validation slot anchor(s) \
+                         and keeping queue position while waiting"
+                    );
+                    if let Some(entry) = own_queue_entry.take() {
+                        self.restore_own_global_waiter(entry)?;
+                    }
+                    drop(box_anchors);
+                    reap_exited_children();
+                    thread::sleep(Duration::from_secs(POLL_SECONDS));
+                    #[cfg(test)]
+                    ADMISSION_BOUNDARY_AFTER_LOCAL_YIELD_HOOK.with(|hook_slot| {
+                        if let Some(hook) = hook_slot.borrow_mut().take() {
+                            hook();
+                        }
+                    });
+                    (box_anchors, slot) = match self.wait_again_for_global_turn(
                         &args,
                         &owner,
                         &anchor_attribution,
-                        false,
                         state_root,
+                        &budget,
                         freshness_deferred,
                         timing,
                         &report_to_stderr,
                     )? {
-                        GlobalWait::Granted { anchors, slot } => (anchors, slot),
-                        GlobalWait::Refused => {
+                        WaitAgain::Global(GlobalWait::Granted { anchors, slot }) => (anchors, slot),
+                        WaitAgain::Global(GlobalWait::Refused) => {
                             return refusal_before_admission(
                                 tool_root,
                                 &attribution,
                                 REFUSED_EXIT_CODE,
                             )
                         }
-                        GlobalWait::FreshnessRefused(error) => {
+                        WaitAgain::Global(GlobalWait::FreshnessRefused(error)) => {
                             return stale_base_refusal_with_record(tool_root, &attribution, error);
+                        }
+                        WaitAgain::YieldRefused(code) => {
+                            return refusal_before_admission(tool_root, &attribution, code)
                         }
                     };
                 }
             }
-        }
-        if args.skip_if_recorded {
-            match exact_record_count_after_admission(tool_root, state_root, &args.target) {
-                Ok(0) => {}
-                Ok(count) => {
-                    drop(box_anchors);
-                    eprintln!(
-                        "REFUSED: exact target {} gained {count} validation ledger record(s) before admission; no validation child started",
-                        args.target
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                Err(reason) => {
-                    drop(box_anchors);
-                    eprintln!(
-                        "REFUSED: exact-target validation ledger recheck is UNKNOWN for {}: {reason}; no validation child started",
-                        args.target
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-            }
-        }
-        let active = ValidateLock {
-            paths: self.paths.for_slot(slot),
         };
         let _box_anchors = box_anchors;
-
-        // Durable half of box exclusion, checked WITH the anchor held so the
-        // answer cannot change under us. The anchor proves no LIVE supervisor
-        // holds the box; this proves no DEAD supervisor left a live payload
-        // behind in some other repository.
-        let foreign = if args.kind == Kind::Bench {
-            foreign_box_claim(&active.paths.global_anchor(), &active.paths.cleanup)
-        } else {
-            foreign_box_quarantine(&active.paths.global_anchor(), &active.paths.cleanup)
-        };
-        if let Some(reason) = foreign {
-            eprintln!("REFUSED: {reason}");
-            return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-        }
-
-        // Admission: block FIFO, or refuse immediately under --no-wait. Never
-        // silently admit more holders than the selected validation slots allow.
-        if args.no_wait {
-            let token = active.with_guard(|| {
-                active.try_acquire_after_global_turn(
-                    &args.agent,
-                    args.kind,
-                    &args.target,
-                    args.hold,
-                )
-            })?;
-            match token {
-                AcquireToken::Acquired => eprintln!(
-                    "validate-lock: ACQUIRED by {} running {} {} (lease {}s)",
-                    args.agent,
-                    args.kind.as_str(),
-                    args.target,
-                    args.hold
-                ),
-                AcquireToken::AcquiredReclaimed(previous) => eprintln!(
-                    "validate-lock: ACQUIRED by {} running {} {}; evidence-reclaimed lease from {previous}",
-                    args.agent,
-                    args.kind.as_str(),
-                    args.target
-                ),
-                AcquireToken::Yield {
-                    reason,
-                    seconds_left,
-                } => {
-                    eprintln!(
-                        "REFUSED: owner watch has priority at this free boundary (~{seconds_left}s): {reason}"
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                AcquireToken::YieldUnknown { reason } => {
-                    eprintln!(
-                        "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                AcquireToken::Held {
-                    agent,
-                    kind,
-                    target,
-                    seconds_left,
-                    ahead,
-                } => {
-                    eprintln!(
-                        "REFUSED: box-exclusive lock held by {agent} running {kind} {target}, ~{seconds_left}s left; {ahead} ahead in queue"
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                AcquireToken::WaitTurn { head, ahead } => {
-                    eprintln!(
-                        "REFUSED: box-exclusive lock free but {head} is ahead of {} in the FIFO queue, ~0s left; {ahead} ahead in queue",
-                        args.agent
-                    );
-                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
-                }
-                // --no-wait never waits: the historical immediate refusal.
-                AcquireToken::QuarantineWait { reason, .. } => {
-                    return Err(ValidateLockError::CleanupQuarantined(reason));
-                }
-            }
-        } else {
-            let acquire_status = active.acquire_after_global_turn(
-                &args.agent,
-                args.kind,
-                &args.target,
-                args.wait,
-                args.hold,
-            )?;
-            if acquire_status != 0 {
-                return refusal_before_admission(tool_root, &attribution, acquire_status);
-            }
-        }
 
         #[cfg(test)]
         ADMISSION_FLOOR_AFTER_LOCAL_ACQUIRE_HOOK.with(|slot| {
@@ -8113,13 +8694,18 @@ impl ValidateLock {
             &gated.domain_token,
             // Kill, do not merely freeze, whatever outlived the leader: a
             // setsid'd descendant escapes the group signal but not its payload
-            // token (https://github.com/rrnewton/dev-hermit/issues/419). The
+            // token, and a same-group descendant that dropped its token (env
+            // -i, sudo env_reset, a non-dumpable binary) escapes the token
+            // but not the original process group
+            // (https://github.com/rrnewton/dev-hermit/issues/419). A process
+            // that left BOTH is not found; see tear_down_payload_domain. The
             // capture names only what SIGKILL could not remove, and that still
             // quarantines the box.
             tear_down_payload_domain(
                 std::process::id(),
                 gated.leader.start_ticks,
                 &gated.domain_token,
+                pgid,
                 Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
                 "validate-lock",
             ),
@@ -9806,7 +10392,8 @@ finally: os.close(held)
     }
     use super::*;
     use crate::landing_lock::{
-        exact_process_liveness, signal_exact_process, ProcessIdentity, PAYLOAD_DOMAIN_ENV,
+        exact_process_liveness, same_group_helper_payload, signal_exact_process,
+        ProcessIdentity, PAYLOAD_DOMAIN_ENV,
     };
     use std::os::unix::process::ExitStatusExt;
 
@@ -12795,6 +13382,139 @@ exit 0
         assert_eq!(result.unwrap(), 0);
     }
 
+    struct SameGroupOutcome {
+        result: Result<i32, ValidateLockError>,
+        identities: Vec<ProcessIdentity>,
+        survivors: Vec<ProcessIdentity>,
+        helper_group: String,
+        helper_token: String,
+        leader_group: String,
+        cleanup_left: bool,
+        holder_left: bool,
+    }
+
+    /// Run [`same_group_helper_payload`] under `helper_env` through the real
+    /// `run` path and report what survived. Survivors are SIGKILLed before
+    /// returning so a failing assertion cannot leak a blocked process.
+    fn run_same_group_helper(name: &str, helper_env: &str) -> SameGroupOutcome {
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (identities_path, fifo) = setsid_pipe_fixture(&root);
+        let group_path = root.join("helper.group");
+        fs::write(&group_path, b"").unwrap();
+        let leader_group_path = root.join("leader.group");
+        let result = lock.run(
+            RunArgs {
+                agent: format!("{name}-validate"),
+                kind: Kind::Bench,
+                target: name.into(),
+                run_record: None,
+                no_wait: false,
+                skip_if_recorded: false,
+                wait: 0,
+                hold: 30,
+                child_deadline: 60,
+                max: 1,
+                skip_base_check: true,
+                child: vec![
+                    OsString::from("/bin/bash"),
+                    OsString::from("-c"),
+                    OsString::from(same_group_helper_payload(helper_env)),
+                    OsString::from("payload-leader"),
+                    identities_path.clone().into_os_string(),
+                    fifo.into_os_string(),
+                    group_path.clone().into_os_string(),
+                    leader_group_path.clone().into_os_string(),
+                ],
+            },
+            &root,
+        );
+        let identities = read_fixture_identities(&identities_path);
+        let survivors = surviving_fixture_identities(&identities);
+        let helper = fs::read_to_string(&group_path).unwrap();
+        let helper_fields: Vec<String> = helper.split_whitespace().map(String::from).collect();
+        assert_eq!(helper_fields.len(), 2, "unexpected helper line {helper:?}");
+        let leader_group = fs::read_to_string(&leader_group_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+        SameGroupOutcome {
+            result,
+            identities,
+            survivors,
+            helper_group: helper_fields[0].clone(),
+            helper_token: helper_fields[1].clone(),
+            leader_group,
+            cleanup_left,
+            holder_left,
+        }
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a process
+    /// left in the payload's ORIGINAL process group without the payload token
+    /// was never signalled at normal exit, survived, and quarantined the box
+    /// on "original group active". Teardown must kill it.
+    #[test]
+    fn normal_exit_tears_down_a_tokenless_process_left_in_the_payload_group() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let outcome = run_same_group_helper(
+            "same-group-tokenless",
+            &format!("env -u {PAYLOAD_DOMAIN_ENV}"),
+        );
+        assert_eq!(outcome.identities.len(), 1, "fixture must record the helper");
+        assert_eq!(
+            outcome.helper_group, outcome.leader_group,
+            "the helper must stay in the payload's original process group"
+        );
+        assert_eq!(outcome.helper_token, "unset", "the helper must carry no payload token");
+        assert!(
+            outcome.survivors.is_empty(),
+            "a token-less member of the original group survived teardown: {:?} (run result {:?})",
+            outcome.survivors,
+            outcome.result
+        );
+        assert_eq!(outcome.result.unwrap(), 0);
+        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!outcome.holder_left, "teardown left the lock held");
+    }
+
+    /// The group rule does not widen the kill to another payload: a member of
+    /// the original group that carries a DIFFERENT payload's token is left
+    /// alone, and because the group is then still populated the run
+    /// quarantines rather than claiming the domain is empty.
+    #[test]
+    fn teardown_spares_a_same_group_process_carrying_another_payload_token() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let outcome = run_same_group_helper(
+            "same-group-foreign-token",
+            &format!("env {PAYLOAD_DOMAIN_ENV}=some-other-payload-9999"),
+        );
+        assert_eq!(outcome.identities.len(), 1, "fixture must record the helper");
+        assert_eq!(outcome.helper_group, outcome.leader_group);
+        assert_eq!(outcome.helper_token, "some-other-payload-9999");
+        assert_eq!(
+            outcome.survivors, outcome.identities,
+            "teardown killed a process carrying another payload's token (run result {:?})",
+            outcome.result
+        );
+        assert!(
+            matches!(outcome.result, Err(ValidateLockError::CleanupQuarantined(_))),
+            "a still-populated original group must quarantine: {:?}",
+            outcome.result
+        );
+        assert!(outcome.cleanup_left, "the quarantine record must remain");
+    }
+
     fn quarantined_holder_fixture(
         name: &str,
         target: &str,
@@ -13183,6 +13903,452 @@ exit 0
             release_after, release_before,
             "an unknown-owner lease was discharged"
         );
+    }
+
+    /// Quarantine a SIBLING slot the way production does: the holder acquires
+    /// slot `slot`, publishes its owner and a Residual cleanup record, and
+    /// registers the box-global claim `arm_run` would; then its supervisor is
+    /// gone. Returns the base paths and the slot's lock.
+    fn quarantined_slot_fixture(
+        name: &str,
+        target: &str,
+        slot: usize,
+        residuals: Vec<ProcessIdentity>,
+        domain_complete: bool,
+    ) -> (LockPaths, ValidateLock) {
+        let paths = temp_paths(name);
+        let slot_lock = ValidateLock {
+            paths: paths.for_slot(slot),
+        };
+        assert_eq!(
+            slot_lock
+                .acquire("quarantined-holder", Kind::Validate, target, 0, 30)
+                .unwrap(),
+            0
+        );
+        slot_lock.write_current_process_owner().unwrap();
+        write_cleanup_record(
+            &slot_lock.paths.cleanup,
+            &CleanupRecord::new(
+                "quarantined-holder",
+                format!("validate:{target}"),
+                CleanupPhase::Residual {
+                    pgid: 0x7fff_fffe,
+                    domain_complete,
+                    residuals,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        register_box_claim(
+            &slot_lock.paths.global_anchor(),
+            &slot_lock.paths.cleanup,
+            "quarantined-holder",
+            &format!("validate:{target}"),
+        );
+        let mut owner = slot_lock.read_process_owner().unwrap().unwrap();
+        owner.pid = u32::MAX;
+        write_truncated(&slot_lock.paths.owner, owner.render().as_bytes()).unwrap();
+        (paths, slot_lock)
+    }
+
+    fn quarantine_run_args(agent: &str, wait: u64, marker: &Path) -> RunArgs {
+        RunArgs {
+            agent: agent.into(),
+            kind: Kind::Bench,
+            target: format!("{agent}-target"),
+            run_record: None,
+            no_wait: false,
+            skip_if_recorded: false,
+            wait,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: true,
+            child: vec![
+                OsString::from("/bin/sh"),
+                OsString::from("-c"),
+                OsString::from("printf ran > \"$1\""),
+                OsString::from("payload"),
+                marker.as_os_str().to_owned(),
+            ],
+        }
+    }
+
+    fn all_slot_anchors_free(paths: &LockPaths) -> bool {
+        (0..VALIDATE_SLOT_COUNT).all(|slot| {
+            matches!(
+                BoxExclusionAnchor::observe(&paths.slot_anchor(slot)),
+                BoxAnchorObservation::Free
+            )
+        })
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: after a
+    /// run auto-reclaimed the quarantine, the release record it wrote started
+    /// the owner-watch yield, and the run slept that yield out INSIDE its
+    /// local acquisition while holding every slot anchor, blocking the very
+    /// watch it was yielding to for up to 90 s. It must drop the anchors and
+    /// wait outside them.
+    #[test]
+    fn run_waiter_frees_its_anchors_during_the_post_reclaim_yield() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "run-post-reclaim-yield",
+            "post-reclaim-head",
+            vec![identity.clone()],
+            true,
+        );
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let marker = root.join("payload-ran");
+        let (run_paths, run_root, run_marker) = (paths.clone(), root.clone(), marker.clone());
+        let waiter = thread::spawn(move || {
+            ValidateLock { paths: run_paths }
+                .run(quarantine_run_args("yield-waiter", 60, &run_marker), &run_root)
+        });
+        thread::sleep(Duration::from_millis(1500));
+        let held_at_quarantine = !all_slot_anchors_free(&paths);
+        kill_residual(residual, &identity);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut released_by = None;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            if let Some(record) = lock
+                .read_release_record()
+                .unwrap()
+                .filter(|record| record.released_by.starts_with("auto-reclaim:"))
+            {
+                released_by = Some(record.released_by);
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        // The watch has NOT run yet, so the yield is still in force: the
+        // waiter must be waiting for it with every anchor released.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut anchors_freed = false;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            if all_slot_anchors_free(&paths) {
+                anchors_freed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let finished_during_yield = waiter.is_finished();
+        if released_by.is_none() {
+            let _ = lock.reclaim_dead();
+        }
+        if lock.read_release_record().unwrap().is_some() {
+            seed_watch_after_latest_release(&lock);
+        }
+        let result = waiter.join().unwrap();
+        let ran = marker.exists();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(held_at_quarantine, "the waiter must hold its anchors while the quarantine is waited out");
+        assert_eq!(released_by.as_deref(), Some("auto-reclaim:yield-waiter"));
+        assert!(
+            !finished_during_yield,
+            "the waiter was admitted before the owner watch ran: {result:?}"
+        );
+        assert!(
+            anchors_freed,
+            "the waiter held its slot anchors through the owner-watch yield it started"
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(ran, "the admitted payload never ran");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a
+    /// quarantine in this repository's slot 1 reached a run only through the
+    /// box-global foreign check, which refused at once as "another
+    /// repository's", with no wait and no auto-reclaim. It must be waited out
+    /// and discharged like the run's own slot.
+    #[test]
+    fn run_waiter_waits_out_a_same_repository_sibling_slot_quarantine() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, slot_lock) = quarantined_slot_fixture(
+            "run-sibling-quarantine",
+            "sibling-head",
+            1,
+            vec![identity.clone()],
+            true,
+        );
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let marker = root.join("payload-ran");
+        let (run_paths, run_root, run_marker) = (paths.clone(), root.clone(), marker.clone());
+        let waiter = thread::spawn(move || {
+            ValidateLock { paths: run_paths }
+                .run(quarantine_run_args("sibling-waiter", 60, &run_marker), &run_root)
+        });
+        thread::sleep(Duration::from_millis(1500));
+        let exited_at_quarantine = waiter.is_finished();
+        kill_residual(residual, &identity);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut released_by = None;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            if let Some(record) = lock
+                .read_release_record()
+                .unwrap()
+                .filter(|record| record.released_by.starts_with("auto-reclaim:"))
+            {
+                released_by = Some(record.released_by);
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if released_by.is_none() {
+            let _ = slot_lock.reclaim_dead();
+        }
+        if lock.read_release_record().unwrap().is_some() {
+            seed_watch_after_latest_release(&lock);
+        }
+        let result = waiter.join().unwrap();
+        let ran = marker.exists();
+        let sibling_cleanup_left = slot_lock.paths.cleanup.exists();
+        let sibling_holder_left = slot_lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            !exited_at_quarantine,
+            "run waiter exited at a recoverable sibling-slot quarantine: {result:?}"
+        );
+        assert_eq!(released_by.as_deref(), Some("auto-reclaim:sibling-waiter"));
+        assert_eq!(result.unwrap(), 0);
+        assert!(ran, "the admitted payload never ran");
+        assert!(!sibling_cleanup_left, "the sibling's record was not discharged");
+        assert!(!sibling_holder_left, "the sibling's dead lease was not discharged");
+    }
+
+    /// An unrecoverable sibling-slot quarantine still refuses at once, but
+    /// names this repository's slot instead of blaming another repository.
+    #[test]
+    fn unrecoverable_sibling_slot_quarantine_refuses_at_once_naming_the_slot() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (paths, slot_lock) = quarantined_slot_fixture(
+            "run-sibling-unrecoverable",
+            "sibling-unrecoverable-head",
+            1,
+            vec![ProcessIdentity {
+                pid: 0,
+                start_ticks: 1,
+            }],
+            false,
+        );
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let marker = root.join("payload-ran");
+        let cleanup_before = fs::read(&slot_lock.paths.cleanup).unwrap();
+        let started = Instant::now();
+        let result = ValidateLock {
+            paths: paths.clone(),
+        }
+        .run(quarantine_run_args("sibling-hopeful", 30, &marker), &root);
+        let elapsed = started.elapsed();
+        let ran = marker.exists();
+        let cleanup_after = fs::read(&slot_lock.paths.cleanup).ok();
+        let _ = fs::remove_dir_all(&root);
+
+        let error = result.expect_err("an unrecoverable sibling quarantine must refuse");
+        assert!(matches!(error, ValidateLockError::CleanupQuarantined(_)), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("same-repository validation slot 1"),
+            "refusal must name the sibling slot: {message}"
+        );
+        assert!(
+            message.contains("cannot be recovered by waiting"),
+            "refusal must say waiting cannot help: {message}"
+        );
+        assert!(
+            !message.contains("another repository"),
+            "a same-repository slot was blamed on another repository: {message}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(POLL_SECONDS),
+            "an unrecoverable sibling quarantine must refuse at once, not wait: {elapsed:?}"
+        );
+        assert!(!ran);
+        assert_eq!(cleanup_after.as_deref(), Some(cleanup_before.as_slice()));
+    }
+
+    /// The read-only admission preview reports a sibling-slot quarantine as
+    /// this repository's, not another repository's.
+    #[test]
+    fn admission_status_names_a_same_repository_sibling_slot_quarantine() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (paths, slot_lock) = quarantined_slot_fixture(
+            "status-sibling-quarantine",
+            "status-sibling-head",
+            1,
+            vec![ProcessIdentity {
+                pid: 0,
+                start_ticks: 1,
+            }],
+            false,
+        );
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let status = lock.immediate_admission_status(&admission_status_args()).unwrap();
+        let cleanup_still_there = slot_lock.paths.cleanup.exists();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert!(!status.admissible);
+        assert_eq!(status.state, ImmediateAdmissionState::Quarantined);
+        let rendered = serde_json::to_string(&status).unwrap();
+        assert!(
+            rendered.contains("same-repository validation slot 1"),
+            "status must name the sibling slot: {rendered}"
+        );
+        assert!(
+            !rendered.contains("another repository"),
+            "status blamed another repository: {rendered}"
+        );
+        assert!(cleanup_still_there, "a status query must not discharge anything");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a bare
+    /// `acquire` waiting behind a quarantine is in the repository FIFO; when a
+    /// later poll's classification errors (here the holder's liveness becomes
+    /// unknowable) the error returned through `?` and left the entry queued
+    /// until the 2x --wait prune, ahead of every later waiter.
+    #[test]
+    fn bare_acquire_waiter_leaves_the_fifo_when_its_quarantine_turns_unrecoverable() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "fifo-unrecoverable",
+            "fifo-unrecoverable-head",
+            vec![identity.clone()],
+            true,
+        );
+        let waiter_paths = paths.clone();
+        let waiter = thread::spawn(move || {
+            ValidateLock {
+                paths: waiter_paths,
+            }
+            .acquire("fifo-waiter", Kind::Validate, "sha-fifo", 60, 30)
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut queued = false;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            if lock
+                .read_queue()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.agent == "fifo-waiter")
+            {
+                queued = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let mut owner = lock.read_process_owner().unwrap().unwrap();
+        owner.host = "some-other-host.invalid".into();
+        write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
+        let result = waiter.join().unwrap();
+        let still_queued = lock
+            .read_queue()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.agent == "fifo-waiter");
+        kill_residual(residual, &identity);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert!(queued, "the waiter never joined the FIFO behind the quarantine");
+        let error = result.expect_err("an unknown-owner quarantine must refuse");
+        assert!(
+            error.to_string().contains("cannot be recovered by waiting"),
+            "{error}"
+        );
+        assert!(!still_queued, "the refused waiter left its FIFO entry behind");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: residuals
+    /// the census froze cannot exit on their own, so the reason a waiter
+    /// waits on must say so and name them, instead of promising that the
+    /// record clears by itself.
+    #[test]
+    fn dead_holder_wait_reason_names_stopped_residuals_that_cannot_exit() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (stopped, stopped_identity) = spawn_residual();
+        let (running, running_identity) = spawn_residual();
+        assert!(signal_exact_process(&stopped_identity, libc::SIGSTOP).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && fs::read_to_string(format!("/proc/{}/stat", stopped_identity.pid))
+                .map(|stat| !stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('T')))
+                .unwrap_or(true)
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let (paths, lock) = quarantined_holder_fixture(
+            "stopped-residual-reason",
+            "stopped-residual-head",
+            vec![stopped_identity.clone(), running_identity.clone()],
+            true,
+        );
+        let admission = lock.with_guard(|| {
+            let holder = lock.read_holder()?;
+            lock.quarantine_admission(holder.as_ref(), "stopped-waiter", epoch_seconds()?)
+        });
+        let cleanup_still_there = paths.cleanup.exists();
+        kill_residual(stopped, &stopped_identity);
+        kill_residual(running, &running_identity);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        let reason = match admission {
+            Ok(QuarantineAdmission::Wait(reason)) => reason,
+            Ok(QuarantineAdmission::Clear) => panic!("a live residual was admitted as Clear"),
+            Ok(QuarantineAdmission::Reclaimed) => panic!("a live residual was discharged"),
+            Err(error) => panic!("expected a waitable quarantine, got {error}"),
+        };
+        let stopped_name = format!("{}@{}", stopped_identity.pid, stopped_identity.start_ticks);
+        let running_name = format!("{}@{}", running_identity.pid, running_identity.start_ticks);
+        assert!(reason.contains("STOPPED"), "{reason}");
+        assert!(reason.contains(&stopped_name), "{reason}");
+        assert!(reason.contains("cannot exit on their own"), "{reason}");
+        assert!(reason.contains("operator must SIGKILL"), "{reason}");
+        assert!(reason.contains(&format!("{running_name} (state ")), "{reason}");
+        assert!(cleanup_still_there, "a waitable quarantine must not be discharged");
+    }
+
+    /// With no recorded identity alive, an ACTIVE residual record is held up
+    /// by the original group alone; the reason must say the group is
+    /// populated by processes the record does not name.
+    #[test]
+    fn orphaned_residual_description_without_live_identities_names_the_group() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (child, identity) = spawn_residual();
+        kill_residual(child, &identity);
+        let reason = describe_orphaned_residuals(0x7fff_fffe, &[identity]);
+        assert!(!reason.contains("STOPPED"), "{reason}");
+        assert!(
+            reason.contains("original process group 2147483646 empties"),
+            "{reason}"
+        );
+        assert!(reason.contains("does not name"), "{reason}");
     }
 
     // 5. --max outside the fixed one/six policies is rejected before acquiring.
@@ -16528,8 +17694,25 @@ garbage
         let Some(root) = env::var_os(ADMISSION_BOUNDARY_ROOT_ENV).map(PathBuf::from) else {
             return;
         };
+        // The foreground held slot 1 until its local acquisition yielded; it
+        // then released its anchors (review of
+        // https://github.com/rrnewton/dev-hermit/issues/419) and took the
+        // lowest free slot at its next turn. Find that slot rather than
+        // assume it, and require exactly one.
+        let paths = admission_boundary_paths(&root);
+        let held = (0..VALIDATE_SLOT_COUNT)
+            .filter(|slot| {
+                ValidateLock {
+                    paths: paths.for_slot(*slot),
+                }
+                .read_holder()
+                .unwrap()
+                .is_some_and(|holder| holder.agent == "boundary-foreground")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(held.len(), 1, "foreground must hold exactly one slot: {held:?}");
         let lock = ValidateLock {
-            paths: admission_boundary_paths(&root).for_slot(1),
+            paths: paths.for_slot(held[0]),
         };
         let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
         assert!(status.admissible, "{status:?}");
@@ -16679,6 +17862,13 @@ garbage
                 let pending = ValidateLock { paths: admission_boundary_paths(&hook_root).for_slot(1) };
                 assert!(pending.read_holder().unwrap().is_none());
                 assert!(!pending.paths.admission_floor.exists());
+                // The slot anchor the foreground held when its local
+                // acquisition yielded is free while it waits: the yield no
+                // longer blocks the watch it is yielding to.
+                assert!(matches!(
+                    BoxExclusionAnchor::observe(&admission_boundary_paths(&hook_root).slot_anchor(1)),
+                    BoxAnchorObservation::Free
+                ), "a yielding run must not hold its slot anchor");
                 if advance {
                     git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
                 }

@@ -1958,6 +1958,7 @@ impl LandingLock {
             std::process::id(),
             gated.leader.start_ticks,
             &gated.domain_token,
+            pgid,
             Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
             "landing-lock",
         );
@@ -2318,6 +2319,21 @@ pub(crate) fn exact_process_liveness(identity: &ProcessIdentity) -> Result<bool,
     }
 }
 
+/// Scheduler state letter of exactly `identity` (`R`, `S`, `T`, `t`, `Z`, ...),
+/// `Ok(None)` when that pid is gone or now names a later process, and `Err`
+/// when `/proc` cannot answer. State and start time come from ONE `stat` read,
+/// so the letter belongs to this generation.
+pub(crate) fn exact_process_state(identity: &ProcessIdentity) -> Result<Option<char>, String> {
+    match process_stat_fields(identity.pid) {
+        Ok((state, _, start_ticks)) => Ok((start_ticks == identity.start_ticks).then_some(state)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(format!(
+            "cannot read the state of pid {}@{}: {source}",
+            identity.pid, identity.start_ticks
+        )),
+    }
+}
+
 pub(crate) fn verify_cleanup_record(
     path: &Path,
     expected: Option<(&str, &str)>,
@@ -2642,26 +2658,43 @@ fn claim_field<'a>(body: &'a str, name: &str) -> Option<&'a str> {
 /// itself, it only makes a decision already recorded elsewhere visible here.
 /// Claims whose record has been cleared are pruned as they are read.
 pub(crate) fn foreign_box_claim(anchor: &Path, own_cleanup: &Path) -> Option<String> {
-    foreign_box_claim_with_active(anchor, own_cleanup, false)
+    foreign_box_claim_with_active(anchor, std::slice::from_ref(&own_cleanup), false)
 }
 
-/// Validation may deliberately coexist with one other live validation.  An
-/// armed run has not released its start-gated child, and a published payload
-/// owned by a live supervisor is not a quarantine. Every other cleanup state
-/// remains a box-wide refusal.
-pub(crate) fn foreign_box_quarantine(anchor: &Path, own_cleanup: &Path) -> Option<String> {
-    foreign_box_claim_with_active(anchor, own_cleanup, true)
+/// [`foreign_box_claim`] for a caller that owns SEVERAL cleanup records: a
+/// repository's validation slots all register in the same claim directory.
+/// Skipping only the active slot's record reported a quarantine in sibling
+/// slot k as "another repository's", which is false and sent the operator to
+/// the wrong place; the caller must settle its own slots itself (review of
+/// https://github.com/rrnewton/dev-hermit/issues/419).
+pub(crate) fn foreign_box_claim_excluding<P: AsRef<Path>>(
+    anchor: &Path,
+    own_cleanups: &[P],
+) -> Option<String> {
+    foreign_box_claim_with_active(anchor, own_cleanups, false)
 }
 
-fn operation_is_validation(operation: &str) -> bool {
+/// The validation form of [`foreign_box_claim_excluding`]. Validation may
+/// deliberately coexist with one other live validation. An armed run has not
+/// released its start-gated child, and a published payload owned by a live
+/// supervisor is not a quarantine. Every other cleanup state remains a
+/// box-wide refusal.
+pub(crate) fn foreign_box_quarantine_excluding<P: AsRef<Path>>(
+    anchor: &Path,
+    own_cleanups: &[P],
+) -> Option<String> {
+    foreign_box_claim_with_active(anchor, own_cleanups, true)
+}
+
+pub(crate) fn operation_is_validation(operation: &str) -> bool {
     operation.starts_with("validate:")
         || operation.starts_with("reverie-validate:")
         || operation.starts_with("frozen-validate:")
 }
 
-fn foreign_box_claim_with_active(
+fn foreign_box_claim_with_active<P: AsRef<Path>>(
     anchor: &Path,
-    own_cleanup: &Path,
+    own_cleanups: &[P],
     allow_published: bool,
 ) -> Option<String> {
     let entries = fs::read_dir(box_claim_dir(anchor)).ok()?;
@@ -2693,8 +2726,8 @@ fn foreign_box_claim_with_active(
                 cleanup.display()
             ));
         };
-        if cleanup == own_cleanup {
-            continue; // my own repository; `require_no_cleanup` already covers it
+        if own_cleanups.iter().any(|own| cleanup == own.as_ref()) {
+            continue; // my own repository; the caller settles its own records
         }
         match verify_cleanup_record(&cleanup, Some((agent, operation))) {
             CleanupVerification::None => {
@@ -3437,6 +3470,94 @@ fn live_payload_members(
         .collect())
 }
 
+/// Process group of exactly `identity`, or `None` when that pid is gone, now
+/// names a later process, or its `stat` cannot be parsed. Reading the group and
+/// the start time from ONE `stat` read binds the answer to this generation.
+fn exact_process_group(identity: &ProcessIdentity) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{}/stat", identity.pid)).ok()?;
+    let close = stat.rfind(')')?;
+    let fields: Vec<_> = stat[close + 1..].split_whitespace().collect();
+    let pgrp = fields.get(2)?.parse::<u32>().ok()?;
+    let start_ticks = fields.get(19)?.parse::<u64>().ok()?;
+    (start_ticks == identity.start_ticks).then_some(pgrp)
+}
+
+/// Whether `pid`'s readable environment names a DIFFERENT payload domain.
+/// That is a nested supervisor's payload or an adopted stranger that labels
+/// itself, and no teardown of this payload may signal it.
+fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
+    let Ok(raw) = fs::read(format!("/proc/{pid}/environ")) else {
+        return false;
+    };
+    let prefix = format!("{PAYLOAD_DOMAIN_ENV}=");
+    let own = format!("{PAYLOAD_DOMAIN_ENV}={domain_token}");
+    raw.split(|byte| *byte == 0).any(|entry| {
+        entry.starts_with(prefix.as_bytes()) && entry != own.as_bytes()
+    })
+}
+
+/// Every live process the teardown of this payload must dispose of: the
+/// payload-domain members (the census rule, [`live_payload_members`]) PLUS the
+/// surviving members of the payload's ORIGINAL process group, `payload_pgid`.
+///
+/// ⚠️ WHY THE ORIGINAL GROUP IS A SECOND AXIS. The payload token is inherited,
+/// but a process can drop it: `env -u`, `env -i`, `sudo`'s `env_reset`, or a
+/// non-dumpable process whose environment cannot be read. Such a process that
+/// stays in the payload's group used to be reached only by the deadline path's
+/// group signal. After a NORMAL leader exit nothing signalled the group, so it
+/// kept the group alive, the census recorded "0 exact residual identities;
+/// original group active", and the box stayed quarantined with nothing a
+/// waiter could do about it (review of
+/// https://github.com/rrnewton/dev-hermit/issues/419).
+///
+/// The leader is already reaped here, so a group signal is not safe: the
+/// number is only protected while the group has members. Each group member is
+/// therefore selected and later signalled by exact identity, and only when all
+/// of these hold:
+///   - it descends from this subreaper and started no earlier than the leader
+///     (the census floor);
+///   - one `stat` read shows it in `payload_pgid` for this exact generation;
+///   - the number `payload_pgid` has not been reused: a live process whose pid
+///     IS `payload_pgid` but whose start time differs from the leader's means
+///     the original group emptied and a later one took the number, so no group
+///     member is selected at all;
+///   - its readable environment does not name a DIFFERENT payload token.
+///
+/// A foreign or unclassifiable descendant OUTSIDE the original group is still
+/// never selected, exactly as before.
+fn teardown_targets(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: &str,
+    payload_pgid: u32,
+) -> io::Result<Vec<ProcessIdentity>> {
+    let group_generation_is_original = process_group_target(payload_pgid).is_some()
+        && !matches!(
+            process_start_ticks(payload_pgid),
+            Ok(start_ticks) if start_ticks != payload_start_ticks
+        );
+    let mut targets = Vec::new();
+    for identity in scan_descendants(supervisor_pid)? {
+        if identity.start_ticks < payload_start_ticks
+            || exempt_from_teardown_signals(identity.pid)
+        {
+            continue;
+        }
+        let selected = match classify_membership(identity.pid, domain_token) {
+            DomainMembership::Payload => true,
+            DomainMembership::Foreign | DomainMembership::Unclassifiable => {
+                group_generation_is_original
+                    && exact_process_group(&identity) == Some(payload_pgid)
+                    && !carries_other_payload_token(identity.pid, domain_token)
+            }
+        };
+        if selected {
+            targets.push(identity);
+        }
+    }
+    Ok(targets)
+}
+
 /// Send `signal` to every live payload-domain member that is not in
 /// `skip_pgid`, and return the identities it reached.
 ///
@@ -3493,14 +3614,40 @@ pub(crate) fn describe_identities(identities: &[ProcessIdentity]) -> String {
         .join(",")
 }
 
+/// Test payload for the review of
+/// https://github.com/rrnewton/dev-hermit/issues/419: the leader backgrounds
+/// a helper that STAYS in the payload's original process group (no setsid)
+/// but runs under `helper_env` (for example `env -u CI_HUB_PAYLOAD_DOMAIN`),
+/// ignores TERM and HUP, and blocks opening a FIFO nobody writes; the leader
+/// then exits 0. Arguments: `$1` identity file (`pid start_ticks`), `$2` the
+/// FIFO, `$3` the helper's `pgrp token-or-unset`, `$4` the leader's pgrp.
+#[cfg(test)]
+pub(crate) fn same_group_helper_payload(helper_env: &str) -> String {
+    format!(
+        r#"
+{helper_env} /bin/bash -c '
+  trap "" TERM HUP
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{{print \$22}}" "/proc/$pid/stat")" >> "$1"
+  printf "%s %s\n" "$(awk "{{print \$5}}" "/proc/$pid/stat")" "${{{PAYLOAD_DOMAIN_ENV}-unset}}" >> "$3"
+  read -r line < "$2"
+' same-group-helper "$1" "$2" "$3" &
+while [ "$(wc -l < "$1")" -lt 1 ] || [ "$(wc -l < "$3")" -lt 1 ]; do sleep 0.01; done
+awk "{{print \$5}}" /proc/$$/stat > "$4"
+exit 0
+"#
+    )
+}
+
 /// Upper bound on the SIGKILL-and-recensus rounds in [`kill_payload_domain`].
 const TEARDOWN_KILL_ROUNDS: usize = 3;
 /// How long one round waits for its SIGKILLed identities to disappear.
 const TEARDOWN_KILL_SETTLE_MILLIS: u64 = 2_000;
 const TEARDOWN_POLL_MILLIS: u64 = 20;
 
-/// Census the payload domain, SIGKILL every member the census froze, and
-/// census again, until nothing is left or [`TEARDOWN_KILL_ROUNDS`] is spent.
+/// Census the payload domain, SIGKILL every member the census froze and every
+/// surviving member of the payload's original process group, and census
+/// again, until nothing is left or [`TEARDOWN_KILL_ROUNDS`] is spent.
 ///
 /// ⚠️ THE CENSUS FREEZE IS A SNAPSHOT, NOT A DISPOSAL.
 /// [`capture_and_freeze_residuals`] SIGSTOPs what it finds so the membership
@@ -3514,10 +3661,18 @@ const TEARDOWN_POLL_MILLIS: u64 = 20;
 /// stay frozen and recorded, and still quarantine the box: nothing is
 /// admitted while any member of the old payload might be alive.
 ///
-/// Membership is the census rule exactly -- the same token, floor and
-/// subreaper walk -- so the set killed here is precisely the set the census
-/// would otherwise have held the box for. Unclassifiable descendants are not
-/// killed and keep the capture incomplete.
+/// The kill set is [`teardown_targets`]: the census rule (same token, floor
+/// and subreaper walk) plus the original group's surviving members, each by
+/// exact identity. It is NOT "every payload process": a process that both
+/// dropped the token and left the original group, or that is not a
+/// descendant of this subreaper, is not reached here; cgroup-scoped disposal
+/// is https://github.com/rrnewton/dev-hermit/issues/428. Unclassifiable
+/// descendants outside the original group are not killed and keep the
+/// capture incomplete.
+///
+/// Worst case this spends [`TEARDOWN_KILL_ROUNDS`] ×
+/// [`TEARDOWN_KILL_SETTLE_MILLIS`] (6 s) waiting for kills to land, plus one
+/// census per round.
 ///
 /// Callers must have reaped, or given up on, the direct payload child first:
 /// the census reaps adopted children with `waitpid(-1)`.
@@ -3525,22 +3680,38 @@ pub(crate) fn kill_payload_domain(
     supervisor_pid: u32,
     payload_start_ticks: u64,
     domain_token: &str,
+    payload_pgid: u32,
     label: &str,
 ) -> ResidualCapture {
     let mut capture = capture_and_freeze_residuals(supervisor_pid, payload_start_ticks, domain_token);
     for _round in 0..TEARDOWN_KILL_ROUNDS {
-        let targets: Vec<_> = capture
+        let mut targets: Vec<_> = capture
             .identities
             .iter()
             .filter(|identity| !exempt_from_teardown_signals(identity.pid))
             .cloned()
             .collect();
+        // Best effort: a failed scan leaves the frozen census set as the kill
+        // set, and the census below fails closed on the same error.
+        for identity in teardown_targets(
+            supervisor_pid,
+            payload_start_ticks,
+            domain_token,
+            payload_pgid,
+        )
+        .unwrap_or_default()
+        {
+            if !targets.contains(&identity) {
+                targets.push(identity);
+            }
+        }
         if targets.is_empty() {
             break;
         }
         eprintln!(
             "{label}: SIGKILL {} payload process(es) still alive after the payload leader, \
-             found by payload token (setsid/setpgid does not remove it): {}",
+             found by payload token or original process group {payload_pgid} (setsid, \
+             setpgid or a dropped token does not remove both): {}",
             targets.len(),
             describe_identities(&targets)
         );
@@ -3566,13 +3737,21 @@ pub(crate) fn kill_payload_domain(
     capture
 }
 
-/// Tear down every payload process that outlived the payload leader, then
-/// return the census of whatever survived.
+/// Tear down the payload processes that outlived the payload leader and that
+/// [`teardown_targets`] can attribute, then return the census of whatever
+/// survived. What it cannot attribute is listed on [`kill_payload_domain`]
+/// and tracked in https://github.com/rrnewton/dev-hermit/issues/428.
 ///
-/// A member that is still alive gets SIGTERM and up to `grace` to exit on its
-/// own, so a publication or cleanup step can finish writing; whatever remains
-/// is then disposed of by [`kill_payload_domain`]. When nothing outlived the
-/// leader this costs one `/proc` scan and returns the same census as before.
+/// Every [`teardown_targets`] member still alive -- payload-token members and
+/// surviving members of the original group `payload_pgid` -- gets SIGTERM and
+/// up to `grace` to exit on its own, so a publication or cleanup step can
+/// finish writing; whatever remains is then disposed of by
+/// [`kill_payload_domain`]. When nothing outlived the leader this costs one
+/// `/proc` scan and returns the same census as before.
+///
+/// Worst-case wall time: `grace` (5 s at both call sites) plus
+/// [`kill_payload_domain`]'s 6 s of kill settling; the validate run path then
+/// adds its bounded empty-domain settle (5 s).
 ///
 /// Call only after the direct child has been reaped (normal exit, or the
 /// group teardown's `Child::wait`) or its status is already lost.
@@ -3580,17 +3759,24 @@ pub(crate) fn tear_down_payload_domain(
     supervisor_pid: u32,
     payload_start_ticks: u64,
     domain_token: &str,
+    payload_pgid: u32,
     grace: Duration,
     label: &str,
 ) -> ResidualCapture {
     reap_exited_children();
-    let termed = signal_payload_domain(
+    let mut termed = Vec::new();
+    for identity in teardown_targets(
         supervisor_pid,
         payload_start_ticks,
         domain_token,
-        None,
-        libc::SIGTERM,
-    );
+        payload_pgid,
+    )
+    .unwrap_or_default()
+    {
+        if matches!(signal_exact_process(&identity, libc::SIGTERM), Ok(true)) {
+            termed.push(identity);
+        }
+    }
     if !termed.is_empty() {
         eprintln!(
             "{label}: {} payload process(es) outlived the payload leader: {}; \
@@ -3612,7 +3798,13 @@ pub(crate) fn tear_down_payload_domain(
             thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
         }
     }
-    kill_payload_domain(supervisor_pid, payload_start_ticks, domain_token, label)
+    kill_payload_domain(
+        supervisor_pid,
+        payload_start_ticks,
+        domain_token,
+        payload_pgid,
+        label,
+    )
 }
 
 /// Reap every exited child adopted by this subreaper without losing the direct
@@ -6795,6 +6987,104 @@ exit 0
         assert!(!holder_left, "teardown left the lock held");
     }
 
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a process
+    /// that stays in the payload's ORIGINAL process group but carries no
+    /// payload token was never signalled at normal exit (the group kill ran
+    /// only on the deadline and signal paths, and the token sweep skips it),
+    /// so it survived and the box stayed quarantined on "original group
+    /// active". Teardown must kill it.
+    #[test]
+    fn normal_exit_tears_down_a_tokenless_process_left_in_the_landing_group() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("same-group-tokenless");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let identities_path = root.join("helper.identity");
+        fs::write(&identities_path, b"").unwrap();
+        let group_path = root.join("helper.group");
+        fs::write(&group_path, b"").unwrap();
+        let leader_group_path = root.join("leader.group");
+        let fifo = root.join("never-written.fifo");
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo_c` is a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let result = lock.run(RunArgs {
+            agent: "same-group-tokenless-lander".into(),
+            pr: "9419".into(),
+            wait: 0,
+            hold: 30,
+            child_deadline: 60,
+            child: vec![
+                OsString::from("/bin/bash"),
+                OsString::from("-c"),
+                OsString::from(same_group_helper_payload(&format!(
+                    "env -u {PAYLOAD_DOMAIN_ENV}"
+                ))),
+                OsString::from("payload-leader"),
+                identities_path.clone().into_os_string(),
+                fifo.clone().into_os_string(),
+                group_path.clone().into_os_string(),
+                leader_group_path.clone().into_os_string(),
+            ],
+        });
+        let identities: Vec<ProcessIdentity> = fs::read_to_string(&identities_path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                assert_eq!(fields.len(), 2, "unexpected identity line {line:?}");
+                ProcessIdentity {
+                    pid: fields[0].parse().unwrap(),
+                    start_ticks: fields[1].parse().unwrap(),
+                }
+            })
+            .collect();
+        reap_exited_children();
+        let survivors: Vec<_> = identities
+            .iter()
+            .filter(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+            .cloned()
+            .collect();
+        for identity in &survivors {
+            let _ = signal_exact_process(identity, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && survivors
+                .iter()
+                .any(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+        {
+            reap_exited_children();
+            thread::sleep(Duration::from_millis(10));
+        }
+        let helper = fs::read_to_string(&group_path).unwrap();
+        let leader_group = fs::read_to_string(&leader_group_path).unwrap_or_default();
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        let helper_fields: Vec<_> = helper.split_whitespace().collect();
+        assert_eq!(identities.len(), 1, "fixture must record the helper");
+        assert_eq!(helper_fields.len(), 2, "unexpected helper line {helper:?}");
+        assert_eq!(
+            helper_fields[0],
+            leader_group.trim(),
+            "the helper must stay in the payload's original process group"
+        );
+        assert_eq!(helper_fields[1], "unset", "the helper must carry no payload token");
+        assert!(
+            survivors.is_empty(),
+            "a token-less member of the original group survived teardown: {survivors:?} (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
     #[test]
     fn normal_exit_tears_down_setsid_pipe_blocked_landing_payload() {
         run_setsid_pipe_payload("setsid-pipe-normal-exit", "exit", 60);
@@ -7167,7 +7457,7 @@ exit 0
             CleanupVerification::Unknown { .. }
         ));
         assert_eq!(
-            foreign_box_quarantine(&anchor, &mine),
+            foreign_box_quarantine_excluding(&anchor, std::slice::from_ref(&mine)),
             None,
             "a live published validation must coexist with the second validation slot"
         );
@@ -7191,7 +7481,7 @@ exit 0
             "without the concurrent-validation allowance, the armed record reproduces the refusal"
         );
         assert_eq!(
-            foreign_box_quarantine(&anchor, &mine),
+            foreign_box_quarantine_excluding(&anchor, std::slice::from_ref(&mine)),
             None,
             "the start gate proves that an armed validation has not started its payload"
         );
@@ -7219,7 +7509,7 @@ exit 0
         write_cleanup_record(&theirs, &record).unwrap();
         register_box_claim(&anchor, &theirs, "first-benchmark", "bench:first");
 
-        let refusal = foreign_box_quarantine(&anchor, &mine)
+        let refusal = foreign_box_quarantine_excluding(&anchor, std::slice::from_ref(&mine))
             .expect("a validation must not overlap a published benchmark payload");
         assert!(refusal.contains("bench:first"), "{refusal}");
         let _ = fs::remove_dir_all(&dir);
