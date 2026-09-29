@@ -160,6 +160,15 @@ struct BoundedTestPause {
 }
 
 #[cfg(test)]
+fn pause_retirement_for_test(slot: &Mutex<Option<BoundedTestPause>>) {
+    let pause = slot.lock().take();
+    if let Some(pause) = pause {
+        let _ = pause.captured.send(());
+        let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 struct ExactTestMember {
     pid: Pid,
@@ -472,6 +481,10 @@ struct Event {
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    registry_retirement_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    worker_identity_retirement_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -693,6 +706,10 @@ impl Event {
             cleanup_return_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_publish_pause: Mutex::new(None),
+            #[cfg(test)]
+            registry_retirement_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_identity_retirement_pause: Mutex::new(None),
         }
     }
 
@@ -1918,6 +1935,8 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+    #[cfg(test)]
+    pause_retirement_for_test(&event.worker_identity_retirement_pause);
 }
 
 fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
@@ -2381,6 +2400,8 @@ impl Notifier {
             // Publish the terminal result before completion becomes visible.
             event.mark_echild();
             event.mark_worker_done();
+            #[cfg(test)]
+            pause_retirement_for_test(&event.registry_retirement_pause);
             if pids
                 .get(&pid)
                 .is_some_and(|current| Arc::ptr_eq(current.handle.event(), &event))
@@ -2665,6 +2686,8 @@ impl Notifier {
 
     /// Removes a completed PID without disturbing a reused PID's event.
     fn remove(&self, pid: Pid, event: &Arc<Event>) {
+        #[cfg(test)]
+        pause_retirement_for_test(&event.registry_retirement_pause);
         let mut pids = self.pids.lock();
         if pids
             .get(&pid)
@@ -3370,6 +3393,7 @@ impl Future for ExitFuture {
 #[cfg(test)]
 mod test {
     include!("stop_observation_tests.rs");
+    include!("retirement_ack_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
