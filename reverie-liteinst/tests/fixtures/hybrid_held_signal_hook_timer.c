@@ -46,16 +46,23 @@ static void branches(unsigned long rounds) {
 
 static volatile unsigned long handled;
 
+/* The branches that `handler` runs before it returns, if nonzero. */
+static unsigned long handler_branches;
+
 static void handler(int signal) {
   (void)signal;
+  if (handler_branches != 0) {
+    branches(handler_branches);
+  }
   ++handled;
 }
 
 /* Arguments: the branches from each round's request to its rt_sigsuspend,
    the number of rounds, the branches after each, then `observe_at`, nonzero
    for a getpid that the Tool sees but that requests nothing that many
-   branches after each request, and a flag that, if nonzero, blocks the
-   timer's signal, SIGSTKFLT.
+   branches after each request, a flag that, if nonzero, blocks the
+   timer's signal, SIGSTKFLT, and optionally the branches that the SIGSYS
+   handler runs (0, the default, for none).
 
    The guest's own seccomp filter traps every rt_sigsuspend
    (`SECCOMP_RET_TRAP`), so the one that Reverie injects for the hook, which
@@ -69,7 +76,7 @@ static void handler(int signal) {
    single step, the timer's included, and the second only after the step's
    SIGTRAP. */
 int main(int argc, char **argv) {
-  if (argc != 6) {
+  if (argc != 6 && argc != 7) {
     return 2;
   }
   unsigned long before = strtoul(argv[1], NULL, 0);
@@ -77,6 +84,9 @@ int main(int argc, char **argv) {
   unsigned long after = strtoul(argv[3], NULL, 0);
   unsigned long observe_at = strtoul(argv[4], NULL, 0);
   unsigned long block_timer = strtoul(argv[5], NULL, 0);
+  if (argc == 7) {
+    handler_branches = strtoul(argv[6], NULL, 0);
+  }
   if (before == 0 || after == 0 || (observe_at != 0 && observe_at >= before)) {
     return 2;
   }
