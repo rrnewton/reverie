@@ -31,6 +31,39 @@ REAL_CHECKER = Path(
 )
 
 
+def _pinned_hermit_commit() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD:hermit"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"unknown (git rev-parse HEAD:hermit: {error})"
+    if proc.returncode != 0:
+        return f"unknown (git rev-parse HEAD:hermit rc={proc.returncode})"
+    return proc.stdout.strip()
+
+
+def require_real_checker(test: unittest.TestCase) -> None:
+    """Refuse, naming the precondition, when the real verifier is absent.
+
+    Without the script the gate can only report state=unavailable (exit 127),
+    so a refusal bracket would compare nothing and the unavailable-evidence
+    test would pass for the wrong reason.
+    """
+    if REAL_CHECKER.is_file() and os.access(REAL_CHECKER, os.X_OK):
+        return
+    test.fail(
+        f"MISSING PRECONDITION: the real merge-authority verifier {REAL_CHECKER} "
+        "is not an executable file. These tests bracket that script from the "
+        f"hermit submodule, pinned at {_pinned_hermit_commit()}; populate "
+        "hermit at that commit, or set MERGE_GATE_AUTHORITY_TEST_CHECKER to a "
+        "copy of scripts/configure-merge-gate-ruleset.sh from it."
+    )
+
+
 class MergeGateAuthorityTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="merge-authority-")
@@ -119,6 +152,7 @@ raise SystemExit(2)
         history_target: str = "branch",
         ruleset_auth_fail: bool = False,
     ) -> tuple[int, dict[str, str]]:
+        require_real_checker(self)
         env = {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "STUB_REQUIRED_CONTEXT": required_context,
