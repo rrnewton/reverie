@@ -138,7 +138,11 @@ impl Tool for SigreturnHookTimerTool {
 // stop the Tool observes does, and records its delivery point as a skid
 // overshoot; the rt_sigreturn trap then retires the event, which must not
 // record it a second time. So each round is witnessed exactly once, and
-// nothing fires.
+// nothing fires. The notification is queued at the trap, held back by the
+// blocked signal, but without records a queued notification cannot be told
+// from a lost one, so no witness may be counted as overtaken with its
+// notification queued (see
+// `reverie_ptrace::testing::precise_events_overtaken_with_notification_queued`).
 #[tokio::test(flavor = "current_thread")]
 async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     reverie_ptrace::ret_without_perf!();
@@ -158,8 +162,10 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
         0.to_string(),
         1.to_string(),
     ]);
-    // The count is process global, and this binary runs this test alone.
+    // The counts are process global, and this binary runs this test alone.
     let _ = reverie::take_skid_overshoot_count();
+    let overtaken_before =
+        reverie_ptrace::testing::precise_events_overtaken_with_notification_queued();
     let (output, global) = tokio::time::timeout(
         Duration::from_secs(120),
         LiteinstBackend::run_host_with_output_and_preload::<SigreturnHookTimerTool>(
@@ -172,6 +178,8 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     .expect("the rt_sigreturn hook guest did not complete")
     .unwrap();
     let witnesses = reverie::take_skid_overshoot_count();
+    let overtaken = reverie_ptrace::testing::precise_events_overtaken_with_notification_queued()
+        - overtaken_before;
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -186,5 +194,10 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     assert_eq!(
         witnesses, rounds,
         "each round's trap overtook its due event, and must be witnessed once"
+    );
+    assert_eq!(
+        overtaken, 0,
+        "without overflow records no witness may be counted as overtaken with its \
+         notification queued"
     );
 }
