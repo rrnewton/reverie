@@ -115,6 +115,14 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// Backends without a guest-resident runtime, every other thread or forked
     /// process, and every task outside such a window, return false.
     ///
+    /// The window covers the runtime's own preparation between those two
+    /// events. Guest constructors that run before the begin event (for example
+    /// those of the executable's `DT_NEEDED` libraries) or after the ending
+    /// event are outside it. One kind of guest code is inside it: code that
+    /// the runtime reaches through an import the guest interposes on, such as
+    /// an exported `malloc` or `open64`. It runs on the bootstrapping thread
+    /// and is reported as part of the bootstrap.
+    ///
     /// The syscalls issued in this window are still delivered to the Tool,
     /// which must still handle them: the Tool keeps full knowledge of the file
     /// descriptors and mappings they create. A Tool that models guest-visible
