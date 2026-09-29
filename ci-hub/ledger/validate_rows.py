@@ -1733,6 +1733,142 @@ def _committed_shard(value: str) -> bool:
     ) is not None
 
 
+def _refuse_view_mutation(self, *_arguments, **_keywords):
+    raise TypeError(
+        "committed validation views are read-only; rows() and events() return private copies"
+    )
+
+
+class _ReadOnlyList(list):
+    """A list view whose items cannot change through the list interface.
+
+    Copying it yields the ordinary mutable structure that rows() and events()
+    return.  Pickling it is refused; pickle rows() or events() instead.
+    """
+
+    __slots__ = ()
+    append = extend = insert = pop = remove = clear = sort = reverse = _refuse_view_mutation
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _refuse_view_mutation
+
+    def __copy__(self):
+        return list(self)
+
+    def __deepcopy__(self, memo):
+        copied = []
+        memo[id(self)] = copied
+        list.extend(copied, (copy.deepcopy(item, memo) for item in self))
+        return copied
+
+    __reduce_ex__ = _refuse_view_mutation
+
+
+class _ReadOnlyDict(dict):
+    """A dict view whose items cannot change through the dict interface."""
+
+    __slots__ = ()
+    clear = pop = popitem = setdefault = update = _refuse_view_mutation
+    __setitem__ = __delitem__ = __ior__ = _refuse_view_mutation
+
+    def __copy__(self):
+        return dict(self)
+
+    def __deepcopy__(self, memo):
+        copied = {}
+        memo[id(self)] = copied
+        for key, item in dict.items(self):
+            copied[copy.deepcopy(key, memo)] = copy.deepcopy(item, memo)
+        return copied
+
+    __reduce_ex__ = _refuse_view_mutation
+
+
+class _ReadOnlyAdmissionObject(qualifying_receipt.AdmissionJsonObject):
+    """An AdmissionJsonObject view; its items and ``pairs`` cannot be rebound."""
+
+    clear = pop = popitem = setdefault = update = _refuse_view_mutation
+    __setitem__ = __delitem__ = __ior__ = _refuse_view_mutation
+    __setattr__ = __delattr__ = _refuse_view_mutation
+
+    def _mutable(self, memo):
+        copied = qualifying_receipt.AdmissionJsonObject.__new__(
+            qualifying_receipt.AdmissionJsonObject
+        )
+        memo[id(self)] = copied
+        for key, item in dict.items(self):
+            dict.__setitem__(copied, copy.deepcopy(key, memo), copy.deepcopy(item, memo))
+        copied.pairs = copy.deepcopy(self.pairs, memo)
+        return copied
+
+    def __copy__(self):
+        copied = qualifying_receipt.AdmissionJsonObject.__new__(
+            qualifying_receipt.AdmissionJsonObject
+        )
+        dict.update(copied, self)
+        copied.pairs = self.pairs
+        return copied
+
+    def __deepcopy__(self, memo):
+        return self._mutable(memo)
+
+    __reduce_ex__ = _refuse_view_mutation
+
+
+_VIEW_LEAVES = frozenset({str, int, float, bool, type(None)})
+
+
+class _NotViewable(Exception):
+    pass
+
+
+def _read_only_view(value, memo: dict[int, object]):
+    """Return a read-only structure equal to ``value``, sharing only immutable leaves.
+
+    Shared references stay shared, as copy.deepcopy keeps them, so an
+    AdmissionJsonObject view's ``pairs`` values are the same objects as its
+    item values.  Any type other than those rows and events are built from,
+    including a dict key that is not a leaf, raises _NotViewable, and the
+    caller then returns a private copy instead.
+    """
+    kind = type(value)
+    leaves = _VIEW_LEAVES
+    if kind in leaves:
+        return value
+    key = id(value)
+    if key in memo:
+        return memo[key]
+    if kind is list:
+        view = _ReadOnlyList.__new__(_ReadOnlyList)
+        memo[key] = view
+        list.extend(view, [item if type(item) in leaves else _read_only_view(item, memo)
+                           for item in value])
+        return view
+    if kind is tuple:
+        items = tuple([item if type(item) in leaves else _read_only_view(item, memo)
+                       for item in value])
+        # As copy.deepcopy does: a tuple reached again through its own items
+        # is the one already recorded.
+        if key in memo:
+            return memo[key]
+        memo[key] = items
+        return items
+    if kind is dict:
+        view = _ReadOnlyDict.__new__(_ReadOnlyDict)
+    elif kind is qualifying_receipt.AdmissionJsonObject:
+        if set(vars(value)) != {"pairs"} or type(value.pairs) is not tuple:
+            raise _NotViewable("admission object has unexpected attributes")
+        view = _ReadOnlyAdmissionObject.__new__(_ReadOnlyAdmissionObject)
+    else:
+        raise _NotViewable(f"no read-only view for {kind.__name__}")
+    if value and not set(map(type, value)) <= leaves:
+        raise _NotViewable("object key is not a leaf")
+    memo[key] = view
+    dict.update(view, [(name, item if type(item) in leaves else _read_only_view(item, memo))
+                       for name, item in value.items()])
+    if kind is not dict:
+        object.__setattr__(view, "pairs", _read_only_view(value.pairs, memo))
+    return view
+
+
 class CommittedValidationNamespace:
     """One complete immutable namespace; construction never accepts event subsets.
 
@@ -1808,6 +1944,7 @@ class CommittedValidationNamespace:
         self._projection_event_ids: dict[str, list[str]] | None = None
         self._rows = _rows_from_events(items, root=state)
         self._origin_cache: dict[tuple[str, str, str], bytes] = {}
+        self._views: dict[str, list] = {}
 
     def __enter__(self):
         return self
@@ -1821,6 +1958,30 @@ class CommittedValidationNamespace:
     def events(self) -> list[dict]:
         """The original validated union, for existing event count/digest capture."""
         return copy.deepcopy(list(self._events.values()))
+
+    def _view(self, name: str, value: list) -> list:
+        if name not in self._views:
+            try:
+                self._views[name] = _read_only_view(value, {})
+            except _NotViewable:
+                return copy.deepcopy(value)
+        return self._views[name]
+
+    def rows_view(self) -> list[dict]:
+        """rows() for a caller that only reads: equal items it cannot change.
+
+        The view is built once and shared.  Every list, dict and
+        AdmissionJsonObject in it refuses item and attribute assignment with
+        TypeError, so an ordinary mutation cannot reach a later reader.  It is
+        never the namespace's own storage: select(), terminals(), rows() and
+        events() read separate objects.  copy.deepcopy of the view is equal,
+        type for type, to rows().
+        """
+        return self._view("rows", self._rows)
+
+    def events_view(self) -> list[dict]:
+        """events() for a caller that only reads, on the rows_view() terms."""
+        return self._view("events", list(self._events.values()))
 
     def source_files(self) -> list[dict]:
         """Original path/blob/data operands for provenance and reproduction."""

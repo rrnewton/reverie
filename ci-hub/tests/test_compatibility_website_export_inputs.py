@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import pickle
 import re
 import subprocess
 import sys
@@ -1569,6 +1570,9 @@ class TransportNamespace:
     def rows(self):
         return [self.selection["row"], {"repo": "hermit", "schema_version": 5}]
 
+    def rows_view(self):
+        return self.rows()
+
     def select(self, **selector):
         assert all(self.selection["row"].get(key) == value for key, value in selector.items())
         return self.selection
@@ -1749,6 +1753,77 @@ def test_fresh_history_capture_uses_real_state_after_public_ledger(tmp_path, mon
         "schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []}
     assert output["validation_ledger"]["history_row_count"] == 0
     assert not (tool / "hermit_test_ledger").exists()
+
+
+def test_historical_export_reads_namespace_views_without_changing_the_namespace_or_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The export reads rows_view()/events_view() rather than deep copies. Its
+    # output must equal the deep-copy path byte for byte, and no export step
+    # may change what the namespace answers afterwards. The schema-5 census
+    # row sends the proof capture through its rows_view() select path too.
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    monkeypatch.setattr(export_inputs, "_historical_reader_state", lambda: TEST_READER_STATE)
+    proof = export_inputs._proof_reader()
+    event = validation_event()
+    row = event["legacy_row"]
+    cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
+            "mode": "verify", "backend": "ptrace"}
+    row.update(schema_version=5, profile="full", selection_mode="full", tree_dirty=False,
+               commit_anchored=True, result="fail", exit_code=1, validation_complete=False,
+               cell_results=None, raw_result_input_census_v1={
+                   "schema": 1, "run_id": row["run_id"], "hermit_sha": row["commit"],
+                   "files": [{"path": "portable/results.jsonl", "bytes": 12, "sha256": "a" * 64,
+                              "rows": [{"line": 1, "cell": cell, "attempt": 1}]}]})
+    event["outcome"] = "fail"
+    repo, parent_commit = repository(tmp_path, {
+        "ledger/hermit/hosta/2026-08.jsonl": proof.canonical_bytes(event) + b"\n",
+        "series/hermit/hosta/2026-08.jsonl": proof.canonical_bytes(series_row()) + b"\n",
+    })
+    git(repo, "remote", "add", "origin", export_inputs.validation_ledger.CANONICAL_PARENT_REPOSITORY)
+    git(repo, "update-ref", "refs/remotes/origin/main", parent_commit)
+    ledger_commit = git(repo / "hermit_test_ledger", "rev-parse", "HEAD")
+    namespace_class = export_inputs.validation_ledger.CommittedValidationNamespace
+    real_capture = export_inputs.validation_ledger.capture_committed_validation_namespace
+    captured, calls = [], []
+
+    def answers(namespace) -> bytes:
+        return pickle.dumps((namespace.rows(), namespace.events(), namespace.source_files(),
+                             namespace.terminals(repo="hermit")), 5)
+
+    def capture(root, commit, *, state_root=None):
+        namespace = real_capture(root, commit, state_root=state_root)
+        captured.append((namespace, answers(namespace)))
+        return namespace
+
+    def spy(name, method):
+        def observed(namespace):
+            calls.append(name)
+            return method(namespace)
+        return observed
+
+    def export():
+        return export_inputs.build_historical_export(
+            repo, parent_commit, row["record_id"], row["run_id"], series_commit=ledger_commit)
+
+    monkeypatch.setattr(export_inputs.validation_ledger, "capture_committed_validation_namespace", capture)
+    monkeypatch.setattr(namespace_class, "rows_view", spy("rows_view", namespace_class.rows_view))
+    monkeypatch.setattr(namespace_class, "events_view", spy("events_view", namespace_class.events_view))
+    monkeypatch.setattr(namespace_class, "rows", spy("rows", namespace_class.rows))
+    monkeypatch.setattr(namespace_class, "events", spy("events", namespace_class.events))
+    viewed = export()
+    assert calls == ["rows", "events", "events_view", "rows_view", "rows_view"]
+    calls.clear()
+    # The deep-copy path this change replaced.
+    monkeypatch.setattr(namespace_class, "rows_view", namespace_class.rows)
+    monkeypatch.setattr(namespace_class, "events_view", namespace_class.events)
+    copied = export()
+    assert export_inputs.render_export(viewed) == export_inputs.render_export(copied)
+    assert viewed["validation_ledger"]["history_row_count"] == 1
+    assert len(viewed["provenance"]["finalized_proof"]["missing_current_terminals"]) == 1
+    assert len(captured) == 2
+    for namespace, before in captured:
+        assert answers(namespace) == before
 
 
 def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commit(

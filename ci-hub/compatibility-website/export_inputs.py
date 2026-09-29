@@ -1006,7 +1006,9 @@ def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[
     # modern stable-run requirement merely because another run has a census.
     # Select whole groups only for the new explicit producer claim, and still
     # let the canonical selector judge every predecessor/opposing successor.
-    rows = [row for row in namespace.rows()
+    # This capture only reads rows, so it takes the shared read-only view
+    # instead of a private deep copy.
+    rows = [row for row in namespace.rows_view()
             if validation_ledger._ledger_team(row.get("repo")) == "hermit"]
     census_runs = {row.get("run_id") for row in rows if row.get("schema_version") == 5
                    and "raw_result_input_census_v1" in row}
@@ -1060,8 +1062,11 @@ def _validation_export(
     *, committed_source: tuple[Path, str] | None = None,
     namespace: Any = None,
 ) -> dict[str, Any]:
-    events = namespace.events() if namespace is not None else validation_ledger.events(root=snapshot_root)
-    history_rows = (namespace.rows() if namespace is not None else
+    # Both populations are only read here: counted, digested, and copied by
+    # _portable_history_rows.  A namespace supplies its read-only views.
+    events = (namespace.events_view() if namespace is not None else
+              validation_ledger.events(root=snapshot_root))
+    history_rows = (namespace.rows_view() if namespace is not None else
                     validation_ledger.rows(root=snapshot_root, committed_source=committed_source))
     portable_history = _portable_history_rows(history_rows, snapshot_root)
     history_jsonl = _opaque_jsonl(portable_history, "HistoryRow")

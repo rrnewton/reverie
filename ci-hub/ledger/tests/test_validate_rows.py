@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import pickle
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ sys.path.insert(0, str(HERE.parent.parent / "validate"))
 import validate_rows  # noqa: E402
 import ledger  # noqa: E402
 import reverie_node  # noqa: E402
+
+qualifying_receipt = validate_rows.qualifying_receipt
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -1119,6 +1122,232 @@ def test_committed_namespace_complete_recovery_and_original_occurrences(tmp_path
         captured[0]["data"] = b"not the original bytes"
         assert ns.select(**_producer_selector_args(expected))["row"]["result"] == "fail"
         assert ns.source_files()[0]["data"] != captured[0]["data"]
+
+
+def _committed_view_namespace(tmp_path: Path):
+    source = tmp_path / "source"
+    state = tmp_path / "reader-state"
+    state.mkdir()
+    first = _producer_selector_row(source, record_id="first")
+    final = _producer_selector_row(source, corrects="first")
+    write_events(source, _producer_selector_event(first, source),
+                 _producer_selector_event(final, source))
+    commit = _commit_namespace(source)
+    expected = {**final, "cwd": str(state / "hermit")}
+    return (validate_rows.capture_committed_validation_namespace(source, commit, state_root=state),
+            expected)
+
+
+def _namespace_answers(ns, expected: dict) -> bytes:
+    # Pickle records every container type, AdmissionJsonObject.pairs, and
+    # which objects are shared, so equal bytes mean the same answers.
+    return pickle.dumps((ns.rows(), ns.events(), ns.source_files(),
+                         ns.select(**_producer_selector_args(expected)),
+                         ns.terminals(repo="hermit")), 5)
+
+
+def _reachable_containers(value) -> list:
+    found, seen, stack = [], set(), [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (str, int, float, bool, type(None))) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        found.append(item)
+        if isinstance(item, dict):
+            stack.extend(item.values())
+            stack.extend(getattr(item, "pairs", ()))
+        else:
+            stack.extend(item)
+    return found
+
+
+def _list_mutations(value: list) -> list:
+    def augmented_add():
+        view = value
+        view += [1]
+
+    def augmented_multiply():
+        view = value
+        view *= 2
+
+    def slice_delete():
+        del value[:]
+
+    def slice_assign():
+        value[0:0] = [1]
+
+    return [lambda: value.append(1), lambda: value.extend([1]), lambda: value.insert(0, 1),
+            lambda: value.pop(), lambda: value.remove(value[0] if value else 1),
+            value.clear, value.sort, value.reverse, lambda: value.__setitem__(0, 1),
+            lambda: value.__delitem__(0), augmented_add, augmented_multiply,
+            slice_delete, slice_assign]
+
+
+def _dict_mutations(value: dict) -> list:
+    key = next(iter(value), "absent")
+
+    def augmented_or():
+        view = value
+        view |= {"new": 1}
+
+    def item_delete():
+        del value[key]
+
+    def item_assign():
+        value[key] = "changed"
+
+    return [value.clear, lambda: value.pop(key), value.popitem,
+            lambda: value.setdefault("new", 1), lambda: value.update(new=1),
+            lambda: value.update({key: "changed"}), augmented_or, item_delete, item_assign]
+
+
+def _admission_attribute_mutations(value) -> list:
+    def assign_pairs():
+        value.pairs = ()
+
+    def delete_pairs():
+        del value.pairs
+
+    def assign_other():
+        value.other = 1
+
+    def assign_class():
+        value.__class__ = qualifying_receipt.AdmissionJsonObject
+
+    return [assign_pairs, delete_pairs, assign_other, assign_class]
+
+
+@pytest.mark.parametrize("view_name", ["rows_view", "events_view"])
+def test_committed_namespace_views_refuse_every_ordinary_mutation(tmp_path: Path, view_name: str):
+    ns, expected = _committed_view_namespace(tmp_path)
+    answers = _namespace_answers(ns, expected)
+    view = getattr(ns, view_name)()
+    before = pickle.dumps(copy.deepcopy(view), 5)
+    containers = _reachable_containers(view)
+    kinds = {type(item) for item in containers}
+    # The fixture must reach an admission object and a list; plain dicts and
+    # tuples are covered by test_read_only_view_keeps_types_sharing_and_pairs.
+    assert validate_rows._ReadOnlyAdmissionObject in kinds and validate_rows._ReadOnlyList in kinds
+    assert not kinds & {list, dict, qualifying_receipt.AdmissionJsonObject}
+    attempted = 0
+    for item in containers:
+        if isinstance(item, tuple):
+            continue
+        mutations = _list_mutations(item) if isinstance(item, list) else _dict_mutations(item)
+        if isinstance(item, qualifying_receipt.AdmissionJsonObject):
+            mutations += _admission_attribute_mutations(item)
+        for mutate in mutations:
+            with pytest.raises(TypeError, match="committed validation views are read-only"):
+                mutate()
+            attempted += 1
+    # At least one list and one admission object received every mutation.
+    assert attempted >= len(_list_mutations([])) + len(_dict_mutations({})) + 4
+    assert pickle.dumps(copy.deepcopy(view), 5) == before
+    assert getattr(ns, view_name)() is view
+    assert _namespace_answers(ns, expected) == answers
+
+
+def test_committed_namespace_view_bypass_cannot_reach_the_namespace(tmp_path: Path):
+    # Even the C-level interface that the view does not guard changes only the
+    # view: select(), terminals(), rows(), events() and source_files() read
+    # separate objects.  This fails if a view shares a container with them.
+    ns, expected = _committed_view_namespace(tmp_path)
+    answers = _namespace_answers(ns, expected)
+    rows, events = ns.rows_view(), ns.events_view()
+    for view in (rows, events):
+        for item in _reachable_containers(view):
+            if isinstance(item, qualifying_receipt.AdmissionJsonObject):
+                object.__setattr__(item, "pairs", ())
+            if isinstance(item, dict):
+                for key in list(dict.keys(item)):
+                    dict.__setitem__(item, key, "bypassed")
+                dict.__setitem__(item, "added", "bypassed")
+            elif isinstance(item, list):
+                list.append(item, "bypassed")
+    assert rows[0]["result"] == "bypassed" and events[-1] == "bypassed"
+    assert _namespace_answers(ns, expected) == answers
+
+
+def test_committed_namespace_views_copy_back_to_rows_and_events(tmp_path: Path):
+    ns, _expected = _committed_view_namespace(tmp_path)
+    for view, copied in ((ns.rows_view(), ns.rows()), (ns.events_view(), ns.events())):
+        assert view == copied
+        assert pickle.dumps(copy.deepcopy(view), 5) == pickle.dumps(copied, 5)
+        assert type(copy.copy(view)) is list and copy.copy(view) == copied
+        assert json.dumps(view) == json.dumps(copied)
+        assert (json.dumps(view, sort_keys=True, separators=(",", ":"))
+                == json.dumps(copied, sort_keys=True, separators=(",", ":")))
+        for item in _reachable_containers(view):
+            if isinstance(item, tuple):
+                continue  # an admission pair; pickling its container is refused
+            with pytest.raises(TypeError, match="committed validation views are read-only"):
+                pickle.dumps(item, 5)
+            if isinstance(item, dict):
+                assert type(copy.copy(item)) is (qualifying_receipt.AdmissionJsonObject
+                    if isinstance(item, qualifying_receipt.AdmissionJsonObject) else dict)
+        # A deep copy is the ordinary mutable population rows()/events() return.
+        mutable = copy.deepcopy(view)
+        mutable[0]["changed"] = True
+        mutable.append({})
+        assert view == copied
+
+
+def test_read_only_view_keeps_types_sharing_and_pairs():
+    shared = ["shared"]
+    duplicate = qualifying_receipt.AdmissionJsonObject(
+        [("k", shared), ("k", {"inner": 1}), ("m", shared)])
+    cyclic: list = []
+    cyclic.append(cyclic)
+    through_tuple: list = []
+    looped = (through_tuple, "leaf")
+    through_tuple.append(looped)
+    value = [duplicate, {"t": (shared, 1.5, None, True, "text"), 7: None},
+             shared, cyclic, looped]
+    original = pickle.dumps(copy.deepcopy(value), 5)
+    view = validate_rows._read_only_view(value, {})
+    assert pickle.dumps(copy.deepcopy(view), 5) == original
+    assert type(view) is validate_rows._ReadOnlyList
+    assert type(view[0]) is validate_rows._ReadOnlyAdmissionObject
+    assert type(view[1]) is validate_rows._ReadOnlyDict and type(view[1]["t"]) is tuple
+    assert view[0].pairs == (("k", ["shared"]), ("k", {"inner": 1}), ("m", ["shared"]))
+    assert view[0].pairs[0][1] is view[0]["m"] is view[1]["t"][0] is view[2]
+    assert view[0].pairs[1][1] is view[0]["k"] and view[3][0] is view[3]
+    assert view[4][0][0] is view[4] and type(view[4][0]) is validate_rows._ReadOnlyList
+    assert view[2] is not shared and view[0] is not duplicate
+    copied = copy.deepcopy(view)
+    assert type(copied[0]) is qualifying_receipt.AdmissionJsonObject
+    assert copied[0].pairs[1][1] is copied[0]["k"] and copied[0]["m"] is copied[2]
+    assert json.dumps(view[:3]) == json.dumps(value[:3])
+    assert pickle.dumps(copy.deepcopy(value), 5) == original
+
+
+@pytest.mark.parametrize("unsupported", ["subclass", "extra_attribute", "list_pairs", "tuple_key"])
+def test_committed_namespace_view_falls_back_to_a_private_copy(unsupported: str):
+    class Row(dict):
+        pass
+
+    if unsupported == "subclass":
+        item = Row(repo="hermit")
+    elif unsupported == "tuple_key":
+        item = {"repo": "hermit", ("tuple",): "key"}
+    else:
+        item = qualifying_receipt.AdmissionJsonObject([("repo", "hermit")])
+        if unsupported == "extra_attribute":
+            item.note = "unexpected"
+        else:
+            item.pairs = [("repo", "hermit")]
+    population = [item]
+    with pytest.raises(validate_rows._NotViewable):
+        validate_rows._read_only_view(population, {})
+    holder = validate_rows.CommittedValidationNamespace.__new__(
+        validate_rows.CommittedValidationNamespace)
+    holder._views = {}
+    copied = holder._view("rows", population)
+    assert copied == population and copied[0] is not item and type(copied[0]) is type(item)
+    assert "rows" not in holder._views
+    copied[0]["repo"] = "changed"
+    assert item["repo"] == "hermit"
 
 
 def test_committed_namespace_retry_keeps_original_origin_after_unrelated_advance(tmp_path: Path):
