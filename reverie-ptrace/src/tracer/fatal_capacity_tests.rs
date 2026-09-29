@@ -80,9 +80,7 @@ pub(super) mod fatal_capacity_tests {
     pub(crate) fn record_body_dropped(tid: Pid, status: Option<ExitStatus>) {
         let waiter = RETIREMENT.with(|slot| {
             let mut slot = slot.borrow_mut();
-            let Some(state) = slot.as_mut() else {
-                return None;
-            };
+            let state = slot.as_mut()?;
             assert_ne!(Some(tid), state.root, "root cannot publish a child receipt");
             assert_eq!(
                 status,
