@@ -204,8 +204,9 @@ enum OrdinaryStart {
 struct OrdinaryExecSlot<L: Tool> {
     stop: Arc<FatalTaskStop>,
     requested: AtomicBool,
-    /// Set by a failed run's nonleader owner once its former TID's exit wait
-    /// met ECHILD with no final status: exec's de_thread released the TID.
+    /// Set by a nonleader owner, in a failed run or not, once its former
+    /// TID's exit wait met ECHILD with no final status: exec's de_thread
+    /// released the TID.
     lost_former: AtomicBool,
     changed: Notify,
     transferred: StdMutex<Option<Box<TracedTask<L>>>>,
@@ -7177,6 +7178,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // has no terminal status to consume. The outer owner
                         // remains available for the leader's actual Exec edge;
                         // ECHILD itself authorizes neither transfer nor exit.
+                        //
+                        // If the notifier recorded that ECHILD for this exact
+                        // generation, de_thread released the TID, and a fatal
+                        // signal can land before that thread's exec stop, so no
+                        // Exec edge need follow, in a run that has not failed
+                        // too. Record it as on the failure path below; the
+                        // owner's lost-former arm then retires this task only
+                        // once the leader owner has consumed its actual final
+                        // status and left the registry.
+                        if let Some(slot) = lost_former
+                            && stop.terminal.observed_exit_status() == Err(Errno::ECHILD)
+                        {
+                            slot.lost_former.store(true, Ordering::Release);
+                            slot.changed.notify_waiters();
+                        }
                         return future::pending().await;
                     }
                     session.retry_after(error.into()).await;
