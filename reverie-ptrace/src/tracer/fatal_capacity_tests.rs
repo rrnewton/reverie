@@ -12,6 +12,7 @@ pub(super) mod fatal_capacity_tests {
     type FinishedObservations = Vec<(i32, bool, bool, bool)>;
     thread_local! {
         static FINISHED: std::cell::RefCell<Option<FinishedObservations>> = const { std::cell::RefCell::new(None) };
+        static REPORTED_FINISHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     pub(crate) fn record_finished(stop: &FatalTaskStop) {
@@ -69,11 +70,20 @@ pub(super) mod fatal_capacity_tests {
             let fds = fs::read_dir("/proc/self/fd")
                 .map_err(anyhow::Error::new)?
                 .count();
-            let finished = FINISHED.with(|slot| slot.borrow().as_ref().unwrap().clone());
+            // FINISHED only appends immutable scalar observations on this
+            // ptracer thread. Indexed deltas reconstruct every marker
+            // prefix without repeatedly cloning and printing old tuples.
+            let start = REPORTED_FINISHED.with(|reported| reported.get());
+            let (end, finished) = FINISHED.with(|slot| {
+                let slot = slot.borrow();
+                let records = slot.as_ref().unwrap();
+                (records.len(), records[start..].to_vec())
+            });
             eprintln!(
-                "capacity marker: iteration={}, fds={fds}, finished_after_hooks={finished:?}",
+                "capacity marker: iteration={}, fds={fds}, finished_after_hooks_range={start}..{end}, finished_after_hooks_new={finished:?}",
                 args.arg0
             );
+            REPORTED_FINISHED.with(|reported| reported.set(end));
             guest.send_rpc((args.arg0, fds)).await;
             Ok(0)
         }
@@ -81,6 +91,7 @@ pub(super) mod fatal_capacity_tests {
 
     async fn isolated_capacity(threads: bool, deadline: u64) {
         FINISHED.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+        REPORTED_FINISHED.with(|reported| reported.set(0));
         let mut original: libc::rlimit = unsafe { std::mem::zeroed() };
         assert_eq!(
             unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
@@ -137,6 +148,10 @@ pub(super) mod fatal_capacity_tests {
         eprintln!(
             "capacity original predicate: threads={threads}, soft_nofile={FD_LIMIT}, required_tasks={TASKS}, samples={captured:?}, outcome={description}"
         );
+        // Keep one self-contained checkpoint, including any observations
+        // since the last marker, before rescue can add observations.
+        let finished = FINISHED.with(|slot| slot.borrow().as_ref().unwrap().clone());
+        eprintln!("capacity original checkpoint: finished_after_hooks={finished:?}");
         let complete = match result {
             Ok(ToolRunOutcome::Complete(done)) => done,
             other => {
