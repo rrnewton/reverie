@@ -16,8 +16,10 @@ invent another source of truth.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import fcntl
+import gc
 import json
 import os
 import hashlib
@@ -1229,6 +1231,37 @@ def _read_rows(path: Path) -> list[dict]:
     return out
 
 
+@contextlib.contextmanager
+def _cyclic_gc_paused():
+    """Pause Python's cycle collector while a replay builds acyclic JSON trees.
+
+    Reference counting still frees every object on time; only the cycle
+    detector's scans are deferred, and the collector's previous state is
+    restored on exit. The trees these readers build contain no cycles, but the
+    admission hook leaves about eleven tracked containers per JSON object (the
+    object, its attribute dict, its pairs tuple and one tuple per key) against
+    about 1.3 without it, so the collector kept rescanning the growing ledger.
+    On the 2026-09-29 ledger (3968 lines, 631,888 JSON objects), parsing with
+    the hook took 6.6 s with the collector running and 1.4 s without it. A
+    whole preserve-mode ``rows()`` call, with a stand-in checker so that only
+    Python work was timed, took 26.7 s and 13.0 s
+    (https://github.com/rrnewton/dev-hermit/issues/390).
+
+    Nested uses are no-ops. The public readers pause once around the whole
+    replay: resuming between the read and the projection made the collector
+    scan every event it had skipped while the rows were still being built.
+    """
+    if not gc.isenabled():
+        yield
+        return
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+@_cyclic_gc_paused()
 def events(*, root: Path | None = None, preserve_admission: bool = False) -> list[dict]:
     """Canonical validation events, excluding acceptance-test data.
 
@@ -1430,6 +1463,7 @@ def _validated_events(
     return items, historical_source_digests
 
 
+@_cyclic_gc_paused()
 def _checked_events(
     *, root: Path, preserve_admission: bool = False,
     committed_source: tuple[Path, str] | None = None,
@@ -1531,6 +1565,7 @@ def _row_projections(
             yield current, restored
 
 
+@_cyclic_gc_paused()
 def _rows_from_events(
     items: list[dict], *, root: Path, accepted_lines: frozenset[str] = frozenset(),
 ) -> list[dict]:
@@ -1611,6 +1646,7 @@ def _record_identities(
     return records
 
 
+@_cyclic_gc_paused()
 def status_input(*, root: Path | None = None, preserve_admission: bool = False) -> dict:
     """One-read input for status: projected rows plus every raw record identity."""
     root = (root or repository_root()).resolve()
@@ -1628,6 +1664,7 @@ def status_input(*, root: Path | None = None, preserve_admission: bool = False) 
     }
 
 
+@_cyclic_gc_paused()
 def rows(
     *, root: Path | None = None, preserve_admission: bool = False,
     committed_source: tuple[Path, str] | None = None,
@@ -1952,6 +1989,7 @@ class CommittedValidationNamespace:
     private path tokens. This selector grants no admission or artifact proof.
     """
 
+    @_cyclic_gc_paused()
     def __init__(self, source_root: Path, source_commit: str, *, state_root: Path | None = None):
         self._root = Path(source_root).resolve()
         self._commit = _committed_sha(source_commit, "source commit")

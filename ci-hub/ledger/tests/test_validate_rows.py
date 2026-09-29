@@ -1,4 +1,5 @@
 import copy
+import gc
 import hashlib
 import json
 import os
@@ -1210,6 +1211,36 @@ def test_validate_each_event_reuses_only_an_exactly_accepted_line(
         [changed], known_ids=known, accepted_lines=lines,
     )) == [expected]
     assert runs == [1]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_replay_pauses_cycle_collection_and_restores_it(
+    tmp_path: Path, monkeypatch, enabled: bool
+):
+    write_events(tmp_path, *_corrected_pairs(tmp_path, 1))
+    real = validate_rows._replace
+    observed: list[bool] = []
+
+    def observing(value, old, new):
+        observed.append(gc.isenabled())
+        return real(value, old, new)
+
+    def failing(value, old, new):
+        raise RuntimeError("replay failed")
+
+    was_enabled = gc.isenabled()
+    try:
+        (gc.enable if enabled else gc.disable)()
+        monkeypatch.setattr(validate_rows, "_replace", observing)
+        validate_rows.rows(root=tmp_path, preserve_admission=True)
+        assert gc.isenabled() is enabled
+        monkeypatch.setattr(validate_rows, "_replace", failing)
+        with pytest.raises(RuntimeError, match="replay failed"):
+            validate_rows.rows(root=tmp_path, preserve_admission=True)
+        assert gc.isenabled() is enabled
+    finally:
+        (gc.enable if was_enabled else gc.disable)()
+    assert observed and not any(observed)
 
 
 def _producer_selector_row(root: Path, **changes) -> dict:
