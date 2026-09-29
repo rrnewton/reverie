@@ -4293,6 +4293,20 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self
     }
 
+    /// Makes every trap-only new-child stop see the clone flags recorded at
+    /// its creating stop with `CLONE_VFORK` flipped, so that they disagree
+    /// with the kind of new-child stop and the stop takes the undecided path.
+    #[cfg(test)]
+    fn liteinst_trap_only_flip_recorded_clone_vfork_for_test(self) -> Self {
+        self.liteinst_trap_only
+            .as_ref()
+            .expect("trap-only mode must be selected before flipping its clone flags")
+            .hooks
+            .flip_recorded_clone_vfork
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     /// Makes the masked hop see every slot exit stop's rip displaced by one
     /// byte, so that H4 must fail closed.
     #[cfg(test)]
