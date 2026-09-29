@@ -3300,7 +3300,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         // rewind the controller resumes at that `int3`, and an ordinary hook
         // entry can reach it within the skid margin. Its SIGTRAP is the
         // syscall trap, not a step report; hand it back to the run loop so it
-        // is dispatched, as a ptrace-backend step hands back a syscall stop.
+        // is dispatched. That ends the step window without a timer event
+        // (`HandleFailure::Event` aborts to the run loop), as a ptrace-backend
+        // step ends at a subscribed syscall's seccomp stop. For an
+        // unsubscribed syscall plain ptrace has no stop and its timer still
+        // fires, so here host-hybrid differs from plain ptrace, as it does
+        // wherever its trap on every hooked syscall is a stop that plain
+        // ptrace does not have.
         //
         // A restart landing's int3s (`arm_liteinst_restart_landing`) report
         // the kernel's restart decision after a guest handler. Plain ptrace

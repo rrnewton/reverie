@@ -1557,6 +1557,8 @@ impl TimerImpl {
                 #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
                 Wait::Stopped(mut new_task, TraceEvent::Signal(Signal::SIGTRAP)) => {
                     if intercept(&new_task)? {
+                        // As at every other stop that ends stepping. This is
+                        // defensive: no test fails without it.
                         #[cfg(target_arch = "x86_64")]
                         if let Err(err) =
                             remove_stepping_trap_flag(&mut new_task, &start, guest_trap_flag)
