@@ -44,8 +44,9 @@ Terms used below:
 
 1. **Build `agentctl watch` + `agentctl inbox`**: a per-coordinator watcher that turns subagent state
    changes into durable inbox entries, and one delivery step that renders all pending entries as one
-   batch. The watcher takes events from herdr's push API and from `agentcloudctl fleet --watch`, and a
-   30 s reconciliation sweep catches anything the event stream missed.
+   batch. The watcher wakes on herdr's push events and on `agentcloudctl fleet --watch`, and a 30 s
+   reconciliation sweep catches anything the event stream missed. For Claude panes it takes the
+   state from `claude agents --json`, because herdr reports working Claude panes as idle (4.7).
 2. **The watcher detects; the coordinator decides.** Like ORC, it does not assign work. It tells the
    coordinator "these agents are idle, here is what they last said", once per idle edge, with
    exponential re-reminders while nothing changes.
@@ -111,7 +112,7 @@ section 5.7 describes the one shared point, the per-pane delivery lock.
 | Source | What it gives | Push or poll |
 |---|---|---|
 | herdr socket `events.subscribe` | `pane.agent_status_changed` (idle, working, blocked, done, unknown), `pane.output_matched` (regex on output), `pane.scroll_changed`, `pane.created/closed/exited` | push |
-| `herdr agent list` | per-pane `agent_status`, `revision`, `state_change_seq` | poll |
+| `herdr agent list` | per-pane `agent_status`, `revision`, `state_change_seq`; **wrong for working Claude panes, see 4.7** | poll |
 | `claude agents --json` | every local Claude Code session: `pid`, `sessionId`, `name`, `status` busy/idle (interactive) or `state` (background) | poll |
 | `/proc/<pid>/environ` | `HERDR_PANE_ID` of a Claude process, so session ↔ pane mapping is exact | poll |
 | Claude transcript `~/.claude/projects/<proj>/<sessionId>.jsonl` | the real transcript; byte offset is a natural cursor | file |
@@ -346,6 +347,36 @@ reachable from inside it. `herdr agent prompt coord` therefore works *from* it, 
 `internet_mode=disabled`, so its GitHub traffic depends on `herdr-run`. At 21:09Z that route refused
 because the `agent-cmds` workspace was at its 32-pane cap with no tab provably finished.
 
+### 4.7 herdr reports working Claude Code panes as idle
+
+Found 2026-09-29 21:30Z while measuring idle detection, and filed as
+https://github.com/rrnewton/agent-utils/issues/179 (`herdr-claude-busy-reads-idle`). herdr 0.8.0
+(manifest `bundled 2026.07.13.1`) classifies Claude Code panes with the rule
+`live_prompt_box (region=prompt_box_body priority=950)`, evidence `"❯\n"`. Current Claude Code keeps
+an empty `❯` prompt box on screen while a turn runs, so a working pane reads as `idle`.
+
+The comparison joins herdr status to `claude agents --json` by pid → `/proc/<pid>/environ`
+`HERDR_PANE_ID`:
+
+| pane | herdr | Claude | footer |
+|---|---|---|---|
+| wJ:p1 (coord) | idle | busy | `bypass permissions on · 7 shells · esc to interrupt` |
+| wJ:p5G (chat-bridge) | idle | busy | `Deciphering… (3h 12m 18s …)` · `esc to interrupt` |
+| wJ:p5K (gate-select) | idle | busy | `Whirring… (1h 12m 35s …)` · `esc to interrupt` |
+| wJ:p3A, wJ:p5B, wJ:p5C | idle | busy | (not captured) |
+| wJ:p3B | done | busy | (not captured) |
+| wJ:p5J (perm-hook) | done | idle | genuinely idle; consistent |
+
+Six of the eight Claude panes were busy by Claude's own account, and herdr reported all six as idle
+or done. The coordinator pane's `state_change_seq` stayed at 375 from 20:16Z to 21:30Z, while it was
+working and received two prompts. Consequences:
+
+- `agentctl wait` and agentctl's ready-before-typing check can pass while a worker is mid-turn.
+- Any idle notifier built on herdr status alone would announce working agents as idle.
+
+The chat-bridge agent was told by cross-session `SendMessage`; no link to
+https://github.com/rrnewton/agent-utils/issues/175 has been shown.
+
 ## 5. Design: `agentctl watch` and `agentctl inbox`
 
 ### 5.1 Requirements
@@ -385,7 +416,7 @@ coordinator already uses (`.agentctl` for herdr agents, `.agentctl-cloud` for ag
 | Event | Trigger | Priority |
 |---|---|---|
 | `blocked` | herdr `blocked`; agentcloud run waiting on input | P1 |
-| `idle` | edge working → idle/done, stable for ≥ 3 s (Gas Town's two-poll rule) | P2 |
+| `idle` | edge working → idle/done, stable for ≥ 3 s (Gas Town's two-poll rule). For Claude panes the state comes from `claude agents --json` (section 4.7); a herdr event only prompts a re-check | P2 |
 | `exited` | pane closed/exited, session ended, pid gone | P1 |
 | `progress` | while working: delta since cursor exceeds a threshold (e.g. 64 KB of transcript or 20 min since last progress entry) | P3, off by default |
 | `still_idle` | an idle agent nobody addressed: re-remind at 30 min, then 60 min, then 120 min, max 3 | P3 |
@@ -491,17 +522,41 @@ Each step gets an adversarial GOALPOST review before it is pushed to agent-utils
 state without asking coord first. Per agent-utils policy the code names no consuming project, and the
 tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 
-1. **Inbox core** (`rs/agentctl`, new module `inbox.rs`): durable queue (file per entry, claim by
-   rename, TTL, cap), coalescing rules from 5.3, priority rendering from 5.6, cursor store from 5.4,
-   and the CLI `agentctl inbox post|list|render|ack`. Unit tests for coalescing, ordering, claim races,
-   TTL, and render caps. No network, no herdr.
+1. **Inbox core — LANDED** at agent-utils main 293d328454415eaf215dceab04a3a4570525ef82 (commits
+   f3e418de..293d3284, `rs/agentctl/src/inbox.rs`). It provides `agentctl inbox
+   post|list|render|deliver|release|quickstart|userguide`:
+   - one live state notice per worker, never lowering an unseen notice's priority, and `working`
+     withdrawal;
+   - keyed messages;
+   - priority-3 expiry and a capacity limit;
+   - one rendered batch within a byte budget that includes the header and trailer;
+   - claim, deliver and record with a re-send of an unchanged batch to the same adapter and session;
+   - `release [--requeue]`;
+   - a directory fsync after every rename.
+
+   The read cursor store (5.4) is deferred to step 2, where the watcher owns it; notices carry
+   `--cursor PATH:START:END` ranges meanwhile. The adversarial review took four rounds. Round 1
+   found 1 HIGH (an oversized batch jammed agentcloud-notify for good) and 4 MEDIUM, including
+   duplicate delivery through the claim window. Round 2 found 1 MEDIUM that the round-1 fixes
+   introduced: a key was reused across sessions after a requeue. Round 3 found 2 LOW overclaims.
+   Round 4 approved.
+
+   `make validate` passed 24 of 24 on the rebased head 35fc326b. On the pushed head 293d3284 it passed
+   23 of 24, the one red being the Python packaging step's 10 s CPU limit. That step fails the same
+   way on the untouched base at host load 90–220, and run standalone on 293d3284 it passed with
+   6.6 s of CPU. The two failing Python chat-transport tests seen along the way also failed on the
+   base, and upstream abd443ab fixed them. There are 22 unit tests, including CLI tests with a fake
+   agentcloudctl. End to end, `deliver --via agentcloud-notify` into a live agentcloud session
+   arrived mid-turn from `cli-script`.
 2. **Watcher** (`agentctl watch --coordinator NAME`): herdr `events.subscribe` (reusing
    `chat_events.rs` framing), the 30 s sweep over `herdr agent list`, the Claude pid/session resolution,
    tier-0 extraction from Claude JSONL, and `fleet --watch` for agentcloud agents. Tests use a fake herdr
    socket and fixture transcripts.
-3. **Delivery** (`agentctl inbox deliver --via agentcloud-notify|print`): the agentcloud adapter uses
-   idempotency keys. Tested end to end against a scratch agentcloud session; the typed herdr adapter
-   comes later, after agreement with chat-bridge on the shared lock.
+3. **Delivery** (`agentctl inbox deliver --via agentcloud-notify|print`): **landed with step 1.**
+   The agentcloud adapter uses the key `agentctl-inbox-<coordinator>-<batch>`, where the batch id
+   hashes the adapter, the session and the notice ids, under a 120 s notify timeout. The typed herdr
+   adapter for a local TUI coordinator comes later, after agreement with chat-bridge on the shared
+   lock. It must not gate on herdr `idle` for Claude panes (4.7).
 4. **Tier-1 summaries**: an optional async worker using a configured command (default
    `claude -p --model haiku …`) with the fixed NOW/NEW/NEEDS contract and a cache. Measured before and
    after on real deltas.
@@ -513,8 +568,10 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 - **Q1.** Does Claude cross-session `SendMessage` into a `--dangerously-skip-permissions` coordinator
   deliver, or is it held for approval? Test with a scratch bypass session (it needs a human-approved
   launch, since the classifier refused one here), or with coord's consent on the real coordinator.
-- **Q2.** Does herdr debounce `agent_status_changed` during the short gaps between tool calls? Measure
-  on a scratch herdr pane.
+- **Q2.** Does herdr debounce `agent_status_changed` during the short gaps between tool calls? This
+  matters less than expected: for current Claude Code panes herdr's `idle` is wrong anyway (4.7), so
+  the watcher uses herdr events only as wake-ups and asks Claude for the state. Still open for Codex
+  panes.
 - **Q3.** Does herdr expose pane *input* activity, so "the owner typed in the last 5 s" can be
   detected? If not, fall back to "composer non-empty" from `herdr agent read`.
 - **Q4.** Codex transcript path resolution for a herdr pane (pid → rollout file).
@@ -522,6 +579,11 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 - **Q6.** Where the watcher should run for agentcloud-hosted coordinators: devbig014 systemd, or an
   agentcloud `subscribe` cron (`agentcloudctl subscribe --spec '{"kind":{"kind":"cron",…},"deliver":{"target":"llm",…}}'`),
   which survives host loss (owner directive 2026-09-28: no task may assume the host is durable).
+
+Follow-ups noted by the review and not yet done: a documented recovery step for a corrupt
+`claimed/` record (today it fails closed and needs a hand move); and keeping the reason when a
+`blocked` notice is replaced by `progress`. The merged notice keeps priority 1 but shows only the
+newer text.
 
 ## Appendix: where things are
 
