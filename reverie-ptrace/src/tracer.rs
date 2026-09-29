@@ -6977,12 +6977,19 @@ mod tests {
         let identity = untraced_process_identity(root);
         let termination = tracer.termination_handle().unwrap();
         let log = tracer.gref.0.clone();
+        // The outcome of a run that finished before the gate below. It is
+        // kept for the failure message, and the finished completion is never
+        // polled again.
+        let mut finished = None;
         let mut completion = Box::pin(tracer.wait_with_output_completion());
         let gated =
             tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
                 while !control.entered.load(Ordering::SeqCst) {
                     tokio::select! {
-                        _ = &mut completion => return false,
+                        outcome = &mut completion => {
+                            finished = Some(outcome);
+                            return false;
+                        }
                         () = tokio::task::yield_now() => {}
                     }
                 }
@@ -7008,7 +7015,10 @@ mod tests {
                         break true;
                     }
                     tokio::select! {
-                        _ = &mut completion => break false,
+                        outcome = &mut completion => {
+                            finished = Some(outcome);
+                            break false;
+                        }
                         () = tokio::task::yield_now() => {}
                     }
                 }
@@ -7018,31 +7028,41 @@ mod tests {
             Ok(false)
         };
         control.release.store(true, Ordering::SeqCst);
-        let result = if killed == Ok(true) {
-            Some(
+        let finished_early = finished.is_some();
+        let result = match finished {
+            Some(outcome) => Some(Ok(outcome)),
+            None if killed == Ok(true) => Some(
                 tokio::time::timeout(
                     deadline.saturating_duration_since(Instant::now()),
                     &mut completion,
                 )
                 .await,
-            )
-        } else {
-            None
+            ),
+            None => None,
         };
         let resumes = control.results.lock().unwrap().clone();
         let done = match result {
-            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            Some(Ok(ToolRunOutcome::Complete(done))) if !finished_early => done,
             other => {
                 let description = match &other {
                     None => format!("gate not reached: gated={gated:?}, killed={killed:?}"),
+                    Some(Ok(ToolRunOutcome::Complete(done))) => {
+                        format!("Complete({:?})", done.result)
+                    }
                     Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
                         format!("Pending({:?})", pending.failure())
                     }
                     Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
                         "UnsupportedBackend".to_owned()
                     }
-                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
                     Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let description = if finished_early {
+                    format!(
+                        "the run finished before the gate (gated={gated:?}, killed={killed:?}): {description}"
+                    )
+                } else {
+                    description
                 };
                 let rescue_deadline = Instant::now() + Duration::from_secs(2);
                 termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
@@ -7054,7 +7074,11 @@ mod tests {
                     )
                     .await
                     .is_ok(),
-                    _ => tokio::time::timeout(
+                    // The run has finished; its completion is not polled again.
+                    Some(Ok(_)) => true,
+                    // The gate or the final wait timed out, so the completion
+                    // has not finished.
+                    None | Some(Err(_)) => tokio::time::timeout(
                         rescue_deadline.saturating_duration_since(Instant::now()),
                         &mut completion,
                     )
@@ -7173,12 +7197,19 @@ mod tests {
         let identity = untraced_process_identity(root);
         let termination = tracer.termination_handle().unwrap();
         let log = tracer.gref.0.clone();
+        // The outcome of a run that finished before the gate below. It is
+        // kept for the failure message, and the finished completion is never
+        // polled again.
+        let mut finished = None;
         let mut completion = Box::pin(tracer.wait_with_output_completion());
         let gated =
             tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
                 while !hold.entered.load(Ordering::SeqCst) {
                     tokio::select! {
-                        _ = &mut completion => return false,
+                        outcome = &mut completion => {
+                            finished = Some(outcome);
+                            return false;
+                        }
                         () = tokio::task::yield_now() => {}
                     }
                 }
@@ -7202,7 +7233,10 @@ mod tests {
                         break true;
                     }
                     tokio::select! {
-                        _ = &mut completion => break false,
+                        outcome = &mut completion => {
+                            finished = Some(outcome);
+                            break false;
+                        }
                         () = tokio::task::yield_now() => {}
                     }
                 }
@@ -7212,30 +7246,40 @@ mod tests {
             Ok(false)
         };
         hold.release.store(true, Ordering::SeqCst);
-        let result = if observed == Ok(true) {
-            Some(
+        let finished_early = finished.is_some();
+        let result = match finished {
+            Some(outcome) => Some(Ok(outcome)),
+            None if observed == Ok(true) => Some(
                 tokio::time::timeout(
                     deadline.saturating_duration_since(Instant::now()),
                     &mut completion,
                 )
                 .await,
-            )
-        } else {
-            None
+            ),
+            None => None,
         };
         let done = match result {
-            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            Some(Ok(ToolRunOutcome::Complete(done))) if !finished_early => done,
             other => {
                 let description = match &other {
                     None => format!("gate not reached: gated={gated:?}, observed={observed:?}"),
+                    Some(Ok(ToolRunOutcome::Complete(done))) => {
+                        format!("Complete({:?})", done.result)
+                    }
                     Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
                         format!("Pending({:?})", pending.failure())
                     }
                     Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
                         "UnsupportedBackend".to_owned()
                     }
-                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
                     Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let description = if finished_early {
+                    format!(
+                        "the run finished before the gate (gated={gated:?}, observed={observed:?}): {description}"
+                    )
+                } else {
+                    description
                 };
                 let records = FATAL_REAP_CHRONOLOGY.with(|slot| slot.borrow().clone());
                 let rescue_deadline = Instant::now() + Duration::from_secs(2);
@@ -7248,7 +7292,11 @@ mod tests {
                     )
                     .await
                     .is_ok(),
-                    _ => tokio::time::timeout(
+                    // The run has finished; its completion is not polled again.
+                    Some(Ok(_)) => true,
+                    // The gate or the final wait timed out, so the completion
+                    // has not finished.
+                    None | Some(Err(_)) => tokio::time::timeout(
                         rescue_deadline.saturating_duration_since(Instant::now()),
                         &mut completion,
                     )
