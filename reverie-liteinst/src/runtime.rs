@@ -1000,23 +1000,46 @@ fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io:
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
     unsafe { reverie_liteinst_host_begin(&frame) };
-    let prepared = prepare();
-    // Close the window before Ready: the tracer may inject the install helper
-    // at the Ready stop, and after Ready the constructor heap is frozen.
-    drop(init_allocation_scope);
-    if crate::patch_alloc::init_heap_exhausted() {
-        // Reported ahead of `prepared`: a miss can surface there only as a
-        // silently skipped arena (liteinst2's fallible reservation) or not at all.
-        return Err(io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            "LiteInst constructor heap (16 MiB) exhausted during host-runtime \
-             preparation; the guest heap was touched before main",
-        ));
-    }
-    prepared?;
+    prepare_in_init_window(init_allocation_scope, prepare)?;
     // SAFETY: identical handshake contract; all helper state is now published.
     unsafe { reverie_liteinst_host_ready(&frame) };
     Ok(())
+}
+
+/// Runs `prepare` in the constructor window that `window` holds, closes the
+/// window, and refuses if any allocation in it missed the constructor heap.
+fn prepare_in_init_window(
+    window: crate::patch_alloc::InitAllocationScope,
+    prepare: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let prepared = prepare();
+    // Close the window before Ready: the tracer may inject the install helper
+    // at the Ready stop, and after Ready the constructor heap is frozen.
+    drop(window);
+    if crate::patch_alloc::init_heap_exhausted() {
+        // Reported ahead of `prepared`: a miss can surface there only as a
+        // silently skipped arena (liteinst2's fallible reservation) or not at all.
+        return Err(init_heap_exhausted_error());
+    }
+    prepared
+}
+
+/// The refusal for a constructor-heap miss. It names the heap, its capacity,
+/// how much of it was carved and the request that missed: the preload
+/// constructor prints this text to the guest's stderr and exits with 127.
+fn init_heap_exhausted_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        format!(
+            "LiteInst constructor heap exhausted during host-runtime preparation: \
+             capacity {} bytes, high-water mark {} bytes, first request it could not \
+             serve {} bytes; that request went to the system allocator, so the guest \
+             heap was touched before main",
+            crate::patch_alloc::INIT_HEAP_BYTES,
+            crate::patch_alloc::init_heap_high_water(),
+            crate::patch_alloc::init_heap_first_miss_bytes(),
+        ),
+    )
 }
 
 pub(crate) fn initialize_reverie_tool(
@@ -3578,6 +3601,7 @@ mod tests {
     use super::fallback_syscall_count;
     use super::initialize_rcb_clock_with;
     use super::mark_site_range_stale;
+    use super::prepare_in_init_window;
     use super::raw_syscall6;
     use super::record_fallback_dispatch;
     use super::reset_site_observability;
@@ -3848,5 +3872,50 @@ mod tests {
                 "accepted unsafe clone flag {rejected:#x}"
             );
         }
+    }
+
+    /// A constructor-window allocation that misses the constructor heap fails
+    /// host initialization with OutOfMemory, ahead of `prepare`'s own result,
+    /// and the refusal names the heap, its capacity and the missed request.
+    #[test]
+    fn constructor_heap_miss_refuses_host_initialization_and_names_the_heap() {
+        struct ClearExhaustion;
+        impl Drop for ClearExhaustion {
+            fn drop(&mut self) {
+                crate::patch_alloc::clear_init_heap_exhaustion();
+            }
+        }
+
+        let _allocator_guard = crate::patch_alloc::allocator_test_guard();
+        assert!(!crate::patch_alloc::init_heap_exhausted());
+        let _clear = ClearExhaustion;
+        let high_water = crate::patch_alloc::init_heap_high_water();
+        // No size class holds more than 4 MiB, so the constructor heap misses
+        // this request without carving anything, and PatchAllocator falls
+        // back to the system allocator as it does in a guest.
+        let oversized = std::alloc::Layout::from_size_align(5 << 20, 8).unwrap();
+        let result = prepare_in_init_window(crate::patch_alloc::enter_init(), || {
+            // SAFETY: oversized has a nonzero size.
+            let pointer = std::hint::black_box(unsafe { std::alloc::alloc(oversized) });
+            assert!(!pointer.is_null());
+            // SAFETY: pointer was allocated above with oversized.
+            unsafe { std::alloc::dealloc(pointer, oversized) };
+            Err(std::io::Error::from_raw_os_error(libc::EIO))
+        });
+
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory, "{error}");
+        assert_eq!(error.raw_os_error(), None);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "LiteInst constructor heap exhausted during host-runtime preparation: \
+                 capacity 16777216 bytes, high-water mark {high_water} bytes, first \
+                 request it could not serve 5242880 bytes; that request went to the \
+                 system allocator, so the guest heap was touched before main"
+            )
+        );
+        // The explicit initializer reports it as -ENOMEM, not -EIO.
+        assert_eq!(crate::host_initialize_status(Err(error)), -libc::ENOMEM);
     }
 }
