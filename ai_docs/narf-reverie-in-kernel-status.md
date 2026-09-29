@@ -1,7 +1,7 @@
 # Narf: unmodified Reverie tools inside the kernel (status)
 
 Maintained by sub-narf-opus, a worker under the dev-hermit coordinator
-coord2. Last updated 2026-09-29 at 20:34Z. This file is the Narf lane's durable
+coord2. Last updated 2026-09-29 at 21:35Z. This file is the Narf lane's durable
 record from 2026-09-29 on.
 
 Narf is Daniel Hodges' kernel, https://github.com/hodgesds/narf. On
@@ -257,6 +257,31 @@ hodgesds/narf. Every Narf commit below is signed.
   - The feature alone (poc): 8 Reverie packages in the dependency tree,
     and 0 Reverie symbols in the image, which has neither kernel tests nor
     boot-init to host a Tool.
+  - Why the poc image changes when only the adapter changes (review-c3c
+    left this open: d18c6edd... at a2720197 against 56a6e2e6... at
+    c0ca7ead). Only symbol names and the build ID change
+    (`backend-6.3/r25/poc-hash/FINDING.md`):
+    - Reproduced at 502e7808 by adding one comment line to the adapter's
+      lib.rs. .text, .data and every debug section stay byte-identical.
+    - 46 kernel symbols get a new ThinLTO `.llvm.<n>` suffix, which changes
+      .symtab and .strtab.
+    - The only loaded bytes that change are 20 bytes of .rodata: the SHA-1
+      build-id note, which the linker computes over its whole output.
+    - Restoring the file and rebuilding gives the first image again.
+    - Between c0ca7ead and a2720197, likewise, 33 symbols differ, each only
+      in that suffix.
+    - No DWARF line-table row in the poc image names a Reverie or adapter
+      source file. The kt-poc control has live rows from 43 such files.
+    - The adapter is in the build only through the `extern crate` at
+      frame/src/bare_main.rs lines 37-38.
+    - The poc image's .text is 17,504 bytes larger than default's. One
+      kernel function, narf_filesystem::sysfs::kobject_add_attr, is
+      inlined differently and grows by 17,735 bytes; the other functions
+      net -228 bytes.
+    - Two build inputs of the kernel crates differ: narf-frame gains the
+      feature and the dependency, and Cargo builds bitflags 2.13.2 with its
+      serde features. Which of them changes that inlining was not
+      isolated.
   - The feature with a user of it: kt-poc links 2696 Reverie symbols
     (2310 at 2919a424) and musl-demo-poc 747 (745).
   - boot-smoke (`at-a2720197/boot-smoke.txt`): exit 0 in 3 s, 0 lines
