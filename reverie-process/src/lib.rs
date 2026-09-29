@@ -993,6 +993,237 @@ mod tests {
         );
     }
 
+    /// The launcher's `execve` must reach the kernel with the argument
+    /// registers that `execve` ignores (arg3..arg5: r10, r8 and r9) set to
+    /// zero. A ptrace tracer records all six argument registers at the seccomp
+    /// stop, so whatever the launcher's own code last left in them would
+    /// otherwise enter the recorded launch as host-dependent state.
+    ///
+    /// A SIGSYS handler observes the registers at the `execve` instruction:
+    /// the filter traps `execve`, the handler reports the three registers
+    /// through a pipe, and the child exits before any exec happens. The
+    /// `pre_exec` callback leaves a recognizable value in those registers, the
+    /// way arbitrary launcher code can.
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test]
+    async fn exec_zeroes_unused_argument_registers() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        use std::sync::atomic::AtomicI32;
+        use std::sync::atomic::Ordering;
+
+        use syscalls::Sysno;
+
+        use super::seccomp::*;
+
+        const POISON: u64 = 0x5a5a_0000_0000_0030;
+        static REPORT_FD: AtomicI32 = AtomicI32::new(-1);
+
+        extern "C" fn on_sigsys(
+            _sig: libc::c_int,
+            _info: *mut libc::siginfo_t,
+            ctx: *mut libc::c_void,
+        ) {
+            // SAFETY: SA_SIGINFO handlers receive a valid ucontext_t.
+            let gregs = unsafe { &(*(ctx as *const libc::ucontext_t)).uc_mcontext.gregs };
+            let words = [
+                gregs[libc::REG_R10 as usize] as u64,
+                gregs[libc::REG_R8 as usize] as u64,
+                gregs[libc::REG_R9 as usize] as u64,
+            ];
+            let fd = REPORT_FD.load(Ordering::Relaxed);
+            // SAFETY: write and _exit are async-signal-safe.
+            unsafe {
+                libc::write(fd, words.as_ptr() as *const libc::c_void, 24);
+                libc::_exit(0);
+            }
+        }
+
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (reader, writer) = (fds[0], fds[1]);
+        REPORT_FD.store(writer, Ordering::Relaxed);
+
+        let filter = FilterBuilder::new()
+            .default_action(Action::Allow)
+            .syscalls([(Sysno::execve, Action::Trap)])
+            .build();
+
+        let mut command = Command::new("/bin/true");
+        command.seccomp(filter);
+        // SAFETY: the callback only calls async-signal-safe sigaction and
+        // writes registers; it does not allocate.
+        unsafe {
+            command.pre_exec(|| {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = on_sigsys as *const () as usize;
+                action.sa_flags = libc::SA_SIGINFO;
+                if libc::sigaction(libc::SIGSYS, &action, std::ptr::null_mut()) != 0 {
+                    return Err(Errno::last());
+                }
+                std::arch::asm!(
+                    "mov r8, {poison}",
+                    "mov r9, {poison}",
+                    "mov r10, {poison}",
+                    poison = in(reg) POISON,
+                    out("r8") _,
+                    out("r9") _,
+                    out("r10") _,
+                );
+                Ok(())
+            });
+        }
+
+        let status = command.spawn().unwrap().wait().await.unwrap();
+        unsafe { libc::close(writer) };
+        let mut words = [0u64; 3];
+        let n = unsafe { libc::read(reader, words.as_mut_ptr() as *mut libc::c_void, 24) };
+        unsafe { libc::close(reader) };
+
+        assert_eq!(status, ExitStatus::SUCCESS);
+        assert_eq!(
+            n, 24,
+            "the SIGSYS handler did not report the execve registers"
+        );
+        assert_eq!(
+            words,
+            [0, 0, 0],
+            "execve reached the kernel with leftover launcher registers \
+             [r10, r8, r9] = [{:#x}, {:#x}, {:#x}]",
+            words[0],
+            words[1],
+            words[2],
+        );
+    }
+
+    /// `Command` resolves its program the way glibc's `execvpe(3)` does: the
+    /// `PATH` of the spawning process (default `/bin:/usr/bin`), an empty entry
+    /// meaning the current directory, `EACCES` remembered while the search
+    /// continues past `ENOENT` and `ENOTDIR`, any other error ending the
+    /// search, and a script without a shebang (`ENOEXEC`) run through
+    /// `/bin/sh`. The expected values are glibc's results, so this passes
+    /// whether the launcher calls glibc's `execvpe` or reimplements its search.
+    #[tokio::test]
+    async fn exec_path_search_matches_glibc_execvpe() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        const NAME: &str = "reverie-exec-probe";
+
+        // The directory holding this test binary is on a mount that allows
+        // exec, which the script cases need; a temporary directory may not be.
+        let exe = std::env::current_exe().unwrap();
+        let scratch = tempfile::tempdir_in(exe.parent().unwrap()).unwrap();
+        let make_dir = |name: &str| {
+            let dir = scratch.path().join(name);
+            fs::create_dir(&dir).unwrap();
+            dir
+        };
+        let empty = make_dir("empty");
+        let not_executable = make_dir("not-executable");
+        let script = make_dir("script");
+        let symlink_loop = make_dir("symlink-loop");
+        let regular_file = scratch.path().join("regular-file");
+        fs::write(&regular_file, "").unwrap();
+
+        let write_probe = |dir: &Path, mode: u32| {
+            let path = dir.join(NAME);
+            fs::write(&path, "exit 7\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        };
+        write_probe(&not_executable, 0o644);
+        // No shebang: `execve` fails with ENOEXEC and the shell runs it.
+        write_probe(&script, 0o755);
+        std::os::unix::fs::symlink(NAME, symlink_loop.join(NAME)).unwrap();
+
+        // The search reads PATH from this process, not from the child's
+        // environment. This test runs alone in its own process.
+        let set_path = |entries: &[&Path]| {
+            let value = entries
+                .iter()
+                .map(|entry| entry.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(":");
+            unsafe { std::env::set_var("PATH", value) };
+        };
+        let exec_error = |errno| Error::new(errno, Context::Exec);
+
+        assert_eq!(
+            Command::new("").spawn().unwrap_err(),
+            exec_error(Errno::ENOENT),
+            "an empty program name"
+        );
+        assert_eq!(
+            Command::new("x".repeat(libc::NAME_MAX as usize + 1))
+                .spawn()
+                .unwrap_err(),
+            exec_error(Errno::ENAMETOOLONG),
+            "a program name longer than NAME_MAX"
+        );
+
+        set_path(&[&empty]);
+        assert_eq!(
+            Command::new(NAME).spawn().unwrap_err(),
+            exec_error(Errno::ENOENT),
+            "a program that is on no PATH entry"
+        );
+
+        set_path(&[&not_executable, &empty]);
+        assert_eq!(
+            Command::new(NAME).spawn().unwrap_err(),
+            exec_error(Errno::EACCES),
+            "EACCES from an earlier entry outranks a later ENOENT"
+        );
+
+        set_path(&[&symlink_loop, &script]);
+        assert_eq!(
+            Command::new(NAME).spawn().unwrap_err(),
+            exec_error(Errno::ELOOP),
+            "an error other than EACCES, ENOENT or ENOTDIR ends the search"
+        );
+
+        set_path(&[&not_executable, &regular_file, &script]);
+        assert_eq!(
+            Command::new(NAME).spawn().unwrap().wait().await.unwrap(),
+            ExitStatus::Exited(7),
+            "the search continues past EACCES and ENOTDIR to a script without a shebang"
+        );
+
+        set_path(&[&empty, Path::new("")]);
+        assert_eq!(
+            Command::new(NAME)
+                .current_dir(&script)
+                .spawn()
+                .unwrap()
+                .wait()
+                .await
+                .unwrap(),
+            ExitStatus::Exited(7),
+            "an empty PATH entry means the current directory"
+        );
+
+        assert_eq!(
+            Command::new(script.join(NAME))
+                .spawn()
+                .unwrap()
+                .wait()
+                .await
+                .unwrap(),
+            ExitStatus::Exited(7),
+            "a name containing a slash is executed without a search"
+        );
+
+        unsafe { std::env::remove_var("PATH") };
+        assert_eq!(
+            Command::new("true").spawn().unwrap().wait().await.unwrap(),
+            ExitStatus::Exited(0),
+            "an unset PATH defaults to /bin:/usr/bin"
+        );
+    }
+
     #[tokio::test]
     async fn seccomp_notify() {
         if crate::test_runs_in_own_process() {
