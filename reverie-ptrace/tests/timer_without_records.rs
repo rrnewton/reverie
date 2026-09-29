@@ -38,6 +38,7 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::PmuConfig;
 use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::KeptTimerProgrammingChecks;
 use reverie_ptrace::testing::assert_at_target_unless_witnessed;
 use reverie_ptrace::testing::check_fn_with_config;
 use reverie_ptrace::testing::disable_timer_overflow_records;
@@ -102,13 +103,16 @@ impl Tool for PreciseTimerTool {
     }
 }
 
-/// The skid witness counter is process global; each case that reads it owns
-/// it while it runs.
+/// The skid witness counter and the kept programming checks are process
+/// global; each case that reads them owns them while it runs.
 static WITNESS: Mutex<()> = Mutex::new(());
 
 /// Runs `guest` under the Tool, with no overflow records, and returns the
-/// clock from the request to each timer event and the skid witnesses.
-fn run(guest: impl FnOnce() + Send + 'static) -> (Vec<u64>, u64) {
+/// clock from the request to each timer event, the skid witnesses, and the
+/// traps that kept the event, each of which must have left its programming
+/// as the request made it, at the trap and at the thread's next stop (see
+/// `KeptTimerProgrammingChecks`).
+fn run(guest: impl FnOnce() + Send + 'static) -> (Vec<u64>, u64, u64) {
     // Checks that a re-run's skid margin override is in effect.
     let _ = rerun_skid_margin();
     disable_timer_overflow_records();
@@ -116,10 +120,13 @@ fn run(guest: impl FnOnce() + Send + 'static) -> (Vec<u64>, u64) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = reverie::take_skid_overshoot_count();
+    let checks = KeptTimerProgrammingChecks::start();
     let events = check_fn_with_config::<PreciseTimerTool, _>(guest, (), true);
+    let keeps = checks.keeps();
     (
         events.0.into_inner().unwrap(),
         reverie::take_skid_overshoot_count(),
+        keeps,
     )
 }
 
@@ -186,11 +193,15 @@ fn int3_loop(rounds: u64) {
 #[test]
 fn a_trap_before_the_period_does_not_cancel_the_timer() {
     ret_without_perf!();
-    let (events, witnesses) = run(|| {
+    let (events, witnesses, keeps) = run(|| {
         request();
         unsafe { core::arch::asm!("int3") };
         do_branches(2 * PERF_RCBS);
     });
+    assert_eq!(
+        keeps, 1,
+        "the trap must keep the event, with its programming unchanged"
+    );
     assert_eq!(events.len(), 1, "the timer must fire once: {events:?}");
     assert_at_target_unless_witnessed(&events, PERF_RCBS, witnesses);
 }
@@ -204,7 +215,7 @@ fn a_trap_before_the_period_does_not_cancel_the_timer() {
 #[test]
 fn a_trap_past_the_target_cancels_the_timer() {
     ret_without_perf!();
-    let (events, witnesses) = run(|| {
+    let (events, witnesses, keeps) = run(|| {
         mask_timer_signal(libc::SIG_BLOCK);
         request();
         do_branches(2 * PERF_RCBS);
@@ -212,6 +223,7 @@ fn a_trap_past_the_target_cancels_the_timer() {
         mask_timer_signal(libc::SIG_UNBLOCK);
         do_branches(PERF_RCBS);
     });
+    assert_eq!(keeps, 0, "the trap must not keep the event");
     assert_eq!(
         events,
         Vec::<u64>::new(),
@@ -227,7 +239,7 @@ fn a_trap_past_the_target_cancels_the_timer() {
 #[test]
 fn a_trap_past_the_period_cancels_the_timer() {
     ret_without_perf!();
-    let (events, witnesses) = run(|| {
+    let (events, witnesses, keeps) = run(|| {
         mask_timer_signal(libc::SIG_BLOCK);
         request();
         do_branches(PERF_RCBS - 2);
@@ -235,6 +247,7 @@ fn a_trap_past_the_period_cancels_the_timer() {
         mask_timer_signal(libc::SIG_UNBLOCK);
         do_branches(PERF_RCBS);
     });
+    assert_eq!(keeps, 0, "the trap must not keep the event");
     assert_eq!(
         events,
         Vec::<u64>::new(),
@@ -254,12 +267,13 @@ fn a_trap_past_the_period_cancels_the_timer() {
 #[test]
 fn a_trap_among_the_single_steps_cancels_the_timer() {
     ret_without_perf!();
-    let (events, witnesses) = run(|| {
+    let (events, witnesses, keeps) = run(|| {
         request();
         do_branches(PERF_RCBS - 2);
         unsafe { core::arch::asm!("int3") };
         do_branches(PERF_RCBS);
     });
+    assert_eq!(keeps, 0, "the trap must not keep the event");
     assert_eq!(
         events,
         Vec::<u64>::new(),
@@ -277,7 +291,14 @@ fn a_trap_among_the_single_steps_cancels_the_timer() {
 #[test]
 fn the_first_trap_near_the_target_cancels_the_timer_in_a_loop_that_traps_in_every_round() {
     ret_without_perf!();
-    let (events, witnesses) = run(|| int3_loop(2 * PERF_RCBS));
+    let (events, witnesses, keeps) = run(|| int3_loop(2 * PERF_RCBS));
+    // Each trap short of the keep point keeps the event, one per branch from
+    // the request's clock on, on every processor in the table.
+    assert_eq!(
+        keeps,
+        keep_point(),
+        "each trap short of the keep point must keep the event, with its programming unchanged"
+    );
     assert_eq!(
         events,
         Vec::<u64>::new(),
@@ -308,12 +329,13 @@ const TRAP_SLACK: u64 = 200;
 fn a_trap_just_past_the_keep_point_cancels_the_timer() {
     ret_without_perf!();
     let branches = keep_point() + TRAP_SLACK;
-    let (events, witnesses) = run(move || {
+    let (events, witnesses, keeps) = run(move || {
         request();
         do_branches(branches);
         unsafe { core::arch::asm!("int3") };
         do_branches(PERF_RCBS);
     });
+    assert_eq!(keeps, 0, "the trap must not keep the event");
     assert_eq!(
         events,
         Vec::<u64>::new(),
@@ -329,12 +351,16 @@ fn a_trap_just_past_the_keep_point_cancels_the_timer() {
 fn a_trap_just_short_of_the_keep_point_keeps_the_timer() {
     ret_without_perf!();
     let branches = keep_point() - 2 * TRAP_SLACK;
-    let (events, witnesses) = run(move || {
+    let (events, witnesses, keeps) = run(move || {
         request();
         do_branches(branches);
         unsafe { core::arch::asm!("int3") };
         do_branches(2 * PERF_RCBS);
     });
+    assert_eq!(
+        keeps, 1,
+        "the trap must keep the event, with its programming unchanged"
+    );
     assert_eq!(events.len(), 1, "the timer must fire once: {events:?}");
     assert_at_target_unless_witnessed(&events, PERF_RCBS, witnesses);
 }

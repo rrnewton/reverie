@@ -94,11 +94,27 @@ pub use crate::timer::KeptProgramming;
 /// Makes the timers of this process check, from now on, at every disregarded
 /// stop (a stop without a Tool callback, such as a LiteInst hook trap) that
 /// keeps a scheduled timer event whose request programmed a PMU notification,
-/// that the stop left that programming as the request made it: that the
+/// that the stop left that programming as the request made it: that no call
+/// that changes the counter's programming (enable, disable, refresh, reset,
+/// period or signal delivery) was made on it since the request, and that the
 /// counter still overflows at the clock at which the request programmed it
-/// to, the target less the skid margin for a precise event. A stop that
-/// re-programmed or reset the counter would move that clock, and the event
-/// would fire late. The check reads both counters once per such stop.
+/// to, the target less the skid margin for a precise event. The check reads
+/// both counters once per such stop.
+///
+/// A stop whose check passes and that hands nothing on is checked again at
+/// the thread's next stop, or at the event's next request, cancellation or
+/// retirement, or the thread's exit, if that comes first: that no such call
+/// was made since the request, which covers the rest of the stop's handling
+/// until the guest resumed (see [`kept_timer_programmings_rechecked`]). A
+/// stop that hands the kept event on, as single steps or a notification it
+/// found lost, is not checked again, since the steps that finish the event
+/// re-program the counter (see [`kept_timer_programmings_handed_on`]).
+///
+/// Neither check covers artificial-signal events, whose request programmed no
+/// notification, or stops during single steps, which keep no programming.
+/// The recheck does not cover a thread killed before its next stop is
+/// handled, or a change made to the counter's descriptor other than through
+/// Reverie's counter calls, of which Reverie makes none.
 pub fn check_kept_timer_programming() {
     crate::timer::KEPT_PROGRAMMING_CHECKS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
@@ -110,8 +126,26 @@ pub fn kept_timer_programmings_checked() -> u64 {
     crate::timer::KEPT_PROGRAMMINGS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The number of kept timer events whose check (see
-/// [`check_kept_timer_programming`]) found their counter overflowing at
+/// The number of kept timer events whose programming this process has
+/// checked again at the thread's next stop (see
+/// [`check_kept_timer_programming`]). Concurrent tests in one process share
+/// the count.
+pub fn kept_timer_programmings_rechecked() -> u64 {
+    crate::timer::KEPT_PROGRAMMINGS_RECHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of kept timer events whose programming this process has
+/// checked at the stop that kept them, where that stop handed the event on
+/// to be finished by single steps, or failed, so that the thread's next
+/// stop did not check it again (see [`check_kept_timer_programming`]).
+/// Concurrent tests in one process share the count.
+pub fn kept_timer_programmings_handed_on() -> u64 {
+    crate::timer::KEPT_PROGRAMMINGS_HANDED_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of checks and rechecks of kept timer events (see
+/// [`check_kept_timer_programming`]) that found their counter programmed
+/// since their request, or, at the stop that kept the event, overflowing at
 /// another clock than their request programmed, or not at all. Concurrent
 /// tests in one process share the count.
 pub fn kept_timer_programmings_changed() -> u64 {
@@ -127,6 +161,82 @@ pub fn take_kept_timer_programmings_changed() -> Vec<KeptProgramming> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
+}
+
+/// The kept timer events whose PMU programming this process checked from
+/// [`KeptTimerProgrammingChecks::start`] on (see
+/// [`check_kept_timer_programming`]). The counts are process global, so a
+/// test that uses this must not run concurrently with another timer test in
+/// the same process.
+#[derive(Debug)]
+pub struct KeptTimerProgrammingChecks {
+    checked: u64,
+    rechecked: u64,
+    handed_on: u64,
+    changed: u64,
+}
+
+impl KeptTimerProgrammingChecks {
+    /// Starts checking kept programmings (see
+    /// [`check_kept_timer_programming`]), and counting from here.
+    pub fn start() -> Self {
+        check_kept_timer_programming();
+        let _ = take_kept_timer_programmings_changed();
+        Self {
+            checked: kept_timer_programmings_checked(),
+            rechecked: kept_timer_programmings_rechecked(),
+            handed_on: kept_timer_programmings_handed_on(),
+            changed: kept_timer_programmings_changed(),
+        }
+    }
+
+    /// Asserts, as [`KeptTimerProgrammingChecks::keeps_and_handed_on`] does,
+    /// that no check or recheck found a kept event's programming changed and
+    /// that every kept event checked at its stop was checked again after it
+    /// or handed on, and also that none was handed on, so that every kept
+    /// event was checked again. Returns the kept events checked.
+    pub fn keeps(self) -> u64 {
+        let (checked, handed_on) = self.keeps_and_handed_on();
+        assert_eq!(
+            handed_on, 0,
+            "no stop that kept an event may have handed it on to single steps, or failed"
+        );
+        checked
+    }
+
+    /// Asserts that no check or recheck since [`KeptTimerProgrammingChecks::start`]
+    /// found a kept event's programming changed, and that every kept event
+    /// checked at its stop was either checked again after it or handed on by
+    /// that stop, to single steps or a lost notification that the steps
+    /// finish, prints the counts, and returns how many kept events were
+    /// checked, the stops that kept a scheduled event whose request
+    /// programmed a PMU notification, and how many of those were handed on.
+    pub fn keeps_and_handed_on(self) -> (u64, u64) {
+        let checked = kept_timer_programmings_checked() - self.checked;
+        let rechecked = kept_timer_programmings_rechecked() - self.rechecked;
+        let handed_on = kept_timer_programmings_handed_on() - self.handed_on;
+        let changed = kept_timer_programmings_changed() - self.changed;
+        let listed = take_kept_timer_programmings_changed();
+        assert!(
+            changed == 0 && listed.is_empty(),
+            "{changed} of {checked} checks and {rechecked} rechecks of kept timer events found \
+             their PMU programming changed by the stop that kept them, or by its handling \
+             before the thread's next stop, which must leave the counter programmed as the \
+             request programmed it: {listed:?}"
+        );
+        assert_eq!(
+            rechecked + handed_on,
+            checked,
+            "every kept event whose programming was checked at its stop must be checked again \
+             after the stop, unless the stop handed it on: {rechecked} checked again and \
+             {handed_on} handed on"
+        );
+        eprintln!(
+            "kept events whose programming was checked unchanged: {checked}, and again after \
+             the stop: {rechecked}, handed on to single steps: {handed_on}"
+        );
+        (checked, handed_on)
+    }
 }
 
 /// Checks that each of a run's precise timer events that a PMU notification

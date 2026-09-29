@@ -36,6 +36,7 @@ fn paused_fixture() -> (
         mmap: Some(NonNull::from(page.as_mut())),
         records: None,
         raw_syscall: Some(paused_read_gate),
+        programmings: std::sync::atomic::AtomicU64::new(0),
     });
     (page, counter)
 }

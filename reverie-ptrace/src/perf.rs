@@ -89,6 +89,9 @@ pub struct PerfCounter {
     mmap: Option<NonNull<perf::perf_event_mmap_page>>,
     records: Option<SampleRecords>,
     raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+    /// Calls on this counter that change its programming, successful or not
+    /// (see [`PerfCounter::programmings`]).
+    programmings: std::sync::atomic::AtomicU64,
 }
 
 /// A ring buffer mapping that receives the sample records of a counter.
@@ -321,6 +324,7 @@ impl Builder {
             mmap,
             records: None,
             raw_syscall,
+            programmings: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -341,9 +345,27 @@ impl PerfCounter {
     /// and sampling.
     pub const DISABLE_SAMPLE_PERIOD: u64 = 1 << 60;
 
+    /// The number of calls on this counter so far that change its
+    /// programming: [`PerfCounter::enable`], [`PerfCounter::disable`],
+    /// [`PerfCounter::refresh`], [`PerfCounter::reset`],
+    /// [`PerfCounter::set_period`] and [`PerfCounter::set_signal_delivery`],
+    /// each counted before its syscall, whether or not it succeeds. Two equal
+    /// counts show that no such call was made between them. The timer uses
+    /// this to check that a stop that keeps a timer event leaves the event's
+    /// programming as its request made it.
+    pub(crate) fn programmings(&self) -> u64 {
+        self.programmings.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn count_programming(&self) {
+        self.programmings
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Enables increments of the
     /// counter and event generation.
     pub fn enable(&self) -> Result<(), Errno> {
+        self.count_programming();
         if let Some(raw_syscall) = self.raw_syscall {
             Errno::from_ret(unsafe {
                 raw_syscall(
@@ -360,12 +382,14 @@ impl PerfCounter {
     /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Disables increments of the
     /// counter and event generation.
     pub fn disable(&self) -> Result<(), Errno> {
+        self.count_programming();
         Errno::result(unsafe { ioctls::DISABLE(self.fd, 0) }).and(Ok(()))
     }
 
     /// Corresponds exactly to the `PERF_EVENT_IOC_REFRESH` ioctl.
     #[allow(dead_code)]
     pub fn refresh(&self, count: libc::c_int) -> Result<(), Errno> {
+        self.count_programming();
         assert!(count != 0); // 0 is undefined behavior
         Errno::result(unsafe { ioctls::REFRESH(self.fd, 0) }).and(Ok(()))
     }
@@ -373,6 +397,7 @@ impl PerfCounter {
     /// Call the `PERF_EVENT_IOC_RESET` ioctl. Resets the counter value to 0,
     /// which results in delayed overflow events.
     pub fn reset(&self) -> Result<(), Errno> {
+        self.count_programming();
         if let Some(raw_syscall) = self.raw_syscall {
             Errno::from_ret(unsafe {
                 raw_syscall(
@@ -390,6 +415,7 @@ impl PerfCounter {
     /// behave as if `ticks` was the original argument to `sample_period` in
     /// the builder.
     pub fn set_period(&self, ticks: u64) -> Result<(), Errno> {
+        self.count_programming();
         // The bindings are wrong for this ioctl. The method signature takes a
         // u64, but the actual ioctl expects a pointer to a u64. Thus, we use
         // the constant manually.
@@ -416,6 +442,7 @@ impl PerfCounter {
     /// There is no reason this couldn't be called at any point, but typial use
     /// cases will set up signal delivery once or not at all.
     pub fn set_signal_delivery(&self, thread: Tid, signal: Signal) -> Result<(), Errno> {
+        self.count_programming();
         let owner = f_owner_ex {
             type_: F_OWNER_TID,
             pid: thread.as_raw(),
@@ -1313,6 +1340,7 @@ pub(crate) mod terminal_close_tests {
             mmap: Some(NonNull::new(mapping.cast()).unwrap()),
             records: None,
             raw_syscall: Some(raw_syscall),
+            programmings: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
