@@ -33,6 +33,7 @@ pub(super) mod fatal_capacity_tests {
     enum CapacityFault {
         None,
         RetainSixOwners,
+        RetainThreeOwners,
         HoldOneExitHook,
     }
 
@@ -59,7 +60,12 @@ pub(super) mod fatal_capacity_tests {
                 assert_eq!(Some(task.tid), state.root, "first registration is the root");
             } else {
                 assert_ne!(Some(task.tid), state.root, "root registered twice");
-                if state.fault == CapacityFault::RetainSixOwners && state.retained.len() < 6 {
+                let retain = match state.fault {
+                    CapacityFault::RetainSixOwners => 6,
+                    CapacityFault::RetainThreeOwners => 3,
+                    _ => 0,
+                };
+                if state.retained.len() < retain {
                     state.retained.push(Arc::clone(task));
                 }
             }
@@ -272,6 +278,7 @@ pub(super) mod fatal_capacity_tests {
         let fault = match std::env::var("REVERIE_FATAL_CAPACITY_FAULT").as_deref() {
             Err(std::env::VarError::NotPresent) => CapacityFault::None,
             Ok("retain-six-owners") => CapacityFault::RetainSixOwners,
+            Ok("retain-three-owners") => CapacityFault::RetainThreeOwners,
             Ok("hold-one-exit-hook") => CapacityFault::HoldOneExitHook,
             other => panic!("unknown capacity fault: {other:?}"),
         };
@@ -403,6 +410,10 @@ pub(super) mod fatal_capacity_tests {
         // Fixed headroom accounts for the original task/hook completing beside
         // the next marker. It cannot hide the 3/4-fd-per-task baseline slope.
         let baseline = captured[0].1;
+        let maximum_immediate = captured.iter().map(|sample| sample.1).max().unwrap();
+        eprintln!(
+            "capacity fd bounds: baseline={baseline}, maximum_immediate={maximum_immediate}, steady_fds={steady_fds:?}"
+        );
         assert!(
             captured.iter().all(|sample| sample.1 <= baseline + 8),
             "retired tasks retained descriptors: {captured:?}"
@@ -442,8 +453,17 @@ pub(super) mod fatal_capacity_tests {
         let _remaining = fatal_remaining(deadline);
     }
 
-    fn capacity_negative_control(fault: &str, failures: &[&str], checkpoint: &str) -> String {
-        let name = "tracer::tests::fatal_capacity_tests::retired_threads_release_descriptors_under_reduced_nofile";
+    fn capacity_negative_control(
+        threads: bool,
+        fault: &str,
+        failure: &str,
+        checkpoint: &str,
+    ) -> String {
+        let name = if threads {
+            "tracer::tests::fatal_capacity_tests::retired_threads_release_descriptors_under_reduced_nofile"
+        } else {
+            "tracer::tests::fatal_capacity_tests::retired_processes_release_descriptors_under_reduced_nofile"
+        };
         // Enter the same isolated predicate directly. Its original shared 3s
         // deadline still begins before this re-exec; retain the literal red.
         let deadline = fatal_monotonic_ns() + 3_000_000_000;
@@ -480,31 +500,141 @@ pub(super) mod fatal_capacity_tests {
             "wrong retirement boundary: {stderr}"
         );
         assert!(
-            failures.iter().any(|failure| stderr.contains(failure)),
+            stderr.contains(failure),
             "wrong original predicate failed: {stderr}"
         );
         stderr
     }
 
+    // CleanupPending and UnsupportedBackend reach the same generic deadline
+    // panic. Qualify the unique original outcome, before rescue can alter it.
+    fn capacity_original_timeout_before_rescue(stderr: &str) -> bool {
+        let mut originals = stderr
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("capacity original predicate:"));
+        let Some((original_line, original)) = originals.next() else {
+            return false;
+        };
+        if originals.next().is_some()
+            || !original.ends_with(", outcome=Timeout(deadline has elapsed)")
+        {
+            return false;
+        }
+        stderr
+            .lines()
+            .position(|line| line.starts_with("capacity rescue only:"))
+            .is_some_and(|rescue_line| original_line < rescue_line)
+    }
+
+    #[test]
+    fn stalled_hook_control_rejects_non_timeout_original_outcomes() {
+        let stderr = |outcome| {
+            format!(
+                "capacity original predicate: threads=true, soft_nofile=128, required_tasks=96, samples=[], outcome={outcome}\n\
+                 capacity rescue only: completed=true\n\
+                 capacity did not complete under the original shared 3s deadline: {outcome}\n"
+            )
+        };
+        assert!(capacity_original_timeout_before_rescue(&stderr(
+            "Timeout(deadline has elapsed)"
+        )));
+        for outcome in [
+            "Pending(backend failure)",
+            "Pending(Timeout(deadline has elapsed))",
+            "UnsupportedBackend",
+            "Complete(Ok(output))",
+        ] {
+            assert!(
+                !capacity_original_timeout_before_rescue(&stderr(outcome)),
+                "non-timeout original outcome accepted: {outcome}"
+            );
+        }
+    }
+
+    #[test]
+    fn stalled_hook_control_requires_unique_pre_rescue_outcome() {
+        let original = "capacity original predicate: threads=true, soft_nofile=128, required_tasks=96, samples=[], outcome=Timeout(deadline has elapsed)\n";
+        let rescue = "capacity rescue only: completed=true\n";
+        assert!(capacity_original_timeout_before_rescue(&format!(
+            "{original}{rescue}"
+        )));
+        for stderr in [
+            original.to_owned(),
+            rescue.to_owned(),
+            format!("{rescue}{original}"),
+            format!("{original}{original}{rescue}"),
+            format!("{original}{rescue}{original}"),
+        ] {
+            assert!(
+                !capacity_original_timeout_before_rescue(&stderr),
+                "ambiguous or missing pre-rescue outcome accepted: {stderr}"
+            );
+        }
+    }
+
     #[test]
     fn retained_child_owners_falsify_capacity_bound() {
         let stderr = capacity_negative_control(
+            true,
             "retain-six-owners",
-            &[
-                "retired tasks retained descriptors",
-                "descriptor count did not return to the initial steady state",
-            ],
+            "retired tasks retained descriptors",
             "capacity retirement checkpoint: registered=97, completed=96, retained=6, held_hook=false, steady_fds=Some(",
         );
         assert!(!stderr.contains("capacity rescue only:"));
     }
 
     #[test]
+    fn three_retained_process_owners_falsify_final_steady_state_bound() {
+        // The first retained owner's descriptors are already in the first
+        // sample. Three owners leave two additional pairs: above +2, within
+        // +8. Check the actual measurements; do not assume that accounting.
+        // Use the process fixture for this additional final-bound control;
+        // the existing thread fixture and its overlap checks stay unchanged.
+        let failure = "descriptor count did not return to the initial steady state";
+        let stderr = capacity_negative_control(
+            false,
+            "retain-three-owners",
+            failure,
+            "capacity retirement checkpoint: registered=97, completed=96, retained=3, held_hook=false, steady_fds=Some(",
+        );
+        assert!(!stderr.contains("capacity rescue only:"));
+        assert!(!stderr.contains("retired tasks retained descriptors"));
+        assert_eq!(stderr.lines().filter(|line| *line == failure).count(), 1);
+        let mut bounds = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("capacity fd bounds: baseline="));
+        let bound = bounds.next().expect("missing original fd measurements");
+        assert!(
+            bounds.next().is_none(),
+            "duplicate original fd measurements"
+        );
+        let (baseline, rest) = bound.split_once(", maximum_immediate=").unwrap();
+        let (maximum_immediate, steady_fds) = rest.split_once(", steady_fds=Some(").unwrap();
+        let baseline: usize = baseline.parse().unwrap();
+        let maximum_immediate: usize = maximum_immediate.parse().unwrap();
+        let steady_fds: usize = steady_fds.strip_suffix(')').unwrap().parse().unwrap();
+        assert!(
+            maximum_immediate <= baseline + 8,
+            "final-bound control exceeded the unchanged immediate bound: {bound}"
+        );
+        assert!(
+            steady_fds > baseline + 2 && steady_fds <= baseline + 8,
+            "retained owners did not isolate the final +2 bound: {bound}"
+        );
+    }
+
+    #[test]
     fn nonretiring_child_hook_falsifies_original_deadline() {
         let stderr = capacity_negative_control(
+            true,
             "hold-one-exit-hook",
-            &["capacity did not complete under the original shared 3s deadline"],
+            "capacity did not complete under the original shared 3s deadline",
             "capacity retirement checkpoint: registered=97, completed=95, retained=0, held_hook=true, steady_fds=None",
+        );
+        assert!(
+            capacity_original_timeout_before_rescue(&stderr),
+            "stalled hook did not produce a unique original timeout before rescue: {stderr}"
         );
         assert!(stderr.contains("capacity rescue only: completed=true"));
     }
