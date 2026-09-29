@@ -101,6 +101,12 @@ REQUIRED: dict[str, str] = {
     # failed was a docstring: this entry is what makes the mechanism itself
     # non-removable, which is the same argument as the line above.
     "deleted_tool_absent": "deliberately-deleted tools reappearing on disk",
+    # The owner directive of 2026-09-28: the website build always happens and a
+    # failed rebuild warns. The two gates that preceded this pair exited 75 on
+    # every run for six days while the site went stale
+    # (https://github.com/rrnewton/dev-hermit/issues/394).
+    "site_rebuild_health": "compatibility website rebuild failures and a stopped builder",
+    "site_data_freshness": "stale published website data and silently excluded rows",
 }
 
 def _protected_shape(
@@ -230,6 +236,55 @@ REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
             "orphaned Hermit/test processes are running unowned: {summary}"
         ),
     ),
+}
+
+# The two website gates are pinned as literal rows rather than through
+# _protected_shape(): site_rebuild_health deliberately carries no timeout_secs
+# (tick-hub's 30 s default applies; measured 2.1 s on 2026-09-28), and both
+# emit an `outcome` field, which the helper does not model. Cadence 0 is
+# tick-hub's EVERY_TICK; see the comment above them in tick-hub.yaml for why a
+# 1800 s cadence let a tick skip them and still enqueue kind=resolve.
+REQUIRED_GATE_SHAPES["site_rebuild_health"] = {
+    "name": "site_rebuild_health",
+    "cadence_secs": 0,
+    "gate": {
+        "cmd": (
+            "./ci-hub/health/site_rebuild_health.py --gate --dispatch "
+            '--state "$DEV_HERMIT_PARENT/.tick-hub/site-rebuild-health.json"'
+        ),
+        "when": "failure",
+        "capture": True,
+    },
+    "emit": {
+        "kind": "action",
+        "skill": "hard-warn-coordinator",
+        "fields": {"component": "site-rebuild", "outcome": "{outcome_key}"},
+        "title": "compatibility website rebuild needs attention: {summary}",
+    },
+}
+REQUIRED_GATE_SHAPES["site_data_freshness"] = {
+    "name": "site_data_freshness",
+    "cadence_secs": 0,
+    "gate": {
+        "timeout_secs": 180,
+        "cmd": (
+            "./ci-hub/health/site_data_freshness.py --gate "
+            '--state "$DEV_HERMIT_PARENT/.tick-hub/site-data-freshness.json"'
+        ),
+        "when": "failure",
+        "capture": True,
+    },
+    "emit": {
+        "kind": "action",
+        "skill": "hard-warn-coordinator",
+        "fields": {
+            "component": "site-data",
+            "outcome": "{outcome_key}",
+            "excluded_not_in_manifest": "{excluded_not_in_manifest}",
+            "excluded_unaccepted": "{excluded_unaccepted}",
+        },
+        "title": "compatibility website data needs attention: {summary}",
+    },
 }
 
 DEFAULT_CONFIG = "ci-hub/health/tick-hub.yaml"

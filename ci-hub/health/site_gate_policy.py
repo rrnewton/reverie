@@ -14,16 +14,19 @@ round-1 review of https://github.com/rrnewton/dev-hermit/issues/394 named both:
 
 THE POLICY
   warning  every evaluation in a warning state fires (exit 1), so tick-hub emits
-           the gate's own action at the reminder's cadence for as long as the
-           condition lasts. The outcome key and the time it last changed are
-           kept, so every page says since when the warning has held.
+           the gate's own action on every evaluation for as long as the
+           condition lasts. Both site gates run on every tick (cadence_secs: 0
+           in tick-hub.yaml), so that is every scheduled and every manual tick.
+           The outcome key and the time it last changed are kept, so every page
+           says since when the warning has held.
   quiet    a quiet key (`current`) is recorded and does not fire.
   unknown  the first UNKNOWN_LIMIT - 1 consecutive unknown evaluations exit 75,
-           as before. tick-hub reruns a gate that returned no result on the next
-           30-minute tick, without waiting for the cadence. The UNKNOWN_LIMIT-th
-           consecutive one, and every one after it, FIRES the gate's own warning
-           with state `unknown`. A real verdict resets the count. An unknown
-           evaluation never overwrites the last real outcome key.
+           as before, and tick-hub prints its generic no-signal action. The
+           count is of evaluations, not of scheduled ticks: a manual tick
+           advances it too. The UNKNOWN_LIMIT-th consecutive one, and every one
+           after it, FIRES the gate's own warning with state `unknown`. A real
+           verdict resets the count. An unknown evaluation never overwrites the
+           last real outcome key.
 
 THE PAGE TEXT IS STABLE WHILE THE CONDITION IS. The persistence clause names
 the time the condition began, not its age or an evaluation count, so an

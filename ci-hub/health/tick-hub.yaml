@@ -758,10 +758,20 @@ reminders:
   # condition has held; the first two consecutive unknown evaluations still exit
   # 75 (tick-hub reruns those on the next tick without waiting for the cadence),
   # and the third and later ones fire the gate's own `unknown-persistent`
-  # warning. The 1800 s cadence evaluates them on every 30-minute tick that is
-  # at least 1800 s after the previous evaluation; a tick that starts a few
-  # seconds early skips them once, so a persisting warning is re-raised at least
-  # hourly and usually every tick.
+  # warning.
+  #
+  # BOTH RUN ON EVERY TICK (cadence_secs: 0, tick-hub's EVERY_TICK). The
+  # round-2 review found that the previous 1800 s cadence aliased with the
+  # 30-minute timer: observed tick intervals are 1790-1811 s, so a tick that
+  # started even a second under 1800 s after the last evaluation skipped both
+  # gates, and a tick that skips a gate emits no ACTION for it -- so a complete
+  # tick with no other finding enqueued kind=resolve while the site condition
+  # still held. At cadence 0 no tick, scheduled or manual, runs without them: a
+  # warning (exit 1), a NO-SIGNAL unknown (exit 75) and a timeout each emit an
+  # ACTION or ERROR line, so a tick can only resolve after both gates read
+  # current. The real re-raise interval is therefore the tick interval,
+  # 1790-1811 s when scheduled. chat_bridge_resource_health still uses
+  # cadence 1800 and has the same aliasing; it is outside this pair.
   #
   # REPLACES site_publication_lag_note and site_publication_lag_escalation. Both
   # grepped the live page for "Source validation run"/"Run finished", text the
@@ -770,7 +780,7 @@ reminders:
   # site_publication_lag.py, is deleted; site_data_freshness measures what it
   # meant to, from build.json instead of page text.
   - name: site_rebuild_health
-    cadence_secs: 1800
+    cadence_secs: 0
     gate:
       cmd: ./ci-hub/health/site_rebuild_health.py --gate --dispatch --state "$DEV_HERMIT_PARENT/.tick-hub/site-rebuild-health.json"
       when: failure
@@ -788,19 +798,25 @@ reminders:
   # by SHA-256 (never page text), and the validation ledger in this tool root.
   # Warns when the newest terminal validation row the build could have admitted
   # on a main commit is more than 24 h newer than the newest published
-  # measurement, and whenever a series row is excluded because its cell is
-  # missing from the builder's manifest (dev-hermit d262eae6bc made that an
-  # exclusion instead of a refusal, and nothing counted it). Every warning names
-  # the exclusion counts by reason: no admitted terminal row, series schema, and
-  # cell not in the manifest. First reading, 2026-09-28T21:16Z: STALE, data as
-  # of 2026-09-22T14:16:37Z against RUN 1950 (hermit 1bd45c15f3, finished
+  # measurement (a run that finished after the build started counts once it is
+  # 36 h old, so a stopped builder reads stale here too); whenever a series row
+  # is excluded because its cell is missing from the builder's manifest
+  # (dev-hermit d262eae6bc made that an exclusion instead of a refusal, and
+  # nothing counted it); and whenever a series row is excluded for any reason
+  # outside the accepted three (no admitted terminal row, series schema older
+  # than v3, stress-series/v1 host facts). Every warning names the exclusion
+  # counts by reason. It is `unknown`, never current, when build.json names an
+  # input this gate does not scan or one that the tool-root ledger does not
+  # extend, and when the scanned ledger has had no hermit run.result row for
+  # 48 h. First reading, 2026-09-28T21:16Z: STALE, data as of
+  # 2026-09-22T14:16:37Z against RUN 1950 (hermit 1bd45c15f3, finished
   # 2026-09-28T18:38:52Z, left unfinalized by the build), 148.4 h; 48709 of
-  # 97580 series rows excluded, 0 of them for a missing manifest cell.
-  # The published data and the site are external state ORC cannot observe.
-  # 3.1 s measured for one evaluation (three downloads, 35 MB); the script's own
-  # 150 s budget keeps it inside this 180 s timeout.
+  # 97580 series rows excluded, 0 of them for a missing manifest cell or an
+  # unaccepted reason. The published data and the site are external state ORC
+  # cannot observe. 3.1 s measured for one evaluation (three downloads, 35 MB);
+  # the script's own 150 s budget keeps it inside this 180 s timeout.
   - name: site_data_freshness
-    cadence_secs: 1800
+    cadence_secs: 0
     gate:
       timeout_secs: 180
       cmd: ./ci-hub/health/site_data_freshness.py --gate --state "$DEV_HERMIT_PARENT/.tick-hub/site-data-freshness.json"
@@ -813,6 +829,7 @@ reminders:
         component: site-data
         outcome: "{outcome_key}"
         excluded_not_in_manifest: "{excluded_not_in_manifest}"
+        excluded_unaccepted: "{excluded_unaccepted}"
       title: "compatibility website data needs attention: {summary}"
 
   - name: github_main_health

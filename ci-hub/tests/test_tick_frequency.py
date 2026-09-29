@@ -166,6 +166,13 @@ def test_only_bounded_transition_gates_use_an_inner_eligibility_window() -> None
         "operational_input_freshness": 900,
         "stale_tick_processes": 900,
         "orphaned_hermit_reaper": 900,
+        # Every tick (tick-hub's EVERY_TICK), scheduled or manual. At 1800 s
+        # these warn-while-it-persists gates aliased with the 1790-1811 s tick
+        # interval, and a tick that skipped them could enqueue kind=resolve
+        # while their condition still held
+        # (https://github.com/rrnewton/dev-hermit/issues/394, round 2).
+        "site_rebuild_health": 0,
+        "site_data_freshness": 0,
     }
 
     service = read("scripts/systemd/hermit-health-tick.service")

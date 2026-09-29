@@ -27,49 +27,115 @@ measured cells must equal build.json's green plus red counts; any mismatch is
 It compares that with the validation ledger in the tool root (the fresh
 origin/main checkout tick-hub runs every gate in).
 
+WHICH LEDGER FILES, AND WHY A MISMATCH IS `unknown`. The gate scans every
+tool-root file the site builder itself would read as validation history:
+ledger/<team>/<host>/<YYYY-MM>.jsonl (published) and
+ledger-recovery/<team>/<host>/<YYYY-MM>/<name>.jsonl (recovery), classified by
+_classify(), which mirrors _input_store_and_location() in
+ci-hub/compatibility-website/export_inputs.py. Rows are filtered to the hermit
+team exactly as the builder filters them. Before anything is compared, every
+source build.json names must agree with that:
+  * a source whose store is neither `series` nor `validation-ledger`, whose
+    recorded store/location is not what its path classifies as, or whose path
+    lies outside the scanned layout (for example a writer that moved to
+    hermit_test_ledger/ledger/...) is `unknown`: the build read data this gate
+    does not scan, so it cannot say the site is current;
+  * every validation-ledger source must exist in the tool root and its first
+    `bytes` bytes must hash to the recorded SHA-256 with the recorded line
+    count; otherwise the tool root is not an extension of what the build read,
+    and that is `unknown`;
+  * a build that names no published ledger/hermit/ source is `unknown`.
+The scanned store must also still be written. If the newest hermit-team
+run.result row in the scanned published files (its emitted_at, else its legacy
+finished_at) is more than --max-ledger-silence-hours (48) old, freshness is
+undetermined: either validation stopped or its writer moved to a file this
+gate does not scan, and neither may read as `current`. Calibration, tool root
+at origin/main on 2026-09-28: 2472 such rows from 2026-08-03T02:15:30Z to
+2026-09-28T22:28:52Z; the longest silences were 67.1 h (from
+2026-09-09T02:42:49Z) and 61.7 h (from 2026-09-19T13:42:36Z), then 38.9, 30.4,
+29.8 and 29.2 h. At 48 h the guard would have held for those two episodes, 32.8
+h in all over eight weeks; at 36 h, three episodes and 59.7 h.
+
 WHAT IT MEASURES.
   data as of   the newest `latest_result_time` over published cells with a
                pass or product-failure result. The page shows the same value as
                "Latest selected measurement".
-  candidates   terminal validation rows in ledger/hermit/*/*.jsonl that the
-               site's admission accepts in form -- a clean, commit-anchored
-               schema-5 full/full run with a non-empty raw census, or a
-               schema-7..10 row carrying cell results, never a Buck release
-               payload (calibrated below, in _admissible) -- that finished after
-               the data-as-of time and that this build could have read: the
-               build's provenance proves it read that line (the tool-root file's
-               prefix is checked byte-for-byte against the recorded SHA-256), or
-               the run finished at least --ingest-grace-hours before the build
-               started. A candidate counts only when its Hermit commit is on
-               main, as the site requires: a recorded post-run main distance of
-               0, or GitHub's compare API (at most --max-compare calls).
-  lag          candidate finish time minus data as of. A series measurement can
-               be admitted only through its terminal row, so the newest
-               admissible terminal row bounds the newest admissible measurement.
-  exclusions   series rows the build excluded, by reason: no admitted terminal
-               row, series schema older than stress-series/v3, and cell not in
-               the builder's manifest. Reasons overlap on one row, so the
-               categories are reported side by side and are not summed; the
-               distinct excluded total is reported beside them.
+  candidates   terminal validation rows of the hermit team in the scanned files
+               that the site's admission accepts in form -- a clean,
+               commit-anchored schema-5 full/full run with a non-empty raw
+               census, or a schema-7..10 row carrying cell results, never a
+               Buck release payload (calibrated below, in _admissible) -- that
+               finished after the data-as-of time and that a build should have
+               read by now: this build's provenance proves it read that line,
+               or the run finished at least --ingest-grace-hours before this
+               build started, or the run finished more than
+               --rebuild-due-hours (36) ago. The last clause is what makes a
+               stopped builder read `stale` here instead of `current`: a run
+               that finished after the published build started is otherwise
+               invisible to this comparison. A candidate counts only when its
+               Hermit commit is on main, as the site requires: a recorded
+               post-run main distance of 0, or GitHub's compare API for
+               <commit>...main reporting `ahead` or `identical` (main contains
+               the commit; at most --max-compare calls).
+  lag          candidate finish time minus data as of. This measures how far
+               the newest admissible TERMINAL row is ahead of the published
+               measurements. It does not bound every series row: a
+               Validate-produced series row is admitted only with an admitted
+               terminal row, but PressureTest and HermitRepeat rows are
+               admitted without one (series_exclusion_reasons() in
+               ci-hub/lib/compatibility_website.rs skips the terminal checks
+               for them), so they can move data as of on their own. In the
+               2026-09-28 build, 1679 of the 48871 admitted series rows were
+               pressure-test rows, the newest emitted 2026-09-16T16:34:55Z,
+               older than that build's data as of.
+  exclusions   series rows the build excluded, by reason. Accepted reasons,
+               counted and reported but not warned on: no admitted terminal
+               row, series schema older than stress-series/v3, and stress-series
+               v1 not recording host facts. Cell not in the builder's manifest
+               warns. Any OTHER stress-series reason -- a commit mismatch
+               between a series row and its terminal row, a cell its validate
+               path did not select, dirty source, or a reason this gate has
+               never seen -- is counted under its exact text and warns: rows
+               must not disappear under a reason nobody accepted. Reasons
+               overlap on one row, so the categories are reported side by side
+               and are not summed; the distinct excluded total is reported
+               beside them. A contract test reads the reason literals from the
+               Rust builder and the v1 reason from hermit's stress_series.rs.
 
-STATES.
-  current                 no main candidate is more than --max-lag-hours
-                          newer than the data, and no row is excluded for a
-                          cell missing from the manifest.
-  stale                   a main candidate that the build could have admitted
-                          is more than --max-lag-hours newer than the data.
+WHAT THIS GATE DOES NOT COVER. Whether the rebuild runs and succeeds is
+site_rebuild_health.py's question: it warns once the last successful docs.yml
+run is --stale-hours (30) old, and dispatches one. This gate asks what the
+published build contains. A stopped builder also reaches this gate through
+--rebuild-due-hours (36): 30 h of rebuild staleness plus a margin over the
+measured 27.6 h longest gap between scheduled docs.yml starts and 35-65 min
+builds, so a normally scheduled rebuild has read a run before the run becomes
+a post-build candidate. ci-hub/health/tests/test_site_data_freshness.py
+asserts that tick-hub.yaml configures site_rebuild_health, with --dispatch and
+at the same cadence, wherever it configures this gate.
+
+STATES. The warning components are joined with `+` in this order:
+  stale                   a main candidate is more than --max-lag-hours
+                          newer than the data.
   not-in-manifest         at least one row is excluded for a cell missing from
                           the builder's manifest.
-  stale+not-in-manifest   both.
+  unaccepted-exclusion    at least one stress-series row is excluded for a
+                          reason outside the accepted set above.
+  current                 none of them, AND freshness was determined.
   unknown                 the site or its artifacts could not be read or did
-                          not agree with each other, or a candidate over the
-                          limit had undeterminable main ancestry. Exit 75.
+                          not agree with each other, the ledger sources did not
+                          agree with the scan (above), or no warning component
+                          holds while freshness is undetermined (a candidate
+                          over the limit had undeterminable main ancestry, or
+                          the scanned ledger is silent). Exit 75.
 
 FIRING (site_gate_policy.py). With --gate every evaluation in a warning state
-exits 1, so tick-hub pages on every evaluation (cadence 1800, the 30-minute
-tick; at least hourly) for as long as the condition lasts, and each page says
-since when. Unknown exits 75 twice and
-fires state `unknown` from the third consecutive evaluation.
+exits 1, so tick-hub pages on every evaluation for as long as the condition
+lasts, and each page says since when. The reminder has cadence 0, which
+tick-hub treats as every tick: every scheduled 30-minute tick (observed
+intervals 1790-1811 s) and every manual tick evaluates it, so no tick passes
+without this gate's own verdict, and a tick can only enqueue kind=resolve after
+the gate read `current`. Unknown exits 75 twice (tick-hub's NO-SIGNAL action)
+and fires state `unknown` from the third consecutive evaluation.
 
     site_data_freshness.py                  # report, exit 0 (75 if unknown)
     site_data_freshness.py --json           # everything it measured
@@ -83,11 +149,12 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -111,6 +178,15 @@ MAX_BLOCK = 16 << 20
 DEFAULT_MAX_LAG_HOURS = 24.0
 DEFAULT_INGEST_GRACE_HOURS = 6.0
 DEFAULT_MAX_COMPARE = 6
+# A run that finished after the published build started becomes a candidate
+# once it is this old: by then a scheduled rebuild should have read it. The
+# rebuild gate warns at 30 h without a successful docs.yml run; scheduled starts
+# were at most 27.6 h apart in the runs measured 2026-09-28 and builds took
+# 35-65 min, so 36 h is past a normally scheduled rebuild, with margin.
+DEFAULT_REBUILD_DUE_HOURS = 36.0
+# The newest hermit run.result row in the scanned published ledger files may be
+# at most this old; see WHICH LEDGER FILES in the docstring for the calibration.
+DEFAULT_MAX_LEDGER_SILENCE_HOURS = 48.0
 # The whole evaluation fits inside the reminder's 180 s gate timeout, so the
 # gate reaches a verdict (or its own `unknown`) instead of being killed: three
 # downloads of at most FETCH_SECS each, then compare calls of at most
@@ -120,11 +196,30 @@ DEFAULT_TIME_BUDGET_SECS = 150
 FETCH_SECS = 45
 COMPARE_SECS = 15
 
-# Reason strings, verbatim from ci-hub/lib/compatibility_website.rs
-# series_exclusion_reasons().
+# Reason strings, verbatim. Every literal in ci-hub/lib/compatibility_website.rs
+# series_exclusion_reasons() and the format of cell_not_in_manifest_reason() are
+# checked against that source by test_reason_strings_match_the_rust_builder; the
+# v1 projection reason comes from hermit's ci/manifest-plan/src/stress_series.rs
+# validate_for_projection() and is checked against the pinned hermit gitlink.
 NOT_IN_MANIFEST_PREFIX = "cell is not in the website builder's manifest (not yet in its cell universe): "
 SCHEMA_REASON = "series schema is not stress-series/v3"
 NO_TERMINAL_REASON = "validate series row has no admitted terminal validation row"
+COMMIT_MISMATCH_REASON = "validate series row and terminal validation row record different Hermit commits"
+CELL_NOT_SELECTED_REASON = "validate series row names a cell not selected by its validate path"
+V1_REASON = "stress-series/v1 does not record machine_shortname, kernel_version, and host_capabilities"
+# The stress-series exclusion reasons that are counted without warning, each
+# under its own category. Old schemas and runs whose terminal row the site did
+# not admit are expected and large (2026-09-28: 35903 v3 rows without an
+# admitted terminal, 12806 pre-v3 rows, 7883 of them also v1). Everything else,
+# including COMMIT_MISMATCH_REASON and CELL_NOT_SELECTED_REASON, warns as
+# `unaccepted-exclusion`.
+ACCEPTED_SERIES_REASONS = {
+    NO_TERMINAL_REASON: "no_admitted_terminal",
+    SCHEMA_REASON: "schema",
+    V1_REASON: "schema_v1_host_fields",
+}
+# The build's input layout, as export_inputs.py classifies it.
+_MONTH_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
 BLOCK_START = b',"projection_admitted_physical_row_count":'
 BLOCK_END = b',"projection_results":'
 BLOCK_KEYS = frozenset(
@@ -226,9 +321,10 @@ def exclusion_block(gz_body: bytes) -> dict:
 
 
 def categorize(block: dict) -> dict:
-    series = {"no_admitted_terminal": 0, "schema": 0, "not_in_manifest": 0}
+    series = {name: 0 for name in ACCEPTED_SERIES_REASONS.values()}
+    series["not_in_manifest"] = 0
     not_in_manifest_cells: dict[str, int] = {}
-    other: dict[str, int] = {}
+    unaccepted: dict[str, int] = {}
     history: dict[str, int] = {}
     for entry in block["projection_exclusion_counts"]:
         if not isinstance(entry, dict):
@@ -242,16 +338,17 @@ def categorize(block: dict) -> dict:
             not_in_manifest_cells[cell] = not_in_manifest_cells.get(cell, 0) + rows
         elif not schema.startswith("stress-series/"):
             history[reason] = history.get(reason, 0) + rows
-        elif reason == SCHEMA_REASON:
-            series["schema"] += rows
-        elif reason == NO_TERMINAL_REASON:
-            series["no_admitted_terminal"] += rows
+        elif reason in ACCEPTED_SERIES_REASONS:
+            series[ACCEPTED_SERIES_REASONS[reason]] += rows
         else:
-            other[reason] = other.get(reason, 0) + rows
+            unaccepted[reason] = unaccepted.get(reason, 0) + rows
     return {
         **series,
         "not_in_manifest_cells": dict(sorted(not_in_manifest_cells.items())),
-        "other_series_reasons": dict(sorted(other.items())),
+        "unaccepted_series_reasons": dict(sorted(unaccepted.items())),
+        # Rows per unaccepted reason, summed: a row carrying two unaccepted
+        # reasons counts twice, like every other per-reason count here.
+        "unaccepted": sum(unaccepted.values()),
         "validation_history_reasons": dict(sorted(history.items())),
         "excluded_total": block["projection_excluded_physical_row_count"],
         "admitted_total": block["projection_admitted_physical_row_count"],
@@ -340,36 +437,108 @@ def _recorded_main(legacy: dict) -> bool:
     return legacy.get("git_ahead") == 0
 
 
+def _classify(relative: str) -> tuple[str, str] | None:
+    """The (store, location) the site builder assigns an input path, or None.
+
+    Mirrors _input_store_and_location() in
+    ci-hub/compatibility-website/export_inputs.py (a test compares the two on a
+    battery of paths), and additionally refuses absolute paths and `..`, which
+    the exporter refuses before classifying.
+    """
+    path = PurePosixPath(relative)
+    parts = path.parts
+    if path.is_absolute() or ".." in parts:
+        return None
+    if (
+        len(parts) == 4
+        and parts[0] == "ledger"
+        and _MONTH_RE.fullmatch(PurePosixPath(parts[3]).stem)
+        and parts[3].endswith(".jsonl")
+    ):
+        return ("validation-ledger", "published")
+    if (
+        len(parts) == 5
+        and parts[0] == "ledger-recovery"
+        and _MONTH_RE.fullmatch(parts[3])
+        and parts[4].endswith(".jsonl")
+    ):
+        return ("validation-ledger", "recovery")
+    if len(parts) == 4 and parts[0] == "series" and parts[3].endswith(".jsonl"):
+        return ("series", "published")
+    return None
+
+
 def _read_sources(build: dict, root: Path) -> dict[str, dict]:
-    """Which tool-root ledger files are provably extensions of what the build read."""
+    """Every validation-ledger file the build read, proven to prefix the tool root's.
+
+    Raises Unknown unless every source build.json names is in a store and at a
+    path this gate scans, every validation-ledger source exists in the tool root
+    with exactly the recorded prefix (SHA-256 of its first `bytes` bytes and
+    `line_count` newlines in them), and at least one of them is a published
+    ledger/hermit/ file. Series sources live in hermit_test_ledger, not in the
+    tool root, so only their classification is checked.
+    """
     provenance = (build.get("provenance") or {}).get("canonical_input_provenance") or {}
     sources = provenance.get("sources")
     if not isinstance(sources, list):
         raise Unknown("build.json has no canonical input sources")
     out: dict[str, dict] = {}
     for source in sources:
-        if not isinstance(source, dict) or source.get("store") != "validation-ledger":
+        if not isinstance(source, dict):
+            raise Unknown(f"build.json input source is not an object: {source!r}")
+        store, location, path = source.get("store"), source.get("location"), source.get("path")
+        if not isinstance(path, str) or not path:
+            raise Unknown(f"build.json input source has no path: {source!r}")
+        if store not in ("series", "validation-ledger"):
+            raise Unknown(f"build.json reads {path} from store {store!r}, which this gate does not know")
+        classified = _classify(path)
+        if classified != (store, location):
+            raise Unknown(
+                f"build.json reads {store}/{location} source {path}, outside the ledger files this "
+                f"gate scans (it classifies that path as {classified or 'no input'}); the build "
+                f"read data this comparison cannot see"
+            )
+        if store != "validation-ledger":
             continue
-        path = str(source.get("path"))
-        if source.get("location") != "published" or not path.startswith("ledger/hermit/"):
-            continue
-        entry = {"line_count": source.get("line_count"), "prefix_verified": False}
-        local = root / path
+        size, lines, digest = source.get("bytes"), source.get("line_count"), source.get("sha256")
+        if not isinstance(size, int) or not isinstance(lines, int) or not isinstance(digest, str):
+            raise Unknown(f"build.json records no bytes, line_count and sha256 for {path}")
         try:
-            data = local.read_bytes()
-        except OSError:
-            out[path] = entry
-            continue
-        size = source.get("bytes")
-        if isinstance(size, int) and len(data) >= size:
-            prefix = data[:size]
-            if (
-                hashlib.sha256(prefix).hexdigest() == source.get("sha256")
-                and prefix.count(b"\n") == source.get("line_count")
-            ):
-                entry["prefix_verified"] = True
-        out[path] = entry
+            data = (root / path).read_bytes()
+        except OSError as exc:
+            raise Unknown(f"build.json read {path}; the tool root cannot read it: {exc.strerror}") from exc
+        prefix = data[:size]
+        if len(data) < size or hashlib.sha256(prefix).hexdigest() != digest or prefix.count(b"\n") != lines:
+            raise Unknown(
+                f"tool-root {path} ({len(data)} bytes) does not begin with the {size} bytes and "
+                f"{lines} lines the build read (sha256 {digest[:12]}); it is not an extension of "
+                f"what the build read"
+            )
+        out[path] = {
+            "store": store,
+            "location": location,
+            "bytes": size,
+            "line_count": lines,
+            "prefix_verified": True,
+        }
+    if not any(
+        entry["location"] == "published" and PurePosixPath(path).parts[1] == "hermit"
+        for path, entry in out.items()
+    ):
+        raise Unknown("build.json names no published ledger/hermit/ source, so nothing the build read can be compared")
     return out
+
+
+def _scanned_ledger_files(root: Path) -> list[tuple[Path, str, str]]:
+    """Tool-root files the builder would read as validation history: (path, relative, location)."""
+    found = []
+    for pattern in ("ledger/*/*/*.jsonl", "ledger-recovery/*/*/*/*.jsonl"):
+        for path in sorted(root.glob(pattern)):
+            relative = path.relative_to(root).as_posix()
+            classified = _classify(relative)
+            if classified is not None and classified[0] == "validation-ledger":
+                found.append((path, relative, classified[1]))
+    return found
 
 
 def candidates(
@@ -379,9 +548,11 @@ def candidates(
     as_of: dt.datetime | None,
     build_started: dt.datetime,
     grace_hours: float,
-) -> tuple[list[dict], dict[str, dict]]:
-    ledger = root / "ledger" / "hermit"
-    if not ledger.is_dir():
+    now: dt.datetime,
+    rebuild_due_hours: float,
+) -> tuple[list[dict], dict[str, dict], dict | None]:
+    """Candidates, the verified sources, and the newest hermit run.result row."""
+    if not (root / "ledger" / "hermit").is_dir():
         raise Unknown(f"tool root {root} has no ledger/hermit directory")
     read = _read_sources(build, root)
     admitted = {str(r.get("run_id")) for r in summary.get("runs") or [] if isinstance(r, dict)}
@@ -389,13 +560,11 @@ def candidates(
     unfinalized = {
         str(m.get("run_id")) for m in proof.get("missing_current_terminals") or [] if isinstance(m, dict)
     }
-    floor_month = as_of.strftime("%Y-%m") if as_of else ""
     grace_edge = build_started - dt.timedelta(hours=grace_hours)
+    due_edge = now - dt.timedelta(hours=rebuild_due_hours)
     found: list[dict] = []
-    for path in sorted(ledger.glob("*/*.jsonl")):
-        if path.stem < floor_month:
-            continue
-        relative = path.relative_to(root).as_posix()
+    newest: dict | None = None
+    for path, relative, location in _scanned_ledger_files(root):
         source = read.get(relative)
         with path.open("rb") as handle:
             for index, line in enumerate(handle):
@@ -403,34 +572,33 @@ def candidates(
                     row = json.loads(line)
                 except ValueError as exc:
                     raise Unknown(f"{relative} line {index + 1} does not parse: {exc}") from exc
-                if not isinstance(row, dict) or not _admissible(row):
+                if not isinstance(row, dict):
                     continue
-                legacy = row["legacy_row"]
+                legacy = row.get("legacy_row") if isinstance(row.get("legacy_row"), dict) else {}
+                if location == "published" and row.get("team") == "hermit" and row.get("event_type") == "run.result":
+                    written = policy.parse_time(row.get("emitted_at")) or policy.parse_time(legacy.get("finished_at"))
+                    if written is not None and (newest is None or written > newest["moment"]):
+                        newest = {"moment": written, "path": relative, "line": index + 1}
+                if not _admissible(row):
+                    continue
                 finished = policy.parse_time(legacy["finished_at"])
                 assert finished is not None
                 if as_of is not None and finished <= as_of:
                     continue
-                if finished >= build_started:
-                    continue
-                if source is None:
-                    was_read: bool | None = False
-                elif source["prefix_verified"]:
-                    was_read = index < int(source["line_count"])
-                else:
-                    was_read = None
-                if not (was_read is True or finished <= grace_edge):
+                was_read = source is not None and index < int(source["line_count"])
+                if not (was_read or finished <= grace_edge or finished <= due_edge):
                     continue
                 run_id = str(legacy.get("run_id") or row.get("run_id"))
                 if run_id in admitted:
                     status = "admitted"
                 elif run_id in unfinalized:
                     status = "unfinalized"
-                elif was_read is True:
+                elif was_read:
                     status = "read-not-admitted"
-                elif was_read is False:
-                    status = "not-read"
+                elif finished >= build_started:
+                    status = "after-build"
                 else:
-                    status = "unverified-read"
+                    status = "not-read"
                 found.append(
                     {
                         "path": relative,
@@ -446,7 +614,10 @@ def candidates(
                     }
                 )
     found.sort(key=lambda c: c["finished_at"], reverse=True)
-    return found, read
+    heartbeat = None
+    if newest is not None:
+        heartbeat = {"at": policy.iso(newest["moment"]), "path": newest["path"], "line": newest["line"]}
+    return found, read, heartbeat
 
 
 def main_ancestor(repo: str, commit: str, run: Runner) -> bool | None:
@@ -470,6 +641,8 @@ def measure(
     max_lag_hours: float,
     grace_hours: float,
     max_compare: int,
+    rebuild_due_hours: float = DEFAULT_REBUILD_DUE_HOURS,
+    max_silence_hours: float = DEFAULT_MAX_LEDGER_SILENCE_HOURS,
     fetch: Fetcher = _fetch,
     run: Runner = _run,
     time_left: Callable[[], float] = lambda: float("inf"),
@@ -479,6 +652,8 @@ def measure(
         "site_url": site_url,
         "max_lag_hours": max_lag_hours,
         "ingest_grace_hours": grace_hours,
+        "rebuild_due_hours": rebuild_due_hours,
+        "max_ledger_silence_hours": max_silence_hours,
     }
     try:
         try:
@@ -518,12 +693,31 @@ def measure(
         exclusions["series_total"] = total
         m["exclusions"] = exclusions
 
-        found, read = candidates(root, build, summary, as_of, started, grace_hours)
+        found, read, heartbeat = candidates(
+            root, build, summary, as_of, started, grace_hours, now, rebuild_due_hours
+        )
         m["ledger_sources"] = read
+        m["newest_hermit_ledger_row"] = heartbeat
         m["candidate_count"] = len(found)
     except Unknown as exc:
         m.update(state="unknown", reason=str(exc))
         return m
+
+    # Silence: the scanned store has stopped receiving hermit results. The
+    # reason names the newest row's time, not its age, so the text is stable
+    # while the condition is (site_gate_policy.py, THE PAGE TEXT IS STABLE).
+    silence_edge = now - dt.timedelta(hours=max_silence_hours)
+    silent_reason: str | None = None
+    if heartbeat is None:
+        silent_reason = "the scanned ledger files hold no hermit run.result row"
+    elif policy.parse_time(heartbeat["at"]) < silence_edge:
+        silent_reason = (
+            f"the newest hermit run.result row in the scanned ledger files was written "
+            f"{heartbeat['at']} ({heartbeat['path']}), more than {max_silence_hours} h before "
+            f"this evaluation: validation stopped, or its writer moved to a store this gate "
+            f"does not scan"
+        )
+    m["ledger_silent"] = silent_reason
 
     def lag(c: dict) -> float | None:
         if as_of is None:
@@ -567,41 +761,69 @@ def measure(
     m["undetermined_candidates"] = undetermined[:5]
     m["lag_hours"] = stale_row["lag_hours"] if stale_row else None
 
-    if stale_row is not None:
-        freshness = "stale"
-    elif undetermined:
-        freshness = "unknown"
-    else:
-        freshness = "current"
-    m["freshness"] = freshness
-    excluded = m["exclusions"]["not_in_manifest"] > 0
-    if freshness == "stale":
-        m["state"] = "stale+not-in-manifest" if excluded else "stale"
-    elif excluded:
-        m["state"] = "not-in-manifest"
-    elif freshness == "unknown":
-        m["state"] = "unknown"
-        m["reason"] = (
+    undetermined_reasons: list[str] = []
+    if undetermined:
+        undetermined_reasons.append(
             f"{len(undetermined)} candidate(s) more than {max_lag_hours} h newer than the data "
             f"have undetermined main ancestry; newest {undetermined[0]['run_id']} "
             f"finished {undetermined[0]['finished_at']}"
         )
+    if silent_reason:
+        undetermined_reasons.append(silent_reason)
+    if stale_row is not None:
+        freshness = "stale"
+    elif undetermined_reasons:
+        freshness = "unknown"
+    else:
+        freshness = "current"
+    m["freshness"] = freshness
+    components = [
+        name
+        for name, present in (
+            ("stale", freshness == "stale"),
+            ("not-in-manifest", m["exclusions"]["not_in_manifest"] > 0),
+            ("unaccepted-exclusion", m["exclusions"]["unaccepted"] > 0),
+        )
+        if present
+    ]
+    if components:
+        m["state"] = "+".join(components)
+    elif freshness == "unknown":
+        m["state"] = "unknown"
     else:
         m["state"] = "current"
+    if freshness == "unknown":
+        m["freshness_reason"] = "; ".join(undetermined_reasons)
+        if m["state"] == "unknown":
+            m["reason"] = m["freshness_reason"]
     return m
 
 
 def _exclusion_text(m: dict) -> str:
     x = m["exclusions"]
-    text = (
-        f"excluded {x['excluded_total']} of {x['series_total']} series rows (reasons overlap): "
+    text = f"excluded {x['excluded_total']} of {x['series_total']} series rows (reasons overlap): "
+    if x["unaccepted"]:
+        # First, so the summary cap never cuts the reason that warned.
+        reasons = sorted(x["unaccepted_series_reasons"].items(), key=lambda item: (-item[1], item[0]))
+        listed = "; ".join(f"{reason[:120]}: {rows}" for reason, rows in reasons[:2])
+        more = f"; and {len(reasons) - 2} more reason(s)" if len(reasons) > 2 else ""
+        text += f"NOT ACCEPTED {x['unaccepted']} ({listed}{more}); "
+    text += (
         f"no admitted terminal {x['no_admitted_terminal']}, schema {x['schema']}, "
         f"not in builder manifest {x['not_in_manifest']}"
     )
     if x["not_in_manifest_cells"]:
         cells = list(x["not_in_manifest_cells"])
         text += f" ({', '.join(cells[:3])}{', ...' if len(cells) > 3 else ''})"
+    text += f", stress-series/v1 host facts {x['schema_v1_host_fields']}"
     return text
+
+
+HEADS = {
+    "stale": "STALE",
+    "not-in-manifest": "ROWS EXCLUDED FOR CELLS MISSING FROM THE BUILDER MANIFEST",
+    "unaccepted-exclusion": "ROWS EXCLUDED FOR A REASON THIS GATE DOES NOT ACCEPT",
+}
 
 
 def render(m: dict) -> str:
@@ -612,12 +834,7 @@ def render(m: dict) -> str:
     if m["state"] == "unknown":
         text = f"site-data: UNKNOWN{persisting} -- {m['reason']}"
     else:
-        head = {
-            "current": "CURRENT",
-            "stale": "STALE",
-            "not-in-manifest": "ROWS EXCLUDED FOR CELLS MISSING FROM THE BUILDER MANIFEST",
-            "stale+not-in-manifest": "STALE, AND ROWS EXCLUDED FOR CELLS MISSING FROM THE BUILDER MANIFEST",
-        }[m["state"]]
+        head = "CURRENT" if m["state"] == "current" else ", AND ".join(HEADS[c] for c in m["state"].split("+"))
         text = (
             f"site-data: {head}{persisting} -- published data as of {m['data_as_of']} "
             f"(build started {m['build_started_at']})"
@@ -630,10 +847,12 @@ def render(m: dict) -> str:
                 f"{m['max_lag_hours']} h), main by {row['main']}, site status {row['site_status']}"
             )
         elif m.get("freshness") == "unknown":
-            text += "; freshness undetermined (main ancestry of a newer candidate unknown)"
+            text += f"; freshness undetermined: {m['freshness_reason']}"
         else:
             text += f"; no main candidate more than {m['max_lag_hours']} h newer"
         text += "; " + _exclusion_text(m)
+        if row and m.get("ledger_silent"):
+            text += f"; also {m['ledger_silent']}"
     return text
 
 
@@ -671,6 +890,14 @@ def main(
     ap.add_argument("--ingest-grace-hours", type=float, default=DEFAULT_INGEST_GRACE_HOURS)
     ap.add_argument("--max-compare", type=int, default=DEFAULT_MAX_COMPARE)
     ap.add_argument(
+        "--rebuild-due-hours", type=float, default=DEFAULT_REBUILD_DUE_HOURS,
+        help="a run older than this is a candidate even if it finished after the build started",
+    )
+    ap.add_argument(
+        "--max-ledger-silence-hours", type=float, default=DEFAULT_MAX_LEDGER_SILENCE_HOURS,
+        help="freshness is undetermined when the newest scanned hermit run.result row is older",
+    )
+    ap.add_argument(
         "--time-budget-secs", type=float, default=DEFAULT_TIME_BUDGET_SECS,
         help="no GitHub compare call starts once fewer than 15 s of this budget remain",
     )
@@ -685,6 +912,8 @@ def main(
         ap.error("--unknown-limit must be at least 1")
     if args.max_lag_hours <= 0 or args.ingest_grace_hours < 0 or args.max_compare < 0 or args.time_budget_secs < 0:
         ap.error("--max-lag-hours must be positive; grace, compare and time budgets non-negative")
+    if args.rebuild_due_hours <= 0 or args.max_ledger_silence_hours <= 0:
+        ap.error("--rebuild-due-hours and --max-ledger-silence-hours must be positive")
 
     started = time.monotonic()
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -696,6 +925,8 @@ def main(
         max_lag_hours=args.max_lag_hours,
         grace_hours=args.ingest_grace_hours,
         max_compare=args.max_compare,
+        rebuild_due_hours=args.rebuild_due_hours,
+        max_silence_hours=args.max_ledger_silence_hours,
         fetch=fetch,
         run=run,
         time_left=lambda: args.time_budget_secs - (time.monotonic() - started),
@@ -722,6 +953,8 @@ def main(
         print(f"lag_hours={m.get('lag_hours') if m.get('lag_hours') is not None else 'none'}")
         excluded = (m.get("exclusions") or {}).get("not_in_manifest")
         print(f"excluded_not_in_manifest={excluded if excluded is not None else 'unknown'}")
+        unaccepted = (m.get("exclusions") or {}).get("unaccepted")
+        print(f"excluded_unaccepted={unaccepted if unaccepted is not None else 'unknown'}")
 
     if args.gate and verdict and verdict["fire"]:
         return FIRE

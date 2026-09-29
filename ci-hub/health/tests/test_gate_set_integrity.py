@@ -413,3 +413,91 @@ def test_transition_resource_schedules_remain_eligible_on_every_outer_tick():
     # inner throttle therefore cannot alias away the next scheduled check.
     assert 900 < 30 * 60 - 650
     assert {reminders[name]["cadence_secs"] for name in names} == {900}
+
+
+# The website pair (https://github.com/rrnewton/dev-hermit/issues/394, round 2).
+SITE_GATES = {
+    "site_rebuild_health": "compatibility website rebuild failures and a stopped builder",
+    "site_data_freshness": "stale published website data and silently excluded rows",
+}
+
+
+def test_site_gates_are_required_and_pinned_to_the_live_rows():
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    for name, why in SITE_GATES.items():
+        assert gsi.REQUIRED[name] == why
+        assert gsi._same_typed_value(live[name], gsi.REQUIRED_GATE_SHAPES[name]), name
+    assert live["site_rebuild_health"]["gate"]["cmd"] == (
+        "./ci-hub/health/site_rebuild_health.py --gate --dispatch "
+        '--state "$DEV_HERMIT_PARENT/.tick-hub/site-rebuild-health.json"'
+    )
+    assert live["site_data_freshness"]["gate"]["cmd"] == (
+        "./ci-hub/health/site_data_freshness.py --gate "
+        '--state "$DEV_HERMIT_PARENT/.tick-hub/site-data-freshness.json"'
+    )
+    assert {live[name]["cadence_secs"] for name in SITE_GATES} == {0}
+
+
+def test_removing_either_site_gate_fires_the_integrity_gate(tmp_path):
+    for name, why in SITE_GATES.items():
+        cfg = write_config(tmp_path, [n for n in gsi.REQUIRED if n != name])
+        code, fields = run(["--config", str(cfg), "--no-drift"])
+        assert code == 1, name
+        assert fields["missing"] == name
+        assert f"{name} -- nothing is watching {why}" in fields["summary"]
+
+
+def _mutated_site_config(tmp_path, name, mutator):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    mutator(live[name])
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    return run(["--config", str(cfg), "--no-drift"])
+
+
+SITE_MUTATIONS = [
+    # The round-1 cadence that let a tick skip them.
+    ("cadence 1800", lambda r: r.update(cadence_secs=1800)),
+    ("float cadence", lambda r: r.update(cadence_secs=0.0)),
+    ("offset", lambda r: r.update(cadence_offset_secs=60)),
+    ("never-true flag", lambda r: r.update(requires_flags=["never_configured"])),
+    ("dependency", lambda r: r.update(depends_on=["gate_set_integrity"])),
+    ("no --gate", lambda r: r["gate"].update(cmd=r["gate"]["cmd"].replace(" --gate", ""))),
+    ("state elsewhere", lambda r: r["gate"].update(cmd=r["gate"]["cmd"].replace(".tick-hub/", "/tmp/"))),
+    ("parallel", lambda r: r["gate"].update(parallel=True)),
+    ("timeout", lambda r: r["gate"].update(timeout_secs=5)),
+    ("no outcome field", lambda r: r["emit"]["fields"].pop("outcome")),
+    ("no skill", lambda r: r["emit"].pop("skill")),
+]
+
+
+def test_a_site_gate_cannot_survive_with_an_inert_shape(tmp_path):
+    for name in SITE_GATES:
+        for label, mutator in SITE_MUTATIONS:
+            code, fields = _mutated_site_config(tmp_path, name, mutator)
+            assert code == 1, (name, label)
+            assert f"{name} -> protected gate execution shape changed" in fields["summary"], (name, label)
+    # when=success is refused one check earlier, under its own message.
+    for name in SITE_GATES:
+        code, fields = _mutated_site_config(tmp_path, name, lambda r: r["gate"].update(when="success"))
+        assert code == 1, name
+        assert f"{name} -> gate must use when=failure and capture=true" in fields["summary"]
+    # Rebuild-specific: dispatch is what keeps the site building.
+    code, fields = _mutated_site_config(
+        tmp_path, "site_rebuild_health",
+        lambda r: r["gate"].update(cmd=r["gate"]["cmd"].replace(" --dispatch", "")),
+    )
+    assert code == 1
+    assert "site_rebuild_health -> protected gate execution shape changed" in fields["summary"]
+    # Freshness-specific: dropping the unaccepted-exclusion count from the page.
+    code, fields = _mutated_site_config(
+        tmp_path, "site_data_freshness", lambda r: r["emit"]["fields"].pop("excluded_unaccepted"),
+    )
+    assert code == 1
+    assert "site_data_freshness -> protected gate execution shape changed" in fields["summary"]

@@ -36,13 +36,23 @@ dispatch loop. A dispatch that GitHub refuses is itself a warning.
 FIRES WHILE IT PERSISTS (site_gate_policy.py). With --gate the exit status is 1
 on EVERY evaluation whose outcome is a warning: `failed:<run id>`,
 `stale:<newest successful run id>`, either one suffixed `:dispatch-failed`
-while GitHub refuses the rebuild dispatch. tick-hub evaluates it on the
-30-minute tick (cadence 1800; at least hourly), so an unfixed failure pages on
-every evaluation and each page says since when; this replaced a once-per-outcome-key policy under which a failure that
-persisted warned only once. Returning to `current` is recorded quietly. An
-unreadable Actions API exits 75 for the first two consecutive evaluations and
-fires state `unknown` from the third. The state file is written atomically
+while GitHub refuses the rebuild dispatch. tick-hub evaluates it on EVERY
+tick (cadence 0: every scheduled 30-minute tick, observed 1790-1811 s apart,
+and every manual one), so an unfixed failure pages on every tick and each page
+says since when, and no tick can skip it and enqueue kind=resolve while the
+failure holds. This replaced a once-per-outcome-key policy under which a
+failure that persisted warned only once. Returning to `current` is recorded
+quietly. An unreadable Actions API exits 75 for the first two consecutive
+evaluations and fires state `unknown` from the third. The state file is written atomically
 under an exclusive lock, so two ticks cannot interleave a read and a write.
+
+WHAT IT DOES NOT COVER. What the rebuild published is site_data_freshness.py's
+question: a green rebuild that published old data reads `stale` there. That
+gate also reads a stopped builder as `stale` on its own, once an unpublished
+main run is more than its --rebuild-due-hours (36) old and more than 24 h
+newer than the published data, including while this gate cannot read the
+Actions API. A test in tests/test_site_data_freshness.py holds tick-hub.yaml
+to configuring both gates at the same cadence.
 
     site_rebuild_health.py                              # report, exit 0
     site_rebuild_health.py --json                       # machine readable
