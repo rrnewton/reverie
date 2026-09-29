@@ -15,20 +15,32 @@ every series reader uses:
 * `parity/<team>/<host>/<YYYY-MM>.jsonl` holds the rows. Their fields are
   exactly hermit's `ParityLedgerRow` (`deny_unknown_fields`), so the
   scorecard reads them with the same Rust type the post-pass writes.
-* `parity-runs/<team>/<host>/<YYYY-MM>.jsonl` holds one `parity.run` marker
-  per appended run. A row type that refuses unknown fields cannot also carry
-  "this run appended N rows", so the marker is its own event. It is what
-  tells three states apart: no marker means `append-parity` never ran for the
-  run (an older hermit, or a producer that never called it); a marker with
-  `records: 0` means the run's parity selection was empty; and a node that
-  never ran shows up as `record-missing` rows whose origin says `absent`.
+* `parity-runs/<team>/<host>/<YYYY-MM>.jsonl` holds the run-level events:
+  one `parity.run` marker per appended run, and one `parity.refusal` per
+  append that was refused. A row type that refuses unknown fields cannot also
+  carry "this run appended N rows", so the marker is its own event.
+
+What the run-level events tell apart: a marker means the run's rows are
+recorded; a refusal with no marker means `append-parity` ran and refused
+them, with the refusal's message; neither means `append-parity` was never
+called for the run (an older hermit, a producer that never calls it, or a run
+whose parity selection was empty: hermit's callers skip `append-parity` when
+nothing is in scope, so an empty selection is not told apart from an older
+hermit). A marker with `records: 0` is what an empty stdin records. A node
+that never ran shows up as `record-missing` rows whose origin says `absent`.
 
 A spooled batch is one file per run: the marker line, then the rows, in the
-canonical compact encoding. The batch is published whole or not at all.
+canonical compact encoding. The batch is published whole or not at all. A
+refusal is a batch of its own, holding only the refusal event.
 
 Everything here refuses loudly. A malformed record is never skipped, a
 record-missing cell stays visible as a row, and credit that is null is never
-turned into 0 or 1.
+turned into 0 or 1. A refused append is recorded as a refusal, never as a run
+that did not happen.
+
+Which backends cannot have their inputs equalized is hermit's declaration
+(`ParityBackend::inputs_not_equalizable`), carried in each run's rows; this
+module holds a run to the declaration its own rows make and hardcodes none.
 """
 
 from __future__ import annotations
@@ -48,6 +60,9 @@ from typing import Any, Iterable, Mapping, Sequence
 SCHEMA = "parity-ledger/v1"
 ROW_EVENT_TYPE = "parity.record"
 RUN_EVENT_TYPE = "parity.run"
+REFUSAL_EVENT_TYPE = "parity.refusal"
+#: The events stored under `parity-runs/` rather than `parity/`.
+RUN_LEVEL_EVENT_TYPES = (RUN_EVENT_TYPE, REFUSAL_EVENT_TYPE)
 TEAM = "hermit"
 RECORD_SCHEMA = 1
 ROW_ROOT = "parity"
@@ -82,11 +97,6 @@ UNAVAILABLE_CLASSES = (
 )
 #: The largest f64 below 1.0: a divergence can never round up to a match.
 BELOW_ONE = 1.0 - sys.float_info.epsilon / 2
-DBT_INPUTS_NOT_EQUALIZABLE = (
-    "the dbt backend refuses --bind and --mount (hermit-cli/src/bin/hermit/run.rs: "
-    '"its DynamoRIO adapter does not enter the guest mount namespace"), so its guest '
-    "cannot be given the ptrace cell's input paths"
-)
 _U64_MAX = (1 << 64) - 1
 _SHA1_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -177,6 +187,23 @@ RUN_FIELDS = (
     "verdicts",
     "nodes",
 )
+REFUSAL_FIELDS = (
+    "schema",
+    "event_type",
+    "event_id",
+    "team",
+    "host",
+    "emitted_at",
+    "producer",
+    "run_id",
+    "hermit_sha",
+    "source_tree_dirty",
+    "input_sha256",
+    "input_lines",
+    "error",
+)
+#: A refusal's message is kept whole up to this many characters.
+REFUSAL_ERROR_LIMIT = 4000
 #: The fields a run marker and each of its rows must share.
 SHARED_FIELDS = (
     "team",
@@ -255,7 +282,9 @@ def _canonical_record(record: Any) -> Any:
 
 
 def canonical_event(event: Mapping[str, Any]) -> dict[str, Any]:
-    """Reorder a row, marker, or source to its schema's field order."""
+    """Reorder a row, marker, refusal, or source to its schema's field order."""
+    if event.get("event_type") == REFUSAL_EVENT_TYPE:
+        return _ordered(event, REFUSAL_FIELDS)
     if event.get("event_type") == RUN_EVENT_TYPE:
         ordered = _ordered(event, RUN_FIELDS)
         if isinstance(ordered.get("verdicts"), Mapping):
@@ -569,16 +598,16 @@ def validate_record(record: Any) -> None:
     if unequalized is not None and inputs_equalized:
         raise ParityLedgerError(f"{at}: unequalized_credit is set but the inputs were equalized")
     measured = verdict in MEASURED_VERDICTS
-    if backend == "dbt":
-        if inputs_equalized or measured:
-            raise ParityLedgerError(
-                f"{at}: {backend} inputs cannot be equalized, so it reports no measured "
-                f"comparison and never equal inputs: {DBT_INPUTS_NOT_EQUALIZABLE}"
-            )
-    elif verdict == "inputs-not-equalized":
+    # Which backends cannot have their inputs equalized is hermit's
+    # declaration (`ParityBackend::inputs_not_equalizable`), not this store's:
+    # the post-pass writes `inputs-not-equalized`, with the declaration as its
+    # reason, for exactly those backends. A record alone says only that it is
+    # such a row; `check_declared_measurability` holds a batch to the
+    # declaration its own rows make.
+    if verdict == "inputs-not-equalized" and inputs_equalized:
         raise ParityLedgerError(
-            f"{at}: {backend} inputs can be equalized; a comparison with unequal inputs is "
-            "measured and reports unequalized_credit"
+            f"{at}: inputs-not-equalized says the inputs could not be equalized, but "
+            "inputs_equalized is true"
         )
     amount = clean if clean is not None else unequalized
     if measured:
@@ -842,6 +871,124 @@ def validate_run(marker: Any) -> Mapping[str, Any]:
     return value
 
 
+def refusal_event_id(producer: str, run_id: str, input_sha256: str, error: str) -> str:
+    """A refusal's identity: one input refused for one reason is one event."""
+    return _sha256_hex(f"{REFUSAL_EVENT_TYPE}\0{producer}\0{run_id}\0{input_sha256}\0{error}")
+
+
+_TRUNCATED = " ... (truncated)"
+
+
+def public_error(text: Any) -> str:
+    """A refusal message fit for the public ledger: no owner path, bounded.
+
+    An owner home directory is replaced by `<owner home>`; a message longer
+    than `REFUSAL_ERROR_LIMIT` keeps its start and says it was truncated.
+    """
+    redacted = re.sub(re.escape(_OWNER_PATH_NEEDLE) + r"[^/\s'\"]*", "<owner home>", str(text)).strip()
+    if not redacted:
+        redacted = "refused with no message"
+    if len(redacted) > REFUSAL_ERROR_LIMIT:
+        redacted = redacted[:REFUSAL_ERROR_LIMIT - len(_TRUNCATED)] + _TRUNCATED
+    return redacted
+
+
+def validate_refusal(event: Any) -> Mapping[str, Any]:
+    """One `parity.refusal`: an `append-parity` call that recorded no rows, and why."""
+    value = _exact_fields(event, REFUSAL_FIELDS, "parity refusal")
+    producer = _string(value["producer"], "parity refusal producer")
+    run_id = _string(value["run_id"], "parity refusal run_id")
+    at = f"parity refusal ({producer} run {run_id})"
+    if value["schema"] != SCHEMA:
+        raise ParityLedgerError(f"{at}: schema must be {SCHEMA}, got {value['schema']!r}")
+    if value["event_type"] != REFUSAL_EVENT_TYPE:
+        raise ParityLedgerError(
+            f"{at}: event_type must be {REFUSAL_EVENT_TYPE}, got {value['event_type']!r}"
+        )
+    _segment(value["team"], f"{at}: team")
+    _segment(value["host"], f"{at}: host")
+    emitted_at = _string(value["emitted_at"], f"{at}: emitted_at")
+    if _EMITTED_AT_RE.fullmatch(emitted_at) is None:
+        raise ParityLedgerError(f"{at}: emitted_at must be YYYY-MM-DDTHH:MM:SSZ, got {emitted_at!r}")
+    _choice(producer, PRODUCERS, f"{at}: producer")
+    if not run_id.strip() or "\0" in run_id:
+        raise ParityLedgerError(f"{at}: run_id must be non-empty")
+    hermit_sha = _string(value["hermit_sha"], f"{at}: hermit_sha")
+    if _SHA1_RE.fullmatch(hermit_sha) is None:
+        raise ParityLedgerError(f"{at}: hermit_sha must be 40 lowercase hex digits, got {hermit_sha!r}")
+    # Null when the refusal is that the caller never said whether its tree was dirty.
+    if value["source_tree_dirty"] is not None:
+        _boolean(value["source_tree_dirty"], f"{at}: source_tree_dirty")
+    input_sha256 = _string(value["input_sha256"], f"{at}: input_sha256")
+    if _SHA256_RE.fullmatch(input_sha256) is None:
+        raise ParityLedgerError(f"{at}: input_sha256 must be 64 lowercase hex digits")
+    _optional_count(value["input_lines"], f"{at}: input_lines")
+    error = _string(value["error"], f"{at}: error")
+    if error != public_error(error):
+        raise ParityLedgerError(
+            f"{at}: error must be non-empty, trimmed, free of owner paths and at most "
+            f"{REFUSAL_ERROR_LIMIT} characters"
+        )
+    if contains_owner_path(value):
+        raise ParityLedgerError(f"{at}: contains a workspace-local owner path; the parity ledger is public")
+    expected = refusal_event_id(producer, run_id, input_sha256, error)
+    if value["event_id"] != expected:
+        raise ParityLedgerError(
+            f"{at}: event_id {value['event_id']!r} is not sha256(parity.refusal, producer, run_id, "
+            f"input_sha256, error) = {expected}"
+        )
+    return value
+
+
+def validate_event(event: Any) -> Mapping[str, Any]:
+    """One published event of either tree: a row, a run marker, or a refusal."""
+    kind = event.get("event_type") if isinstance(event, Mapping) else None
+    if kind == RUN_EVENT_TYPE:
+        return validate_run(event)
+    if kind == REFUSAL_EVENT_TYPE:
+        return validate_refusal(event)
+    return validate_row(event)
+
+
+def check_declared_measurability(rows: Sequence[Mapping[str, Any]], label: str) -> dict[str, str]:
+    """Hold one run's rows to the measurability hermit declared for them.
+
+    hermit declares, per backend, whether the ptrace reference's inputs can be
+    given to that backend's guest (`ParityBackend::inputs_not_equalizable`),
+    and its post-pass writes an `inputs-not-equalized` record, with the
+    declaration as its reason, for every cell of a backend declared not
+    equalizable. The declaration is read from the run's own rows, so a
+    backend hermit later makes measurable is admitted without changing this
+    store. Within one run a declared backend reports one declaration, no
+    measured comparison and no equal inputs, exactly as hermit's
+    `ParityRecord::validate` requires. Returns backend -> declaration.
+    """
+    declared: dict[str, str] = {}
+    for index, row in enumerate(rows, 2):
+        if row["verdict"] != "inputs-not-equalized":
+            continue
+        backend, why = row["backend"], row["reason"]
+        known = declared.setdefault(backend, why)
+        if known != why:
+            raise ParityLedgerError(
+                f"{label}: event {index} ({row['cell']}) declares {backend} inputs not "
+                f"equalizable for {why!r}, but an earlier row of the run declares {known!r}; "
+                "a run's hermit makes one declaration per backend"
+            )
+    for index, row in enumerate(rows, 2):
+        why = declared.get(row["backend"])
+        record = row["record"]
+        if why is None or record is None:
+            continue
+        if row["verdict"] in MEASURED_VERDICTS or record["inputs_equalized"]:
+            raise ParityLedgerError(
+                f"{label}: event {index} ({row['cell']}): {row['backend']} inputs cannot be "
+                "equalized, so it reports no measured comparison and never equal inputs: "
+                f"{why}"
+            )
+    return declared
+
+
 def validate_batch(events: Sequence[Any], label: str = "parity batch") -> tuple[dict, list[dict]]:
     """One run's batch: its marker first, then every row of that run.
 
@@ -852,6 +999,15 @@ def validate_batch(events: Sequence[Any], label: str = "parity batch") -> tuple[
     if not events:
         raise ParityLedgerError(f"{label}: a batch holds at least its run marker")
     marker = events[0]
+    if isinstance(marker, Mapping) and marker.get("event_type") == REFUSAL_EVENT_TYPE:
+        # A refused append records only why it was refused.
+        if len(events) != 1:
+            raise ParityLedgerError(f"{label}: a refusal batch holds only its refusal event")
+        try:
+            validate_refusal(marker)
+        except ParityLedgerError as error:
+            raise ParityLedgerError(f"{label}: {error}") from error
+        return dict(marker), []
     if not isinstance(marker, Mapping) or marker.get("event_type") != RUN_EVENT_TYPE:
         raise ParityLedgerError(f"{label}: the first event must be the {RUN_EVENT_TYPE} marker")
     try:
@@ -863,6 +1019,8 @@ def validate_batch(events: Sequence[Any], label: str = "parity batch") -> tuple[
     for index, row in enumerate(rows, 2):
         if isinstance(row, Mapping) and row.get("event_type") == RUN_EVENT_TYPE:
             raise ParityLedgerError(f"{label}: event {index} is a second run marker")
+        if isinstance(row, Mapping) and row.get("event_type") == REFUSAL_EVENT_TYPE:
+            raise ParityLedgerError(f"{label}: event {index} is a refusal inside a recorded run")
         try:
             validate_row(row)
         except ParityLedgerError as error:
@@ -879,6 +1037,7 @@ def validate_batch(events: Sequence[Any], label: str = "parity batch") -> tuple[
                 f"{row['source']['lane']}/{row['source']['node']}"
             )
         seen.add(row["event_id"])
+    check_declared_measurability(rows, label)
     try:
         nodes = _run_nodes(rows)
     except ParityLedgerError as error:
@@ -1004,7 +1163,7 @@ def shard_path(root: str, team: str, host: str, month: str) -> str:
 
 
 def event_shard(event: Mapping[str, Any]) -> str:
-    root = RUN_ROOT if event.get("event_type") == RUN_EVENT_TYPE else ROW_ROOT
+    root = RUN_ROOT if event.get("event_type") in RUN_LEVEL_EVENT_TYPES else ROW_ROOT
     return shard_path(root, event["team"], event["host"], str(event["emitted_at"])[:7])
 
 
@@ -1070,10 +1229,15 @@ def _first_difference(existing: Mapping[str, dict], fresh: Sequence[dict]) -> st
 
 
 def _describe(event: Mapping[str, Any]) -> str:
+    if event.get("event_type") == REFUSAL_EVENT_TYPE:
+        return f"refusal of {event.get('producer')} run {event.get('run_id')}"
     if event.get("event_type") == RUN_EVENT_TYPE:
         return (f"run marker of {event.get('producer')} run {event.get('run_id')} "
                 f"({event.get('records')} record(s))")
-    return f"row {event.get('cell')} from node {event.get('source', {}).get('lane')}/{event.get('source', {}).get('node')}"
+    source = event.get("source")
+    if not isinstance(source, Mapping):
+        source = {}
+    return f"row {event.get('cell')} from node {source.get('lane')}/{source.get('node')}"
 
 
 def recorded_run_events(
@@ -1152,9 +1316,14 @@ def append_parity(
             f"content: {_first_difference(existing, events)}; the parity ledger is append-only, "
             "so a changed record is refused rather than replaced"
         )
-    spool = Path(spool)
+    result["batch"] = _write_batch(Path(spool), events)
+    return result
+
+
+def _write_batch(spool: Path, events: Sequence[Mapping[str, Any]]) -> str:
+    """Write one batch atomically under its own name and read it back."""
     spool.mkdir(parents=True, exist_ok=True)
-    name = batch_name(marker)
+    name = batch_name(events[0])
     target = spool / name
     temporary = spool / f".{name}.{os.getpid()}.tmp"
     data = encode_batch(events).encode("utf-8")
@@ -1173,8 +1342,91 @@ def append_parity(
     # Publishers glob only `*.jsonl`, so the batch appears whole or not at all.
     os.replace(temporary, target)
     read_batch(target)
-    result["batch"] = name
-    return result
+    return name
+
+
+def build_refusal(
+    *,
+    producer: str,
+    run_id: str,
+    hermit_sha: str,
+    emitted_at: str,
+    source_tree_dirty: bool | None,
+    host: str,
+    input_bytes: bytes,
+    input_lines: int | None,
+    error: Any,
+    team: str = TEAM,
+) -> dict:
+    """The `parity.refusal` event for one refused `append-parity` call."""
+    message = public_error(error)
+    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
+    event = canonical_event({
+        "schema": SCHEMA,
+        "event_type": REFUSAL_EVENT_TYPE,
+        "event_id": refusal_event_id(producer, run_id, input_sha256, message),
+        "team": team,
+        "host": host,
+        "emitted_at": emitted_at,
+        "producer": producer,
+        "run_id": run_id,
+        "hermit_sha": hermit_sha,
+        "source_tree_dirty": source_tree_dirty,
+        "input_sha256": input_sha256,
+        "input_lines": input_lines,
+        "error": message,
+    })
+    validate_refusal(event)
+    return event
+
+
+def append_refusal(spool: Path, event: Mapping[str, Any]) -> dict[str, Any]:
+    """Spool one refusal as a batch of its own; caller holds the lock.
+
+    The same input refused for the same reason is one event, so a replay that
+    finds its refusal already spooled or retained writes nothing.
+    """
+    validate_refusal(event)
+    for directory in (Path(spool), Path(spool) / "published"):
+        for path in sorted(directory.glob(f"*__{event['event_id']}.jsonl")):
+            prior, _ = read_batch(path)
+            if same_event(prior, event):
+                return {"batch": None, "recorded_in": str(path.relative_to(Path(spool)))}
+    return {"batch": _write_batch(Path(spool), [event]), "recorded_in": None}
+
+
+def run_refusals(
+    spool: Path, producer: str, run_id_value: str, *,
+    published: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict]:
+    """Every recorded refusal of one run, oldest first.
+
+    Read from the spool, its `published/` retention and, when given, the
+    published events. A refusal's batch is named by its own event id, which
+    depends on the refused input, so every spooled batch is read; one that
+    cannot be read is skipped here (the publisher names it as refused).
+    """
+    found: dict[str, dict] = {}
+    for directory in (Path(spool), Path(spool) / "published"):
+        for path in batch_paths(directory):
+            try:
+                event, rows = read_batch(path)
+            except ParityLedgerError:
+                continue
+            if event.get("event_type") == REFUSAL_EVENT_TYPE and not rows:
+                found.setdefault(event["event_id"], event)
+    for event in (published or {}).values():
+        if event.get("event_type") == REFUSAL_EVENT_TYPE:
+            try:
+                validate_refusal(event)
+            except ParityLedgerError:
+                continue
+            found.setdefault(event["event_id"], dict(event))
+    return sorted(
+        (event for event in found.values()
+         if event["producer"] == producer and event["run_id"] == run_id_value),
+        key=lambda event: (event["emitted_at"], event["event_id"]),
+    )
 
 
 # -------------------------------------------------------------------- publish
@@ -1182,11 +1434,23 @@ def append_parity(
 
 @dataclass(frozen=True)
 class PublishedParity:
-    """Every parity event at one ledger commit, and the shard texts read."""
+    """Every parity event at one ledger commit, and the shard texts read.
+
+    ``events`` indexes the published events by id, for the duplicate and
+    conflict checks a new batch needs. Published events are indexed, not
+    revalidated: the ledger is append-only, so a row that a later, stricter
+    validator would refuse can never be repaired, and it must not stop every
+    later publication and reap. What the index itself cannot use (a line that
+    is not a JSON object with an event id, an event in the wrong shard, an id
+    published twice with different bodies, a path outside the shard layout)
+    is listed in ``invalid`` with its location and reported, never raised.
+    Every event being appended is validated in full by `read_batch`.
+    """
 
     commit: str
     events: dict[str, dict]
     texts: dict[str, str]
+    invalid: tuple[dict[str, Any], ...] = ()
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -1199,21 +1463,45 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def shard_events(text: str, label: str) -> list[dict]:
-    """Events of one published shard: markers or rows, each validated."""
+    """Events of one shard text: markers, refusals or rows, each validated."""
     events = parse_lines(text, label)
     for index, event in enumerate(events, 1):
         try:
-            if event.get("event_type") == RUN_EVENT_TYPE:
-                validate_run(event)
-            else:
-                validate_row(event)
+            validate_event(event)
         except ParityLedgerError as error:
             raise ParityLedgerError(f"{label}:{index}: {error}") from error
     return events
 
 
+def _index_lines(text: str, relative: str, invalid: list[dict[str, Any]]) -> list[tuple[int, dict]]:
+    """The indexable events of one published shard; anything else goes to ``invalid``."""
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    else:
+        invalid.append({"path": relative, "line": len(lines),
+                        "error": "final line has no newline terminator"})
+    found = []
+    for number, line in enumerate(lines, 1):
+        try:
+            value = loads(line, f"{relative}:{number}")
+        except ParityLedgerError as error:
+            invalid.append({"path": relative, "line": number, "error": str(error)})
+            continue
+        if not isinstance(value, dict) or not isinstance(value.get("event_id"), str) or not value["event_id"]:
+            invalid.append({"path": relative, "line": number,
+                            "error": "not a JSON object with an event_id"})
+            continue
+        found.append((number, value))
+    return found
+
+
 def published_parity_at_repo(repo: Path, ref: str) -> PublishedParity:
-    """Read `parity/` and `parity-runs/` at one ledger ref, validated."""
+    """Index `parity/` and `parity-runs/` at one ledger ref.
+
+    Raises only when the ref or a shard cannot be read at all; see
+    `PublishedParity` for what is indexed and what is reported.
+    """
     resolved = _git(Path(repo), "rev-parse", "--verify", f"{ref}^{{commit}}")
     commit = resolved.stdout.strip()
     if resolved.returncode != 0 or _SHA1_RE.fullmatch(commit) is None:
@@ -1227,26 +1515,34 @@ def published_parity_at_repo(repo: Path, ref: str) -> PublishedParity:
         )
     events: dict[str, dict] = {}
     texts: dict[str, str] = {}
+    invalid: list[dict[str, Any]] = []
     for relative in listed.stdout.splitlines():
         parts = Path(relative).parts
         if len(parts) != 4 or parts[0] not in (ROW_ROOT, RUN_ROOT) or not relative.endswith(".jsonl"):
-            raise ParityLedgerError(f"{commit}:{relative} is not a parity shard path")
+            invalid.append({"path": relative, "line": None, "error": "not a parity shard path; not read"})
+            continue
         shown = _git(Path(repo), "show", f"{commit}:{relative}")
         if shown.returncode != 0:
             raise ParityLedgerError(
                 f"cannot read {commit}:{relative}: {shown.stderr.strip() or 'no output'}"
             )
         texts[relative] = shown.stdout
-        for event in shard_events(shown.stdout, f"{commit}:{relative}"):
-            if event_shard(event) != relative:
-                raise ParityLedgerError(f"{commit}:{relative}: {_describe(event)} belongs in {event_shard(event)}")
+        for number, event in _index_lines(shown.stdout, relative, invalid):
+            try:
+                placed = event_shard(event)
+            except (KeyError, TypeError, ParityLedgerError) as error:
+                placed = f"no shard ({type(error).__name__}: {error})"
+            if placed != relative:
+                invalid.append({"path": relative, "line": number,
+                                "error": f"{_describe(event)} belongs in {placed}"})
             prior = events.get(event["event_id"])
             if prior is not None and canonical_line(prior) != canonical_line(event):
-                raise ParityLedgerError(
-                    f"{commit}:{relative}: event_id {event['event_id']} is published twice with different bodies"
-                )
-            events[event["event_id"]] = event
-    return PublishedParity(commit=commit, events=events, texts=texts)
+                invalid.append({"path": relative, "line": number,
+                                "error": f"event_id {event['event_id']} is published twice with "
+                                         "different bodies; the first copy stands"})
+                continue
+            events.setdefault(event["event_id"], event)
+    return PublishedParity(commit=commit, events=events, texts=texts, invalid=tuple(invalid))
 
 
 @dataclass
@@ -1301,6 +1597,12 @@ def plan_publication(batches: Sequence[Path], published: PublishedParity) -> Pub
                 if event["event_id"] in claimed:
                     raise ParityLedgerError(
                         f"{_describe(event)} is also in another pending batch"
+                    )
+                base = published.texts.get(event_shard(event), "")
+                if base and not base.endswith("\n"):
+                    raise ParityLedgerError(
+                        f"published shard {event_shard(event)} has no final newline, so "
+                        "nothing can be appended to it"
                     )
         except ParityLedgerError as error:
             refused.append({"batch": Path(path).name, "error": str(error)})

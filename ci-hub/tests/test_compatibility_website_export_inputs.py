@@ -2076,10 +2076,10 @@ def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commi
 PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
 
 
-def _parity_run_1953_summary_bytes() -> bytes:
-    """RUN 1953's 192 sources, wrapped and summarized as the ledger would hold them."""
-    reader = export_inputs._parity_reader()
-    ledger_store = reader.parity_ledger_module()
+def _parity_run_1953_shards() -> dict[str, bytes]:
+    """RUN 1953's 192 sources, wrapped as `append-parity` wraps them and laid
+    out in the ledger's `parity/` and `parity-runs/` shards."""
+    ledger_store = export_inputs._parity_reader().parity_ledger_module()
     text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
     sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
     batch = ledger_store.build_batch(
@@ -2088,8 +2088,27 @@ def _parity_run_1953_summary_bytes() -> bytes:
         hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T21:40:00Z",
         source_tree_dirty=False, host="fixturehost",
     )
-    rows = [row for row in batch if row["event_type"] == "parity.record"]
-    return reader.encode_summary(reader.summarize_rows(rows, store_sha256="a" * 64))
+    shards: dict[str, bytes] = {}
+    for event in batch:
+        path = ledger_store.event_shard(event)
+        shards[path] = shards.get(path, b"") + ledger_store.encode_batch([event]).encode()
+    return shards
+
+
+def _store(shards: dict[str, bytes]) -> dict[str, bytes]:
+    reader = export_inputs._parity_reader()
+    return {path: data for path, data in shards.items() if reader.is_store_shard(path)}
+
+
+def _parity_run_1953_summary_bytes(shards: dict[str, bytes] | None = None, series_commit: str | None = None) -> bytes:
+    """RUN 1953 summarized as hermit's scorecard would summarize `shards`."""
+    reader = export_inputs._parity_reader()
+    shards = _parity_run_1953_shards() if shards is None else shards
+    ledger_store = reader.parity_ledger_module()
+    rows = [event for path, data in _store(shards).items()
+            for event in ledger_store.parse_lines(data.decode(), path) if event["event_type"] == "parity.record"]
+    return reader.encode_summary(reader.summarize_rows(
+        rows, store_sha256=reader.store_digest(_store(shards)), series_commit=series_commit))
 
 
 def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
@@ -2104,58 +2123,143 @@ def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
     return git(ledger, "rev-parse", "HEAD")
 
 
-PARITY_SHARDS = {
-    "parity/rrnewton/fixturehost/2026-09.jsonl": b"{}\n",
-    "parity-runs/rrnewton/fixturehost/2026-09.jsonl": b"{}\n",
-}
+RUN_1953_LINE = (
+    "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
+    "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+)
 
 
 def test_export_without_parity_carries_an_absent_capture_not_zero(tmp_path: Path):
     repo, commit = repository(tmp_path)
     result = export_inputs.build_export(repo, commit, published_only=True)
-    ledger_commit = result["provenance"]["series_commit"]
-    assert result["parity"] == export_inputs._parity_reader().absent_carriage(ledger_commit, 0, 0)
-    assert export_inputs._parity_reader().validate_carriage(result["parity"]) is None
+    carriage = result["parity"]
+    assert carriage["ledger_commit"] == result["provenance"]["series_commit"]
+    assert (carriage["state"], carriage["present"], carriage["store_files"], carriage["store_sha256"],
+            carriage["run_marker_files"], carriage["append_refusals_total"]) == ("absent", False, 0, None, 0, 0)
+    assert export_inputs._parity_reader().validate_carriage(carriage) is None
 
 
-def test_export_carries_the_committed_parity_summary_bytes(tmp_path: Path):
+def test_export_carries_the_summary_of_the_store_at_the_series_commit(tmp_path: Path):
     repo, commit = repository(tmp_path)
-    data = _parity_run_1953_summary_bytes()
-    ledger_commit = _commit_ledger_parity(repo, {**PARITY_SHARDS, "scorecard/parity.json": data})
+    shards = _parity_run_1953_shards()
+    data = _parity_run_1953_summary_bytes(shards)
+    ledger_commit = _commit_ledger_parity(repo, {**shards, "scorecard/parity.json": data})
     result = export_inputs.build_export(repo, commit, published_only=True)
     assert result["provenance"]["series_commit"] == ledger_commit
     carriage = result["parity"]
-    assert carriage["present"] is True and carriage["ledger_commit"] == ledger_commit
+    reader = export_inputs._parity_reader()
+    assert (carriage["state"], carriage["present"], carriage["ledger_commit"]) == ("current", True, ledger_commit)
     assert carriage["summary_json"].encode() == data and carriage["bytes"] == len(data)
     assert carriage["sha256"] == hashlib.sha256(data).hexdigest()
     assert carriage["git_object"] == git(repo / "hermit_test_ledger", "rev-parse", f"{ledger_commit}:scorecard/parity.json")
-    assert (carriage["store_files"], carriage["run_marker_files"]) == (1, 1)
-    summary = export_inputs._parity_reader().validate_carriage(carriage)
-    assert summary["producers"][0]["line"] == (
-        "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
-        "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+    # The digest is recomputed from the committed shard, not copied from the summary.
+    assert carriage["store_sha256"] == reader.store_digest(_store(shards)) == json.loads(data)["generated_from"]["store_sha256"]
+    assert (carriage["store_files"], carriage["store_records"], carriage["run_marker_files"]) == (1, 192, 1)
+    summary = reader.validate_carriage(carriage)
+    assert summary["producers"][0]["line"] == RUN_1953_LINE
+
+
+def test_a_parity_only_publication_after_the_summary_makes_it_stale(tmp_path: Path):
+    repo, _commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    shards = _parity_run_1953_shards()
+    series_commit = _commit_ledger_parity(repo, shards)
+    # The mirror commits the scorecard one commit after the series commit it names.
+    summarized = _commit_ledger_parity(
+        repo, {"scorecard/parity.json": _parity_run_1953_summary_bytes(shards, series_commit)})
+    current = export_inputs._parity_capture(ledger, summarized)
+    assert (current["state"], current["summarized_commit"]) == ("current", series_commit)
+    (path,) = _store(shards)
+    first, second = shards[path].splitlines(keepends=True)[:2]
+    extended = {path: shards[path] + first + second, "parity/hermit/laterhost/2026-10.jsonl": first}
+    later = _commit_ledger_parity(repo, extended)
+    stale = export_inputs._parity_capture(ledger, later)
+    assert (stale["state"], stale["summarized_commit"], stale["unsummarized_records"], stale["store_records"]) == (
+        "stale", series_commit, 3, 195)
+    assert export_inputs._parity_reader().validate_carriage(stale)["producers"][0]["line"] == RUN_1953_LINE
+
+
+def test_a_summary_that_is_not_of_its_store_is_refused_and_the_export_goes_on(tmp_path: Path):
+    repo, commit = repository(tmp_path)
+    shards = _parity_run_1953_shards()
+    (path,) = _store(shards)
+    data = _parity_run_1953_summary_bytes(shards)
+    # The store at the series commit has one more record than the summary covers,
+    # and the summary names no series commit that would locate what it covered.
+    moved = {**shards, path: shards[path] + shards[path].splitlines(keepends=True)[0]}
+    ledger_commit = _commit_ledger_parity(repo, {**moved, "scorecard/parity.json": data})
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    reader = export_inputs._parity_reader()
+    carriage = result["parity"]
+    assert result["provenance"]["series_commit"] == ledger_commit and result["series"]
+    assert (carriage["state"], carriage["summary_json"]) == ("refused", None)
+    assert carriage["refusal"] == (
+        f"ledger commit {ledger_commit} scorecard/parity.json is refused: its store_sha256 "
+        f"{reader.store_digest(_store(shards))} is not {reader.store_digest(_store(moved))}, the digest of the "
+        f"parity/ store at ledger commit {ledger_commit}, and it names no series_commit to locate what it summarized"
     )
+    assert reader.validate_carriage(carriage) is None
+
+
+def test_a_parity_summary_naming_a_commit_off_the_ledger_history_is_refused(tmp_path: Path):
+    # https://github.com/rrnewton/hermit/issues/3301 findings [7] and [8]: the
+    # summary's series_commit is checked against the ledger's history by git.
+    # A side-branch commit holding the same store digests like the summary,
+    # but it is not what the exported commit's history summarized.
+    repo, _commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    reader = export_inputs._parity_reader()
+    shards = _parity_run_1953_shards()
+    (path,) = _store(shards)
+    branch = git(ledger, "symbolic-ref", "--short", "HEAD")
+    git(ledger, "checkout", "-q", "--detach", "HEAD")
+    side = _commit_ledger_parity(repo, shards)
+    git(ledger, "checkout", "-q", branch)
+    data = _parity_run_1953_summary_bytes(shards, side)
+    matching = _commit_ledger_parity(repo, {**shards, "scorecard/parity.json": data})
+    carriage = export_inputs._parity_capture(ledger, matching)
+    assert (carriage["state"], carriage["summary_json"], carriage["refusal"]) == (
+        "refused", None,
+        f"ledger commit {matching} scorecard/parity.json is refused: its store_sha256 matches the parity/ store "
+        f"at ledger commit {matching}, but its series_commit {side} is not that commit or an ancestor of it",
+    )
+    assert reader.validate_carriage(carriage) is None
+    extended = {path: shards[path] + shards[path].splitlines(keepends=True)[0]}
+    later = _commit_ledger_parity(repo, extended)
+    carriage = export_inputs._parity_capture(ledger, later)
+    assert (carriage["state"], carriage["summary_json"], carriage["refusal"]) == (
+        "refused", None,
+        f"ledger commit {later} scorecard/parity.json is refused: its store_sha256 "
+        f"{reader.store_digest(_store(shards))} is not {reader.store_digest(extended)}, the digest of the "
+        f"parity/ store at ledger commit {later}, and its series_commit {side} is not an ancestor of it",
+    )
+    assert reader.validate_carriage(carriage) is None
 
 
 def test_parity_records_without_a_summary_are_carried_as_unsummarized(tmp_path: Path):
     repo, _commit = repository(tmp_path)
-    ledger_commit = _commit_ledger_parity(repo, PARITY_SHARDS)
+    shards = _parity_run_1953_shards()
+    ledger_commit = _commit_ledger_parity(repo, shards)
     carriage = export_inputs._parity_capture(repo / "hermit_test_ledger", ledger_commit)
-    assert carriage == export_inputs._parity_reader().absent_carriage(ledger_commit, 1, 1)
+    reader = export_inputs._parity_reader()
+    assert (carriage["state"], carriage["present"], carriage["store_files"], carriage["run_marker_files"],
+            carriage["store_sha256"]) == ("absent", False, 1, 1, reader.store_digest(_store(shards)))
+    assert reader.validate_carriage(carriage) is None
 
 
-def test_a_malformed_committed_parity_summary_refuses_the_export(tmp_path: Path):
-    repo, _commit = repository(tmp_path)
-    value = json.loads(_parity_run_1953_summary_bytes())
+def test_a_malformed_committed_parity_summary_is_refused_not_the_export(tmp_path: Path):
+    repo, commit = repository(tmp_path)
+    shards = _parity_run_1953_shards()
+    value = json.loads(_parity_run_1953_summary_bytes(shards))
     value["producers"][0]["total"]["matched"] = 1
     data = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
-    ledger_commit = _commit_ledger_parity(repo, {**PARITY_SHARDS, "scorecard/parity.json": data})
-    with pytest.raises(
-        export_inputs.ExportRefused,
-        match=rf"ledger commit {ledger_commit} scorecard/parity\.json is refused: .*\.total: "
-              r"measured 175 is not matched \+ diverged",
-    ):
-        export_inputs._parity_capture(repo / "hermit_test_ledger", ledger_commit)
+    ledger_commit = _commit_ledger_parity(repo, {**shards, "scorecard/parity.json": data})
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    carriage = result["parity"]
+    assert carriage["state"] == "refused" and carriage["sha256"] == hashlib.sha256(data).hexdigest()
+    assert re.fullmatch(
+        rf"ledger commit {ledger_commit} scorecard/parity\.json is refused: .*\.total: "
+        r"measured 175 is not matched \+ diverged.*", carriage["refusal"])
 
 
 def test_a_symlinked_parity_summary_is_refused(tmp_path: Path):
@@ -2166,6 +2270,22 @@ def test_a_symlinked_parity_summary_is_refused(tmp_path: Path):
     git(ledger, "add", "scorecard/parity.json")
     git(ledger, "commit", "-qm", "symlinked parity summary")
     ledger_commit = git(ledger, "rev-parse", "HEAD")
-    with pytest.raises(export_inputs.ExportRefused,
-                       match=r"parity ledger path is not a regular blob: scorecard/parity\.json \(mode=120000"):
-        export_inputs._parity_capture(ledger, ledger_commit)
+    carriage = export_inputs._parity_capture(ledger, ledger_commit)
+    assert (carriage["state"], carriage["refusal"]) == (
+        "refused", f"ledger commit {ledger_commit} parity ledger path(s) are not regular blobs: scorecard/parity.json")
+
+
+def test_append_refusals_at_the_series_commit_are_carried(tmp_path: Path):
+    repo, _commit = repository(tmp_path)
+    reader = export_inputs._parity_reader()
+    ledger_store = reader.parity_ledger_module()
+    refusal = ledger_store.build_refusal(
+        producer="validate", run_id="validate-refused", hermit_sha="d" * 40, emitted_at="2026-09-29T01:00:00Z",
+        source_tree_dirty=None, host="fixturehost", input_bytes=b"x", input_lines=1,
+        error="--source-tree-dirty is required",
+    )
+    ledger_commit = _commit_ledger_parity(
+        repo, {ledger_store.event_shard(refusal): ledger_store.encode_batch([refusal]).encode()})
+    carriage = export_inputs._parity_capture(repo / "hermit_test_ledger", ledger_commit)
+    assert (carriage["state"], carriage["run_marker_files"], carriage["append_refusals_total"]) == ("absent", 1, 1)
+    assert carriage["append_refusals"] == [{field: refusal[field] for field in reader.APPEND_REFUSAL_FIELDS}]

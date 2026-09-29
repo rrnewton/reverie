@@ -543,6 +543,10 @@ def test_cell_populations_and_result_denominator_remain_separate() -> None:
     )
     summary = _browser_payload(files, "data/site-summary.json.gz")
     assert summary["projection_audit"] == data["projection_audit"]
+    # The published history names the retired rerun for what it is.
+    assert summary["backend_history"]
+    assert all("parity" not in point and "legacy_rerun_parity" in point
+               for point in summary["backend_history"])
     omission = data["projection_audit"]["deliberate_omissions"][0]
     assert omission["event_references"] == [
         {
@@ -3580,7 +3584,10 @@ def test_backend_history_preserves_regression_then_explicit_gap() -> None:
     assert points["2026-09-01"]["determinism"]["green_cells"] == 1
     assert points["2026-09-02"]["determinism"]["green_cells"] == 0
     assert points["2026-09-03"]["determinism"]["green_cells"] is None
-    assert all(point["parity"]["green_cells"] is None for point in points.values())
+    assert all(point["legacy_rerun_parity"]["green_cells"] is None for point in points.values())
+    # The retired rerun is never published under the current parity name.
+    assert all(set(point) == {"date", "backend", "reference_cells", "determinism", "legacy_rerun_parity"}
+               for point in points.values())
     assert all(point["reference_cells"] == 1 for point in points.values())
     chart = render_page._backend_history_chart(model)
     assert 'aria-label="Show kvm determinism line"' in chart
@@ -3603,14 +3610,14 @@ def test_backend_history_chart_plots_percentages_when_denominator_changes() -> N
                 "backend": "kvm",
                 "reference_cells": 4,
                 "determinism": {"green_cells": 1, "unavailable_cells": 0},
-                "parity": {"green_cells": None, "unavailable_cells": 4},
+                "legacy_rerun_parity": {"green_cells": None, "unavailable_cells": 4},
             },
             {
                 "date": "2026-09-02",
                 "backend": "kvm",
                 "reference_cells": 8,
                 "determinism": {"green_cells": 4, "unavailable_cells": 0},
-                "parity": {"green_cells": None, "unavailable_cells": 8},
+                "legacy_rerun_parity": {"green_cells": None, "unavailable_cells": 8},
             },
         ],
         data={"provenance": {"parent_commit": "1" * 40}},
@@ -6392,6 +6399,8 @@ PARITY_RUN_1953_LINE = (
 
 
 def _parity_carriage() -> dict[str, Any]:
+    """RUN 1953 as the exporter captures it: the rows in their `parity/` shard,
+    the summary of that store, and the digest recomputed from the shard."""
     reader = render_page._parity_reader()
     ledger_store = reader.parity_ledger_module()
     text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
@@ -6403,9 +6412,19 @@ def _parity_carriage() -> dict[str, Any]:
         source_tree_dirty=False, host="fixturehost",
     )
     rows = [row for row in batch if row["event_type"] == "parity.record"]
-    data = reader.encode_summary(reader.summarize_rows(rows, store_sha256="a" * 64))
+    store = {ledger_store.event_shard(rows[0]): ledger_store.encode_batch(rows).encode()}
+    data = reader.encode_summary(reader.summarize_rows(rows, store_sha256=reader.store_digest(store)))
     blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
-    return reader.present_carriage(PARITY_LEDGER_COMMIT, blob, data, 1, 1)
+
+    def no_earlier_store(commit: str) -> Any:
+        raise reader.ParitySummaryError(f"no earlier store at {commit}")
+
+    carriage = reader.capture_carriage(
+        PARITY_LEDGER_COMMIT, summary_object=blob, summary_data=data, store=store, store_files=1,
+        run_marker_files=1, read_store_at=no_earlier_store, is_ancestor=lambda commit: False,
+    )
+    assert carriage["state"] == "current", carriage["refusal"]
+    return carriage
 
 
 def _data_with_parity(carriage: dict[str, Any]) -> dict[str, Any]:
@@ -6429,23 +6448,60 @@ def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
     assert f'<p class="parity-line"><code>{PARITY_RUN_1953_LINE}</code></p>' in overview
     # The leaderboard reads the same summary, never the retired rerun figure.
     assert "Parity w/partial" not in overview
+    assert "Parity summary refused" not in overview
     # The panel follows the leaderboard and precedes the history chart.
     assert overview.index('id="backends"') < overview.index('id="parity"') < overview.index('id="backend-history"')
 
 
-def test_build_data_refuses_parity_read_at_another_ledger_commit() -> None:
+def _refused_parity_site(data: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, bytes]]:
+    """The site with a refused parity carriage, and the same site without parity."""
+    _validated(data)
+    files = render_page.render_site(_build(data), data)
+    plain = representative_build_data()
+    plain["provenance"]["canonical_input_provenance"].update(
+        {k: data["provenance"]["canonical_input_provenance"][k]
+         for k in ("series_repository", "series_commit", "series_tree")})
+    return files, render_page.render_site(_build(plain), plain)
+
+
+def test_parity_read_at_another_ledger_commit_is_refused_in_the_parity_panel_alone() -> None:
     data = _data_with_parity(_parity_carriage())
     data["provenance"]["canonical_input_provenance"]["series_commit"] = "f" * 40
-    module = render_page._writer()._build_data_module()
-    with pytest.raises(module.BuildRefused, match=f"runs.parity was read at ledger commit {PARITY_LEDGER_COMMIT}, "
-                                                  f"not the series commit {'f' * 40}"):
-        _validated(data)
+    files, plain = _refused_parity_site(data)
+    overview = files["index.html"].decode()
+    assert "<strong>Parity summary refused; no parity figure is shown for this build.</strong>" in overview
+    assert (f"parity carriage is refused: it was read at ledger commit {PARITY_LEDGER_COMMIT}, "
+            f"not the series commit {'f' * 40}") in overview
+    assert PARITY_RUN_1953_LINE not in overview
+    # The determinism pages are all still published.
+    assert set(files) == set(plain) and 'id="backends"' in overview and 'id="backend-history"' in overview
 
 
-def test_build_data_refuses_a_tampered_parity_carriage() -> None:
+def test_a_tampered_parity_carriage_still_produces_the_determinism_pages() -> None:
     carriage = _parity_carriage()
     carriage["summary_json"] = carriage["summary_json"].replace('"matched": 0', '"matched": 1', 1)
-    data = _data_with_parity(carriage)
+    files, plain = _refused_parity_site(_data_with_parity(carriage))
+    overview = files["index.html"].decode()
+    assert "parity carriage is refused: parity carriage.sha256 disagrees with the bytes carried" in overview
+    assert overview.count("parity summary refused; see the parity panel") >= 2
+    assert set(files) == set(plain)
+    # Every cell page is the determinism page it would be without parity; only the
+    # digest of the Stage 1 artifact, which carries runs.parity, differs.
+    digest = re.compile(rb"(<dt>Stage 1 artifact digest</dt><dd><code>)[0-9a-f]{64}")
+    cells = [name for name in plain if name.startswith("cells/") and name.endswith(".html")]
+    assert cells
+    for name in cells:
+        assert digest.sub(rb"\1", files[name]) == digest.sub(rb"\1", plain[name]), name
+
+
+def test_build_admits_the_captured_parity_carriage_without_refusing_the_build() -> None:
     module = render_page._writer()._build_data_module()
-    with pytest.raises(module.BuildRefused, match=r"runs\.parity is refused: .*sha256 disagrees with the bytes carried"):
-        _validated(data)
+    carriage = _parity_carriage()
+    assert module._checked_parity(carriage, PARITY_LEDGER_COMMIT, "canonical input parity") == carriage
+    tampered = dict(carriage, bytes=carriage["bytes"] + 1)
+    refused = module._checked_parity(tampered, PARITY_LEDGER_COMMIT, "canonical input parity")
+    assert (refused["state"], refused["ledger_commit"], refused["summary_json"]) == (
+        "refused", PARITY_LEDGER_COMMIT, None)
+    assert refused["refusal"] == (
+        f"canonical input parity is refused: parity carriage.bytes {carriage['bytes'] + 1} is not the "
+        f"{carriage['bytes']} byte(s) carried")

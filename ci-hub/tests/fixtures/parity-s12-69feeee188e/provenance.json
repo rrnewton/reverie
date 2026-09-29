@@ -1,0 +1,37 @@
+{
+  "description": "hermit's scorecard parity summary exactly as its S12 writer produced it, and the parity-ledger/v1 rows it summarized, copied byte for byte from hermit so the website's parity checker and panel are tested against the Rust writer's real output, not only against the Python reference in parity_summary.py. See https://github.com/rrnewton/hermit/issues/3301 (slice S12 writes, slice D5 reads).",
+  "hermit_repository": "https://github.com/rrnewton/hermit.git",
+  "hermit_commit": "69feeee188e8480c34645716b57bc87f3f857cc5",
+  "hermit_commit_subject": "Report cross-backend parity beside determinism from parity ledger rows",
+  "hermit_commit_on_main": "no: as of 2026-09-29 hermit main is cfa56cd605af84cf6caccc332e057003478c1860, which does not contain this commit. Re-vendor from the landed S12 commit if its fixture bytes change.",
+  "files": {
+    "expected-parity.json": {
+      "hermit_path": "ci/compat-envelope/testdata/parity-ledger/expected-parity.json",
+      "bytes": 217963,
+      "sha256": "d139a53f1a86b2118785b172ba5066b98526b72bc6d9ff23bfbd2177458ab816",
+      "git_blob": "e29ce34fa928c76c7d2c0684a242a5311eedf352"
+    },
+    "hermit-provenance.json": {
+      "hermit_path": "ci/compat-envelope/testdata/parity-ledger/provenance.json",
+      "bytes": 3077,
+      "sha256": "97e21c829cc3ca9ff869670ee570107e5dbc8662288d56075625aecc07e525dc",
+      "git_blob": "ab797614e6bdbf62083ef28dd0d686f5357fd767"
+    },
+    "retired-ids.json": {
+      "hermit_path": "tests/e2e/manifests/inventory/retired-ids.json",
+      "bytes": 9543,
+      "sha256": "a335046789672fbde27f1cbcec52c7218455ac61a00d424977e8c738a98b8e34",
+      "git_blob": "b912c13254d2f554b7df0d5cc858798e79d4afc7"
+    },
+    "rows.jsonl": {
+      "hermit_path": "ci/compat-envelope/testdata/parity-ledger/rows.jsonl",
+      "bytes": 403557,
+      "sha256": "f7288bc0ccd1a69565ed490b6d3a1547ee3083e63ae36eb499b10523a8e3a028",
+      "git_blob": "74538959fee9c150a2c33de29b974b6a02fc42f4"
+    }
+  },
+  "store_shard": "parity/hermit/devbig014/2026-09.jsonl",
+  "store_sha256": "d2750e52eb70b0bf984f3b4798f05aa32e413261bf3a127f90f8f4de46cbc9b3",
+  "store_sha256_note": "expected-parity.json's generated_from.store_sha256 is the digest of a parity/ store holding rows.jsonl as its only shard at store_shard (team hermit and host devbig014 are the fixture values named in hermit-provenance.json).",
+  "catalogue_renames": "hermit's scorecard reports each cell under its live catalogue id, mapped through retired-ids.json, and keeps the id the run emitted as emitted_cell. retired-ids.json maps each of its 104 backend-parity-c/<test> ids to c-programs/<test>, except backend-parity-c/pidfd-open-self, which became c-programs/pidfd-open-self-pair. summarize_rows has no catalogue, so it reports the emitted ids; that is the only difference between the two summaries."
+}

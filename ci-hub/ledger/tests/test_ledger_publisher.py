@@ -910,6 +910,52 @@ def test_a_changed_parity_replay_is_refused_but_the_series_still_publishes(
     assert changed.exists(), "a refused parity batch stays spooled and visible"
 
 
+def test_unusable_published_parity_is_reported_and_never_blocks_a_new_run(
+        tmp_path, remote_and_clone, parity_store, capsys):
+    """https://github.com/rrnewton/hermit/issues/3301 finding [12]: published
+    parity is indexed, not revalidated. Lines the index cannot use are listed,
+    and the next run still publishes and its retained copy still reaps."""
+    parity = parity_store
+    bare, clone = remote_and_clone
+    sources = _parity_sources(parity)
+    first = _parity_events(parity, sources)
+    _spool_parity(parity, tmp_path / "p1", first)
+    assert publisher.publish(clone, tmp_path / "p1", store="parity")["parity"]["historic_invalid"] == 0
+    # Something outside this tool appends to the published shard: a line that
+    # is not JSON, and a second copy of a published row with another body.
+    seed = tmp_path / "seed"
+    git(seed, "pull", "-q", "origin", "main")
+    rows_rel = f"parity/{TEAM}/{HOST}/2026-09.jsonl"
+    conflicting = dict(first[1], reason="rewritten after publication")
+    with open(seed / rows_rel, "a", encoding="utf-8") as handle:
+        handle.write("not json\n" + parity.canonical_line(conflicting) + "\n")
+    git(seed, "add", rows_rel)
+    git(seed, "-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-q", "-m", "tamper")
+    git(seed, "push", "-q", "origin", "main")
+    tampered = _remote_text(bare, rows_rel)
+
+    # Another run over the same records: the pressure-test producer's ids differ.
+    second = _parity_events(parity, sources, producer="pressure-test")
+    batch = _spool_parity(parity, tmp_path / "p2", second)
+    out = publisher.publish(clone, tmp_path / "p2", store="parity")
+
+    assert out["parity"]["published"] == 193 and out["parity"]["refused"] == [], out
+    assert out["parity"]["historic_invalid"] == 2
+    assert out["parity"]["historic_invalid_sample"] == [
+        {"path": rows_rel, "line": 193,
+         "error": f"{rows_rel}:193: not JSON: Expecting value: line 1 column 1 (char 0)"},
+        {"path": rows_rel, "line": 194,
+         "error": f"event_id {first[1]['event_id']} is published twice with different "
+                  "bodies; the first copy stands"},
+    ]
+    after = _remote_text(bare, rows_rel)
+    assert after.startswith(tampered) and after[len(tampered):] == parity.encode_batch(second[1:])
+    git(clone, "fetch", "-q", "origin", "main")
+    git(clone, "checkout", "-q", "--detach", "origin/main")
+    assert publisher.reap_retained(tmp_path / "p2", clone, store="parity") == 1
+    assert not (tmp_path / "p2" / "published" / batch.name).exists()
+
+
 def test_a_node_that_never_ran_publishes_as_record_missing(tmp_path, remote_and_clone, parity_store):
     parity = parity_store
     bare, clone = remote_and_clone

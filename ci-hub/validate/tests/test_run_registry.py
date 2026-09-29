@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import stat
 import subprocess
@@ -764,9 +765,9 @@ class RunRegistryContractTests(unittest.TestCase):
         parity = {
             "schema": "parity-publication/v1", "published": 193, "already_published": 0,
             "commit": "b" * 40, "joint": False, "batches": ["hermit__h__2026-09__x.jsonl"],
-            "refused": [], "error": None, "pending_batches": 0,
+            "refused": [], "error": None, "pending_batches": 0, "historic_invalid": 0,
             "run": {"producer": "validate", "run_id": "validate-x", "state": "published",
-                    "records": 192},
+                    "records": 192, "refusal": None},
         }
         failed = {"state": "failed", "recorded_at": "2026-09-28T03:00:00+00:00",
                   "detail": "series push refused",
@@ -774,16 +775,22 @@ class RunRegistryContractTests(unittest.TestCase):
         accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=failed))
         self.assertEqual(failed, accepted.raw["ledger_mirror"])
         run = parity["run"]
+        refused_run = {**run, "state": "refused", "records": None,
+                       "refusal": "input row 1: parity ledger source x: unknown field"}
         for label, good in (
-            ("empty selection is 0, not absent", {**parity, "run": {**run, "records": 0}}),
+            ("a zero-record marker counts 0", {**parity, "run": {**run, "records": 0}}),
             ("pending", {**parity, "published": 0, "commit": None,
                          "run": {**run, "state": "pending"}}),
+            ("refused run carries its message", {**parity, "published": 0, "commit": None,
+                                                 "run": refused_run}),
             ("absent run has no count", {**parity, "run": {**run, "state": "absent",
                                                            "records": None}}),
             ("unreadable ledger", {**parity, "error": "cannot count parity: x",
+                                   "historic_invalid": None,
                                    "run": {**run, "state": None, "records": None}}),
             ("no run named", {**parity, "run": None}),
             ("refused batch", {**parity, "refused": [{"batch": "b.jsonl", "error": "bad"}]}),
+            ("unusable published entries", {**parity, "historic_invalid": 2}),
         ):
             with self.subTest(label):
                 run_registry.check_parity_publication(good)
@@ -799,11 +806,23 @@ class RunRegistryContractTests(unittest.TestCase):
             ("refusal shape", {**parity, "refused": [{"batch": "b"}]},
              "must be a list of {batch, error} refusals"),
             ("unknown state", {**parity, "run": {**run, "state": "matched"}},
-             "must be null, published, pending, or absent"),
+             "must be null, published, pending, refused, or absent"),
             ("absent with a count", {**parity, "run": {**run, "state": "absent", "records": 0}},
              "must be counted exactly when the run's marker was read"),
             ("published without a count", {**parity, "run": {**run, "records": None}},
              "must be counted exactly when the run's marker was read"),
+            ("refused with a count", {**parity, "run": {**refused_run, "records": 0}},
+             "must be counted exactly when the run's marker was read"),
+            ("refused without its message", {**parity, "run": {**refused_run, "refusal": " "}},
+             f"{field}.run.refusal: a refused run must carry its refusal message"),
+            ("a message on a run that was not refused",
+             {**parity, "run": {**run, "refusal": "stale"}},
+             f"{field}.run.refusal: only a refused run carries a refusal message"),
+            ("run without the refusal key",
+             {**parity, "run": {k: v for k, v in run.items() if k != "refusal"}},
+             f"{field}.run: must contain exactly producer, records, refusal, run_id, state"),
+            ("historic_invalid not a count", {**parity, "historic_invalid": -1},
+             f"{field}.historic_invalid: must be a nonnegative integer or null"),
         ):
             with self.subTest(label), self.assertRaisesRegex(RuntimeError, message):
                 run_registry.parse_current_record(validation_handle(
@@ -812,6 +831,48 @@ class RunRegistryContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "may carry only its quarantine and parity"):
             run_registry.parse_current_record(validation_handle(
                 ledger_mirror={**failed, "raw_publication": {"parity": parity}}))
+
+    def test_successful_publication_types_its_parity_outcome(self) -> None:
+        # https://github.com/rrnewton/hermit/issues/3301 finding [7]: the
+        # success path checks the parity outcome exactly as the failed path does.
+        repository = "https://github.com/rrnewton/hermit_test_ledger.git"
+        parity = {
+            "schema": "parity-publication/v1", "published": 193, "already_published": 0,
+            "commit": "b" * 40, "joint": True, "batches": ["hermit__h__2026-09__x.jsonl"],
+            "refused": [], "error": None, "pending_batches": 0, "historic_invalid": 0,
+            "run": {"producer": "validate", "run_id": "validate-x", "state": "published",
+                    "records": 192, "refusal": None},
+        }
+        publication = {
+            "state": "published", "recorded_at": "2026-09-21T12:00:00Z",
+            "repository": repository, "source_repository": repository,
+            "commit": "b" * 40, "source_commit": "c" * 40,
+            "source_tree": "d" * 40, "series_commit": "c" * 40, "rows": 2,
+            "raw_publication": {"published": 2, "parity": parity},
+            "scorecard": {"state": "published", "hermit_commit": SHA,
+                         "files": {"scorecard/SCORECARD.md": "f" * 64,
+                                   "scorecard/cells.json": "0" * 64}},
+        }
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=publication))
+        self.assertEqual(publication, accepted.raw["ledger_mirror"])
+        dropped = {**publication, "raw_publication": {
+            "published": 2, "parity_not_recorded": "validation-run-handle-...joint: must be a boolean"}}
+        run_registry.parse_current_record(validation_handle(ledger_mirror=dropped))
+        field = "ledger_mirror.raw_publication"
+        for label, raw, message in (
+            ("unfit parity", {"published": 2, "parity": {**parity, "joint": "no"}},
+             f"{field}.parity.joint: must be a boolean"),
+            ("old run shape", {"published": 2, "parity": {**parity, "run": {
+                k: v for k, v in parity["run"].items() if k != "refusal"}}},
+             f"{field}.parity.run: must contain exactly"),
+            ("both", {"published": 2, "parity": parity, "parity_not_recorded": "x"},
+             f"{field}: carries both a parity outcome and the reason it was not recorded"),
+            ("blank reason", {"published": 2, "parity_not_recorded": " "},
+             f"{field}.parity_not_recorded: must be a nonempty string"),
+        ):
+            with self.subTest(label), self.assertRaisesRegex(RuntimeError, re.escape(message)):
+                run_registry.parse_current_record(validation_handle(
+                    ledger_mirror={**publication, "raw_publication": raw}))
 
     def test_scorecard_may_bind_parity_json_but_nothing_else_optional(self) -> None:
         files = {"scorecard/SCORECARD.md": "f" * 64, "scorecard/cells.json": "0" * 64}

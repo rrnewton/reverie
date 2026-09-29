@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -51,6 +52,17 @@ def first(sources, backend, verdict):
         if source["backend"] == backend and source["verdict"] == verdict:
             return index, source
     raise AssertionError(f"fixture has no {backend} {verdict} source")
+
+
+def measured_like(source: dict, template: dict) -> dict:
+    """Make `source` a well-formed diverged comparison, copying the measured
+    fields of `template` (a diverged source of another backend)."""
+    record = copy.deepcopy(template["record"])
+    record.update(test_id=source["test_id"], backend=source["backend"])
+    source["verdict"] = "diverged"
+    source["reason"] = None
+    source["record"] = record
+    return source
 
 
 def record_missing(test_id: str = "backend-parity-c/never-ran", backend: str = "kvm") -> dict:
@@ -164,10 +176,99 @@ class MalformedRecordsAreRefusedLoudly(unittest.TestCase):
         self.refuse(sources, "parity record fields are not exactly its schema's: unknown bonus")
 
     def test_dbt_cannot_report_a_measured_comparison(self):
+        # RUN 1953's hermit declares dbt not equalizable: its 14 dbt rows are
+        # inputs-not-equalized with the declaration as their reason. A
+        # well-formed measured dbt record in the same run is refused.
+        sources = fixture_sources()
+        index, source = first(sources, "dbt", "inputs-not-equalized")
+        declaration = source["reason"]
+        measured_like(source, first(sources, "kvm", "diverged")[1])
+        ledger_index = index + 2  # after the run marker, 1-based
+        self.refuse(sources,
+                    f"event {ledger_index} ({source['cell']}): dbt inputs cannot be equalized, so it "
+                    f"reports no measured comparison and never equal inputs: {declaration}")
+
+    def test_a_declared_backend_never_reports_equal_inputs(self):
+        sources = fixture_sources()
+        _, declared = first(sources, "dbt", "inputs-not-equalized")
+        index, source = [(i, s) for i, s in enumerate(sources)
+                         if s["backend"] == "dbt" and s is not declared][0]
+        source["verdict"] = source["record"]["verdict"] = "unavailable"
+        source["reason"] = source["record"]["reason"] = "fixture: an unavailable dbt operand"
+        source["record"]["inputs_equalized"] = True
+        self.refuse(sources,
+                    f"event {index + 2} ({source['cell']}): dbt inputs cannot be equalized, so it "
+                    f"reports no measured comparison and never equal inputs: {declared['reason']}")
+
+    def test_a_run_declares_one_reason_per_backend(self):
+        sources = fixture_sources()
+        dbt = [(i, s) for i, s in enumerate(sources) if s["backend"] == "dbt"]
+        index, source = dbt[-1]
+        source["reason"] = source["record"]["reason"] = "some other declaration"
+        self.refuse(sources,
+                    f"event {index + 2} ({source['cell']}) declares dbt inputs not equalizable for "
+                    f"'some other declaration', but an earlier row of the run declares "
+                    f"{dbt[0][1]['reason']!r}; a run's hermit makes one declaration per backend")
+
+    def test_a_kvm_declaration_holds_the_runs_kvm_rows_to_it(self):
+        # The rule follows the declaration the run's rows make, not a
+        # backend named in this store: a kvm row that says its inputs could
+        # not be equalized makes the run's measured kvm rows refusable.
+        sources = fixture_sources()
+        index, source = first(sources, "kvm", "diverged")
+        why = "fixture: kvm declared not equalizable"
+        source["verdict"] = "inputs-not-equalized"
+        source["reason"] = why
+        source["record"].update(
+            verdict="inputs-not-equalized", reason=why, unequalized_credit=None,
+            first_divergent_record=None, left_len=None, right_len=None, matched_prefix=None,
+            first_difference=None)
+        later, other = next((i, s) for i, s in enumerate(sources)
+                            if i > index and s["backend"] == "kvm" and s["verdict"] == "diverged")
+        message = self.refuse(sources, f"event {later + 2} ({other['cell']}): kvm inputs cannot be equalized")
+        self.assertTrue(message.endswith(why), message)
+
+    def test_inputs_not_equalized_with_equalized_inputs_is_refused(self):
         sources = fixture_sources()
         _, source = first(sources, "dbt", "inputs-not-equalized")
-        source["verdict"] = source["record"]["verdict"] = "diverged"
-        self.refuse(sources, "dbt inputs cannot be equalized")
+        source["record"]["inputs_equalized"] = True
+        self.refuse(sources,
+                    f"parity record {source['cell']}: inputs-not-equalized says the inputs could not "
+                    "be equalized, but inputs_equalized is true")
+
+    def test_a_run_whose_hermit_makes_dbt_measurable_is_admitted(self):
+        # No dbt rule is hardcoded here: once hermit stops declaring dbt not
+        # equalizable, a run whose dbt rows are all measured is admitted.
+        sources = fixture_sources()
+        template = first(sources, "kvm", "diverged")[1]
+        for source in sources:
+            if source["backend"] == "dbt":
+                measured_like(source, template)
+        marker, rows = parity.validate_batch(build(sources))
+        self.assertEqual((0, 175 + 14),
+                         (marker["verdicts"]["inputs-not-equalized"], marker["verdicts"]["diverged"]))
+        self.assertEqual({"diverged"}, {row["verdict"] for row in rows if row["backend"] == "dbt"})
+
+    def test_an_unmeasured_record_carries_no_credit(self):
+        sources = fixture_sources()
+        _, source = first(sources, "kvm", "candidate-missing")
+        source["record"]["unequalized_credit"] = 0.5
+        self.refuse(sources,
+                    f"parity record {source['cell']}: CandidateMissing is unmeasured and carries no "
+                    "credit or divergence")
+
+    def test_a_match_must_be_full_credit(self):
+        # credit(12, 106, 106) is the stated amount, so only the match rule
+        # can refuse it.
+        sources = fixture_sources()
+        _, source = first(sources, "kvm", "diverged")
+        record = source["record"]
+        self.assertLess(record["matched_prefix"], record["left_len"])
+        source["verdict"] = record["verdict"] = "matched"
+        record.update(first_divergent_record=None, first_difference=None)
+        self.refuse(sources,
+                    f"parity record {source['cell']}: a match must be full credit, got "
+                    f"Some({record['unequalized_credit']})")
 
     def test_record_missing_row_that_carries_a_record(self):
         sources = fixture_sources()
@@ -231,7 +332,10 @@ class RecordMissingAndEmptySelection(unittest.TestCase):
                 "a node that left no status can only owe record-missing rows, got diverged"):
             build([source])
 
-    def test_empty_selection_is_a_marker_with_zero_records(self):
+    def test_empty_stdin_is_a_marker_with_zero_records(self):
+        # The store can record an empty call. No producer makes one today:
+        # hermit's callers skip append-parity when no parity cell is in
+        # scope, so an empty selection reads as absent, like an older hermit.
         with tempfile.TemporaryDirectory() as raw:
             spool = Path(raw) / "spool"
             result = parity.append_parity(
@@ -239,9 +343,108 @@ class RecordMissingAndEmptySelection(unittest.TestCase):
                 emitted_at=EMITTED_AT, source_tree_dirty=False, host="fixturehost")
             marker, rows = parity.read_batch(spool / result["batch"])
             self.assertEqual((0, [], []), (marker["records"], marker["nodes"], rows))
-            # Absence of a marker is the other state: nothing for this run id.
             other = parity.run_event_id("validate", "never-appended")
             self.assertEqual([], list(spool.glob(f"*__{other}.jsonl")))
+
+
+REFUSAL_ARGS = dict(
+    producer="validate", run_id=RUN_ID, hermit_sha=HERMIT_SHA, emitted_at=EMITTED_AT,
+    source_tree_dirty=False, host="fixturehost", input_bytes=b'{"cell":"x"}\n', input_lines=1,
+    error="input row 1: parity ledger source fields are not exactly its schema's: unknown x",
+)
+
+
+class RefusalsAreRecorded(unittest.TestCase):
+    """https://github.com/rrnewton/hermit/issues/3301 finding [2]: a refused
+    append leaves a durable `parity.refusal`, never a run that reads absent."""
+
+    def refusal(self, **overrides):
+        return parity.build_refusal(**{**REFUSAL_ARGS, **overrides})
+
+    def test_a_refusal_is_a_batch_of_its_own_published_to_the_run_tree(self):
+        event = self.refusal()
+        self.assertEqual(list(parity.REFUSAL_FIELDS), list(event))
+        self.assertEqual(parity.refusal_event_id(
+            "validate", RUN_ID, parity.hashlib.sha256(REFUSAL_ARGS["input_bytes"]).hexdigest(),
+            REFUSAL_ARGS["error"]), event["event_id"])
+        with tempfile.TemporaryDirectory() as raw:
+            spool = Path(raw)
+            result = parity.append_refusal(spool, event)
+            self.assertEqual({"batch": f"hermit__fixturehost__2026-09__{event['event_id']}.jsonl",
+                              "recorded_in": None}, result)
+            self.assertEqual((event, []), parity.read_batch(spool / result["batch"]))
+            # One input refused for one reason is one event, whenever it recurs.
+            again = parity.append_refusal(spool, self.refusal(emitted_at="2026-09-28T23:00:00Z"))
+            self.assertEqual({"batch": None, "recorded_in": result["batch"]}, again)
+            self.assertEqual(1, len(parity.batch_paths(spool)))
+            plan = parity.plan_publication([spool / result["batch"]],
+                                           parity.PublishedParity("c" * 40, {}, {}))
+            self.assertEqual({"parity-runs/hermit/fixturehost/2026-09.jsonl": parity.encode_batch([event])},
+                             plan.texts)
+            self.assertEqual(1, plan.appended)
+            self.assertEqual([event], parity.run_refusals(spool, "validate", RUN_ID))
+            self.assertEqual([], parity.run_refusals(spool, "validate", "another-run"))
+            self.assertEqual([], parity.run_refusals(spool, "pressure-test", RUN_ID))
+            later = self.refusal(error="a different reason", emitted_at="2026-09-28T23:30:00Z")
+            self.assertEqual([event, later], parity.run_refusals(
+                Path(raw) / "no-spool", "validate", RUN_ID,
+                published={e["event_id"]: e for e in (later, event)}))
+
+    def test_a_refusal_message_is_public_and_bounded(self):
+        self.assertEqual("cannot read <owner home>/x.jsonl",
+                         parity.public_error("  cannot read /home/alice/x.jsonl \n"))
+        self.assertEqual("refused with no message", parity.public_error(" "))
+        bounded = parity.public_error("e" * 5000)
+        self.assertEqual((4000, True), (len(bounded), bounded.endswith(" ... (truncated)")))
+        self.assertEqual("cannot read <owner home>/x.jsonl",
+                         self.refusal(error="cannot read /home/alice/x.jsonl")["error"])
+
+    def test_every_refusal_field_is_checked(self):
+        event = self.refusal()
+        at = f"parity refusal (validate run {RUN_ID})"
+        cases = [
+            ("unknown field", {"extra": 1},
+             "parity refusal fields are not exactly its schema's: unknown extra"),
+            ("schema", {"schema": "v0"}, f"{at}: schema must be parity-ledger/v1, got 'v0'"),
+            ("event type", {"event_type": "parity.run"},
+             f"{at}: event_type must be parity.refusal, got 'parity.run'"),
+            ("host", {"host": "a/b"}, f"{at}: host must be a single path segment, got 'a/b'"),
+            ("emitted_at", {"emitted_at": "2026-09-28"},
+             f"{at}: emitted_at must be YYYY-MM-DDTHH:MM:SSZ, got '2026-09-28'"),
+            ("producer", {"producer": "nightly"},
+             "parity refusal (nightly run " + RUN_ID + "): producer must be one of validate, "
+             "pressure-test, got 'nightly'"),
+            ("blank run", {"run_id": " "}, "parity refusal (validate run  ): run_id must be non-empty"),
+            ("tree", {"hermit_sha": "abc"},
+             f"{at}: hermit_sha must be 40 lowercase hex digits, got 'abc'"),
+            ("dirty", {"source_tree_dirty": "no"},
+             f"{at}: source_tree_dirty must be true or false, got the string 'no'"),
+            ("input digest", {"input_sha256": "0" * 63},
+             f"{at}: input_sha256 must be 64 lowercase hex digits"),
+            ("input lines", {"input_lines": -1},
+             f"{at}: input_lines must be a nonnegative integer, got the number -1"),
+            ("untrimmed error", {"error": " padded"},
+             f"{at}: error must be non-empty, trimmed, free of owner paths and at most 4000 characters"),
+            ("owner path", {"run_id": "/home/alice/run"},
+             "parity refusal (validate run /home/alice/run): contains a workspace-local owner path"),
+            ("identity", {"event_id": "0" * 64}, f"{at}: event_id '{'0' * 64}' is not sha256("),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label), self.assertRaises(parity.ParityLedgerError) as caught:
+                parity.validate_refusal({**event, **change})
+            self.assertIn(message, str(caught.exception))
+        # A null tree state is the refusal for a caller that never said.
+        parity.validate_refusal(self.refusal(source_tree_dirty=None, input_lines=None))
+
+    def test_a_refusal_never_travels_with_rows(self):
+        event = self.refusal()
+        events = build(fixture_sources()[:2])
+        with self.assertRaisesRegex(parity.ParityLedgerError,
+                                    "b: a refusal batch holds only its refusal event"):
+            parity.validate_batch([event, *events[1:]], "b")
+        with self.assertRaisesRegex(parity.ParityLedgerError,
+                                    "b: event 2 is a refusal inside a recorded run"):
+            parity.validate_batch([events[0], event, *events[1:]], "b")
 
 
 class AppendOnlyReplay(unittest.TestCase):
@@ -327,6 +530,16 @@ class PublicationPlanning(unittest.TestCase):
         self.assertEqual(([], [path], [], 0),
                          (plan.fresh_batches, plan.already_published, plan.refused, plan.appended))
 
+    def test_a_published_shard_without_a_final_newline_refuses_the_batch_it_would_extend(self):
+        path = self.spool_batch(fixture_sources()[:3])
+        rows = "parity/hermit/fixturehost/2026-09.jsonl"
+        published = parity.PublishedParity("c" * 40, {}, {rows: '{"cut":'})
+        plan = parity.plan_publication([path], published)
+        self.assertEqual(([], {}), (plan.fresh_batches, plan.texts))
+        self.assertEqual([{"batch": path.name, "error": f"published shard {rows} has no final "
+                                                         "newline, so nothing can be appended to it"}],
+                         plan.refused)
+
     def test_fresh_batches_append_marker_and_rows_to_their_shards(self):
         a = self.spool_batch(fixture_sources()[:3])
         b = self.spool_batch([], run_id="empty-run")
@@ -338,12 +551,53 @@ class PublicationPlanning(unittest.TestCase):
         self.assertEqual(2, len(plan.texts["parity-runs/hermit/fixturehost/2026-09.jsonl"].splitlines()))
 
 
+class PublishedParityIsIndexedNotRevalidated(unittest.TestCase):
+    """https://github.com/rrnewton/hermit/issues/3301 finding [12]."""
+
+    def test_unusable_published_entries_are_listed_and_the_rest_indexed(self):
+        events = build(fixture_sources()[:3])
+        stricter = dict(events[1], event_id="f" * 64, verdict="matched")  # a later rule refuses
+        rows_rel = "parity/hermit/fixturehost/2026-09.jsonl"
+        runs_rel = "parity-runs/hermit/fixturehost/2026-09.jsonl"
+        cut_rel = "parity/hermit/otherhost/2026-09.jsonl"
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            files = {
+                rows_rel: parity.encode_batch([*events[1:], stricter]),
+                runs_rel: parity.encode_batch([events[0], events[1]]),
+                cut_rel: "not json\n" + parity.canonical_line(events[2]),
+                "parity/README.md": "notes\n",
+            }
+            for rel, text in files.items():
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text(text, encoding="utf-8")
+            for command in (["init", "-q"], ["add", "-A"],
+                            ["-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-qm", "x"]):
+                subprocess.run(["git", "-C", str(repo), *command], check=True, capture_output=True)
+            published = parity.published_parity_at_repo(repo, "HEAD")
+        self.assertEqual({e["event_id"] for e in [*events, stricter]}, set(published.events))
+        self.assertEqual(stricter, published.events["f" * 64])
+        node = "from node portable/manifest_backend_parity_c belongs in"
+        self.assertEqual([  # in `git ls-tree` path order
+            {"path": runs_rel, "line": 2, "error": f"row {events[1]['cell']} {node} {rows_rel}"},
+            {"path": "parity/README.md", "line": None, "error": "not a parity shard path; not read"},
+            {"path": cut_rel, "line": 2, "error": "final line has no newline terminator"},
+            {"path": cut_rel, "line": 1,
+             "error": f"{cut_rel}:1: not JSON: Expecting value: line 1 column 1 (char 0)"},
+            {"path": cut_rel, "line": 2, "error": f"row {events[2]['cell']} {node} {rows_rel}"},
+        ], list(published.invalid))
+
+
 class CreditIsNeverInvented(unittest.TestCase):
     def test_credit_function(self):
         self.assertIsNone(parity.credit(0, 0, 0))
         self.assertEqual(1.0, parity.credit(5, 5, 5))
         self.assertEqual(0.0, parity.credit(0, 3, 4))
         self.assertLess(parity.credit(999_999, 999_999, 1_000_000), 1.0)
+        # Lengths are u64 counts; past 2**53 the plain ratio rounds to 1.0
+        # and only the BELOW_ONE clamp keeps a divergence below full credit.
+        self.assertEqual(1.0, (2**60 - 1) / 2**60)
+        self.assertEqual(parity.BELOW_ONE, parity.credit(2**60 - 1, 2**60, 2**60))
 
     def test_unmeasured_verdicts_have_no_measured_credit(self):
         for source in fixture_sources():

@@ -6550,15 +6550,31 @@ def _cmd_append(argv: list[str]) -> int:
     return 0
 
 
-def _parity_stdin_sources(parity) -> list[Any]:
+def _parity_stdin_bytes() -> bytes:
+    buffer = getattr(sys.stdin, "buffer", None)
+    return buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
+
+
+def _parity_stdin_lines(data: bytes) -> int | None:
+    """How many lines stdin held, as `_parity_stdin_sources` splits it; None if not UTF-8."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return len(lines)
+
+
+def _parity_stdin_sources(parity, data: bytes) -> list[Any]:
     """One `ParityLedgerSource` per stdin line, in order; strict JSON.
 
     Unlike `append-cells`, nothing is quarantined: parity rows are derived from
     files hermit already retains, so a refused batch is re-exportable
-    (`test-harness parity export`) and is refused whole, loudly.
+    (`test-harness parity export`). It is refused whole, loudly, and the
+    refusal is recorded as a `parity.refusal`.
     """
-    buffer = getattr(sys.stdin, "buffer", None)
-    data = buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -6574,12 +6590,40 @@ def _parity_stdin_sources(parity) -> list[Any]:
     return sources
 
 
+def _record_parity_refusal(parity, spool: Path, *, producer: str, run_id: str, tree: str,
+                           emitted_at: str, dirty: bool | None, data: bytes, error: Any) -> str:
+    """Spool a `parity.refusal` for this call; a sentence naming where it went.
+
+    A refusal that itself cannot be recorded (an identity the ledger cannot
+    hold, an unwritable spool) is named, never raised: the caller's own
+    refusal is what the exit status reports.
+    """
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", emitted_at) is None:
+        # A malformed --emitted-at is itself a refusal; the refusal is dated now.
+        emitted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        event = parity.build_refusal(
+            producer=producer, run_id=run_id, hermit_sha=tree, emitted_at=emitted_at,
+            source_tree_dirty=dirty, host=_writer_host(), input_bytes=data,
+            input_lines=_parity_stdin_lines(data), error=error,
+        )
+        with series_spool_transition_lock(spool, exclusive=True):
+            outcome = parity.append_refusal(spool, event)
+    except (parity.ParityLedgerError, MalformedQuarantine, OSError, SeriesError) as failure:
+        return f"the refusal could NOT be recorded: {failure}"
+    if outcome["batch"] is None:
+        return f"the refusal is already recorded ({outcome['recorded_in']})"
+    return f"the refusal is recorded -> {spool / outcome['batch']}"
+
+
 def _cmd_append_parity(argv: list[str]) -> int:
     """Spool one run's parity rows: `parity: ...` on stdout, a refusal on stderr.
 
     Exit 0 when the batch was written or was already recorded identically,
-    1 when the rows were refused (nothing written), 2 for a usage error or an
-    unwritable spool.
+    1 when the rows were refused, 2 for a usage error or an unwritable spool.
+    A refusal of a call that names a valid producer, run and tree is spooled
+    as a `parity.refusal` (see parity_ledger.py), so the run reads as refused
+    rather than as never attempted.
     """
     options: dict[str, str] = {}
     flags = {
@@ -6602,21 +6646,56 @@ def _cmd_append_parity(argv: list[str]) -> int:
     ]
     if missing:
         return _usage(f"append-parity requires {', '.join(missing)}")
-    dirty_text = options.get("source_tree_dirty", "false")
-    if dirty_text not in {"true", "false"}:
-        return _usage(f"append-parity --source-tree-dirty must be true or false, got {dirty_text!r}")
     emitted_at = options.get("emitted_at") or datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     parity = parity_ledger_module()
-    try:
-        host = _writer_host()
-        sources = _parity_stdin_sources(parity)
-    except (MalformedQuarantine, parity.ParityLedgerError) as error:
-        print(f"series: REFUSED the parity batch, nothing was written: {error}", file=sys.stderr)
-        return 1
     parent = options["parent"]
     spool = parity_spool_dir(parent)
+    try:
+        data = _parity_stdin_bytes()
+    except OSError as error:
+        print(f"series: cannot read the parity rows on stdin: {error}", file=sys.stderr)
+        return 2
+    # Where no producer, run and tree can be named, no refusal can say whose it is.
+    identified = (
+        options["producer"] in parity.PRODUCERS
+        and options["run_id"].strip() and "\0" not in options["run_id"]
+        and re.fullmatch(r"[0-9a-f]{40}", options["tree"]) is not None
+    )
+
+    def refuse(error: Any, dirty: bool | None, status: int) -> int:
+        recorded = (
+            _record_parity_refusal(
+                parity, spool, producer=options["producer"], run_id=options["run_id"],
+                tree=options["tree"], emitted_at=emitted_at, dirty=dirty, data=data, error=error,
+            )
+            if identified else "the refusal is not recorded: no valid producer, run and tree name it"
+        )
+        if status == 2:
+            _usage(str(error))
+            print(f"series: {recorded}", file=sys.stderr)
+            return 2
+        print(f"series: REFUSED the parity batch, no row was written; {recorded}: {error}",
+              file=sys.stderr)
+        return status
+
+    # Like append-cells, the tree state is evidence and is never defaulted:
+    # a row stamped clean without a caller saying so would be admitted as
+    # clean evidence by every scorecard that excludes dirty rows.
+    dirty_text = options.get("source_tree_dirty")
+    if dirty_text is None:
+        return refuse("append-parity requires --source-tree-dirty true|false", None, 2)
+    if dirty_text not in {"true", "false"}:
+        return refuse(
+            f"append-parity --source-tree-dirty must be true or false, got {dirty_text!r}", None, 2
+        )
+    dirty = dirty_text == "true"
+    try:
+        host = _writer_host()
+        sources = _parity_stdin_sources(parity, data)
+    except (MalformedQuarantine, parity.ParityLedgerError) as error:
+        return refuse(error, dirty, 1)
     # What the ledger already holds for this run, so a replay is recognised
     # and a changed record is refused even after its batch was drained. An
     # unreadable ledger is named, not fatal: the publisher repeats this check
@@ -6627,6 +6706,8 @@ def _cmd_append_parity(argv: list[str]) -> int:
         at = parity.published_parity_at_repo(ledger_root(parent), "refs/remotes/origin/main")
         published = at.events
         published_check = f"read {len(published)} published parity event(s) at {at.commit}"
+        if at.invalid:
+            published_check += f"; {len(at.invalid)} published entr(ies) could not be indexed"
     except (SeriesError, parity.ParityLedgerError, OSError, subprocess.SubprocessError) as error:
         published_check = f"published ledger not consulted: {error}"
     try:
@@ -6635,12 +6716,11 @@ def _cmd_append_parity(argv: list[str]) -> int:
                 spool, sources,
                 producer=options["producer"], run_id=options["run_id"],
                 hermit_sha=options["tree"], emitted_at=emitted_at,
-                source_tree_dirty=dirty_text == "true", host=host,
+                source_tree_dirty=dirty, host=host,
                 published=published, published_check=published_check,
             )
     except parity.ParityLedgerError as error:
-        print(f"series: REFUSED the parity batch, nothing was written: {error}", file=sys.stderr)
-        return 1
+        return refuse(error, dirty, 1)
     except (OSError, SeriesError) as error:
         print(f"series: cannot write the parity spool {spool}: {error}", file=sys.stderr)
         return 2
@@ -7190,14 +7270,15 @@ def _usage(message: str) -> int:
         "      --run-id <id> --tree <sha> [--checkout <Hermit checkout>]\n"
         "      [--emitted-at <UTC>] < cell-results.jsonl\n"
         "  series.py append-parity --parent <root> --producer <validate|pressure-test>\n"
-        "      --run-id <id> --tree <sha> [--emitted-at <UTC>]\n"
-        "      [--source-tree-dirty true|false] < parity-ledger-sources.jsonl\n"
+        "      --run-id <id> --tree <sha> --source-tree-dirty <true|false>\n"
+        "      [--emitted-at <UTC>] < parity-ledger-sources.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "  series.py snapshot --parent <root> --output <run-scoped.json>\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses exact equal runs, and writes the UNPUBLISHED spool.\n"
         "append-parity spools one run's parity rows (hermit's ParityLedgerSource) with\n"
-        "a run marker; empty stdin records an empty parity selection.\n"
+        "a run marker; empty stdin records a zero-record marker. A refused call is\n"
+        "spooled as a parity.refusal carrying its message.\n"
         "history freshly reads tracked shards from test-ledger origin/main plus that local spool.\n"
         "snapshot atomically writes that canonical union with immutable source identities;\n"
         "an unavailable source is refused and never replaced by stale tracked output.",

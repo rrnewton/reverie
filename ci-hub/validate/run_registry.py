@@ -842,27 +842,33 @@ def check_failed_raw_publication(value: Any) -> None:
         _count(run[name], f"{field}.run.{name}", nullable=False)
 
 
-PARITY_RUN_STATES = frozenset({"published", "pending", "absent"})
+PARITY_RUN_STATES = frozenset({"published", "pending", "refused", "absent"})
 
 
 def check_parity_publication(value: Any, *, field: str = "ledger_mirror.raw_publication.parity") -> None:
     """The mirror's parity-publication/v1 outcome, fully typed.
 
-    ``run`` is where this validate run's parity batch stands: ``published``
-    (its run marker is on the ledger), ``pending`` (spooled), ``absent``
-    (append-parity never recorded it), or ``null`` state when the ledger
-    could not be read. ``records`` is the marker's row count, so an empty
-    selection (0) stays distinct from a run that recorded nothing (absent).
+    ``run`` is where this validate run's parity stands: ``published`` (its
+    run marker is on the ledger), ``pending`` (its batch is spooled),
+    ``refused`` (append-parity refused the run and recorded a
+    ``parity.refusal``; ``refusal`` is its message), ``absent`` (no marker and
+    no refusal: append-parity was never called), or ``null`` state when the
+    ledger could not be read. ``absent`` includes a run with no parity cells
+    in scope, because hermit's callers skip append-parity then, so it is not
+    evidence of an older hermit. ``records`` is the marker's row count.
+    ``historic_invalid`` counts published parity entries the ledger index
+    could not use; they are reported, never allowed to block a publication.
     """
     keys = {"schema", "published", "already_published", "commit", "joint", "batches",
-            "refused", "error", "pending_batches", "run"}
+            "refused", "error", "pending_batches", "historic_invalid", "run"}
     if not isinstance(value, dict) or set(value) != keys:
         raise _error(field, "must contain exactly " + ", ".join(sorted(keys)))
     if value["schema"] != "parity-publication/v1":
         raise _error(f"{field}.schema", "must be parity-publication/v1")
     for name in ("published", "already_published"):
         _count(value[name], f"{field}.{name}", nullable=False)
-    _count(value["pending_batches"], f"{field}.pending_batches", nullable=True)
+    for name in ("pending_batches", "historic_invalid"):
+        _count(value[name], f"{field}.{name}", nullable=True)
     if value["commit"] is not None and not _is_commit(value["commit"]):
         raise _error(f"{field}.commit", "must be null or lowercase forty-hex")
     if value["published"] and value["commit"] is None:
@@ -885,17 +891,23 @@ def check_parity_publication(value: Any, *, field: str = "ledger_mirror.raw_publ
     run = value["run"]
     if run is None:
         return
-    run_keys = {"producer", "run_id", "state", "records"}
+    run_keys = {"producer", "run_id", "state", "records", "refusal"}
     if not isinstance(run, dict) or set(run) != run_keys:
         raise _error(f"{field}.run", "must contain exactly " + ", ".join(sorted(run_keys)))
     for name in ("producer", "run_id"):
         if not isinstance(run[name], str) or not run[name].strip():
             raise _error(f"{field}.run.{name}", "must be a nonempty string")
     if run["state"] is not None and run["state"] not in PARITY_RUN_STATES:
-        raise _error(f"{field}.run.state", "must be null, published, pending, or absent")
+        raise _error(f"{field}.run.state", "must be null, published, pending, refused, or absent")
     _count(run["records"], f"{field}.run.records", nullable=True)
-    if (run["records"] is None) != (run["state"] in {None, "absent"}):
+    if (run["records"] is None) != (run["state"] in {None, "absent", "refused"}):
         raise _error(f"{field}.run.records", "must be counted exactly when the run's marker was read")
+    refusal = run["refusal"]
+    if run["state"] == "refused":
+        if not isinstance(refusal, str) or not refusal.strip():
+            raise _error(f"{field}.run.refusal", "a refused run must carry its refusal message")
+    elif refusal is not None:
+        raise _error(f"{field}.run.refusal", "only a refused run carries a refusal message")
 
 
 def _is_commit(value: Any) -> bool:
@@ -1008,6 +1020,19 @@ def _cell_ledger_publication(value: dict[str, Any]) -> None:
         raise _error("ledger_mirror.series_commit", "must equal the named source commit")
     if not isinstance(value["raw_publication"], dict):
         raise _error("ledger_mirror.raw_publication", "must retain the publisher outcome")
+    # A successful publication's parity outcome is typed exactly as a failed
+    # one's. One that did not fit was dropped by start_unit, which kept the
+    # reason instead; the two never appear together.
+    raw = value["raw_publication"]
+    if "parity" in raw:
+        if "parity_not_recorded" in raw:
+            raise _error("ledger_mirror.raw_publication",
+                         "carries both a parity outcome and the reason it was not recorded")
+        check_parity_publication(raw["parity"])
+    elif "parity_not_recorded" in raw and (not isinstance(raw["parity_not_recorded"], str)
+                                           or not raw["parity_not_recorded"].strip()):
+        raise _error("ledger_mirror.raw_publication.parity_not_recorded",
+                     "must be a nonempty string")
     scorecard = value["scorecard"]
     expected = "failed" if value["state"] == "derived-failed" else "published"
     if (expected == "published" and isinstance(scorecard, dict)

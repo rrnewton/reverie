@@ -3040,9 +3040,9 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual({
             "schema": "parity-publication/v1", "published": 193, "already_published": 0,
             "commit": head, "joint": True, "batches": [batch.name], "refused": [],
-            "error": None, "pending_batches": 0,
+            "error": None, "pending_batches": 0, "historic_invalid": 0,
             "run": {"producer": "validate", "run_id": self.PARITY_RUN,
-                    "state": "published", "records": 192},
+                    "state": "published", "records": 192, "refusal": None},
         }, parity)
         self.assertEqual("series: append 1 event(s); parity: append 193 event(s)",
                          git(self.remote, "log", "-1", "--format=%s", "main"))
@@ -3054,12 +3054,13 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual("unchanged", again["state"], again)
         self.assertEqual(0, again["raw_publication"]["parity"]["published"])
         self.assertEqual({"producer": "validate", "run_id": self.PARITY_RUN,
-                          "state": "published", "records": 192},
+                          "state": "published", "records": 192, "refusal": None},
                          again["raw_publication"]["parity"]["run"])
-        # A run that never recorded parity is ABSENT, not an empty selection.
+        # No marker and no refusal: append-parity was never called for the
+        # run (an older hermit, or no parity cell in scope; not told apart).
         other = self.publish(publish_only=True, finalized_run_id="validate-older-hermit")
         self.assertEqual({"producer": "validate", "run_id": "validate-older-hermit",
-                          "state": "absent", "records": None},
+                          "state": "absent", "records": None, "refusal": None},
                          other["raw_publication"]["parity"]["run"])
         self.run_registry().check_parity_publication(other["raw_publication"]["parity"])
 
@@ -3086,11 +3087,104 @@ class DirectLedgerFixture(unittest.TestCase):
         # The run's only batch cannot be read, so where it stands is unknown,
         # and the reason is named; it is never counted as published or empty.
         self.assertEqual({"producer": "validate", "run_id": self.PARITY_RUN,
-                          "state": None, "records": None}, outcome["run"])
+                          "state": None, "records": None, "refusal": None}, outcome["run"])
         self.assertIn("cannot count parity: ParityLedgerError: " + refusal, outcome["error"])
         self.assertTrue(batch.exists(), "a refused parity batch stays spooled")
         self.assertIsNone(self.remote_file("parity/hermit/fixture/2026-09.jsonl"))
         self.run_registry().check_parity_publication(outcome)
+
+    def test_a_refused_append_publishes_its_refusal_and_the_run_reads_refused(self):
+        # https://github.com/rrnewton/hermit/issues/3301 finding [2]: a refused
+        # append-parity is a durable record, never a run that reads absent.
+        parity = series.parity_ledger_module()
+        refusal = parity.build_refusal(
+            producer="validate", run_id=self.PARITY_RUN, hermit_sha=self.PARITY_TREE,
+            emitted_at="2026-09-21T12:00:00Z", source_tree_dirty=False, host="fixture",
+            input_bytes=b"{}\n", input_lines=1,
+            error="input row 1: parity ledger source fields are not exactly its schema's")
+        spool = series.parity_spool_dir(self.parent)
+        batch = spool / parity.append_refusal(spool, refusal)["batch"]
+        self.append("run-beside-parity-refusal")
+        report = self.publish(publish_only=True, finalized_run_id=self.PARITY_RUN)
+        self.assertEqual("published", report["state"], report)
+        outcome = report["raw_publication"]["parity"]
+        self.assertEqual((1, [batch.name], [], None), (outcome["published"], outcome["batches"],
+                                                       outcome["refused"], outcome["error"]))
+        refused_run = {"producer": "validate", "run_id": self.PARITY_RUN, "state": "refused",
+                       "records": None, "refusal": refusal["error"]}
+        self.assertEqual(refused_run, outcome["run"])
+        self.assertEqual(parity.encode_batch([refusal]),
+                         self.remote_file("parity-runs/hermit/fixture/2026-09.jsonl"))
+        self.assertIsNone(self.remote_file("parity/hermit/fixture/2026-09.jsonl"))
+        self.run_registry().check_parity_publication(outcome)
+        # Once drained, the published refusal still names the run.
+        again = self.publish(publish_only=True, finalized_run_id=self.PARITY_RUN)
+        self.assertEqual(refused_run, again["raw_publication"]["parity"]["run"])
+        # A marker for the run supersedes the refusal: a later attempt succeeded.
+        self.spool_parity()
+        self.append("run-parity-after-refusal")
+        later = self.publish(publish_only=True, finalized_run_id=self.PARITY_RUN)
+        self.assertEqual({"producer": "validate", "run_id": self.PARITY_RUN, "state": "published",
+                          "records": 192, "refusal": None}, later["raw_publication"]["parity"]["run"])
+
+    def test_a_successful_publication_records_a_typed_parity_outcome_or_names_the_misfit(self):
+        # https://github.com/rrnewton/hermit/issues/3301 finding [7]: the
+        # success path checks raw_publication.parity as the failed path does.
+        self.append("run-parity-success")
+        self.spool_parity()
+        report = self.publish()
+        self.assertEqual("published", report["state"], report)
+        self.assertEqual("published", report["scorecard"]["state"], report)
+        parity = report["raw_publication"]["parity"]
+        self.assertEqual((193, True), (parity["published"], parity["joint"]))
+        sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/validate"))
+        import start_unit
+        run_registry = self.run_registry()
+        no_gh = self.root / "no-gh"
+        no_gh.write_text("#!/bin/sh\necho 'GitHub must not be called' >&2\nexit 97\n")
+        no_gh.chmod(0o755)
+        for index, (name, carried) in enumerate([("fits", parity),
+                                                 ("unfit parity", {**parity, "joint": "no"})]):
+            with self.subTest(name):
+                printed = {**report, "raw_publication": {**report["raw_publication"], "parity": carried}}
+
+                def succeeded_mirror(command, **kwargs):
+                    return subprocess.CompletedProcess(
+                        command, 0, json.dumps(printed, sort_keys=True) + "\n", "")
+
+                record_path = self.parent / f"parity-success-{index}.json"
+                record = {
+                    "schema_version": run_registry.SCHEMA_VERSION,
+                    "producer": "normal-completion-publication-fixture",
+                    "repo": "rrnewton/hermit", "checkout": str(self.source),
+                    "target": self.target, "canonical_verdict": "VALIDATED",
+                    "unit": self.PARITY_RUN + ".service", "wrapper_exit_code": 0,
+                    "e2e_result_root": str(self.root / "results"),
+                    "github_executable": str(no_gh),
+                }
+                run_registry.write_record(record_path, record)
+                stderr = io.StringIO()
+                with mock.patch.dict(os.environ), contextlib.redirect_stderr(stderr):
+                    os.environ.pop("FLEET_REAL_GH", None)
+                    result = start_unit.finalize_ledger_mirror(
+                        self.parent, mirror.TOOL_ROOT, record_path, record=record,
+                        run=succeeded_mirror)
+                self.assertEqual(result, run_registry.read_record(record_path))
+                mirrored = result["ledger_mirror"]
+                self.assertEqual("published", mirrored["state"], mirrored)
+                # What was written is what the record's own schema accepts.
+                run_registry._ledger_mirror(mirrored)
+                others = {k: v for k, v in report["raw_publication"].items() if k != "parity"}
+                if name == "fits":
+                    self.assertEqual({**others, "parity": parity}, mirrored["raw_publication"])
+                    self.assertNotIn("PARITY OUTCOME NOT RECORDED", stderr.getvalue())
+                else:
+                    reason = ("validation-run-handle-ledger_mirror.raw_publication.parity.joint: "
+                              "must be a boolean")
+                    self.assertEqual({**others, "parity_not_recorded": reason},
+                                     mirrored["raw_publication"])
+                    self.assertIn(f"validate-run: PARITY OUTCOME NOT RECORDED: {reason}",
+                                  stderr.getvalue())
 
     def test_a_scorecard_without_parity_json_is_tolerated_and_one_with_it_is_bound(self):
         self.append("run-no-parity-json")

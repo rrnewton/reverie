@@ -1632,22 +1632,12 @@ def _checked_parity(carriage: Any, series_commit: Any, label: str) -> dict[str, 
 
     The summary must be `scorecard/parity.json` at exactly the ledger commit the
     series rows came from, so the parity panel and the determinism figures
-    describe one ledger snapshot. Anything the checker refuses refuses the
-    build; nothing is repaired or dropped.
+    describe one ledger snapshot. A carriage the checker refuses becomes a
+    refused carriage naming why: the parity panel shows the refusal and the
+    rest of the site is built. Nothing is repaired.
     """
-    reader = _parity_summary()
-    try:
-        reader.validate_carriage(carriage)
-    except reader.ParitySummaryError as error:
-        raise BuildRefused(f"{label} is refused: {error}") from error
-    if series_commit is None:
-        raise BuildRefused(f"{label} has no series ledger commit to be read at")
-    if carriage["ledger_commit"] != series_commit:
-        raise BuildRefused(
-            f"{label} was read at ledger commit {carriage['ledger_commit']}, "
-            f"not the series commit {series_commit}"
-        )
-    return json.loads(_canonical_bytes(carriage))
+    admitted, _summary = _parity_summary().admit_carriage(carriage, series_commit, label)
+    return json.loads(_canonical_bytes(admitted))
 
 
 def _artifact_result(
@@ -1885,13 +1875,9 @@ def _validated_output_runs(data: Mapping[str, Any]) -> dict[str, Any]:
     )
     if runs.get("schema_version") != SCHEMA_VERSION:
         raise BuildRefused("runs.schema_version is unsupported")
-    if "parity" in runs:
-        provenance = _object(data.get("provenance"), "provenance")
-        canonical = _object(
-            provenance.get("canonical_input_provenance"),
-            "provenance.canonical_input_provenance",
-        )
-        _checked_parity(runs["parity"], canonical.get("series_commit"), "runs.parity")
+    # runs.parity is admitted where it is shown (render_page._parity_view), so
+    # a parity carriage that fails its checks is refused in the parity panel
+    # alone and never refuses the determinism pages.
     integer_fields = (
         "current_validation_run_row_count",
         "projection_admitted_physical_row_count",
@@ -2625,8 +2611,7 @@ def _build_from_captured(
                 "historical reader Hermit gitlink disagrees with the gitlink "
                 "recorded by the generator base commit"
             )
-    # Check the parity carriage before the projection runs, so a refused
-    # summary costs no projection.
+    # Admit the parity carriage; a refused one is carried to the parity panel.
     parity = None
     if "parity" in canonical_document.value:
         parity = _checked_parity(

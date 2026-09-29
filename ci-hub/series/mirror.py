@@ -418,7 +418,7 @@ def _preserve_failed_series_commit(writer: Path, parent: Path) -> BaseException 
 def _parity_result(*, joint: bool) -> dict[str, Any]:
     return {"schema": PARITY_PUBLICATION_SCHEMA, "published": 0, "already_published": 0,
             "commit": None, "joint": joint, "batches": [], "refused": [], "error": None,
-            "pending_batches": None, "run": None}
+            "pending_batches": None, "historic_invalid": None, "run": None}
 
 
 def _absorb_parity(result: dict[str, Any], outcome: Mapping[str, Any] | None,
@@ -430,6 +430,8 @@ def _absorb_parity(result: dict[str, Any], outcome: Mapping[str, Any] | None,
     result["already_published"] = outcome.get("already_published", 0)
     result["batches"] = list(outcome.get("batches", []))
     result["refused"] = list(outcome.get("refused", []))
+    if outcome.get("historic_invalid") is not None:
+        result["historic_invalid"] = outcome["historic_invalid"]
     if outcome.get("error"):
         result["error"] = str(outcome["error"])
     if result["published"]:
@@ -466,11 +468,18 @@ def publish_parity_alone(ledger: Path, writer: Path, result: dict[str, Any], *,
 
 def count_parity(result: dict[str, Any], parity_spool: Path, writer: Path | None,
                  run_id: str | None) -> None:
-    """Pending parity batches, and where this validate run's batch stands.
+    """Pending parity batches, and where this validate run's parity stands.
 
-    ``run.state`` is ``published`` (its marker is on fetched main), ``pending``
-    (spooled, not published), or ``absent`` (append-parity never recorded this
-    run, e.g. an older hermit); ``null`` when the ledger could not be read.
+    ``run.state`` is ``published`` (its run marker is on fetched main),
+    ``pending`` (its batch is spooled, not published), ``refused``
+    (append-parity refused the run and recorded a ``parity.refusal``, whose
+    message is ``run.refusal``), or ``absent`` (no marker and no refusal:
+    append-parity was never called for this run). ``absent`` covers an older
+    hermit AND a run with no parity cells in scope, because hermit's callers
+    skip append-parity on an empty selection; the two are not told apart. The
+    state is ``null`` when the ledger could not be read. ``historic_invalid``
+    counts published parity entries the index could not use (see
+    `parity_ledger.PublishedParity`).
     """
     parity = series.parity_ledger_module()
     try:
@@ -478,17 +487,25 @@ def count_parity(result: dict[str, Any], parity_spool: Path, writer: Path | None
         if run_id is None:
             return
         identity = parity.run_event_id("validate", run_id)
-        run = {"producer": "validate", "run_id": run_id, "state": None, "records": None}
+        run = {"producer": "validate", "run_id": run_id, "state": None, "records": None,
+               "refusal": None}
         result["run"] = run
         pending = sorted(Path(parity_spool).glob(f"*__{identity}.jsonl"))
+        published_events = None
         if writer is not None:
             published = parity.published_parity_at_repo(writer, "refs/remotes/origin/main")
+            result["historic_invalid"] = len(published.invalid)
+            published_events = published.events
             marker = published.events.get(identity)
             if marker is not None:
                 run.update(state="published", records=marker["records"])
                 return
         if pending:
             run.update(state="pending", records=parity.read_batch(pending[0])[0]["records"])
+            return
+        refusals = parity.run_refusals(parity_spool, "validate", run_id, published=published_events)
+        if refusals:
+            run.update(state="refused", refusal=refusals[-1]["error"])
         elif writer is not None:
             run["state"] = "absent"
     except (OSError, parity.ParityLedgerError) as error:

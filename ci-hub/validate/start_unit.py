@@ -11845,6 +11845,22 @@ def finalize_ledger_mirror(
                     raise ValueError(
                         "success report has an invalid commit, tree, or row count"
                     )
+                raw_publication = report.get("raw_publication")
+                # The success path checks the parity outcome as the failed
+                # path does. One that does not fit is dropped and its reason
+                # kept, so it never costs the record the publication itself.
+                if isinstance(raw_publication, dict) and "parity" in raw_publication:
+                    try:
+                        run_registry.check_parity_publication(raw_publication["parity"])
+                    except RuntimeError as refused:
+                        raw_publication = {
+                            key: item for key, item in raw_publication.items() if key != "parity"
+                        }
+                        raw_publication["parity_not_recorded"] = str(refused)
+                        print(
+                            f"validate-run: PARITY OUTCOME NOT RECORDED: {refused}",
+                            file=sys.stderr,
+                        )
                 outcome = {
                     "state": state,
                     "recorded_at": recorded_at,
@@ -11855,7 +11871,7 @@ def finalize_ledger_mirror(
                     "repository": report["repository"],
                     "source_repository": report.get("source_repository"),
                     "series_commit": report.get("series_commit"),
-                    "raw_publication": report.get("raw_publication"),
+                    "raw_publication": raw_publication,
                     "scorecard": report.get("scorecard"),
                 }
                 if state == "derived-failed":

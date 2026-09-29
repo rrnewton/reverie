@@ -37,7 +37,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 SCHEMA = "parity-summary/v1"
@@ -171,15 +171,40 @@ LEGACY_ENTRY_FIELDS = (
 CARRIAGE_FIELDS = (
     "path",
     "ledger_commit",
+    "state",
     "present",
     "git_object",
     "bytes",
     "sha256",
     "summary_json",
     "store_files",
+    "store_records",
+    "store_sha256",
     "run_marker_files",
+    "summarized_commit",
+    "unsummarized_records",
+    "refusal",
+    "append_refusals",
+    "append_refusals_total",
 )
+#: absent: no `scorecard/parity.json`. current: it summarizes exactly the
+#: `parity/` store at the ledger commit. stale: it summarizes the store at an
+#: earlier ledger commit, which the current store extends. refused: anything
+#: else, with the reason; only the parity panel is affected.
+CARRIAGE_STATES = ("absent", "current", "stale", "refused")
+APPEND_REFUSAL_FIELDS = ("producer", "run_id", "hermit_sha", "emitted_at", "error")
+#: A carriage lists at most this many append-time refusals, newest first;
+#: `append_refusals_total` counts them all.
+APPEND_REFUSAL_LIMIT = 20
 
+#: The cell fields that locate a divergence; only a diverged cell has them.
+_DIVERGENCE_FIELDS = (
+    "first_divergent_record",
+    "first_difference_field",
+    "first_difference_syscall",
+    "reference_message",
+    "candidate_message",
+)
 _SHA1_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40,64}")
@@ -291,8 +316,18 @@ def _depth(value: Any, at: str) -> tuple[int, int] | None:
 
 
 def credit_text(value: float | None) -> str:
-    """A credit as the scorecard prints it: three decimals, or `n/a`."""
-    return "n/a" if value is None else f"{value:.3f}"
+    """A credit as the scorecard prints it: three decimals, or `n/a`.
+
+    A credit below 1 never prints as full credit: from 0.9995 up, three
+    decimals would round it to `1.000`, so it prints `0.999` instead, as the
+    panel's four-decimal figures do.
+    """
+    if value is None:
+        return "n/a"
+    text = f"{value:.3f}"
+    if value < 1.0 and text == "1.000":
+        return "0.999"
+    return text
 
 
 def render_line(tally: Mapping[str, Any]) -> str:
@@ -430,13 +465,32 @@ def _validate_cell(value: Any, at: str) -> Mapping[str, Any]:
         raise ParitySummaryError(f"{at}: a {verdict} cell carries credit {credit!r}; only a measured cell is credited")
     if verdict == "diverged" and credit is not None and credit >= 1.0:
         raise ParitySummaryError(f"{at}: a diverged cell's credit {credit!r} must be below 1")
-    if verdict == "matched" and credit is not None and credit != 1.0:
+    if verdict == "matched" and credit != 1.0:
         raise ParitySummaryError(f"{at}: a matched cell's credit must be 1, got {credit!r}")
     for field in ("matched_prefix", "left_len", "right_len", "first_divergent_record", "first_difference_syscall"):
         _optional_count(cell[field], f"{at}.{field}")
     for field in ("first_difference_field", "reference_message", "candidate_message"):
         if cell[field] is not None and not isinstance(cell[field], str):
             raise ParitySummaryError(f"{at}.{field} must be a string or null")
+    # The ledger admits a record only when its credit is `credit(prefix, left,
+    # right)` (parity_ledger.validate_record); a cell is that record's
+    # summary, so the same rules hold for it.
+    prefix, left, right = cell["matched_prefix"], cell["left_len"], cell["right_len"]
+    if verdict in MEASURED_VERDICTS:
+        if left is None or right is None:
+            raise ParitySummaryError(f"{at}: a measured cell needs both compared lengths")
+        expected = None if prefix is None else parity_ledger_module().credit(prefix, left, right)
+        if not _same_number(credit, expected):
+            raise ParitySummaryError(
+                f"{at}: credit {credit!r} is not the {expected!r} its matched prefix {prefix!r} "
+                f"of {left} | {right} gives"
+            )
+        if verdict == "matched" and any(cell[field] is not None for field in _DIVERGENCE_FIELDS):
+            raise ParitySummaryError(f"{at}: a matched cell carries no divergence position")
+    elif any(cell[field] is not None for field in ("matched_prefix", "left_len", "right_len", *_DIVERGENCE_FIELDS)):
+        raise ParitySummaryError(
+            f"{at}: a {verdict} cell is unmeasured and carries no compared lengths or divergence"
+        )
     stated_class = cell["unavailable_class"]
     if verdict in MEASURED_VERDICTS or verdict in {"record-missing", "refused"}:
         if stated_class is not None:
@@ -532,6 +586,33 @@ def _validate_tally(value: Any, cells: Sequence[Mapping[str, Any]], at: str) -> 
     return stated
 
 
+def _check_declared_measurability(cells: Sequence[Mapping[str, Any]], at: str) -> None:
+    """parity_ledger.check_declared_measurability over one run's cells.
+
+    A backend whose cells are `inputs-not-equalized` is one hermit declared
+    not equalizable for that run; its reason is the declaration. Such a
+    backend has one declaration and no measured cell in the run.
+    """
+    declared: dict[str, str] = {}
+    for cell in cells:
+        if cell["verdict"] != "inputs-not-equalized":
+            continue
+        known = declared.setdefault(cell["backend"], cell["reason"])
+        if known != cell["reason"]:
+            raise ParitySummaryError(
+                f"{at}: cell {cell['cell']} declares {cell['backend']} inputs not equalizable for "
+                f"{cell['reason']!r}, but another cell of the run declares {known!r}; a run's hermit "
+                "makes one declaration per backend"
+            )
+    for cell in cells:
+        why = declared.get(cell["backend"])
+        if why is not None and cell["verdict"] in MEASURED_VERDICTS:
+            raise ParitySummaryError(
+                f"{at}: cell {cell['cell']}: {cell['backend']} inputs cannot be equalized, so it "
+                f"reports no measured comparison and never equal inputs: {why}"
+            )
+
+
 def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
     run = _exact(value, RUN_FIELDS, at)
     producer = _choice(run["producer"], PRODUCERS, f"{at}.producer")
@@ -550,6 +631,7 @@ def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
         if key in seen:
             raise ParitySummaryError(f"{at}: cell {cell['cell']} is reported twice")
         seen.add(key)
+    _check_declared_measurability(cells, at)
     per_backend = _exact(run["per_backend"], BACKENDS, f"{at}.per_backend")
     for backend in BACKENDS:
         _validate_tally(
@@ -723,60 +805,246 @@ def load_summary(text: str) -> Mapping[str, Any]:
 # -------------------------------------------------------------------- carriage
 
 
-def absent_carriage(ledger_commit: str, store_files: int, run_marker_files: int) -> dict[str, Any]:
-    """The carriage of a ledger commit that holds no `scorecard/parity.json`."""
-    return {
-        "path": LEDGER_PATH,
-        "ledger_commit": ledger_commit,
-        "present": False,
-        "git_object": None,
-        "bytes": None,
-        "sha256": None,
-        "summary_json": None,
-        "store_files": store_files,
-        "run_marker_files": run_marker_files,
-    }
+def is_store_shard(path: str) -> bool:
+    """A `parity/<team>/<host>/<file>.jsonl` path: what hermit's scorecard reads and digests."""
+    parts = path.split("/")
+    return len(parts) == 4 and parts[0] == ROW_STORE and all(parts) and parts[3].endswith(".jsonl")
 
 
-def present_carriage(
-    ledger_commit: str, git_object: str, data: bytes, store_files: int, run_marker_files: int
-) -> dict[str, Any]:
-    """The carriage of a committed summary: its exact bytes, checked."""
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ParitySummaryError(f"{LEDGER_PATH} is not UTF-8: {error}") from error
-    carriage = {
-        "path": LEDGER_PATH,
-        "ledger_commit": ledger_commit,
-        "present": True,
-        "git_object": git_object,
-        "bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "summary_json": text,
-        "store_files": store_files,
-        "run_marker_files": run_marker_files,
-    }
-    validate_carriage(carriage)
+def store_digest(shards: Mapping[str, bytes]) -> str:
+    """hermit's `store_sha256`: SHA-256 over each shard, in byte order of its path,
+    of the path, a NUL byte, the length as a little-endian u64, and the bytes."""
+    digest = hashlib.sha256()
+    for path in sorted(shards, key=lambda name: name.encode("utf-8")):
+        data = shards[path]
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(len(data).to_bytes(8, "little"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def record_lines(data: bytes) -> int:
+    """The lines of one shard as hermit splits them (Rust `split_terminator('\\n')`)."""
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
+def append_refusals_from(run_shards: Mapping[str, bytes]) -> tuple[list[dict[str, Any]], int]:
+    """The `parity.refusal` events in the `parity-runs/` shards whose run has no
+    `parity.run` marker: an `append-parity` call that recorded nothing and was
+    not later retried successfully. Newest first, at most `APPEND_REFUSAL_LIMIT`,
+    and the total. Published events are indexed, not revalidated: a line that is
+    not a valid refusal or marker is skipped here (the publisher reports it).
+    """
+    ledger = parity_ledger_module()
+    markers: set[tuple[Any, Any]] = set()
+    refusals: dict[str, Mapping[str, Any]] = {}
+    for data in run_shards.values():
+        for line in data.decode("utf-8", errors="replace").split("\n"):
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("event_type") == ledger.RUN_EVENT_TYPE:
+                markers.add((event.get("producer"), event.get("run_id")))
+            elif event.get("event_type") == ledger.REFUSAL_EVENT_TYPE:
+                try:
+                    ledger.validate_refusal(event)
+                except ledger.ParityLedgerError:
+                    continue
+                refusals.setdefault(event["event_id"], event)
+    open_refusals = sorted(
+        (event for event in refusals.values() if (event["producer"], event["run_id"]) not in markers),
+        key=lambda event: (event["emitted_at"], event["event_id"]),
+        reverse=True,
+    )
+    listed = [{field: event[field] for field in APPEND_REFUSAL_FIELDS}
+              for event in open_refusals[:APPEND_REFUSAL_LIMIT]]
+    return listed, len(open_refusals)
+
+
+def _carriage(ledger_commit: str | None, state: str, **fields: Any) -> dict[str, Any]:
+    carriage: dict[str, Any] = {name: None for name in CARRIAGE_FIELDS}
+    carriage.update(path=LEDGER_PATH, ledger_commit=ledger_commit, state=state,
+                    append_refusals=[], append_refusals_total=0)
+    carriage.update(fields)
     return carriage
 
 
+def refused_carriage(ledger_commit: str | None, refusal: str, **facts: Any) -> dict[str, Any]:
+    """A carriage the website could not admit: the reason, and whatever is known."""
+    return _carriage(ledger_commit, "refused", refusal=refusal, **facts)
+
+
+def capture_carriage(
+    ledger_commit: str,
+    *,
+    summary_object: str | None,
+    summary_data: bytes | None,
+    store: Mapping[str, bytes],
+    store_files: int,
+    run_marker_files: int,
+    read_store_at: Callable[[str], tuple[Mapping[str, bytes], int]],
+    is_ancestor: Callable[[str], bool],
+    append_refusals: Sequence[Mapping[str, Any]] = (),
+    append_refusals_total: int = 0,
+) -> dict[str, Any]:
+    """Classify the ledger commit's `scorecard/parity.json` against its store.
+
+    `store` holds the bytes of every `parity/` shard at `ledger_commit` (see
+    `is_store_shard`), and `store_files` counts every file below `parity/`.
+    `read_store_at(commit)` returns the same pair at an earlier commit, and
+    `is_ancestor(commit)` says whether a commit is an ancestor of
+    `ledger_commit`; either may raise `ParitySummaryError`. Never raises: a
+    summary that cannot be admitted is returned as a refused carriage.
+    """
+    facts = {
+        "store_files": store_files,
+        "store_records": sum(record_lines(data) for data in store.values()),
+        # hermit's digest is None only when the ledger has no parity/ store.
+        "store_sha256": store_digest(store) if store_files else None,
+        "run_marker_files": run_marker_files,
+        "append_refusals": [dict(item) for item in append_refusals[:APPEND_REFUSAL_LIMIT]],
+        "append_refusals_total": append_refusals_total,
+    }
+    if summary_object is None:
+        return _carriage(ledger_commit, "absent", present=False, **facts)
+    assert summary_data is not None
+    described = {"present": True, "git_object": summary_object, "bytes": len(summary_data),
+                 "sha256": hashlib.sha256(summary_data).hexdigest(), **facts}
+    summarized = None
+    try:
+        try:
+            text = summary_data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ParitySummaryError(f"{LEDGER_PATH} is not UTF-8: {error}") from error
+        summary = load_summary(text)
+        generated = summary["generated_from"]
+        summarized = generated["series_commit"]
+        claimed = generated["store_sha256"]
+        actual = facts["store_sha256"]
+        if not summary["store_present"]:
+            raise ParitySummaryError(
+                f"the scorecard writes {LEDGER_PATH} only for a ledger with a {ROW_STORE}/ store"
+            )
+        if actual is None:
+            raise ParitySummaryError(
+                f"the summary reports a {ROW_STORE}/ store but ledger commit {ledger_commit} has none"
+            )
+        if claimed is None:
+            raise ParitySummaryError(f"the summary reports a {ROW_STORE}/ store but no store_sha256")
+        if claimed == actual:
+            if summarized not in (None, ledger_commit) and not is_ancestor(summarized):
+                raise ParitySummaryError(
+                    f"its store_sha256 matches the {ROW_STORE}/ store at ledger commit {ledger_commit}, "
+                    f"but its series_commit {summarized} is not that commit or an ancestor of it"
+                )
+            return _carriage(ledger_commit, "current", summary_json=text, summarized_commit=summarized,
+                             unsummarized_records=0, **described)
+        mismatch = (
+            f"its store_sha256 {claimed} is not {actual}, the digest of the {ROW_STORE}/ store "
+            f"at ledger commit {ledger_commit}"
+        )
+        if summarized is None:
+            raise ParitySummaryError(f"{mismatch}, and it names no series_commit to locate what it summarized")
+        if summarized == ledger_commit or not is_ancestor(summarized):
+            raise ParitySummaryError(f"{mismatch}, and its series_commit {summarized} is not an ancestor of it")
+        older, _older_files = read_store_at(summarized)
+        if store_digest(older) != claimed:
+            raise ParitySummaryError(
+                f"{mismatch}, nor the digest of the store at its series_commit {summarized}"
+            )
+        for path, data in older.items():
+            if path not in store:
+                raise ParitySummaryError(
+                    f"{mismatch}; shard {path} at its series_commit {summarized} is gone at {ledger_commit}"
+                )
+            if not store[path].startswith(data):
+                raise ParitySummaryError(
+                    f"{mismatch}; shard {path} at {ledger_commit} does not extend its text at the "
+                    f"series_commit {summarized} (the ledger is append-only)"
+                )
+        newer = facts["store_records"] - sum(record_lines(data) for data in older.values())
+        return _carriage(ledger_commit, "stale", summary_json=text, summarized_commit=summarized,
+                         unsummarized_records=newer, **described)
+    except ParitySummaryError as error:
+        return refused_carriage(ledger_commit, f"ledger commit {ledger_commit} {LEDGER_PATH} is refused: {error}",
+                                summarized_commit=summarized, **described)
+
+
+def _validate_append_refusals(carriage: Mapping[str, Any], at: str, refused: bool) -> None:
+    listed = carriage["append_refusals"]
+    if not isinstance(listed, list) or len(listed) > APPEND_REFUSAL_LIMIT:
+        raise ParitySummaryError(f"{at}.append_refusals must be a list of at most {APPEND_REFUSAL_LIMIT}")
+    for index, raw in enumerate(listed):
+        item = _exact(raw, APPEND_REFUSAL_FIELDS, f"{at}.append_refusals[{index}]")
+        _choice(item["producer"], PRODUCERS, f"{at}.append_refusals[{index}].producer")
+        for field in ("run_id", "emitted_at", "error"):
+            _string(item[field], f"{at}.append_refusals[{index}].{field}")
+        if _commit(item["hermit_sha"], f"{at}.append_refusals[{index}].hermit_sha") is None:
+            raise ParitySummaryError(f"{at}.append_refusals[{index}].hermit_sha must be set")
+    total = carriage["append_refusals_total"]
+    if total is None and refused:
+        if listed:
+            raise ParitySummaryError(f"{at}: append refusals are listed but not counted")
+        return
+    if _count(total, f"{at}.append_refusals_total") < len(listed):
+        raise ParitySummaryError(f"{at}.append_refusals_total {total} is fewer than the {len(listed)} listed")
+    if len(listed) < min(total, APPEND_REFUSAL_LIMIT):
+        raise ParitySummaryError(
+            f"{at}: {len(listed)} append refusal(s) listed of {total}; up to {APPEND_REFUSAL_LIMIT} are listed"
+        )
+
+
 def validate_carriage(value: Any) -> Mapping[str, Any] | None:
-    """Check a carriage and return its decoded summary, or None when absent."""
+    """Check a carriage; return its decoded summary when it is current or stale, else None."""
     at = "parity carriage"
     carriage = _exact(value, CARRIAGE_FIELDS, at)
     if carriage["path"] != LEDGER_PATH:
         raise ParitySummaryError(f"{at}.path must be {LEDGER_PATH}, got {carriage['path']!r}")
-    if _commit(carriage["ledger_commit"], f"{at}.ledger_commit") is None:
+    state = _choice(carriage["state"], CARRIAGE_STATES, f"{at}.state")
+    _validate_append_refusals(carriage, at, state == "refused")
+    sha = carriage["store_sha256"]
+    if sha is not None and (not isinstance(sha, str) or _SHA256_RE.fullmatch(sha) is None):
+        raise ParitySummaryError(f"{at}.store_sha256 must be 64 lowercase hex digits")
+    if state == "refused":
+        _string(carriage["refusal"], f"{at}.refusal")
+        _commit(carriage["ledger_commit"], f"{at}.ledger_commit")
+        _commit(carriage["summarized_commit"], f"{at}.summarized_commit")
+        if carriage["summary_json"] is not None:
+            raise ParitySummaryError(f"{at}: a refused carriage carries no summary to render")
+        if carriage["present"] is not None:
+            _boolean(carriage["present"], f"{at}.present")
+        for field in ("bytes", "store_files", "store_records", "run_marker_files", "unsummarized_records"):
+            _optional_count(carriage[field], f"{at}.{field}")
+        return None
+    if carriage["refusal"] is not None:
+        raise ParitySummaryError(f"{at}: only a refused carriage carries a refusal")
+    ledger_commit = _commit(carriage["ledger_commit"], f"{at}.ledger_commit")
+    if ledger_commit is None:
         raise ParitySummaryError(f"{at}.ledger_commit must be set")
     store_files = _count(carriage["store_files"], f"{at}.store_files")
+    store_records = _count(carriage["store_records"], f"{at}.store_records")
     _count(carriage["run_marker_files"], f"{at}.run_marker_files")
+    if (sha is None) != (store_files == 0):
+        raise ParitySummaryError(f"{at}.store_sha256 must be set exactly when a {ROW_STORE}/ store exists")
+    if store_files == 0 and store_records:
+        raise ParitySummaryError(f"{at}: {store_records} record(s) counted without a {ROW_STORE}/ store")
     present = _boolean(carriage["present"], f"{at}.present")
-    if not present:
-        for field in ("git_object", "bytes", "sha256", "summary_json"):
+    if state == "absent":
+        if present:
+            raise ParitySummaryError(f"{at}: an absent summary is not present")
+        for field in ("git_object", "bytes", "sha256", "summary_json", "summarized_commit",
+                      "unsummarized_records"):
             if carriage[field] is not None:
                 raise ParitySummaryError(f"{at}: an absent summary has no {field}")
         return None
+    if not present:
+        raise ParitySummaryError(f"{at}: a {state} summary must be present")
     git_object = carriage["git_object"]
     if not isinstance(git_object, str) or _OBJECT_ID_RE.fullmatch(git_object) is None:
         raise ParitySummaryError(f"{at}.git_object must be a lowercase 40- or 64-hex object id")
@@ -796,9 +1064,56 @@ def validate_carriage(value: Any) -> Mapping[str, Any] | None:
     if store_files == 0:
         raise ParitySummaryError(
             f"{at}: the summary reports a {ROW_STORE}/ store but ledger commit "
-            f"{carriage['ledger_commit']} has no {ROW_STORE}/ shard"
+            f"{ledger_commit} has no {ROW_STORE}/ shard"
+        )
+    generated = summary["generated_from"]
+    if carriage["summarized_commit"] != generated["series_commit"]:
+        raise ParitySummaryError(
+            f"{at}.summarized_commit {carriage['summarized_commit']!r} is not the summary's "
+            f"series_commit {generated['series_commit']!r}"
+        )
+    unsummarized = _count(carriage["unsummarized_records"], f"{at}.unsummarized_records")
+    if state == "current":
+        if generated["store_sha256"] != sha:
+            raise ParitySummaryError(
+                f"{at}: a current summary's store_sha256 {generated['store_sha256']!r} must be the "
+                f"store's {sha}"
+            )
+        if unsummarized:
+            raise ParitySummaryError(f"{at}: a current summary leaves no record unsummarized")
+        return summary
+    if generated["store_sha256"] == sha:
+        raise ParitySummaryError(f"{at}: a stale summary's store_sha256 must differ from the store's")
+    if carriage["summarized_commit"] in (None, ledger_commit):
+        raise ParitySummaryError(f"{at}: a stale summary names the earlier ledger commit it summarized")
+    if unsummarized > store_records:
+        raise ParitySummaryError(
+            f"{at}: {unsummarized} unsummarized record(s) exceed the {store_records} in the store"
         )
     return summary
+
+
+def admit_carriage(
+    value: Any, series_commit: Any, label: str
+) -> tuple[dict[str, Any], Mapping[str, Any] | None]:
+    """The carriage to render and its summary; never raises.
+
+    A carriage that fails `validate_carriage`, or that was read at another
+    ledger commit than the series rows, is replaced by a refused carriage
+    naming why, so a parity defect is confined to the parity panel.
+    """
+    commit = series_commit if isinstance(series_commit, str) and _SHA1_RE.fullmatch(series_commit) else None
+    try:
+        summary = validate_carriage(value)
+        if commit is None:
+            raise ParitySummaryError("there is no series ledger commit to read it at")
+        if value["ledger_commit"] not in (None, commit):
+            raise ParitySummaryError(
+                f"it was read at ledger commit {value['ledger_commit']}, not the series commit {commit}"
+            )
+    except ParitySummaryError as error:
+        return refused_carriage(commit, f"{label} is refused: {error}", append_refusals_total=None), None
+    return json.loads(json.dumps(value)), summary
 
 
 # ------------------------------------------------------------------- reference

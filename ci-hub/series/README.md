@@ -598,33 +598,58 @@ those records into the test ledger; `parity_ledger.py` owns every check.
 test-harness parity export --e2e-root <run e2e root> \
   | python3 ci-hub/series/series.py append-parity --parent <root> \
       --producer validate --run-id <unit> --tree <hermit commit> \
-      [--source-tree-dirty true|false]
+      --source-tree-dirty true|false
 ```
 
+* `--source-tree-dirty` is required, as it is for `append-cells`. The tree
+  state is evidence: a row stamped clean without the caller saying so would
+  be admitted as clean by every reader that excludes dirty rows. A missing or
+  malformed value is a usage error (exit 2).
 * Rows go to `parity/<team>/<host>/<YYYY-MM>.jsonl`. Their fields are exactly
   hermit's `ParityLedgerRow` (it refuses unknown fields). `event_id` is
   `sha256(producer \0 run_id \0 cell \0 lane \0 node)`, so a run is keyed by
   its producer and run id, and a cell by its node.
 * Each appended run also writes one `parity.run` marker to
   `parity-runs/<team>/<host>/<YYYY-MM>.jsonl` (the row type cannot carry a
-  run total). It tells three states apart. No marker means `append-parity`
-  never ran for that run (an older hermit, or a producer that never called
-  it). A marker with `records: 0` means the run's parity selection was empty.
-  A node that never ran appears as `record-missing` rows whose
+  run total). A node that never ran appears as `record-missing` rows whose
   `source.post_pass_state` is `absent`.
+* A refused call that names a valid producer, run id and tree writes one
+  `parity.refusal` event, alone in its own batch, to the same `parity-runs/`
+  shard. It carries the input's SHA-256 and line count, the tree state, and the reason
+  (bounded to 4000 characters, with the owner's home directory replaced by
+  `<owner home>`); its `event_id`
+  is `sha256("parity.refusal" \0 producer \0 run_id \0 input_sha256 \0
+  error)`, so repeating the same refusal records it once.
+* The mirror reports where one validate run's parity stands as
+  `raw_publication.parity.run.state`: `published` (its marker is on the
+  fetched ledger), `pending` (its batch is spooled), `refused` (a
+  `parity.refusal` names the run and no marker does; `run.refusal` is the
+  latest reason), or `absent` (neither). `absent` does NOT distinguish an
+  older hermit from a run with no parity cell in scope: hermit's callers skip
+  `append-parity` when the selection is empty, so neither leaves a record.
+  The state is null when the ledger could not be read.
 * Both trees are outside the `series/*/*/*.jsonl` glob, so no series reader
   sees them.
 * Nothing is quarantined and nothing is skipped. A malformed input line, a
   record whose verdict disagrees with its envelope, credit that is not
-  hermit's `credit(matched_prefix, left_len, right_len)`, or a workspace-local
-  owner path refuses the WHOLE batch with the reason on stderr (exit 1).
-  Nothing is written, and the batch can be exported again from the files
-  hermit retains.
+  hermit's `credit(matched_prefix, left_len, right_len)`, a measured cell of a
+  backend the batch itself declares inputs-not-equalized, or a
+  workspace-local owner path refuses the WHOLE batch with the reason on
+  stderr (exit 1). No row is written, only the `parity.refusal`, and the
+  batch can be exported again from the files hermit retains.
 * `credit` is null for every cell that was not measured (`unavailable`,
   `record-missing`, and the rest). A null credit is never counted as 0 or 1.
 * The ledger is append-only. A replay that differs only in `emitted_at` is
   already recorded and writes nothing. Any other difference, whether spooled,
   retained, or published, is refused rather than replaced.
+* Published parity is indexed, not revalidated. A new batch is validated in
+  full before it is spooled and again before it is published; what is
+  already on the ledger is only indexed by `event_id`. A published line that
+  is not JSON, sits in the wrong shard, or repeats an `event_id` with a
+  different body is reported (the publisher's `parity.historic_invalid`
+  count, and the mirror's) and skipped. It never blocks a new run, because
+  the append-only ledger cannot repair it. A published shard without a final
+  newline refuses only the batch that would extend it.
 
 The spool is `ignored/ci-hub/parity-spool/`, one batch per run (the marker,
 then its rows). `mirror.py` publishes the pending batches in the SAME ledger
@@ -635,6 +660,26 @@ series rows fail, the parity batches publish in their own commit. The
 backlog sweep publishes them with `publish_backlog.py --store parity`, and
 `health/ledger_spool_backlog.py --store parity --gate` fires when a batch
 stays pending past its bound.
+
+The compatibility website reads `scorecard/parity.json` at the series ledger
+commit together with the `parity/` store and the `parity-runs/` refusals there
+(`export_inputs._parity_capture`, `parity_summary.capture_carriage`). The
+summary's `store_sha256` is recomputed from the store, never trusted. The
+carriage is in one of four states:
+
+* `absent`: the commit has no `scorecard/parity.json`.
+* `current`: `store_sha256` is the digest of the store at that commit, and the
+  summary's `series_commit`, when it names one, is that commit or an ancestor
+  of it.
+* `stale`: `store_sha256` is the digest of the store at the summary's
+  `series_commit`, an ancestor whose every shard is a byte prefix of the same
+  shard today. The panel says the figures are as of that commit and how many
+  record lines are newer.
+* `refused`: anything else. Only the parity panel is refused, with the reason
+  and what was read; the determinism pages still publish.
+
+Runs whose rows `append-parity` refused, and that no later `parity.run` marker
+recorded, are listed in the panel (newest 20, with the total) in every state.
 
 ## Running the tests
 

@@ -2298,17 +2298,36 @@ class AppendParityCli(unittest.TestCase):
         self.parent = Path(self.temporary.name)
         self.spool = series.parity_spool_dir(self.parent)
 
-    def _run(self, data: bytes, *extra, run_id=None, emitted_at="2026-09-28T21:40:00Z"):
+    def _run(self, data: bytes, *extra, run_id=None, emitted_at="2026-09-28T21:40:00Z",
+             dirty="false"):
         command = [
             sys.executable, str(Path(series.__file__).resolve()), "append-parity",
             "--parent", str(self.parent), "--producer", "validate",
             "--run-id", run_id or self.RUN_ID, "--tree", self.TREE,
-            "--emitted-at", emitted_at, *extra,
+            "--emitted-at", emitted_at,
+            *(() if dirty is None else ("--source-tree-dirty", dirty)), *extra,
         ]
         return subprocess.run(command, input=data, capture_output=True, timeout=120, check=False)
 
     def _batches(self):
         return sorted(p.name for p in self.spool.glob("*.jsonl")) if self.spool.is_dir() else []
+
+    def _recorded(self):
+        """Every spooled batch as (first event, rows)."""
+        parity = series.parity_ledger_module()
+        return [parity.read_batch(self.spool / name) for name in self._batches()]
+
+    def _only_refusal(self, data: bytes, error: str, dirty):
+        """The spool holds exactly one batch, the refusal of this input for `error`."""
+        parity = series.parity_ledger_module()
+        ((refusal, rows),) = self._recorded()
+        self.assertEqual(parity.REFUSAL_EVENT_TYPE, refusal["event_type"])
+        self.assertEqual([], rows)
+        self.assertEqual(
+            ("validate", self.RUN_ID, self.TREE, dirty, hashlib.sha256(data).hexdigest(), error),
+            (refusal["producer"], refusal["run_id"], refusal["hermit_sha"],
+             refusal["source_tree_dirty"], refusal["input_sha256"], refusal["error"]))
+        return refusal
 
     def test_round_trip_of_a_real_run_then_an_identical_replay(self):
         data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
@@ -2339,14 +2358,24 @@ class AppendParityCli(unittest.TestCase):
         self.assertEqual("diverged", tampered["verdict"])
         tampered["verdict"] = "matched"
         lines[7] = json.dumps(tampered)
-        refused = self._run(("\n".join(lines) + "\n").encode())
+        data = ("\n".join(lines) + "\n").encode()
+        refused = self._run(data)
         self.assertEqual(1, refused.returncode)
         self.assertEqual(b"", refused.stdout)
+        error = (f"input row 8: parity ledger source {tampered['cell']}: row verdict matched "
+                 "disagrees with record verdict diverged")
+        (batch,) = self._batches()
         self.assertIn(
-            "series: REFUSED the parity batch, nothing was written: input row 8: parity ledger "
-            f"source {tampered['cell']}: row verdict matched disagrees with record verdict diverged",
-            refused.stderr.decode())
-        self.assertEqual([], self._batches())
+            "series: REFUSED the parity batch, no row was written; the refusal is recorded -> "
+            f"{self.spool / batch}: {error}", refused.stderr.decode())
+        # The run reads as refused, with the message, and no row was spooled.
+        refusal = self._only_refusal(data, error, False)
+        self.assertEqual(192, refusal["input_lines"])
+        # The same input refused again for the same reason is the one refusal.
+        again = self._run(data, emitted_at="2026-09-28T22:00:00Z")
+        self.assertEqual(1, again.returncode)
+        self.assertIn("the refusal is already recorded", again.stderr.decode())
+        self.assertEqual([batch], self._batches())
 
     def test_a_blank_line_or_bad_json_is_refused_not_skipped(self):
         line = (self.FIXTURE / "ledger-sources.jsonl").read_text().splitlines()[0]
@@ -2356,7 +2385,12 @@ class AppendParityCli(unittest.TestCase):
         truncated = self._run((line + "\n" + line[:40] + "\n").encode())
         self.assertEqual(1, truncated.returncode)
         self.assertIn("stdin line 2", truncated.stderr.decode())
-        self.assertEqual([], self._batches())
+        # Two refusals of two inputs; neither spooled a row.
+        recorded = self._recorded()
+        self.assertEqual(["stdin line 2 is blank"],
+                         [event["error"] for event, _ in recorded if event["input_lines"] == 3])
+        self.assertEqual(2, len(recorded))
+        self.assertEqual([[], []], [rows for _, rows in recorded])
 
     def test_empty_stdin_records_an_empty_selection(self):
         empty = self._run(b"", run_id="validate-empty-selection")
@@ -2374,15 +2408,45 @@ class AppendParityCli(unittest.TestCase):
             input=b"", capture_output=True, timeout=60, check=False)
         self.assertEqual(2, missing.returncode)
         self.assertIn("append-parity requires --tree", missing.stderr.decode())
-        dirty = self._run(b"", "--source-tree-dirty", "maybe")
+        dirty = self._run(b"", dirty="maybe")
         self.assertEqual(2, dirty.returncode)
         self.assertIn("--source-tree-dirty must be true or false", dirty.stderr.decode())
+        self._only_refusal(
+            b"", "append-parity --source-tree-dirty must be true or false, got 'maybe'", None)
         bad_producer = subprocess.run(
             [sys.executable, str(Path(series.__file__).resolve()), "append-parity",
              "--parent", str(self.parent), "--producer", "hermit-repeat", "--run-id", "x",
-             "--tree", self.TREE], input=b"", capture_output=True, timeout=60, check=False)
+             "--tree", self.TREE, "--source-tree-dirty", "false"],
+            input=b"", capture_output=True, timeout=60, check=False)
         self.assertEqual(1, bad_producer.returncode)
         self.assertIn("--producer", bad_producer.stderr.decode())
+        # No valid producer names the refusal, so none is recorded for it.
+        self.assertIn("the refusal is not recorded: no valid producer, run and tree name it",
+                      bad_producer.stderr.decode())
+        self.assertEqual(1, len(self._batches()))
+
+
+    # --source-tree-dirty is evidence, so append-parity never defaults it.
+
+    def test_an_append_without_the_tree_state_is_a_usage_error_and_a_recorded_refusal(self):
+        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        refused = self._run(data, dirty=None)
+        self.assertEqual(2, refused.returncode)
+        self.assertEqual(b"", refused.stdout)
+        stderr = refused.stderr.decode()
+        self.assertIn("series: append-parity requires --source-tree-dirty true|false", stderr)
+        self.assertIn("usage:", stderr)
+        self.assertIn("series: the refusal is recorded -> ", stderr)
+        refusal = self._only_refusal(
+            data, "append-parity requires --source-tree-dirty true|false", None)
+        self.assertEqual(192, refusal["input_lines"])
+
+    def test_a_dirty_tree_is_stamped_on_the_marker_and_every_row(self):
+        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        appended = self._run(data, dirty="true")
+        self.assertEqual(0, appended.returncode, appended.stderr.decode())
+        ((marker, rows),) = self._recorded()
+        self.assertEqual({True}, {marker["source_tree_dirty"], *(row["source_tree_dirty"] for row in rows)})
 
 
 class WriteBoundaryCli(unittest.TestCase):

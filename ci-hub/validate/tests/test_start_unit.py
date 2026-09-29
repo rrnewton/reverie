@@ -6600,6 +6600,44 @@ else:
         self.assertIn("--results", publication)
         self.assertEqual("validate-test", publication[publication.index("--finalized-run-id") + 1])
 
+    #: A fitting parity outcome of a successful publication.
+    PARITY_OUTCOME = {
+        "schema": "parity-publication/v1", "published": 193, "already_published": 0,
+        "commit": "d" * 40, "joint": True, "batches": ["hermit__h__2026-09__x.jsonl"],
+        "refused": [], "error": None, "pending_batches": 0, "historic_invalid": 0,
+        "run": {"producer": "validate", "run_id": "validate-test", "state": "published",
+                "records": 192, "refusal": None},
+    }
+
+    def test_ledger_mirror_success_records_a_fitting_parity_outcome(self) -> None:
+        # https://github.com/rrnewton/hermit/issues/3301 finding [7]: the success
+        # path checks the parity outcome as the failed path does.
+        self.fake.ledger_mirror_update = {
+            "raw_publication": {"published": 17, "parity": self.PARITY_OUTCOME}}
+        rc, _output, error = self.invoke()
+        self.assertEqual(0, rc, error)
+        self.assertNotIn("PARITY OUTCOME NOT RECORDED", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json")
+        self.assertEqual({"published": 17, "parity": self.PARITY_OUTCOME},
+                         record["ledger_mirror"]["raw_publication"])
+
+    def test_ledger_mirror_success_drops_an_unfit_parity_outcome_and_keeps_why(self) -> None:
+        # An unfit outcome is dropped with its reason; the publication itself is
+        # still recorded, and the record still parses.
+        self.fake.ledger_mirror_update = {
+            "raw_publication": {"published": 17, "parity": {**self.PARITY_OUTCOME, "joint": "no"}}}
+        rc, _output, error = self.invoke()
+        self.assertEqual(0, rc, error)
+        reason = "validation-run-handle-ledger_mirror.raw_publication.parity.joint: must be a boolean"
+        self.assertIn(f"validate-run: PARITY OUTCOME NOT RECORDED: {reason}", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json")
+        self.assertEqual("published", record["ledger_mirror"]["state"])
+        self.assertEqual({"published": 17, "parity_not_recorded": reason},
+                         record["ledger_mirror"]["raw_publication"])
+        self.assertTrue(start_unit.cell_ledger_published(record))
+
     def test_ledger_mirror_failure_is_loud_without_changing_green_verdict(self) -> None:
         self.fake.ledger_mirror_rc = 1
         self.fake.ledger_mirror_stderr = "remote push refused"

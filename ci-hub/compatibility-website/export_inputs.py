@@ -950,61 +950,139 @@ def _parity_reader() -> Any:
     return parity_summary
 
 
-def _parity_capture(ledger: Path, series_commit: str) -> dict[str, Any]:
-    """Carry the ledger commit's parity summary as its exact committed bytes.
-
-    hermit's scorecard writes `scorecard/parity.json` from the ledger's
-    `parity/` store and the mirror commits it beside the series, so it is read
-    at the same ledger commit as the series rows. The carriage also counts the
-    `parity/` and `parity-runs/` shards, so the website can tell a ledger with
-    no parity records from one whose records were never summarized. A summary
-    that breaks its contract refuses the export.
-    """
+def _parity_listing(ledger: Path, commit: str, roots: Sequence[str]) -> list[tuple[str, str, bool]]:
+    """(path, object id, regular) for every blob under `roots` at `commit`."""
     reader = _parity_reader()
-    summary_path = reader.LEDGER_PATH
-    listed = _git(
-        ledger,
-        ["ls-tree", "-r", "-z", series_commit, "--", summary_path, reader.ROW_STORE, reader.RUN_STORE],
-    )
-    summary_object = None
-    store_files = 0
-    run_marker_files = 0
-    for raw in listed.split(b"\0"):
+    entries = []
+    for raw in _git(ledger, ["ls-tree", "-r", "-z", commit, "--", *roots]).split(b"\0"):
         if not raw:
             continue
         try:
             metadata, raw_path = raw.split(b"\t", 1)
             mode, object_type, object_id = metadata.decode().split()
-        except (ValueError, UnicodeDecodeError) as error:
-            raise ExportRefused(f"git returned malformed ls-tree entry {raw!r}") from error
-        relative = _safe_git_path(raw_path.decode(errors="strict"))
-        if object_type != "blob" or mode not in {"100644", "100755"}:
-            raise ExportRefused(
-                f"parity ledger path is not a regular blob: {relative} "
-                f"(mode={mode}, type={object_type})"
-            )
+            relative = _safe_git_path(raw_path.decode(errors="strict"))
+        except (ValueError, UnicodeDecodeError, ExportRefused) as error:
+            raise reader.ParitySummaryError(f"git returned malformed ls-tree entry {raw!r}: {error}") from error
         if not re.fullmatch(r"[0-9a-f]{40,64}", object_id):
-            raise ExportRefused(f"parity ledger path has invalid Git object id: {relative}")
-        top = PurePosixPath(relative).parts[0]
-        if relative == summary_path:
-            summary_object = object_id
-        elif top == reader.ROW_STORE:
-            store_files += 1
-        elif top == reader.RUN_STORE:
-            run_marker_files += 1
-        else:
-            raise ExportRefused(f"git listed an unrequested parity ledger path: {relative}")
+            raise reader.ParitySummaryError(f"parity ledger path has invalid Git object id: {relative}")
+        if not any(relative == root or relative.startswith(root + "/") for root in roots):
+            raise reader.ParitySummaryError(f"git listed an unrequested parity ledger path: {relative}")
+        entries.append((relative, object_id, object_type == "blob" and mode in {"100644", "100755"}))
+    return entries
+
+
+def _parity_blob(ledger: Path, object_id: str) -> bytes:
+    return _git(ledger, ["cat-file", "blob", object_id])
+
+
+def _parity_store_at(ledger: Path, commit: str) -> tuple[dict[str, bytes], int]:
+    """The `parity/` shards hermit digests at `commit`, and the count of every file below `parity/`."""
+    reader = _parity_reader()
+    shards: dict[str, bytes] = {}
+    files = 0
     try:
-        if summary_object is None:
-            return reader.absent_carriage(series_commit, store_files, run_marker_files)
-        data = _git(ledger, ["show", f"{series_commit}:{summary_path}"])
-        return reader.present_carriage(
-            series_commit, summary_object, data, store_files, run_marker_files
+        for relative, object_id, regular in _parity_listing(ledger, commit, [reader.ROW_STORE]):
+            files += 1
+            if not regular:
+                raise reader.ParitySummaryError(f"parity ledger path {relative} at {commit} is not a regular blob")
+            if reader.is_store_shard(relative):
+                shards[relative] = _parity_blob(ledger, object_id)
+    except ExportRefused as error:
+        raise reader.ParitySummaryError(str(error)) from error
+    return shards, files
+
+
+def _parity_is_ancestor(ledger: Path, ancestor: str, descendant: str) -> bool:
+    reader = _parity_reader()
+    arguments = ["merge-base", "--is-ancestor", ancestor, descendant]
+    try:
+        result = capture_bounded_process(
+            ["git", "--no-replace-objects", "-C", str(ledger), *arguments],
+            timeout=_GIT_TIMEOUT_SECONDS,
+            stdout_limit=_MAX_GIT_STDOUT_BYTES,
+            stderr_limit=_MAX_GIT_STDERR_BYTES,
+            environment=_git_environment(),
         )
-    except reader.ParitySummaryError as error:
-        raise ExportRefused(
-            f"ledger commit {series_commit} {summary_path} is refused: {error}"
-        ) from error
+    except (OSError, subprocess.TimeoutExpired, OutputLimitExceeded) as error:
+        raise reader.ParitySummaryError(f"cannot run git in {ledger}: {error}") from error
+    if result.returncode in (0, 1):
+        return result.returncode == 0
+    raise reader.ParitySummaryError(
+        f"git {' '.join(arguments)} failed: {_process_detail(result.stderr, result.stdout)}"
+    )
+
+
+def _parity_capture(ledger: Path, series_commit: str) -> dict[str, Any]:
+    """Carry the ledger commit's parity summary, bound to the store it summarizes.
+
+    hermit's scorecard writes `scorecard/parity.json` from the ledger's
+    `parity/` store, and records the store's digest in
+    `generated_from.store_sha256`. The mirror commits it beside the series, but
+    a parity-only publication appends rows without regenerating it. So the
+    digest is recomputed here from the shards at the series commit: equal, the
+    summary is current; equal to the store at the earlier ledger commit it
+    names, which the current store extends, it is stale and says how many
+    newer record lines it omits; anything else refuses the summary. A parity
+    refusal is carried to the parity panel and never refuses the export.
+    """
+    reader = _parity_reader()
+    summary_path = reader.LEDGER_PATH
+    try:
+        listed = _parity_listing(ledger, series_commit, [summary_path, reader.ROW_STORE, reader.RUN_STORE])
+    except (ExportRefused, reader.ParitySummaryError) as error:
+        return reader.refused_carriage(
+            series_commit, f"ledger commit {series_commit} parity paths cannot be listed: {error}",
+            append_refusals_total=None,
+        )
+    summary_object = None
+    store: dict[str, bytes] = {}
+    run_shards: dict[str, bytes] = {}
+    store_files = 0
+    run_marker_files = 0
+    irregular = []
+    try:
+        for relative, object_id, regular in listed:
+            if not regular:
+                irregular.append(relative)
+            top = PurePosixPath(relative).parts[0]
+            if relative == summary_path:
+                summary_object = object_id
+            elif top == reader.ROW_STORE:
+                store_files += 1
+                if regular and reader.is_store_shard(relative):
+                    store[relative] = _parity_blob(ledger, object_id)
+            else:
+                run_marker_files += 1
+                if regular:
+                    run_shards[relative] = _parity_blob(ledger, object_id)
+        refusals, refusals_total = reader.append_refusals_from(run_shards)
+        facts = {"store_files": store_files, "run_marker_files": run_marker_files,
+                 "append_refusals": refusals, "append_refusals_total": refusals_total}
+        if irregular:
+            return reader.refused_carriage(
+                series_commit,
+                f"ledger commit {series_commit} parity ledger path(s) are not regular blobs: "
+                + ", ".join(irregular),
+                **facts,
+            )
+        data = None if summary_object is None else _parity_blob(ledger, summary_object)
+    except (ExportRefused, reader.ParitySummaryError) as error:
+        return reader.refused_carriage(
+            series_commit, f"ledger commit {series_commit} parity ledger cannot be read: {error}",
+            append_refusals_total=None,
+        )
+    return reader.capture_carriage(
+        series_commit,
+        summary_object=summary_object,
+        summary_data=data,
+        store=store,
+        store_files=store_files,
+        run_marker_files=run_marker_files,
+        read_store_at=lambda commit: _parity_store_at(ledger, commit),
+        is_ancestor=lambda commit: _parity_is_ancestor(ledger, commit, series_commit),
+        append_refusals=refusals,
+        append_refusals_total=refusals_total,
+    )
 
 
 def _proof_reader() -> Any:

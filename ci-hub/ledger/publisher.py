@@ -101,7 +101,7 @@ def _parity_store():
 
 def _parity_report() -> dict:
     return {"published": 0, "already_published": 0, "batches": [], "refused": [],
-            "error": None}
+            "error": None, "historic_invalid": None, "historic_invalid_sample": []}
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
@@ -928,6 +928,10 @@ def _plan_parity(repo: Path, ref: str, batches: Sequence[Path], report: dict, *,
             raise PublishRefused(detail) from error
         report["error"] = detail
         return None
+    # Published entries the index could not use are reported, never raised:
+    # the append-only ledger cannot repair them, so they must not block this.
+    report["historic_invalid"] = len(published.invalid)
+    report["historic_invalid_sample"] = [dict(item) for item in published.invalid[:3]]
     plan = parity.plan_publication(batches, published)
     report["refused"] = list(plan.refused)
     return plan
@@ -1173,6 +1177,12 @@ def main(argv: list[str] | None = None) -> int:
         for item in refused:
             print(f"ledger-publisher: REFUSED parity batch {item['batch']}: {item['error']}",
                   file=sys.stderr)
+        parity_report = report.get("parity") or {}
+        if parity_report.get("historic_invalid"):
+            print(f"ledger-publisher: {parity_report['historic_invalid']} published parity "
+                  "entr(ies) could not be indexed and were skipped:", file=sys.stderr)
+            for item in parity_report.get("historic_invalid_sample") or []:
+                print(f"  {item['path']}:{item['line']}: {item['error']}", file=sys.stderr)
         return 2 if refused else 0
     except (OSError, subprocess.SubprocessError, PublishRefused, MalformedEvent) as error:
         print(f"ledger-publisher: REFUSED: {error}", file=sys.stderr)

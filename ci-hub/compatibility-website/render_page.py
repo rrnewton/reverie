@@ -1635,7 +1635,8 @@ def _metric_amount(value: Fraction | int) -> str:
 def _backend_leaderboard(model: SiteModel) -> str:
     # Parity comes from the ledger's parity summary, never from the retired
     # rerun evidence `_backend_rows` still reads for the legacy history lines.
-    parity_run = _parity_headline(_parity_view(model)[1])
+    carriage, summary = _parity_view(model)
+    parity_run = _parity_headline(summary)
     rows = []
     for item in _backend_rows(model):
         columns = []
@@ -1647,7 +1648,7 @@ def _backend_leaderboard(model: SiteModel) -> str:
                 f'<td><strong>{label}</strong><span class="secondary">'
                 f'{_metric_amount(metric[amount])} / {_integer(item["denominator"])} cells</span></td>'
             )
-        columns.append(_leaderboard_parity_columns(str(item["backend"]), parity_run))
+        columns.append(_leaderboard_parity_columns(str(item["backend"]), parity_run, carriage))
         details = (
             f'{_integer(item["failed"])} failed; {_integer(item["missing"])} missing/unmeasured; '
             f'{_integer(item["determinism"]["unavailable"])} without determinism evidence; '
@@ -1694,6 +1695,10 @@ BACKEND_HISTORY_COLORS = (
 )
 
 
+#: (site-summary.json backend_history key, `_backend_rows` metric) pairs.
+BACKEND_HISTORY_SERIES = (("determinism", "determinism"), ("legacy_rerun_parity", "parity"))
+
+
 def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
     """Replay the existing reducer as of each recorded UTC date, not ever-green."""
     reducer = _writer()._build_data_module()._modules().reducer
@@ -1738,10 +1743,12 @@ def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
         for item in _backend_rows(snapshot):
             history.append({
                 "date": day, "backend": item["backend"], "reference_cells": item["denominator"],
-                **{name: {
+                # The retired ptrace-rerun evidence is named for what it is, so no
+                # reader of site-summary.json mistakes it for current parity.
+                **{key: {
                     "green_cells": None if item[name]["percentage"] is None else item[name]["full"],
                     "unavailable_cells": item[name]["unavailable"],
-                } for name in ("determinism", "parity")},
+                } for key, name in BACKEND_HISTORY_SERIES},
             })
     return history
 
@@ -1773,10 +1780,11 @@ def _backend_history_chart(model: SiteModel) -> str:
     for index, backend in enumerate(sorted({point["backend"] for point in history})):
         points = [point for point in history if point["backend"] == backend]
         color = BACKEND_HISTORY_COLORS[index % len(BACKEND_HISTORY_COLORS)]
-        for name in ("determinism", "parity"):
-            # The parity lines replay the retired ptrace-rerun evidence; they
-            # are labelled legacy history, and current parity is the panel.
-            title = LEGACY_RERUN_PARITY if name == "parity" else name
+        for name, _source in BACKEND_HISTORY_SERIES:
+            # The legacy_rerun_parity lines replay the retired ptrace-rerun
+            # evidence; they are labelled legacy history, and current parity is
+            # the panel.
+            title = LEGACY_RERUN_PARITY if name == "legacy_rerun_parity" else name
             commands = []
             connected = False
             for point in points:
@@ -1796,7 +1804,7 @@ def _backend_history_chart(model: SiteModel) -> str:
                     ),
                 })
                 connected = True
-            dash = ' stroke-dasharray="7 4"' if name == "parity" else ''
+            dash = ' stroke-dasharray="7 4"' if name == "legacy_rerun_parity" else ''
             series_id = f"history-{index}-{name}"
             if commands:
                 lines.append(
@@ -1833,7 +1841,7 @@ def _backend_history_chart(model: SiteModel) -> str:
     table_rows = []
     for point in history:
         values = []
-        for name in ("determinism", "parity"):
+        for name, _source in BACKEND_HISTORY_SERIES:
             count = point[name]["green_cells"]
             value = percentage(point, name)
             values.extend((
@@ -1883,18 +1891,18 @@ def _parity_view(model: Any) -> tuple[Mapping[str, Any] | None, Mapping[str, Any
     """The build's parity carriage and its checked summary.
 
     `(None, None)` is a build without a parity capture (historical, or built
-    before parity was captured); `(carriage, None)` is a ledger capture with no
-    `scorecard/parity.json`. A carriage the checker refuses refuses the page.
+    before parity was captured). Otherwise the carriage is admitted against the
+    build's series ledger commit: its summary is returned only when it is
+    current or stale. A carriage the checker refuses is replaced by a refused
+    carriage naming why, which only the parity panel and columns show.
     """
     carriage = model.runs.get("parity")
     if carriage is None:
         return None, None
-    reader = _parity_reader()
-    try:
-        summary = reader.validate_carriage(carriage)
-    except reader.ParitySummaryError as error:
-        raise RenderRefused(f"parity carriage is refused: {error}") from error
-    return carriage, summary
+    provenance = model.data.get("provenance")
+    canonical = provenance.get("canonical_input_provenance") if isinstance(provenance, Mapping) else None
+    series_commit = canonical.get("series_commit") if isinstance(canonical, Mapping) else None
+    return _parity_reader().admit_carriage(carriage, series_commit, "parity carriage")
 
 
 def _parity_headline(summary: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -1964,14 +1972,58 @@ def _parity_absent_text(carriage: Mapping[str, Any] | None) -> str:
     )
 
 
+def _parity_refused_text(carriage: Mapping[str, Any]) -> str:
+    facts = []
+    if carriage["ledger_commit"] is not None:
+        facts.append(f'ledger commit <code>{_escape(carriage["ledger_commit"])}</code>')
+    if carriage["store_files"] is not None:
+        facts.append(f'{_integer(carriage["store_files"])} parity record shard file(s)')
+    if carriage["store_records"] is not None:
+        facts.append(f'{_integer(carriage["store_records"])} record line(s)')
+    if carriage["sha256"] is not None:
+        facts.append(f'<code>{_escape(carriage["path"])}</code> sha256 {_short_sha(carriage["sha256"])}')
+    return (
+        '<div class="notice parity-refused"><p><strong>Parity summary refused; no parity figure is shown for this '
+        "build.</strong> The determinism figures are unaffected.</p>"
+        f'<p><code class="parity-message">{_escape(carriage["refusal"])}</code></p>'
+        + (f'<p>Read at: {"; ".join(facts)}.</p>' if facts else "")
+        + "</div>"
+    )
+
+
+def _parity_append_refusals(carriage: Mapping[str, Any] | None) -> str:
+    if carriage is None or not carriage["append_refusals_total"]:
+        return ""
+    listed = carriage["append_refusals"]
+    return (
+        f'<div class="notice parity-append-refusals"><p><strong>{_integer(carriage["append_refusals_total"])} '
+        "parity run(s) recorded no parity rows: <code>append-parity</code> refused their records and they were "
+        f"not later recorded ({_integer(len(listed))} newest listed).</strong> These runs are not in any figure "
+        "below.</p><ul>"
+        + "".join(
+            f'<li>{_escape(item["producer"])} run <code>{_escape(item["run_id"])}</code> at Hermit '
+            f'{_short_sha(item["hermit_sha"])}, {_escape(item["emitted_at"])}: '
+            f'<code class="parity-message">{_escape(item["error"])}</code></li>'
+            for item in listed
+        )
+        + "</ul></div>"
+    )
+
+
 def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], summary: Mapping[str, Any]) -> str:
     total = run["total"]
     generated = summary["generated_from"]
     as_of = (
         f'<p class="parity-as-of">Data as of: last parity record emitted {_time_element(run["emitted_at"], "parity emitted_at")}; '
         f'Hermit commit {_short_sha(run["hermit_sha"])} measured; '
-        f'ledger commit {_short_sha(carriage["ledger_commit"])} '
-        f'(<code>{_escape(carriage["path"])}</code>, sha256 {_short_sha(carriage["sha256"])}); '
+        + (
+            f'parity store at ledger commit {_short_sha(carriage["summarized_commit"])} (stale: '
+            f'{_integer(carriage["unsummarized_records"])} newer record line(s) at ledger commit '
+            f'{_short_sha(carriage["ledger_commit"])} not summarized) '
+            if carriage["state"] == "stale" else
+            f'parity store at ledger commit {_short_sha(carriage["ledger_commit"])} '
+        )
+        + f'(<code>{_escape(carriage["path"])}</code>, sha256 {_short_sha(carriage["sha256"])}); '
         f'summary written by Hermit tool commit {_short_sha(generated["tool_hermit_commit"])}.</p>'
     )
     if total["credited"]:
@@ -2138,12 +2190,25 @@ def _parity_panel(model: Any) -> str:
         f'<section id="parity"><h2>{PARITY_PANEL_TITLE}</h2>'
         "<p>After the determinism checks, each candidate backend's retained verify log is compared with the "
         "ptrace reference log. A cell's credit is the matched prefix of the two logs over the longer one, in "
-        "[0, 1]; only a complete match earns 1. This panel shows the ledger's committed parity summary exactly; "
-        "it is separate from determinism and recomputes nothing.</p>"
+        "[0, 1]; only a complete match earns 1. This panel shows the ledger's committed parity summary after "
+        "checking it against the parity records it summarizes; it is separate from determinism and recomputes "
+        "no credit.</p>"
     )
     if summary is None:
-        return intro + _parity_absent_text(carriage) + "</section>"
+        body = _parity_refused_text(carriage) if carriage is not None and carriage["state"] == "refused" \
+            else _parity_absent_text(carriage)
+        return intro + body + _parity_append_refusals(carriage) + "</section>"
     parts = [intro]
+    if carriage["state"] == "stale":
+        parts.append(
+            f'<p class="notice parity-stale"><strong>Stale: this summary covers the parity store at ledger commit '
+            f'<code>{_escape(carriage["summarized_commit"])}</code>; '
+            f'{_integer(carriage["unsummarized_records"])} newer parity record line(s) at ledger commit '
+            f'<code>{_escape(carriage["ledger_commit"])}</code> are not summarized.</strong> The figures below '
+            f'are as of <code>{_escape(carriage["summarized_commit"])}</code>. A parity-only publication appends '
+            "records without rewriting the summary; the next scorecard publication summarizes them.</p>"
+        )
+    parts.append(_parity_append_refusals(carriage))
     if not summary["producers"]:
         parts.append(
             f"<p>The ledger's parity store holds no admitted parity run "
@@ -2184,12 +2249,23 @@ def _parity_panel(model: Any) -> str:
     return "".join(parts)
 
 
-def _leaderboard_parity_columns(backend: str, run: Mapping[str, Any] | None) -> str:
+def _leaderboard_parity_columns(
+    backend: str, run: Mapping[str, Any] | None, carriage: Mapping[str, Any] | None = None
+) -> str:
+    if carriage is not None and carriage["state"] == "refused":
+        return (
+            '<td><strong>Refused</strong><span class="secondary">parity summary refused; see the parity panel</span></td>'
+            '<td><strong>Refused</strong><span class="secondary">parity summary refused; see the parity panel</span></td>'
+        )
     if run is None:
         return (
             '<td><strong>Not available</strong><span class="secondary">no parity summary</span></td>'
             '<td><strong>Not available</strong><span class="secondary">no parity summary</span></td>'
         )
+    stale = (
+        f'; stale, as of ledger commit {_escape(str(carriage["summarized_commit"])[:12])}'
+        if carriage is not None and carriage["state"] == "stale" else ""
+    )
     tally = run["per_backend"].get(backend)
     if tally is None:
         note = "ptrace is the parity reference" if backend == "ptrace" else "not a parity candidate"
@@ -2203,9 +2279,9 @@ def _leaderboard_parity_columns(backend: str, run: Mapping[str, Any] | None) -> 
     )
     return (
         f'<td><strong>{_integer(tally["matched"])} / {_integer(tally["selected"])}</strong>'
-        f'<span class="secondary">matched / selected parity cells; {_integer(tally["measured"])} measured</span></td>'
+        f'<span class="secondary">matched / selected parity cells; {_integer(tally["measured"])} measured{stale}</span></td>'
         f'<td><strong>{_parity_credit(tally["floor_credit"])}</strong>'
-        f'<span class="secondary">floor over {_integer(tally["selected"])} selected; {mean}</span></td>'
+        f'<span class="secondary">floor over {_integer(tally["selected"])} selected; {mean}{stale}</span></td>'
     )
 
 def _overview(model: SiteModel, page: str) -> str:
