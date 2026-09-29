@@ -324,6 +324,13 @@ enum HubCommand {
     /// Find the newest recorded PASS -> FAIL transition for a local cell or gate.
     FirstBad(FirstBadArgs),
     /// Reconcile `locally-validated` with each PR's exact-head validation record.
+    ///
+    /// Exit status: 0 when every PR was reconciled; 1 when an operation
+    /// failed; 2 for a usage or ledger error; 3, with --pr only, when the PR
+    /// was left without the label bound because relevant evidence was
+    /// produced on another host and its artifacts are absent here. Exit 0
+    /// does not by itself mean the label was bound: read --json
+    /// (https://github.com/rrnewton/dev-hermit/issues/416).
     ApplyLocalLabel(ApplyLocalLabelArgs),
     /// Publish a qualifying local validation receipt as a GitHub commit status.
     PublishCommitStatus(PublishCommitStatusArgs),
@@ -4253,20 +4260,71 @@ impl CanonicalReceiptAssessment {
     /// NEEDS-RERUN with no unresolved obligation of its own, and at least one
     /// foreign row whose artifacts are absent here, qualifies when either
     /// this host already holds a qualifying receipt (the foreign rows are
-    /// ancestors that can only block) or one of the foreign rows is for the
-    /// head itself (it may be the producer's receipt). A head with neither
-    /// has no receipt in the ledger on any host, so it stays decidable here.
-    /// A FAILED record anywhere makes the verdict FAILED, never this.
+    /// ancestors that can only block) or an unreadable foreign row for the
+    /// head itself claims a clean full pass (see
+    /// [`Self::foreign_receipt_claim_at_head`]). A head with neither has no
+    /// receipt in the ledger on any host, so it stays decidable here. A
+    /// FAILED record anywhere makes the verdict FAILED, never this.
+    ///
+    /// "Another host could decide" is not "another host will". When the
+    /// receipt is on host A and a relevant ancestor row is on host B, A holds
+    /// the receipt and B sees A's receipt as a foreign head row, so both
+    /// answer true and neither can reach VALIDATED or remove a label. Only
+    /// copying the artifacts between the hosts
+    /// (https://github.com/rrnewton/dev-hermit/issues/412) settles that head.
     fn undecidable_on_this_host(&self) -> bool {
         self.verdict == validate_status::Verdict::NeedsRerun
             && self.unresolved_failure_obligations.is_empty()
             && !self.unverifiable_evidence.is_empty()
-            && (!self.qualifying.is_empty()
-                || self
-                    .unverifiable_evidence
-                    .iter()
-                    .any(|entry| entry.commit == self.sha))
+            && (!self.qualifying.is_empty() || self.foreign_receipt_claim_at_head())
     }
+
+    /// Whether some unreadable foreign row for the head itself may be its
+    /// producer's receipt: by its own recorded fields it claims the clean
+    /// exact-commit full pass that both receipt predicates require, and only
+    /// its retained artifacts, absent here, are left to judge. A foreign head
+    /// row that records TRUNCATED, NO_RESULT, NEEDS-RERUN, a failure, or a
+    /// partial or dirty run cannot be a receipt on any host, so its absent
+    /// artifacts leave this host able to decide.
+    fn foreign_receipt_claim_at_head(&self) -> bool {
+        self.unverifiable_evidence
+            .iter()
+            .filter(|entry| entry.commit == self.sha)
+            .any(|entry| {
+                self.disqualified.iter().any(|row| {
+                    unverifiable_entry_names_row(entry, row)
+                        && row_claims_clean_exact_full_pass(row, &self.sha)
+                })
+            })
+    }
+}
+
+/// Whether `entry` was reported for `row`: the same commit, run, finish time
+/// and producing host.
+fn unverifiable_entry_names_row(
+    entry: &failure_obligations::UnverifiableEvidence,
+    row: &HistoryRow,
+) -> bool {
+    row.commit.as_deref() == Some(entry.commit.as_str())
+        && row.run_id == entry.run_id
+        && row.finished_at.as_deref().unwrap_or_default() == entry.finished_at
+        && row.host.as_deref().map(str::trim) == Some(entry.producing_host.as_str())
+}
+
+/// The clauses shared by [`qualify_canonical_receipt`] and
+/// [`qualify_reverie_receipt`] that read only the row's own recorded fields:
+/// an exact, anchored, clean full run whose driver recorded a pass with zero
+/// failures. Passing them is a claim, not a qualification.
+fn row_claims_clean_exact_full_pass(row: &HistoryRow, sha: &str) -> bool {
+    row.commit.as_deref() == Some(sha)
+        && row.commit_anchored == Some(true)
+        && row.tree_dirty == Some(false)
+        && row.profile.as_deref() == Some("full")
+        && row.selection_mode.as_deref() == Some("full")
+        && row.result.as_deref() == Some("pass")
+        && extra_str(row, "raw_result") == Some("pass")
+        && row.exit_code == Some(0)
+        && row.failures == Some(0)
 }
 
 fn is_oid(value: &str) -> bool {
@@ -11507,6 +11565,38 @@ fn unverifiable_evidence_note(entries: &[failure_obligations::UnverifiableEviden
     )
 }
 
+/// Why `publish-commit-status` writes no status for a head that is not
+/// VALIDATED. A qualifying receipt can exist while failure obligations or
+/// foreign-host evidence keep the verdict below VALIDATED; that is not "no
+/// qualifying receipt".
+fn commit_status_withheld_reason(assessment: &CanonicalReceiptAssessment) -> String {
+    let verdict = assessment.verdict.as_str();
+    if assessment.qualifying.is_empty() {
+        return format!("no qualifying local validation receipt (verdict {verdict})");
+    }
+    let mut blockers = Vec::new();
+    if !assessment.unresolved_failure_obligations.is_empty() {
+        blockers.push(format!(
+            "{} unresolved failure obligation(s)",
+            assessment.unresolved_failure_obligations.len()
+        ));
+    }
+    if !assessment.unverifiable_evidence.is_empty() {
+        blockers.push(format!(
+            "{} relevant row(s) whose artifacts exist only on their producing host",
+            assessment.unverifiable_evidence.len()
+        ));
+    }
+    if blockers.is_empty() {
+        format!("a qualifying local validation receipt exists but the verdict is {verdict}")
+    } else {
+        format!(
+            "a qualifying local validation receipt exists but the verdict is {verdict}: {}",
+            blockers.join(" and ")
+        )
+    }
+}
+
 fn run_publish_commit_status(
     tool_root: &Path,
     state_root: &Path,
@@ -11522,20 +11612,21 @@ fn run_publish_commit_status(
     let assessment = assess_canonical_receipts(state_root, &rows, &args.sha, &args.repo)
         .map_err(CiHubError::ValidateStatus)?;
     if assessment.verdict != validate_status::Verdict::Validated {
+        let reason = commit_status_withheld_reason(&assessment);
         let report = serde_json::json!({
             "schema_version": 1,
             "action": "none",
             "repository": args.repo,
             "sha": args.sha,
             "verdict": assessment.verdict.as_str(),
-            "reason": "no qualifying local validation receipt; no commit status was written",
+            "reason": format!("{reason}; no commit status was written"),
             "unverifiable_evidence": assessment.unverifiable_evidence,
         });
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else {
             println!(
-                "{} {}: no qualifying local receipt; no commit status written{}",
+                "{} {}: {reason}; no commit status written{}",
                 report["repository"].as_str().unwrap(),
                 report["sha"].as_str().unwrap(),
                 unverifiable_evidence_note(&assessment.unverifiable_evidence),
@@ -11592,10 +11683,7 @@ fn run_publish_commit_status(
     Ok(0)
 }
 
-/// `ci-hub apply-local-label --pr <N> | --all-open` reconciles the derived
-/// `locally-validated` cache in both directions. A qualifying exact-head receipt
-/// binds the label; every other exact-head verdict removes an existing label.
-/// Receipt comments remain immutable history and are already exact-head bound.
+/// The canonical ledger rows `apply-local-label` judges.
 fn load_apply_local_label_rows(
     tool_root: &Path,
     state_root: &Path,
@@ -11603,6 +11691,62 @@ fn load_apply_local_label_rows(
     Ok(load_ledger_rows_reporting_with_tool(&ledger_path(state_root), tool_root)?.0)
 }
 
+/// `apply-local-label --pr` exit status when the PR ends without the label
+/// bound and its head's verdict here rests on relevant evidence whose
+/// retained artifacts exist only on another host (`unverifiable_evidence` is
+/// non-empty), whether the label was absent (`skip`), kept (`keep-unjudged`)
+/// or removed. Distinct from 0 so a caller that reads only the exit status
+/// cannot report the receipt as published, and from 1, which is an operation
+/// that failed.
+const APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE: i32 = 3;
+
+/// Whether reconciling one PR with `action` leaves it without the label
+/// bound while its head's verdict here rests on foreign-host evidence. Every
+/// action but Bind leaves it unbound; Bind requires VALIDATED, which no
+/// unverifiable evidence allows.
+fn leaves_pr_unbound_on_foreign_evidence(
+    action: LocalLabelReconcileAction,
+    assessment: &CanonicalReceiptAssessment,
+) -> bool {
+    action != LocalLabelReconcileAction::Bind && !assessment.unverifiable_evidence.is_empty()
+}
+
+/// The exit status of one `apply-local-label` invocation. A failed operation
+/// wins. In `--pr` mode a PR left unbound on foreign-host evidence is
+/// [`APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE`]. A sweep (`--all-open`) exits
+/// 0 for it: that per-PR state is in its report and is not a sweep failure.
+///
+/// Exit 0 in `--pr` mode still does not mean the label was bound. A head that
+/// this host judges not VALIDATED on its own evidence also exits 0 (`skip`
+/// or `removed`), which is recorded as a separate, older defect in
+/// https://github.com/rrnewton/dev-hermit/issues/416.
+fn apply_local_label_exit_status(
+    single_pr: bool,
+    failed: i32,
+    unbound_on_foreign_evidence: i32,
+) -> i32 {
+    if failed != 0 {
+        1
+    } else if single_pr && unbound_on_foreign_evidence != 0 {
+        APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE
+    } else {
+        0
+    }
+}
+
+/// `ci-hub apply-local-label --pr <N> | --all-open` reconciles the derived
+/// `locally-validated` cache with each PR's exact-head verdict on this host.
+/// A qualifying exact-head receipt with verdict VALIDATED binds the label.
+/// Any other verdict removes an existing label, with one exception: when
+/// [`CanonicalReceiptAssessment::undecidable_on_this_host`] holds, an existing
+/// label is kept unjudged (`keep-unjudged`), because another host may be able
+/// to decide. That host is not guaranteed to exist. With the receipt on one
+/// host and a relevant ancestor row on another, each host keeps the label and
+/// neither can remove it, so a label that an earlier head earned can stay on a
+/// head that no host judges VALIDATED. The label is a derived cache; landing
+/// re-derives the exact-head verdict. Receipt comments remain immutable
+/// history and are already exact-head bound. See
+/// [`apply_local_label_exit_status`] for the exit status.
 fn run_apply_local_label(
     tool_root: &Path,
     state_root: &Path,
@@ -11624,7 +11768,9 @@ fn run_apply_local_label(
     let mut applied = 0i32;
     let mut removed = 0i32;
     let mut kept_unjudged = 0i32;
+    let mut unbound_on_foreign_evidence = 0i32;
     let mut failed = 0i32;
+    let single_pr = args.pr.is_some();
     for pr in prs {
         // In sweep mode a single unreadable PR must not abort the whole run.
         let (head, has_label) = match gh_pr_head_and_local_label(tool_root, &args.repo, pr) {
@@ -11652,15 +11798,24 @@ fn run_apply_local_label(
                 continue;
             }
         };
-        match local_label_reconcile_action(
+        let action = local_label_reconcile_action(
             assessment.verdict == validate_status::Verdict::Validated,
             assessment.undecidable_on_this_host(),
             has_label,
-        ) {
+        );
+        if leaves_pr_unbound_on_foreign_evidence(action, &assessment) {
+            unbound_on_foreign_evidence += 1;
+        }
+        match action {
             LocalLabelReconcileAction::KeepUnjudged => {
                 // Removing here would let a host that cannot read the
-                // evidence overrule the host that can. The producing host's
-                // own sweep still judges, and removes, this label.
+                // evidence overrule one that can: when the receipt's
+                // producer holds every relevant artifact, its own sweep
+                // judges this label. When no host holds them all (the
+                // receipt on one host, a relevant ancestor row on another),
+                // every host keeps the label and none removes it until the
+                // artifacts are copied
+                // (https://github.com/rrnewton/dev-hermit/issues/412).
                 println!(
                     "PR #{pr}: keep {LOCALLY_VALIDATED_LABEL} unjudged -- head {} is {} only because relevant evidence is readable solely on its producing host{}; this host can neither confirm nor remove the label",
                     &head[..12.min(head.len())],
@@ -11830,6 +11985,7 @@ fn run_apply_local_label(
             "applied": applied,
             "removed": removed,
             "kept_unjudged": kept_unjudged,
+            "unbound_on_foreign_evidence": unbound_on_foreign_evidence,
             "actions": actions,
         });
         println!(
@@ -11837,7 +11993,13 @@ fn run_apply_local_label(
             serde_json::to_string_pretty(&report).expect("serialize report")
         );
     }
-    Ok(if failed == 0 { 0 } else { 1 })
+    let status = apply_local_label_exit_status(single_pr, failed, unbound_on_foreign_evidence);
+    if status == APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE {
+        eprintln!(
+            "ci-hub: apply-local-label: no receipt published and {LOCALLY_VALIDATED_LABEL} not bound by this host: relevant evidence was produced on another host and its artifacts are absent here (exit {status}; see validate-status and https://github.com/rrnewton/dev-hermit/issues/412)"
+        );
+    }
+    Ok(status)
 }
 
 fn run_python(root: &Path, relative_script: &str, args: Vec<OsString>) -> Result<i32, CiHubError> {
@@ -15809,6 +15971,31 @@ mod tests {
         );
     }
 
+    /// https://github.com/rrnewton/dev-hermit/issues/395: Hermit's validate
+    /// driver reports "receipt published; locally-validated applied" for any
+    /// exit 0 from `apply-local-label --pr`. A PR left unbound on foreign
+    /// evidence therefore exits 3, and a failed operation still exits 1.
+    #[test]
+    fn apply_local_label_exit_status_separates_foreign_evidence_from_success() {
+        assert_eq!(APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE, 3);
+        // (single_pr, failed, unbound_on_foreign_evidence) -> exit status
+        for (single_pr, failed, unbound, expected) in [
+            (true, 0, 0, 0),
+            (true, 0, 1, 3),
+            (true, 1, 0, 1),
+            (true, 1, 1, 1),
+            (false, 0, 0, 0),
+            (false, 0, 4, 0),
+            (false, 2, 4, 1),
+        ] {
+            assert_eq!(
+                apply_local_label_exit_status(single_pr, failed, unbound),
+                expected,
+                "single_pr={single_pr} failed={failed} unbound={unbound}"
+            );
+        }
+    }
+
     #[test]
     fn local_validation_status_names_the_path_that_selected_cells() {
         let mut row: HistoryRow = serde_json::from_value(serde_json::json!({
@@ -18730,12 +18917,47 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         // The producer's store is not this root's store, so every artifact
         // the foreign row names is absent here.
         let producer_store = Store::new();
-        let schema10_row = |commit: &str, host: &str| {
-            let mut fixture = Fixture::new("cross-diverged-then-matched", "foreign-run", commit, 0);
-            fixture.row["host"] = serde_json::json!(host);
-            // Before the receipt, so the obligation pass reads it.
-            fixture.row["finished_at"] = serde_json::json!("2026-08-01T12:00:30Z");
-            fixture.write(&producer_store.0)
+        let schema10_row_with =
+            |commit: &str, host: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+                let mut fixture =
+                    Fixture::new("cross-diverged-then-matched", "foreign-run", commit, 0);
+                fixture.row["host"] = serde_json::json!(host);
+                // Before the receipt, so the obligation pass reads it.
+                fixture.row["finished_at"] = serde_json::json!("2026-08-01T12:00:30Z");
+                edit(&mut fixture.row);
+                fixture.write(&producer_store.0)
+            };
+        let schema10_row = |commit: &str, host: &str| schema10_row_with(commit, host, &|_| {});
+        // The fixture row records no driver outcome. These are the fields a
+        // producer writes for a clean exact-commit full pass.
+        let claim_clean_full_pass = |row: &mut serde_json::Value| {
+            for (field, value) in [
+                ("commit_anchored", serde_json::json!(true)),
+                ("tree_dirty", serde_json::json!(false)),
+                ("profile", serde_json::json!("full")),
+                ("selection_mode", serde_json::json!("full")),
+                ("result", serde_json::json!("pass")),
+                ("raw_result", serde_json::json!("pass")),
+                ("exit_code", serde_json::json!(0)),
+                ("failures", serde_json::json!(0)),
+            ] {
+                row[field] = value;
+            }
+        };
+        // The exit status apply-local-label --pr (and a sweep) returns for
+        // one PR in `assessment`, reconciled from `has_label`.
+        let exit_status = |assessment: &CanonicalReceiptAssessment, has_label: bool| {
+            let action = local_label_reconcile_action(
+                assessment.verdict == validate_status::Verdict::Validated,
+                assessment.undecidable_on_this_host(),
+                has_label,
+            );
+            let unbound = i32::from(leaves_pr_unbound_on_foreign_evidence(action, assessment));
+            (
+                action,
+                apply_local_label_exit_status(true, 0, unbound),
+                apply_local_label_exit_status(false, 0, unbound),
+            )
         };
         let assess = |row: HistoryRow| {
             assess_canonical_receipts_as(
@@ -18774,6 +18996,10 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
                 ""
             );
             assert!(!assessment.undecidable_on_this_host());
+            assert_eq!(
+                exit_status(&assessment, false),
+                (LocalLabelReconcileAction::Bind, 0, 0)
+            );
         }
 
         // RELATED: the target's parent. Named, blocking, never credited.
@@ -18788,6 +19014,31 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         assert_eq!(
             local_label_reconcile_action(false, assessment.undecidable_on_this_host(), true),
             LocalLabelReconcileAction::KeepUnjudged
+        );
+        // Neither keeping a label nor finding none publishes anything, so
+        // --pr must not exit 0: the validate driver reads exit 0 as
+        // "receipt published". A sweep reports it per PR and exits 0.
+        assert_eq!(
+            exit_status(&assessment, true),
+            (
+                LocalLabelReconcileAction::KeepUnjudged,
+                APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE,
+                0
+            )
+        );
+        assert_eq!(
+            exit_status(&assessment, false),
+            (
+                LocalLabelReconcileAction::LeaveAbsent,
+                APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE,
+                0
+            )
+        );
+        assert_eq!(APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE, 3);
+        // publish-commit-status names what blocks the receipt it holds.
+        assert_eq!(
+            commit_status_withheld_reason(&assessment),
+            "a qualifying local validation receipt exists but the verdict is NEEDS-RERUN: 1 relevant row(s) whose artifacts exist only on their producing host"
         );
         let json = report(&assessment);
         assert_eq!(json["verdict"], "NEEDS-RERUN");
@@ -18813,28 +19064,120 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
             " (1 relevant row(s) foreign-host-artifact-absent: foreign-run from fixture-producer-host; see validate-status)"
         );
 
-        // A foreign row for the head itself, and no local receipt: it may be
-        // the producer's receipt, so this host cannot judge a label either.
+        // A foreign row for the head itself that claims a clean full pass,
+        // and no local receipt: it may be the producer's receipt, so this
+        // host cannot judge a label either.
         let alone = |rows: &[HistoryRow]| {
             assess_canonical_receipts_as(&root, rows, &target, CANONICAL_VALIDATE_REPO, Some(LOCAL))
                 .expect("a foreign absence is a named state, not a reader fault")
         };
-        let assessment = alone(&[schema10_row(&target, PRODUCER)]);
+        let assessment = alone(&[schema10_row_with(&target, PRODUCER, &claim_clean_full_pass)]);
         assert_eq!(assessment.verdict, validate_status::Verdict::NeedsRerun);
         assert!(assessment.qualifying.is_empty());
         assert_eq!(assessment.unverifiable_evidence.len(), 1);
         assert_eq!(assessment.unverifiable_evidence[0].commit, target);
+        assert!(assessment.foreign_receipt_claim_at_head());
         assert!(assessment.undecidable_on_this_host());
-        // A foreign ancestor row and no receipt for the head on any host:
-        // nothing in the ledger backs a label, so it is removed as before.
-        let assessment = alone(&[schema10_row(&base, PRODUCER)]);
-        assert_ne!(assessment.verdict, validate_status::Verdict::Validated);
-        assert!(assessment.qualifying.is_empty());
-        assert!(!assessment.undecidable_on_this_host());
         assert_eq!(
-            local_label_reconcile_action(false, assessment.undecidable_on_this_host(), true),
-            LocalLabelReconcileAction::Remove
+            commit_status_withheld_reason(&assessment),
+            "no qualifying local validation receipt (verdict NEEDS-RERUN)"
         );
+        assert_eq!(
+            exit_status(&assessment, true),
+            (
+                LocalLabelReconcileAction::KeepUnjudged,
+                APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE,
+                0
+            )
+        );
+
+        // A foreign head row that does not claim a clean full pass cannot be
+        // a receipt on any host, even though its artifacts are unreadable
+        // here and NEEDS-RERUN outranks what it records. A label is removed.
+        // (A dirty schema-10 row is refused outright before any artifact is
+        // read, so it never reaches this state.)
+        let not_a_pass_claim: [(&str, &dyn Fn(&mut serde_json::Value)); 6] = [
+            ("records no driver outcome", &|_| {}),
+            ("truncated", &|row| {
+                claim_clean_full_pass(row);
+                row["result"] = serde_json::json!("truncated");
+            }),
+            ("no-result", &|row| {
+                claim_clean_full_pass(row);
+                row["result"] = serde_json::json!("no-result");
+            }),
+            ("needs-rerun", &|row| {
+                claim_clean_full_pass(row);
+                row["result"] = serde_json::json!("needs-rerun");
+            }),
+            ("nonzero driver exit", &|row| {
+                claim_clean_full_pass(row);
+                row["exit_code"] = serde_json::json!(143);
+            }),
+            ("not commit-anchored", &|row| {
+                claim_clean_full_pass(row);
+                row["commit_anchored"] = serde_json::json!(false);
+            }),
+        ];
+        for (label, edit) in not_a_pass_claim {
+            let assessment = alone(&[schema10_row_with(&target, PRODUCER, edit)]);
+            assert_eq!(
+                assessment.verdict,
+                validate_status::Verdict::NeedsRerun,
+                "{label}"
+            );
+            assert!(assessment.qualifying.is_empty(), "{label}");
+            assert_eq!(assessment.unverifiable_evidence.len(), 1, "{label}");
+            assert_eq!(
+                assessment.unverifiable_evidence[0].commit, target,
+                "{label}"
+            );
+            assert!(!assessment.foreign_receipt_claim_at_head(), "{label}");
+            assert!(!assessment.undecidable_on_this_host(), "{label}");
+            assert_eq!(
+                exit_status(&assessment, true),
+                (
+                    LocalLabelReconcileAction::Remove,
+                    APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE,
+                    0
+                ),
+                "{label}"
+            );
+        }
+
+        // A foreign ancestor row, and a local head row that does not
+        // qualify: no receipt for the head on any host, so nothing in the
+        // ledger backs a label and it is removed. The local row sets the
+        // target's cutoff, so the foreign row is actually judged here.
+        for result in ["needs-rerun", "no-result"] {
+            let mut local = schema4_receipt_value();
+            local["commit"] = serde_json::json!(target);
+            local["host"] = serde_json::json!(LOCAL);
+            local["result"] = serde_json::json!(result);
+            let assessment = alone(&[schema10_row(&base, PRODUCER), history_row(local)]);
+            assert_eq!(
+                assessment.verdict,
+                validate_status::Verdict::NeedsRerun,
+                "{result}"
+            );
+            assert!(assessment.qualifying.is_empty(), "{result}");
+            assert!(
+                assessment.unresolved_failure_obligations.is_empty(),
+                "{result}"
+            );
+            assert_eq!(assessment.unverifiable_evidence.len(), 1, "{result}");
+            assert_eq!(assessment.unverifiable_evidence[0].commit, base, "{result}");
+            assert!(!assessment.undecidable_on_this_host(), "{result}");
+            assert_eq!(
+                exit_status(&assessment, true),
+                (
+                    LocalLabelReconcileAction::Remove,
+                    APPLY_LOCAL_LABEL_EXIT_FOREIGN_EVIDENCE,
+                    0
+                ),
+                "{result}"
+            );
+        }
 
         // The same absence on a row this host produced is a reader fault.
         let error = assess(schema10_row(&base, LOCAL)).unwrap_err();
