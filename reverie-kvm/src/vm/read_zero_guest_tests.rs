@@ -194,6 +194,33 @@ mod read_zero_guest_tests {
             .install_static_elf(&image, "/bin/read-zero-alias")
             .unwrap();
         let loaded = backend.static_elf.as_ref().unwrap();
+        // The Tool also observes the already-installed image's initial exec.
+        // Derive its expected arguments independently from the known fixture
+        // stack before the runner starts, including the exact path and both
+        // pointer-array terminators.
+        let initial_stack = loaded.stack_pointer;
+        let read_stack_word = |address| {
+            let mut bytes = [0_u8; 8];
+            backend.memory.user().read(address, &mut bytes).unwrap();
+            u64::from_le_bytes(bytes)
+        };
+        assert_eq!(read_stack_word(initial_stack), 1, "fixture argc");
+        let initial_argv = initial_stack.checked_add(8).unwrap();
+        let initial_envp = initial_stack.checked_add(24).unwrap();
+        let initial_path = read_stack_word(initial_argv);
+        assert_eq!(read_stack_word(initial_argv.checked_add(8).unwrap()), 0);
+        assert_eq!(read_stack_word(initial_envp), 0);
+        let mut initial_path_bytes = [0_u8; b"/bin/read-zero-alias\0".len()];
+        backend
+            .memory
+            .user()
+            .read(initial_path, &mut initial_path_bytes)
+            .unwrap();
+        assert_eq!(&initial_path_bytes, b"/bin/read-zero-alias\0");
+        let initial_exec = SyscallRequest::new(
+            libc::SYS_execve as u64,
+            [initial_path, initial_argv, initial_envp, 0, 0, 0],
+        );
         let lifecycle = loaded
             .task_lifecycle
             .lock()
@@ -281,22 +308,24 @@ mod read_zero_guest_tests {
             "guest must execute dup[/dup2/close]/read and never the exit(99)"
         );
         if tool {
-            let expected = if rebound {
-                vec![
-                    libc::SYS_dup,
-                    libc::SYS_dup2,
-                    libc::SYS_close,
-                    libc::SYS_read,
-                ]
-            } else {
-                vec![libc::SYS_dup, libc::SYS_read]
-            };
+            let mut expected = vec![
+                initial_exec,
+                SyscallRequest::new(libc::SYS_dup as u64, [0; 6]),
+            ];
+            if rebound {
+                expected.push(SyscallRequest::new(
+                    libc::SYS_dup2 as u64,
+                    [3, 0, 0, 0, 0, 0],
+                ));
+                expected.push(SyscallRequest::new(
+                    libc::SYS_close as u64,
+                    [3, 0, 0, 0, 0, 0],
+                ));
+            }
+            expected.push(request);
             assert_eq!(
-                forwarded
-                    .iter()
-                    .map(|call| call.number() as i64)
-                    .collect::<Vec<_>>(),
-                expected
+                forwarded, expected,
+                "exact initial exec and guest request sequence"
             );
             assert_eq!(forwarded.last(), Some(&request));
         } else {
