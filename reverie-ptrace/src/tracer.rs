@@ -840,11 +840,17 @@ async fn finish_ordinary_terminal(
                         // A stop queued before the exit stop does not reach
                         // this arm when the exit capability's resume (or its
                         // ESRCH) retired it, as for the stale Seccomp stop of
-                        // group_exit_ignores_stop_queued_before_exit. A
-                        // non-exit stop that does reach it was not retired:
-                        // its prefix held a status that records lifecycle
-                        // state (safeptrace's stop_records_lifecycle_state),
-                        // or the retirement was bypassed.
+                        // group_exit_ignores_stop_queued_before_exit and the
+                        // stale VforkDone stop of
+                        // group_exit_retires_vfork_done_queued_before_exit.
+                        // A VforkDone stop records no lifecycle state (see
+                        // safeptrace's stop_records_lifecycle_state), so it
+                        // is retired with the rest of that prefix and never
+                        // reaches this arm from there. A non-exit stop that
+                        // does reach it was not retired: its prefix held a
+                        // fork, vfork or clone stop, the epoch Exec, or a
+                        // status that is not a stop, any of which keeps the
+                        // whole prefix; or the retirement was bypassed.
                         //
                         // The first non-exit stop fails the session and
                         // signals the groups, once. Any later one is only
@@ -8588,6 +8594,147 @@ mod tests {
             .await
             .expect("group-exit guest hung")
             .expect("a stop queued before EXIT must not fail the group exit");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    /// A vfork parent's PTRACE_EVENT_VFORK_DONE stop still queued when a
+    /// group exit moves it into its exit stop, so its notifier FIFO holds
+    /// [VforkDone, EXIT]. While the tracer is blocked on the leader's
+    /// getppid, the vfork child execs, which releases the parent into its
+    /// vfork-done stop, and another thread then calls exit_group. The
+    /// vfork-done stop is retired with the prefix when the exit stop is
+    /// resumed, so the group exit completes with the actual status and the
+    /// terminal path never meets it as an unexpected non-exit stop.
+    #[tokio::test(flavor = "current_thread")]
+    async fn group_exit_retires_vfork_done_queued_before_exit() {
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static GO: AtomicBool = AtomicBool::new(false);
+        static PARENT_TID: AtomicUsize = AtomicUsize::new(0);
+        static CHILD_RUNNING: AtomicBool = AtomicBool::new(false);
+        static PATH: &std::ffi::CStr = c"/bin/true";
+        fn after_go() {
+            RUNNING.fetch_add(1, Ordering::SeqCst);
+            while !GO.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+        }
+        /// The state letter of this process's thread `tid`, from its stat.
+        fn thread_state(tid: usize) -> Option<u8> {
+            let stat = std::fs::read(format!("/proc/self/task/{tid}/stat")).ok()?;
+            let end = stat.iter().rposition(|&byte| byte == b')')?;
+            stat.get(end + 2).copied()
+        }
+        extern "C" fn vfork_child(_: *mut libc::c_void) -> libc::c_int {
+            // Shares the parent's memory on its own stack: raw syscalls only.
+            let delay = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 100_000_000,
+            };
+            CHILD_RUNNING.store(true, Ordering::SeqCst);
+            unsafe {
+                libc::syscall(
+                    libc::SYS_nanosleep,
+                    &delay as *const libc::timespec,
+                    std::ptr::null_mut::<libc::timespec>(),
+                );
+                let argv = [PATH.as_ptr(), std::ptr::null()];
+                let envp = [std::ptr::null::<libc::c_char>()];
+                libc::syscall(
+                    libc::SYS_execve,
+                    PATH.as_ptr(),
+                    argv.as_ptr(),
+                    envp.as_ptr(),
+                );
+                libc::syscall(libc::SYS_exit, 127);
+            }
+            127
+        }
+        let tracer = spawn_fn::<StaleStopTool, _>(|| {
+            // The vfork parent. Its vfork stop is handled, it then waits for
+            // the child's exec in wait_for_vfork_done (state D), and the
+            // exec releases it into its vfork-done stop (state t).
+            std::thread::spawn(|| {
+                PARENT_TID.store(
+                    unsafe { libc::syscall(libc::SYS_gettid) } as usize,
+                    Ordering::SeqCst,
+                );
+                after_go();
+                const STACK: usize = 256 * 1024;
+                let stack = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        STACK,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
+                        -1,
+                        0,
+                    )
+                };
+                assert_ne!(stack, libc::MAP_FAILED);
+                let top = unsafe { (stack as *mut u8).add(STACK) } as *mut libc::c_void;
+                unsafe {
+                    libc::clone(
+                        vfork_child,
+                        top,
+                        libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD,
+                        std::ptr::null_mut(),
+                    )
+                };
+                loop {
+                    unsafe { libc::pause() };
+                }
+            });
+            // The group exit, once the parent has left wait_for_vfork_done
+            // for its vfork-done stop. Bounded, so a missed state only
+            // leaves the prefix unexercised.
+            std::thread::spawn(|| {
+                after_go();
+                let tid = PARENT_TID.load(Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut waited_for_vfork_done = false;
+                while Instant::now() < deadline {
+                    match thread_state(tid) {
+                        Some(b'D') => waited_for_vfork_done = true,
+                        Some(b't') if waited_for_vfork_done => break,
+                        _ => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+            });
+            while RUNNING.load(Ordering::SeqCst) < 2 {
+                std::hint::spin_loop();
+            }
+            GO.store(true, Ordering::SeqCst);
+            // Block the tracer for 500 ms from the time the child runs: its
+            // exec (after 100 ms) and the group exit both land while the
+            // parent's vfork-done stop is unconsumed.
+            while !CHILD_RUNNING.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            unsafe { libc::syscall(libc::SYS_getppid) };
+            loop {
+                unsafe { libc::pause() };
+            }
+        })
+        .await
+        .expect("spawn vfork group-exit guest");
+        let result = tokio::time::timeout(Duration::from_secs(10), tracer.wait())
+            .await
+            .expect("vfork group-exit guest hung");
+        let (status, ()) = match result {
+            Ok(done) => done,
+            Err(error) => {
+                assert!(
+                    !error
+                        .to_string()
+                        .contains("unexpected ptrace terminal stop"),
+                    "a vfork-done stop queued before EXIT reached the terminal path: {error}"
+                );
+                panic!("the vfork group exit failed: {error}");
+            }
+        };
         assert_eq!(status, ExitStatus::Exited(0));
     }
 
