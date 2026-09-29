@@ -723,6 +723,47 @@ fn captured_rights_never_mutate_shared_physical_stdout_stderr() {
 
 #[test]
 fn captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked() {
+    const TEST: &str =
+        "executor::tests::captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked";
+    const CHILD_ENV: &str = "REVERIE_CAPTURE_IDENTITY_CHILD";
+    const COMPLETE: &str = "captured receive retirement clone failures 0 and 1 completed";
+    if std::env::var(CHILD_ENV).as_deref() != Ok(TEST) {
+        assert!(std::env::var_os(CHILD_ENV).is_none());
+        let output = std::process::Command::new("/usr/bin/timeout")
+            .args(["--kill-after=2s", "10s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+            .env(CHILD_ENV, TEST)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated captured receive retirement failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            stderr
+        );
+        assert_eq!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("running "))
+                .collect::<Vec<_>>(),
+            ["running 1 test"]
+        );
+        let completed_test = format!("test {TEST} ... ok");
+        assert_eq!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("test ") && line.contains(" ... "))
+                .collect::<Vec<_>>(),
+            [completed_test.as_str()]
+        );
+        assert_eq!(stderr.lines().filter(|line| *line == COMPLETE).count(), 1);
+        return;
+    }
+    // Create every probed descriptor after exec, outside parallel libtest cases.
     for successful_clones in [0, 1] {
         let root = TestDir::new();
         let mut sender = ElfExecutor::new(test_state(&root.0), true);
@@ -838,6 +879,7 @@ fn captured_rights_receive_clone_failure_retires_sender_final_owners_unlocked() 
             negative_errno(libc::EAGAIN)
         );
     }
+    eprintln!("{COMPLETE}");
 }
 
 #[test]
