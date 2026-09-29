@@ -9,7 +9,7 @@ This round was dispatched by coord2 on 2026-09-29 at 15:39Z, working from the ow
 | Goal | Status | Result |
 |---|---|---|
 | 1. Curated phase-two evidence copy | done | dev-hermit main `30bb84e0f1e3d7343b6b2f7fa7b83cbf864768f1`: 9,327 text files (28.1 MB) in [evidence/phase2/](evidence/phase2/), plus a 60.9 MB archive of 214 large logs outside git |
-| 2. Fix the loader bug (https://github.com/rrnewton/hermit/issues/3328) | fixed in an approved PR; not landed yet | https://github.com/rrnewton/hermit/pull/3374, APPROVE at exact head `558df1a7f`; the new test fails without the fix (EFAULT, exit 101) and passes with it, and I re-ran both myself; full local validation of the rebased head `eebc63f3` started 17:42Z (section 2) |
+| 2. Fix the loader bug (https://github.com/rrnewton/hermit/issues/3328) | fixed in an approved PR; **not landed** | https://github.com/rrnewton/hermit/pull/3374, APPROVE at exact head `558df1a7f`; the new test fails without the fix (EFAULT, exit 101) and passes with it, and I re-ran both myself; the PR head is now `c6867781` (rebased onto main `98a621f42`, re-approved); the required full local validation could not be started from this session (section 2), so it was handed to coord2 |
 | 3. Re-find seeds on current Hermit main | done | a passing and a failing seed for all 3 tests on main `4101426a`, 18 of 18 trials deterministic, 4 min 25 s in all (section 3) |
 
 ## 1. Curated phase-two evidence copy
@@ -95,9 +95,33 @@ With the fix, the 192- and 0-byte cases also pass `--verify --verify-strict`: `b
 
 The change meets none of the four `post-facto-human-review` triggers (hermit `.llms/skills/post-facto-review/SKILL.md`), so one review suffices.
 
-**Landing.** Landing needs a full local validation run. The PR branch was rebased locally onto hermit main `82e24cc0e`; the patches are identical (`git range-diff` shows `=`) and the rebased head is `eebc63f336466f63f973c620990779eae8cbe66a`, tree `5e0ae489`. That head was not pushed. On the rebased head, the new test passes and `generate-validation-dag --check` passes.
+**Landing: not done. The exact-head validation could not be started from this session.** Landing needs a full local validation run at the PR's exact head, and each attempt below was refused before the validation DAG ran:
 
-The validation launch was refused once: "prospective validation slot/path authority could not be proved after 205.181s: read-only entry classification budget expired while reading ignored/validate/runs/hermit-pressure-test.json". The retry was admitted (830 run handles, 408 s). The run has been going since about 17:42Z; its result is recorded in LANDING_STATUS.
+| Time (UTC) | Target | Launch | Refusal |
+|---|---|---|---|
+| ≈17:32 | `eebc63f33` (rebased onto `82e24cc0e`) | `ci-hub validate-run --materialize-target --dry-run` | "read-only entry classification budget expired while reading ignored/validate/runs/hermit-pressure-test.json". The dry-run retry was admitted (830 run handles, 408 s). |
+| 17:43 | `eebc63f33` | `ci-hub validate-run` | "validation target … does not contain freshly fetched origin/main. Rebase before validating." Hermit main gained 5 commits while the run waited about 3 minutes for admission. |
+| 17:51 | `c68677817` (rebased onto `98a621f42`) | `ci-hub validate-run` | "explicit DEV_HERMIT_TOOL_ROOT /home/newton/work/dev-hermit is dirty: M hermit". The shared parent checkout's `hermit` gitlink was already modified when this session started. |
+| 17:58 | `c68677817` | `scripts/hermit-operational-tick --run-current-tool --tool-relative ci-hub/ci-hub -- validate-run …` | "cannot resolve current origin/main". Fetching dev-hermit returned GitHub CONNECT 403 from this session. |
+| 18:01 | `c68677817` | same, with `--tool-parent-sha addc63df…` (newest cached tool tree) | "fd-backed DEV_HERMIT_TOOL_ROOT lacks the installed-bootstrap, cache, or exact-parent handoff metadata" |
+
+The PR head is now `c6867781717df87837b268a0310d901be4c5bb4c`:
+
+- commits `9ddad7428` (tests) and `c68677817` (fix);
+- `git range-diff` shows both commits as `=` against the approved `558df1a7f`;
+- `generate-validation-dag --check` is fresh, and the new test passes at the rebased heads.
+
+The reviewer re-approved after each rebase:
+
+- https://github.com/rrnewton/hermit/pull/3374#issuecomment-5895574046 at `eebc63f33`;
+- https://github.com/rrnewton/hermit/pull/3374#issuecomment-5895629743 at `c6867781`.
+
+The PR's `Owner:` line was released at 18:06Z, and coord2 was asked to run the validation and land.
+
+Two refused runs left temporary checkouts, which the cleanup fence kept:
+
+- `worktrees/validate/validate-fresh-eebc63f33646-1731885-676ae801`
+- `worktrees/validate/validate-fresh-c6867781717d-2362802-9068cd11`
 
 **Related exposure, not fixed (listed in the pull request):** 23 other Detcore call sites also stage scratch memory below `rsp`. The worst two:
 
@@ -177,18 +201,19 @@ Each body was read back and matched what was sent byte for byte.
 
 ## What next (suggestions, not actions)
 
-1. Land https://github.com/rrnewton/hermit/pull/3374. It needs the exact-head local validation receipt, and whatever the owner accepts given that full validation of main has not been green since 2026-09-11. Then retry the three targets the loader bug stopped. That needs their Buck test binaries rebuilt on an OnDemand node: LogStore and McRefill were evicted from buck-out, and the transport monitor's state is unchecked.
+1. Land https://github.com/rrnewton/hermit/pull/3374 (coord2): run the exact-head local validation for `c6867781` from a clean tool root, then `ci-hub/landing/land-pr.sh 3374 tfa2/inject-fstat-efault`. The most recent hermit full validation on this box passed 272 of 272 in 2,691 s (`ci-hub local-history`, 2026-09-29 08:09Z). Then retry the three targets the loader bug stopped. That needs their Buck test binaries rebuilt on an OnDemand node: LogStore and McRefill were evicted from buck-out, and the transport monitor's state is unchecked.
 2. Record the new seed sets as the campaign's "current" witnesses. Thrift is now pass 0 / fail 3 on main; AsyncSSL (1/11) and HTTPCoro (3/0) are unchanged. A later loop should re-find seeds on every Hermit bump rather than trust old ones.
 3. Fix https://github.com/rrnewton/hermit/issues/3376 and the review's N1 to N3 follow-ups on https://github.com/rrnewton/hermit/pull/3374.
 
 ## Resources
 
-- **Wall time:** the round ran from 15:39Z to about 18:00Z.
+- **Wall time:** the round ran from 15:39Z to 18:10Z (2 h 31 min).
   - Seed re-find: 4 min 25 s.
   - Control runs: 8 s.
   - Evidence curation and archive: about 3 min of compute.
   - Hermit builds: release 1 min 27 s; debug at the PR head 47 s.
   - Exact-head test re-runs: about 3 min.
-  - Subagents: the loader-fix author ran about 71 min, and the reviewer about 19 min plus the re-review.
-- **Disk** (`df -h /home/newton`): 253G free at the start, 251G after the archive, and 233G after the builds in the two slots. The seeds slot's `target/` was then cleaned (10.6 GiB). The loader slot's `target/` (16G apparent) is kept for follow-up on the pull request.
+  - Subagents: the loader-fix author ran about 71 min, and the reviewer about 19 min plus three short re-reviews.
+  - Validation attempts: 5 launches, all refused before the DAG ran (about 20 min of admission time in all).
+- **Disk** (`df -h /home/newton`): 253G free at the start, 251G after the archive, 233G after the builds in the two slots, and 237G at the end. The seeds slot's `target/` was then cleaned (10.6 GiB). The loader slot's `target/` (16G apparent) is kept for follow-up on the pull request.
 - **Slots:** `sub-tfa2-030-loader` (branch `tfa2/inject-fstat-efault`) and `sub-tfa2-030-seeds` (branch `tfa2/seed-refind-build`, no commits of its own). Both are registered with `wrkslots --machine devbig030`.
