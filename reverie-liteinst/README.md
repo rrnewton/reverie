@@ -286,8 +286,10 @@ These counters are **per-process**: they are process-global statics, so a
 `fork`/`clone` child copy-on-write inherits the parent's accumulated values.
 Left alone, a child would report the parent's residual surface and hook activity
 as its own. In compatibility/strace mode LiteInst forwards a fork-like syscall
-itself (bare `fork` or a null-stack, SIGCHLD-only `clone`; raw `vfork` and
-`clone3` are refused with `ENOTSUP` before forwarding), so `process_syscall`
+itself (bare `fork`, or a `clone` with a null child stack, `SIGCHLD` as its exit
+signal, and no flags beyond `CLONE_CHILD_CLEARTID`, `CLONE_CHILD_SETTID` and
+`CLONE_PARENT_SETTID`, which covers glibc's `fork`; raw `vfork` and `clone3` are
+refused with `ENOTSUP` before forwarding), so `process_syscall`
 invokes the shared
 [`reverie_preload::fork::ForkHook`] seam in the child (guarded by the shared
 `is_fork_like` classifier and a zero return value): immediately after the fork
