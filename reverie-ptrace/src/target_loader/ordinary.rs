@@ -341,12 +341,15 @@ fn validate_runtime_hashes(
 ) -> io::Result<()> {
     let sysv = unique.get(&dynamic::DT_HASH).copied();
     let gnu = unique.get(&dynamic::DT_GNU_HASH).copied();
+<<<<<<< 2f516223377ea547afa822fd86015d0d80d7603d
 <<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
 =======
     if sysv.is_none() && gnu.is_none() {
         return Err(invalid("missing runtime symbol hash table"));
     }
 >>>>>>> f75114e25f
+=======
+>>>>>>> c4d5198a67
     if let Some(address) = sysv {
         validate_sysv_hash(elf, bytes, strings, address, selected)?;
     }
@@ -357,6 +360,7 @@ fn validate_runtime_hashes(
 }
 
 fn parse_runtime(bytes: &[u8]) -> io::Result<Provider<'_>> {
+<<<<<<< 2f516223377ea547afa822fd86015d0d80d7603d
 <<<<<<< c1ffab7ee6e3f99a2057a70b26fc19ce37c90ec9
     // The measured unstripped release runtime is 35,223,752 bytes, exceeding
     // the public dlopen provider's 32 MiB limit. Keep a separate bounded 64 MiB
@@ -365,6 +369,11 @@ fn parse_runtime(bytes: &[u8]) -> io::Result<Provider<'_>> {
     // The reviewed staged-release contract permits an ELF file up to 64 MiB.
     // This separate policy does not widen dlopen's 32 MiB libc/libdl limit.
 >>>>>>> f75114e25f
+=======
+    // The measured unstripped release runtime is 35,223,752 bytes, exceeding
+    // the public dlopen provider's 32 MiB limit. Keep a separate bounded 64 MiB
+    // runtime policy with room for build variation; this is not an ABI limit.
+>>>>>>> c4d5198a67
     runtime_file_bound(bytes.len())?;
     let elf = Elf::parse(bytes).map_err(|_| invalid("malformed runtime ELF"))?;
     if !elf.is_64
