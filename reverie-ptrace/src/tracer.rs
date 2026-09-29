@@ -423,6 +423,50 @@ thread_local! {
     static EXIT_RESUME_RETIREMENT_BYPASS: std::cell::RefCell<Option<Arc<ExitResumeRetirementBypass>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Test-only: holds the terminal path of the target TID after its exit-stop
+/// resume, before its next wait, until the notifier has queued a real
+/// PTRACE_EVENT_EXEC stop for it. A fatal signal sent after that lands after
+/// the replacement image's exec stop was reported (interleaving X). With
+/// `hold_for_release` the path stays held until the test sets `release`.
+/// `terminal` is a diagnostics readback of the held generation. It issues no
+/// ptrace request and fabricates no status.
+#[cfg(test)]
+#[derive(Default)]
+struct ExecReportHold {
+    target: std::sync::atomic::AtomicUsize,
+    hold_for_release: bool,
+    entered: AtomicBool,
+    release: AtomicBool,
+    terminal: StdMutex<Option<TerminalCleanup>>,
+}
+#[cfg(test)]
+thread_local! {
+    static EXEC_REPORT_HOLD: std::cell::RefCell<Option<Arc<ExecReportHold>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn hold_until_exec_reported_for_test(running: &Running, terminal: &TerminalCleanup) {
+    let Some(hold) = EXEC_REPORT_HOLD.with(|slot| slot.borrow().clone()) else {
+        return;
+    };
+    let pid = running.pid();
+    if hold.target.load(Ordering::SeqCst) != pid.as_raw() as usize
+        || hold.entered.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    let exec_stop = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+    while !terminal.queued_raw_statuses().contains(&exec_stop) {
+        tokio::task::yield_now().await;
+    }
+    record_fatal_phase_for_test(|| format!("exec report held: tid={pid}"));
+    *hold.terminal.lock().unwrap() = Some(running.terminal_cleanup());
+    hold.entered.store(true, Ordering::SeqCst);
+    while hold.hold_for_release && !hold.release.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("actual exec for {pid} from {former} has no retained preceding EXIT event status")]
 struct ExitEventStatusUnavailable {
@@ -635,6 +679,8 @@ async fn finish_ordinary_terminal(
                         Ok(running) => {
                             // The sole capability has made the transition.
                             held.lock().unwrap().take();
+                            #[cfg(test)]
+                            hold_until_exec_reported_for_test(&running, terminal).await;
                             break running.wait_owned();
                         }
                         Err((retained, Errno::ESRCH)) => {
@@ -777,8 +823,11 @@ async fn finish_ordinary_terminal(
                     // queued: by a synchronous wait, or by the notifier for a
                     // second exit stop under this PID with no Exec between
                     // (a non-leader exec's thread that a fatal signal killed
-                    // before its exec stop). It is resumed like the first;
-                    // only the actual terminal status settles the path.
+                    // before its exec stop), or with an Exec between that the
+                    // wait retired because the fatal signal had taken the
+                    // thread out of that exec stop before it was decoded. It
+                    // is resumed like the first; only the actual terminal
+                    // status settles the path.
                     #[cfg(test)]
                     record_fatal_phase_for_test(|| {
                         format!("finish queued exit stop: tid={}", stopped.pid())
@@ -6766,6 +6815,237 @@ mod tests {
         assert!(terminal.queued_raw_statuses().is_empty());
     }
 
+    /// Interleaving X in a run that has not failed: a real SIGKILL from
+    /// outside reaches the group after the replacement image's exec stop was
+    /// reported and before the leader's terminal path decoded that Exec. The
+    /// test holds the path until the exec stop is queued, sends the SIGKILL,
+    /// and releases the path only once the notifier has published the new
+    /// image's exit stop, so the Exec decode's GETEVENTMSG reads that exit
+    /// stop's message (the exit code 9) instead of a former TID. The wait
+    /// retires the dead Exec, the exit stop behind it is resumed once, the
+    /// former TID's owner is retired as lost, and the run Completes with the
+    /// real Signaled(SIGKILL). Before the fix the Exec decoded as a former
+    /// TID of 9 and the run stayed Pending; without the lost-former record
+    /// on the ordinary exit-wait path, the leader's thread join would wait
+    /// for the former thread's owner forever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_killed_after_exec_report_completes_with_the_kill() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = None);
+                EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
+                FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let hold = Arc::new(ExecReportHold {
+            hold_for_release: true,
+            ..ExecReportHold::default()
+        });
+        // Target 0 matches no TID, so this control only records resumes.
+        let resumes = Arc::new(ExitResumeControl::default());
+        let _clear = Clear;
+        EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = Some(hold.clone()));
+        EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(resumes.clone()));
+        FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
+        let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
+            || {
+                std::thread::spawn(|| {
+                    let args = [
+                        c"/bin/sh".as_ptr(),
+                        c"-c".as_ptr(),
+                        c"printf survived".as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            },
+            (false, 1),
+            true,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid();
+        hold.target.store(root.as_raw() as usize, Ordering::SeqCst);
+        let identity = untraced_process_identity(root);
+        let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
+        let mut completion = Box::pin(tracer.wait_with_output_completion());
+        let gated =
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                while !hold.entered.load(Ordering::SeqCst) {
+                    tokio::select! {
+                        _ = &mut completion => return false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+                true
+            })
+            .await;
+        let observed = if gated == Ok(true) {
+            identity.send_signal(Signal::SIGKILL).unwrap();
+            // The SIGKILL takes the new image out of its exec stop into its
+            // exit stop; wait until the notifier has published that stop.
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                loop {
+                    if hold
+                        .terminal
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .expect("held leader generation")
+                        .exit_stop_observed()
+                    {
+                        break true;
+                    }
+                    tokio::select! {
+                        _ = &mut completion => break false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+            })
+            .await
+        } else {
+            Ok(false)
+        };
+        hold.release.store(true, Ordering::SeqCst);
+        let result = if observed == Ok(true) {
+            Some(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    &mut completion,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let done = match result {
+            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            other => {
+                let description = match &other {
+                    None => format!("gate not reached: gated={gated:?}, observed={observed:?}"),
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
+                        format!("Pending({:?})", pending.failure())
+                    }
+                    Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
+                        "UnsupportedBackend".to_owned()
+                    }
+                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
+                    Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let records = FATAL_REAP_CHRONOLOGY.with(|slot| slot.borrow().clone());
+                let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
+                let signal = identity.send_signal(Signal::SIGKILL);
+                let rescued = match other {
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        pending.resume_cleanup(),
+                    )
+                    .await
+                    .is_ok(),
+                    _ => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        &mut completion,
+                    )
+                    .await
+                    .is_ok(),
+                };
+                panic!(
+                    "run killed after its exec report did not Complete within 3s: {description}; rescue signal={signal:?}, rescued={rescued}, records={records:?}"
+                );
+            }
+        };
+        assert_reaped("root killed after its exec report", root);
+        let status = ExitStatus::Signaled(Signal::SIGKILL, false);
+        let output = done
+            .result
+            .expect("the run killed after its exec report failed");
+        assert_eq!(output.status, status);
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let leader_resumes: Vec<_> = resumes
+            .results
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| *pid == root)
+            .cloned()
+            .collect();
+        assert_eq!(
+            leader_resumes,
+            vec![(root, Ok(())), (root, Ok(()))],
+            "the leader's two exit stops were not each resumed once"
+        );
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        let started: Vec<Pid> = events
+            .iter()
+            .filter(|event| event.0 == 0 && event.1 != root)
+            .map(|event| event.1)
+            .collect();
+        assert_eq!(started.len(), 1, "guest thread starts: {events:?}");
+        let former = started[0];
+        assert!(
+            events
+                .iter()
+                .all(|event| !(event.0 == 2 && event.2 == former.as_raw() as usize)),
+            "on_exit_thread ran for the lost former: {events:?}"
+        );
+        let (records, omitted) = FATAL_REAP_CHRONOLOGY
+            .with(|slot| slot.borrow().clone())
+            .expect("chronology installed");
+        assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        assert!(
+            records.contains(&format!("exec report held: tid={root}")),
+            "the exec-report hold was not reached: {records:?}"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.starts_with("finish unexpected stop:")),
+            "a non-exit stop reached the non-exit arm: {records:?}"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| **record == format!("finish queued exit stop: tid={root}"))
+                .count(),
+            1,
+            "the exit stop behind the dead Exec was not resumed once: {records:?}"
+        );
+        let lost: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with("lost former retired: tid="))
+            .collect();
+        assert_eq!(
+            lost,
+            vec![&format!("lost former retired: tid={former}")],
+            "the exec thread's owner was not retired as lost: {records:?}"
+        );
+        let terminal = hold
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        assert_eq!(terminal.retired_dead_exec_stops(), 1);
+        assert_eq!(terminal.observed_exit_status(), Ok(Some(status)));
+        assert!(terminal.queued_raw_statuses().is_empty());
+    }
+
     /// A genuinely unexpected non-exit stop after the exit-stop resume: the
     /// same held step stop, with the exit resume forced through a capability
     /// that does not retire it. The session fails exactly once with the
@@ -6774,7 +7054,7 @@ mod tests {
     /// nothing more is issued for that TID by the terminal path.
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_unexpected_nonexit_stop_after_exit_resume_fails_once_without_reentry() {
-        unexpected_nonexit_stops_after_exit_resume(false).await;
+        unexpected_nonexit_stops_after_exit_resume(false, false).await;
     }
 
     /// As above with two stale stops: the hold single-steps the leader once
@@ -6784,13 +7064,52 @@ mod tests {
     /// resume.
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_two_unexpected_nonexit_stops_after_exit_resume_fail_once_without_reentry() {
-        unexpected_nonexit_stops_after_exit_resume(true).await;
+        unexpected_nonexit_stops_after_exit_resume(true, false).await;
     }
 
-    async fn unexpected_nonexit_stops_after_exit_resume(second_step: bool) {
+    /// The single-stale-stop run with interleaving X forced: the leader's
+    /// terminal path holds after its exit-stop resume until the notifier has
+    /// queued the replacement image's real exec stop, so the group SIGKILL
+    /// that the unexpected stop triggers lands after that exec stop was
+    /// reported. Before the fix the wait decoding that Exec read the exit
+    /// stop's message as a former TID ("actual exec former 9 has no
+    /// same-process initialized owner"), or met ESRCH ("owned ptrace wait
+    /// observed death during decoding"), and the run stayed Pending. Now the
+    /// dead Exec is retired, the exit stop behind it is resumed once, and
+    /// the run Completes with the one unexpected-stop failure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_unexpected_nonexit_stop_with_exec_reported_before_the_kill_fails_once() {
+        unexpected_nonexit_stops_after_exit_resume(false, true).await;
+    }
+
+    /// As above with two stale stops.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_two_unexpected_nonexit_stops_with_exec_reported_before_the_kill_fail_once() {
+        unexpected_nonexit_stops_after_exit_resume(true, true).await;
+    }
+
+    /// The interleavings of the group SIGKILL with the exec thread, told
+    /// apart by what the leader's notifier generation recorded.
+    #[derive(Debug, PartialEq)]
+    enum KillInterleaving {
+        /// Lands during de_thread: the exec thread dies under its former TID.
+        DuringDeThread,
+        /// Lands after de_thread, before the exec stop: a second exit stop
+        /// under the leader's PID with no Exec between.
+        BeforeExecStop,
+        /// Lands after the exec stop was reported: the Exec is retired as
+        /// dead and the exit stop behind it is resumed.
+        AfterExecStop,
+    }
+
+    async fn unexpected_nonexit_stops_after_exit_resume(
+        second_step: bool,
+        force_exec_report: bool,
+    ) {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
+                EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = None);
                 EXIT_RESUME_RETIREMENT_BYPASS.with(|slot| *slot.borrow_mut() = None);
                 EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
                 FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
@@ -6804,7 +7123,11 @@ mod tests {
         bypass.armed.store(true, Ordering::SeqCst);
         // Target 0 matches no TID, so this control only records resumes.
         let resumes = Arc::new(ExitResumeControl::default());
+        let exec_hold = Arc::new(ExecReportHold::default());
         let _clear = Clear;
+        if force_exec_report {
+            EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = Some(exec_hold.clone()));
+        }
         EXIT_RESUME_RETIREMENT_BYPASS.with(|slot| *slot.borrow_mut() = Some(bypass.clone()));
         EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(resumes.clone()));
         FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
@@ -6842,8 +7165,12 @@ mod tests {
         .await
         .unwrap();
         let root = tracer.guest_pid();
+        exec_hold
+            .target
+            .store(root.as_raw() as usize, Ordering::SeqCst);
         let identity = untraced_process_identity(root);
         let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
         let mut completion = Box::pin(tracer.wait_with_output_completion());
         let result = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
@@ -6920,14 +7247,19 @@ mod tests {
             .with(|slot| slot.borrow().clone())
             .expect("chronology installed");
         assert_eq!(omitted, 0, "chronology truncated: {records:?}");
-        // The group SIGKILL races the exec thread's de_thread. If it lands
-        // first, that thread dies under its former TID and the leader reports
-        // one exit stop. If it lands after de_thread gave the thread the
-        // leader's PID but before its exec stop, the thread skips that stop
-        // and reports a second actual exit stop under the leader's PID, with
-        // no Exec between. The notifier queues it, the terminal path resumes
-        // it, and the former TID's owner is retired as lost. Either way no
-        // non-exit stop is resumed; each exit stop is resumed exactly once.
+        // The group SIGKILL races the exec thread. If it lands during
+        // de_thread, that thread dies under its former TID and the leader
+        // reports one exit stop. If it lands after de_thread gave the thread
+        // the leader's PID but before its exec stop, the thread skips that
+        // stop and reports a second actual exit stop under the leader's PID,
+        // with no Exec between. The notifier queues it, the terminal path
+        // resumes it, and the former TID's owner is retired as lost. If it
+        // lands after the exec stop was reported, the thread leaves that stop
+        // for its exit stop before the Exec is decoded: the wait retires the
+        // dead Exec, the exit stop behind it reaches the same wait and is
+        // resumed, and the former TID's owner is retired as lost. In every
+        // case no non-exit stop is resumed; each exit stop is resumed exactly
+        // once.
         let queued_exit = format!("finish queued exit stop: tid={root}");
         let lost: Vec<&String> = records
             .iter()
@@ -6937,49 +7269,94 @@ mod tests {
             .iter()
             .filter(|record| **record == queued_exit)
             .count();
+        let leader_terminal = hold
+            .0
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        let dead_execs = leader_terminal.retired_dead_exec_stops();
+        let interleaving = match (queued, dead_execs) {
+            (0, 0) => KillInterleaving::DuringDeThread,
+            (1, 0) => KillInterleaving::BeforeExecStop,
+            (1, 1) => KillInterleaving::AfterExecStop,
+            (queued, dead) => panic!(
+                "{queued} queued exit stops and {dead} retired dead Execs for the leader: {records:?}"
+            ),
+        };
         // Shown by --show-output: which interleaving this run exercised.
-        eprintln!("leader exit stops queued behind the first: {queued}");
-        match queued {
-            0 => {
-                assert_eq!(
-                    leader_resumes,
-                    vec![(root, Ok(()))],
-                    "the terminal path resumed the leader's non-exit stop: {records:?}"
-                );
-                assert!(
-                    lost.is_empty(),
-                    "former lost with one exit stop: {records:?}"
-                );
-            }
-            1 => {
-                assert_eq!(
-                    leader_resumes,
-                    vec![(root, Ok(())), (root, Ok(()))],
-                    "the leader's two exit stops were not each resumed once: {records:?}"
-                );
-                assert_eq!(
-                    lost.len(),
-                    1,
-                    "second exit stop, no lost former: {records:?}"
-                );
-                let former = lost[0]
-                    .strip_prefix("lost former retired: tid=")
-                    .unwrap()
-                    .parse::<i32>()
-                    .unwrap();
-                assert_ne!(former, root.as_raw());
-                assert!(
-                    resumes
-                        .results
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .all(|(pid, _)| pid.as_raw() != former),
-                    "the lost former's TID was resumed: {records:?}"
-                );
-            }
-            count => panic!("{count} queued exit stops for the leader: {records:?}"),
+        eprintln!("kill interleaving: {interleaving:?}");
+        if force_exec_report {
+            assert_eq!(
+                interleaving,
+                KillInterleaving::AfterExecStop,
+                "the held exec report did not force X: {records:?}"
+            );
+            assert!(
+                records.contains(&format!("exec report held: tid={root}")),
+                "the exec-report hold was not reached: {records:?}"
+            );
         }
+        // The exec thread is the one guest thread other than the leader.
+        let events = log.lock().unwrap().clone();
+        let started: Vec<Pid> = events
+            .iter()
+            .filter(|event| event.0 == 0 && event.1 != root)
+            .map(|event| event.1)
+            .collect();
+        assert_eq!(started.len(), 1, "guest thread starts: {events:?}");
+        let former = started[0];
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        // on_exit_thread for the exec thread's own state: only when it died
+        // under its former TID. A lost former has no status and no hook.
+        let former_exit_hooks = events
+            .iter()
+            .filter(|event| event.0 == 2 && event.2 == former.as_raw() as usize)
+            .count();
+        if interleaving == KillInterleaving::DuringDeThread {
+            assert_eq!(
+                leader_resumes,
+                vec![(root, Ok(()))],
+                "the terminal path resumed the leader's non-exit stop: {records:?}"
+            );
+            assert!(
+                lost.is_empty(),
+                "former lost with one exit stop: {records:?}"
+            );
+            assert_eq!(
+                former_exit_hooks, 1,
+                "exec thread that died under its own TID: {events:?}"
+            );
+        } else {
+            assert_eq!(
+                leader_resumes,
+                vec![(root, Ok(())), (root, Ok(()))],
+                "the leader's two exit stops were not each resumed once: {records:?}"
+            );
+            assert_eq!(
+                lost,
+                vec![&format!("lost former retired: tid={former}")],
+                "second exit stop, no lost former for the exec thread: {records:?}"
+            );
+            assert!(
+                resumes
+                    .results
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(pid, _)| *pid != former),
+                "the lost former's TID was resumed: {records:?}"
+            );
+            assert_eq!(
+                former_exit_hooks, 0,
+                "on_exit_thread ran for a lost former: {events:?}"
+            );
+        }
+        assert!(leader_terminal.queued_raw_statuses().is_empty());
         let prefix = format!("finish getevent: tid={root},");
         assert_eq!(
             records
