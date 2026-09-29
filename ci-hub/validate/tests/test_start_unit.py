@@ -12573,6 +12573,184 @@ else:
             )
         )
 
+    # validate-lock's own lines for the eviction of
+    # https://github.com/rrnewton/dev-hermit/issues/413, with this fixture's
+    # agent and target.
+    EVICTION_LOG_LINES = [
+        f"REFUSE: validation target {SHA} does not contain freshly fetched "
+        "origin/main. Rebase before validating.",
+        f"validate-lock: EVICTED agent=test target={SHA} from the queue after "
+        "673s: origin/main advanced while it waited, so this run could never "
+        "have been admitted. Slot released.",
+    ]
+
+    def arrange_typed_eviction(self) -> None:
+        self.fake.typed_admission_refusal = "validation-lock-refusal"
+        self.fake.inner_log_lines = list(self.EVICTION_LOG_LINES)
+        self.fake.actual_exit = 3
+        self.fake.final_validate_status = None
+        self.fake.executed_nodes = None
+        self.fake.executed_tests = None
+        self.fake.write_service_result = False
+        self.fake.ledger_rows = []
+
+    def invoke_typed_refusal_with_foreign_cleanup_lock(
+        self, kind: str, *, holder_seconds: float, wait_seconds: float
+    ) -> tuple[int, str, str, subprocess.Popen[str]]:
+        """Take a real foreign lock between the refusal's ledger step and cleanup."""
+
+        real_finalize = start_unit.finalize_ledger_mirror
+        holder: subprocess.Popen[str] | None = None
+
+        def hold_after_ledger(*args: object, **kwargs: object):
+            nonlocal holder
+            updated = real_finalize(*args, **kwargs)
+            holder = self.foreign_cleanup_lock_holder(kind, seconds=holder_seconds)
+            return updated
+
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(
+                start_unit, "SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS", wait_seconds
+            ),
+            mock.patch.object(
+                start_unit, "SAME_LAUNCH_CLEANUP_LOCK_POLL_SECONDS", 0.005
+            ),
+            mock.patch.object(
+                start_unit, "finalize_ledger_mirror", side_effect=hold_after_ledger
+            ),
+        ):
+            rc, output, error = self.invoke()
+
+        assert holder is not None
+        return rc, output, error, holder
+
+    def verdict_lines(self, error: str) -> str:
+        """The COULD-NOT-DETERMINE verdict block, without earlier progress lines."""
+
+        start = error.index("validate-run: COULD-NOT-DETERMINE: ")
+        return error[start:]
+
+    def test_eviction_with_timed_out_cleanup_names_eviction_and_removal_command(
+        self,
+    ) -> None:
+        """https://github.com/rrnewton/dev-hermit/issues/413 reproduced.
+
+        The cleanup never acquires record authority, so it returns no durable
+        record. That must be reported as the cleanup failure it is, next to the
+        eviction validate-lock logged, never as a malformed refusal.
+        """
+
+        self.arrange_typed_eviction()
+
+        rc, _output, error, holder = self.invoke_typed_refusal_with_foreign_cleanup_lock(
+            "generation", holder_seconds=5.0, wait_seconds=0.2
+        )
+
+        self.assertIsNone(holder.poll(), "the foreign holder must outlive the wait")
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assertNotIn("malformed", verdict)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED -- "
+            "origin/main advanced while it waited",
+            verdict,
+        )
+        self.assertIn(f"(run log: validate-lock: EVICTED agent=test target={SHA}", verdict)
+        self.assertIn(
+            "Separately, storage cleanup did not complete: same-launch cleanup "
+            "timed out after 0.2s waiting for run-writer generation authority",
+            verdict,
+        )
+        assert self.fake.fresh is not None
+        self.assertIn(
+            f"the no-evidence checkout was retained at {self.fake.fresh}", verdict
+        )
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertIn(f"private Cargo home retained at {record['cargo_home']}", verdict)
+        self.assertIn(f"runtime root retained at {record['runtime_root']}", verdict)
+        self.assertIn("remedy: rebase onto the current origin/main", verdict)
+        self.assertIn(
+            f" remove {self.fake.fresh.name} --validate-complete --coordinator-pid "
+            '"$$" --expected-generation 7',
+            verdict,
+        )
+        self.assertIn(
+            f"--project-root {self.root.resolve()} --machine "
+            f"{start_unit.WRKSLOTS_MACHINE} --allow-existing-unregistered-worktrees",
+            verdict,
+        )
+        self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, verdict)
+        self.assertNotIn("the verdict is unreadable", verdict)
+        self.assert_record_storage_retained()
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_eviction_with_complete_cleanup_names_eviction(self) -> None:
+        self.arrange_typed_eviction()
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED -- "
+            "origin/main advanced while it waited in the validate-lock queue",
+            verdict,
+        )
+        self.assertIn("remedy: rebase onto the current origin/main", verdict)
+        self.assertNotIn("Separately, storage cleanup did not complete", verdict)
+        self.assertNotIn("--validate-complete", verdict)
+        self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, verdict)
+        self.assert_record_storage_removed()
+
+    def test_other_validation_lock_refusal_quotes_validate_lock(self) -> None:
+        self.arrange_typed_eviction()
+        refusal = (
+            "REFUSED: declared-priority queue did not grant agent=test "
+            f"target={SHA} within 7200s"
+        )
+        self.fake.inner_log_lines = [refusal]
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): REFUSED -- the "
+            f"validation payload never ran and no verdict exists (run log: {refusal})",
+            verdict,
+        )
+        self.assertNotIn("EVICTED", verdict)
+        self.assertIn("remedy: correct the admission condition and retry", verdict)
+        self.assert_record_storage_removed()
+
+    def test_refusal_explanation_without_a_refusal_line_says_so(self) -> None:
+        log = self.root / "refusal-without-reason.log"
+        log.write_text("validate-lock: waiting in declared-priority queue\n")
+        reason = run_registry.AdmissionRefusalReason.VALIDATION_LOCK_REFUSAL
+
+        explanation = start_unit.admission_refusal_explanation(reason, log)
+        missing = start_unit.admission_refusal_explanation(
+            reason, self.root / "absent.log"
+        )
+
+        self.assertEqual("REFUSED", explanation.label)
+        self.assertIn(f"validate-lock logged no refusal line in {log}", explanation.detail)
+        self.assertEqual("REFUSED", missing.label)
+        self.assertIn("is unreadable", missing.detail)
+        stale = start_unit.admission_refusal_explanation(
+            run_registry.AdmissionRefusalReason.STALE_BASE, None
+        )
+        self.assertIn("the run handle names no log", stale.detail)
+
     def test_visibility_failure_does_not_stop_accepted_validation_service(self) -> None:
         self.fake.herdr_status_rc = 1
 
@@ -13597,6 +13775,75 @@ else:
                 for command in self.fake.commands
             )
         )
+
+    def attach_evicted_refusal(
+        self, suffix: str, *, checkout_jsonl: bool = False
+    ) -> tuple[Path, int, str]:
+        fresh, record = self.refused_admission_cleanup_record(suffix)
+        durable = start_unit.run_registry.read_record(record)
+        durable["admission_result"]["reason"] = "validation-lock-refusal"
+        start_unit.run_registry.write_record(record, durable)
+        Path(durable["log"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(durable["log"]).write_text("\n".join(self.EVICTION_LOG_LINES) + "\n")
+        if checkout_jsonl:
+            fixture = (
+                fresh / "tests/fixtures/ledger-schema10/legacy/ordinary-only-cells.jsonl"
+            )
+            fixture.parent.mkdir(parents=True, exist_ok=True)
+            fixture.write_text("{}\n")
+        self.fake.fresh = fresh
+        error = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error):
+            rc = start_unit.main(
+                ["--attach", f"validate-{suffix}"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+        return fresh, rc, error.getvalue()
+
+    def test_attach_eviction_names_eviction(self) -> None:
+        fresh, rc, error = self.attach_evicted_refusal("admission-evicted-attach")
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertFalse(fresh.exists(), error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED -- "
+            "origin/main advanced while it waited",
+            error,
+        )
+        self.assertIn("remedy: rebase onto the current origin/main", error)
+        self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, error)
+        self.assertNotIn("Separately", error)
+
+    def test_attach_eviction_without_ledger_retirement_names_both(self) -> None:
+        """A checkout-local ``*.jsonl`` blocks the durable no-payload marker.
+
+        Hermit tracks four such fixtures, so a real eviction checkout reaches
+        this path. The verdict must still name the eviction first and report
+        the retained storage as a separate condition.
+        """
+
+        fresh, rc, error = self.attach_evicted_refusal(
+            "admission-evicted-attach-jsonl", checkout_jsonl=True
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertTrue(fresh.is_dir(), error)
+        self.assertNotIn("malformed", error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED -- "
+            "origin/main advanced while it waited",
+            error,
+        )
+        self.assertIn(
+            "Separately, its no-payload cell-ledger retirement is not durable, "
+            "so cleanup was not attempted; checkout and Cargo home retained",
+            error,
+        )
+        self.assertIn("remedy: rebase onto the current origin/main", error)
+        self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, error)
 
     def test_attach_refusal_with_published_status_retains_checkout(self) -> None:
         fresh, record = self.refused_admission_cleanup_record(

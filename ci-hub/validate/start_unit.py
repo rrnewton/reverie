@@ -1268,16 +1268,30 @@ def record_unstarted_refusal(
     )
 
 
-def could_not_determine(reason: str, remedy: str, *, out: TextIO | None = None) -> int:
+def could_not_determine(
+    reason: str,
+    remedy: str,
+    *,
+    out: TextIO | None = None,
+    state: str | None = None,
+) -> int:
     """The run is not being called passed OR failed, and that is the answer.
 
     Distinct from both. The validate may well have executed; what is missing is a
     readable verdict, so neither "retry" nor "investigate the failure" is right
-    until the evidence is recoverable.
+    until the evidence is recoverable. A typed admission refusal passes its own
+    `state`: there the verdict is not unreadable, it never existed.
     """
     stream = out if out is not None else sys.stderr
     print(f"validate-run: COULD-NOT-DETERMINE: {reason}", file=stream)
-    print("  state:  COULD-NOT-DETERMINE -- not a pass and NOT a failure; the verdict is unreadable.", file=stream)
+    print(
+        "  state:  "
+        + (
+            state
+            or "COULD-NOT-DETERMINE -- not a pass and NOT a failure; the verdict is unreadable."
+        ),
+        file=stream,
+    )
     print(f"  remedy: {remedy}", file=stream)
     return EXIT_COULD_NOT_DETERMINE
 
@@ -9589,6 +9603,159 @@ def record_claims_refused_admission(record: Mapping[str, Any]) -> bool:
     return isinstance(admission, dict) and admission.get("state") == "refused"
 
 
+# validate-lock writes the reason for every refusal into the run log. The typed
+# `admission_result.reason` is coarse: `validation-lock-refusal` covers a queue
+# eviction, a yield refusal, a memory refusal and a queue timeout alike. The
+# verdict must repeat validate-lock's own words, or an eviction (rebase and
+# queue again) reads the same as a refusal nobody can act on. Only the log's
+# tail is read: a refused run never started its payload, so its log is a few
+# kilobytes, and a larger log must not make the verdict slow.
+ADMISSION_REFUSAL_LOG_TAIL_BYTES = 256 * 1024
+ADMISSION_REFUSAL_LINE_MAX_CHARS = 600
+VALIDATE_LOCK_EVICTED_PREFIX = "validate-lock: EVICTED "
+VALIDATE_LOCK_REFUSAL_PREFIXES = ("REFUSE: ", "REFUSED: ")
+STALE_BASE_REFUSAL_MARKER = "does not contain freshly fetched origin/main"
+TYPED_REFUSAL_STATE = (
+    "COULD-NOT-DETERMINE -- not a pass and NOT a failure; admission was "
+    "refused, so the validation payload never ran and no verdict exists."
+)
+
+
+@dataclass(frozen=True)
+class AdmissionRefusalExplanation:
+    """validate-lock's own reason for one typed admission refusal."""
+
+    label: str
+    detail: str
+    remedy: str
+
+    def describe(self, reason: run_registry.AdmissionRefusalReason | None) -> str:
+        return (
+            f"typed admission refused ({reason.value if reason else 'unknown'}): "
+            f"{self.label} -- {self.detail}"
+        )
+
+
+def admission_refusal_explanation(
+    reason: run_registry.AdmissionRefusalReason | None, log: Path | None
+) -> AdmissionRefusalExplanation:
+    """Classify a typed refusal from the last reason validate-lock logged.
+
+    An EVICTED line wins over the REFUSE line printed just before it: the
+    eviction is the decision, and the stale-base line is its evidence. The log
+    is diagnostic text, never admission authority; the typed refusal was
+    already validated from the durable handle before this runs.
+    """
+
+    generic_remedy = (
+        "correct the admission condition and retry; do not treat this attempt "
+        "as either pass or failure"
+    )
+    rebase_remedy = (
+        "rebase onto the current origin/main and queue the new head again; do "
+        "not treat this attempt as either pass or failure"
+    )
+    lines: list[str] = []
+    unreadable: str | None = None
+    if log is None:
+        unreadable = "the run handle names no log"
+    else:
+        try:
+            with log.open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, size - ADMISSION_REFUSAL_LOG_TAIL_BYTES))
+                lines = stream.read().decode("utf-8", "replace").splitlines()
+        except OSError as error:
+            unreadable = f"the run log {log} is unreadable: {error}"
+
+    def clipped(line: str) -> str:
+        line = line.strip()
+        if len(line) <= ADMISSION_REFUSAL_LINE_MAX_CHARS:
+            return line
+        return line[: ADMISSION_REFUSAL_LINE_MAX_CHARS - 3] + "..."
+
+    evicted = next(
+        (line for line in reversed(lines) if line.startswith(VALIDATE_LOCK_EVICTED_PREFIX)),
+        None,
+    )
+    if evicted is not None:
+        return AdmissionRefusalExplanation(
+            "EVICTED",
+            "origin/main advanced while it waited in the validate-lock queue, so "
+            "it could never have been admitted; the validation payload never ran "
+            f"and no verdict exists (run log: {clipped(evicted)})",
+            rebase_remedy,
+        )
+    refused = next(
+        (
+            line
+            for line in reversed(lines)
+            if line.startswith(VALIDATE_LOCK_REFUSAL_PREFIXES)
+        ),
+        None,
+    )
+    if refused is not None and STALE_BASE_REFUSAL_MARKER in refused:
+        return AdmissionRefusalExplanation(
+            "STALE-BASE",
+            "the target does not contain freshly fetched origin/main; the "
+            "validation payload never ran and no verdict exists "
+            f"(run log: {clipped(refused)})",
+            rebase_remedy,
+        )
+    if refused is not None:
+        return AdmissionRefusalExplanation(
+            "REFUSED",
+            "the validation payload never ran and no verdict exists "
+            f"(run log: {clipped(refused)})",
+            generic_remedy,
+        )
+    missing = unreadable or f"validate-lock logged no refusal line in {log}"
+    return AdmissionRefusalExplanation(
+        "REFUSED",
+        f"the validation payload never ran and no verdict exists ({missing})",
+        generic_remedy,
+    )
+
+
+def managed_checkout_removal_command(
+    tool_root: Path,
+    state_root: Path,
+    checkout: Path | None,
+    identity: WrkslotsIdentity | None,
+) -> str | None:
+    """The exact shell command that removes one retained managed validate checkout.
+
+    It is the command same-launch cleanup runs, with this launcher's pid
+    replaced by the invoking shell's: wrkslots requires the coordinator pid to
+    be an ancestor of the removal. An fd-backed tool root is released when this
+    process exits, so the printed command names the state root's entry point.
+    """
+
+    if checkout is None or identity is None:
+        return None
+    resolved_state = state_root.resolve()
+    if checkout.parent != resolved_state / "worktrees" / "validate":
+        return None
+    if checkout.name != identity.slot:
+        return None
+    command_root = (
+        resolved_state if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) else tool_root
+    )
+    placeholder = "\0coordinator-pid\0"
+    argv = wrkslots_command(
+        command_root,
+        resolved_state,
+        "remove",
+        identity.slot,
+        "--validate-complete",
+        "--coordinator-pid",
+        placeholder,
+        "--expected-generation",
+        str(identity.generation),
+    )
+    return " ".join('"$$"' if item == placeholder else shlex.quote(item) for item in argv)
+
+
 def admission_refusal_has_no_payload_evidence(record: Mapping[str, Any]) -> bool:
     """Reject any refused handle that also claims product execution or output."""
 
@@ -11057,15 +11224,30 @@ def attach(
             run=run,
         )
         refused = typed_admission_refusal(updated)
-        if refused is None or not cell_ledger_retirement_ready(
-            root, record_path, updated
-        ):
+        if refused is None or not admission_refusal_has_no_payload_evidence(updated):
             return could_not_determine(
                 "typed admission refusal is malformed, contradicts payload "
                 "evidence, or is not the durable canonical handle; checkout "
                 "and Cargo home retained",
                 "inspect the durable run handle and framework result sidecar "
                 "before retrying",
+            )
+        reason = refused.admission_result.reason
+        raw_log = updated.get("log")
+        explanation = admission_refusal_explanation(
+            reason, Path(raw_log) if isinstance(raw_log, str) and raw_log else None
+        )
+        if not cell_ledger_retirement_ready(root, record_path, updated):
+            # The refusal itself is typed, well formed and claims no product
+            # evidence; only the durable no-payload ledger disposition that
+            # authorizes cleanup is missing (see the CELL LEDGER line above).
+            return could_not_determine(
+                f"{explanation.describe(reason)}. Separately, its no-payload "
+                "cell-ledger retirement is not durable, so cleanup was not "
+                "attempted; checkout and Cargo home retained",
+                f"{explanation.remedy}. Inspect the durable run handle before "
+                "removing the retained storage",
+                state=TYPED_REFUSAL_STATE,
             )
         cleanup_after_attach(
             root,
@@ -11075,12 +11257,10 @@ def attach(
             run=run,
             tool_root=tool_root,
         )
-        reason = refused.admission_result.reason
         return could_not_determine(
-            f"typed admission refused ({reason.value if reason else 'unknown'}); "
-            "the validation payload never ran and no verdict exists",
-            "correct the admission condition and retry; do not treat this attempt "
-            "as either pass or failure",
+            explanation.describe(reason),
+            explanation.remedy,
+            state=TYPED_REFUSAL_STATE,
         )
     updated = bookkeep_record(record_path, base_record=latest, **final)
     updated = finalize_reverie_counts(root, tool_root, record_path, record=updated)
@@ -12604,8 +12784,19 @@ def main(
         )
         storage_cleanup = cleanup_current_storage(require_typed_refusal=True)
         report_storage_cleanup(storage_cleanup)
-        completed_handle = typed_admission_refusal(storage_cleanup.record or {})
-        if completed_handle is None:
+        # The refusal was validated from `latest` above. A cleanup that never
+        # acquired record authority (for example, a timed-out run-writer
+        # generation wait) returns no record at all, and that is a cleanup
+        # failure, not a malformed refusal: it is reported separately below.
+        # When cleanup did read the durable record under its authority, that
+        # record must still carry the same refusal.
+        refused_handle = typed_admission_refusal(latest)
+        durable_handle = (
+            refused_handle
+            if storage_cleanup.record is None
+            else typed_admission_refusal(storage_cleanup.record)
+        )
+        if refused_handle is None:
             return could_not_determine(
                 "typed admission refusal is malformed, contradicts payload evidence, "
                 "or is not the durable canonical handle; checkout, Cargo home, and "
@@ -12613,23 +12804,62 @@ def main(
                 "inspect the durable run handle and framework result sidecar before "
                 "retrying",
             )
-        refusal = completed_handle.admission_result.reason
+        if (
+            durable_handle is None
+            or durable_handle.admission_result != refused_handle.admission_result
+        ):
+            return could_not_determine(
+                "typed admission refusal is not the durable canonical handle: the "
+                "run record read under cleanup authority no longer carries the "
+                "refusal read after the wait"
+                + (
+                    ""
+                    if storage_cleanup.complete
+                    else "; checkout, Cargo home, and runtime root retained"
+                ),
+                "inspect the durable run handle and framework result sidecar before "
+                "retrying",
+            )
+        refusal = refused_handle.admission_result.reason
+        explanation = admission_refusal_explanation(refusal, log)
         if not storage_cleanup.complete:
             cleanup_detail = storage_cleanup.error or (
                 "coupled checkout and private-storage cleanup did not complete"
             )
+            retained: list[str] = []
+            removal: str | None = None
+            if fresh_checkout is not None and not storage_cleanup.checkout.removed:
+                retained.append(f"the no-evidence checkout was retained at {fresh_checkout}")
+                removal = managed_checkout_removal_command(
+                    tool_root, state_root, fresh_checkout, fresh_wrkslots
+                )
+            if private_cargo_home is not None and not storage_cleanup.cargo_removed:
+                retained.append(f"private Cargo home retained at {private_cargo_home}")
+            if runtime_root is not None and storage_cleanup.runtime_removed is False:
+                retained.append(f"runtime root retained at {runtime_root}")
+            remedy = explanation.remedy
+            if removal is not None:
+                remedy += (
+                    ". The retained checkout was never built; once no process uses "
+                    f"it, remove it with: {removal}"
+                )
+            elif fresh_checkout is not None and not storage_cleanup.checkout.removed:
+                remedy += (
+                    f". The retained checkout {fresh_checkout} is not a managed "
+                    "validate slot, so no wrkslots removal command applies; inspect "
+                    "it before removing it"
+                )
             return could_not_determine(
-                f"typed admission refused ({refusal.value if refusal else 'unknown'}), "
-                "but its no-evidence checkout was retained and coupled private-"
-                "storage cleanup was incomplete: "
-                f"{cleanup_detail}",
-                "inspect the retained checkout and private storage before retrying",
+                f"{explanation.describe(refusal)}. Separately, storage cleanup did "
+                f"not complete: {cleanup_detail}"
+                + (f"; {'; '.join(retained)}" if retained else ""),
+                remedy,
+                state=TYPED_REFUSAL_STATE,
             )
         return could_not_determine(
-            f"typed admission refused ({refusal.value if refusal else 'unknown'}); "
-            "the validation payload never ran and no verdict exists",
-            "correct the admission condition and retry; do not treat this attempt "
-            "as either pass or failure",
+            explanation.describe(refusal),
+            explanation.remedy,
+            state=TYPED_REFUSAL_STATE,
         )
 
     try:
