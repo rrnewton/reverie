@@ -8,10 +8,14 @@ current repository permission, and cache labels cannot add or remove authority.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
+import tempfile
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve()
 BIN = HERE.parent.parent.parent / "bin"
@@ -105,12 +109,35 @@ def _install_run(comments: list[dict], labels: list[str]):
     return fake
 
 
+@contextlib.contextmanager
+def _selected_github_route():
+    """Select an explicit GitHub executable that refuses if it is ever run.
+
+    Since 68e56d4c002af5dbe9ed055caa186cb89a8acfd5 ("Require explicit bot
+    GitHub routing"), gh-merge-verified builds every GitHub argv through
+    ``gh_route.command``, which refuses before ``run`` is reached unless
+    FLEET_REAL_GH names an existing absolute executable. These tests fake
+    ``tool.run``, so the selected executable is never launched; the stub exits
+    97 so that a call escaping the fake cannot reach GitHub or pass silently.
+    The caller's own FLEET_REAL_GH, set or unset, therefore does not matter.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        gh = pathlib.Path(tmp) / "gh"
+        gh.write_text("#!/bin/sh\necho 'GitHub must not be called' >&2\nexit 97\n")
+        gh.chmod(0o755)
+        with mock.patch.dict(os.environ, {"FLEET_REAL_GH": str(gh)}):
+            yield gh
+
+
 def _run(lanes: list[str], comments: list[dict]):
     """Review-admission findings for a PR carrying `lanes` and `comments`."""
     saved = tool.run
     tool.run = _install_run(comments, lanes)
     try:
-        return tool.review_admission_problems("1", "rrnewton/dev-hermit", HEAD)
+        with _selected_github_route():
+            return tool.review_admission_problems(
+                "1", "rrnewton/dev-hermit", HEAD
+            )
     finally:
         tool.run = saved
 
@@ -215,9 +242,10 @@ def test_both_exact_head_lanes_are_current_without_identity_checks() -> None:
     saved = tool.run
     tool.run = _install_run(comments, ["claude", "codex"])
     try:
-        assert tool.review_admission_problems(
-            "1", "rrnewton/dev-hermit", HEAD
-        ) == []
+        with _selected_github_route():
+            assert tool.review_admission_problems(
+                "1", "rrnewton/dev-hermit", HEAD
+            ) == []
     finally:
         tool.run = saved
 
@@ -226,7 +254,8 @@ def test_unreadable_state_is_still_refused_as_absence() -> None:
     saved = tool.run
     tool.run = lambda *a, **k: (1, "", "boom")
     try:
-        assert tool.review_admission_problems("1", "r/r", HEAD) == [
-            "__UNREADABLE__"]
+        with _selected_github_route():
+            assert tool.review_admission_problems("1", "r/r", HEAD) == [
+                "__UNREADABLE__"]
     finally:
         tool.run = saved
