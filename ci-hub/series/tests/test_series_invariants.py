@@ -3934,6 +3934,250 @@ class CellResultProjection(unittest.TestCase):
         series.validate_rows(rows)
         return rows
 
+    OBSERVED_STDOUT = "vdso ok 42\n"
+    DECLARED_STDOUT = "getrandom ok\n"
+
+    @staticmethod
+    def _stdout_identity(text):
+        encoded = text.encode()
+        return len(encoded), hashlib.sha256(encoded).hexdigest()
+
+    def _exact_stdout_reason(self, run="first", declared=None):
+        """The text Hermit's ``expected_stdout_mismatch_reason`` writes."""
+        observed_bytes, observed_sha = self._stdout_identity(self.OBSERVED_STDOUT)
+        declared_bytes, declared_sha = self._stdout_identity(
+            self.DECLARED_STDOUT if declared is None else declared
+        )
+        return (
+            f"verify {run} run stdout ({observed_bytes} bytes, sha256 {observed_sha}) "
+            f"differs from the declared expected_stdout ({declared_bytes} bytes, "
+            f"sha256 {declared_sha})"
+        )
+
+    def _contains_stdout_reason(self, quoted):
+        """The text Hermit's ``expected_stdout_contains_mismatch_reason`` writes.
+
+        ``quoted`` is spelled as Rust's ``{:?}`` renders the declared text.
+        """
+        observed_bytes, observed_sha = self._stdout_identity(self.OBSERVED_STDOUT)
+        return (
+            f"verify stdout ({observed_bytes} bytes, sha256 {observed_sha}) does not "
+            f"contain the declared expected_stdout_contains text {quoted}"
+        )
+
+    def _expected_output_failed_cell(self, reason, *, status=0, stdout=None):
+        """A matched verify attempt the runner FAILed for its declared stdout.
+
+        Both compared runs printed ``OBSERVED_STDOUT``. The runner checks the
+        declared stdout after the canonical comparison matched and before the
+        guest's exit, so the attempt carries no timeout, no error kind, and
+        the guest's own status, and the row is crash-error.
+        """
+        cell = self._validate_cell(1)
+        cell.update(outcome="FAIL", result="crash-error", failure_class="product_failure")
+        # The synthetic repository has no Detcore gitlink; see
+        # _validate_no_verdict_cell.
+        cell["detcore_tree"] = self.detcore_tree
+        attempt = cell["attempts"][0]
+        attempt["outcome"] = "FAIL"
+        attempt["status"] = status
+        attempt["reason"] = reason
+        if stdout is not None:
+            attempt["stdout"] = stdout
+        observed_bytes, observed_sha = self._stdout_identity(self.OBSERVED_STDOUT)
+        report = json.loads(attempt["verification_report"])
+        report["compared_outputs"] = {
+            side: {
+                "exit_code": status,
+                "signal": None,
+                "stdout_sha256": observed_sha,
+                "stdout_bytes": observed_bytes,
+                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_bytes": 0,
+            }
+            for side in ("left", "right")
+        }
+        self._replace_comparison_report(attempt, report)
+        return cell
+
+    def test_matched_attempt_failed_by_declared_stdout_is_retained_as_failed_match(self):
+        # The random-sources-root-only rows quarantined in hermit_test_ledger
+        # d4402b7 are this case: both runs agree, exit 0, and print other
+        # stdout than the cell declares.
+        tab_and_quotes = self._contains_stdout_reason('"getrandom\\t\\"ok\\""')
+        cases = (
+            ("exact stdout, exit 0", self._expected_output_failed_cell(
+                self._exact_stdout_reason())),
+            ("exact stdout, exit 3", self._expected_output_failed_cell(
+                self._exact_stdout_reason(), status=3)),
+            ("contained text, capture recorded", self._expected_output_failed_cell(
+                tab_and_quotes, stdout=self.OBSERVED_STDOUT)),
+            # Hermit records a capture it cannot read as UTF-8 as empty.
+            ("contained text, capture not text", self._expected_output_failed_cell(
+                tab_and_quotes, stdout="")),
+            ("contained text, no capture", self._expected_output_failed_cell(
+                self._contains_stdout_reason('"getrandom"'))),
+            # The shared Rust checker rebuilds the reason with the runner's own
+            # formatter, so it is the oracle for this reader's ASCII rendering.
+            ("contained text, every ASCII character", self._expected_output_failed_cell(
+                self._contains_stdout_reason(
+                    series._rust_debug_ascii("".join(map(chr, range(128))))
+                ))),
+            # An exact claim is decided from the report alone; the capture,
+            # even another one, is not what the runner compared.
+            ("exact stdout, other capture", self._expected_output_failed_cell(
+                self._exact_stdout_reason(), stdout="something else\n")),
+        )
+        for label, cell in cases:
+            with self.subTest(label=label):
+                reason = cell["attempts"][0]["reason"]
+                row = self._project_validate(cell, label.replace(" ", "-").replace(",", ""))[0]
+                payload = row["series"]
+                self.assertEqual(
+                    (payload["outcome"], payload["result"], payload["failure_class"]),
+                    ("errored", "crash-error", "product_failure"),
+                )
+                attempt = cell["attempts"][0]
+                self.assertEqual(payload["no_verdict_evidence"]["attempts"], [{
+                    "index": "1",
+                    "kind": "failed_match",
+                    "detail": reason,
+                    "attempt_outcome": "FAIL",
+                    "disposition": "errored",
+                    "error_kind": None,
+                    "status": attempt["status"],
+                    "signal": None,
+                    "timed_out": False,
+                    "verification_report_sha256": attempt["verification_report_sha256"],
+                }])
+
+        # Declared, the runner still checks stdout first, so a guest that
+        # ended exactly as declared is failed by its stdout all the same.
+        declared = self._expected_exit_cell(
+            status=7, signal=None, guest_exit_code=7, guest_signal=None, declared=(7, None),
+        )
+        declared.update(outcome="FAIL", result="crash-error", failure_class="product_failure")
+        declared["detcore_tree"] = self.detcore_tree
+        attempt = declared["attempts"][0]
+        attempt["outcome"] = "FAIL"
+        # _expected_exit_cell's compared runs printed 12 bytes of sha256 a...a.
+        attempt["reason"] = (
+            f"verify first run stdout (12 bytes, sha256 {'a' * 64}) differs from the "
+            f"declared expected_stdout (13 bytes, sha256 {'c' * 64})"
+        )
+        row = self._project_validate(declared, "declared-exit-7-stdout")[0]
+        self.assertEqual(
+            row["series"]["no_verdict_evidence"]["attempts"][0]["detail"],
+            attempt["reason"],
+        )
+        self.assertEqual(row["series"]["declared_guest_exit"]["attempts"][0]["outcome"], "FAIL")
+
+    def test_failed_declared_stdout_claims_the_evidence_contradicts_are_refused(self):
+        exact = self._exact_stdout_reason()
+        contains = self._contains_stdout_reason('"getrandom"')
+
+        def edited(reason=exact, *, status=0, stdout=None, edit=None):
+            cell = self._expected_output_failed_cell(reason, status=status, stdout=stdout)
+            if edit is not None:
+                edit(cell)
+            return cell
+
+        def other_report_stdout(cell):
+            attempt = cell["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            for side in ("left", "right"):
+                report["compared_outputs"][side]["stdout_sha256"] = "e" * 64
+            self._replace_comparison_report(attempt, report)
+
+        def unequal_runs(cell):
+            attempt = cell["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            report["compared_outputs"]["right"]["stderr_bytes"] = 1
+            self._replace_comparison_report(attempt, report)
+
+        def no_compared_outputs(cell):
+            attempt = cell["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            del report["compared_outputs"]
+            self._replace_comparison_report(attempt, report)
+
+        def chaos(cell):
+            cell["mode"] = "chaos"
+
+        def with_error_kind(cell):
+            cell["attempts"][0]["error_kind"] = "wall-timeout"
+
+        def no_disposition(cell):
+            cell["attempts"][0]["status"] = None
+
+        def determinism_failure(cell):
+            cell["result"] = "determinism-failure"
+
+        def beside_a_pass(cell):
+            # Only one supporting attempt is required, so without its own
+            # refusal a pass row would silently drop the failed match.
+            cell.update(outcome="PASS", result="pass", failure_class=None)
+            cell["attempts"].append(self._attempt(index="2"))
+
+        contradicts = "reason claims a failed declared expected output that contradicts its evidence"
+        unrecognized = "matched report is internally inconsistent"
+        for label, cell, expected in (
+            ("the second run of a matched pair",
+             edited(self._exact_stdout_reason(run="second")),
+             f"{contradicts}: it names the second run"),
+            ("declared stdout that is the observed stdout",
+             edited(self._exact_stdout_reason(declared=self.OBSERVED_STDOUT)),
+             f"{contradicts}: the declared stdout is the observed stdout"),
+            ("the report printed other stdout", edited(edit=other_report_stdout),
+             f"{contradicts}: both compared runs printed"),
+            ("the contained reason names other stdout", edited(contains, edit=other_report_stdout),
+             f"{contradicts}: both compared runs printed"),
+            ("unequal compared runs", edited(edit=unequal_runs),
+             f"{contradicts}: the matched report has no identical"),
+            ("no compared outputs", edited(edit=no_compared_outputs),
+             f"{contradicts}: the matched report has no identical"),
+            ("a chaos cell", edited(edit=chaos),
+             f"{contradicts}: only a verify cell declares expected stdout"),
+            ("an error kind", edited(edit=with_error_kind),
+             f"{contradicts}: the runner fails declared stdout only"),
+            ("no process disposition", edited(edit=no_disposition),
+             f"{contradicts}: the runner fails declared stdout only"),
+            ("an empty declared text", edited(self._contains_stdout_reason('""')),
+             f"{contradicts}: the runner finds an empty declared text"),
+            ("a capture that contains the text",
+             edited(self._contains_stdout_reason('"vdso ok"'), stdout=self.OBSERVED_STDOUT),
+             f"{contradicts}: the captured stdout contains the declared text"),
+            ("a capture that is other bytes", edited(contains, stdout="vdso ok 43\n"),
+             f"{contradicts}: the captured stdout is not the stdout the reason names"),
+            ("a capture that is not a string", edited(contains, stdout=["vdso"]),
+             f"{contradicts}: the captured stdout is not text"),
+            ("a failed match under a determinism-failure result",
+             edited(edit=determinism_failure),
+             "supports only a crash-error result"),
+            ("a failed match beside a passing attempt", edited(edit=beside_a_pass),
+             "supports only a crash-error result"),
+            # Texts the runner does not write, or that this reader cannot
+            # prove it wrote, keep the refusal the attempt had before.
+            ("another reason", edited("the guest printed something unexpected"), unrecognized),
+            ("trailing text", edited(exact + " "), unrecognized),
+            ("a text Rust would escape", edited(self._contains_stdout_reason('"a\tb"')), unrecognized),
+            ("a non-ASCII text", edited(self._contains_stdout_reason('"café"')), unrecognized),
+            ("a zero-padded count", edited(exact.replace("stdout (11 bytes", "stdout (011 bytes")),
+             unrecognized),
+            ("no reason", edited(None), unrecognized),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(series.MalformedRow, re.escape(expected)):
+                    self._project_validate(cell, "refused")
+
+        # Pressure evidence types a matched report as a canonical pass and
+        # cannot carry this failure, so a pressure row refuses it.
+        pressure = edited()
+        pressure["run_index"] = 0
+        pressure.pop("attempt")
+        with self.assertRaisesRegex(series.MalformedRow, "pressure evidence cannot represent"):
+            self._project([pressure])
+
     def test_declared_expected_guest_exit_admits_exactly_the_declared_disposition(self):
         # The three run-213 rows, and the 128 + signo spelling of a signal
         # death that Hermit uses when it cannot re-raise the guest's signal.

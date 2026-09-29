@@ -4081,6 +4081,197 @@ def _is_canonical_compared_output(output: Any) -> bool:
     )
 
 
+_U64_MAX = 2**64 - 1
+# The texts ``expected_stdout_mismatch_reason`` and
+# ``expected_stdout_contains_mismatch_reason`` in Hermit's
+# ci/manifest-plan/src/runner.rs write. Rust's ``u64`` display has no sign and
+# no leading zero, and its digests are lowercase SHA-256.
+_EXACT_STDOUT_REASON_RE = re.compile(
+    r"verify (?P<run>[a-z]+) run stdout \((?P<observed_bytes>0|[1-9][0-9]*) bytes, "
+    r"sha256 (?P<observed_sha256>[0-9a-f]{64})\) differs from the declared "
+    r"expected_stdout \((?P<declared_bytes>0|[1-9][0-9]*) bytes, "
+    r"sha256 (?P<declared_sha256>[0-9a-f]{64})\)"
+)
+_CONTAINS_STDOUT_REASON_RE = re.compile(
+    r"verify stdout \((?P<observed_bytes>0|[1-9][0-9]*) bytes, "
+    r"sha256 (?P<observed_sha256>[0-9a-f]{64})\) does not contain the declared "
+    r"expected_stdout_contains text (?P<quoted>\".*\")",
+    re.DOTALL,
+)
+
+
+def _rust_debug_ascii(text: str) -> str | None:
+    """Rust's ``{:?}`` rendering of an ASCII ``text``, or None for other text.
+
+    Beyond ASCII, Rust's rendering depends on its Unicode printability tables,
+    which this reader does not reproduce; such a text is not recognized.
+    """
+    rendered = ['"']
+    for character in text:
+        code = ord(character)
+        if code > 0x7F:
+            return None
+        rendered.append({
+            "\t": "\\t", "\r": "\\r", "\n": "\\n", "\0": "\\0",
+            "\\": "\\\\", '"': '\\"',
+        }.get(character) or (
+            f"\\u{{{code:x}}}" if code < 0x20 or code == 0x7F else character
+        ))
+    rendered.append('"')
+    return "".join(rendered)
+
+
+def _parse_rust_debug_ascii(quoted: str) -> str | None:
+    """Invert :func:`_rust_debug_ascii`, or None when it could not have written ``quoted``."""
+    if len(quoted) < 2 or not quoted.startswith('"') or not quoted.endswith('"'):
+        return None
+    inner = quoted[1:-1]
+    text = []
+    position = 0
+    while position < len(inner):
+        character = inner[position]
+        position += 1
+        if character != "\\":
+            text.append(character)
+            continue
+        escape = inner[position:position + 1]
+        position += 1
+        if escape == "u":
+            closing = inner.find("}", position)
+            digits = inner[position + 1:closing] if closing > position else ""
+            if (not inner.startswith("{", position) or not digits
+                    or re.fullmatch(r"[0-9a-f]+", digits) is None or int(digits, 16) > 0x7F):
+                return None
+            text.append(chr(int(digits, 16)))
+            position = closing + 1
+        elif escape in ("t", "r", "n", "0", "\\", '"'):
+            text.append({"t": "\t", "r": "\r", "n": "\n", "0": "\0"}.get(escape, escape))
+        else:
+            return None
+    decoded = "".join(text)
+    return decoded if _rust_debug_ascii(decoded) == quoted else None
+
+
+def _expected_output_failure_reason(
+    attempt: dict, report: dict, *, mode: str, index: int,
+) -> str | None:
+    """The runner's reason for a failed declared stdout on a matched FAIL, or None.
+
+    Hermit's runner checks a verify cell's declared ``expected_stdout`` and
+    ``expected_stdout_contains`` after the canonical comparison matched and
+    before the guest's exit, and records a failure only as the attempt's
+    ``reason``: no timeout, no error kind, and possibly status 0. None: the
+    reason is not one of those texts. A string: it is, and the evidence bears
+    it out, so the attempt is a failed match. MalformedRow: it claims such a
+    failure that the evidence contradicts.
+
+    The evidence is what the runner decided from. For an exact
+    ``expected_stdout`` that is the matched report's per-run stdout identity,
+    so the captured ``stdout`` is not consulted. For
+    ``expected_stdout_contains`` the runner searched the capture after
+    requiring it to equal both compared runs, so a recorded capture must be
+    those bytes and must omit the text. Hermit's runner records a capture it
+    cannot read as UTF-8 as empty, so an empty capture of nonempty output is
+    absent, not other bytes. The row does not carry the manifest's declared
+    stdout, so the declared side is checked only for what it cannot be.
+    """
+    reason = attempt.get("reason")
+    if not isinstance(reason, str):
+        return None
+    exact = _EXACT_STDOUT_REASON_RE.fullmatch(reason)
+    contains = None if exact else _CONTAINS_STDOUT_REASON_RE.fullmatch(reason)
+    claim = exact or contains
+    if claim is None:
+        return None
+    text = None
+    if contains is not None:
+        text = _parse_rust_debug_ascii(contains["quoted"])
+        if text is None:
+            return None
+
+    def contradiction(why: str) -> MalformedRow:
+        return MalformedRow(
+            f"cell attempt {index} reason claims a failed declared expected output "
+            f"that contradicts its evidence: {why}"
+        )
+
+    if mode != "verify":
+        raise contradiction(
+            f"only a verify cell declares expected stdout, and this is a {mode} cell"
+        )
+    status = attempt.get("status")
+    signal = attempt.get("signal")
+    completed = (
+        type(status) is int and status >= 0 and signal is None
+    ) or (
+        status is None and type(signal) is int and signal > 0
+    )
+    if (
+        attempt.get("timed_out") is not False
+        or attempt.get("error_kind") is not None
+        or not completed
+    ):
+        raise contradiction(
+            "the runner fails declared stdout only for an attempt that completed "
+            "with a status or signal, no timeout and no error kind"
+        )
+    outputs = report.get("compared_outputs")
+    if (
+        not isinstance(outputs, dict)
+        or set(outputs) != {"left", "right"}
+        or not _is_canonical_compared_output(outputs["left"])
+        or outputs["left"] != outputs["right"]
+        or not all(
+            outputs["left"][field] is None or type(outputs["left"][field]) is int
+            for field in ("exit_code", "signal")
+        )
+    ):
+        raise contradiction("the matched report has no identical, complete compared outputs")
+    observed_bytes = int(claim["observed_bytes"])
+    observed_sha256 = claim["observed_sha256"]
+    if observed_bytes > _U64_MAX:
+        raise contradiction("its observed byte count exceeds u64")
+    left = outputs["left"]
+    if left["stdout_bytes"] != observed_bytes or left["stdout_sha256"] != observed_sha256:
+        raise contradiction(
+            f"both compared runs printed {left['stdout_bytes']} bytes with sha256 "
+            f"{left['stdout_sha256']}, not the stdout the reason names"
+        )
+    if exact is not None:
+        # The runner names the first run whose stdout differs, and both runs
+        # of a matched pair print the same bytes.
+        if exact["run"] != "first":
+            raise contradiction(
+                f"it names the {exact['run']} run, but the first run of a matched "
+                "pair printed the same bytes"
+            )
+        declared_bytes = int(exact["declared_bytes"])
+        if declared_bytes > _U64_MAX:
+            raise contradiction("its declared byte count exceeds u64")
+        if declared_bytes == observed_bytes and exact["declared_sha256"] == observed_sha256:
+            raise contradiction("the declared stdout is the observed stdout")
+        return reason
+    if not text:
+        raise contradiction("the runner finds an empty declared text in any stdout")
+    stdout = attempt.get("stdout")
+    if stdout is None or (stdout == "" and observed_bytes > 0):
+        return reason
+    if not isinstance(stdout, str):
+        raise contradiction("the captured stdout is not text")
+    try:
+        captured = stdout.encode("utf-8")
+    except UnicodeEncodeError:
+        raise contradiction("the captured stdout is not UTF-8 text") from None
+    if (
+        len(captured) != observed_bytes
+        or hashlib.sha256(captured).hexdigest() != observed_sha256
+    ):
+        raise contradiction("the captured stdout is not the stdout the reason names")
+    if text in stdout:
+        raise contradiction("the captured stdout contains the declared text")
+    return reason
+
+
 def _typed_comparison_attempt(
     attempt: Any,
     *,
@@ -4088,12 +4279,15 @@ def _typed_comparison_attempt(
     index: int,
     expected_guest_exit: tuple[int | None, int | None] | None = None,
 ) -> str:
-    """Return matched/diverged/no_result/timeout/errored for one typed attempt.
+    """Return matched/diverged/no_result/timeout/errored/failed_match for one typed attempt.
 
     ``expected_guest_exit`` is the row's validated declaration from
     ``_expected_guest_exit``. Without one, a matched attempt must have exited
     0 (any status in chaos) and not by a signal. With one, a matched attempt
-    must end exactly as declared and nothing else.
+    must end exactly as declared and nothing else. A matched attempt the
+    runner FAILed for a failed declared stdout, which
+    :func:`_expected_output_failure_reason` verifies, is ``failed_match``
+    however it ended: the runner checks declared stdout before the exit.
     """
     if not isinstance(attempt, dict):
         raise MalformedRow(f"cell attempt {index} must be an object")
@@ -4234,6 +4428,10 @@ def _typed_comparison_attempt(
         if not canonical:
             return "no_result"
         if verdict == "matched":
+            if attempt.get("outcome") == "FAIL" and _expected_output_failure_reason(
+                attempt, report, mode=mode, index=index
+            ) is not None:
+                return "failed_match"
             status = attempt.get("status")
             if expected_guest_exit is None:
                 disposition_consistent = (
@@ -4718,6 +4916,13 @@ def _cell_outcome(row: dict) -> str:
         )
         for index, attempt in enumerate(attempts, 1)
     ]
+    if "failed_match" in dispositions and classification != ("crash-error", "product_failure"):
+        # Hermit's runner types a matched attempt it FAILed as crash-error,
+        # and the shared failed_match evidence requires exactly that result.
+        raise MalformedRow(
+            "a matched attempt failed by its declared expected output supports only "
+            f"a crash-error result: result={result!r} failure_class={failure_class!r}"
+        )
     if has_parity:
         _typed_backend_parity(row, dispositions)
         return projected
@@ -4734,7 +4939,7 @@ def _cell_outcome(row: dict) -> str:
         ("determinism-failure", "product_failure"): {"diverged"},
         ("parity-failure", "product_failure"): {"diverged"},
         ("replay-failure", "product_failure"): {"diverged"},
-        ("crash-error", "product_failure"): {"no_result"},
+        ("crash-error", "product_failure"): {"no_result", "failed_match"},
         ("timeout", "no_result"): {"timeout"},
         ("oom", "no_result"): {"no_result", "timeout"},
         (None, "understood_infrastructure_failure"): {"errored"},
@@ -4967,6 +5172,8 @@ def _no_verdict_kind(attempt: dict, disposition: str) -> str:
         return "unspecified" if reason is None else reason["kind"]
     if verdict == "infrastructure_error":
         return "infrastructure_error"
+    if verdict == "matched" and disposition == "failed_match":
+        return "failed_match"
     if verdict in {"matched", "diverged"} and disposition == "no_result":
         return {
             "matched": "noncanonical_match",
@@ -5006,6 +5213,13 @@ def _pressure_evidence(row: dict) -> dict | None:
                 index=index,
                 expected_guest_exit=_expected_guest_exit(row),
             )
+            if disposition == "failed_match":
+                # Pressure evidence types every matched report as a canonical
+                # pass, so it cannot say that the runner failed this one.
+                raise MalformedRow(
+                    f"pressure inner attempt {index} is a matched attempt failed by its "
+                    "declared expected output, which pressure evidence cannot represent"
+                )
             raw = attempt.get("verification_report")
             if raw is not None:
                 # The existing reader above verifies the report bytes, hash,
@@ -5185,7 +5399,9 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
             "index": index,
             "kind": _no_verdict_kind(attempt, kind),
             "attempt_outcome": attempt.get("outcome"),
-            "disposition": kind,
+            # A failed match is the crash-error red, so its disposition is
+            # the errored outcome that result projects to.
+            "disposition": "errored" if kind == "failed_match" else kind,
             "error_kind": error_kind,
             "status": status,
             "signal": signal,
@@ -5195,6 +5411,10 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
         if retained["kind"] == "comparison_refused":
             report = json.loads(attempt["verification_report"])
             retained["detail"] = report["no_result_reason"]["detail"]
+        elif retained["kind"] == "failed_match":
+            # The runner's reason is the only record of why the attempt
+            # failed; _typed_comparison_attempt verified it above.
+            retained["detail"] = attempt["reason"]
         dispositions.append(retained)
     if not dispositions:
         if projected_outcome == "errored" and row.get("result") == "crash-error":
