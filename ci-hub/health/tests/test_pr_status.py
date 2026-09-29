@@ -1354,6 +1354,7 @@ def _status_report(verdict="VALIDATED", *, repo="rrnewton/hermit", sha="a" * 40)
             "qualifying_count": int(positive), "qualifying_receipts": [receipt] if positive else [],
             "newest_qualifying": receipt if positive else None,
             "failed_record_count": int(verdict == "FAILED"), "unresolved_failure_obligations": [],
+            "unverifiable_evidence": [],
             "ledger_freshness": None if positive else {"state": "current", "local_absence_is_authoritative": True}}
 
 
@@ -1432,6 +1433,10 @@ class BankedGreenCommitsTests(unittest.TestCase):
             if verdict == "NEEDS-RERUN":
                 report["unresolved_failure_obligations"] = [{"resolution": "unresolved"}]
             self.assertEqual(self.credit(report), frozenset())
+        report = _status_report()
+        report.update(verdict="NEEDS-RERUN", exit_code=4,
+                      unverifiable_evidence=[{"state": "foreign-host-artifact-absent"}])
+        self.assertEqual(self.credit(report), frozenset())
 
     def test_newest_allows_ties_and_does_not_depend_on_list_order(self):
         report = _status_report()
@@ -1456,6 +1461,8 @@ class BankedGreenCommitsTests(unittest.TestCase):
             lambda r: r.update(failed_record_count=1),
             lambda r: r.update(failed_record_count=False),
             lambda r: r.update(unresolved_failure_obligations=[{"resolution": "unresolved"}]),
+            lambda r: r.update(unverifiable_evidence=[{"state": "foreign-host-artifact-absent"}]),
+            lambda r: r.update(unverifiable_evidence={}),
             lambda r: r["qualifying_receipts"][0].update(repo="rrnewton/reverie"),
             lambda r: r["qualifying_receipts"][0].update(sha="d" * 40),
             lambda r: r["qualifying_receipts"][0].update(tree="bad"),

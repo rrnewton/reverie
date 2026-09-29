@@ -62,6 +62,14 @@ pub enum EvidenceOutcome {
     },
     ReaderFault {
         reason: String,
+        /// The row-named retained artifact path when, and only when, the
+        /// fault is that the path does not exist in this store (ENOENT while
+        /// opening it). Every other fault leaves this `None`. It is not
+        /// serialized: the batch wire form stays `reader-fault` with its
+        /// reason, and the obligation pass alone decides what absence of a
+        /// foreign host's artifact means.
+        #[serde(skip)]
+        absent_artifact: Option<String>,
     },
 }
 
@@ -89,6 +97,7 @@ fn refused(reason: impl Into<String>) -> EvidenceOutcome {
 fn reader_fault(reason: impl Into<String>) -> EvidenceOutcome {
     EvidenceOutcome::ReaderFault {
         reason: reason.into(),
+        absent_artifact: None,
     }
 }
 
@@ -210,6 +219,11 @@ fn retained_bytes(
             Some(libc::ELOOP) | Some(libc::ENOTDIR)
         ) {
             refused("retained artifact path contains a symlink or non-directory component")
+        } else if error.kind() == io::ErrorKind::NotFound {
+            EvidenceOutcome::ReaderFault {
+                reason: format!("cannot open retained artifact {relative}: {error}"),
+                absent_artifact: Some(relative.to_owned()),
+            }
         } else {
             reader_fault(format!("cannot open retained artifact {relative}: {error}"))
         }
@@ -1303,10 +1317,29 @@ mod tests {
         assert_eq!(original.len() as u64, reference.bytes);
         assert_eq!(format!("{:x}", Sha256::digest(&original)), reference.sha256);
         fs::remove_file(&path).unwrap();
-        assert!(matches!(
-            verify(&row, &store.0),
-            EvidenceOutcome::ReaderFault { .. }
-        ));
+        let missing = verify(&row, &store.0);
+        match &missing {
+            EvidenceOutcome::ReaderFault {
+                reason,
+                absent_artifact,
+            } => {
+                assert!(reason.contains("No such file or directory"), "{reason}");
+                // The typed absence names exactly the row's missing path.
+                assert_eq!(absent_artifact.as_deref(), Some(reference.path.as_str()));
+            }
+            other => panic!("a missing artifact is a reader fault: {other:?}"),
+        }
+        // The typed absence is not part of the batch wire form.
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap(),
+            json!({
+                "status": "reader-fault",
+                "reason": format!(
+                    "cannot open retained artifact {}: No such file or directory (os error 2)",
+                    reference.path
+                ),
+            })
+        );
         let mut corrupt = original.clone();
         corrupt.push(b' ');
         fs::write(&path, corrupt).unwrap();
@@ -1481,7 +1514,7 @@ mod tests {
         let (_, refusal) = verified(verify_with_capacity(&row, &store.0, total));
         assert!(refusal.is_none());
         match verify_with_capacity(&row, &store.0, total - 1) {
-            EvidenceOutcome::ReaderFault { reason } => {
+            EvidenceOutcome::ReaderFault { reason, .. } => {
                 assert!(reason.contains(&format!("aggregate artifact limit {} bytes", total - 1)));
                 assert!(reason.contains("test-results.jsonl"));
             }
@@ -1697,7 +1730,7 @@ mod tests {
         let mut budget = ArtifactBudget::new(8);
         assert!(matches!(
             read_artifact_bytes(file, before, None, "growing-artifact", &mut budget),
-            Err(EvidenceOutcome::ReaderFault { reason }) if reason.contains("limit 8 bytes")
+            Err(EvidenceOutcome::ReaderFault { reason, .. }) if reason.contains("limit 8 bytes")
         ));
         assert_eq!(budget.remaining, 8);
         let file = fs::File::open(&path).unwrap();
@@ -1720,7 +1753,7 @@ mod tests {
         let mut budget = ArtifactBudget::new(8);
         assert!(matches!(
             read_artifact_bytes(MustNotRead, 9, None, "oversize", &mut budget),
-            Err(EvidenceOutcome::ReaderFault { reason }) if reason.contains("limit 8 bytes")
+            Err(EvidenceOutcome::ReaderFault { reason, .. }) if reason.contains("limit 8 bytes")
         ));
         assert!(matches!(
             read_artifact_bytes(MustNotRead, 4, Some(5), "plan", &mut budget),

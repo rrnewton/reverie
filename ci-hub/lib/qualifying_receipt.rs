@@ -991,7 +991,7 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
             crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
                 BoundaryOutcome::Refused(format!("cell_results {reason}"))
             }
-            crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
+            crate::validation_evidence::EvidenceOutcome::ReaderFault { reason, .. } => {
                 eprintln!("validation evidence: {reason}");
                 BoundaryOutcome::Indeterminate("validation-evidence-artifacts-unreadable")
             }

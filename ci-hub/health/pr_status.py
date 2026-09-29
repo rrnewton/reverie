@@ -998,6 +998,12 @@ def _banked_status_credit(repo: str, sha: str, result: subprocess.CompletedProce
     newest, obligations = report.get("newest_qualifying"), report.get("unresolved_failure_obligations")
     if type(count) is not int or count < 0 or not isinstance(receipts, list) or count != len(receipts) or not isinstance(obligations, list):
         raise refused("incoherent receipt count or obligation list")
+    # Relevant rows whose evidence exists only on another host. A reader
+    # older than the field could not produce one (it aborted instead), so
+    # absence reads as none; a present value must be a list.
+    unverifiable = report.get("unverifiable_evidence", [])
+    if not isinstance(unverifiable, list):
+        raise refused("incoherent unverifiable evidence list")
     for receipt in receipts:
         if not isinstance(receipt, dict) or any(receipt.get(k) != v for k, v in (("repo", repo), ("sha", sha), ("commit", sha))):
             raise refused("qualifying receipt identity mismatch")
@@ -1021,7 +1027,7 @@ def _banked_status_credit(repo: str, sha: str, result: subprocess.CompletedProce
     if verdict != "VALIDATED":
         # A genuine failure or unresolved obligation can override positive rows.
         return False
-    if not count or obligations or type(report.get("failed_record_count")) is not int or report["failed_record_count"] != 0:
+    if not count or obligations or unverifiable or type(report.get("failed_record_count")) is not int or report["failed_record_count"] != 0:
         raise refused("validated verdict contradicts its receipt/failure evidence")
     # Disqualified, withheld, and no-result history may coexist with VALIDATED.
     return True

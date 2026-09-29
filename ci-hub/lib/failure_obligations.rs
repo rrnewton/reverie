@@ -559,15 +559,34 @@ impl ValidatedEvidence<'_> {
     }
 }
 
+/// Why one row's typed evidence could not be read. The obligation pass keeps
+/// this typed until it knows whether the row can matter to the target.
+#[derive(Debug)]
+enum EvidenceFault {
+    /// A row-named retained artifact does not exist in this host's store.
+    Absent { artifact: String, message: String },
+    /// Any other reader fault, refusal, or malformed row.
+    Fatal(String),
+}
+
+impl EvidenceFault {
+    fn into_message(self) -> String {
+        match self {
+            EvidenceFault::Absent { message, .. } | EvidenceFault::Fatal(message) => message,
+        }
+    }
+}
+
 fn validated_observation_evidence<'a>(
     row: &'a HistoryRow,
     schema_min: u32,
     schema_max: u32,
     artifact_root: Option<&Path>,
-) -> Result<Option<ValidatedEvidence<'a>>, String> {
+) -> Result<Option<ValidatedEvidence<'a>>, EvidenceFault> {
     if row.schema_version != Some(10) {
         return validated_evidence(row, schema_min, schema_max)
-            .map(|value| value.map(ValidatedEvidence::Legacy));
+            .map(|value| value.map(ValidatedEvidence::Legacy))
+            .map_err(EvidenceFault::Fatal);
     }
     if 10 < schema_min || 10 > schema_max {
         return Ok(None);
@@ -581,9 +600,18 @@ fn validated_observation_evidence<'a>(
         | crate::validation_evidence::EvidenceOutcome::LegacyUnbound { evidence, .. } => {
             Ok(Some(ValidatedEvidence::Schema10(evidence)))
         }
-        crate::validation_evidence::EvidenceOutcome::Refused { reason } => Err(reason),
-        crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
-            Err(format!("validation evidence reader fault: {reason}"))
+        crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
+            Err(EvidenceFault::Fatal(reason))
+        }
+        crate::validation_evidence::EvidenceOutcome::ReaderFault {
+            reason,
+            absent_artifact,
+        } => {
+            let message = format!("validation evidence reader fault: {reason}");
+            Err(match absent_artifact {
+                Some(artifact) => EvidenceFault::Absent { artifact, message },
+                None => EvidenceFault::Fatal(message),
+            })
         }
     }
 }
@@ -648,7 +676,7 @@ pub(crate) fn cell_results_for_website_with<'a>(
                 )
             }
             crate::validation_evidence::EvidenceOutcome::Refused { reason }
-            | crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
+            | crate::validation_evidence::EvidenceOutcome::ReaderFault { reason, .. } => {
                 CellResultsForWebsite::Unavailable(reason)
             }
         });
@@ -700,47 +728,99 @@ fn target_cutoff(rows: &[HistoryRow], target_sha: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The named state of a relevant row whose evidence this host cannot verify
+/// because its retained artifacts were produced on, and exist only on, another
+/// host.
+pub const FOREIGN_HOST_ARTIFACT_ABSENT: &str = "foreign-host-artifact-absent";
+
+/// A row the obligation pass would have to read for this target, produced on
+/// another host, whose retained artifact is absent from this host's store.
+///
+/// Its failures, if any, cannot be known here, so it is never credited and it
+/// blocks exactly as an unresolved obligation does. Copying the producing
+/// host's `ignored/validate/artifacts/<run_id>/` into this store makes the row
+/// verifiable (and a corrupt copy is then a refusal, not this state).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct UnverifiableEvidence {
+    pub state: &'static str,
+    pub commit: String,
+    pub finished_at: String,
+    pub run_id: Option<String>,
+    pub producing_host: String,
+    pub local_host: String,
+    pub missing_artifact: String,
+    pub reason: String,
+}
+
+/// The complete answer of one obligation pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObligationAssessment {
+    pub obligations: Vec<UnresolvedFailureObligation>,
+    /// Relevant rows this host cannot verify. Non-empty means the target is
+    /// not validated here, whatever `obligations` says.
+    pub unverifiable_evidence: Vec<UnverifiableEvidence>,
+}
+
+/// A row whose evidence could not be read, held until the pass knows whether
+/// any of its commits is the target or an ancestor of it.
+struct DeferredFault<'a> {
+    row: &'a HistoryRow,
+    commits: Vec<String>,
+    fault: EvidenceFault,
+}
+
+fn machine_name(host: &str) -> &str {
+    host.split('.').next().unwrap_or(host)
+}
+
+/// The producing host, when the row names one and it is provably not this
+/// host. An unnamed producer or an unknown local host is never "foreign".
+fn foreign_producer<'a>(row: &'a HistoryRow, local_host: Option<&str>) -> Option<&'a str> {
+    let producer = row
+        .host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())?;
+    let local = local_host.map(str::trim).filter(|host| !host.is_empty())?;
+    (machine_name(producer) != machine_name(local)).then_some(producer)
+}
+
 /// Evaluate every per-cell failure obligation visible no later than the target
 /// run.  A divergence on the target commit is never cleared by a lucky sibling
 /// pass on that same commit.  An older obligation is cleared only by a later
 /// commit carrying the calibrated number of clean canonical legs.
+///
+/// Only rows on the target or on an ancestor of it can open, clear, or
+/// describe an obligation, so only those rows' unreadable evidence can matter.
+/// A row that cannot be read is therefore judged after the scan: when none of
+/// its commits is the target or an ancestor it is dropped, whatever its
+/// artifacts look like. When it is relevant it aborts the query as before,
+/// with one named exception: a retained artifact that is absent from this
+/// store for a row produced on another host becomes a
+/// [`FOREIGN_HOST_ARTIFACT_ABSENT`] entry, which blocks the target and is
+/// never credited. `local_host` is this host's name; `None` disables the
+/// exception, so every relevant absence stays a reader fault.
+///
+/// `artifact_root` is the state root whose `ignored/validate/artifacts` store
+/// holds retained schema-10 artifacts; `None` resolves the current store.
+#[allow(clippy::too_many_arguments)]
 pub fn unresolved<F>(
     rows: &[HistoryRow],
     target_sha: &str,
     qualifying_target_rows: &[HistoryRow],
     cell_results_schema_min: u32,
     cell_results_schema_max: u32,
-    is_ancestor: F,
-) -> Result<Vec<UnresolvedFailureObligation>, String>
-where
-    F: FnMut(&str, &str) -> Result<bool, String>,
-{
-    unresolved_in_store(
-        rows,
-        target_sha,
-        qualifying_target_rows,
-        cell_results_schema_min,
-        cell_results_schema_max,
-        None,
-        is_ancestor,
-    )
-}
-
-fn unresolved_in_store<F>(
-    rows: &[HistoryRow],
-    target_sha: &str,
-    qualifying_target_rows: &[HistoryRow],
-    cell_results_schema_min: u32,
-    cell_results_schema_max: u32,
     artifact_root: Option<&Path>,
+    local_host: Option<&str>,
     mut is_ancestor: F,
-) -> Result<Vec<UnresolvedFailureObligation>, String>
+) -> Result<ObligationAssessment, String>
 where
     F: FnMut(&str, &str) -> Result<bool, String>,
 {
     let Some(cutoff) = target_cutoff(rows, target_sha) else {
-        return Ok(Vec::new());
+        return Ok(ObligationAssessment::default());
     };
+    let mut deferred: Vec<DeferredFault<'_>> = Vec::new();
     // Only obligations for cells selected by this candidate can block it. A
     // disabled/red cell remains visible in the scorecard but must not multiply
     // unrelated validation work. `None` means no supported evidence was
@@ -752,16 +832,24 @@ where
         .iter()
         .filter(|row| row.commit.as_deref() == Some(target_sha))
     {
-        if let Some(evidence) = validated_observation_evidence(
+        match validated_observation_evidence(
             row,
             cell_results_schema_min,
             cell_results_schema_max,
             artifact_root,
-        )? {
-            target_requires_bound |= evidence.requires_bound();
-            target_selected
-                .get_or_insert_default()
-                .extend(evidence.selected().iter().map(CellKey::from));
+        ) {
+            Ok(Some(evidence)) => {
+                target_requires_bound |= evidence.requires_bound();
+                target_selected
+                    .get_or_insert_default()
+                    .extend(evidence.selected().iter().map(CellKey::from));
+            }
+            Ok(None) => {}
+            Err(fault) => deferred.push(DeferredFault {
+                row,
+                commits: vec![target_sha.to_owned()],
+                fault,
+            }),
         }
     }
     let mut by_cell_commit: BTreeMap<(CellKey, String, String, String), CommitObservation> =
@@ -778,17 +866,34 @@ where
         let Some(commit) = row.commit.as_deref() else {
             continue;
         };
-        let Some(evidence) = validated_observation_evidence(
+        let evidence = match validated_observation_evidence(
             row,
             cell_results_schema_min,
             cell_results_schema_max,
             artifact_root,
-        )?
-        else {
-            continue;
+        ) {
+            Ok(Some(evidence)) => evidence,
+            Ok(None) => continue,
+            Err(fault) => {
+                deferred.push(DeferredFault {
+                    row,
+                    commits: vec![commit.to_owned()],
+                    fault,
+                });
+                continue;
+            }
         };
-        let Some(tree) = row.tree().map_err(str::to_owned)? else {
-            continue;
+        let tree = match row.tree() {
+            Ok(Some(tree)) => tree,
+            Ok(None) => continue,
+            Err(error) => {
+                deferred.push(DeferredFault {
+                    row,
+                    commits: vec![commit.to_owned()],
+                    fault: EvidenceFault::Fatal(error.to_owned()),
+                });
+                continue;
+            }
         };
         let Some(toolchain) = row.extra.get("toolchain").and_then(|value| value.as_str()) else {
             continue;
@@ -815,7 +920,14 @@ where
         };
         if let Some(existing) = runs.get(run_id) {
             if existing != &fingerprint {
-                return Err(format!("conflicting correction rows for run_id {run_id}"));
+                // Either commit being relevant makes the conflict fatal.
+                deferred.push(DeferredFault {
+                    row,
+                    commits: vec![existing.commit.clone(), commit.to_owned()],
+                    fault: EvidenceFault::Fatal(format!(
+                        "conflicting correction rows for run_id {run_id}"
+                    )),
+                });
             }
             continue;
         }
@@ -858,6 +970,48 @@ where
             }
         }
     }
+
+    // Relevance is the rule the per-cell pass below applies to every
+    // observation: only the target and its ancestors can latch, clear, or
+    // describe an obligation. The cells of an unreadable row are unknown, so
+    // the selected-cell narrowing cannot make one irrelevant. Ancestry is
+    // asked only for rows that failed to read.
+    let mut unverifiable_evidence = Vec::new();
+    for DeferredFault {
+        row,
+        commits,
+        fault,
+    } in deferred
+    {
+        let mut relevant = false;
+        for commit in &commits {
+            if commit == target_sha || is_ancestor(commit, target_sha)? {
+                relevant = true;
+                break;
+            }
+        }
+        if !relevant {
+            continue;
+        }
+        match (fault, foreign_producer(row, local_host)) {
+            (EvidenceFault::Absent { artifact, message }, Some(producer)) => {
+                unverifiable_evidence.push(UnverifiableEvidence {
+                    state: FOREIGN_HOST_ARTIFACT_ABSENT,
+                    commit: commits[0].clone(),
+                    finished_at: row.finished_at.clone().unwrap_or_default(),
+                    run_id: row.run_id.clone(),
+                    producing_host: producer.to_owned(),
+                    local_host: local_host.unwrap_or_default().trim().to_owned(),
+                    missing_artifact: artifact,
+                    reason: message,
+                });
+            }
+            (fault, _) => return Err(fault.into_message()),
+        }
+    }
+    // A qualifying target row is also scanned as history; report it once.
+    unverifiable_evidence.sort();
+    unverifiable_evidence.dedup();
 
     let mut by_cell: BTreeMap<CellKey, Vec<CommitObservation>> = BTreeMap::new();
     for ((cell, _, _, _), observation) in by_cell_commit {
@@ -940,7 +1094,10 @@ where
             target_unavailable_comparisons: target.map_or(0, |value| value.unavailable_comparisons),
         });
     }
-    Ok(unresolved)
+    Ok(ObligationAssessment {
+        obligations: unresolved,
+        unverifiable_evidence,
+    })
 }
 
 #[cfg(test)]
@@ -1114,10 +1271,16 @@ mod tests {
             &target_receipts,
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
+        .map(|assessment| {
+            assert!(assessment.unverifiable_evidence.is_empty());
+            assessment.obligations
+        })
     }
 
     #[test]
@@ -1417,6 +1580,8 @@ mod tests {
             &[full],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| Ok(ancestor == descendant),
         )
         .unwrap_err();
@@ -1508,11 +1673,14 @@ mod tests {
             &[untyped_target],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
-        .unwrap();
+        .unwrap()
+        .obligations;
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
     }
@@ -1537,11 +1705,14 @@ mod tests {
             &[empty],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
-        .unwrap();
+        .unwrap()
+        .obligations;
 
         assert!(obligations.is_empty());
     }
@@ -1721,11 +1892,14 @@ mod tests {
             &target_receipts,
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
-        .unwrap();
+        .unwrap()
+        .obligations;
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
     }
@@ -1751,11 +1925,14 @@ mod tests {
             &[full_target],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
-        .unwrap();
+        .unwrap()
+        .obligations;
         assert_eq!(obligations.len(), 1);
     }
 
@@ -1790,11 +1967,14 @@ mod tests {
             &[full_target],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
         .unwrap()
+        .obligations
         .is_empty());
     }
 
@@ -1812,13 +1992,16 @@ mod tests {
             &[target],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant
                     || (ancestor == OLD && (descendant == BAD || descendant == FIX))
                     || (ancestor == BAD && descendant == FIX))
             },
         )
-        .unwrap();
+        .unwrap()
+        .obligations;
         assert_eq!(obligations.len(), 1);
     }
 
@@ -1831,6 +2014,8 @@ mod tests {
             &[rows[1].clone()],
             CELL_RESULTS_SCHEMA_MIN,
             CELL_RESULTS_SCHEMA_MAX,
+            None,
+            None,
             |ancestor, descendant| {
                 if ancestor == BAD && descendant == FIX {
                     Err("missing commit object".into())
@@ -1857,17 +2042,22 @@ mod tests {
     }
 
     fn schema10_obligations(rows: &[HistoryRow], store: &Path) -> Vec<UnresolvedFailureObligation> {
-        unresolved_in_store(
+        unresolved(
             rows,
             FIX,
             &target_rows(rows, FIX),
             6,
             10,
             Some(store),
+            None,
             |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
             },
         )
+        .map(|assessment| {
+            assert!(assessment.unverifiable_evidence.is_empty());
+            assessment.obligations
+        })
         .unwrap()
     }
 
@@ -2013,13 +2203,14 @@ mod tests {
             .extra
             .insert("toolchain".into(), serde_json::json!("changed-toolchain"));
         let target = schema8_candidate_target(&failed, 2);
-        let error = unresolved_in_store(
+        let error = unresolved(
             &[failed, correction, target.clone()],
             FIX,
             &[target],
             6,
             10,
             Some(&store.0),
+            None,
             |_, _| Ok(true),
         )
         .unwrap_err();
@@ -2108,5 +2299,321 @@ mod tests {
         assert_eq!(obligations[0].baseline_legs, 2);
         assert_eq!(obligations[0].required_clean_legs, 10);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
+    }
+
+    // https://github.com/rrnewton/dev-hermit/issues/395: a row produced on
+    // another host names retained artifacts that exist only there.
+    const LOCAL_HOST: &str = "devbig014";
+    const FOREIGN_HOST: &str = "devbig030";
+
+    /// OLD -> BAD -> FIX is the target's history; OTHER is on no path to FIX.
+    fn history_ancestry(ancestor: &str, descendant: &str) -> Result<bool, String> {
+        Ok(ancestor == descendant
+            || (ancestor == BAD && descendant == FIX)
+            || (ancestor == OLD && (descendant == BAD || descendant == FIX)))
+    }
+
+    /// A schema-10 row whose artifacts are written to `store` under `host`.
+    fn hosted_schema10(
+        store: &Path,
+        name: &str,
+        run: &str,
+        commit: &str,
+        ordinal: u64,
+        host: Option<&str>,
+    ) -> HistoryRow {
+        use crate::validation_evidence::fixtures::Fixture;
+        let mut fixture = Fixture::new(name, run, commit, ordinal);
+        if let Some(host) = host {
+            fixture.row["host"] = serde_json::json!(host);
+        }
+        fixture.write(store)
+    }
+
+    /// The local store: exists, carries the retained prefix, and holds none
+    /// of the rows written to a producer store.
+    fn local_store() -> crate::validation_evidence::fixtures::Store {
+        let store = crate::validation_evidence::fixtures::Store::new();
+        std::fs::create_dir_all(store.0.join("ignored/validate/artifacts")).unwrap();
+        store
+    }
+
+    /// A readable target that finishes after every schema-10 fixture row.
+    fn late_schema6_target() -> HistoryRow {
+        let mut target = row(FIX, 900, true);
+        target.finished_at = Some("2026-09-16T00:59:00Z".into());
+        target
+    }
+
+    fn corrupt_constructed_plan(store: &Path, row: &HistoryRow) {
+        let reference = row.constructed_plan_artifact().unwrap().unwrap();
+        let path = store.join(&reference.path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.push(b' ');
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn plan_path(run: &str) -> String {
+        format!("ignored/validate/artifacts/{run}/constructed-plan.json")
+    }
+
+    fn absent_message(run: &str) -> String {
+        format!(
+            "validation evidence reader fault: cannot open retained artifact {}: No such file or directory (os error 2)",
+            plan_path(run)
+        )
+    }
+
+    fn assess_history(
+        rows: &[HistoryRow],
+        qualifying: &[HistoryRow],
+        store: &Path,
+        local_host: Option<&str>,
+    ) -> Result<ObligationAssessment, String> {
+        unresolved(
+            rows,
+            FIX,
+            qualifying,
+            6,
+            10,
+            Some(store),
+            local_host,
+            history_ancestry,
+        )
+    }
+
+    #[test]
+    fn unreadable_rows_off_the_target_history_never_abort_the_query() {
+        let producer = crate::validation_evidence::fixtures::Store::new();
+        let local = local_store();
+        let failing = "cross-diverged-then-matched";
+        let local_corrupt = hosted_schema10(
+            &local.0,
+            failing,
+            "local-corrupt",
+            OTHER,
+            4,
+            Some(LOCAL_HOST),
+        );
+        corrupt_constructed_plan(&local.0, &local_corrupt);
+        let mut malformed_tree = row(OTHER, 5, false);
+        malformed_tree
+            .extra
+            .insert("tree".into(), serde_json::json!("unknown"));
+        // One physical run recorded twice with different validate paths.
+        let quick = schema8_row(OTHER, 6, false, "quick");
+        let full = schema8_row(OTHER, 6, false, "full");
+        let target = hosted_schema10(&local.0, "matched", "target", FIX, 50, Some(LOCAL_HOST));
+        let rows = vec![
+            hosted_schema10(&producer.0, failing, "foreign-absent", OTHER, 1, Some(FOREIGN_HOST)),
+            hosted_schema10(&producer.0, failing, "local-absent", OTHER, 2, Some(LOCAL_HOST)),
+            hosted_schema10(&producer.0, failing, "hostless-absent", OTHER, 3, None),
+            local_corrupt,
+            malformed_tree,
+            quick,
+            full,
+            target.clone(),
+        ];
+        for local_host in [Some(LOCAL_HOST), None] {
+            let assessment = assess_history(&rows, &[target.clone()], &local.0, local_host)
+                .expect("rows off the target's history cannot abort its query");
+            assert_eq!(assessment, ObligationAssessment::default());
+        }
+        // Ancestry is asked only for rows that failed to read, and every
+        // unreadable row above is on OTHER.
+        let mut asked = BTreeSet::new();
+        unresolved(
+            &rows,
+            FIX,
+            &[target],
+            6,
+            10,
+            Some(&local.0),
+            Some(LOCAL_HOST),
+            |ancestor, descendant| {
+                asked.insert((ancestor.to_owned(), descendant.to_owned()));
+                history_ancestry(ancestor, descendant)
+            },
+        )
+        .unwrap();
+        assert_eq!(asked, BTreeSet::from([(OTHER.to_owned(), FIX.to_owned())]));
+    }
+
+    #[test]
+    fn relevant_foreign_absent_artifacts_are_named_and_block_the_target() {
+        let producer = crate::validation_evidence::fixtures::Store::new();
+        let local = local_store();
+        let foreign_failure = hosted_schema10(
+            &producer.0,
+            "cross-diverged-then-matched",
+            "foreign-failure",
+            BAD,
+            1,
+            Some(FOREIGN_HOST),
+        );
+        // A foreign row on the target itself is read twice: as a candidate
+        // row and as history. It is reported once.
+        let foreign_target = hosted_schema10(
+            &producer.0,
+            "matched",
+            "foreign-target",
+            FIX,
+            40,
+            Some("devbig030.facebook.com"),
+        );
+        let target = hosted_schema10(&local.0, "matched", "target", FIX, 50, Some(LOCAL_HOST));
+        let rows = vec![foreign_failure, foreign_target.clone(), target.clone()];
+        let assessment = assess_history(
+            &rows,
+            &[foreign_target, target],
+            &local.0,
+            Some(LOCAL_HOST),
+        )
+        .expect("a foreign absence is a named state, not a reader fault");
+        assert!(assessment.obligations.is_empty());
+        assert_eq!(
+            assessment.unverifiable_evidence,
+            vec![
+                UnverifiableEvidence {
+                    state: FOREIGN_HOST_ARTIFACT_ABSENT,
+                    commit: BAD.into(),
+                    finished_at: "2026-09-16T00:01:00Z".into(),
+                    run_id: Some("foreign-failure".into()),
+                    producing_host: FOREIGN_HOST.into(),
+                    local_host: LOCAL_HOST.into(),
+                    missing_artifact: plan_path("foreign-failure"),
+                    reason: absent_message("foreign-failure"),
+                },
+                UnverifiableEvidence {
+                    state: FOREIGN_HOST_ARTIFACT_ABSENT,
+                    commit: FIX.into(),
+                    finished_at: "2026-09-16T00:40:00Z".into(),
+                    run_id: Some("foreign-target".into()),
+                    producing_host: "devbig030.facebook.com".into(),
+                    local_host: LOCAL_HOST.into(),
+                    missing_artifact: plan_path("foreign-target"),
+                    reason: absent_message("foreign-target"),
+                },
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&assessment.unverifiable_evidence[0]).unwrap(),
+            serde_json::json!({
+                "state": "foreign-host-artifact-absent",
+                "commit": BAD,
+                "finished_at": "2026-09-16T00:01:00Z",
+                "run_id": "foreign-failure",
+                "producing_host": FOREIGN_HOST,
+                "local_host": LOCAL_HOST,
+                "missing_artifact": plan_path("foreign-failure"),
+                "reason": absent_message("foreign-failure"),
+            })
+        );
+    }
+
+    #[test]
+    fn relevant_unreadable_rows_that_are_not_foreign_absences_still_abort() {
+        let failing = "cross-diverged-then-matched";
+        let target = late_schema6_target();
+        // (producing host, local host, artifacts written locally then corrupted)
+        let absent_cases = [
+            (Some(LOCAL_HOST), Some(LOCAL_HOST)),
+            (None, Some(LOCAL_HOST)),
+            (Some("devbig014.facebook.com"), Some(LOCAL_HOST)),
+            (Some(FOREIGN_HOST), None),
+            (Some(FOREIGN_HOST), Some("  ")),
+            (Some(" "), Some(LOCAL_HOST)),
+        ];
+        for (index, (producing, local_host)) in absent_cases.into_iter().enumerate() {
+            let producer = crate::validation_evidence::fixtures::Store::new();
+            let local = local_store();
+            let run = format!("absent-{index}");
+            let rows = vec![
+                hosted_schema10(&producer.0, failing, &run, BAD, 1, producing),
+                target.clone(),
+            ];
+            let error = assess_history(&rows, &[target.clone()], &local.0, local_host)
+                .expect_err("only a foreign producer's absence is a named state");
+            assert_eq!(error, absent_message(&run), "case {index}");
+        }
+        for (index, producing) in [Some(FOREIGN_HOST), Some(LOCAL_HOST)].into_iter().enumerate() {
+            let local = local_store();
+            let run = format!("corrupt-{index}");
+            let corrupt = hosted_schema10(&local.0, failing, &run, BAD, 1, producing);
+            corrupt_constructed_plan(&local.0, &corrupt);
+            let rows = vec![corrupt, target.clone()];
+            let error = assess_history(&rows, &[target.clone()], &local.0, Some(LOCAL_HOST))
+                .expect_err("a present corrupt artifact is refused, whoever produced it");
+            assert_eq!(
+                error,
+                format!(
+                    "artifact {} length differs from declared constructed_plan bytes",
+                    plan_path(&run)
+                )
+            );
+        }
+        // No retained store at all is this host's fault, not the row's.
+        let bare = crate::validation_evidence::fixtures::Store::new();
+        let producer = crate::validation_evidence::fixtures::Store::new();
+        let rows = vec![
+            hosted_schema10(&producer.0, failing, "no-store", BAD, 1, Some(FOREIGN_HOST)),
+            target.clone(),
+        ];
+        let error = assess_history(&rows, &[target.clone()], &bare.0, Some(LOCAL_HOST))
+            .expect_err("a missing store is a reader fault");
+        assert_eq!(
+            error,
+            "validation evidence reader fault: cannot open retained artifact store: No such file or directory (os error 2)"
+        );
+    }
+
+    #[test]
+    fn relevance_of_an_unreadable_row_fails_closed_and_spans_both_conflicting_commits() {
+        let producer = crate::validation_evidence::fixtures::Store::new();
+        let local = local_store();
+        let target = late_schema6_target();
+        let rows = vec![
+            hosted_schema10(
+                &producer.0,
+                "cross-diverged-then-matched",
+                "foreign-failure",
+                BAD,
+                1,
+                Some(FOREIGN_HOST),
+            ),
+            target.clone(),
+        ];
+        let error = unresolved(
+            &rows,
+            FIX,
+            &[target.clone()],
+            6,
+            10,
+            Some(&local.0),
+            Some(LOCAL_HOST),
+            |ancestor, descendant| {
+                if ancestor == BAD {
+                    Err("missing commit object".into())
+                } else {
+                    history_ancestry(ancestor, descendant)
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "missing commit object");
+
+        // The first recording of a run is off the target's history; its
+        // conflicting correction is on it, which makes the conflict fatal.
+        let first = schema8_row(OTHER, 7, true, "full");
+        let mut correction = serde_json::to_value(schema8_row(BAD, 7, true, "full")).unwrap();
+        correction["run_id"] = first.run_id.clone().into();
+        correction["cell_results"]["run_id"] = first.run_id.clone().into();
+        let correction: HistoryRow = serde_json::from_value(correction).unwrap();
+        let rows = vec![first, correction, target.clone()];
+        let error = assess_history(&rows, &[target], &local.0, Some(LOCAL_HOST)).unwrap_err();
+        assert_eq!(
+            error,
+            format!("conflicting correction rows for run_id run-{OTHER}-7")
+        );
     }
 }

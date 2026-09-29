@@ -4229,6 +4229,9 @@ struct CanonicalReceiptAssessment {
     withheld_nonpass_records: usize,
     no_result_records: Vec<validate_status::RowNoResultReasons>,
     unresolved_failure_obligations: Vec<failure_obligations::UnresolvedFailureObligation>,
+    /// Relevant rows produced on another host whose retained artifacts are
+    /// absent here. They block exactly as an unresolved obligation does.
+    unverifiable_evidence: Vec<failure_obligations::UnverifiableEvidence>,
 }
 
 fn is_oid(value: &str) -> bool {
@@ -5691,6 +5694,19 @@ fn assess_canonical_receipts(
     sha: &str,
     repo: &str,
 ) -> Result<CanonicalReceiptAssessment, String> {
+    assess_canonical_receipts_as(root, rows, sha, repo, local_machine().as_deref())
+}
+
+/// [`assess_canonical_receipts`] as seen from the machine named `local_host`,
+/// which decides whether a row's absent retained artifact was produced on
+/// another host (see [`failure_obligations::unresolved`]).
+fn assess_canonical_receipts_as(
+    root: &Path,
+    rows: &[HistoryRow],
+    sha: &str,
+    repo: &str,
+    local_host: Option<&str>,
+) -> Result<CanonicalReceiptAssessment, String> {
     let repo = canonical_validation_repo(repo).ok_or_else(|| {
         format!(
             "canonical local receipt ledger supports only {CANONICAL_VALIDATE_REPO} and {CANONICAL_REVERIE_REPO}, not {repo}"
@@ -5745,7 +5761,13 @@ fn assess_canonical_receipts(
         "hermit"
     });
     let mut ancestry_cache: BTreeMap<(String, String), Result<bool, String>> = BTreeMap::new();
-    let unresolved_failure_obligations = failure_obligations::unresolved(
+    // The obligation pass verifies retained artifacts in the same state root
+    // this ledger was read from (the root `verify_current_store` resolves in
+    // production), so a caller-supplied root is the store that is judged.
+    let failure_obligations::ObligationAssessment {
+        obligations: unresolved_failure_obligations,
+        unverifiable_evidence,
+    } = failure_obligations::unresolved(
         &repo_rows,
         sha,
         &qualifying_target_rows,
@@ -5755,6 +5777,8 @@ fn assess_canonical_receipts(
         qualifying_receipt::active()
             .cell_results
             .supported_schema_max,
+        Some(root),
+        local_host,
         |ancestor, target| {
             if ancestor == target {
                 return Ok(true);
@@ -5762,21 +5786,7 @@ fn assess_canonical_receipts(
             if let Some(result) = ancestry_cache.get(&(ancestor.to_owned(), target.to_owned())) {
                 return result.clone();
             }
-            let result = match Command::new("git")
-                .arg("-C")
-                .arg(&product_checkout)
-                .args(["merge-base", "--is-ancestor", ancestor, target])
-                .status()
-            {
-                Ok(status) if status.success() => Ok(true),
-                Ok(status) if status.code() == Some(1) => Ok(false),
-                Ok(status) => Err(format!(
-                    "cannot establish commit ancestry {ancestor} -> {target}: git exited {status}"
-                )),
-                Err(error) => Err(format!(
-                    "cannot establish commit ancestry {ancestor} -> {target}: {error}"
-                )),
-            };
+            let result = commit_is_ancestor(&product_checkout, ancestor, target);
             ancestry_cache.insert((ancestor.to_owned(), target.to_owned()), result.clone());
             result
         },
@@ -5785,7 +5795,9 @@ fn assess_canonical_receipts(
     // over a lucky PASS. Withheld non-verdicts remain non-poisoning.
     let verdict = if saw_failed {
         validate_status::Verdict::FailedOnRecord
-    } else if !unresolved_failure_obligations.is_empty() {
+    } else if !unresolved_failure_obligations.is_empty() || !unverifiable_evidence.is_empty() {
+        // Evidence this host cannot read may hold a failure; it is never
+        // credited, so it blocks exactly as an unresolved obligation does.
         validate_status::Verdict::NeedsRerun
     } else if !qualifying.is_empty() {
         validate_status::Verdict::Validated
@@ -5810,7 +5822,85 @@ fn assess_canonical_receipts(
         withheld_nonpass_records: status_assessment.withheld_nonpass_records,
         no_result_records,
         unresolved_failure_obligations,
+        unverifiable_evidence,
     })
+}
+
+fn git_ancestry_command(checkout: &Path) -> Command {
+    let mut command = Command::new("git");
+    // A read-only verdict must never fetch: a promisor remote would otherwise
+    // be asked for every commit this clone lacks.
+    command
+        .arg("-C")
+        .arg(checkout)
+        .env("GIT_NO_LAZY_FETCH", "1");
+    command
+}
+
+/// Whether `ancestor` is `target` or an ancestor of it in `checkout`.
+///
+/// `merge-base --is-ancestor` cannot answer for a commit object this clone
+/// lacks. Such a commit is provably not an ancestor when the clone is not
+/// shallow and holds the target's complete commit history: walking that
+/// history would have to parse the absent commit. Any other failure to answer
+/// stays an error, so the caller fails closed.
+fn commit_is_ancestor(checkout: &Path, ancestor: &str, target: &str) -> Result<bool, String> {
+    let failure = |detail: String| {
+        Err(format!(
+            "cannot establish commit ancestry {ancestor} -> {target}: {detail}"
+        ))
+    };
+    let output = match git_ancestry_command(checkout)
+        .args(["merge-base", "--is-ancestor", ancestor, target])
+        .bounded_output()
+    {
+        Ok(output) => output,
+        Err(error) => return failure(error.to_string()),
+    };
+    match output.status.code() {
+        Some(0) => return Ok(true),
+        Some(1) => return Ok(false),
+        _ => {}
+    }
+    let merge_base_failure = format!(
+        "git exited {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    match absent_commit_is_not_ancestor(checkout, ancestor, target) {
+        Ok(true) => Ok(false),
+        Ok(false) => failure(merge_base_failure),
+        Err(detail) => failure(format!("{merge_base_failure}; {detail}")),
+    }
+}
+
+/// `Ok(true)` only when `ancestor` is a full object id absent from a
+/// non-shallow clone in which every commit reachable from `target` is present.
+fn absent_commit_is_not_ancestor(
+    checkout: &Path,
+    ancestor: &str,
+    target: &str,
+) -> Result<bool, String> {
+    if !is_oid(ancestor) || !is_oid(target) {
+        return Ok(false);
+    }
+    let run = |args: &[&str]| {
+        git_ancestry_command(checkout)
+            .args(args)
+            .bounded_output()
+            .map_err(|error| format!("git {}: {error}", args.join(" ")))
+    };
+    let shallow = run(&["rev-parse", "--is-shallow-repository"])?;
+    if !shallow.status.success() || String::from_utf8_lossy(&shallow.stdout).trim() != "false" {
+        return Ok(false);
+    }
+    // `cat-file -e` exits 1, silently, exactly when the object is missing;
+    // a present object means merge-base failed for some other reason.
+    if run(&["cat-file", "-e", ancestor])?.status.code() != Some(1) {
+        return Ok(false);
+    }
+    let history = run(&["rev-list", "--quiet", target])?;
+    Ok(history.status.success())
 }
 
 fn newest_canonical_receipt(rows: &[QualifyingReceipt]) -> Option<&QualifyingReceipt> {
@@ -7245,6 +7335,7 @@ fn exact_validate_status_json_report(
         "failed_record_count": assessment.failed_records,
         "withheld_nonpass_record_count": assessment.withheld_nonpass_records,
         "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
+        "unverifiable_evidence": assessment.unverifiable_evidence,
         "newest_qualifying": newest.map(describe_receipt),
         "qualifying_receipts": qualifying_receipts,
         "no_result_records": assessment.no_result_records,
@@ -10647,12 +10738,15 @@ fn run_validate_status(
                 );
             }
             validate_status::Verdict::NeedsRerun => {
-                if assessment.unresolved_failure_obligations.is_empty() {
+                if assessment.unresolved_failure_obligations.is_empty()
+                    && assessment.unverifiable_evidence.is_empty()
+                {
                     println!(
                         "# validate NEEDS-RERUN {} -- red evidence lacks complete solo execution conditions or is known-flaky/contended; rerun solo at -j 4",
                         assessment.sha,
                     );
-                } else {
+                }
+                if !assessment.unresolved_failure_obligations.is_empty() {
                     println!(
                         "# validate NEEDS-RERUN {} -- {} durable per-cell failure obligation(s) remain unresolved",
                         assessment.sha,
@@ -10677,6 +10771,28 @@ fn run_validate_status(
                             obligation.baseline_failures,
                             obligation.baseline_legs,
                             obligation.failing_commit,
+                        );
+                    }
+                }
+                if !assessment.unverifiable_evidence.is_empty() {
+                    println!(
+                        "# validate NEEDS-RERUN {} -- {} relevant ledger row(s) name validation evidence that exists only on another host; the failures they record cannot be read here, so they neither pass nor clear anything",
+                        assessment.sha,
+                        assessment.unverifiable_evidence.len(),
+                    );
+                    for entry in &assessment.unverifiable_evidence {
+                        println!(
+                            "#   {} run {} on {} at {} ({}): {} is absent on {}; copy ignored/validate/artifacts/{}/ from {} into this checkout's ignored/validate/artifacts/, or query from {}",
+                            entry.state,
+                            entry.run_id.as_deref().unwrap_or("<none>"),
+                            entry.commit,
+                            entry.finished_at,
+                            entry.producing_host,
+                            entry.missing_artifact,
+                            if entry.local_host.is_empty() { "this host" } else { entry.local_host.as_str() },
+                            entry.run_id.as_deref().unwrap_or("<run_id>"),
+                            entry.producing_host,
+                            entry.producing_host,
                         );
                     }
                 }
@@ -11321,6 +11437,31 @@ fn bind_verified_receipt_to_pr(
     Ok(())
 }
 
+/// A short clause naming relevant rows whose evidence exists only on another
+/// host, for the one-line outputs that report a non-VALIDATED verdict. Empty
+/// when there are none. `validate-status` prints each entry and its remedy.
+fn unverifiable_evidence_note(entries: &[failure_obligations::UnverifiableEvidence]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let runs = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} from {}",
+                entry.run_id.as_deref().unwrap_or("<none>"),
+                entry.producing_host
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        " ({} relevant row(s) {}: {runs}; see validate-status)",
+        entries.len(),
+        failure_obligations::FOREIGN_HOST_ARTIFACT_ABSENT,
+    )
+}
+
 fn run_publish_commit_status(
     tool_root: &Path,
     state_root: &Path,
@@ -11343,14 +11484,16 @@ fn run_publish_commit_status(
             "sha": args.sha,
             "verdict": assessment.verdict.as_str(),
             "reason": "no qualifying local validation receipt; no commit status was written",
+            "unverifiable_evidence": assessment.unverifiable_evidence,
         });
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else {
             println!(
-                "{} {}: no qualifying local receipt; no commit status written",
+                "{} {}: no qualifying local receipt; no commit status written{}",
                 report["repository"].as_str().unwrap(),
-                report["sha"].as_str().unwrap()
+                report["sha"].as_str().unwrap(),
+                unverifiable_evidence_note(&assessment.unverifiable_evidence),
             );
         }
         return Ok(0);
@@ -11488,30 +11631,34 @@ fn run_apply_local_label(
                     }
                 };
                 println!(
-                    "PR #{pr}: {action} stale {LOCALLY_VALIDATED_LABEL} -- head {} is {}",
+                    "PR #{pr}: {action} stale {LOCALLY_VALIDATED_LABEL} -- head {} is {}{}",
                     &head[..12.min(head.len())],
-                    assessment.verdict.as_str()
+                    assessment.verdict.as_str(),
+                    unverifiable_evidence_note(&assessment.unverifiable_evidence),
                 );
                 actions.push(serde_json::json!({
                     "pr": pr,
                     "head": head,
                     "action": action,
                     "verdict": assessment.verdict.as_str(),
+                    "unverifiable_evidence": assessment.unverifiable_evidence,
                 }));
                 removed += 1;
                 continue;
             }
             LocalLabelReconcileAction::LeaveAbsent => {
                 println!(
-                    "PR #{pr}: skip -- head {} is {} and label is absent",
+                    "PR #{pr}: skip -- head {} is {} and label is absent{}",
                     &head[..12.min(head.len())],
-                    assessment.verdict.as_str()
+                    assessment.verdict.as_str(),
+                    unverifiable_evidence_note(&assessment.unverifiable_evidence),
                 );
                 actions.push(serde_json::json!({
                     "pr": pr,
                     "head": head,
                     "action": "skip",
                     "verdict": assessment.verdict.as_str(),
+                    "unverifiable_evidence": assessment.unverifiable_evidence,
                 }));
                 continue;
             }
@@ -18441,6 +18588,146 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// https://github.com/rrnewton/dev-hermit/issues/395: a schema-10 ledger
+    /// row produced on another host names retained artifacts that exist only
+    /// there. It must not abort a query for a commit it cannot affect, and it
+    /// must block, by name, a commit whose history it is on.
+    #[test]
+    fn foreign_host_schema10_row_blocks_only_its_own_history() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        const LOCAL: &str = "fixture-local-host";
+        const PRODUCER: &str = "fixture-producer-host";
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "ci-hub-foreign-artifacts-{}-{nonce}",
+            std::process::id()
+        ));
+        let checkout = root.join("hermit");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(root.join("ignored/validate/artifacts")).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "--initial-branch=main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "target"]);
+        let target = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "-b", "side", &base]);
+        git(&["commit", "-q", "--allow-empty", "-m", "sibling"]);
+        let sibling = git(&["rev-parse", "HEAD"]);
+        // A commit object this clone has never held.
+        let unknown = "ab".repeat(20);
+
+        let mut receipt = schema4_receipt_value();
+        receipt["commit"] = serde_json::json!(target);
+        let receipt = history_row(receipt);
+        // The producer's store is not this root's store, so every artifact
+        // the foreign row names is absent here.
+        let producer_store = Store::new();
+        let schema10_row = |commit: &str, host: &str| {
+            let mut fixture = Fixture::new("cross-diverged-then-matched", "foreign-run", commit, 0);
+            fixture.row["host"] = serde_json::json!(host);
+            // Before the receipt, so the obligation pass reads it.
+            fixture.row["finished_at"] = serde_json::json!("2026-08-01T12:00:30Z");
+            fixture.write(&producer_store.0)
+        };
+        let assess = |row: HistoryRow| {
+            assess_canonical_receipts_as(
+                &root,
+                &[row, receipt.clone()],
+                &target,
+                CANONICAL_VALIDATE_REPO,
+                Some(LOCAL),
+            )
+        };
+        let report = |assessment: &CanonicalReceiptAssessment| {
+            exact_validate_status_json_report(
+                CANONICAL_VALIDATE_REPO,
+                assessment,
+                "no-match",
+                None,
+                None,
+                assessment.verdict.as_str(),
+                serde_json::Value::Null,
+                &[],
+                Path::new("ledger"),
+            )
+        };
+
+        // UNRELATED: a sibling, and a commit this clone lacks entirely.
+        for unrelated in [sibling.as_str(), unknown.as_str()] {
+            let assessment = assess(schema10_row(unrelated, PRODUCER))
+                .expect("a row off the target's history cannot abort its query");
+            assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
+            let json = report(&assessment);
+            assert_eq!(json["verdict"], "VALIDATED");
+            assert_eq!(json["exit_code"], 0);
+            assert_eq!(json["unverifiable_evidence"], serde_json::json!([]));
+            assert_eq!(unverifiable_evidence_note(&assessment.unverifiable_evidence), "");
+        }
+
+        // RELATED: the target's parent. Named, blocking, never credited.
+        let assessment = assess(schema10_row(&base, PRODUCER))
+            .expect("a foreign absence is a named state, not a reader fault");
+        assert_eq!(assessment.verdict, validate_status::Verdict::NeedsRerun);
+        assert_eq!(assessment.qualifying.len(), 1);
+        assert!(assessment.unresolved_failure_obligations.is_empty());
+        let json = report(&assessment);
+        assert_eq!(json["verdict"], "NEEDS-RERUN");
+        assert_eq!(json["exit_code"], 4);
+        let plan = "ignored/validate/artifacts/foreign-run/constructed-plan.json";
+        assert_eq!(
+            json["unverifiable_evidence"],
+            serde_json::json!([{
+                "state": "foreign-host-artifact-absent",
+                "commit": base,
+                "finished_at": "2026-08-01T12:00:30Z",
+                "run_id": "foreign-run",
+                "producing_host": PRODUCER,
+                "local_host": LOCAL,
+                "missing_artifact": plan,
+                "reason": format!(
+                    "validation evidence reader fault: cannot open retained artifact {plan}: No such file or directory (os error 2)"
+                ),
+            }])
+        );
+        assert_eq!(
+            unverifiable_evidence_note(&assessment.unverifiable_evidence),
+            " (1 relevant row(s) foreign-host-artifact-absent: foreign-run from fixture-producer-host; see validate-status)"
+        );
+
+        // The same absence on a row this host produced is a reader fault.
+        let error = assess(schema10_row(&base, LOCAL)).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "validation evidence reader fault: cannot open retained artifact {plan}: No such file or directory (os error 2)"
+            )
+        );
+
+        drop(producer_store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
