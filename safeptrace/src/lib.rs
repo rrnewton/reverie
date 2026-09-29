@@ -45,6 +45,8 @@ pub use crate::notifier::StopSiginfo;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::StoppedObservation;
 #[cfg(feature = "notifier")]
+pub use crate::notifier::SupersededStopRefusal;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
 pub use crate::regs::*;
 use crate::waitid::IdType;
@@ -709,6 +711,26 @@ impl Stopped {
         #[cfg(feature = "notifier")]
         if let Some(epoch) = self.2.0 {
             self.1.event().retire_statuses_before_exit_stop(epoch);
+        }
+    }
+
+    /// On the capability for a published exit stop, refuses the stop when a
+    /// fork, vfork or clone stop was queued before it.
+    ///
+    /// Such a stop names a live child only through its event message. The
+    /// tracee left it for the exit stop, whose message (the exit status) has
+    /// replaced the child's PID: decoding it now would read the exit status
+    /// as a PID, and once this exit stop is resumed the read fails with
+    /// ESRCH and the child is never captured. The refusal names the queued
+    /// status instead. This makes no ptrace request and changes no queue; a
+    /// prefix holding such a stop is also never retired (see
+    /// [`Stopped::retire_statuses_before_exit_stop`]). Always succeeds on any
+    /// other capability.
+    #[cfg(feature = "notifier")]
+    pub fn superseded_new_child(&self) -> Result<(), SupersededStopRefusal> {
+        match self.2.0 {
+            Some(epoch) => self.1.event().superseded_new_child(epoch),
+            None => Ok(()),
         }
     }
 
