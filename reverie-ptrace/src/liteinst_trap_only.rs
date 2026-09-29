@@ -47,7 +47,8 @@
 //!   runs, the sites it can reach are restored;
 //! - before any `process_madvise` runs, every site of the caller's table is
 //!   restored: the tracer reads neither its `iovec` array nor which process
-//!   its pidfd names;
+//!   its pidfd names. No site is patched at a `process_madvise` stop (nor at
+//!   a mapping change's);
 //! - before the guest installs a seccomp filter or syscall user dispatch,
 //!   every site is restored and the table and all its descendants (fork,
 //!   clone and exec) are disabled.
@@ -72,7 +73,9 @@
 //!   site that the write leaves alone keeps the patch (`0x80` where plain
 //!   ptrace has `0x05`, after a write over the first byte only) until the
 //!   next restore, and that restore takes a byte the guest wrote with the
-//!   patch's own value back to the original;
+//!   patch's own value back to the original; and a guest that writes its own
+//!   `int 0x80` (`cd 80`) over a live site's address has it routed as that
+//!   site's x86_64 syscall, where plain ptrace kills the process with SIGSYS;
 //! - a seccomp filter or syscall user dispatch installed before the tracee
 //!   starts (inherited from the launcher), which never reaches the lineage
 //!   check;
@@ -83,10 +86,13 @@
 //!   `MADV_COLLAPSE` (`process_madvise_remote_valid` in `mm/madvise.c`), and
 //!   each keeps a page's contents, so no difference from plain ptrace is
 //!   known; a kernel that accepted more advice would open one. A target that
-//!   shares the caller's address space (the parent a vfork child runs for,
-//!   or a process created with `CLONE_VM`) accepts any advice, but it uses
-//!   the caller's table, which the restore covers. No test names another
-//!   process;
+//!   shares the caller's address space (the caller itself, the parent a vfork
+//!   child runs for, or a process created with `CLONE_VM`) accepts any
+//!   advice, but it uses the caller's table: the restore puts back every
+//!   site of it, and the calling site is not patched at that stop even when
+//!   this is its first call, so no site holds the patch when the call runs
+//!   (`trap_only_p2_t6c_process_madvise_first_call_leaves_its_site_unpatched`).
+//!   No test names another process;
 //! - syscalls a Tool injects bypass the lifecycle: a Tool that substitutes a
 //!   clone reaches the new-child stop with no recorded flags, which restores
 //!   and disables (the undecided path); one that substitutes a mapping
