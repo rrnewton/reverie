@@ -7113,6 +7113,42 @@ fn random_device_read(
     Ok(copied as i64)
 }
 
+/// Lend the existing private-snapshot descriptor to the terminal reader. Its
+/// inner owner returns the File only after physical retirement. Restore that
+/// exact File on success, error, or unwind without changing entry metadata or
+/// publishing a stale entry back into the authoritative shared file table.
+struct ReadEndpoint<'a> {
+    files: &'a mut std::collections::BTreeMap<i32, std::fs::File>,
+    fd: i32,
+    endpoint: Option<std::fs::File>,
+}
+
+impl<'a> ReadEndpoint<'a> {
+    fn take(files: &'a mut std::collections::BTreeMap<i32, std::fs::File>, fd: i32) -> Self {
+        let endpoint = Some(
+            files
+                .remove(&fd)
+                .expect("prechecked read descriptor disappeared"),
+        );
+        Self {
+            files,
+            fd,
+            endpoint,
+        }
+    }
+}
+
+impl Drop for ReadEndpoint<'_> {
+    fn drop(&mut self) {
+        if let Some(endpoint) = self.endpoint.take() {
+            // The exclusive map borrow prevents a competing local insertion.
+            self.files.insert(self.fd, endpoint);
+        }
+        // None means the registry still owns the actual File because physical
+        // retirement was not proven. Never duplicate, close, or replace it.
+    }
+}
+
 fn read(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
@@ -7172,6 +7208,21 @@ fn read(
     {
         // Only actual host endpoints decide zero-count error ordering here.
         // Synthetic descriptions retain their existing dispatch and ownership.
+        if let Some((context, identity)) = terminal_read {
+            let mut endpoint = ReadEndpoint::take(&mut state.files, fd);
+            let returned = context.read(
+                &mut endpoint.endpoint,
+                identity,
+                *request,
+                args[1] as usize,
+                0,
+            )?;
+            return Ok(if returned.count < 0 {
+                io_error(std::io::Error::from_raw_os_error(returned.errno))
+            } else {
+                returned.count as i64
+            });
+        }
         return Ok(host_read_zero(file.as_raw_fd(), args[1]));
     }
     if let Err(error) = ensure_read_capable(file) {
@@ -18570,6 +18621,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("executor/read_zero_cancel_tests.rs");
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");
     use std::collections::BTreeMap;
