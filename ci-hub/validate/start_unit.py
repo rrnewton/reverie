@@ -9613,7 +9613,28 @@ def record_claims_refused_admission(record: Mapping[str, Any]) -> bool:
 ADMISSION_REFUSAL_LOG_TAIL_BYTES = 256 * 1024
 ADMISSION_REFUSAL_LINE_MAX_CHARS = 600
 VALIDATE_LOCK_EVICTED_PREFIX = "validate-lock: EVICTED "
+VALIDATE_LOCK_TIMEOUT_PREFIX = "validate-lock: TIMEOUT after "
 VALIDATE_LOCK_REFUSAL_PREFIXES = ("REFUSE: ", "REFUSED: ")
+# validate-lock prints each fail-closed freshness or admission-object failure
+# (a `StaleBase` error that names no property of the target) as one line that
+# starts with one of these, then exits with the stale-base code. A mid-wait
+# "keeping queue position" line starts with "validate-lock: mid-wait" and is
+# not a refusal, so it matches none of them.
+VALIDATE_LOCK_UNRESOLVED_PREFIXES = (
+    "validate-lock: validation source checkout is UNRESOLVED",
+    "validate-lock: validation admission check could not run",
+    "validate-lock: validation admission check for ",
+    "validate-lock: shared Git directory is UNRESOLVED",
+    "validate-lock: current origin/main fetch could not run",
+    "validate-lock: current origin/main fetch failed",
+    "validate-lock: current-main ancestry check could not run",
+    "validate-lock: current-main ancestry for ",
+    "validate-lock: current-main freshness for ",
+    "validate-lock: admission object ",
+    "validate-lock: could not set frozen origin/main",
+    "validate-lock: frozen origin/main readback",
+)
+VALIDATE_LOCK_LINE_PREFIX = "validate-lock: "
 STALE_BASE_REFUSAL_MARKER = "does not contain freshly fetched origin/main"
 TYPED_REFUSAL_STATE = (
     "COULD-NOT-DETERMINE -- not a pass and NOT a failure; admission was "
@@ -9639,11 +9660,12 @@ class AdmissionRefusalExplanation:
 def admission_refusal_explanation(
     reason: run_registry.AdmissionRefusalReason | None, log: Path | None
 ) -> AdmissionRefusalExplanation:
-    """Classify a typed refusal from the last reason validate-lock logged.
+    """Classify a typed refusal from the last refusal line validate-lock logged.
 
-    An EVICTED line wins over the REFUSE line printed just before it: the
-    eviction is the decision, and the stale-base line is its evidence. The log
-    is diagnostic text, never admission authority; the typed refusal was
+    The LAST recognized line decides. An eviction prints the stale-base REFUSE
+    line as its evidence and then the EVICTED line, so the eviction wins; a
+    refusal printed after an earlier diagnostic wins over that diagnostic. The
+    log is diagnostic text, never admission authority; the typed refusal was
     already validated from the durable handle before this runs.
     """
 
@@ -9654,6 +9676,15 @@ def admission_refusal_explanation(
     rebase_remedy = (
         "rebase onto the current origin/main and queue the new head again; do "
         "not treat this attempt as either pass or failure"
+    )
+    unresolved_remedy = (
+        "repair the fetch, network or repository condition the line names, then "
+        "queue the same head again; do not treat this attempt as either pass or "
+        "failure"
+    )
+    timeout_remedy = (
+        "queue the same head again when the validation box is free, or with a "
+        "longer wait; do not treat this attempt as either pass or failure"
     )
     lines: list[str] = []
     unreadable: str | None = None
@@ -9674,42 +9705,57 @@ def admission_refusal_explanation(
             return line
         return line[: ADMISSION_REFUSAL_LINE_MAX_CHARS - 3] + "..."
 
-    evicted = next(
-        (line for line in reversed(lines) if line.startswith(VALIDATE_LOCK_EVICTED_PREFIX)),
-        None,
-    )
-    if evicted is not None:
-        return AdmissionRefusalExplanation(
-            "EVICTED",
-            "origin/main advanced while it waited in the validate-lock queue, so "
-            "it could never have been admitted; the validation payload never ran "
-            f"and no verdict exists (run log: {clipped(evicted)})",
-            rebase_remedy,
+    for line in reversed(lines):
+        if line.startswith(VALIDATE_LOCK_EVICTED_PREFIX):
+            return AdmissionRefusalExplanation(
+                "EVICTED",
+                "origin/main advanced while it waited in the validate-lock queue, "
+                "so it could never have been admitted; the validation payload "
+                f"never ran and no verdict exists (run log: {clipped(line)})",
+                rebase_remedy,
+            )
+        if line.startswith(VALIDATE_LOCK_TIMEOUT_PREFIX):
+            return AdmissionRefusalExplanation(
+                "TIMEOUT",
+                "validate-lock gave up waiting for its turn; the validation "
+                f"payload never ran and no verdict exists (run log: {clipped(line)})",
+                timeout_remedy,
+            )
+        if line.startswith(VALIDATE_LOCK_UNRESOLVED_PREFIXES):
+            return AdmissionRefusalExplanation(
+                "UNRESOLVED",
+                "validate-lock could not establish that the target is current, so "
+                "it refused fail-closed; the validation payload never ran and no "
+                f"verdict exists (run log: {clipped(line)})",
+                unresolved_remedy,
+            )
+        if line.startswith(VALIDATE_LOCK_REFUSAL_PREFIXES):
+            if STALE_BASE_REFUSAL_MARKER in line:
+                return AdmissionRefusalExplanation(
+                    "STALE-BASE",
+                    "the target does not contain freshly fetched origin/main; the "
+                    "validation payload never ran and no verdict exists "
+                    f"(run log: {clipped(line)})",
+                    rebase_remedy,
+                )
+            return AdmissionRefusalExplanation(
+                "REFUSED",
+                "the validation payload never ran and no verdict exists "
+                f"(run log: {clipped(line)})",
+                generic_remedy,
+            )
+    if unreadable is not None:
+        missing = unreadable
+    else:
+        last = next(
+            (line for line in reversed(lines) if line.startswith(VALIDATE_LOCK_LINE_PREFIX)),
+            None,
         )
-    refused = next(
-        (
-            line
-            for line in reversed(lines)
-            if line.startswith(VALIDATE_LOCK_REFUSAL_PREFIXES)
-        ),
-        None,
-    )
-    if refused is not None and STALE_BASE_REFUSAL_MARKER in refused:
-        return AdmissionRefusalExplanation(
-            "STALE-BASE",
-            "the target does not contain freshly fetched origin/main; the "
-            "validation payload never ran and no verdict exists "
-            f"(run log: {clipped(refused)})",
-            rebase_remedy,
+        missing = f"validate-lock logged no recognized refusal line in {log}; " + (
+            f"its last validate-lock line was: {clipped(last)}"
+            if last is not None
+            else "the log holds no validate-lock line at all"
         )
-    if refused is not None:
-        return AdmissionRefusalExplanation(
-            "REFUSED",
-            "the validation payload never ran and no verdict exists "
-            f"(run log: {clipped(refused)})",
-            generic_remedy,
-        )
-    missing = unreadable or f"validate-lock logged no refusal line in {log}"
     return AdmissionRefusalExplanation(
         "REFUSED",
         f"the validation payload never ran and no verdict exists ({missing})",
@@ -10049,16 +10095,10 @@ def legacy_refused_admission_ledger_noop(publication: object) -> bool:
     )
 
 
-def refused_admission_ledger_retirement_ready(
-    root: Path,
-    record_path: Path,
-    record: Mapping[str, Any],
-    *,
-    record_lock_held: bool = False,
-    record_parent_identity: tuple[int, ...] | None = None,
-) -> bool:
-    publication = record.get("ledger_mirror")
-    marker = (
+def admission_refusal_ledger_marker(publication: object) -> bool:
+    """Recognize the exact no-payload disposition `finalize_ledger_mirror` writes."""
+
+    return (
         isinstance(publication, dict)
         and set(publication)
         == {"state", "recorded_at", "repository", "detail"}
@@ -10068,7 +10108,26 @@ def refused_admission_ledger_retirement_ready(
         and isinstance(publication.get("recorded_at"), str)
         and bool(publication["recorded_at"].strip())
     )
-    if not marker and not legacy_refused_admission_ledger_noop(publication):
+
+
+def admission_refusal_ledger_disposition_recorded(publication: object) -> bool:
+    """A refusal's `ledger_mirror` proves that no ledger row can exist."""
+
+    return admission_refusal_ledger_marker(
+        publication
+    ) or legacy_refused_admission_ledger_noop(publication)
+
+
+def refused_admission_ledger_retirement_ready(
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    record_lock_held: bool = False,
+    record_parent_identity: tuple[int, ...] | None = None,
+) -> bool:
+    publication = record.get("ledger_mirror")
+    if not admission_refusal_ledger_disposition_recorded(publication):
         return False
     if record_lock_held:
         return _admission_refusal_is_authoritative_locked(
@@ -10176,6 +10235,234 @@ def cell_ledger_retirement_ready(
         isinstance(durable_publication, dict)
         and durable_publication == publication
         and pre_dag_no_result_is_authoritative(root, record_path, durable)
+    )
+
+
+# At most this many paths are quoted when a verdict names checkout files.
+REFUSAL_EVIDENCE_PATHS_SHOWN = 5
+
+
+def quoted_paths(paths: Sequence[str]) -> str:
+    shown = ", ".join(paths[:REFUSAL_EVIDENCE_PATHS_SHOWN])
+    hidden = len(paths) - REFUSAL_EVIDENCE_PATHS_SHOWN
+    return shown + (f", and {hidden} more" if hidden > 0 else "")
+
+
+def checkout_jsonl_files(checkout: Path) -> list[str]:
+    """Every ``*.jsonl`` the no-payload receipt check treats as evidence."""
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    found: list[str] = []
+    for current, dirs, files in os.walk(
+        checkout, onerror=raise_walk_error, followlinks=False
+    ):
+        dirs[:] = [name for name in dirs if name not in RECEIPT_SCAN_PRUNE]
+        found.extend(
+            str(Path(current, name).relative_to(checkout))
+            for name in files
+            if name.endswith(".jsonl")
+        )
+    return sorted(found)
+
+
+@dataclass(frozen=True)
+class RefusalNoPayloadDiagnosis:
+    """Why one typed refusal's no-payload proof holds, is withheld, or fails.
+
+    ``contradiction`` names evidence that the refusal is malformed, is
+    contradicted by payload evidence, or is not the durable canonical handle.
+    Storage is then retained and no removal is suggested.
+
+    ``blocked`` names the conservative conditions that withhold cleanup from an
+    otherwise sound refusal: a missing no-payload ledger disposition, or
+    checkout ``*.jsonl`` files, which the whole-tree check treats as evidence
+    (https://github.com/rrnewton/dev-hermit/issues/415).
+
+    The receipt fields repeat the classification that same-launch cleanup runs
+    before its own ``wrkslots remove``: only a ``*.jsonl`` that Git does not
+    track can be output of this run.
+    """
+
+    contradiction: str | None
+    blocked: tuple[str, ...] = ()
+    checkout: Path | None = None
+    untracked_jsonl: tuple[str, ...] = ()
+    tracked_jsonl: tuple[str, ...] = ()
+    scan_error: str | None = None
+
+    @property
+    def removal_safe(self) -> bool:
+        """Removing the checkout by hand would destroy no result-shaped file."""
+
+        return (
+            self.contradiction is None
+            and self.scan_error is None
+            and not self.untracked_jsonl
+        )
+
+    def retained_checkout_remedy(self, checkout: Path, removal: str | None) -> str:
+        """What to do with a retained checkout, from the evidence checked here."""
+
+        if self.contradiction is not None:
+            return (
+                f"The retained checkout {checkout} belongs to a refusal whose "
+                f"no-payload proof failed ({self.contradiction}); inspect it "
+                "before removing it"
+            )
+        if self.untracked_jsonl:
+            return (
+                f"The retained checkout {checkout} holds "
+                f"{len(self.untracked_jsonl)} *.jsonl file(s) that Git does not "
+                f"track and that may be run output: {quoted_paths(self.untracked_jsonl)}; "
+                "inspect them before removing the checkout"
+            )
+        if self.scan_error is not None:
+            return (
+                f"The retained checkout {checkout} could not be checked for "
+                f"result files ({self.scan_error}); inspect it before removing it"
+            )
+        if removal is None:
+            return (
+                f"The retained checkout {checkout} is not a managed validate "
+                "slot, so no wrkslots removal command applies; inspect it before "
+                "removing it"
+            )
+        checked = (
+            "validate-lock refused the run before its payload started, the "
+            "durable run handle records no product execution or output, no "
+            "framework result sidecar exists, and a receipt scan found no "
+            "untracked *.jsonl"
+        )
+        if self.tracked_jsonl:
+            checked += (
+                f" (only {len(self.tracked_jsonl)} *.jsonl file(s) that Git "
+                "tracks, which cannot be output of this run; see "
+                "https://github.com/rrnewton/dev-hermit/issues/415)"
+            )
+        return (
+            f"The retained checkout {checkout} holds no result evidence: "
+            f"{checked}. Once no process uses it, remove it with: {removal}"
+        )
+
+
+def diagnose_refusal_no_payload(
+    root: Path,
+    record_path: Path,
+    reported: Mapping[str, Any],
+    *,
+    run: Runner,
+    identical: bool,
+) -> RefusalNoPayloadDiagnosis:
+    """Name the evidence that grants or withholds a refusal's cleanup authority.
+
+    This re-reads the durable run handle; ``reported`` is the handle the caller
+    already read. With ``identical``, the durable handle must equal it; without,
+    only its typed admission result must match, because cleanup bookkeeping may
+    have added fields since. The result is diagnostic text for a verdict; it
+    never authorizes cleanup. Removal authority stays with
+    `admission_refusal_is_authoritative` under the run-record lock.
+    """
+
+    checkout: Path | None = None
+
+    def contradicted(cause: str) -> RefusalNoPayloadDiagnosis:
+        return RefusalNoPayloadDiagnosis(cause, checkout=checkout)
+
+    handle = typed_admission_refusal(reported)
+    if handle is None:
+        return contradicted(
+            "the run handle read after the wait is not a typed validate "
+            "admission refusal"
+        )
+    try:
+        canonical_root = root.resolve(strict=True)
+        expected = run_registry.record_path(canonical_root, handle.unit)
+        lexical = Path(os.path.abspath(os.fspath(record_path)))
+        if lexical != expected:
+            return contradicted(
+                f"the run handle {lexical} is not the canonical handle {expected}"
+            )
+        run_registry.require_no_owner_watch_correction(canonical_root)
+        sidecar = service_result.result_path(expected)
+        if sidecar.exists() or sidecar.is_symlink():
+            return contradicted(f"a framework result sidecar exists at {sidecar}")
+        durable = run_registry.read_record(expected)
+    except (OSError, RuntimeError, ValueError) as error:
+        return contradicted(f"the durable run handle could not be verified: {error}")
+    durable_handle = typed_admission_refusal(durable)
+    if durable_handle is None:
+        return contradicted(
+            "the durable run handle is no longer a typed validate admission refusal"
+        )
+    if durable_handle.admission_result != handle.admission_result:
+        return contradicted(
+            "the durable run handle carries a different admission result than "
+            "the one read after the wait"
+        )
+    if identical and durable != dict(reported):
+        return contradicted(
+            "the durable run handle differs from the one read after the wait"
+        )
+    if not admission_refusal_has_no_payload_evidence(durable):
+        return contradicted(
+            "the durable run handle records product execution, output, or "
+            "archived receipts"
+        )
+    publication = durable.get("ledger_mirror")
+    disposed = admission_refusal_ledger_disposition_recorded(publication)
+    if publication is not None and not disposed:
+        return contradicted(
+            "the durable run handle records a cell-ledger publication, not the "
+            "no-payload disposition"
+        )
+    blocked: list[str] = []
+    if not disposed:
+        blocked.append(
+            "the durable run handle records no no-payload cell-ledger disposition"
+        )
+    untracked: tuple[str, ...] = ()
+    tracked: tuple[str, ...] = ()
+    scan_error: str | None = None
+    raw_checkout = durable.get("checkout")
+    if not isinstance(raw_checkout, str) or not raw_checkout:
+        scan_error = "the durable run handle names no checkout"
+    else:
+        checkout = Path(raw_checkout)
+        if checkout.is_symlink():
+            scan_error = f"the recorded checkout {checkout} is a symlink"
+        elif checkout.is_dir():
+            try:
+                every = checkout_jsonl_files(checkout)
+                untracked = (
+                    tuple(orphaned_receipt_locations(checkout, run=run))
+                    if every
+                    else ()
+                )
+            except OSError as error:
+                scan_error = f"the receipt scan of {checkout} failed: {error}"
+            else:
+                tracked = tuple(sorted(set(every) - set(untracked)))
+        elif checkout.exists():
+            scan_error = f"the recorded checkout {checkout} is not a directory"
+    if untracked or tracked:
+        found = sorted((*untracked, *tracked))
+        blocked.append(
+            f"the checkout receipt check found {len(found)} *.jsonl file(s) "
+            f"({len(untracked)} not tracked by Git) and treats any as possible "
+            "result evidence (https://github.com/rrnewton/dev-hermit/issues/415): "
+            f"{quoted_paths(found)}"
+        )
+    if scan_error is not None:
+        blocked.append(scan_error)
+    return RefusalNoPayloadDiagnosis(
+        None,
+        tuple(blocked),
+        checkout,
+        untracked,
+        tracked,
+        scan_error,
     )
 
 
@@ -10467,8 +10754,10 @@ def finalize_ledger_mirror(
         if not admission_refusal_is_authoritative(root, record_path, record):
             print(
                 "validate-run: CELL LEDGER NOT ATTEMPTED: typed admission refusal "
-                "conflicts with payload evidence or is not the durable canonical "
-                "handle; original results retained.",
+                "conflicts with payload evidence, is not the durable canonical "
+                "handle, or its checkout holds *.jsonl files the receipt check "
+                "treats as evidence (https://github.com/rrnewton/dev-hermit/issues/415); "
+                "original results retained.",
                 file=sys.stderr,
             )
             return dict(record)
@@ -11238,15 +11527,53 @@ def attach(
             reason, Path(raw_log) if isinstance(raw_log, str) and raw_log else None
         )
         if not cell_ledger_retirement_ready(root, record_path, updated):
-            # The refusal itself is typed, well formed and claims no product
-            # evidence; only the durable no-payload ledger disposition that
-            # authorizes cleanup is missing (see the CELL LEDGER line above).
+            # Cleanup authority failed. Name why before choosing the verdict:
+            # a result sidecar, a changed or non-canonical durable handle, or a
+            # pending owner-watch correction contradicts the refusal itself.
+            # Only a missing no-payload disposition or checkout *.jsonl files
+            # (https://github.com/rrnewton/dev-hermit/issues/415) leave the
+            # refusal sound and merely withhold cleanup.
+            diagnosis = diagnose_refusal_no_payload(
+                root, record_path, updated, run=run, identical=True
+            )
+            contradiction = diagnosis.contradiction
+            if contradiction is None and not diagnosis.blocked:
+                contradiction = (
+                    "its no-payload cleanup authority could not be bound to the "
+                    "durable canonical handle, for a reason this check could "
+                    "not name"
+                )
+            if contradiction is not None:
+                return could_not_determine(
+                    "typed admission refusal is malformed, contradicts payload "
+                    "evidence, or is not the durable canonical handle: "
+                    f"{contradiction}; checkout and Cargo home retained",
+                    "inspect the durable run handle and framework result "
+                    "sidecar before retrying",
+                )
+            checkout = diagnosis.checkout
+            retained = (
+                f"checkout retained at {checkout}"
+                if checkout is not None and checkout.exists()
+                else "checkout retained"
+            )
+            remedy = explanation.remedy
+            if checkout is not None and checkout.exists():
+                removal: str | None = None
+                if diagnosis.removal_safe:
+                    try:
+                        identity = recorded_wrkslots_identity(updated, checkout)
+                    except ValueError:
+                        identity = None
+                    removal = managed_checkout_removal_command(
+                        tool_root, root, checkout, identity
+                    )
+                remedy += ". " + diagnosis.retained_checkout_remedy(checkout, removal)
             return could_not_determine(
-                f"{explanation.describe(reason)}. Separately, its no-payload "
-                "cell-ledger retirement is not durable, so cleanup was not "
-                "attempted; checkout and Cargo home retained",
-                f"{explanation.remedy}. Inspect the durable run handle before "
-                "removing the retained storage",
+                f"{explanation.describe(reason)}. Separately, cleanup was not "
+                f"attempted because {'; and '.join(diagnosis.blocked)}; "
+                f"{retained} and Cargo home retained",
+                remedy,
                 state=TYPED_REFUSAL_STATE,
             )
         cleanup_after_attach(
@@ -12784,18 +13111,13 @@ def main(
         )
         storage_cleanup = cleanup_current_storage(require_typed_refusal=True)
         report_storage_cleanup(storage_cleanup)
-        # The refusal was validated from `latest` above. A cleanup that never
-        # acquired record authority (for example, a timed-out run-writer
-        # generation wait) returns no record at all, and that is a cleanup
-        # failure, not a malformed refusal: it is reported separately below.
-        # When cleanup did read the durable record under its authority, that
-        # record must still carry the same refusal.
+        # The refusal was validated from `latest` above. Whatever cleanup did,
+        # re-read the durable handle now and bind the verdict to it. A cleanup
+        # that returns no record may never have acquired record authority (a
+        # timed-out run-writer generation wait), or it may have acquired it and
+        # then failed to read or parse the record; only the durable handle can
+        # tell those apart, so its absence proves nothing.
         refused_handle = typed_admission_refusal(latest)
-        durable_handle = (
-            refused_handle
-            if storage_cleanup.record is None
-            else typed_admission_refusal(storage_cleanup.record)
-        )
         if refused_handle is None:
             return could_not_determine(
                 "typed admission refusal is malformed, contradicts payload evidence, "
@@ -12804,14 +13126,13 @@ def main(
                 "inspect the durable run handle and framework result sidecar before "
                 "retrying",
             )
-        if (
-            durable_handle is None
-            or durable_handle.admission_result != refused_handle.admission_result
-        ):
+        diagnosis = diagnose_refusal_no_payload(
+            state_root, record_path, latest, run=run, identical=False
+        )
+        if diagnosis.contradiction is not None:
             return could_not_determine(
-                "typed admission refusal is not the durable canonical handle: the "
-                "run record read under cleanup authority no longer carries the "
-                "refusal read after the wait"
+                "typed admission refusal is malformed, contradicts payload evidence, "
+                f"or is not the durable canonical handle: {diagnosis.contradiction}"
                 + (
                     ""
                     if storage_cleanup.complete
@@ -12827,28 +13148,27 @@ def main(
                 "coupled checkout and private-storage cleanup did not complete"
             )
             retained: list[str] = []
-            removal: str | None = None
+            remedy = explanation.remedy
             if fresh_checkout is not None and not storage_cleanup.checkout.removed:
-                retained.append(f"the no-evidence checkout was retained at {fresh_checkout}")
-                removal = managed_checkout_removal_command(
-                    tool_root, state_root, fresh_checkout, fresh_wrkslots
+                retained.append(
+                    f"the no-evidence checkout was retained at {fresh_checkout}"
+                    if diagnosis.removal_safe
+                    else f"the checkout was retained at {fresh_checkout}"
+                )
+                removal = (
+                    managed_checkout_removal_command(
+                        tool_root, state_root, fresh_checkout, fresh_wrkslots
+                    )
+                    if diagnosis.removal_safe
+                    else None
+                )
+                remedy += ". " + diagnosis.retained_checkout_remedy(
+                    fresh_checkout, removal
                 )
             if private_cargo_home is not None and not storage_cleanup.cargo_removed:
                 retained.append(f"private Cargo home retained at {private_cargo_home}")
             if runtime_root is not None and storage_cleanup.runtime_removed is False:
                 retained.append(f"runtime root retained at {runtime_root}")
-            remedy = explanation.remedy
-            if removal is not None:
-                remedy += (
-                    ". The retained checkout was never built; once no process uses "
-                    f"it, remove it with: {removal}"
-                )
-            elif fresh_checkout is not None and not storage_cleanup.checkout.removed:
-                remedy += (
-                    f". The retained checkout {fresh_checkout} is not a managed "
-                    "validate slot, so no wrkslots removal command applies; inspect "
-                    "it before removing it"
-                )
             return could_not_determine(
                 f"{explanation.describe(refusal)}. Separately, storage cleanup did "
                 f"not complete: {cleanup_detail}"

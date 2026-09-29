@@ -12641,8 +12641,9 @@ else:
         """https://github.com/rrnewton/dev-hermit/issues/413 reproduced.
 
         The cleanup never acquires record authority, so it returns no durable
-        record. That must be reported as the cleanup failure it is, next to the
-        eviction validate-lock logged, never as a malformed refusal.
+        record. The durable handle, read again, still carries the refusal, so
+        this is the cleanup failure it is, next to the eviction validate-lock
+        logged, never a malformed refusal.
         """
 
         self.arrange_typed_eviction()
@@ -12686,6 +12687,15 @@ else:
             f"{start_unit.WRKSLOTS_MACHINE} --allow-existing-unregistered-worktrees",
             verdict,
         )
+        self.assertIn(
+            f"The retained checkout {self.fake.fresh} holds no result evidence: "
+            "validate-lock refused the run before its payload started, the durable "
+            "run handle records no product execution or output, no framework result "
+            "sidecar exists, and a receipt scan found no untracked *.jsonl. Once no "
+            "process uses it, remove it with: ",
+            verdict,
+        )
+        self.assertNotIn("never built", verdict)
         self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, verdict)
         self.assertNotIn("the verdict is unreadable", verdict)
         self.assert_record_storage_retained()
@@ -12732,24 +12742,280 @@ else:
         self.assertIn("remedy: correct the admission condition and retry", verdict)
         self.assert_record_storage_removed()
 
+    def invoke_typed_refusal_around_ledger_step(
+        self,
+        *,
+        before: Callable[[Path], None] | None = None,
+        after: Callable[[Path], None] | None = None,
+    ) -> tuple[int, str, str]:
+        """Change the durable run handle's surroundings around the ledger step."""
+
+        real_finalize = start_unit.finalize_ledger_mirror
+
+        def wrapped(root: Path, tool_root: Path, record_path: Path, **kwargs: object):
+            if before is not None:
+                before(record_path)
+            updated = real_finalize(root, tool_root, record_path, **kwargs)
+            if after is not None:
+                after(record_path)
+            return updated
+
+        with mock.patch.object(start_unit, "finalize_ledger_mirror", side_effect=wrapped):
+            return self.invoke()
+
+    def assert_malformed_refusal_without_removal(self, verdict: str, cause: str) -> None:
+        self.assertIn(
+            "typed admission refusal is malformed, contradicts payload evidence, or "
+            f"is not the durable canonical handle: {cause}",
+            verdict,
+        )
+        self.assertIn("checkout, Cargo home, and runtime root retained", verdict)
+        self.assertIn(
+            "remedy: inspect the durable run handle and framework result sidecar "
+            "before retrying",
+            verdict,
+        )
+        self.assertNotIn("EVICTED", verdict)
+        self.assertNotIn("--validate-complete", verdict)
+        self.assertNotIn("remove it with", verdict)
+        self.assertNotIn(start_unit.TYPED_REFUSAL_STATE, verdict)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_eviction_whose_durable_record_breaks_after_the_ledger_step_is_malformed(
+        self,
+    ) -> None:
+        """A cleanup that returns no record proves nothing about the handle.
+
+        Here cleanup acquires record authority and then cannot parse the durable
+        record. The refusal read after the wait must not stand in for it: the
+        verdict is the malformed one, with no removal command.
+        """
+
+        self.arrange_typed_eviction()
+
+        def corrupt(record_path: Path) -> None:
+            record_path.write_text('{"not": "a run record"')
+
+        rc, _output, error = self.invoke_typed_refusal_around_ledger_step(after=corrupt)
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assert_malformed_refusal_without_removal(
+            verdict,
+            "the durable run handle could not be verified: cannot read validation "
+            "handle",
+        )
+
+    def test_eviction_with_a_result_sidecar_is_a_contradiction_without_removal(
+        self,
+    ) -> None:
+        self.arrange_typed_eviction()
+        sidecars: list[Path] = []
+
+        def write_sidecar(record_path: Path) -> None:
+            sidecar = start_unit.service_result.result_path(record_path)
+            sidecar.write_text("{}\n")
+            sidecars.append(sidecar)
+
+        rc, _output, error = self.invoke_typed_refusal_around_ledger_step(
+            before=write_sidecar
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assert_malformed_refusal_without_removal(
+            verdict, f"a framework result sidecar exists at {sidecars[0]}"
+        )
+        self.assert_record_storage_retained()
+
+    def test_eviction_with_an_untracked_checkout_receipt_prints_no_removal_command(
+        self,
+    ) -> None:
+        """Cleanup refuses for no-payload authority; the remedy must not delete."""
+
+        self.arrange_typed_eviction()
+        self.plant_orphan_receipt("ci/unexpected-receipt.jsonl")
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED -- "
+            "origin/main advanced while it waited",
+            verdict,
+        )
+        self.assertIn(
+            "Separately, storage cleanup did not complete: typed admission refusal "
+            "lacks durable no-payload cleanup authority",
+            verdict,
+        )
+        assert self.fake.fresh is not None
+        self.assertIn(f"the checkout was retained at {self.fake.fresh}", verdict)
+        self.assertNotIn("no-evidence checkout", verdict)
+        self.assertIn(
+            f"The retained checkout {self.fake.fresh} holds 1 *.jsonl file(s) that "
+            "Git does not track and that may be run output: "
+            "ci/unexpected-receipt.jsonl; inspect them before removing the checkout",
+            verdict,
+        )
+        self.assertNotIn("--validate-complete", verdict)
+        self.assertNotIn("remove it with", verdict)
+        self.assertNotIn("never built", verdict)
+        self.assertTrue((self.fake.fresh / "ci/unexpected-receipt.jsonl").is_file())
+        self.assert_record_storage_retained()
+
+    def test_eviction_with_only_tracked_checkout_jsonl_prints_the_removal_command(
+        self,
+    ) -> None:
+        """https://github.com/rrnewton/dev-hermit/issues/415 withholds cleanup.
+
+        A tracked fixture cannot be output of this run, so the remedy names the
+        checked facts and the exact removal command.
+        """
+
+        self.arrange_typed_eviction()
+        self.plant_orphan_receipt("fixtures/committed.jsonl")
+        self.fake.fresh_tracked_jsonl = "fixtures/committed.jsonl\n"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        assert self.fake.fresh is not None
+        self.assertIn(
+            f"the no-evidence checkout was retained at {self.fake.fresh}", verdict
+        )
+        self.assertIn(
+            "a receipt scan found no untracked *.jsonl (only 1 *.jsonl file(s) that "
+            "Git tracks, which cannot be output of this run; see "
+            "https://github.com/rrnewton/dev-hermit/issues/415)",
+            verdict,
+        )
+        self.assertIn("no framework result sidecar exists", verdict)
+        self.assertIn(
+            f" remove {self.fake.fresh.name} --validate-complete --coordinator-pid "
+            '"$$" --expected-generation 7',
+            verdict,
+        )
+        self.assert_record_storage_retained()
+
+    def test_queue_timeout_refusal_names_the_timeout(self) -> None:
+        self.arrange_typed_eviction()
+        self.fake.inner_log_lines = ["validate-lock: TIMEOUT after 7200s"]
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): TIMEOUT -- "
+            "validate-lock gave up waiting for its turn",
+            verdict,
+        )
+        self.assertIn("(run log: validate-lock: TIMEOUT after 7200s)", verdict)
+        self.assertNotIn("no recognized refusal line", verdict)
+        self.assert_record_storage_removed()
+
     def test_refusal_explanation_without_a_refusal_line_says_so(self) -> None:
         log = self.root / "refusal-without-reason.log"
-        log.write_text("validate-lock: waiting in declared-priority queue\n")
+        log.write_text(
+            "validate-lock: waiting in declared-priority queue\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=1.0s exit=3\n"
+        )
+        silent = self.root / "refusal-without-validate-lock.log"
+        silent.write_text("# ci-hub/validate-lock tool COST ACTUAL wall=1.0s exit=3\n")
         reason = run_registry.AdmissionRefusalReason.VALIDATION_LOCK_REFUSAL
 
         explanation = start_unit.admission_refusal_explanation(reason, log)
+        quiet = start_unit.admission_refusal_explanation(reason, silent)
         missing = start_unit.admission_refusal_explanation(
             reason, self.root / "absent.log"
         )
 
         self.assertEqual("REFUSED", explanation.label)
-        self.assertIn(f"validate-lock logged no refusal line in {log}", explanation.detail)
+        self.assertIn(
+            f"validate-lock logged no recognized refusal line in {log}; its last "
+            "validate-lock line was: validate-lock: waiting in declared-priority "
+            "queue",
+            explanation.detail,
+        )
+        self.assertNotIn("logged no refusal line", explanation.detail)
+        self.assertIn(
+            f"validate-lock logged no recognized refusal line in {silent}; the log "
+            "holds no validate-lock line at all",
+            quiet.detail,
+        )
         self.assertEqual("REFUSED", missing.label)
         self.assertIn("is unreadable", missing.detail)
         stale = start_unit.admission_refusal_explanation(
             run_registry.AdmissionRefusalReason.STALE_BASE, None
         )
         self.assertIn("the run handle names no log", stale.detail)
+
+    def explain_log(self, name: str, *lines: str) -> start_unit.AdmissionRefusalExplanation:
+        log = self.root / f"{name}.log"
+        log.write_text("".join(f"{line}\n" for line in lines))
+        return start_unit.admission_refusal_explanation(
+            run_registry.AdmissionRefusalReason.VALIDATION_LOCK_REFUSAL, log
+        )
+
+    def test_refusal_explanation_recognizes_a_queue_timeout(self) -> None:
+        # validate_lock.rs prints this line when the lock wait expires; the
+        # mid-wait line before it is diagnostic and must not decide.
+        unresolved_mid_wait = (
+            f"validate-lock: mid-wait freshness UNRESOLVED for target={SHA}, keeping "
+            "queue position: validate-lock: current origin/main fetch failed in /x "
+            f"(git exit Some(128): boom); freshness for {SHA} is UNRESOLVED."
+        )
+        explanation = self.explain_log(
+            "timeout", unresolved_mid_wait, "validate-lock: TIMEOUT after 7200s"
+        )
+
+        self.assertEqual("TIMEOUT", explanation.label)
+        self.assertIn("(run log: validate-lock: TIMEOUT after 7200s)", explanation.detail)
+        self.assertIn("queue the same head again", explanation.remedy)
+        self.assertNotIn("rebase", explanation.remedy)
+
+        yielding = self.explain_log(
+            "timeout-yield",
+            "validate-lock: TIMEOUT after 60s while yielding to owner watch",
+        )
+        self.assertEqual("TIMEOUT", yielding.label)
+
+    def test_refusal_explanation_recognizes_fail_closed_freshness_lines(self) -> None:
+        for line in (
+            "validate-lock: current origin/main fetch failed in /x (git exit "
+            f"Some(128): fatal: unable to access); freshness for {SHA} is UNRESOLVED.",
+            "validate-lock: current origin/main fetch could not run in /x (No such "
+            f"file or directory); freshness for {SHA} is UNRESOLVED.",
+            f"validate-lock: current-main freshness for {SHA} is UNRESOLVED: timed "
+            "out after 30s waiting for the shared Git lock",
+            f"validate-lock: current-main ancestry for {SHA} is UNRESOLVED in /x "
+            "(git exit Some(129): boom).",
+            f"validate-lock: validation admission check for {SHA} did not resolve "
+            "(exit Some(3)); treating fixed-floor ancestry as STALE.",
+            "validate-lock: shared Git directory is UNRESOLVED in /x (boom)",
+        ):
+            with self.subTest(line=line):
+                explanation = self.explain_log("unresolved", line)
+                self.assertEqual("UNRESOLVED", explanation.label)
+                self.assertIn(f"(run log: {line})", explanation.detail)
+                self.assertIn("repair the fetch, network or repository", explanation.remedy)
+
+        # A mid-wait line is not a refusal: it kept the queue position.
+        mid_wait = (
+            f"validate-lock: mid-wait freshness DEFERRED for target={SHA}, keeping "
+            "queue position: timed out after 3s"
+        )
+        explanation = self.explain_log("mid-wait", mid_wait)
+        self.assertEqual("REFUSED", explanation.label)
+        self.assertIn("no recognized refusal line", explanation.detail)
+        self.assertIn(f"its last validate-lock line was: {mid_wait}", explanation.detail)
 
     def test_visibility_failure_does_not_stop_accepted_validation_service(self) -> None:
         self.fake.herdr_status_rc = 1
@@ -13776,8 +14042,15 @@ else:
             )
         )
 
+    ATTACH_CHECKOUT_JSONL = "tests/fixtures/ledger-schema10/legacy/ordinary-only-cells.jsonl"
+
     def attach_evicted_refusal(
-        self, suffix: str, *, checkout_jsonl: bool = False
+        self,
+        suffix: str,
+        *,
+        checkout_jsonl: bool = False,
+        jsonl_tracked: bool = False,
+        sidecar: bool = False,
     ) -> tuple[Path, int, str]:
         fresh, record = self.refused_admission_cleanup_record(suffix)
         durable = start_unit.run_registry.read_record(record)
@@ -13786,11 +14059,13 @@ else:
         Path(durable["log"]).parent.mkdir(parents=True, exist_ok=True)
         Path(durable["log"]).write_text("\n".join(self.EVICTION_LOG_LINES) + "\n")
         if checkout_jsonl:
-            fixture = (
-                fresh / "tests/fixtures/ledger-schema10/legacy/ordinary-only-cells.jsonl"
-            )
+            fixture = fresh / self.ATTACH_CHECKOUT_JSONL
             fixture.parent.mkdir(parents=True, exist_ok=True)
             fixture.write_text("{}\n")
+            if jsonl_tracked:
+                self.fake.fresh_tracked_jsonl = f"{self.ATTACH_CHECKOUT_JSONL}\n"
+        if sidecar:
+            start_unit.service_result.result_path(record).write_text("{}\n")
         self.fake.fresh = fresh
         error = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error):
@@ -13817,12 +14092,12 @@ else:
         self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, error)
         self.assertNotIn("Separately", error)
 
-    def test_attach_eviction_without_ledger_retirement_names_both(self) -> None:
+    def test_attach_eviction_with_untracked_checkout_jsonl_names_both(self) -> None:
         """A checkout-local ``*.jsonl`` blocks the durable no-payload marker.
 
-        Hermit tracks four such fixtures, so a real eviction checkout reaches
-        this path. The verdict must still name the eviction first and report
-        the retained storage as a separate condition.
+        The verdict names the eviction first, then the retained checkout and the
+        file that withheld cleanup. The file is not tracked, so it may be run
+        output and no removal command is printed.
         """
 
         fresh, rc, error = self.attach_evicted_refusal(
@@ -13838,12 +14113,87 @@ else:
             error,
         )
         self.assertIn(
-            "Separately, its no-payload cell-ledger retirement is not durable, "
-            "so cleanup was not attempted; checkout and Cargo home retained",
+            "Separately, cleanup was not attempted because the durable run handle "
+            "records no no-payload cell-ledger disposition; and the checkout "
+            "receipt check found 1 *.jsonl file(s) (1 not tracked by Git) and "
+            "treats any as possible result evidence "
+            "(https://github.com/rrnewton/dev-hermit/issues/415): "
+            f"{self.ATTACH_CHECKOUT_JSONL}; checkout retained at {fresh} and Cargo "
+            "home retained",
             error,
         )
         self.assertIn("remedy: rebase onto the current origin/main", error)
+        self.assertIn(
+            f"The retained checkout {fresh} holds 1 *.jsonl file(s) that Git does "
+            f"not track and that may be run output: {self.ATTACH_CHECKOUT_JSONL}; "
+            "inspect them before removing the checkout",
+            error,
+        )
+        self.assertNotIn("--validate-complete", error)
         self.assertIn("state:  " + start_unit.TYPED_REFUSAL_STATE, error)
+
+    def test_attach_eviction_with_only_tracked_checkout_jsonl_prints_removal(
+        self,
+    ) -> None:
+        """Hermit tracks such fixtures, so a real eviction checkout reaches this.
+
+        While https://github.com/rrnewton/dev-hermit/issues/415 is open the
+        tracked file still withholds cleanup, but it cannot be run output, so
+        the verdict names the retained checkout and the exact removal command.
+        """
+
+        fresh, rc, error = self.attach_evicted_refusal(
+            "admission-evicted-attach-tracked-jsonl",
+            checkout_jsonl=True,
+            jsonl_tracked=True,
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertTrue(fresh.is_dir(), error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED", error
+        )
+        self.assertIn(
+            "the checkout receipt check found 1 *.jsonl file(s) (0 not tracked by "
+            "Git)",
+            error,
+        )
+        self.assertIn(f"checkout retained at {fresh} and Cargo home retained", error)
+        self.assertIn(
+            f"The retained checkout {fresh} holds no result evidence: ", error
+        )
+        self.assertIn(
+            f" remove {fresh.name} --validate-complete --coordinator-pid "
+            '"$$" --expected-generation 7',
+            error,
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_attach_refusal_with_a_result_sidecar_is_a_contradiction(self) -> None:
+        fresh, rc, error = self.attach_evicted_refusal(
+            "admission-evicted-attach-sidecar", sidecar=True
+        )
+        sidecar = start_unit.service_result.result_path(
+            run_registry.record_path(self.root, "validate-admission-evicted-attach-sidecar")
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertTrue(fresh.is_dir(), error)
+        self.assertIn(
+            "typed admission refusal is malformed, contradicts payload evidence, or "
+            "is not the durable canonical handle: a framework result sidecar exists "
+            f"at {sidecar}; checkout and Cargo home retained",
+            error,
+        )
+        self.assertNotIn("EVICTED", error.split("COULD-NOT-DETERMINE: ", 1)[1])
+        self.assertNotIn("Separately", error)
+        self.assertNotIn(start_unit.TYPED_REFUSAL_STATE, error)
+        self.assertNotIn("--validate-complete", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
 
     def test_attach_refusal_with_published_status_retains_checkout(self) -> None:
         fresh, record = self.refused_admission_cleanup_record(
