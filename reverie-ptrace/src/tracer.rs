@@ -7114,8 +7114,25 @@ mod tests {
     /// TID of 9 and the run stayed Pending; without the lost-former record
     /// on the ordinary exit-wait path, the leader's thread join would wait
     /// for the former thread's owner forever.
+    ///
+    /// The exec thread calls execv only once the leader sleeps (state S):
+    /// the leader has then been resumed from its post-clone step stop and is
+    /// in no ptrace stop, so the exec's zap moves it straight into its exit
+    /// stop. Otherwise the zap could take the leader out of a step stop that
+    /// the run loop had already decoded, and the resume issued for that step
+    /// stop would consume the exit stop, so the Exec would have no exit
+    /// status (https://github.com/rrnewton/reverie/issues/688) and the run
+    /// would fail before reaching the hold. If the leader is not seen
+    /// sleeping within 2 s, the guest exits with status 3, which the test
+    /// reports as a run that finished before its gate.
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_exec_killed_after_exec_report_completes_with_the_kill() {
+        /// The state letter of this process's thread `tid`, from its stat.
+        fn thread_state(tid: libc::pid_t) -> Option<u8> {
+            let stat = std::fs::read(format!("/proc/self/task/{tid}/stat")).ok()?;
+            let end = stat.iter().rposition(|&byte| byte == b')')?;
+            stat.get(end + 2).copied()
+        }
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
@@ -7138,6 +7155,14 @@ mod tests {
         let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
             || {
                 std::thread::spawn(|| {
+                    let leader = unsafe { libc::getpid() };
+                    let asleep_by = Instant::now() + Duration::from_secs(2);
+                    while thread_state(leader) != Some(b'S') {
+                        if Instant::now() >= asleep_by {
+                            unsafe { libc::_exit(3) };
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                     let args = [
                         c"/bin/sh".as_ptr(),
                         c"-c".as_ptr(),
