@@ -3047,12 +3047,8 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         return;
     }
 
-    if event.number == libc::SYS_clone && !clone_is_fork_like(event.args[0], event.args[1]) {
-        event.result = if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT {
-            -i64::from(libc::EPERM)
-        } else {
-            -i64::from(libc::ENOTSUP)
-        };
+    if let Some(errno) = refused_process_creation(event.number, event.args, tool_mode) {
+        event.result = -i64::from(errno);
         unsafe {
             trace_event(event, Some(event.result));
         }
@@ -3091,6 +3087,50 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         unsafe {
             trace_event(event, Some(event.result));
         }
+    }
+}
+
+/// Errno for process creation that the strace and compatibility modes refuse
+/// before forwarding, or `None` when `process_syscall` may forward it.
+///
+/// These modes forward from runtime frames on the guest's stack below the
+/// interrupted syscall site: an installed hook's trampoline, or the SIGSYS
+/// handler. Only a child with its own copy of those frames can return through
+/// them. That means bare `fork` and the null-stack, SIGCHLD-only `clone` that
+/// [`clone_is_fork_like`] accepts. Any other `clone` is refused with the
+/// mode-specific errno it already had.
+///
+/// A `vfork` child runs on the parent's stack while the parent is suspended
+/// inside those frames. It returns through them, then overwrites them before
+/// the parent resumes. A `clone3` child with its own stack starts right after
+/// the syscall instruction inside the forwarding code, with none of the frames
+/// it would return through. A thread-creating `clone3` would also bypass the
+/// thread `clone` refusal. The decision uses only the syscall number, so
+/// `clone_args` is never read. The shared preload dispatcher refuses both for
+/// the same reason. See <https://github.com/rrnewton/reverie/issues/758>.
+///
+/// Both are refused with `ENOTSUP` in both modes. This matches the preload
+/// dispatcher and Tool mode's nested and injected syscall guards. `ENOSYS` was
+/// the alternative, because glibc's `__clone_internal` retries a failed clone3
+/// as clone only on `ENOSYS`. But glibc calls clone3 only from pthread_create
+/// and posix_spawn, and both pass a child stack. The guard above would refuse
+/// the retried clone (EPERM in compat, ENOTSUP in strace), so the call would
+/// still fail. It would just take a second refused syscall, and the errno would
+/// depend on the mode. glibc's `fork` uses clone, not clone3, and vfork has no
+/// fallback convention. The cost is that a fork-shaped clone3 caller that falls
+/// back only on `ENOSYS` fails here; Tool mode admits that shape through
+/// `tool_host::clone3_is_plain_fork`.
+fn refused_process_creation(number: i64, args: [u64; 6], tool_mode: u8) -> Option<i32> {
+    match number {
+        libc::SYS_clone if !clone_is_fork_like(args[0], args[1]) => {
+            Some(if tool_mode == TOOL_COMPAT {
+                libc::EPERM
+            } else {
+                libc::ENOTSUP
+            })
+        }
+        libc::SYS_clone3 | libc::SYS_vfork => Some(libc::ENOTSUP),
+        _ => None,
     }
 }
 
@@ -3533,6 +3573,7 @@ mod tests {
     use super::mark_site_range_stale;
     use super::raw_syscall6;
     use super::record_fallback_dispatch;
+    use super::refused_process_creation;
     use super::reset_site_observability;
 
     #[test]
@@ -3800,6 +3841,50 @@ mod tests {
                 !clone_is_fork_like(libc::SIGCHLD as u64 | rejected as u64, 0),
                 "accepted unsafe clone flag {rejected:#x}"
             );
+        }
+    }
+
+    // https://github.com/rrnewton/reverie/issues/758
+    #[test]
+    fn strace_and_compat_refuse_vfork_and_clone3_by_number() {
+        let bookkeeping = (libc::CLONE_CHILD_CLEARTID
+            | libc::CLONE_CHILD_SETTID
+            | libc::CLONE_PARENT_SETTID) as u64;
+        for mode in [super::TOOL_STRACE, super::TOOL_COMPAT] {
+            let clone_errno = if mode == super::TOOL_COMPAT {
+                libc::EPERM
+            } else {
+                libc::ENOTSUP
+            };
+            for (number, args, expected) in [
+                // Refused by number, whatever the clone_args pointer and size.
+                (libc::SYS_vfork, [0; 6], Some(libc::ENOTSUP)),
+                (libc::SYS_clone3, [0; 6], Some(libc::ENOTSUP)),
+                (libc::SYS_clone3, [u64::MAX; 6], Some(libc::ENOTSUP)),
+                (
+                    libc::SYS_clone,
+                    [libc::CLONE_VM as u64 | libc::SIGCHLD as u64, 0, 0, 0, 0, 0],
+                    Some(clone_errno),
+                ),
+                (
+                    libc::SYS_clone,
+                    [libc::SIGCHLD as u64, 1, 0, 0, 0, 0],
+                    Some(clone_errno),
+                ),
+                (libc::SYS_fork, [0; 6], None),
+                (
+                    libc::SYS_clone,
+                    [libc::SIGCHLD as u64 | bookkeeping, 0, 0, 0, 0, 0],
+                    None,
+                ),
+                (libc::SYS_getpid, [0; 6], None),
+            ] {
+                assert_eq!(
+                    refused_process_creation(number, args, mode),
+                    expected,
+                    "mode {mode} syscall {number} args {args:?}"
+                );
+            }
         }
     }
 }
