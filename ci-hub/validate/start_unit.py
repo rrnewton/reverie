@@ -71,8 +71,39 @@ HOST_TMP_ROOT = Path("/tmp").resolve()
 MAX_RUNTIME_ROOT_BYTES = 30
 VALIDATE_CLEANUP_BATCH_LIMIT = 8
 # Separate from payload/queue deadlines: admission observed 10.612s for eight
-# retained groups. Every read-only child shares this finite classification budget.
+# retained groups. Every read-only child shares one finite classification
+# budget; this is its fixed part, and entry_classification_seconds() below adds
+# a part proportional to the wrkslots event chain.
 VALIDATE_ENTRY_CLASSIFICATION_SECONDS = 30.0
+# THE CLASSIFICATION COST GROWS WITH THE WRKSLOTS EVENT CHAIN, SO ITS BUDGET DOES
+# TOO (https://github.com/rrnewton/dev-hermit/issues/408). `wrkslots
+# classify-create-journals` rebuilds registry state by reading and hash-checking
+# the whole append-only chain under worktrees/EVENTS.<machine>, which only
+# grows (about 1,000 to 1,300 events a day). Measured 2026-09-29 on devbig014
+# with the pinned agent-utils 26dd3eaa, 16,273 events and zero journals: 20.15
+# to 26.35 s wall over five runs at load 65 to 127, with the chain read seven
+# times in one invocation; one chain load is linear, 0.29 s per 4,000 events.
+# The run-handle scan, the other entry step, took 1.2 s for 1,788 handles. A
+# fixed 30 s therefore refused ordinary launches at 30.0 s three times that
+# morning (load 95 to 107), once history had grown past it.
+#
+# Per event: 4 ms, about 2.5x the worst completed run (26.35 s / 16,273 =
+# 1.62 ms) and 2.2x the floor the refusals imply (over 30 s / ~16,200 =
+# 1.85 ms). The fixed 30 s above still pays for everything that does not scale
+# with events. At 16,273 events the budget is 95.1 s.
+#
+# The cap keeps the deadline finite whatever the chain says. The budget runs
+# while entry holds the run-population lock, the same directory flock every
+# wrkslots mutation takes, so 300 s stays below the longest measured removal
+# hold of that lock (426.5 s, https://github.com/rrnewton/dev-hermit/issues/389):
+# entry never holds it longer than an ordinary `wrkslots remove`. A hung child
+# is still killed at the deadline and refused before any checkout exists. The
+# cap is reached at 67,500 events; past that the chain itself must shrink
+# (a verified checkpoint, https://github.com/rrnewton/agent-utils/issues/162),
+# and the refusal names the event count and the cap.
+VALIDATE_ENTRY_CLASSIFICATION_SECONDS_PER_EVENT = 0.004
+VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS = 300.0
+WRKSLOTS_EVENT_NAME = re.compile(r"[0-9]{20}\.json")
 # WAITING FOR A REGISTRY LOCK IS NOT CLASSIFICATION, AND THE BUDGET ABOVE NEVER
 # PAYS FOR IT (https://github.com/rrnewton/dev-hermit/issues/389). Entry takes
 # the run-writer generation lock (shared) and the run-population lock, which is
@@ -4335,17 +4366,105 @@ class CleanupClassificationExpired(RuntimeError):
     """Incomplete read-only evidence must never admit a new checkout."""
 
 
+def count_wrkslots_events(root: Path) -> int:
+    """Count the wrkslots event files every classification child replays.
+
+    ``wrkslots classify-create-journals`` replays the event chain of every
+    machine shard, so this counts complete events in every
+    ``worktrees/EVENTS.<machine>`` directory, the flat-layout control directory
+    beside the ``worktrees/validate`` path entry already assumes. It only sizes
+    a finite budget: an unreadable, missing or symlinked directory counts zero,
+    which can only shorten the budget toward its fixed part, never lengthen it
+    past VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS.
+    """
+
+    total = 0
+    try:
+        with os.scandir(root / "worktrees") as control:
+            shards = [
+                entry
+                for entry in control
+                if entry.name.startswith("EVENTS.")
+                and entry.is_dir(follow_symlinks=False)
+            ]
+    except OSError:
+        return 0
+    for shard in shards:
+        try:
+            with os.scandir(shard.path) as entries:
+                total += sum(
+                    1 for entry in entries
+                    if WRKSLOTS_EVENT_NAME.fullmatch(entry.name) is not None
+                )
+        except OSError:
+            continue
+    return total
+
+
+def entry_classification_seconds(event_count: int) -> float:
+    """Finite classification budget for a registry with ``event_count`` events."""
+
+    scaled = (
+        VALIDATE_ENTRY_CLASSIFICATION_SECONDS
+        + VALIDATE_ENTRY_CLASSIFICATION_SECONDS_PER_EVENT * max(0, event_count)
+    )
+    return max(
+        VALIDATE_ENTRY_CLASSIFICATION_SECONDS,
+        min(VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS, scaled),
+    )
+
+
+def entry_classification_budget(
+    root: Path, started: float, run: Runner
+) -> CleanupClassificationBudget:
+    """Start one read-only classification budget sized by the event chain."""
+
+    events = count_wrkslots_events(root)
+    seconds = entry_classification_seconds(events)
+    capped = (
+        VALIDATE_ENTRY_CLASSIFICATION_SECONDS
+        + VALIDATE_ENTRY_CLASSIFICATION_SECONDS_PER_EVENT * events
+        > VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS
+    )
+    basis = (
+        f"classification budget {seconds:.1f}s = "
+        f"{VALIDATE_ENTRY_CLASSIFICATION_SECONDS:g}s + "
+        f"{VALIDATE_ENTRY_CLASSIFICATION_SECONDS_PER_EVENT * 1000:g}ms x "
+        f"{events} wrkslots events, cap "
+        f"{VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS:g}s"
+    )
+    if capped:
+        basis += (
+            " REACHED: the wrkslots event chain has outgrown the entry bound; "
+            "shrink it (https://github.com/rrnewton/agent-utils/issues/162) "
+            "rather than raising the cap"
+        )
+    return CleanupClassificationBudget(
+        started + seconds, run, seconds=seconds, events=events, basis=basis
+    )
+
+
 @dataclass(frozen=True)
 class CleanupClassificationBudget:
     deadline: float
     runner: Runner
+    # How the deadline was derived, repeated in every expiry so a refusal names
+    # the budget it ran out of and the registry size that set it.
+    seconds: float | None = None
+    events: int | None = None
+    basis: str = ""
+
+    def _expired(self, message: str) -> CleanupClassificationExpired:
+        suffix = f"; {self.basis}" if self.basis else ""
+        return CleanupClassificationExpired(
+            f"{message}; unresolved storage remains retained{suffix}"
+        )
 
     def remaining(self, context: str) -> float:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise CleanupClassificationExpired(
-                "read-only entry classification budget expired while "
-                f"{context}; unresolved storage remains retained"
+            raise self._expired(
+                f"read-only entry classification budget expired while {context}"
             )
         return remaining
 
@@ -4359,9 +4478,9 @@ class CleanupClassificationBudget:
         try:
             result = self.runner(command, **kwargs)
         except subprocess.TimeoutExpired as error:
-            raise CleanupClassificationExpired(
+            raise self._expired(
                 "read-only entry classification command timed out after "
-                f"{kwargs['timeout']:g}s: {context}; unresolved storage remains retained"
+                f"{kwargs['timeout']:g}s: {context}"
             ) from error
         self.remaining(context)
         return result
@@ -4686,9 +4805,7 @@ def sweep_completed_checkouts(
     # a separate wall budget; the destructive sweep still removes at most eight
     # groups and keeps its persistent cursor and publication prerequisites.
     budget = (
-        CleanupClassificationBudget(
-            time.monotonic() + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
-        )
+        entry_classification_budget(root, time.monotonic(), run)
         if classify_ownerless_only
         else None
     )
@@ -6305,9 +6422,12 @@ def require_validate_entry_cleanup(
 
     Every classification step runs while the run-writer generation and
     run-population locks are held, and the complete read-only classification
-    shares one finite VALIDATE_ENTRY_CLASSIFICATION_SECONDS budget that starts
-    only once both locks are granted. Waiting for them is not classification:
-    it is bounded separately by VALIDATE_ENTRY_LOCK_WAIT_SECONDS (one deadline,
+    shares one finite budget that starts only once both locks are granted. The
+    budget is entry_classification_seconds() of the wrkslots event count,
+    VALIDATE_ENTRY_CLASSIFICATION_SECONDS plus a per-event part, capped at
+    VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS, because the create-journal
+    classification replays that whole chain. Waiting for the locks is not
+    classification: it is bounded separately by VALIDATE_ENTRY_LOCK_WAIT_SECONDS (one deadline,
     shared with the caller's generation-lock wait when ``lock_wait`` is given)
     and reported on its own. The population lock is an exclusive flock on the
     same directory every wrkslots mutation flocks for its whole run, so a
@@ -6348,11 +6468,10 @@ def require_validate_entry_cleanup(
                 wait=lock_wait,
             )
             # Both locks are held: classification starts here, and only it is
-            # charged to the budget.
+            # charged to the budget. The event chain is counted under the same
+            # locks, so the budget is sized by the registry being classified.
             classified_from = time.monotonic()
-            budget = CleanupClassificationBudget(
-                classified_from + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
-            )
+            budget = entry_classification_budget(root, classified_from, run)
             journal_scopes = classify_create_journal_scopes(
                 root,
                 prospective_slot=prospective_slot,
@@ -6395,7 +6514,9 @@ def require_validate_entry_cleanup(
         f"journals={len(journal_scopes)} run-handles={inspected} "
         f"elapsed={now - lock_wait.started:.3f}s "
         f"classification={now - classified_from:.3f}s "
-        f"lock-wait={lock_wait.waited:.3f}s",
+        f"lock-wait={lock_wait.waited:.3f}s "
+        f"wrkslots-events={budget.events} "
+        f"classification-budget={budget.seconds:.1f}s",
         file=sys.stderr,
     )
 

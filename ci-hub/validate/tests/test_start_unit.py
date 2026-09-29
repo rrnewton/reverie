@@ -3964,6 +3964,156 @@ else:
             budget.run(["probe"], timeout=2.0)
         self.assertEqual([2.0, 1.0], observed)
 
+    # Event-scaled classification budget,
+    # https://github.com/rrnewton/dev-hermit/issues/408. The create-journal
+    # classification replays the whole wrkslots event chain, so a fixed 30 s
+    # refused ordinary launches once the chain had grown past it.
+
+    def plant_wrkslots_events(self, count: int, machine: str = "devbig014") -> Path:
+        shard = self.root / "worktrees" / f"EVENTS.{machine}"
+        shard.mkdir(parents=True, exist_ok=True)
+        for sequence in range(1, count + 1):
+            (shard / f"{sequence:020d}.json").touch()
+        return shard
+
+    def test_entry_classification_seconds_scale_with_events_and_stay_finite(
+        self,
+    ) -> None:
+        self.assertEqual(30.0, start_unit.VALIDATE_ENTRY_CLASSIFICATION_SECONDS)
+        self.assertEqual(
+            0.004, start_unit.VALIDATE_ENTRY_CLASSIFICATION_SECONDS_PER_EVENT
+        )
+        self.assertEqual(300.0, start_unit.VALIDATE_ENTRY_CLASSIFICATION_MAX_SECONDS)
+        cases = (
+            (-5, 30.0),
+            (0, 30.0),
+            (2000, 38.0),
+            # The devbig014 chain on 2026-09-29, when a fixed 30 s refused.
+            (16273, 95.092),
+            (67500, 300.0),
+            (67501, 300.0),
+            (10**9, 300.0),
+        )
+        for events, seconds in cases:
+            with self.subTest(events=events):
+                self.assertAlmostEqual(
+                    seconds, start_unit.entry_classification_seconds(events)
+                )
+
+    def test_count_wrkslots_events_counts_only_complete_events_in_real_shards(
+        self,
+    ) -> None:
+        self.assertEqual(0, start_unit.count_wrkslots_events(self.root))
+        first = self.plant_wrkslots_events(3, "hosta")
+        self.plant_wrkslots_events(2, "hostb")
+        (first / "00000000000000000004.json.tmp.123").touch()
+        (first / "README").touch()
+        (first / "1.json").touch()
+        (self.root / "worktrees" / "EVENTS.file").touch()
+        (self.root / "worktrees" / "EVENTS.link").symlink_to(first)
+        (self.root / "worktrees" / "OTHER.hostc").mkdir()
+        (self.root / "worktrees" / "OTHER.hostc" / f"{1:020d}.json").touch()
+        self.assertEqual(5, start_unit.count_wrkslots_events(self.root))
+
+    def test_entry_admits_a_classification_longer_than_the_fixed_part(self) -> None:
+        # 2,000 events: 30 s + 4 ms x 2,000 = 38 s. The fixed 30 s budget
+        # refused this 35 s classification as "budget expired".
+        self.managed_cleanup_record("event-budget-admit")
+        self.plant_wrkslots_events(2000)
+        elapsed = [0.0]
+        observed: list[float] = []
+
+        def run(command, **kwargs):
+            if wrkslots_action(command, "classify-create-journals"):
+                observed.append(kwargs["timeout"])
+                elapsed[0] += 35.0
+            return self.fake(command, **kwargs)
+
+        before = self.filesystem_snapshot(self.root)
+        with mock.patch.object(
+            start_unit.time, "monotonic", side_effect=lambda: elapsed[0]
+        ):
+            error = self.require_read_only_entry(run=run)
+        self.assertIn("ENTRY-AUTHORITY state=ready", error)
+        self.assertIn("classification=35.000s", error)
+        self.assertIn("wrkslots-events=2000 classification-budget=38.0s", error)
+        self.assertNotIn("budget expired", error)
+        self.assertEqual(1, len(observed), error)
+        self.assertAlmostEqual(38.0, observed[0])
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+
+    def test_entry_child_past_the_scaled_budget_still_refuses_naming_it(
+        self,
+    ) -> None:
+        self.managed_cleanup_record("event-budget-refuse")
+        self.plant_wrkslots_events(2000)
+        before = self.filesystem_snapshot(self.root)
+        for late_result in (False, True):
+            with self.subTest(late_result=late_result):
+                elapsed = [0.0]
+
+                def run(command, **kwargs):
+                    if wrkslots_action(command, "classify-create-journals"):
+                        self.assertAlmostEqual(38.0, kwargs["timeout"])
+                        if late_result:
+                            elapsed[0] = 38.0
+                        else:
+                            raise subprocess.TimeoutExpired(
+                                command, kwargs["timeout"]
+                            )
+                    return self.fake(command, **kwargs)
+
+                with (
+                    mock.patch.object(
+                        start_unit.time, "monotonic", side_effect=lambda: elapsed[0]
+                    ),
+                    self.assertRaises(start_unit.ValidateEntryCleanupRefused) as raised,
+                ):
+                    self.require_read_only_entry(run=run)
+                message = str(raised.exception)
+                self.assertIn(
+                    "timed out after 38s" if not late_result
+                    else "classification budget expired while",
+                    message,
+                )
+                self.assertIn(
+                    "; unresolved storage remains retained; classification "
+                    "budget 38.0s = 30s + 4ms x 2000 wrkslots events, cap 300s",
+                    message,
+                )
+                self.assertNotIn("REACHED", message)
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+
+    def test_entry_budget_cap_bounds_a_hung_child_and_names_the_cap(self) -> None:
+        elapsed = [0.0]
+        observed: list[float] = []
+
+        def run(command, **kwargs):
+            if wrkslots_action(command, "classify-create-journals"):
+                observed.append(kwargs["timeout"])
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return self.fake(command, **kwargs)
+
+        with (
+            mock.patch.object(
+                start_unit, "count_wrkslots_events", return_value=10**9
+            ),
+            mock.patch.object(
+                start_unit.time, "monotonic", side_effect=lambda: elapsed[0]
+            ),
+            self.assertRaises(start_unit.ValidateEntryCleanupRefused) as raised,
+        ):
+            self.require_read_only_entry(run=run)
+        self.assertEqual([300.0], observed)
+        message = str(raised.exception)
+        self.assertIn("timed out after 300s", message)
+        self.assertIn(
+            "classification budget 300.0s = 30s + 4ms x 1000000000 wrkslots "
+            "events, cap 300s REACHED: the wrkslots event chain has outgrown "
+            "the entry bound",
+            message,
+        )
+
     # Entry lock waiting, https://github.com/rrnewton/dev-hermit/issues/389.
     # Waiting for the registry locks is bounded by its own
     # VALIDATE_ENTRY_LOCK_WAIT_SECONDS and is never charged to the read-only
