@@ -1935,7 +1935,13 @@ impl LandingLock {
             }
         });
 
-        let outcome = supervise_child(&mut gated.child, args.child_deadline, &args.pr);
+        let outcome = supervise_child(
+            &mut gated.child,
+            args.child_deadline,
+            &args.pr,
+            gated.leader.start_ticks,
+            &gated.domain_token,
+        );
         // Atomically disable heartbeat renewal before stopping it. A heartbeat
         // already holding the guard finishes first; after this durable phase
         // transition no stale renewal can race cleanup or authorize reclaim.
@@ -1944,10 +1950,16 @@ impl LandingLock {
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = capture_and_freeze_residuals(
+        // Kill, do not merely freeze, whatever outlived the leader: a setsid'd
+        // descendant escapes the group signal but not its payload token
+        // (https://github.com/rrnewton/dev-hermit/issues/419). The capture
+        // names only what SIGKILL could not remove, and that still quarantines.
+        let capture = tear_down_payload_domain(
             std::process::id(),
             gated.leader.start_ticks,
             &gated.domain_token,
+            Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
+            "landing-lock",
         );
         let domain_empty =
             !process_group_exists(pgid) && capture.complete && capture.identities.is_empty();
@@ -3383,6 +3395,226 @@ pub(crate) fn capture_and_freeze_residuals(
     }
 }
 
+/// Environment entry that exempts a test payload process from the teardown
+/// signal sweeps below. See [`exempt_from_teardown_signals`].
+#[cfg(test)]
+pub(crate) const TEST_UNKILLABLE_ENTRY: &str = "CI_HUB_TEST_UNKILLABLE=1";
+
+/// Whether the teardown sweeps must leave `pid` alone.
+///
+/// Production never exempts anything. A test binary exempts a process whose
+/// environment carries [`TEST_UNKILLABLE_ENTRY`], which stands in for the
+/// payload process SIGKILL cannot remove: one in uninterruptible sleep, or one
+/// the supervisor is not permitted to signal. Without that stand-in the
+/// quarantine that must follow a failed kill would have no test that reaches
+/// it, because every fixture process dies when it is killed.
+fn exempt_from_teardown_signals(pid: u32) -> bool {
+    #[cfg(test)]
+    if let Ok(raw) = fs::read(format!("/proc/{pid}/environ")) {
+        return raw
+            .split(|byte| *byte == 0)
+            .any(|entry| entry == TEST_UNKILLABLE_ENTRY.as_bytes());
+    }
+    let _ = pid;
+    false
+}
+
+/// Live members of the payload domain beneath `supervisor_pid`, by the SAME
+/// rule the census uses: a descendant of this subreaper that started no
+/// earlier than the payload leader and whose environment carries
+/// `domain_token`. Reads `/proc` only; it neither reaps nor freezes.
+fn live_payload_members(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: &str,
+) -> io::Result<Vec<ProcessIdentity>> {
+    Ok(scan_descendants(supervisor_pid)?
+        .into_iter()
+        .filter(|identity| identity.start_ticks >= payload_start_ticks)
+        .filter(|identity| {
+            classify_membership(identity.pid, domain_token) == DomainMembership::Payload
+        })
+        .collect())
+}
+
+/// Send `signal` to every live payload-domain member that is not in
+/// `skip_pgid`, and return the identities it reached.
+///
+/// This is what reaches a payload process that left the payload's process
+/// group with `setsid` or `setpgid`: the group signal cannot, and the payload
+/// token survives both. `skip_pgid` lets a caller that has already signalled
+/// the payload group avoid delivering the same signal twice to its members,
+/// which some programs treat as a request to abandon their own cleanup.
+///
+/// It does not reap, so it is safe while the direct payload child's exit
+/// status is still owed to `Child::wait`. Membership is the census rule
+/// exactly, so it can never signal a process the census would not have
+/// frozen: an unclassifiable or foreign descendant is left alone.
+pub(crate) fn signal_payload_domain(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: &str,
+    skip_pgid: Option<u32>,
+    signal: libc::c_int,
+) -> Vec<ProcessIdentity> {
+    let Ok(members) = live_payload_members(supervisor_pid, payload_start_ticks, domain_token)
+    else {
+        // Best effort: the census that follows every teardown rescans and
+        // fails closed on the same error.
+        return Vec::new();
+    };
+    let mut reached = Vec::new();
+    for identity in members {
+        if exempt_from_teardown_signals(identity.pid) {
+            continue;
+        }
+        if let Some(pgid) = skip_pgid {
+            let Ok(pid) = libc::pid_t::try_from(identity.pid) else {
+                continue;
+            };
+            // SAFETY: getpgid only reads the target's process-group id.
+            let member_pgid = unsafe { libc::getpgid(pid) };
+            if member_pgid > 0 && member_pgid as u32 == pgid {
+                continue;
+            }
+        }
+        if matches!(signal_exact_process(&identity, signal), Ok(true)) {
+            reached.push(identity);
+        }
+    }
+    reached
+}
+
+pub(crate) fn describe_identities(identities: &[ProcessIdentity]) -> String {
+    identities
+        .iter()
+        .map(|identity| format!("{}@{}", identity.pid, identity.start_ticks))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Upper bound on the SIGKILL-and-recensus rounds in [`kill_payload_domain`].
+const TEARDOWN_KILL_ROUNDS: usize = 3;
+/// How long one round waits for its SIGKILLed identities to disappear.
+const TEARDOWN_KILL_SETTLE_MILLIS: u64 = 2_000;
+const TEARDOWN_POLL_MILLIS: u64 = 20;
+
+/// Census the payload domain, SIGKILL every member the census froze, and
+/// census again, until nothing is left or [`TEARDOWN_KILL_ROUNDS`] is spent.
+///
+/// ⚠️ THE CENSUS FREEZE IS A SNAPSHOT, NOT A DISPOSAL.
+/// [`capture_and_freeze_residuals`] SIGSTOPs what it finds so the membership
+/// it reports holds still. Before
+/// https://github.com/rrnewton/dev-hermit/issues/419 that frozen set was the
+/// end state: RUN 1959's setsid'd scorecard publication was recorded, left
+/// stopped, and held the box in quarantine from 12:37:49Z to 13:01:19Z on
+/// 2026-09-29 until an operator killed it. Here every frozen member is killed
+/// and the domain is re-censused, so the returned capture names only what
+/// SIGKILL could not remove (uninterruptible sleep, or no permission). Those
+/// stay frozen and recorded, and still quarantine the box: nothing is
+/// admitted while any member of the old payload might be alive.
+///
+/// Membership is the census rule exactly -- the same token, floor and
+/// subreaper walk -- so the set killed here is precisely the set the census
+/// would otherwise have held the box for. Unclassifiable descendants are not
+/// killed and keep the capture incomplete.
+///
+/// Callers must have reaped, or given up on, the direct payload child first:
+/// the census reaps adopted children with `waitpid(-1)`.
+pub(crate) fn kill_payload_domain(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: &str,
+    label: &str,
+) -> ResidualCapture {
+    let mut capture = capture_and_freeze_residuals(supervisor_pid, payload_start_ticks, domain_token);
+    for _round in 0..TEARDOWN_KILL_ROUNDS {
+        let targets: Vec<_> = capture
+            .identities
+            .iter()
+            .filter(|identity| !exempt_from_teardown_signals(identity.pid))
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            break;
+        }
+        eprintln!(
+            "{label}: SIGKILL {} payload process(es) still alive after the payload leader, \
+             found by payload token (setsid/setpgid does not remove it): {}",
+            targets.len(),
+            describe_identities(&targets)
+        );
+        for identity in &targets {
+            let _ = signal_exact_process(identity, libc::SIGKILL);
+        }
+        let settle = Instant::now() + Duration::from_millis(TEARDOWN_KILL_SETTLE_MILLIS);
+        loop {
+            // A killed member whose parent was also killed is reparented to
+            // this subreaper as a zombie; reaping it is what makes it absent.
+            reap_exited_children();
+            if targets
+                .iter()
+                .all(|identity| matches!(exact_process_liveness(identity), Ok(false)))
+                || Instant::now() >= settle
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+        }
+        capture = capture_and_freeze_residuals(supervisor_pid, payload_start_ticks, domain_token);
+    }
+    capture
+}
+
+/// Tear down every payload process that outlived the payload leader, then
+/// return the census of whatever survived.
+///
+/// A member that is still alive gets SIGTERM and up to `grace` to exit on its
+/// own, so a publication or cleanup step can finish writing; whatever remains
+/// is then disposed of by [`kill_payload_domain`]. When nothing outlived the
+/// leader this costs one `/proc` scan and returns the same census as before.
+///
+/// Call only after the direct child has been reaped (normal exit, or the
+/// group teardown's `Child::wait`) or its status is already lost.
+pub(crate) fn tear_down_payload_domain(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+    domain_token: &str,
+    grace: Duration,
+    label: &str,
+) -> ResidualCapture {
+    reap_exited_children();
+    let termed = signal_payload_domain(
+        supervisor_pid,
+        payload_start_ticks,
+        domain_token,
+        None,
+        libc::SIGTERM,
+    );
+    if !termed.is_empty() {
+        eprintln!(
+            "{label}: {} payload process(es) outlived the payload leader: {}; \
+             SIGTERM sent, waiting up to {}s before SIGKILL",
+            termed.len(),
+            describe_identities(&termed),
+            grace.as_secs()
+        );
+        let deadline = Instant::now() + grace;
+        loop {
+            reap_exited_children();
+            if termed
+                .iter()
+                .all(|identity| matches!(exact_process_liveness(identity), Ok(false)))
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+        }
+    }
+    kill_payload_domain(supervisor_pid, payload_start_ticks, domain_token, label)
+}
+
 /// Reap every exited child adopted by this subreaper without losing the direct
 /// payload child's status.
 ///
@@ -3957,7 +4189,13 @@ impl ChildOutcome {
 /// SIGKILLed, and the child is reaped so no zombie is left behind. Callers reject
 /// zero before acquiring the lock so the pre-guardrail unbounded behavior cannot
 /// be re-enabled.
-fn supervise_child(child: &mut Child, deadline_secs: u64, pr: &str) -> ChildOutcome {
+fn supervise_child(
+    child: &mut Child,
+    deadline_secs: u64,
+    pr: &str,
+    payload_start_ticks: u64,
+    domain_token: &str,
+) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
         match reap_while_supervising(child.id()) {
@@ -3978,7 +4216,7 @@ fn supervise_child(child: &mut Child, deadline_secs: u64, pr: &str) -> ChildOutc
         }
         if Instant::now() >= deadline {
             let pgid = child.id();
-            terminate_child_group(child, pr);
+            terminate_child_group(child, pr, payload_start_ticks, domain_token);
             return ChildOutcome::TimedOut { pgid };
         }
         thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
@@ -3989,13 +4227,39 @@ fn supervise_child(child: &mut Child, deadline_secs: u64, pr: &str) -> ChildOutc
 /// reap the direct child. The child was spawned with `process_group(0)`, so its
 /// pid equals its pgid and signalling `-pid` reaches the whole land subtree
 /// (gh / git / cargo), not just the wrapper shell.
-fn terminate_child_group(child: &mut Child, pr: &str) {
+///
+/// Each group signal is paired with the same signal to every payload-domain
+/// member OUTSIDE the group ([`signal_payload_domain`]), so a descendant that
+/// called `setsid` shares the grace window and the final SIGKILL instead of
+/// surviving to be frozen by the census
+/// (https://github.com/rrnewton/dev-hermit/issues/419).
+fn terminate_child_group(
+    child: &mut Child,
+    pr: &str,
+    payload_start_ticks: u64,
+    domain_token: &str,
+) {
     // Capture the protected domain before TERM can reap its leader. Descendants
     // retain this pgid even after the direct child exits.
     let pgid = child.id();
     let group = format!("-{pgid}");
+    let supervisor = std::process::id();
     eprintln!("landing-lock: child-deadline reached for PR #{pr}; SIGTERM process group {group}");
     signal_group(libc::SIGTERM, pgid);
+    let escaped = signal_payload_domain(
+        supervisor,
+        payload_start_ticks,
+        domain_token,
+        Some(pgid),
+        libc::SIGTERM,
+    );
+    if !escaped.is_empty() {
+        eprintln!(
+            "landing-lock: SIGTERM {} payload process(es) outside process group {group}: {}",
+            escaped.len(),
+            describe_identities(&escaped)
+        );
+    }
     let grace = Instant::now() + Duration::from_secs(CHILD_TERM_GRACE_SECONDS);
     while Instant::now() < grace {
         // Do not reap the leader yet: its exact PID keeps the captured process
@@ -4004,6 +4268,20 @@ fn terminate_child_group(child: &mut Child, pr: &str) {
     }
     eprintln!("landing-lock: grace expired for PR #{pr}; SIGKILL process group {group}");
     let kill_sent = signal_group(libc::SIGKILL, pgid);
+    let escaped = signal_payload_domain(
+        supervisor,
+        payload_start_ticks,
+        domain_token,
+        Some(pgid),
+        libc::SIGKILL,
+    );
+    if !escaped.is_empty() {
+        eprintln!(
+            "landing-lock: SIGKILL {} payload process(es) outside process group {group}: {}",
+            escaped.len(),
+            describe_identities(&escaped)
+        );
+    }
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -5977,9 +6255,14 @@ wait
             paths: paths.clone(),
         };
         let identity_path = paths.lock.parent().unwrap().join("escaped.identity");
+        // The escaped child is marked CI_HUB_TEST_UNKILLABLE so the teardown's
+        // kill sweep leaves it alive, standing in for a payload process SIGKILL
+        // cannot remove. Since https://github.com/rrnewton/dev-hermit/issues/419
+        // an ordinary setsid'd escapee is killed and the run releases; this test
+        // covers the quarantine that must still follow a kill that fails.
         let script = r#"
 trap 'exit 0' TERM
-setsid /bin/bash -c '
+CI_HUB_TEST_UNKILLABLE=1 setsid /bin/bash -c '
   trap "" TERM HUP
   pid=$BASHPID
   start=$(awk "{print \$22}" "/proc/$pid/stat")
@@ -6340,8 +6623,13 @@ wait
             paths: paths.clone(),
         };
         let identity_path = paths.lock.parent().unwrap().join("escaped.identity");
+        // The escaped child is marked CI_HUB_TEST_UNKILLABLE so the teardown's
+        // kill sweep leaves it alive, standing in for a payload process SIGKILL
+        // cannot remove. Since https://github.com/rrnewton/dev-hermit/issues/419
+        // an ordinary setsid'd escapee is killed and the run releases; this test
+        // covers the quarantine that must still follow a kill that fails.
         let script = r#"
-setsid /bin/sh -c '
+CI_HUB_TEST_UNKILLABLE=1 setsid /bin/sh -c '
   trap "" TERM HUP
   pid=$$
   start=$(awk "{print \$22}" "/proc/$pid/stat")
@@ -6404,6 +6692,117 @@ exit 0
         write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
         assert_eq!(lock.reclaim_dead().unwrap(), 0);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// https://github.com/rrnewton/dev-hermit/issues/419: a setsid'd payload
+    /// process and its child, both ignoring TERM and blocked opening a FIFO
+    /// nobody writes, escape the landing supervisor's process-group kill. The
+    /// teardown must kill them by payload token instead of quarantining.
+    fn run_setsid_pipe_payload(name: &str, mode: &str, child_deadline: u64) {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let identities_path = root.join("escaped.identities");
+        fs::write(&identities_path, b"").unwrap();
+        let fifo = root.join("never-written.fifo");
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo_c` is a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let script = r#"
+setsid /bin/bash -c '
+  trap "" TERM HUP
+  record() {
+    local pid=$BASHPID
+    printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  }
+  ( trap "" TERM HUP; record "$1"; read -r line < "$2" ) &
+  record "$1"
+  read -r line < "$2"
+' escaped-publication "$1" "$2" &
+while [ "$(wc -l < "$1")" -lt 2 ]; do sleep 0.01; done
+if [ "$3" = wait ]; then
+  trap 'exit 0' TERM
+  wait
+fi
+exit 0
+"#;
+        let result = lock.run(RunArgs {
+            agent: format!("{name}-lander"),
+            pr: "9419".into(),
+            wait: 0,
+            hold: 30,
+            child_deadline,
+            child: vec![
+                OsString::from("/bin/bash"),
+                OsString::from("-c"),
+                OsString::from(script),
+                OsString::from("payload-leader"),
+                identities_path.clone().into_os_string(),
+                fifo.clone().into_os_string(),
+                OsString::from(mode),
+            ],
+        });
+        let identities: Vec<ProcessIdentity> = fs::read_to_string(&identities_path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                ProcessIdentity {
+                    pid: fields[0].parse().unwrap(),
+                    start_ticks: fields[1].parse().unwrap(),
+                }
+            })
+            .collect();
+        reap_exited_children();
+        let survivors: Vec<_> = identities
+            .iter()
+            .filter(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+            .cloned()
+            .collect();
+        for identity in &survivors {
+            let _ = signal_exact_process(identity, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && survivors
+                .iter()
+                .any(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+        {
+            reap_exited_children();
+            thread::sleep(Duration::from_millis(10));
+        }
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert!(
+            survivors.is_empty(),
+            "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
+        );
+        let expected = if mode == "wait" {
+            CHILD_DEADLINE_EXIT_CODE
+        } else {
+            0
+        };
+        assert_eq!(result.unwrap(), expected);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
+    #[test]
+    fn normal_exit_tears_down_setsid_pipe_blocked_landing_payload() {
+        run_setsid_pipe_payload("setsid-pipe-normal-exit", "exit", 60);
+    }
+
+    #[test]
+    fn deadline_teardown_kills_setsid_pipe_blocked_landing_payload() {
+        run_setsid_pipe_payload("setsid-pipe-deadline", "wait", 2);
     }
 
     #[test]

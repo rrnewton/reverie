@@ -45,12 +45,13 @@ use thiserror::Error;
 #[cfg(test)]
 use crate::landing_lock::census_recorded_domain;
 use crate::landing_lock::{
-    box_exclusion_anchor_path as box_exclusion_anchor_at, capture_and_freeze_residuals,
-    census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
+    box_exclusion_anchor_path as box_exclusion_anchor_at, census_cleanup_domain,
+    census_disposition, current_host, describe_identities, enable_child_subreaper,
     exact_process_liveness, exit_status_code, foreign_box_claim, foreign_box_quarantine,
-    heartbeat_test_helper_delay, print_census_recovery, print_cleanup_record, process_group_exists,
-    process_start_ticks, reap_exited_children, reap_while_supervising, register_box_claim,
-    remove_cleanup_record_and_claim, repository_lock_root, signal_group, spawn_gated_child, suffix,
+    heartbeat_test_helper_delay, kill_payload_domain, print_census_recovery, print_cleanup_record,
+    process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
+    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root, signal_group,
+    signal_payload_domain, spawn_gated_child, suffix, tear_down_payload_domain,
     verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
     CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
     DomainEvidence, GatedChild, ProcessIdentity, ResidualCapture,
@@ -2792,9 +2793,15 @@ fn settle_empty_payload_domain(
         }
         thread::sleep(Duration::from_millis(EMPTY_DOMAIN_SETTLE_POLL_MILLIS));
         // Repeat the *whole* census, not merely the PGID probe. A helper that
-        // becomes visible during the grace window must turn into an exact
-        // residual and quarantine; waiting may never erase live ownership.
-        capture = capture_and_freeze_residuals(supervisor_pid, leader.start_ticks, domain_token);
+        // becomes visible during the grace window is killed like any other
+        // payload survivor, and one that cannot be killed turns into an exact
+        // residual and quarantines; waiting may never erase live ownership.
+        capture = kill_payload_domain(
+            supervisor_pid,
+            leader.start_ticks,
+            domain_token,
+            "validate-lock",
+        );
     }
     capture
 }
@@ -2831,6 +2838,27 @@ enum AcquireToken {
         head: String,
         ahead: usize,
     },
+    /// A cleanup quarantine holds the box, but it can clear without operator
+    /// action: its supervisor is still alive, its exact recorded residuals may
+    /// still exit, or its absence is already proven. The waiter keeps its queue
+    /// place and polls within `--wait`; nothing is admitted until the record is
+    /// discharged by the same proof `reclaim-dead` uses.
+    QuarantineWait {
+        reason: String,
+        ahead: usize,
+    },
+}
+
+/// How a cleanup record bears on one acquisition attempt.
+enum QuarantineAdmission {
+    /// No cleanup record: ordinary admission applies.
+    Clear,
+    /// This attempt discharged a proven-empty quarantine of a proven-dead
+    /// holder (`auto-reclaim:<agent>`); ordinary admission applies to the
+    /// now-free lock, owner-watch yield included.
+    Reclaimed,
+    /// The quarantine can clear without operator action; keep waiting.
+    Wait(String),
 }
 
 enum GlobalTurn {
@@ -5425,6 +5453,163 @@ impl ValidateLock {
         }
     }
 
+    /// Decide whether a waiter may keep its place behind the current cleanup
+    /// quarantine, or must refuse because waiting cannot clear it.
+    ///
+    /// ⚠️ THIS NEVER ADMITS PAST A QUARANTINE. [`QuarantineAdmission::Wait`]
+    /// and every refusal keep the caller out; the only thing this changes is
+    /// whether the caller waits or exits 3. The record is removed only by
+    /// [`Self::discharge_dead_holder`] after the exact proof `reclaim-dead`
+    /// requires -- the owner is dead AND the payload domain is proven empty --
+    /// and only then is [`QuarantineAdmission::Reclaimed`] returned, after
+    /// which ordinary admission applies to a lock with no record at all.
+    ///
+    /// Before https://github.com/rrnewton/dev-hermit/issues/419 every record
+    /// refused at once. On 2026-09-29 RUN 1959's frozen residuals made two
+    /// queued waiters exit 3 after 6895 s and 3525 s in the queue
+    /// (https://github.com/rrnewton/reverie/pull/649 and
+    /// https://github.com/rrnewton/reverie/pull/774), while the quarantine
+    /// itself cleared 23.5 minutes later.
+    ///
+    /// Waitable, because the record can clear with no operator action:
+    ///   - the holder's supervisor is alive, so it is still tearing down or
+    ///     censusing its own payload and will release or quarantine;
+    ///   - the supervisor is proven dead and its residual census was complete,
+    ///     but those exact identities are still alive: once they exit the
+    ///     record becomes proven-absent;
+    ///   - proven absence (`Recoverable`) with a proven-dead owner: this
+    ///     attempt discharges it itself, recording `auto-reclaim:<agent>`.
+    ///
+    /// Refused, because only an operator can clear it: an unverifiable
+    /// record, an incomplete census, a dead supervisor whose record never
+    /// reached a complete census, or a supervisor whose liveness cannot be
+    /// established (the same condition makes `reclaim-dead` refuse). The
+    /// refusal says which.
+    fn quarantine_admission(
+        &self,
+        holder: Option<&ValidateLockState>,
+        agent: &str,
+        now: i64,
+    ) -> Result<QuarantineAdmission, ValidateLockError> {
+        let cleanup = self.cleanup_verification(holder);
+        let refuse = |why: &str| match self.require_no_cleanup(holder) {
+            Err(ValidateLockError::CleanupQuarantined(message)) => {
+                Err(ValidateLockError::CleanupQuarantined(format!(
+                    "{message}; this quarantine cannot be recovered by waiting: {why}"
+                )))
+            }
+            Err(other) => Err(other),
+            Ok(()) => Err(ValidateLockError::CleanupQuarantined(format!(
+                "cleanup record changed during admission; this quarantine cannot be recovered by \
+                 waiting: {why}"
+            ))),
+        };
+        let Some(holder) = holder else {
+            return match cleanup {
+                CleanupVerification::None => Ok(QuarantineAdmission::Clear),
+                _ => refuse("the cleanup record is not bound to any lock holder"),
+            };
+        };
+        match &cleanup {
+            CleanupVerification::None => return Ok(QuarantineAdmission::Clear),
+            CleanupVerification::Unknown { .. } => {
+                return refuse("the cleanup record itself cannot be verified")
+            }
+            _ => {}
+        }
+        let owner = self.owner_liveness()?;
+        if let CleanupVerification::Recoverable { record, reason } = &cleanup {
+            let attestation = record.attestation.clone();
+            let reason = reason.clone();
+            let decision = self.holder_stale_clear_decision(holder, now, cleanup.clone())?;
+            if let LeaseDecision::Clear { evidence } = decision {
+                let released_by = format!("auto-reclaim:{agent}");
+                self.discharge_dead_holder(holder, &released_by, attestation.as_ref())?;
+                eprintln!(
+                    "validate-lock: {released_by} discharged the proven-empty quarantine of dead \
+                     holder_agent={} kind={} target={}: {}; {reason}",
+                    holder.agent,
+                    holder.kind,
+                    holder.target,
+                    render_supervisor_clear_evidence(&evidence)
+                );
+                return Ok(QuarantineAdmission::Reclaimed);
+            }
+            if matches!(owner, OwnerLiveness::Alive) {
+                return Ok(QuarantineAdmission::Wait(format!(
+                    "RECOVERABLE: payload absence is proven and holder {}'s supervisor is alive, \
+                     so it will release: {reason}",
+                    holder.agent
+                )));
+            }
+            return refuse(&format!(
+                "payload absence is proven, but the lease cannot be cleared without the holder's \
+                 death being proven: {decision}"
+            ));
+        }
+        match (&owner, &cleanup) {
+            (OwnerLiveness::Alive, _) => {
+                let (state, reason) = match &cleanup {
+                    CleanupVerification::Armed { reason, .. } => ("ARMED", reason),
+                    CleanupVerification::Active { reason, .. } => ("ACTIVE", reason),
+                    CleanupVerification::Uncensused { reason, .. } => ("UNCENSUSED", reason),
+                    _ => unreachable!("None, Unknown and Recoverable returned above"),
+                };
+                Ok(QuarantineAdmission::Wait(format!(
+                    "{state}: holder {}'s supervisor is alive and still owns this cleanup: \
+                     {reason}",
+                    holder.agent
+                )))
+            }
+            (OwnerLiveness::Dead(_), CleanupVerification::Active { record, reason })
+                if matches!(
+                    record.phase,
+                    CleanupPhase::Residual {
+                        domain_complete: true,
+                        ..
+                    }
+                ) =>
+            {
+                Ok(QuarantineAdmission::Wait(format!(
+                    "ACTIVE: {reason}; the holder's supervisor is dead and its census was \
+                     complete, so this clears once those exact identities exit"
+                )))
+            }
+            (OwnerLiveness::Unknown(why), _) => refuse(&format!(
+                "the holder's supervisor liveness cannot be established ({why}), so even an \
+                 empty payload domain would not permit reclaim"
+            )),
+            (_, CleanupVerification::Active { .. }) => refuse(
+                "the supervisor is dead and its census never completed, so absence cannot be \
+                 proven when the payload exits",
+            ),
+            (_, CleanupVerification::Armed { .. }) => refuse(
+                "the supervisor is dead and the run never published a payload identity",
+            ),
+            (_, CleanupVerification::Uncensused { .. }) => refuse(
+                "the recorded census is incomplete, so absence cannot be proven without \
+                 operator action",
+            ),
+            _ => unreachable!("None, Unknown and Recoverable returned above"),
+        }
+    }
+
+    /// Discharge a dead holder's lease and cleanup record, recording who did it.
+    /// Callers must already hold the guard and a `LeaseDecision::Clear`.
+    fn discharge_dead_holder(
+        &self,
+        holder: &ValidateLockState,
+        released_by: &str,
+        attestation: Option<&DomainAttestation>,
+    ) -> Result<(), ValidateLockError> {
+        self.write_release_record(released_by, &holder.kind, &holder.target, attestation)?;
+        self.remove_matching_admission_floor(holder)?;
+        remove_if_exists(&self.paths.lock)?;
+        remove_if_exists(&self.paths.owner)?;
+        remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.global_anchor())
+            .map_err(|source| io_error("remove", &self.paths.cleanup, source))
+    }
+
     fn arm_run(&self, agent: &str, kind: Kind, target: &str) -> Result<(), ValidateLockError> {
         let record = CleanupRecord::new(
             agent,
@@ -5728,10 +5913,14 @@ impl ValidateLock {
     ) -> Result<i32, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
+        let mut quarantined: Option<String> = None;
         loop {
             let token = self.with_guard(|| {
                 self.try_acquire_ordered(agent, kind, target, hold, honor_repository_fifo)
             })?;
+            if !matches!(&token, AcquireToken::QuarantineWait { .. }) {
+                quarantined = None;
+            }
             #[cfg(test)]
             let observed_local_yield = matches!(&token, AcquireToken::Yield { .. });
             match token {
@@ -5796,12 +5985,34 @@ impl ValidateLock {
                         last = token;
                     }
                 }
+                AcquireToken::QuarantineWait { reason, ahead } => {
+                    if wait == 0 {
+                        // --wait 0 keeps the historical immediate refusal.
+                        self.with_guard(|| self.remove_from_queue(agent))?;
+                        return Err(ValidateLockError::CleanupQuarantined(reason));
+                    }
+                    let position = ahead + 1;
+                    let token = format!("QUARANTINE:{reason}:{position}");
+                    if token != last {
+                        eprintln!(
+                            "validate-lock: waiting: cleanup quarantine can clear without \
+                             operator action; keeping queued position {position}: {reason}"
+                        );
+                        last = token;
+                    }
+                    quarantined = Some(reason);
+                }
             }
             if started.elapsed() >= Duration::from_secs(wait) {
                 self.with_guard(|| {
                     self.remove_from_queue(agent)?;
                     Ok(())
                 })?;
+                if let Some(reason) = quarantined {
+                    return Err(ValidateLockError::CleanupQuarantined(format!(
+                        "quarantine did not clear within --wait {wait}s: {reason}"
+                    )));
+                }
                 eprintln!("validate-lock: TIMEOUT after {wait}s");
                 return Ok(1);
             }
@@ -5849,8 +6060,19 @@ impl ValidateLock {
         honor_repository_fifo: bool,
     ) -> Result<AcquireToken, ValidateLockError> {
         let now = epoch_seconds()?;
-        let holder = self.read_holder()?;
-        self.require_no_cleanup(holder.as_ref())?;
+        let mut holder = self.read_holder()?;
+        // An unrecoverable quarantine refuses here, before this agent is
+        // enqueued, exactly as before.
+        let quarantine = match self.quarantine_admission(holder.as_ref(), agent, now)? {
+            QuarantineAdmission::Clear => None,
+            QuarantineAdmission::Reclaimed => {
+                // The discharge removed the holder under this guard; admit
+                // against the freed lock exactly as after any other release.
+                holder = self.read_holder()?;
+                None
+            }
+            QuarantineAdmission::Wait(reason) => Some(reason),
+        };
         let mut queue = self.read_queue()?;
         if honor_repository_fifo && !queue.iter().any(|entry| entry.agent == agent) {
             queue.push(QueueEntry {
@@ -5869,6 +6091,16 @@ impl ValidateLock {
         } else {
             0
         };
+        if let Some(reason) = quarantine {
+            // Keep this waiter's FIFO place while the quarantine clears.
+            if honor_repository_fifo {
+                self.write_queue(&queue)?;
+            }
+            return Ok(AcquireToken::QuarantineWait {
+                reason,
+                ahead: my_index,
+            });
+        }
 
         let clear_decision = holder
             .as_ref()
@@ -7114,20 +7346,11 @@ impl ValidateLock {
             let now = epoch_seconds()?;
             match self.holder_stale_clear_decision(&holder, now, cleanup)? {
                 LeaseDecision::Clear { evidence } => {
-                    self.write_release_record(
+                    self.discharge_dead_holder(
+                        &holder,
                         &format!("reclaim-dead:{}", holder.agent),
-                        &holder.kind,
-                        &holder.target,
                         attestation.as_ref(),
                     )?;
-                    self.remove_matching_admission_floor(&holder)?;
-                    remove_if_exists(&self.paths.lock)?;
-                    remove_if_exists(&self.paths.owner)?;
-                    remove_cleanup_record_and_claim(
-                        &self.paths.cleanup,
-                        &self.paths.global_anchor(),
-                    )
-                    .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
                     Ok(Some((holder.agent, holder.kind, holder.target, evidence)))
                 }
                 decision => Err(ValidateLockError::ReclaimNotProven(decision.to_string())),
@@ -7701,6 +7924,10 @@ impl ValidateLock {
                     );
                     return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
+                // --no-wait never waits: the historical immediate refusal.
+                AcquireToken::QuarantineWait { reason, .. } => {
+                    return Err(ValidateLockError::CleanupQuarantined(reason));
+                }
             }
         } else {
             let acquire_status = active.acquire_after_global_turn(
@@ -7867,7 +8094,13 @@ impl ValidateLock {
             }
         });
 
-        let outcome = supervise_child(&mut gated.child, args.child_deadline, &args.target);
+        let outcome = supervise_child(
+            &mut gated.child,
+            args.child_deadline,
+            &args.target,
+            gated.leader.start_ticks,
+            &gated.domain_token,
+        );
         active.begin_run_census(&args.agent, args.kind, &args.target, &gated)?;
         let _ = stop_tx.send(());
         let _ = heartbeat.join();
@@ -7878,10 +8111,17 @@ impl ValidateLock {
             pgid,
             &gated.leader,
             &gated.domain_token,
-            capture_and_freeze_residuals(
+            // Kill, do not merely freeze, whatever outlived the leader: a
+            // setsid'd descendant escapes the group signal but not its payload
+            // token (https://github.com/rrnewton/dev-hermit/issues/419). The
+            // capture names only what SIGKILL could not remove, and that still
+            // quarantines the box.
+            tear_down_payload_domain(
                 std::process::id(),
                 gated.leader.start_ticks,
                 &gated.domain_token,
+                Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
+                "validate-lock",
             ),
         );
         match active.finalize_run_census(
@@ -8574,7 +8814,13 @@ fn install_termination_handlers() -> io::Result<()> {
 /// process group if it runs longer than `deadline_secs`. Copied (not reused)
 /// from landing_lock so the deadline-kill messages carry the `validate-lock:`
 /// prefix; `signal_group` itself is shared.
-fn supervise_child(child: &mut Child, deadline_secs: u64, target: &str) -> ChildOutcome {
+fn supervise_child(
+    child: &mut Child,
+    deadline_secs: u64,
+    target: &str,
+    payload_start_ticks: u64,
+    domain_token: &str,
+) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
         match reap_while_supervising(child.id()) {
@@ -8605,12 +8851,24 @@ fn supervise_child(child: &mut Child, deadline_secs: u64, target: &str) -> Child
             );
             // Name the SIGNAL as the cause. Reusing the deadline phrase here is
             // what made the durable log contradict itself mid-record.
-            terminate_child_group(child, target, &signalled_cause(signal));
+            terminate_child_group(
+                child,
+                target,
+                &signalled_cause(signal),
+                payload_start_ticks,
+                domain_token,
+            );
             return ChildOutcome::Signalled { pgid, signal };
         }
         if Instant::now() >= deadline {
             let pgid = child.id();
-            terminate_child_group(child, target, TERMINATION_CAUSE_DEADLINE);
+            terminate_child_group(
+                child,
+                target,
+                TERMINATION_CAUSE_DEADLINE,
+                payload_start_ticks,
+                domain_token,
+            );
             return ChildOutcome::TimedOut { pgid };
         }
         thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
@@ -8650,17 +8908,58 @@ fn signalled_cause(signal: i32) -> String {
     format!("supervisor signalled ({signal})")
 }
 
-fn terminate_child_group(child: &mut Child, target: &str, cause: &str) {
+/// Each group signal is paired with the same signal to every payload-domain
+/// member OUTSIDE the group (`signal_payload_domain`), so a descendant that
+/// called `setsid` -- RUN 1959's scorecard publication, started by
+/// hermit-box-run -- shares the grace window and the final SIGKILL instead of
+/// surviving to be frozen by the census and quarantining the box
+/// (https://github.com/rrnewton/dev-hermit/issues/419).
+fn terminate_child_group(
+    child: &mut Child,
+    target: &str,
+    cause: &str,
+    payload_start_ticks: u64,
+    domain_token: &str,
+) {
     let pgid = child.id();
     let group = format!("-{pgid}");
+    let supervisor = std::process::id();
     eprintln!("{}", termination_notice(cause, target, &group));
     signal_group(libc::SIGTERM, pgid);
+    let escaped = signal_payload_domain(
+        supervisor,
+        payload_start_ticks,
+        domain_token,
+        Some(pgid),
+        libc::SIGTERM,
+    );
+    if !escaped.is_empty() {
+        eprintln!(
+            "validate-lock: SIGTERM {} payload process(es) outside process group {group}: {}",
+            escaped.len(),
+            describe_identities(&escaped)
+        );
+    }
     let grace = Instant::now() + Duration::from_secs(CHILD_TERM_GRACE_SECONDS);
     while Instant::now() < grace {
         thread::sleep(Duration::from_millis(CHILD_POLL_MILLIS));
     }
     eprintln!("validate-lock: grace expired for {target}; SIGKILL process group {group}");
     let kill_sent = signal_group(libc::SIGKILL, pgid);
+    let escaped = signal_payload_domain(
+        supervisor,
+        payload_start_ticks,
+        domain_token,
+        Some(pgid),
+        libc::SIGKILL,
+    );
+    if !escaped.is_empty() {
+        eprintln!(
+            "validate-lock: SIGKILL {} payload process(es) outside process group {group}: {}",
+            escaped.len(),
+            describe_identities(&escaped)
+        );
+    }
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -9506,7 +9805,9 @@ finally: os.close(held)
         assert_ne!(signalled_cause(9), signalled_cause(15));
     }
     use super::*;
-    use crate::landing_lock::{exact_process_liveness, signal_exact_process, ProcessIdentity};
+    use crate::landing_lock::{
+        exact_process_liveness, signal_exact_process, ProcessIdentity, PAYLOAD_DOMAIN_ENV,
+    };
     use std::os::unix::process::ExitStatusExt;
 
     const HARD_DEATH_ROOT_ENV: &str = "CI_HUB_VALIDATE_HARD_DEATH_ROOT";
@@ -11631,7 +11932,13 @@ os._exit(exit_code)
                 fs::write(&release_path, b"release\n").unwrap();
             });
 
-            let outcome = supervise_child(&mut gated.child, 5, "periodic-reap-bracket");
+            let outcome = supervise_child(
+                &mut gated.child,
+                5,
+                "periodic-reap-bracket",
+                gated.leader.start_ticks,
+                &gated.domain_token,
+            );
             observer.join().unwrap();
             match outcome {
                 ChildOutcome::Exited { status, pgid } => {
@@ -11739,9 +12046,14 @@ os._exit(0)
             paths: paths.clone(),
         };
         let identity_path = paths.lock.parent().unwrap().join("escaped.identity");
+        // The escaped child is marked CI_HUB_TEST_UNKILLABLE so the teardown's
+        // kill sweep leaves it alive, standing in for a payload process SIGKILL
+        // cannot remove. Since https://github.com/rrnewton/dev-hermit/issues/419
+        // an ordinary setsid'd escapee is killed and the run releases; this test
+        // covers the quarantine that must still follow a kill that fails.
         let script = r#"
 trap 'exit 0' TERM
-setsid /bin/bash -c '
+CI_HUB_TEST_UNKILLABLE=1 setsid /bin/bash -c '
   trap "" TERM HUP
   pid=$BASHPID
   start=$(awk "{print \$22}" "/proc/$pid/stat")
@@ -11855,13 +12167,22 @@ wait
             lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
             CleanupVerification::Recoverable { .. }
         ));
-        assert!(matches!(
-            lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30),
-            Err(ValidateLockError::CleanupQuarantined(_))
-        ));
-
-        assert_eq!(lock.reclaim_dead().unwrap(), 0);
+        // Proven absence plus a dead owner is exactly reclaim-dead's proof, so
+        // since https://github.com/rrnewton/dev-hermit/issues/419 the next
+        // acquisition attempt discharges the record itself and names itself in
+        // the release record. Ordinary admission then applies to the freed
+        // lock in the same attempt, so this --wait 0 attempt meets the
+        // owner-watch yield that follows every non-watch release.
+        let discharged = lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30);
+        assert_eq!(discharged.unwrap(), REFUSED_EXIT_CODE);
         assert!(!paths.cleanup.exists());
+        assert!(lock.read_holder().unwrap().is_none());
+        assert_eq!(
+            lock.read_release_record().unwrap().unwrap().released_by,
+            "auto-reclaim:replacement-validate"
+        );
+        // Nothing is left for the explicit path to do.
+        assert_eq!(lock.reclaim_dead().unwrap(), 0);
         seed_watch_after_latest_release(&lock);
         assert_eq!(
             lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30)
@@ -12149,8 +12470,13 @@ wait
             paths: paths.clone(),
         };
         let identity_path = paths.lock.parent().unwrap().join("escaped.identity");
+        // The escaped child is marked CI_HUB_TEST_UNKILLABLE so the teardown's
+        // kill sweep leaves it alive, standing in for a payload process SIGKILL
+        // cannot remove. Since https://github.com/rrnewton/dev-hermit/issues/419
+        // an ordinary setsid'd escapee is killed and the run releases; this test
+        // covers the quarantine that must still follow a kill that fails.
         let script = r#"
-setsid /bin/sh -c '
+CI_HUB_TEST_UNKILLABLE=1 setsid /bin/sh -c '
   trap "" TERM HUP
   pid=$$
   start=$(awk "{print \$22}" "/proc/$pid/stat")
@@ -12222,6 +12548,641 @@ exit 0
         write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
         assert_eq!(lock.reclaim_dead().unwrap(), 0);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    // https://github.com/rrnewton/dev-hermit/issues/419 -- RUN 1959's scorecard
+    // publication was started by hermit-box-run under `setsid`, so the
+    // supervisor's process-group kill missed it, the census froze it with
+    // SIGSTOP, and the box stayed quarantined for 23.5 minutes while two queued
+    // waiters exited 3. The fixture reproduces that shape: a setsid'd process
+    // and its child, both ignoring TERM and blocked opening a FIFO that nothing
+    // will ever write.
+    const SETSID_PIPE_BLOCKED_PAYLOAD: &str = r#"
+setsid /bin/bash -c '
+  trap "" TERM HUP
+  record() {
+    local pid=$BASHPID
+    printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  }
+  ( trap "" TERM HUP; record "$1"; read -r line < "$2" ) &
+  record "$1"
+  read -r line < "$2"
+' escaped-publication "$1" "$2" &
+while [ "$(wc -l < "$1")" -lt 2 ]; do sleep 0.01; done
+if [ "$3" = wait ]; then
+  trap 'exit 0' TERM
+  wait
+fi
+exit 0
+"#;
+
+    fn setsid_pipe_fixture(root: &Path) -> (PathBuf, PathBuf) {
+        let identities = root.join("escaped.identities");
+        fs::write(&identities, b"").unwrap();
+        let fifo = root.join("never-written.fifo");
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo_c` is a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        (identities, fifo)
+    }
+
+    fn read_fixture_identities(path: &Path) -> Vec<ProcessIdentity> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                assert_eq!(fields.len(), 2, "unexpected identity line {line:?}");
+                ProcessIdentity {
+                    pid: fields[0].parse().unwrap(),
+                    start_ticks: fields[1].parse().unwrap(),
+                }
+            })
+            .collect()
+    }
+
+    /// Return the fixture identities still alive, then SIGKILL and reap them so
+    /// a failing assertion cannot leak a blocked process past the test.
+    fn surviving_fixture_identities(identities: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+        reap_exited_children();
+        let survivors: Vec<_> = identities
+            .iter()
+            .filter(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+            .cloned()
+            .collect();
+        for identity in &survivors {
+            let _ = signal_exact_process(identity, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && survivors
+                .iter()
+                .any(|identity| matches!(exact_process_liveness(identity), Ok(true)))
+        {
+            reap_exited_children();
+            thread::sleep(Duration::from_millis(10));
+        }
+        survivors
+    }
+
+    fn setsid_pipe_run_args(
+        agent: &str,
+        target: &str,
+        identities: &Path,
+        fifo: &Path,
+        mode: &str,
+        child_deadline: u64,
+    ) -> RunArgs {
+        RunArgs {
+            agent: agent.into(),
+            kind: Kind::Bench,
+            target: target.into(),
+            run_record: None,
+            no_wait: false,
+            skip_if_recorded: false,
+            wait: 0,
+            hold: 30,
+            child_deadline,
+            max: 1,
+            skip_base_check: true,
+            child: vec![
+                OsString::from("/bin/bash"),
+                OsString::from("-c"),
+                OsString::from(SETSID_PIPE_BLOCKED_PAYLOAD),
+                OsString::from("payload-leader"),
+                identities.as_os_str().to_owned(),
+                fifo.as_os_str().to_owned(),
+                OsString::from(mode),
+            ],
+        }
+    }
+
+    #[test]
+    fn normal_exit_tears_down_setsid_pipe_blocked_payload_without_quarantine() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("setsid-pipe-normal-exit");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (identities_path, fifo) = setsid_pipe_fixture(&root);
+        let result = lock.run(
+            setsid_pipe_run_args(
+                "setsid-pipe-validate",
+                "setsid-pipe-normal",
+                &identities_path,
+                &fifo,
+                "exit",
+                60,
+            ),
+            &root,
+        );
+        let identities = read_fixture_identities(&identities_path);
+        let survivors = surviving_fixture_identities(&identities);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert!(
+            survivors.is_empty(),
+            "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
+    #[test]
+    fn deadline_teardown_kills_setsid_pipe_blocked_payload_without_quarantine() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("setsid-pipe-deadline");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (identities_path, fifo) = setsid_pipe_fixture(&root);
+        let result = lock.run(
+            setsid_pipe_run_args(
+                "setsid-pipe-deadline-validate",
+                "setsid-pipe-deadline",
+                &identities_path,
+                &fifo,
+                "wait",
+                2,
+            ),
+            &root,
+        );
+        let identities = read_fixture_identities(&identities_path);
+        let survivors = surviving_fixture_identities(&identities);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert!(
+            survivors.is_empty(),
+            "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), CHILD_DEADLINE_EXIT_CODE);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
+    #[test]
+    fn teardown_does_not_kill_a_descendant_carrying_another_payload_token() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("foreign-token-descendant");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let identity_path = root.join("foreign.identity");
+        fs::write(&identity_path, b"").unwrap();
+        // The descendant re-labels itself with ANOTHER payload's token, which is
+        // how an unrelated daemon adopted by this subreaper presents. The
+        // teardown kill sweep must leave it alone, exactly as the census does.
+        let script = format!(
+            r#"
+{PAYLOAD_DOMAIN_ENV}=some-other-payload-9999 setsid /bin/bash -c '
+  trap "" TERM HUP
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{{print \$22}}" "/proc/$pid/stat")" >> "$1"
+  exec sleep 60
+' foreign-daemon "$1" &
+while [ "$(wc -l < "$1")" -lt 1 ]; do sleep 0.01; done
+exit 0
+"#
+        );
+        let result = lock.run(
+            RunArgs {
+                agent: "foreign-token-validate".into(),
+                kind: Kind::Bench,
+                target: "foreign-token".into(),
+                run_record: None,
+                no_wait: false,
+                skip_if_recorded: false,
+                wait: 0,
+                hold: 30,
+                child_deadline: 60,
+                max: 1,
+                skip_base_check: true,
+                child: vec![
+                    OsString::from("/bin/bash"),
+                    OsString::from("-c"),
+                    OsString::from(script),
+                    OsString::from("payload-leader"),
+                    identity_path.clone().into_os_string(),
+                ],
+            },
+            &root,
+        );
+        let identities = read_fixture_identities(&identity_path);
+        let survivors = surviving_fixture_identities(&identities);
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(identities.len(), 1);
+        assert_eq!(
+            survivors, identities,
+            "teardown killed a process that does not carry this payload's token (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    fn quarantined_holder_fixture(
+        name: &str,
+        target: &str,
+        residuals: Vec<ProcessIdentity>,
+        domain_complete: bool,
+    ) -> (LockPaths, ValidateLock) {
+        let paths = temp_paths(name);
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        assert_eq!(
+            lock.acquire("quarantined-holder", Kind::Validate, target, 0, 30)
+                .unwrap(),
+            0
+        );
+        lock.write_current_process_owner().unwrap();
+        write_cleanup_record(
+            &paths.cleanup,
+            &CleanupRecord::new(
+                "quarantined-holder",
+                format!("validate:{target}"),
+                CleanupPhase::Residual {
+                    pgid: 0x7fff_fffe,
+                    domain_complete,
+                    residuals,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // The quarantining supervisor has exited, as RUN 1959's did.
+        let mut owner = lock.read_process_owner().unwrap().unwrap();
+        owner.pid = u32::MAX;
+        write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
+        (paths, lock)
+    }
+
+    fn spawn_residual() -> (Child, ProcessIdentity) {
+        let child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let identity = ProcessIdentity {
+            pid: child.id(),
+            start_ticks: process_start_ticks(child.id()).unwrap(),
+        };
+        (child, identity)
+    }
+
+    fn kill_residual(mut child: Child, identity: &ProcessIdentity) {
+        let _ = signal_exact_process(identity, libc::SIGKILL);
+        let _ = child.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && matches!(exact_process_liveness(identity), Ok(true)) {
+            reap_exited_children();
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn waiter_behind_a_quarantine_that_clears_keeps_its_place_and_is_admitted() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "quarantine-clears",
+            "quarantined-head",
+            vec![identity.clone()],
+            true,
+        );
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Active { .. }
+        ));
+        let waiter_paths = paths.clone();
+        let started = Instant::now();
+        let waiter = thread::spawn(move || {
+            let lock = ValidateLock {
+                paths: waiter_paths,
+            };
+            lock.acquire("queued-waiter", Kind::Validate, "sha-waiter", 60, 30)
+        });
+        thread::sleep(Duration::from_millis(1500));
+        let exited_at_quarantine = waiter.is_finished();
+        let queued_while_quarantined = lock
+            .read_queue()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.agent == "queued-waiter");
+
+        // Recovery, as at 13:01:19Z on 2026-09-29: the residual dies, then an
+        // operator runs reclaim-dead. The waiter may already have reclaimed the
+        // proven-dead holder itself, in which case this finds nothing to do.
+        kill_residual(residual, &identity);
+        let manual = lock.reclaim_dead();
+        seed_watch_after_latest_release(&lock);
+        let result = waiter.join().unwrap();
+        let elapsed = started.elapsed();
+        let holder = lock.read_holder().unwrap();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert!(
+            !exited_at_quarantine,
+            "waiter exited at a recoverable quarantine instead of keeping its place: {result:?}"
+        );
+        assert!(
+            queued_while_quarantined,
+            "waiter gave up its FIFO place while the quarantine cleared"
+        );
+        assert!(manual.is_ok(), "reclaim-dead failed: {manual:?}");
+        assert_eq!(result.unwrap(), 0, "waiter was not admitted after the quarantine cleared");
+        assert!(elapsed < Duration::from_secs(60));
+        assert_eq!(holder.map(|holder| holder.agent).as_deref(), Some("queued-waiter"));
+    }
+
+    #[test]
+    fn waiter_auto_reclaims_a_proven_dead_quarantine_and_records_it() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "quarantine-auto-reclaim",
+            "auto-reclaim-head",
+            vec![identity.clone()],
+            true,
+        );
+        let waiter_paths = paths.clone();
+        let waiter = thread::spawn(move || {
+            let lock = ValidateLock {
+                paths: waiter_paths,
+            };
+            lock.acquire("auto-waiter", Kind::Validate, "sha-auto", 60, 30)
+        });
+        thread::sleep(Duration::from_millis(1500));
+        let exited_at_quarantine = waiter.is_finished();
+        kill_residual(residual, &identity);
+
+        // No operator action: the waiter itself must run reclaim-dead's proof.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut released_by = None;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            let record = lock.read_release_record().unwrap();
+            if let Some(record) = record.filter(|record| record.released_by.starts_with("auto-reclaim:")) {
+                released_by = Some(record.released_by.clone());
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if released_by.is_some() {
+            seed_watch_after_latest_release(&lock);
+        } else {
+            // Unblock a waiter that never reclaimed so the test can finish.
+            let _ = lock.reclaim_dead();
+            if lock.read_release_record().unwrap().is_some() {
+                seed_watch_after_latest_release(&lock);
+            }
+        }
+        let result = waiter.join().unwrap();
+        let cleanup_left = paths.cleanup.exists();
+        let holder = lock.read_holder().unwrap();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert!(
+            !exited_at_quarantine,
+            "waiter exited at a recoverable quarantine instead of keeping its place: {result:?}"
+        );
+        assert_eq!(released_by.as_deref(), Some("auto-reclaim:auto-waiter"));
+        assert!(!cleanup_left);
+        assert_eq!(result.unwrap(), 0);
+        assert_eq!(holder.map(|holder| holder.agent).as_deref(), Some("auto-waiter"));
+    }
+
+    /// The incident path itself: both RUN 1959 waiters were `validate-lock run`
+    /// invocations that reached `acquire_after_global_turn` holding the box
+    /// anchor and exited 3 on "ACTIVE: payload identities remain active".
+    #[test]
+    fn run_waiter_behind_a_clearing_quarantine_keeps_its_turn_and_runs() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "run-quarantine-clears",
+            "run-quarantined-head",
+            vec![identity.clone()],
+            true,
+        );
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let marker = root.join("payload-ran");
+        let (run_paths, run_root, run_marker) = (paths.clone(), root.clone(), marker.clone());
+        let waiter = thread::spawn(move || {
+            ValidateLock { paths: run_paths }.run(
+                RunArgs {
+                    agent: "run-waiter".into(),
+                    kind: Kind::Bench,
+                    target: "run-waiter-target".into(),
+                    run_record: None,
+                    no_wait: false,
+                    skip_if_recorded: false,
+                    wait: 60,
+                    hold: 30,
+                    child_deadline: 30,
+                    max: 1,
+                    skip_base_check: true,
+                    child: vec![
+                        OsString::from("/bin/sh"),
+                        OsString::from("-c"),
+                        OsString::from("printf ran > \"$1\""),
+                        OsString::from("payload"),
+                        run_marker.into_os_string(),
+                    ],
+                },
+                &run_root,
+            )
+        });
+        thread::sleep(Duration::from_millis(1500));
+        let exited_at_quarantine = waiter.is_finished();
+        kill_residual(residual, &identity);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut released_by = None;
+        while Instant::now() < deadline && !waiter.is_finished() {
+            if let Some(record) = lock
+                .read_release_record()
+                .unwrap()
+                .filter(|record| record.released_by.starts_with("auto-reclaim:"))
+            {
+                released_by = Some(record.released_by);
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if released_by.is_none() {
+            let _ = lock.reclaim_dead();
+        }
+        if lock.read_release_record().unwrap().is_some() {
+            seed_watch_after_latest_release(&lock);
+        }
+        let result = waiter.join().unwrap();
+        let ran = marker.exists();
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            !exited_at_quarantine,
+            "run waiter exited at a recoverable quarantine instead of keeping its turn: {result:?}"
+        );
+        assert_eq!(released_by.as_deref(), Some("auto-reclaim:run-waiter"));
+        assert_eq!(result.unwrap(), 0);
+        assert!(ran, "the admitted payload never ran");
+        assert!(!cleanup_left);
+        assert!(!holder_left);
+    }
+
+    #[test]
+    fn waiter_gives_up_on_a_quarantine_that_never_clears_without_admitting() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "quarantine-persists",
+            "persistent-head",
+            vec![identity.clone()],
+            true,
+        );
+        let lock_before = fs::read(&paths.lock).unwrap();
+        let cleanup_before = fs::read(&paths.cleanup).unwrap();
+        let started = Instant::now();
+        let result = lock.acquire("patient-waiter", Kind::Validate, "sha-patient", 4, 30);
+        let elapsed = started.elapsed();
+        let lock_after = fs::read(&paths.lock).unwrap();
+        let cleanup_after = fs::read(&paths.cleanup).unwrap();
+        kill_residual(residual, &identity);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        assert_eq!(lock_after, lock_before, "a live quarantine must never be displaced");
+        assert_eq!(cleanup_after, cleanup_before);
+        let error = result.expect_err("a quarantine that never clears must not admit");
+        assert!(matches!(error, ValidateLockError::CleanupQuarantined(_)));
+        assert!(
+            elapsed >= Duration::from_secs(4),
+            "waiter did not spend its --wait budget before refusing: {elapsed:?}"
+        );
+        assert!(
+            error.to_string().contains("did not clear within"),
+            "refusal must say the quarantine outlasted the wait: {error}"
+        );
+    }
+
+    #[test]
+    fn unrecoverable_quarantine_still_refuses_immediately_and_says_so() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (paths, lock) = quarantined_holder_fixture(
+            "quarantine-unrecoverable",
+            "unrecoverable-head",
+            vec![ProcessIdentity {
+                pid: 0,
+                start_ticks: 1,
+            }],
+            false,
+        );
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Uncensused { .. }
+        ));
+        let started = Instant::now();
+        let result = lock.acquire("hopeful-waiter", Kind::Validate, "sha-hopeful", 30, 30);
+        let elapsed = started.elapsed();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        let error = result.expect_err("an uncensused quarantine must refuse");
+        assert!(matches!(error, ValidateLockError::CleanupQuarantined(_)));
+        assert!(
+            elapsed < Duration::from_secs(POLL_SECONDS),
+            "an unrecoverable quarantine must refuse at once, not wait: {elapsed:?}"
+        );
+        assert!(
+            error.to_string().contains("cannot be recovered by waiting"),
+            "refusal must say waiting cannot help: {error}"
+        );
+    }
+
+    /// A quarantine whose supervisor's liveness cannot be established is not
+    /// waitable, with residuals alive or gone: `reclaim-dead` needs the owner
+    /// proven dead too, so no amount of waiting would discharge it.
+    #[test]
+    fn unknown_owner_liveness_quarantine_refuses_immediately_and_is_not_discharged() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let (residual, identity) = spawn_residual();
+        let (paths, lock) = quarantined_holder_fixture(
+            "quarantine-unknown-owner",
+            "unknown-owner-head",
+            vec![identity.clone()],
+            true,
+        );
+        let mut owner = lock.read_process_owner().unwrap().unwrap();
+        owner.host = "some-other-host.invalid".into();
+        write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
+        let lock_bytes = fs::read(&paths.lock).unwrap();
+        let cleanup_bytes = fs::read(&paths.cleanup).unwrap();
+        let release_before = fs::read(&paths.released).ok();
+
+        let started = Instant::now();
+        let populated = lock.acquire("hopeful-waiter", Kind::Validate, "sha-hopeful", 30, 30);
+        let populated_elapsed = started.elapsed();
+        kill_residual(residual, &identity);
+        let recoverable = matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Recoverable { .. }
+        );
+        let started = Instant::now();
+        let absent = lock.acquire("hopeful-waiter", Kind::Validate, "sha-hopeful", 30, 30);
+        let absent_elapsed = started.elapsed();
+        let lock_after = fs::read(&paths.lock).ok();
+        let cleanup_after = fs::read(&paths.cleanup).ok();
+        let release_after = fs::read(&paths.released).ok();
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+
+        for (label, result, elapsed) in [
+            ("populated", populated, populated_elapsed),
+            ("absent", absent, absent_elapsed),
+        ] {
+            let error = result.expect_err("an unknown-owner quarantine must refuse");
+            assert!(
+                matches!(error, ValidateLockError::CleanupQuarantined(_)),
+                "{label}: {error}"
+            );
+            assert!(
+                error.to_string().contains("cannot be recovered by waiting"),
+                "{label}: refusal must say waiting cannot help: {error}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(POLL_SECONDS),
+                "{label}: refused only after {elapsed:?}"
+            );
+        }
+        assert!(recoverable, "fixture did not reach proven payload absence");
+        assert_eq!(lock_after.as_deref(), Some(lock_bytes.as_slice()));
+        assert_eq!(cleanup_after.as_deref(), Some(cleanup_bytes.as_slice()));
+        assert_eq!(
+            release_after, release_before,
+            "an unknown-owner lease was discharged"
+        );
     }
 
     // 5. --max outside the fixed one/six policies is rejected before acquiring.
