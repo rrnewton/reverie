@@ -2261,12 +2261,19 @@ struct RestartPlan {
     inject_in_signal: bool,
     /// Deliver `SIGTRAP` in place of `signal` from its signal event.
     deliver_sigtrap: bool,
+    /// With `signal_timer`, request the timer `SIGNAL_TIMER_NEAR_RCBS` ahead
+    /// instead, so its single-step window covers the handler's return.
+    signal_timer_near: bool,
 }
 
 /// Far enough past the delivery of a quiet guest handler that neither the
 /// timer's notification nor its single-step window reaches the handler's
 /// return, and well within the fixture's `-spin` loop after the read.
 const SIGNAL_TIMER_RCBS: u64 = 50_000;
+
+/// Near enough that the timer's skid-margin single-step window covers the
+/// quiet handler's return, so the step loop reaches a restart landing.
+const SIGNAL_TIMER_NEAR_RCBS: u64 = 1000;
 
 /// A syscall `RestartTool` injects inside the first magic invocation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2292,6 +2299,7 @@ impl RestartPlan {
             | ((self.signal_timer as u64) << 36)
             | ((self.inject_in_signal as u64) << 37)
             | ((self.deliver_sigtrap as u64) << 38)
+            | ((self.signal_timer_near as u64) << 39)
     }
 
     fn decode(config: u64) -> Self {
@@ -2310,6 +2318,7 @@ impl RestartPlan {
             signal_timer: (config >> 36) & 1 != 0,
             inject_in_signal: (config >> 37) & 1 != 0,
             deliver_sigtrap: (config >> 38) & 1 != 0,
+            signal_timer_near: (config >> 39) & 1 != 0,
         }
     }
 }
@@ -2459,8 +2468,13 @@ impl Tool for RestartTool {
         let plan = RestartPlan::decode(*guest.config());
         if signal as i32 == plan.signal {
             if plan.signal_timer {
+                let rcbs = if plan.signal_timer_near {
+                    SIGNAL_TIMER_NEAR_RCBS
+                } else {
+                    SIGNAL_TIMER_RCBS
+                };
                 guest
-                    .set_timer_precise(reverie::TimerSchedule::Rcbs(SIGNAL_TIMER_RCBS))
+                    .set_timer_precise(reverie::TimerSchedule::Rcbs(rcbs))
                     .unwrap();
             }
             if plan.inject_in_signal {
@@ -3178,6 +3192,47 @@ async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
             restarts: 1,
             signal: libc::SIGUSR1,
             signal_timer: true,
+            ..Default::default()
+        };
+        let (stdout, events) = restart_parity(mode, plan, 1, mode).await;
+        let result = if restarted { RESTART_RESULT } else { -4 };
+        assert_eq!(
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
+            "{mode}"
+        );
+        let last = if restarted {
+            "magic read(0x7e57,1)"
+        } else {
+            "timer"
+        };
+        assert_eq!(
+            events,
+            ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1", last],
+            "{mode}"
+        );
+    }
+}
+
+/// As `host_hybrid_landing_stop_does_not_cancel_a_timer`, with the timer due
+/// `SIGNAL_TIMER_NEAR_RCBS` after the deciding signal, so the timer's
+/// single-step window covers the handler's return and the precise timer, not
+/// the run loop, executes the restart landing. The landing must be resolved
+/// inside the step loop: an interrupted read continues and the timer fires
+/// in the spin loop as under plain ptrace; a restarted read stops at its
+/// re-entry on both backends.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
+    for (mode, restarted) in [
+        ("handler-quiet-spin", false),
+        ("handler-quiet-spin-restart", true),
+    ] {
+        let plan = RestartPlan {
+            errno: reverie::Errno::ERESTARTSYS.into_raw(),
+            restarts: 1,
+            signal: libc::SIGUSR1,
+            signal_timer: true,
+            signal_timer_near: true,
             ..Default::default()
         };
         let (stdout, events) = restart_parity(mode, plan, 1, mode).await;
