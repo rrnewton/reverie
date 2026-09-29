@@ -73,6 +73,75 @@ def retained_case(root, source, run, mutation=None):
     return green
 
 
+_RETIRED_PARITY_PROJECTION_KEYS = {
+    "ordinary_green_count", "selected_backend_parity", "backend_parity_selected_count",
+    "backend_parity_recorded_count", "backend_parity_green_count",
+}
+_COMPACT_UNAVAILABLE = "Comparison evidence unavailable; exact detail is retained in the cell artifact"
+
+
+def pre_s1_candidate(candidate):
+    """Rewrite a pre-S1 reference-diverged row so its candidate attempt, the
+    cell's Ordinary verdict, no longer matched while backend_parity stays
+    populated. The native producer verifier must still authenticate it; the
+    same rewrite is exercised against the Rust verifier in
+    ci-hub/lib/validation_evidence.rs.
+
+    An unavailable verdict states no comparison, so a selected-attempt-v1
+    summary cell must then carry neither an evidence binding nor a selected
+    attempt (the producer's binding rule); the retained artifact cell keeps
+    its recorded attempt. Legacy-unbound rows carry neither field already."""
+    def mutate(row, plan, cells, tests):
+        artifact_attempt = cells[0]["backend_parity"]["attempts"][0]
+        summary_attempt = row["cell_results"]["cells"][0]["backend_parity"]["attempts"][0]
+        attempt = artifact_attempt["candidate_attempt"]
+        if candidate == "diverged":
+            reference = artifact_attempt["reference_attempt"]
+            for key in ("verification_report", "verification_report_sha256", "outcome", "status", "first_divergent_record"):
+                attempt[key] = copy.deepcopy(reference[key])
+            attempt["reason"] = "candidate strict verification diverged"
+            summary = copy.deepcopy(summary_attempt["reference"])
+            artifact_verdict = copy.deepcopy(summary)
+            summary_attempt["candidate_verification_report_sha256"] = reference["verification_report_sha256"]
+        else:
+            attempt.update(verification_report=None, verification_report_sha256=None, outcome="ERROR",
+                           status=1, error_kind="synthetic-candidate-crash",
+                           reason="candidate exited before verification")
+            summary = {"state": "unavailable-with-reason", "comparison_tier": "declared-but-unverifiable",
+                       "reason": _COMPACT_UNAVAILABLE}
+            artifact_verdict = dict(summary, reason="candidate exited before verification")
+            summary_attempt["candidate_verification_report_sha256"] = None
+            row["cell_results"]["cells"][0].pop("evidence_binding", None)
+            row["cell_results"]["cells"][0].pop("selected_attempt", None)
+        summary_attempt["candidate"] = copy.deepcopy(summary)
+        row["cell_results"]["cells"][0]["cell_verdict"] = summary
+        cells[0]["cell_verdict"] = artifact_verdict
+    return mutate
+
+
+def ordinary_only_candidate(candidate):
+    """Rewrite an ordinary-only row, the shape of every post-S1 row (a cell
+    with no backend_parity, whose single Ordinary observation carries no outer
+    attempt), so the cell's own strict verification diverged or crashed before
+    verification. The artifact and the compact summary are rewritten together,
+    so the native producer verifier must still authenticate the row; the same
+    rewrite is exercised against the Rust verifier in
+    ci-hub/lib/validation_evidence.rs."""
+    def mutate(row, plan, cells, tests):
+        summary_cell = row["cell_results"]["cells"][0]
+        if candidate == "diverged":
+            for verdict in (summary_cell["cell_verdict"], cells[0]["cell_verdict"]):
+                verdict.update(state="compared-and-diverged", bitwise_parity=False)
+        else:
+            summary = {"state": "unavailable-with-reason", "comparison_tier": "declared-but-unverifiable",
+                       "reason": _COMPACT_UNAVAILABLE}
+            summary_cell["cell_verdict"] = summary
+            cells[0]["cell_verdict"] = dict(summary, reason="candidate exited before verification")
+            summary_cell.pop("evidence_binding", None)
+            summary_cell.pop("selected_attempt", None)
+    return mutate
+
+
 def test_selected_attempt_v1_fixture_manifest_integrity():
     fixtures = FIXTURES / "selected-attempt-v1"
     manifest_bytes = (fixtures / "FINAL-V1-FIXTURE-MANIFEST.json").read_bytes()
@@ -102,6 +171,27 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
     ordinary = retained_case(tmp_path, "ordinary-only", "ordinary-only")
     reference = retained_case(tmp_path, "reference-diverged", "reference")
     retried = retained_case(tmp_path, "cross-diverged-then-matched", "retried")
+    # Pre-S1 rows with backend_parity populated whose Ordinary verdict failed.
+    bound_reference = retained_case(tmp_path, "selected-attempt-v1/reference-diverged", "bound-reference")
+    candidate_diverged = retained_case(
+        tmp_path, "selected-attempt-v1/reference-diverged", "candidate-diverged", pre_s1_candidate("diverged"))
+    candidate_unavailable = retained_case(
+        tmp_path, "selected-attempt-v1/reference-diverged", "candidate-unavailable", pre_s1_candidate("unavailable"))
+    legacy_candidate_diverged = retained_case(
+        tmp_path, "reference-diverged", "legacy-candidate-diverged", pre_s1_candidate("diverged"))
+    legacy_candidate_unavailable = retained_case(
+        tmp_path, "reference-diverged", "legacy-candidate-unavailable", pre_s1_candidate("unavailable"))
+    # Ordinary-only rows, the shape of every post-S1 row, whose one cell's own
+    # verification diverged or was unavailable.
+    bound_ordinary = retained_case(tmp_path, "selected-attempt-v1/ordinary-only", "bound-ordinary")
+    ordinary_diverged = retained_case(
+        tmp_path, "selected-attempt-v1/ordinary-only", "ordinary-diverged", ordinary_only_candidate("diverged"))
+    ordinary_unavailable = retained_case(
+        tmp_path, "selected-attempt-v1/ordinary-only", "ordinary-unavailable", ordinary_only_candidate("unavailable"))
+    legacy_ordinary_diverged = retained_case(
+        tmp_path, "ordinary-only", "legacy-ordinary-diverged", ordinary_only_candidate("diverged"))
+    legacy_ordinary_unavailable = retained_case(
+        tmp_path, "ordinary-only", "legacy-ordinary-unavailable", ordinary_only_candidate("unavailable"))
     missing = retained_case(tmp_path, "matched", "missing-plan")
     (tmp_path / missing["constructed_plan"]["path"]).unlink()
     corrupt = retained_case(tmp_path, "matched", "corrupt-plan")
@@ -154,7 +244,7 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
     assert restored["cell_results"] == matched["cell_results"]
     assert "/home/fixture" not in json.dumps(event)
     assert b"/home/fixture" in (tmp_path / matched["cell_results"]["artifact"]["path"]).read_bytes()
-    rows = [matched, ordinary, reference, retried, missing, corrupt, same_length_corrupt, empty_suffix, nul_suffix, wrong_compatibility, partial, missing_producer, substituted_producer, restored]
+    rows = [matched, ordinary, reference, retried, bound_reference, candidate_diverged, candidate_unavailable, legacy_candidate_diverged, legacy_candidate_unavailable, bound_ordinary, ordinary_diverged, ordinary_unavailable, legacy_ordinary_diverged, legacy_ordinary_unavailable, missing, corrupt, same_length_corrupt, empty_suffix, nul_suffix, wrong_compatibility, partial, missing_producer, substituted_producer, restored]
     predicate = copy.deepcopy(receipt.active())
     predicate["cell_results"]["supported_schema_max"] = 10
     real_popen = receipt.subprocess.Popen
@@ -170,29 +260,76 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
             checked_ordinary = receipt.validation_evidence(ordinary)
             assert checked_ordinary.status == "legacy-unbound"
             assert checked_ordinary.evidence["full_backend_parity"] is False
-            assert checked_ordinary.backend_parity_matches == ()
             projection = receipt.cell_scorecard_projection(ordinary, predicate)
             assert projection["eligible"] is False
             assert projection["binding_contract"] == "legacy-unbound"
             assert projection["bound_evidence_eligible"] is False
             assert len(projection["selected"]) == 1
-            assert projection["ordinary_green_count"] == 1
-            assert projection["selected_backend_parity"] == []
-            assert projection["backend_parity_selected_count"] == 0
-            assert projection["backend_parity_recorded_count"] == 0
-            assert projection["backend_parity_green_count"] == 0
+            assert projection["green_count"] == 1
+            assert not set(projection) & _RETIRED_PARITY_PROJECTION_KEYS
+            # Parity is not a qualification input
+            # (https://github.com/rrnewton/hermit/issues/3301). A ptrace
+            # reference or cross divergence no longer refuses; these legacy rows
+            # are refused only for their missing selected-attempt binding.
             for row in (reference, retried):
-                assert receipt.row_qualification(row, row["commit"], predicate) == (False, "cell_results comparison-diverged")
-                # A valid recorded failure remains publishable evidence.
+                assert receipt.validation_evidence(row).full_validation_refusal is None
+                assert receipt.row_qualification(row, row["commit"], predicate) == (False, "cell_results legacy-unbound")
                 validate_rows._require_cell_results(row, tmp_path)
-            for row in (matched, reference, retried):
+            # A bound pre-S1 row qualifies or is refused exactly as its
+            # Ordinary observation dictates.
+            checked_bound = receipt.validation_evidence(bound_reference)
+            assert checked_bound.status == "verified"
+            assert checked_bound.evidence["full_backend_parity"] is False
+            assert [item["verdict"]["state"] for item in checked_bound.evidence["observations"]] == ["matched", "diverged", "unavailable-with-reason"]
+            assert receipt.row_qualification(bound_reference, bound_reference["commit"], predicate) == (True, "qualifies")
+            for row, status, state, reason in (
+                (candidate_diverged, "verified", "diverged", "cell_results comparison-diverged"),
+                (candidate_unavailable, "verified", "unavailable-with-reason", "cell_results comparison-unavailable"),
+                (legacy_candidate_diverged, "legacy-unbound", "diverged", "cell_results comparison-diverged"),
+                (legacy_candidate_unavailable, "legacy-unbound", "unavailable-with-reason", "cell_results comparison-unavailable"),
+            ):
+                checked = receipt.validation_evidence(row)
+                assert checked.status == status, checked
+                assert checked.evidence["cell_results"]["selected_backend_parity"] != []
+                ordinary_states = [item["verdict"]["state"] for item in checked.evidence["observations"] if item["relation"]["kind"] == "ordinary"]
+                assert ordinary_states == [state]
+                assert checked.full_validation_refusal == reason
+                assert receipt.row_qualification(row, row["commit"], predicate) == (False, reason)
+                projection = receipt.cell_scorecard_projection(row, predicate)
+                assert projection["green_count"] == 0
+            # The same two refusals on ordinary-only rows. Their single Ordinary
+            # observation has no outer attempt, unlike a parity cell's, so these
+            # cases fail if the Ordinary filter ever exempts that population.
+            checked_bound_ordinary = receipt.validation_evidence(bound_ordinary)
+            assert checked_bound_ordinary.status == "verified"
+            assert [(item["relation"]["kind"], item["outer_attempt"], item["verdict"]["state"])
+                    for item in checked_bound_ordinary.evidence["observations"]] == [("ordinary", None, "matched")]
+            assert checked_bound_ordinary.full_validation_refusal is None
+            assert receipt.row_qualification(bound_ordinary, bound_ordinary["commit"], predicate) == (True, "qualifies")
+            for row, status, state, reason in (
+                (ordinary_diverged, "verified", "diverged", "cell_results comparison-diverged"),
+                (ordinary_unavailable, "verified", "unavailable-with-reason", "cell_results comparison-unavailable"),
+                (legacy_ordinary_diverged, "legacy-unbound", "diverged", "cell_results comparison-diverged"),
+                (legacy_ordinary_unavailable, "legacy-unbound", "unavailable-with-reason", "cell_results comparison-unavailable"),
+            ):
+                checked = receipt.validation_evidence(row)
+                assert checked.status == status, checked
+                assert checked.evidence["cell_results"]["selected_backend_parity"] == []
+                assert [(item["relation"]["kind"], item["outer_attempt"], item["verdict"]["state"])
+                        for item in checked.evidence["observations"]] == [("ordinary", None, state)]
+                assert checked.full_validation_refusal == reason
+                assert receipt.row_qualification(row, row["commit"], predicate) == (False, reason)
+                projection = receipt.cell_scorecard_projection(row, predicate)
+                assert projection["green_count"] == 0
+            for row in (matched, reference, retried, bound_reference):
                 projection = receipt.cell_scorecard_projection(row, predicate)
                 assert len(projection["selected"]) == 1
-                assert projection["ordinary_green_count"] == 1
-                assert projection["backend_parity_selected_count"] == 1
-                assert projection["backend_parity_recorded_count"] == 1
-                assert projection["backend_parity_green_count"] == int(row is matched)
-                assert projection["green_count"] == int(row is matched)
+                # Each cell is green exactly as its ordinary verdict dictates;
+                # a legacy backend_parity slot never demotes it.
+                assert projection["green_count"] == 1
+                assert [cell["scorecard_green"] for cell in projection["cells"]] == [True]
+                assert "backend_parity" not in projection["cells"][0]
+                assert not set(projection) & _RETIRED_PARITY_PROJECTION_KEYS
             checked_reference = receipt.validation_evidence(reference)
             observations = checked_reference.evidence["observations"]
             present, diverged, unavailable = failure_evidence.failed_cells(reference["cell_results"], comparison_observations=observations)
@@ -224,9 +361,8 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
             assert receipt.row_qualification(partial, partial["commit"], predicate) == (False, "cell_results incomplete for full validation")
             projection = receipt.cell_scorecard_projection(partial, predicate)
             assert len(projection["selected"]) == 1
-            assert projection["backend_parity_selected_count"] == 1
-            assert projection["backend_parity_recorded_count"] == 0
-            assert projection["backend_parity_green_count"] == 0
+            assert projection["green_count"] == 0
+            assert not set(projection) & _RETIRED_PARITY_PROJECTION_KEYS
         assert launch.call_count == 1
         assert launch.call_args.args[0] == [str(CI_HUB / "ci-hub"), "validate-evidence"]
 
@@ -309,9 +445,10 @@ def test_schema10_real_mixed_contract_batch_preserves_history_and_refuses_upgrad
                     continue
                 validate_rows._require_cell_results(row, tmp_path)
                 assert len(checked.evidence["observations"]) == (6 if "then-matched" in label else 1 if "ordinary-only" in label else 3)
-                failed = "diverged" in label
+                # Every Ordinary observation in these producer fixtures matched;
+                # reference and cross divergences are not qualification inputs.
+                assert checked.full_validation_refusal is None, label
                 assert receipt.row_qualification(row, row["commit"], predicate) == (
-                    (False, "cell_results comparison-diverged") if failed else
                     (False, "cell_results legacy-unbound") if checked.status == "legacy-unbound" else
                     (True, "qualifies")
                 )
@@ -327,15 +464,23 @@ def test_schema10_real_mixed_contract_batch_preserves_history_and_refuses_upgrad
 @pytest.mark.parametrize("case,accepted", [
     ("matched", False), ("ordinary-only", False),
     ("selected-attempt-v1/matched", True), ("selected-attempt-v1/ordinary-only", True),
-    ("selected-attempt-v1/reference-diverged", False),
-    ("selected-attempt-v1/cross-diverged-then-matched", False),
+    # Parity is not a qualification input: bound pre-S1 rows whose ptrace
+    # reference or cross comparison diverged qualify on their Ordinary match.
+    ("selected-attempt-v1/reference-diverged", True),
+    ("selected-attempt-v1/cross-diverged-then-matched", True),
+    ("selected-attempt-v1/candidate-diverged", False),
+    ("selected-attempt-v1/candidate-unavailable", False),
     ("reference-diverged", False), ("cross-diverged-then-matched", False),
     ("missing-plan", False), ("base-before-missing-plan", False),
 ])
 def test_schema10_normal_rust_qualification_uses_the_retained_artifact_store(tmp_path, case, accepted):
     import tempfile
     source = "matched" if case in {"missing-plan", "base-before-missing-plan"} else case
-    row = retained_case(tmp_path, source, "rust-" + case.replace("/", "-"))
+    mutation = None
+    if case.startswith("selected-attempt-v1/candidate-"):
+        source = "selected-attempt-v1/reference-diverged"
+        mutation = pre_s1_candidate(case.removeprefix("selected-attempt-v1/candidate-"))
+    row = retained_case(tmp_path, source, "rust-" + case.replace("/", "-"), mutation)
     if case in {"missing-plan", "base-before-missing-plan"}:
         (tmp_path / row["constructed_plan"]["path"]).unlink()
     if case == "base-before-missing-plan":

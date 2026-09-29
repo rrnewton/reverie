@@ -242,7 +242,10 @@ def test_earlier_candidate_divergence_survives_a_terminal_match():
     assert unavailable == []
 
 
-@pytest.mark.parametrize("mutation", ["extra-field", "unknown-relation", "boolean-attempt", "empty-match-identity"])
+@pytest.mark.parametrize("mutation", [
+    "extra-field", "unknown-relation", "boolean-attempt", "retired-parity-matches",
+    "legacy-parity-flag-type", "legacy-parity-missing-type", "unknown-evidence-field",
+])
 def test_malformed_verified_response_is_a_reader_fault(mutation):
     row = row10()
     row["cell_results"] = {"binding_contract": 1}
@@ -253,7 +256,7 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
                 raw = json.loads(line)["row_json"]
                 report = {
                     "row_sha256": hashlib.sha256(raw.encode()).hexdigest(), "status": "verified",
-                    "full_validation_refusal": None, "backend_parity_matches": [],
+                    "full_validation_refusal": None,
                     "evidence": {
                         "cell_results": row["cell_results"], "test_results": {},
                         "observations": [observation("ordinary", "matched")],
@@ -267,8 +270,16 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
                     report["evidence"]["observations"][0]["relation"]["kind"] = "future"
                 elif mutation == "boolean-attempt":
                     report["evidence"]["observations"][0]["outer_attempt"] = True
+                elif mutation == "retired-parity-matches":
+                    # The native reply no longer carries parity matches; an
+                    # extra transport key is refused, not silently ignored.
+                    report["backend_parity_matches"] = []
+                elif mutation == "legacy-parity-flag-type":
+                    report["evidence"]["full_backend_parity"] = "true"
+                elif mutation == "legacy-parity-missing-type":
+                    report["evidence"]["missing_backend_parity"] = [None]
                 else:
-                    report["backend_parity_matches"] = [{}]
+                    report["evidence"]["selected_backend_parity"] = []
                 stdout.write(json.dumps(report).encode() + b"\n")
 
     with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(MalformedVerified)):
@@ -278,6 +289,7 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
             assert "malformed verified response" in checked.reason
 
 
+@pytest.mark.parametrize("legacy_parity", ["present-full", "present-incomplete", "absent"])
 @pytest.mark.parametrize("status,marker,valid", [
     ("legacy-unbound", "absent", True), ("verified", 1, True),
     ("verified", "absent", False), ("legacy-unbound", 1, False),
@@ -285,21 +297,27 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
     ("verified", 1.0, False), ("verified", "1", False),
     ("verified", 0, False), ("verified", 2, False),
 ])
-def test_native_transport_checks_capability_outcome_without_inventing_it(status, marker, valid):
+def test_native_transport_checks_capability_outcome_without_inventing_it(status, marker, valid, legacy_parity):
     # A protocol control only. Real artifact authentication and Rust/Python
-    # qualification parity are covered by the native fixture tests.
+    # qualification parity are covered by the native fixture tests. Historical
+    # parity fields may be present, incomplete, or absent; qualification never
+    # reads them (https://github.com/rrnewton/hermit/issues/3301).
     row = row10()
     cells = {} if marker == "absent" else {"binding_contract": marker}
     row["cell_results"] = cells
+    evidence = {
+        "cell_results": cells, "test_results": {},
+        "observations": [observation("ordinary", "matched")],
+        "missing_cells": [], "missing_test_producers": [],
+        "full_test_results": True,
+    }
+    if legacy_parity == "present-full":
+        evidence.update(missing_backend_parity=[], full_backend_parity=True)
+    elif legacy_parity == "present-incomplete":
+        evidence.update(missing_backend_parity=[{"candidate": {}}], full_backend_parity=False)
     report = {
         "row_sha256": receipt._evidence_row_digest(row), "status": status,
-        "full_validation_refusal": None, "backend_parity_matches": [],
-        "evidence": {
-            "cell_results": cells, "test_results": {},
-            "observations": [observation("ordinary", "matched")],
-            "missing_cells": [], "missing_backend_parity": [], "missing_test_producers": [],
-            "full_test_results": True, "full_backend_parity": True,
-        },
+        "full_validation_refusal": None, "evidence": evidence,
     }
     with mock.patch.object(receipt, "_capture_validation_evidence", return_value=(0, json.dumps(report).encode() + b"\n", b"")):
         with receipt.validation_evidence_batch([row], predicate=policy10()):

@@ -5,8 +5,8 @@
 //! standalone Python reader without re-entering receipt qualification.
 
 use crate::records::{
-    CellBindingContract, CellIdentity, ComparisonObservationVerdictV10, HistoryRow,
-    RequiredNullable, VerifiedValidationEvidenceV10,
+    CellBindingContract, ComparisonObservationVerdictV10, ComparisonRelationV10, HistoryRow,
+    VerifiedValidationEvidenceV10,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -52,12 +52,10 @@ pub enum EvidenceOutcome {
     LegacyUnbound {
         evidence: Box<VerifiedValidationEvidenceV10>,
         full_validation_refusal: Option<String>,
-        backend_parity_matches: Vec<CellIdentity>,
     },
     Verified {
         evidence: Box<VerifiedValidationEvidenceV10>,
         full_validation_refusal: Option<String>,
-        backend_parity_matches: Vec<CellIdentity>,
     },
     Refused {
         reason: String,
@@ -95,8 +93,16 @@ fn reader_fault(reason: impl Into<String>) -> EvidenceOutcome {
 }
 
 /// Qualification remains stronger than readable partial evidence. This checks
-/// only the producer's verified coverage and observations, never the raw report
-/// policy a second time.
+/// only the producer's verified coverage and ORDINARY observations, never the
+/// raw report policy a second time.
+///
+/// Cross-backend parity is not a qualification input
+/// (https://github.com/rrnewton/hermit/issues/3301). Historical schema-10 rows
+/// still carry `selected_backend_parity`, `missing_backend_parity`,
+/// `full_backend_parity` and Reference/BackendParity observations; they parse
+/// and stay in the returned evidence, but nothing here reads them. Each cell's
+/// Ordinary observation is its own verdict, so a parity row qualifies or is
+/// refused exactly as that verdict dictates.
 pub fn full_validation_refusal(evidence: &VerifiedValidationEvidenceV10) -> Option<&'static str> {
     if evidence.cell_results.selected_count == 0 || !evidence.missing_cells.is_empty() {
         return Some("cell_results incomplete for full validation");
@@ -108,7 +114,13 @@ pub fn full_validation_refusal(evidence: &VerifiedValidationEvidenceV10) -> Opti
     if !evidence.full_test_results {
         return Some("test_results incomplete for full validation");
     }
-    if evidence.observations.iter().any(|observation| {
+    let ordinary = || {
+        evidence
+            .observations
+            .iter()
+            .filter(|observation| observation.relation == ComparisonRelationV10::Ordinary)
+    };
+    if ordinary().any(|observation| {
         matches!(
             observation.verdict,
             ComparisonObservationVerdictV10::Diverged
@@ -116,18 +128,13 @@ pub fn full_validation_refusal(evidence: &VerifiedValidationEvidenceV10) -> Opti
     }) {
         return Some("cell_results comparison-diverged");
     }
-    if evidence.observations.iter().any(|observation| {
+    if ordinary().any(|observation| {
         matches!(
             observation.verdict,
             ComparisonObservationVerdictV10::UnavailableWithReason { .. }
         )
     }) {
         return Some("cell_results comparison-unavailable");
-    }
-    // An empty selected relation set reports no parity coverage. Ordinary test
-    // completion still uses its own checks above.
-    if !evidence.cell_results.selected_backend_parity.is_empty() && !evidence.full_backend_parity {
-        return Some("backend_parity incomplete for full validation");
     }
     None
 }
@@ -309,27 +316,14 @@ fn verify_with_capacity(row: &HistoryRow, root: &Path, artifact_bytes: u64) -> E
     match row.verify_schema10_artifact_bytes(&plan_bytes, &cell_bytes, &test_bytes) {
         Ok(Some(evidence)) => {
             let full_validation_refusal = full_validation_refusal(&evidence).map(str::to_owned);
-            let backend_parity_matches = evidence
-                .cell_results
-                .cells
-                .iter()
-                .filter_map(|cell| match &cell.backend_parity {
-                    RequiredNullable::Value(parity) if parity.is_clean_match() => {
-                        Some(cell.identity())
-                    }
-                    _ => None,
-                })
-                .collect();
             match evidence.cell_results.binding_contract {
                 CellBindingContract::LegacyUnbound => EvidenceOutcome::LegacyUnbound {
                     evidence: Box::new(evidence),
                     full_validation_refusal,
-                    backend_parity_matches,
                 },
                 CellBindingContract::SelectedAttemptV1 => EvidenceOutcome::Verified {
                     evidence: Box::new(evidence),
                     full_validation_refusal,
-                    backend_parity_matches,
                 },
             }
         }
@@ -686,31 +680,29 @@ mod tests {
 
     const COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    fn verified(
-        outcome: EvidenceOutcome,
-    ) -> (
-        Box<VerifiedValidationEvidenceV10>,
-        Option<String>,
-        Vec<CellIdentity>,
-    ) {
+    fn verified(outcome: EvidenceOutcome) -> (Box<VerifiedValidationEvidenceV10>, Option<String>) {
         match outcome {
             EvidenceOutcome::Verified {
                 evidence,
                 full_validation_refusal,
-                backend_parity_matches,
             }
             | EvidenceOutcome::LegacyUnbound {
                 evidence,
                 full_validation_refusal,
-                backend_parity_matches,
-            } => (evidence, full_validation_refusal, backend_parity_matches),
+            } => (evidence, full_validation_refusal),
             other => panic!("expected verified synthetic artifact: {other:?}"),
         }
     }
 
+    /// These are exact pre-S1 producer rows whose cells carry `backend_parity`.
+    /// The legacy parity fields and relations still parse and are preserved in
+    /// the evidence, but qualification reads only each cell's Ordinary
+    /// observation (https://github.com/rrnewton/hermit/issues/3301). Every
+    /// Ordinary observation here matched, so each row qualifies even where the
+    /// ptrace reference or the cross comparison diverged.
     #[test]
     fn schema10_exact_producer_artifacts_preserve_relation_results() {
-        for (name, observations, full_match) in [
+        for (name, observations, full_backend_parity) in [
             ("matched", 3, true),
             ("reference-diverged", 3, false),
             ("cross-diverged-then-matched", 6, false),
@@ -719,7 +711,7 @@ mod tests {
             let row = store.exact(name);
             let outcome = verify(&row, &store.0);
             assert!(matches!(outcome, EvidenceOutcome::LegacyUnbound { .. }));
-            let (evidence, refusal, matches) = verified(outcome);
+            let (evidence, refusal) = verified(outcome);
             assert_eq!(
                 evidence.cell_results.binding_contract,
                 CellBindingContract::LegacyUnbound
@@ -727,9 +719,16 @@ mod tests {
             assert_eq!(evidence.cell_results.selected_count, 1);
             assert_eq!(evidence.cell_results.selected_backend_parity.len(), 1);
             assert_eq!(evidence.observations.len(), observations);
-            assert_eq!(evidence.full_backend_parity, full_match);
-            assert_eq!(refusal.is_none(), full_match);
-            assert_eq!(matches.len(), usize::from(full_match));
+            assert_eq!(evidence.full_backend_parity, full_backend_parity, "{name}");
+            assert!(
+                evidence
+                    .observations
+                    .iter()
+                    .filter(|observation| observation.relation == ComparisonRelationV10::Ordinary)
+                    .all(|observation| observation.verdict
+                        == ComparisonObservationVerdictV10::Matched)
+            );
+            assert_eq!(refusal, None, "{name}");
             if name == "reference-diverged" {
                 assert_eq!(
                     evidence.observations[0].verdict,
@@ -758,7 +757,6 @@ mod tests {
                     evidence.observations[5].verdict,
                     ComparisonObservationVerdictV10::Matched
                 );
-                assert_eq!(refusal.as_deref(), Some("cell_results comparison-diverged"));
             }
         }
     }
@@ -830,10 +828,10 @@ mod tests {
                 .len(),
             3
         );
-        assert_eq!(
-            reports[0]["full_validation_refusal"],
-            "cell_results comparison-diverged"
-        );
+        // The legacy row's ptrace reference diverged; its Ordinary
+        // observation matched, and parity is not a qualification input.
+        assert!(reports[0]["full_validation_refusal"].is_null());
+        assert!(reports[0].get("backend_parity_matches").is_none());
         assert_eq!(
             reports[1]["evidence"]["cell_results"]["binding_contract"],
             1
@@ -849,7 +847,7 @@ mod tests {
     fn schema10_ordinary_only_coverage_does_not_claim_backend_parity() {
         let store = Store::new();
         let row = store.exact("ordinary-only");
-        let (evidence, refusal, matches) = verified(verify(&row, &store.0));
+        let (evidence, refusal) = verified(verify(&row, &store.0));
         assert_eq!(evidence.cell_results.selected_count, 1);
         assert_eq!(evidence.cell_results.recorded_count, 1);
         assert!(evidence.cell_results.selected_backend_parity.is_empty());
@@ -866,8 +864,433 @@ mod tests {
             evidence.observations[0].verdict,
             ComparisonObservationVerdictV10::Matched
         );
-        assert!(matches.is_empty());
         assert!(refusal.is_none());
+    }
+
+    /// Every refusal in `full_validation_refusal`, bracketed: one qualifying
+    /// case and one violating case with its exact message. The observation
+    /// relations come from a real pre-S1 producer row, so Reference and
+    /// BackendParity observations are the shapes historical rows carry.
+    #[test]
+    fn full_validation_refusal_reads_only_ordinary_observations() {
+        let store = Store::new();
+        let (base, refusal) = verified(verify(&store.exact("reference-diverged"), &store.0));
+        assert_eq!(refusal, None);
+        assert_eq!(
+            base.observations
+                .iter()
+                .map(|observation| match observation.relation {
+                    ComparisonRelationV10::Ordinary => "ordinary",
+                    ComparisonRelationV10::Reference { .. } => "reference",
+                    ComparisonRelationV10::BackendParity { .. } => "backend_parity",
+                })
+                .collect::<Vec<_>>(),
+            ["ordinary", "reference", "backend_parity"]
+        );
+        let unavailable = || ComparisonObservationVerdictV10::UnavailableWithReason {
+            reason: "synthetic".into(),
+        };
+        let with = |edit: &dyn Fn(&mut VerifiedValidationEvidenceV10)| {
+            let mut evidence = (*base).clone();
+            edit(&mut evidence);
+            full_validation_refusal(&evidence)
+        };
+
+        // Qualifying: every non-Ordinary divergence or unavailability, and
+        // incomplete legacy parity coverage, is ignored.
+        assert_eq!(with(&|_| {}), None);
+        assert_eq!(
+            with(&|evidence| {
+                evidence.observations[1].verdict = unavailable();
+                evidence.observations[2].verdict = ComparisonObservationVerdictV10::Diverged;
+            }),
+            None
+        );
+        assert_eq!(
+            with(&|evidence| {
+                evidence.full_backend_parity = false;
+                evidence.missing_backend_parity =
+                    evidence.cell_results.selected_backend_parity.clone();
+                assert!(!evidence.missing_backend_parity.is_empty());
+            }),
+            None
+        );
+
+        // Violating: each refusal, with its exact message.
+        assert_eq!(
+            with(&|evidence| evidence.cell_results.selected_count = 0),
+            Some("cell_results incomplete for full validation")
+        );
+        assert_eq!(
+            with(&|evidence| evidence.missing_cells =
+                vec![evidence.observations[0].identity.clone()]),
+            Some("cell_results incomplete for full validation")
+        );
+        assert_eq!(
+            with(&|evidence| evidence.full_test_results = false),
+            Some("test_results incomplete for full validation")
+        );
+        assert_eq!(
+            with(&|evidence| evidence.observations[0].verdict =
+                ComparisonObservationVerdictV10::Diverged),
+            Some("cell_results comparison-diverged")
+        );
+        assert_eq!(
+            with(&|evidence| evidence.observations[0].verdict = unavailable()),
+            Some("cell_results comparison-unavailable")
+        );
+        // A diverged Ordinary observation outranks an unavailable one.
+        assert_eq!(
+            with(&|evidence| {
+                let mut diverged = evidence.observations[0].clone();
+                diverged.verdict = ComparisonObservationVerdictV10::Diverged;
+                evidence.observations[0].verdict = unavailable();
+                evidence.observations.push(diverged);
+            }),
+            Some("cell_results comparison-diverged")
+        );
+    }
+
+    /// The same two comparison refusals, bracketed on the population every
+    /// post-S1 row consists of: a cell with no `backend_parity`, whose single
+    /// Ordinary observation carries no outer attempt. Every case in
+    /// `full_validation_refusal_reads_only_ordinary_observations` edits a
+    /// parity cell's Ordinary observation, whose outer attempt is `Some`, so a
+    /// filter narrowed to `outer_attempt.is_some()` would pass it while
+    /// exempting every ordinary-only cell.
+    #[test]
+    fn full_validation_refusal_refuses_ordinary_only_cells() {
+        let store = Store::new();
+        for (source, bound) in [
+            ("ordinary-only", false),
+            ("selected-attempt-v1/ordinary-only", true),
+        ] {
+            let outcome = verify(&store.exact(source), &store.0);
+            if bound {
+                assert!(
+                    matches!(outcome, EvidenceOutcome::Verified { .. }),
+                    "{source}: {outcome:?}"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, EvidenceOutcome::LegacyUnbound { .. }),
+                    "{source}: {outcome:?}"
+                );
+            }
+            let (base, refusal) = verified(outcome);
+            assert!(base.cell_results.selected_backend_parity.is_empty());
+            assert_eq!(base.observations.len(), 1, "{source}");
+            assert_eq!(
+                base.observations[0].relation,
+                ComparisonRelationV10::Ordinary
+            );
+            assert_eq!(base.observations[0].outer_attempt, None, "{source}");
+            assert_eq!(
+                base.observations[0].verdict,
+                ComparisonObservationVerdictV10::Matched
+            );
+            let with = |verdict: ComparisonObservationVerdictV10| {
+                let mut evidence = (*base).clone();
+                evidence.observations[0].verdict = verdict;
+                full_validation_refusal(&evidence)
+            };
+
+            // Qualifying: the unmodified matched cell.
+            assert_eq!(refusal, None, "{source}");
+            assert_eq!(
+                with(ComparisonObservationVerdictV10::Matched),
+                None,
+                "{source}"
+            );
+            // Violating: each comparison refusal, with its exact message.
+            assert_eq!(
+                with(ComparisonObservationVerdictV10::Diverged),
+                Some("cell_results comparison-diverged"),
+                "{source}"
+            );
+            assert_eq!(
+                with(ComparisonObservationVerdictV10::UnavailableWithReason {
+                    reason: "synthetic".into(),
+                }),
+                Some("cell_results comparison-unavailable"),
+                "{source}"
+            );
+        }
+    }
+
+    /// Rewrite an ordinary-only producer row so its one cell's own strict
+    /// verification diverged, or crashed before verification. The retained
+    /// artifact and the compact ledger summary are rewritten together, so the
+    /// shared producer verifier must still authenticate the row.
+    fn ordinary_only_candidate(fixture: &mut Fixture, candidate: &str) {
+        let summary = &mut fixture.row["cell_results"]["cells"][0];
+        let artifact = &mut fixture.cells[0];
+        match candidate {
+            "diverged" => {
+                for verdict in [&mut summary["cell_verdict"], &mut artifact["cell_verdict"]] {
+                    verdict["state"] = json!("compared-and-diverged");
+                    verdict["bitwise_parity"] = json!(false);
+                }
+            }
+            "unavailable" => {
+                let unavailable = |reason: &str| {
+                    json!({
+                        "state": "unavailable-with-reason",
+                        "comparison_tier": "declared-but-unverifiable",
+                        "reason": reason,
+                    })
+                };
+                // The artifact keeps the exact reason; the row summary carries
+                // the producer's compact form.
+                artifact["cell_verdict"] = unavailable("candidate exited before verification");
+                summary["cell_verdict"] = unavailable(
+                    "Comparison evidence unavailable; exact detail is retained in the cell artifact",
+                );
+                // An unavailable verdict states no comparison, so a
+                // selected-attempt-v1 summary cell carries neither a binding
+                // nor a selected attempt; the artifact keeps its attempt.
+                // Legacy-unbound summaries carry neither field already.
+                let cell = summary.as_object_mut().unwrap();
+                cell.remove("evidence_binding");
+                cell.remove("selected_attempt");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// An ordinary-only row, the shape of every post-S1 row, rewritten through
+    /// the producer verifier so its cell's own verification diverged or was
+    /// unavailable, is refused with the exact message, under both the
+    /// selected-attempt-v1 and the legacy-unbound contract.
+    #[test]
+    fn schema10_ordinary_only_rows_qualify_or_refuse_by_their_ordinary_observation() {
+        let store = Store::new();
+        for (source, bound) in [
+            ("selected-attempt-v1/ordinary-only", true),
+            ("ordinary-only", false),
+        ] {
+            let contract = |outcome: &EvidenceOutcome| {
+                if bound {
+                    matches!(outcome, EvidenceOutcome::Verified { .. })
+                } else {
+                    matches!(outcome, EvidenceOutcome::LegacyUnbound { .. })
+                }
+            };
+            // Qualifying: the same row, written through the same fixture path
+            // without the rewrite.
+            let run = format!("{}-matched", source.replace('/', "-"));
+            let row = Fixture::new(source, &run, COMMIT, 1).write(&store.0);
+            let outcome = verify(&row, &store.0);
+            assert!(contract(&outcome), "{run}: {outcome:?}");
+            let (evidence, refusal) = verified(outcome);
+            assert_eq!(evidence.observations.len(), 1, "{run}");
+            assert_eq!(evidence.observations[0].outer_attempt, None, "{run}");
+            assert_eq!(refusal, None, "{run}");
+
+            for (candidate, expected, ordinary) in [
+                (
+                    "diverged",
+                    "cell_results comparison-diverged",
+                    ComparisonObservationVerdictV10::Diverged,
+                ),
+                (
+                    "unavailable",
+                    "cell_results comparison-unavailable",
+                    ComparisonObservationVerdictV10::UnavailableWithReason {
+                        reason: "Comparison evidence unavailable; exact detail is retained in the cell artifact".into(),
+                    },
+                ),
+            ] {
+                let run = format!("{}-{candidate}", source.replace('/', "-"));
+                let mut fixture = Fixture::new(source, &run, COMMIT, 1);
+                ordinary_only_candidate(&mut fixture, candidate);
+                let row = fixture.write(&store.0);
+                let outcome = verify(&row, &store.0);
+                assert!(contract(&outcome), "{run}: {outcome:?}");
+                let (evidence, refusal) = verified(outcome);
+                assert!(evidence.cell_results.selected_backend_parity.is_empty());
+                assert_eq!(evidence.observations.len(), 1, "{run}");
+                assert_eq!(
+                    evidence.observations[0].relation,
+                    ComparisonRelationV10::Ordinary
+                );
+                assert_eq!(evidence.observations[0].outer_attempt, None, "{run}");
+                assert_eq!(evidence.observations[0].verdict, ordinary, "{run}");
+                assert_eq!(refusal.as_deref(), Some(expected), "{run}");
+
+                // Control: the verifier really checks the rewritten artifact.
+                // A row summary left claiming the original match is refused.
+                let mut stale = Fixture::new(source, &format!("{run}-stale-summary"), COMMIT, 2);
+                let original = stale.row["cell_results"]["cells"][0].clone();
+                ordinary_only_candidate(&mut stale, candidate);
+                stale.row["cell_results"]["cells"][0] = original;
+                let row = stale.write(&store.0);
+                match verify(&row, &store.0) {
+                    EvidenceOutcome::Refused { reason } => assert_eq!(
+                        reason, "schema 10 cell artifact differs from its compact ledger summary",
+                        "{run}"
+                    ),
+                    other => panic!("{run}: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// Rewrite the pre-S1 `reference-diverged` producer row so its candidate
+    /// attempt (the cell's Ordinary verdict) no longer matched, keeping
+    /// `backend_parity` populated. The shared producer verifier must still
+    /// authenticate the row; this is not a parser-bypassing edit.
+    fn pre_s1_candidate(fixture: &mut Fixture, candidate: &str) {
+        let artifact_attempt = &mut fixture.cells[0]["backend_parity"]["attempts"][0];
+        let summary_attempt =
+            &mut fixture.row["cell_results"]["cells"][0]["backend_parity"]["attempts"][0];
+        let summary_verdict;
+        match candidate {
+            "diverged" => {
+                // The reference's retained diverged report, run under kvm.
+                let reference = artifact_attempt["reference_attempt"].clone();
+                let attempt = &mut artifact_attempt["candidate_attempt"];
+                for key in [
+                    "verification_report",
+                    "verification_report_sha256",
+                    "outcome",
+                    "status",
+                    "first_divergent_record",
+                ] {
+                    attempt[key] = reference[key].clone();
+                }
+                attempt["reason"] = json!("candidate strict verification diverged");
+                summary_verdict = summary_attempt["reference"].clone();
+                summary_attempt["candidate_verification_report_sha256"] =
+                    reference["verification_report_sha256"].clone();
+            }
+            "unavailable" => {
+                let attempt = &mut artifact_attempt["candidate_attempt"];
+                attempt["verification_report"] = json!(null);
+                attempt["verification_report_sha256"] = json!(null);
+                attempt["outcome"] = json!("ERROR");
+                attempt["status"] = json!(1);
+                attempt["error_kind"] = json!("synthetic-candidate-crash");
+                attempt["reason"] = json!("candidate exited before verification");
+                summary_verdict = json!({
+                    "state": "unavailable-with-reason",
+                    "comparison_tier": "declared-but-unverifiable",
+                    "reason": "Comparison evidence unavailable; exact detail is retained in the cell artifact",
+                });
+                summary_attempt["candidate_verification_report_sha256"] = json!(null);
+            }
+            _ => unreachable!(),
+        }
+        // The artifact keeps the attempt's exact reason; the row summary
+        // carries the producer's compact form.
+        let mut artifact_verdict = summary_verdict.clone();
+        if candidate == "unavailable" {
+            artifact_verdict["reason"] = json!("candidate exited before verification");
+        }
+        summary_attempt["candidate"] = summary_verdict.clone();
+        fixture.row["cell_results"]["cells"][0]["cell_verdict"] = summary_verdict;
+        fixture.cells[0]["cell_verdict"] = artifact_verdict;
+        if candidate == "unavailable" {
+            // An unavailable verdict states no comparison, so a
+            // selected-attempt-v1 summary cell carries neither a binding nor a
+            // selected attempt; the artifact keeps its attempt. Legacy-unbound
+            // summaries carry neither field already.
+            let cell = fixture.row["cell_results"]["cells"][0]
+                .as_object_mut()
+                .unwrap();
+            cell.remove("evidence_binding");
+            cell.remove("selected_attempt");
+        }
+    }
+
+    /// A pre-S1 ledger row with `backend_parity` populated qualifies or is
+    /// refused exactly as its Ordinary observation dictates: one of each, for
+    /// both the selected-attempt-v1 and the legacy-unbound contract.
+    #[test]
+    fn schema10_pre_s1_parity_rows_qualify_or_refuse_by_their_ordinary_observation() {
+        let store = Store::new();
+        for (source, bound) in [
+            ("selected-attempt-v1/reference-diverged", true),
+            ("reference-diverged", false),
+        ] {
+            let contract = |outcome: &EvidenceOutcome| {
+                if bound {
+                    matches!(outcome, EvidenceOutcome::Verified { .. })
+                } else {
+                    matches!(outcome, EvidenceOutcome::LegacyUnbound { .. })
+                }
+            };
+            // Qualifying: the Ordinary candidate matched while the ptrace
+            // reference diverged and the cross comparison was unavailable.
+            let qualifying = store.exact(source);
+            let outcome = verify(&qualifying, &store.0);
+            assert!(contract(&outcome), "{source}: {outcome:?}");
+            let (evidence, refusal) = verified(outcome);
+            assert!(!evidence.full_backend_parity);
+            assert_eq!(evidence.cell_results.selected_backend_parity.len(), 1);
+            assert_eq!(
+                evidence.observations[0].relation,
+                ComparisonRelationV10::Ordinary
+            );
+            assert_eq!(
+                evidence.observations[0].verdict,
+                ComparisonObservationVerdictV10::Matched
+            );
+            assert_eq!(
+                evidence.observations[1].verdict,
+                ComparisonObservationVerdictV10::Diverged
+            );
+            assert_eq!(refusal, None, "{source}");
+
+            for (candidate, expected, ordinary) in [
+                (
+                    "diverged",
+                    "cell_results comparison-diverged",
+                    ComparisonObservationVerdictV10::Diverged,
+                ),
+                (
+                    "unavailable",
+                    "cell_results comparison-unavailable",
+                    ComparisonObservationVerdictV10::UnavailableWithReason {
+                        reason: "Comparison evidence unavailable; exact detail is retained in the cell artifact".into(),
+                    },
+                ),
+            ] {
+                let run = format!("{}-{candidate}", source.replace('/', "-"));
+                let mut fixture = Fixture::new(source, &run, COMMIT, 1);
+                pre_s1_candidate(&mut fixture, candidate);
+                let row = fixture.write(&store.0);
+                let outcome = verify(&row, &store.0);
+                assert!(contract(&outcome), "{run}: {outcome:?}");
+                let (evidence, refusal) = verified(outcome);
+                assert_eq!(evidence.cell_results.selected_backend_parity.len(), 1);
+                assert_eq!(
+                    evidence.observations[0].relation,
+                    ComparisonRelationV10::Ordinary
+                );
+                assert_eq!(evidence.observations[0].verdict, ordinary, "{run}");
+                assert_eq!(refusal.as_deref(), Some(expected), "{run}");
+
+                // Control: the verifier really checks the rewritten attempt. A
+                // row summary left claiming the original match is refused.
+                let mut stale = Fixture::new(source, &format!("{run}-stale-summary"), COMMIT, 2);
+                let original = stale.row["cell_results"]["cells"][0].clone();
+                pre_s1_candidate(&mut stale, candidate);
+                for key in ["cell_verdict", "evidence_binding", "selected_attempt"] {
+                    if let Some(value) = original.get(key) {
+                        stale.row["cell_results"]["cells"][0][key] = value.clone();
+                    }
+                }
+                let row = stale.write(&store.0);
+                match verify(&row, &store.0) {
+                    EvidenceOutcome::Refused { reason } => assert_eq!(
+                        reason, "schema 10 cell artifact differs from its compact ledger summary",
+                        "{run}"
+                    ),
+                    other => panic!("{run}: {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]
@@ -912,7 +1335,7 @@ mod tests {
 
     #[test]
     fn schema10_plan_and_artifact_substitutions_never_gain_authority() {
-        use crate::records::{BackendParityRelation, ConstructedValidationPlanV10};
+        use crate::records::{BackendParityRelation, CellIdentity, ConstructedValidationPlanV10};
 
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -1026,12 +1449,11 @@ mod tests {
         fixture.row["cell_results"]["cells"] = json!([]);
         fixture.row["cell_results"]["recorded_count"] = json!(0);
         let row = fixture.write(&store.0);
-        let (evidence, refusal, matches) = verified(verify(&row, &store.0));
+        let (evidence, refusal) = verified(verify(&row, &store.0));
         assert_eq!(evidence.cell_results.selected_count, 1);
         assert_eq!(evidence.missing_cells.len(), 1);
         assert_eq!(evidence.missing_backend_parity.len(), 1);
         assert!(evidence.observations.is_empty());
-        assert!(matches.is_empty());
         assert_eq!(
             refusal.as_deref(),
             Some("cell_results incomplete for full validation")
@@ -1056,7 +1478,7 @@ mod tests {
         let row = store.exact("matched");
         let (_, plan, cells, tests) = fixtures::bytes("matched");
         let total = (plan.len() + cells.len() + tests.len()) as u64;
-        let (_, refusal, _) = verified(verify_with_capacity(&row, &store.0, total));
+        let (_, refusal) = verified(verify_with_capacity(&row, &store.0, total));
         assert!(refusal.is_none());
         match verify_with_capacity(&row, &store.0, total - 1) {
             EvidenceOutcome::ReaderFault { reason } => {
@@ -1111,9 +1533,8 @@ mod tests {
             let target = external.0.join("retained");
             fs::rename(store.0.join(prefix), &target).unwrap();
             symlink(&target, store.0.join(prefix)).unwrap();
-            let (_, refusal, matches) = verified(verify(&row, &store.0));
+            let (_, refusal) = verified(verify(&row, &store.0));
             assert!(refusal.is_none(), "operator-owned prefix {prefix}");
-            assert_eq!(matches.len(), 1);
         }
     }
 

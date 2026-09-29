@@ -23,7 +23,7 @@ def test_nonstring_native_primitives_are_reader_faults(field, value):
     row["cell_results"] = {"binding_contract": 1}
     report = {
         "row_sha256": receipt._evidence_row_digest(row), "status": "verified",
-        "full_validation_refusal": None, "backend_parity_matches": [],
+        "full_validation_refusal": None,
         "evidence": {
             "cell_results": row["cell_results"], "test_results": {},
             "observations": [observation("ordinary", "matched")],
@@ -57,7 +57,7 @@ def test_mixed_capability_transport_fault_never_publishes_a_verified_prefix(faul
     reports = [{
         "row_sha256": receipt._evidence_row_digest(row),
         "status": "legacy-unbound" if index == 0 else "verified",
-        "full_validation_refusal": None, "backend_parity_matches": [],
+        "full_validation_refusal": None,
         "evidence": {
             "cell_results": row["cell_results"], "test_results": {},
             "observations": [observation("ordinary", "matched")],
@@ -257,7 +257,7 @@ def test_live_batch_overflow_cannot_accept_an_earlier_verified_response():
     first["cell_results"] = {"binding_contract": 1}
     reply = {
         "row_sha256": receipt._evidence_row_digest(first), "status": "verified",
-        "full_validation_refusal": None, "backend_parity_matches": [],
+        "full_validation_refusal": None,
         "evidence": {"cell_results": first["cell_results"], "test_results": {}, "observations": [],
                      "missing_cells": [], "missing_backend_parity": [],
                      "missing_test_producers": [], "full_test_results": True,

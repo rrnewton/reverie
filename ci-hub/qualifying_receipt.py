@@ -87,7 +87,6 @@ class _ValidationEvidence:
     reason: str | None = None
     evidence: dict[str, Any] | None = None
     full_validation_refusal: str | None = None
-    backend_parity_matches: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -343,23 +342,31 @@ def _native_identity_shape_valid(value: Any) -> bool:
     )
 
 
+# Cross-backend parity is not a qualification input
+# (https://github.com/rrnewton/hermit/issues/3301). The native DTO still carries
+# these historical fields today; they may be present or absent, are checked only
+# as transport shape when present, and are never read by qualification.
+_LEGACY_PARITY_EVIDENCE_FIELDS = frozenset({"missing_backend_parity", "full_backend_parity"})
+
+
 def _native_evidence_shape_valid(evidence: Any, row: dict[str, Any]) -> bool:
     """Check the native response envelope, not the report/comparator policy."""
     fields = {
         "cell_results", "test_results", "observations", "missing_cells",
-        "missing_backend_parity", "missing_test_producers", "full_test_results",
-        "full_backend_parity",
+        "missing_test_producers", "full_test_results",
     }
-    if not isinstance(evidence, dict) or set(evidence) != fields:
+    if not isinstance(evidence, dict) or not fields <= set(evidence) <= fields | _LEGACY_PARITY_EVIDENCE_FIELDS:
         return False
     if not isinstance(evidence["cell_results"], dict) or evidence["cell_results"] != row.get("cell_results"):
         return False
     if not isinstance(evidence["test_results"], dict):
         return False
     for key in ("missing_cells", "missing_backend_parity", "missing_test_producers", "observations"):
+        if key not in evidence:
+            continue
         if not isinstance(evidence[key], list) or not all(isinstance(value, dict) for value in evidence[key]):
             return False
-    if any(type(evidence[key]) is not bool for key in ("full_test_results", "full_backend_parity")):
+    if any(type(evidence[key]) is not bool for key in ("full_test_results", "full_backend_parity") if key in evidence):
         return False
     for observation in evidence["observations"]:
         if set(observation) != {"identity", "relation", "outer_attempt", "verdict"}:
@@ -446,10 +453,8 @@ def _check_validation_evidence(
                     return fault("validation artifact checker returned a malformed status")
                 if status in {"verified", "legacy-unbound"}:
                     if (
-                        set(report) != {"row_sha256", "status", "evidence", "full_validation_refusal", "backend_parity_matches"}
+                        set(report) != {"row_sha256", "status", "evidence", "full_validation_refusal"}
                         or not _native_evidence_shape_valid(report["evidence"], json.loads(requests[digest]))
-                        or not isinstance(report["backend_parity_matches"], list)
-                        or not all(_native_identity_shape_valid(cell) for cell in report["backend_parity_matches"])
                         or (report["full_validation_refusal"] is not None and not isinstance(report["full_validation_refusal"], str))
                     ):
                         return fault("validation artifact checker returned a malformed verified response")
@@ -467,7 +472,6 @@ def _check_validation_evidence(
                     reports[digest] = _ValidationEvidence(
                         digest, status, evidence=report["evidence"],
                         full_validation_refusal=report["full_validation_refusal"],
-                        backend_parity_matches=tuple(report["backend_parity_matches"]),
                     )
                 elif status in {"refused", "reader-fault"}:
                     if set(report) != {"row_sha256", "status", "reason"} or not isinstance(report["reason"], str) or not report["reason"].strip():
@@ -1527,20 +1531,8 @@ def cell_scorecard_projection(
         }
         for cell in evidence["cells"]
     ]
-    if checked is not None:
-        parity_matches = {
-            tuple(cell[key] for key in _CELL_IDENTITY_KEYS)
-            for cell in checked.backend_parity_matches
-        }
-        for projected, cell in zip(cells, evidence["cells"]):
-            ordinary_green = projected["scorecard_green"]
-            parity = cell["backend_parity"]
-            projected["ordinary_scorecard_green"] = ordinary_green
-            projected["backend_parity"] = parity
-            if parity is not None:
-                projected["scorecard_green"] = ordinary_green and (
-                    tuple(cell[key] for key in _CELL_IDENTITY_KEYS) in parity_matches
-                )
+    # A historical cell's backend_parity slot is ignored: each cell is green
+    # exactly as its own ordinary verdict dictates.
     projection = {
         "eligible": status is CellResultsVerdict.SATISFIED,
         "cell_results_satisfied": status is CellResultsVerdict.SATISFIED,
@@ -1559,11 +1551,6 @@ def cell_scorecard_projection(
                 "selected-attempt-v1" if checked.status == "verified" else "legacy-unbound"
             ),
             "bound_evidence_eligible": checked.status == "verified",
-            "ordinary_green_count": sum(cell["ordinary_scorecard_green"] for cell in cells),
-            "selected_backend_parity": evidence["selected_backend_parity"],
-            "backend_parity_selected_count": len(evidence["selected_backend_parity"]),
-            "backend_parity_recorded_count": sum(cell["backend_parity"] is not None for cell in cells),
-            "backend_parity_green_count": len(parity_matches),
         })
     return projection
 
