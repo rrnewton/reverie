@@ -35,49 +35,71 @@ struct context {
   unsigned worker_calls; /* Written by worker, read only after pthread_join. */
 };
 
-static void fail(const char *what) {
+static void fail(const char* what) {
   fprintf(stderr, "cross-thread waitid failed: %s\n", what);
   /* Abort all sibling threads on failure; never strand a pipe waiter. */
   syscall(SYS_exit_group, 90);
   __builtin_unreachable();
 }
 
-static void require(int condition, const char *what) {
-  if (!condition) fail(what);
+static void require(int condition, const char* what) {
+  if (!condition)
+    fail(what);
 }
 
-static void send_bytes(int fd, const void *bytes, size_t size) {
+static void send_bytes(int fd, const void* bytes, size_t size) {
   require(write(fd, bytes, size) == (ssize_t)size, "complete pipe write");
 }
 
-static void receive_bytes(int fd, void *bytes, size_t size) {
+static void receive_bytes(int fd, void* bytes, size_t size) {
   require(read(fd, bytes, size) == (ssize_t)size, "complete pipe read");
 }
 
 /* event: 1 = six child fields; 0 = six zero fields; -1 = no write.
  * Whole-arena equality proves values/footprint, not temporal store order. */
-static void wait_call(const struct context *c, pid_t child, int all,
-                      unsigned long options, void *usage, int error,
-                      int event, unsigned *calls, const char *name) {
+static void wait_call(
+    const struct context* c,
+    pid_t child,
+    int all,
+    unsigned long options,
+    void* usage,
+    int error,
+    int event,
+    unsigned* calls,
+    const char* name) {
   unsigned char actual[INFO_BYTES], expected[INFO_BYTES];
   memset(actual, 0xa5, sizeof(actual));
   memset(expected, 0xa5, sizeof(expected));
   if (event >= 0) {
-    uint32_t fields[] = {event ? SIGCHLD : 0, 0, event ? CLD_EXITED : 0,
-                        event ? (uint32_t)child : 0,
-                        event ? (uint32_t)c->uid : 0,
-                        event ? CHILD_STATUS : 0};
-    for (size_t i = 0; i < sizeof(field_offsets) / sizeof(field_offsets[0]); ++i)
+    uint32_t fields[] = {
+        event ? SIGCHLD : 0,
+        0,
+        event ? CLD_EXITED : 0,
+        event ? (uint32_t)child : 0,
+        event ? (uint32_t)c->uid : 0,
+        event ? CHILD_STATUS : 0};
+    for (size_t i = 0; i < sizeof(field_offsets) / sizeof(field_offsets[0]);
+         ++i)
       memcpy(expected + INFO_OFFSET + field_offsets[i], &fields[i], 4);
   }
   errno = 0;
-  long result = syscall(SYS_waitid, all ? P_ALL : P_PID, all ? 0 : child,
-                        actual + INFO_OFFSET, options, usage);
+  long result = syscall(
+      SYS_waitid,
+      all ? P_ALL : P_PID,
+      all ? 0 : child,
+      actual + INFO_OFFSET,
+      options,
+      usage);
   int saved_errno = errno;
   ++*calls;
   if (result != (error ? -1 : 0) || saved_errno != error) {
-    fprintf(stderr, "%s: result=%ld errno=%d expected=%d\n", name, result,
-            saved_errno, error);
+    fprintf(
+        stderr,
+        "%s: result=%ld errno=%d expected=%d\n",
+        name,
+        result,
+        saved_errno,
+        error);
     fail("raw wait result");
   }
   require(memcmp(actual, expected, sizeof(actual)) == 0, name);
@@ -86,56 +108,119 @@ static void wait_call(const struct context *c, pid_t child, int all,
 static pid_t new_child(void) {
   pid_t child = fork();
   require(child >= 0, "fork");
-  if (!child) _exit(CHILD_STATUS);
+  if (!child)
+    _exit(CHILD_STATUS);
   return child;
 }
 
-static void no_children(const struct context *c, pid_t child, unsigned *calls) {
-  wait_call(c, child, 0, WEXITED | WNOHANG, NULL, ECHILD, 0, calls,
-            "exact child consumed once");
-  wait_call(c, child, 1, WEXITED | WNOHANG, NULL, ECHILD, 0, calls,
-            "all children consumed once");
+static void no_children(const struct context* c, pid_t child, unsigned* calls) {
+  wait_call(
+      c,
+      child,
+      0,
+      WEXITED | WNOHANG,
+      NULL,
+      ECHILD,
+      0,
+      calls,
+      "exact child consumed once");
+  wait_call(
+      c,
+      child,
+      1,
+      WEXITED | WNOHANG,
+      NULL,
+      ECHILD,
+      0,
+      calls,
+      "all children consumed once");
 }
 
-static void foreign_waits(const struct context *c, pid_t child,
-                          unsigned *calls) {
-  wait_call(c, child, c->all, WEXITED | WNOWAIT, NULL, 0, 1, calls,
-            "first sibling peek values and padding");
-  wait_call(c, child, c->all, WEXITED | WNOWAIT, NULL, 0, 1, calls,
-            "repeated sibling peek values and padding");
+static void
+foreign_waits(const struct context* c, pid_t child, unsigned* calls) {
+  wait_call(
+      c,
+      child,
+      c->all,
+      WEXITED | WNOWAIT,
+      NULL,
+      0,
+      1,
+      calls,
+      "first sibling peek values and padding");
+  wait_call(
+      c,
+      child,
+      c->all,
+      WEXITED | WNOWAIT,
+      NULL,
+      0,
+      1,
+      calls,
+      "repeated sibling peek values and padding");
   if (c->fault) {
     long page = sysconf(_SC_PAGESIZE);
     require(page >= 4096 && page <= 65536, "bounded host page size");
-    unsigned char *usage = mmap(NULL, (size_t)page, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    unsigned char* usage = mmap(
+        NULL,
+        (size_t)page,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0);
     require(usage != MAP_FAILED, "usage mmap");
     memset(usage, 0xa5, (size_t)page);
     require(mprotect(usage, (size_t)page, PROT_NONE) == 0, "protect usage");
-    wait_call(c, child, c->all, WEXITED, usage + 16, EFAULT, -1, calls,
-              "usage fault precedes every info store");
-    require(mprotect(usage, (size_t)page, PROT_READ | PROT_WRITE) == 0,
-            "restore usage for readback");
+    wait_call(
+        c,
+        child,
+        c->all,
+        WEXITED,
+        usage + 16,
+        EFAULT,
+        -1,
+        calls,
+        "usage fault precedes every info store");
+    require(
+        mprotect(usage, (size_t)page, PROT_READ | PROT_WRITE) == 0,
+        "restore usage for readback");
     for (long i = 0; i < page; ++i)
       require(usage[i] == 0xa5, "protected usage and guards untouched");
     require(munmap(usage, (size_t)page) == 0, "usage munmap");
   } else {
     /* Native CPU accounting is variable; successful calls use NULL rusage. */
-    wait_call(c, child, c->all, WEXITED, NULL, 0, 1, calls,
-              "sibling consumption values and padding");
+    wait_call(
+        c,
+        child,
+        c->all,
+        WEXITED,
+        NULL,
+        0,
+        1,
+        calls,
+        "sibling consumption values and padding");
   }
   no_children(c, child, calls);
 }
 
-static void *worker(void *opaque) {
-  struct context *c = opaque;
+static void* worker(void* opaque) {
+  struct context* c = opaque;
   unsigned calls = 0;
   pid_t tid = (pid_t)syscall(SYS_gettid);
   require(getpid() == c->process && tid != c->leader, "same-process sibling");
   if (c->reverse) {
     pid_t child = new_child();
     require(child != tid && child != c->leader, "distinct worker child");
-    wait_call(c, child, 0, WEXITED | WNOWAIT, NULL, 0, 1, &calls,
-              "creator worker proves child waitability");
+    wait_call(
+        c,
+        child,
+        0,
+        WEXITED | WNOWAIT,
+        NULL,
+        0,
+        1,
+        &calls,
+        "creator worker proves child waitability");
     /* Pass the PID as pipe data, not a racy shared context update. */
     send_bytes(c->ready[1], &child, sizeof(child));
     unsigned char done = 0;
@@ -150,26 +235,43 @@ static void *worker(void *opaque) {
   return NULL;
 }
 
-int main(int argc, char **argv) {
-  if (argc != 4) fail("three exact mode arguments required");
+int main(int argc, char** argv) {
+  if (argc != 4)
+    fail("three exact mode arguments required");
   struct context c = {0};
-  if (!strcmp(argv[1], "worker-child")) c.reverse = 1;
-  else require(!strcmp(argv[1], "leader-child"), "direction");
-  if (!strcmp(argv[2], "all")) c.all = 1;
-  else require(!strcmp(argv[2], "pid"), "selector");
-  if (!strcmp(argv[3], "efault")) c.fault = 1;
-  else require(!strcmp(argv[3], "success"), "consume mode");
+  if (!strcmp(argv[1], "worker-child"))
+    c.reverse = 1;
+  else
+    require(!strcmp(argv[1], "leader-child"), "direction");
+  if (!strcmp(argv[2], "all"))
+    c.all = 1;
+  else
+    require(!strcmp(argv[2], "pid"), "selector");
+  if (!strcmp(argv[3], "efault"))
+    c.fault = 1;
+  else
+    require(!strcmp(argv[3], "success"), "consume mode");
   c.process = getpid();
   c.leader = (pid_t)syscall(SYS_gettid);
-  c.uid = getuid(); /* Validate each backend's real/virtual UID; no filtering. */
+  c.uid =
+      getuid(); /* Validate each backend's real/virtual UID; no filtering. */
   require(c.leader == c.process, "main is process leader");
-  require(pipe(c.ready) == 0 && pipe(c.release) == 0, "two synchronization pipes");
+  require(
+      pipe(c.ready) == 0 && pipe(c.release) == 0, "two synchronization pipes");
   unsigned calls = 0;
   pid_t child = 0;
   if (!c.reverse) {
     child = c.initial_child = new_child();
-    wait_call(&c, child, 0, WEXITED | WNOWAIT, NULL, 0, 1, &calls,
-              "creator leader proves readiness before pthread_create");
+    wait_call(
+        &c,
+        child,
+        0,
+        WEXITED | WNOWAIT,
+        NULL,
+        0,
+        1,
+        &calls,
+        "creator leader proves readiness before pthread_create");
   }
   pthread_t thread;
   require(pthread_create(&thread, NULL, worker, &c) == 0, "pthread_create");
@@ -180,16 +282,23 @@ int main(int argc, char **argv) {
     const unsigned char done = 'd';
     send_bytes(c.release[1], &done, sizeof(done));
   }
-  void *value = (void *)1;
+  void* value = (void*)1;
   require(pthread_join(thread, &value) == 0 && value == NULL, "pthread_join");
-  if (!c.reverse) no_children(&c, child, &calls);
-  require(calls == (c.reverse ? 5u : 3u) &&
-          c.worker_calls == (c.reverse ? 3u : 5u), "eight exact wait calls");
+  if (!c.reverse)
+    no_children(&c, child, &calls);
+  require(
+      calls == (c.reverse ? 5u : 3u) && c.worker_calls == (c.reverse ? 3u : 5u),
+      "eight exact wait calls");
   /* Threads share one FD table. Close only after join, in the owner main. */
-  require(close(c.ready[0]) == 0 && close(c.ready[1]) == 0 &&
-          close(c.release[0]) == 0 && close(c.release[1]) == 0, "close owned pipes");
-  require(printf("cross-thread waitid %s %s %s calls=8\n", argv[1], argv[2], argv[3]) > 0,
-          "final marker write");
+  require(
+      close(c.ready[0]) == 0 && close(c.ready[1]) == 0 &&
+          close(c.release[0]) == 0 && close(c.release[1]) == 0,
+      "close owned pipes");
+  require(
+      printf(
+          "cross-thread waitid %s %s %s calls=8\n", argv[1], argv[2], argv[3]) >
+          0,
+      "final marker write");
   require(fflush(stdout) == 0, "flush final marker");
   return 0;
 }

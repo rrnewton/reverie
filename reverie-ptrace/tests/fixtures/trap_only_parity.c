@@ -33,7 +33,7 @@ static void on_usr1(int signal_number) {
   usr1_seen = 1;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc == 3 && strcmp(argv[1], "touch") == 0) {
     int fd = open(argv[2], O_WRONLY | O_CREAT | O_EXCL, 0600);
     return fd < 0 ? 20 : 0;
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
     return 8;
   }
 
-  char *const next[] = {argv[0], "exec", NULL};
+  char* const next[] = {argv[0], "exec", NULL};
   execv(argv[0], next);
   return 10;
 }
