@@ -1515,6 +1515,18 @@ class RecordLocked(RuntimeError):
     """
 
 
+class RecordLockedByAnotherThread(RecordLocked):
+    """A nonblocking request met another thread of this process that will release.
+
+    Raised only when ``blocking=False`` and the in-process holder is a
+    different thread that accepts waiters, which is exactly the case a
+    blocking request waits out on the in-process condition. A caller that
+    polls under its own bound may retry it. Same-thread re-entry, authority
+    inherited through a no-exec fork, and holders that reject waiters raise a
+    plain ``RecordLocked`` instead, because waiting can never end those.
+    """
+
+
 @dataclass
 class RunPopulationAuthority:
     """An exclusive lock on one state root's complete run-handle population.
@@ -1816,10 +1828,17 @@ def run_population_lock(
                     "forked process inherited run-population authority for "
                     f"{canonical}; exec before writing run records"
                 )
-            if owner_thread == thread_id or owner_rejects_waiters or not blocking:
+            if owner_thread == thread_id or owner_rejects_waiters:
                 raise RecordLocked(
                     "this process already holds run-population authority for "
                     f"{canonical}"
+                )
+            if not blocking:
+                # The one in-process conflict that ends on its own: a blocking
+                # request would wait on the condition below.
+                raise RecordLockedByAnotherThread(
+                    "this process already holds run-population authority for "
+                    f"{canonical} on another thread"
                 )
             _RUN_POPULATION_CONDITION.wait()
         _RUN_POPULATION_ACTIVE[canonical] = (

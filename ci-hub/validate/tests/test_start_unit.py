@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -20,6 +21,7 @@ import pytest
 import runpy
 import unittest
 from unittest import mock
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -1404,9 +1406,17 @@ class StartUnitTest(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def foreign_cleanup_lock_holder(
-        self, kind: str, *, seconds: float
+        self, kind: str, *, seconds: float, marker: Path | None = None
     ) -> subprocess.Popen[str]:
-        """Start one exec'd process holding a real generation/population lock."""
+        """Start one exec'd process holding a real generation/population lock.
+
+        ``exclusive-generation-then-population`` holds the exclusive generation
+        side for ``seconds``, takes the population lock before releasing it,
+        then holds population for ``seconds`` more. ``population-then-unlink``
+        holds population for ``seconds`` and deletes ``marker`` before it
+        releases, as a wrkslots removal clears its FINISH journal inside the
+        same directory lock.
+        """
 
         program = r"""
 import fcntl
@@ -1415,12 +1425,19 @@ import sys
 import time
 from pathlib import Path
 
-kind, module_dir, raw_root, raw_seconds = sys.argv[1:]
+kind, module_dir, raw_root, raw_seconds, raw_marker = sys.argv[1:]
 root = Path(raw_root)
 if kind == "generation":
     sys.path.insert(0, module_dir)
     import run_registry
     with run_registry.run_writer_generation_lock(root):
+        print("ready", flush=True)
+        time.sleep(float(raw_seconds))
+elif kind == "exclusive-generation":
+    # The side destructive cleanup takes; it excludes a launcher's shared side.
+    sys.path.insert(0, module_dir)
+    import run_registry
+    with run_registry.run_writer_generation_lock(root, exclusive=True):
         print("ready", flush=True)
         time.sleep(float(raw_seconds))
 elif kind == "population":
@@ -1429,6 +1446,27 @@ elif kind == "population":
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         print("ready", flush=True)
         time.sleep(float(raw_seconds))
+    finally:
+        os.close(descriptor)
+elif kind == "exclusive-generation-then-population":
+    sys.path.insert(0, module_dir)
+    import run_registry
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with run_registry.run_writer_generation_lock(root, exclusive=True):
+            print("ready", flush=True)
+            time.sleep(float(raw_seconds))
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        time.sleep(float(raw_seconds))
+    finally:
+        os.close(descriptor)
+elif kind == "population-then-unlink":
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        print("ready", flush=True)
+        time.sleep(float(raw_seconds))
+        os.unlink(raw_marker)
     finally:
         os.close(descriptor)
 else:
@@ -1443,6 +1481,7 @@ else:
                 str(Path(start_unit.run_registry.__file__).resolve().parent),
                 str(self.root),
                 str(seconds),
+                "" if marker is None else str(marker),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3868,6 +3907,805 @@ else:
             elapsed[0] = 29.0
             budget.run(["probe"], timeout=2.0)
         self.assertEqual([2.0, 1.0], observed)
+
+    # Entry lock waiting, https://github.com/rrnewton/dev-hermit/issues/389.
+    # Waiting for the registry locks is bounded by its own
+    # VALIDATE_ENTRY_LOCK_WAIT_SECONDS and is never charged to the read-only
+    # classification budget. The bounds are injected so no case sleeps 30 s;
+    # each holder is a separate exec'd process holding the real kernel lock.
+
+    ENTRY_LOCK_WAIT_SLOT = "validate-fresh-aaaaaaaaaaaa-lock-wait"
+
+    def entry_lock_identity(self, kind: str) -> tuple[str, Path]:
+        canonical = self.root.resolve()
+        if kind == "exclusive-generation":
+            return (
+                "run-writer generation lock",
+                canonical / start_unit.run_registry.RUN_WRITER_GENERATION_LOCK,
+            )
+        self.assertEqual("population", kind)
+        return "run-population lock", canonical
+
+    def require_entry_under_bounds(
+        self,
+        *,
+        classification: float,
+        lock_wait: float,
+        with_authority: bool = False,
+        run: start_unit.Runner | None = None,
+    ) -> str:
+        """Run read-only entry under injected bounds; return its stderr.
+
+        ``with_authority`` is the production shape: the caller already holds
+        the shared generation side and entry takes only the population lock.
+        A refusal propagates with the captured stderr attached as a note.
+        """
+
+        prospective = self.ENTRY_LOCK_WAIT_SLOT
+        error = io.StringIO()
+        with (
+            mock.patch.object(
+                start_unit, "VALIDATE_ENTRY_CLASSIFICATION_SECONDS", classification
+            ),
+            mock.patch.object(
+                start_unit, "VALIDATE_ENTRY_LOCK_WAIT_SECONDS", lock_wait
+            ),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_POLL_SECONDS", 0.005),
+            contextlib.redirect_stderr(error),
+            contextlib.ExitStack() as authority,
+        ):
+            generation = (
+                authority.enter_context(
+                    start_unit.run_registry.run_writer_generation_lock(self.root)
+                )
+                if with_authority
+                else None
+            )
+            try:
+                start_unit.require_validate_entry_cleanup(
+                    self.root,
+                    prospective_slot=prospective,
+                    prospective_checkout=self.root / "worktrees/validate" / prospective,
+                    run=run or self.fake,
+                    tool_root=self.root,
+                    generation_authority=generation,
+                )
+            except BaseException as refusal:
+                refusal.add_note(error.getvalue())
+                raise
+        return error.getvalue()
+
+    def entry_authority_seconds(self, error: str) -> dict[str, float]:
+        match = re.search(
+            r"ENTRY-AUTHORITY state=ready .* elapsed=([0-9.]+)s "
+            r"classification=(-?[0-9.]+)s lock-wait=([0-9.]+)s",
+            error,
+        )
+        self.assertIsNotNone(match, error)
+        assert match is not None
+        return {
+            "elapsed": float(match.group(1)),
+            "classification": float(match.group(2)),
+            "lock_wait": float(match.group(3)),
+        }
+
+    def test_entry_lock_wait_longer_than_budget_is_not_charged_to_it(self) -> None:
+        self.managed_cleanup_record("entry-lock-wait-admit")
+        cases = (
+            ("exclusive-generation", False),
+            ("population", False),
+            ("population", True),
+        )
+        for kind, with_authority in cases:
+            with self.subTest(kind=kind, with_authority=with_authority):
+                lock_name, lock_path = self.entry_lock_identity(kind)
+                holder = self.foreign_cleanup_lock_holder(kind, seconds=1.5)
+                started = time.monotonic()
+                error = self.require_entry_under_bounds(
+                    classification=0.5,
+                    lock_wait=30.0,
+                    with_authority=with_authority,
+                )
+                wall = time.monotonic() - started
+                holder.wait(timeout=5)
+
+                self.assertNotIn("budget expired", error)
+                seconds = self.entry_authority_seconds(error)
+                # The wait alone is longer than the whole budget, and the
+                # classification that was charged stayed inside it.
+                self.assertGreaterEqual(seconds["lock_wait"], 1.0, error)
+                self.assertGreater(seconds["lock_wait"], 0.5, error)
+                self.assertLess(seconds["classification"], 0.5, error)
+                self.assertGreaterEqual(seconds["classification"], 0.0, error)
+                self.assertGreaterEqual(wall, seconds["lock_wait"])
+                self.assertIn("run-handles=1", error)
+                self.assertIn("ENTRY-LOCK-WAIT waiting up to ", error)
+                waited = re.search(
+                    r"ENTRY-LOCK-WAIT waited ([0-9.]+)s for the (.+?) on (.+?), "
+                    r"held by (.+)",
+                    error,
+                )
+                self.assertIsNotNone(waited, error)
+                assert waited is not None
+                self.assertEqual(lock_name, waited.group(2))
+                self.assertEqual(str(lock_path), waited.group(3))
+                self.assertIn(f"pid {holder.pid} (write: ", waited.group(4))
+                self.assertGreaterEqual(float(waited.group(1)), 1.0)
+
+    def test_entry_lock_wait_past_its_bound_refuses_naming_lock_and_wait(self) -> None:
+        self.managed_cleanup_record("entry-lock-wait-expired")
+        cases = (
+            ("exclusive-generation", False),
+            ("population", False),
+            ("population", True),
+        )
+        for kind, with_authority in cases:
+            with self.subTest(kind=kind, with_authority=with_authority):
+                lock_name, lock_path = self.entry_lock_identity(kind)
+                holder = self.foreign_cleanup_lock_holder(kind, seconds=60)
+                before = self.filesystem_snapshot(self.root)
+                commands_before = len(self.fake.commands)
+                started = time.monotonic()
+                with (
+                    mock.patch.object(
+                        start_unit,
+                        "_prospective_run_handle_conflicts",
+                        wraps=start_unit._prospective_run_handle_conflicts,
+                    ) as classify,
+                    self.assertRaises(start_unit.ValidateEntryLockWaitExpired) as raised,
+                ):
+                    self.require_entry_under_bounds(
+                        classification=30.0,
+                        lock_wait=0.4,
+                        with_authority=with_authority,
+                    )
+                wall = time.monotonic() - started
+                message = str(raised.exception)
+
+                self.assertIsNone(holder.poll(), "the holder must still hold the lock")
+                self.assertTrue(
+                    message.startswith("validation entry lock wait bound expired: waited "),
+                    message,
+                )
+                waited = re.match(
+                    r"validation entry lock wait bound expired: waited ([0-9.]+)s "
+                    r"for the (.+?) on (.+?), held by ",
+                    message,
+                )
+                self.assertIsNotNone(waited, message)
+                assert waited is not None
+                self.assertGreaterEqual(float(waited.group(1)), 0.4, message)
+                self.assertLess(float(waited.group(1)), 5.0, message)
+                self.assertLess(wall, 5.0, message)
+                self.assertEqual(lock_name, waited.group(2))
+                self.assertEqual(str(lock_path), waited.group(3))
+                self.assertIn(f"held by pid {holder.pid} (write: ", message)
+                self.assertIn(
+                    "entry waits at most 0.4s in total for registry locks", message
+                )
+                self.assertIn(
+                    "create-journal and run-handle classification did not start",
+                    message,
+                )
+                self.assertNotIn("classification budget expired", message)
+                self.assertNotIn("authority could not be proved", message)
+                classify.assert_not_called()
+                # Journal classification runs under the locks too, so an
+                # expired wait never asked the provider for it.
+                self.assertFalse(
+                    any(
+                        wrkslots_action(command, "classify-create-journals")
+                        for command in self.fake.commands[commands_before:]
+                    ),
+                    self.fake.commands[commands_before:],
+                )
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+                holder.terminate()
+                holder.wait(timeout=5)
+
+    def test_entry_slow_classification_after_lock_wait_is_still_refused(self) -> None:
+        self.managed_cleanup_record("entry-lock-wait-slow")
+        original_read = start_unit.read_cleanup_record_object
+
+        def slow_read(path: Path) -> dict[str, object]:
+            time.sleep(0.7)
+            return original_read(path)
+
+        cases = (
+            ("exclusive-generation", False),
+            ("population", False),
+            ("population", True),
+        )
+        for kind, with_authority in cases:
+            with self.subTest(kind=kind, with_authority=with_authority):
+                holder = self.foreign_cleanup_lock_holder(kind, seconds=1.0)
+                with (
+                    mock.patch.object(
+                        start_unit, "read_cleanup_record_object", side_effect=slow_read
+                    ),
+                    self.assertRaises(start_unit.ValidateEntryCleanupRefused) as raised,
+                ):
+                    self.require_entry_under_bounds(
+                        classification=0.5,
+                        lock_wait=30.0,
+                        with_authority=with_authority,
+                    )
+                holder.wait(timeout=5)
+                message = str(raised.exception)
+                captured = "\n".join(getattr(raised.exception, "__notes__", []))
+
+                self.assertNotIsInstance(
+                    raised.exception, start_unit.ValidateEntryLockWaitExpired
+                )
+                self.assertIn(
+                    "read-only entry classification budget expired while "
+                    "finishing run-handle classification; unresolved storage "
+                    "remains retained",
+                    message,
+                )
+                # The lock really was contended first, and the refusal reports
+                # the wait separately from the classification it charged.
+                self.assertIn("ENTRY-LOCK-WAIT waited ", captured)
+                split = re.search(
+                    r"s \((-?[0-9.]+)s classifying, ([0-9.]+)s waiting for "
+                    r"registry locks\)",
+                    message,
+                )
+                self.assertIsNotNone(split, message)
+                assert split is not None
+                self.assertGreaterEqual(float(split.group(1)), 0.5, message)
+                self.assertGreater(float(split.group(2)), 0.1, message)
+
+    def test_entry_budget_charges_journal_and_handle_classification_after_the_wait(
+        self,
+    ) -> None:
+        # Both steps now run after the locks are granted: 0.3 s of create-journal
+        # classification plus 0.3 s of run-handle classification exceeds a 0.5 s
+        # budget. A budget that left journal classification uncharged (or ran it
+        # before the budget started) would charge 0.3 s and admit this.
+        self.managed_cleanup_record("entry-lock-wait-paused")
+        original_read = start_unit.read_cleanup_record_object
+
+        def slow_journals(command, **kwargs):
+            if wrkslots_action(command, "classify-create-journals"):
+                time.sleep(0.3)
+            return self.fake(command, **kwargs)
+
+        def slow_read(path: Path) -> dict[str, object]:
+            time.sleep(0.3)
+            return original_read(path)
+
+        for kind in ("exclusive-generation", "population"):
+            with self.subTest(kind=kind):
+                holder = self.foreign_cleanup_lock_holder(kind, seconds=1.0)
+                with (
+                    mock.patch.object(
+                        start_unit, "read_cleanup_record_object", side_effect=slow_read
+                    ),
+                    self.assertRaises(start_unit.ValidateEntryCleanupRefused) as raised,
+                ):
+                    self.require_entry_under_bounds(
+                        classification=0.5, lock_wait=30.0, run=slow_journals
+                    )
+                holder.wait(timeout=5)
+                captured = "\n".join(getattr(raised.exception, "__notes__", []))
+                self.assertNotIsInstance(
+                    raised.exception, start_unit.ValidateEntryLockWaitExpired
+                )
+                self.assertIn(
+                    "read-only entry classification budget expired while "
+                    "finishing run-handle classification",
+                    str(raised.exception),
+                )
+                self.assertIn("ENTRY-LOCK-WAIT waited ", captured)
+
+    def test_validate_run_refuses_lock_wait_past_bound_with_its_own_remedy(self) -> None:
+        holder = self.foreign_cleanup_lock_holder("population", seconds=60)
+        started = time.monotonic()
+        with (
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_WAIT_SECONDS", 0.3),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_POLL_SECONDS", 0.005),
+        ):
+            rc, _output, error = self.invoke()
+        wall = time.monotonic() - started
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertLess(wall, 10.0, error)
+        self.assertIsNone(holder.poll(), "the holder must still hold the lock")
+        self.assertIn(
+            "validation entry lock wait bound expired: waited ", error
+        )
+        self.assertIn(
+            f"for the run-population lock on {self.root.resolve()}, held by "
+            f"pid {holder.pid} (write: ",
+            error,
+        )
+        self.assertIn("entry waits at most 0.3s in total for registry locks", error)
+        self.assertIn(
+            "another process held a validation registry lock past the entry "
+            "lock-wait bound and no checkout was created",
+            error,
+        )
+        self.assertNotIn("classification budget expired", error)
+        self.assertNotIn("inspect the named overlapping slot", error)
+        self.assertFalse(any(wrkslots_action(command, "create")
+                             for command in self.fake.commands))
+
+    def test_validate_run_admits_after_a_lock_wait_longer_than_budget(self) -> None:
+        self.foreign_cleanup_lock_holder("population", seconds=1.5)
+        with (
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_CLASSIFICATION_SECONDS", 0.5),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_POLL_SECONDS", 0.005),
+        ):
+            rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertNotIn("budget expired", error)
+        seconds = self.entry_authority_seconds(error)
+        self.assertGreaterEqual(seconds["lock_wait"], 1.0, error)
+        self.assertLess(seconds["classification"], 0.5, error)
+        self.assertIn("ENTRY-LOCK-WAIT waited ", error)
+        self.assertTrue(any(wrkslots_action(command, "create")
+                            for command in self.fake.commands))
+
+    def test_describe_flock_holders_names_holders_not_blocked_waiters(self) -> None:
+        holder = self.foreign_cleanup_lock_holder("population", seconds=60)
+        waiter = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import fcntl, os, sys\n"
+                "fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n",
+                str(self.root),
+            ],
+        )
+
+        def stop_waiter() -> None:
+            if waiter.poll() is None:
+                waiter.kill()
+            waiter.wait(timeout=5)
+
+        self.addCleanup(stop_waiter)
+        deadline = time.monotonic() + 10
+        while not any(
+            "->" in line and f" {waiter.pid} " in line
+            for line in Path("/proc/locks").read_text().splitlines()
+        ):
+            self.assertLess(time.monotonic(), deadline, "waiter never blocked")
+            self.assertIsNone(waiter.poll())
+            time.sleep(0.01)
+
+        described = start_unit.describe_flock_holders(self.root)
+        self.assertIn(f"pid {holder.pid} (write: ", described)
+        self.assertNotIn(f"pid {waiter.pid} ", described)
+        self.assertNotIn("unidentified", described)
+
+        unlocked = self.root / "unlocked-file"
+        unlocked.write_text("")
+        self.assertIn(
+            "an unidentified holder (/proc/locks lists no flock on",
+            start_unit.describe_flock_holders(unlocked),
+        )
+
+    # In-process contention, https://github.com/rrnewton/dev-hermit/issues/389.
+    # Entry polls nonblocking acquisitions, so it must keep waiting where the
+    # blocking form waited (another thread that will release) and keep raising
+    # where the blocking form raised (conflicts no wait can end).
+
+    def hold_population_on_thread(
+        self, *, seconds: float, reject_same_process: bool = False
+    ) -> tuple[threading.Thread, Callable[[], None]]:
+        """Hold real run-population authority on another thread of this process."""
+
+        held = threading.Event()
+        release = threading.Event()
+        failures: list[BaseException] = []
+
+        def hold() -> None:
+            try:
+                with start_unit.run_registry.run_population_lock(
+                    self.root, reject_same_process=reject_same_process
+                ):
+                    held.set()
+                    release.wait(seconds)
+            except BaseException as error:  # surfaced by the cleanup below
+                failures.append(error)
+                held.set()
+
+        holder = threading.Thread(target=hold, name="population-holder")
+        holder.start()
+
+        def stop() -> None:
+            release.set()
+            holder.join(timeout=10)
+            self.assertFalse(holder.is_alive(), "population holder thread hung")
+            self.assertEqual([], failures)
+
+        # tearDown deletes the state root and cleanups run after it, so each
+        # caller stops the holder itself before returning.
+        self.assertTrue(held.wait(timeout=10), "holder thread never took the lock")
+        self.assertEqual([], failures)
+        return holder, stop
+
+    def test_entry_waits_for_another_thread_and_counts_it_as_lock_wait(self) -> None:
+        self.managed_cleanup_record("entry-thread-wait")
+        for with_authority in (False, True):
+            with self.subTest(with_authority=with_authority):
+                _holder, stop = self.hold_population_on_thread(seconds=0.8)
+                try:
+                    error = self.require_entry_under_bounds(
+                        classification=0.5,
+                        lock_wait=30.0,
+                        with_authority=with_authority,
+                    )
+                finally:
+                    stop()
+
+                self.assertNotIn("budget expired", error)
+                seconds = self.entry_authority_seconds(error)
+                self.assertGreaterEqual(seconds["lock_wait"], 0.5, error)
+                self.assertLess(seconds["classification"], 0.5, error)
+                self.assertIn(
+                    "ENTRY-LOCK-WAIT waited ", error
+                )
+                self.assertIn(
+                    f"for the run-population lock on {self.root.resolve()}, held "
+                    f"by another thread of this process (pid {os.getpid()})",
+                    error,
+                )
+
+    def assert_entry_refused_at_once(self, *, expected: str) -> None:
+        # A 5 s bound: retrying a conflict that cannot end would spend all of
+        # it and then report a lock-wait expiry instead of this conflict.
+        started = time.monotonic()
+        with self.assertRaises(start_unit.ValidateEntryCleanupRefused) as raised:
+            self.require_entry_under_bounds(classification=30.0, lock_wait=5.0)
+        wall = time.monotonic() - started
+        message = str(raised.exception)
+        captured = "\n".join(getattr(raised.exception, "__notes__", []))
+        self.assertNotIsInstance(
+            raised.exception, start_unit.ValidateEntryLockWaitExpired, message
+        )
+        self.assertIn("authority could not be proved after ", message)
+        self.assertIn(expected, message)
+        self.assertNotIn("ENTRY-LOCK-WAIT", captured)
+        self.assertLess(wall, 2.0, message)
+
+    def test_entry_raises_at_once_for_same_thread_reentry(self) -> None:
+        self.managed_cleanup_record("entry-same-thread")
+        with start_unit.run_registry.run_population_lock(self.root):
+            self.assert_entry_refused_at_once(
+                expected="this process already holds run-population authority for "
+                f"{self.root.resolve()}"
+            )
+        with start_unit.run_registry.run_writer_generation_lock(
+            self.root, exclusive=True
+        ):
+            self.assert_entry_refused_at_once(
+                expected="this process already holds exclusive run-writer "
+                "generation authority"
+            )
+
+    def test_entry_raises_at_once_for_a_thread_that_rejects_waiters(self) -> None:
+        self.managed_cleanup_record("entry-rejecting-thread")
+        holder, stop = self.hold_population_on_thread(
+            seconds=60, reject_same_process=True
+        )
+        try:
+            self.assert_entry_refused_at_once(
+                expected="this process already holds run-population authority for "
+                f"{self.root.resolve()}"
+            )
+            self.assertTrue(holder.is_alive(), "the rejecting holder must still hold")
+        finally:
+            stop()
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
+    def test_entry_raises_at_once_in_a_fork_that_inherited_the_locks(self) -> None:
+        import select
+
+        self.managed_cleanup_record("entry-fork")
+        read_fd, write_fd = os.pipe()
+        child: int | None = None
+        try:
+            with start_unit.run_registry.run_population_lock(self.root):
+                child = os.fork()
+                if child == 0:
+                    os.close(read_fd)
+                    report: dict[str, object] = {}
+                    try:
+                        started = time.monotonic()
+                        try:
+                            self.require_entry_under_bounds(
+                                classification=30.0, lock_wait=5.0
+                            )
+                        except BaseException as error:
+                            report = {
+                                "type": type(error).__name__,
+                                "message": str(error),
+                                "notes": "\n".join(getattr(error, "__notes__", [])),
+                            }
+                        else:
+                            report = {"type": "admitted"}
+                        report["wall"] = time.monotonic() - started
+                        os.write(write_fd, json.dumps(report).encode())
+                    finally:
+                        os._exit(0)
+                os.close(write_fd)
+                ready, _writable, _exceptional = select.select([read_fd], [], [], 4.0)
+                self.assertEqual([read_fd], ready, "forked entry kept waiting")
+                chunks = []
+                while chunk := os.read(read_fd, 65536):
+                    chunks.append(chunk)
+                waited, status = os.waitpid(child, 0)
+                child = None
+                self.assertGreater(waited, 0)
+                self.assertEqual(0, os.waitstatus_to_exitcode(status))
+        finally:
+            if child is not None:
+                os.kill(child, 9)
+                os.waitpid(child, 0)
+            with contextlib.suppress(OSError):
+                os.close(read_fd)
+            with contextlib.suppress(OSError):
+                os.close(write_fd)
+        report = json.loads(b"".join(chunks))
+        self.assertEqual("ValidateEntryCleanupRefused", report["type"], report)
+        self.assertIn("forked process inherited run-writer generation", report["message"])
+        self.assertNotIn("ENTRY-LOCK-WAIT", report["notes"])
+        self.assertLess(report["wall"], 2.0, report)
+
+    def test_entry_lock_wait_bound_is_one_deadline_across_both_locks(self) -> None:
+        # 0.3 s on the generation lock, then 0.3 s on population, against a
+        # 0.4 s total bound: each wait alone fits, together they do not.
+        self.managed_cleanup_record("entry-lock-wait-total")
+        holder = self.foreign_cleanup_lock_holder(
+            "exclusive-generation-then-population", seconds=0.3
+        )
+        started = time.monotonic()
+        with self.assertRaises(start_unit.ValidateEntryLockWaitExpired) as raised:
+            self.require_entry_under_bounds(classification=30.0, lock_wait=0.4)
+        wall = time.monotonic() - started
+        message = str(raised.exception)
+        captured = "\n".join(getattr(raised.exception, "__notes__", []))
+        holder.wait(timeout=5)
+
+        self.assertIn(
+            f"for the run-population lock on {self.root.resolve()}, held by ", message
+        )
+        self.assertIn("ENTRY-LOCK-WAIT waited ", captured)
+        self.assertIn("for the run-writer generation lock on ", captured)
+        total = re.search(r"and waited ([0-9.]+)s in total", message)
+        self.assertIsNotNone(total, message)
+        assert total is not None
+        self.assertGreaterEqual(float(total.group(1)), 0.4, message)
+        self.assertLess(float(total.group(1)), 3.0, message)
+        self.assertLess(wall, 3.0, message)
+
+    def test_validate_run_lock_wait_bound_spans_the_pre_entry_generation_lock(
+        self,
+    ) -> None:
+        holder = self.foreign_cleanup_lock_holder(
+            "exclusive-generation-then-population", seconds=0.3
+        )
+        with (
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_WAIT_SECONDS", 0.4),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_POLL_SECONDS", 0.005),
+        ):
+            rc, _output, error = self.invoke()
+        holder.wait(timeout=5)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIn(
+            "ENTRY-LOCK-WAIT waited ", error
+        )
+        self.assertIn("for the run-writer generation lock on ", error)
+        self.assertIn(
+            f"for the run-population lock on {self.root.resolve()}, held by ", error
+        )
+        self.assertIn("entry waits at most 0.4s in total for registry locks", error)
+        self.assertIn(
+            "another process held a validation registry lock past the entry "
+            "lock-wait bound and no checkout was created",
+            error,
+        )
+        self.assertFalse(any(wrkslots_action(command, "create")
+                             for command in self.fake.commands))
+
+    def test_validate_run_bounds_the_pre_entry_generation_lock_wait(self) -> None:
+        holder = self.foreign_cleanup_lock_holder("exclusive-generation", seconds=60)
+        with (
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_WAIT_SECONDS", 0.3),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_POLL_SECONDS", 0.005),
+            # The refusal's own no-op same-launch cleanup also wants the
+            # exclusive side this holder keeps; do not wait 30 s for it here.
+            mock.patch.object(start_unit, "SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS", 0.2),
+        ):
+            rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIsNone(holder.poll(), "the holder must still hold the lock")
+        expired = re.search(
+            r"validation entry lock wait bound expired: waited ([0-9.]+)s for the "
+            r"run-writer generation lock on (.+?), held by pid (\d+) \(write: ",
+            error,
+        )
+        self.assertIsNotNone(expired, error)
+        assert expired is not None
+        self.assertLess(float(expired.group(1)), 5.0, error)
+        self.assertEqual(
+            str(
+                self.root.resolve()
+                / start_unit.run_registry.RUN_WRITER_GENERATION_LOCK
+            ),
+            expired.group(2),
+        )
+        self.assertEqual(str(holder.pid), expired.group(3))
+        self.assertIn(
+            "another process held a validation registry lock past the entry "
+            "lock-wait bound and no checkout was created",
+            error,
+        )
+        self.assertFalse(any(
+            wrkslots_action(command, "classify-create-journals")
+            or wrkslots_action(command, "create")
+            for command in self.fake.commands
+        ))
+
+    def test_entry_classifies_create_journals_under_the_population_lock(self) -> None:
+        self.managed_cleanup_record("entry-journals-locked")
+        probes: list[str] = []
+
+        def probing(command, **kwargs):
+            if wrkslots_action(command, "classify-create-journals"):
+                # A second open file description in this process conflicts with
+                # the population flock exactly as another process would.
+                descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    probes.append("held")
+                else:
+                    probes.append("free")
+                finally:
+                    os.close(descriptor)
+            return self.fake(command, **kwargs)
+
+        for with_authority in (False, True):
+            with self.subTest(with_authority=with_authority):
+                probes.clear()
+                error = self.require_entry_under_bounds(
+                    classification=30.0,
+                    lock_wait=30.0,
+                    with_authority=with_authority,
+                    run=probing,
+                )
+                self.assertIn("ENTRY-AUTHORITY state=ready", error)
+                self.assertEqual(["held"], probes)
+
+    def test_entry_waits_out_a_live_removal_before_reading_its_journal(self) -> None:
+        # Row 1 of the issue: a removal in progress holds the directory lock and
+        # its FINISH journal, and clears the journal before it releases.
+        self.managed_cleanup_record("entry-live-removal")
+        marker = self.root / "live-removal-finish-journal"
+        marker.write_text("")
+        seen: list[bool] = []
+
+        def removal_aware(command, **kwargs):
+            if wrkslots_action(command, "classify-create-journals"):
+                seen.append(marker.exists())
+                if marker.exists():
+                    return completed(
+                        command,
+                        rc=1,
+                        stderr="finish journal of a removal still in progress",
+                    )
+            return self.fake(command, **kwargs)
+
+        holder = self.foreign_cleanup_lock_holder(
+            "population-then-unlink", seconds=0.5, marker=marker
+        )
+        error = self.require_entry_under_bounds(
+            classification=30.0, lock_wait=30.0, run=removal_aware
+        )
+        holder.wait(timeout=5)
+
+        self.assertIn("ENTRY-AUTHORITY state=ready", error)
+        self.assertIn("ENTRY-LOCK-WAIT waited ", error)
+        self.assertEqual([False], seen)
+        self.assertFalse(marker.exists())
+
+    def test_entry_lock_wait_redescribes_a_changed_holder(self) -> None:
+        self.managed_cleanup_record("entry-holder-changes")
+        cases = (
+            # Looked up again while waiting: the change is reported as it happens.
+            (0.05, True),
+            # Never looked up again while waiting: the expiry still re-describes.
+            (100.0, False),
+        )
+        for interval, reported_while_waiting in cases:
+            with self.subTest(interval=interval):
+                holder = self.foreign_cleanup_lock_holder("population", seconds=60)
+                names = iter(["holder-A"])
+                with (
+                    mock.patch.object(
+                        start_unit,
+                        "describe_flock_holders",
+                        side_effect=lambda _path: next(names, "holder-B"),
+                    ),
+                    mock.patch.object(
+                        start_unit, "VALIDATE_ENTRY_LOCK_REDESCRIBE_SECONDS", interval
+                    ),
+                    self.assertRaises(start_unit.ValidateEntryLockWaitExpired) as raised,
+                ):
+                    self.require_entry_under_bounds(classification=30.0, lock_wait=0.4)
+                message = str(raised.exception)
+                captured = "\n".join(getattr(raised.exception, "__notes__", []))
+                holder.terminate()
+                holder.wait(timeout=5)
+
+                self.assertIn(", held by holder-B (earlier holders: holder-A); ", message)
+                self.assertIn("ENTRY-LOCK-WAIT waiting up to ", captured)
+                self.assertIn("held by holder-A", captured)
+                self.assertEqual(
+                    reported_while_waiting,
+                    "now held by holder-B" in captured,
+                    captured,
+                )
+
+    def test_entry_lock_grant_names_every_holder_it_waited_for(self) -> None:
+        self.managed_cleanup_record("entry-holder-grant")
+        self.foreign_cleanup_lock_holder("population", seconds=0.6)
+        names = iter(["holder-A"])
+        with (
+            mock.patch.object(
+                start_unit,
+                "describe_flock_holders",
+                side_effect=lambda _path: next(names, "holder-B"),
+            ),
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_LOCK_REDESCRIBE_SECONDS", 0.05),
+        ):
+            error = self.require_entry_under_bounds(classification=30.0, lock_wait=30.0)
+        self.assertRegex(
+            error,
+            r"ENTRY-LOCK-WAIT waited [0-9.]+s for the run-population lock on .+, "
+            r"held by holder-A then holder-B\n",
+        )
+
+    def test_holder_command_line_read_gives_up_on_a_stuck_read(self) -> None:
+        fifo = self.root / "stuck-cmdline"
+        os.mkfifo(fifo)
+
+        def release_reader() -> None:
+            # The abandoned reader is blocked opening the FIFO; a writer lets
+            # it finish so no thread outlives the test.
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+
+        self.addCleanup(release_reader)
+        started = time.monotonic()
+        with self.assertRaisesRegex(TimeoutError, "did not finish within 0.2s"):
+            start_unit._read_proc_bounded(str(fifo), 0.2)
+        self.assertLess(time.monotonic() - started, 2.0)
+
+        real_read = start_unit._read_proc_bounded
+        with (
+            mock.patch.object(start_unit, "VALIDATE_ENTRY_HOLDER_READ_SECONDS", 0.2),
+            mock.patch.object(
+                start_unit,
+                "_read_proc_bounded",
+                side_effect=lambda path, timeout: real_read(str(fifo), timeout),
+            ) as read,
+        ):
+            started = time.monotonic()
+            summary = start_unit._process_command_summary(os.getpid())
+        self.assertLess(time.monotonic() - started, 2.0)
+        read.assert_called_once_with(f"/proc/{os.getpid()}/cmdline", 0.2)
+        self.assertEqual(
+            f"command line unreadable: reading {fifo} did not finish within 0.2s",
+            summary,
+        )
 
     def test_cleanup_handle_fifo_is_refused_without_waiting_for_a_writer(self) -> None:
         fifo = self.root / "blocked-handle.json"

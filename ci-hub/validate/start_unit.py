@@ -20,6 +20,7 @@ import stat
 import subprocess
 import tempfile
 import sys
+import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -71,6 +72,41 @@ VALIDATE_CLEANUP_BATCH_LIMIT = 8
 # Separate from payload/queue deadlines: admission observed 10.612s for eight
 # retained groups. Every read-only child shares this finite classification budget.
 VALIDATE_ENTRY_CLASSIFICATION_SECONDS = 30.0
+# WAITING FOR A REGISTRY LOCK IS NOT CLASSIFICATION, AND THE BUDGET ABOVE NEVER
+# PAYS FOR IT (https://github.com/rrnewton/dev-hermit/issues/389). Entry takes
+# the run-writer generation lock (shared) and the run-population lock, which is
+# an exclusive flock on the state-root directory. Every wrkslots mutation flocks
+# that same directory (the parent of .wrkslots.yml) for its whole run, including
+# a validation-checkout removal. While the budget started before these
+# acquisitions, a launch queued behind one removal was refused as "classification
+# budget expired" and blamed an innocent run handle. Measured 2026-09-28 on
+# devbig030 and devbig014: refusals after 30.6 to 426.5 s, the long ones behind
+# `wrkslots remove --validate-complete` (one such process was alive 423 s). The
+# budget now starts only once both locks are held, and every classification
+# step, including the create-journal classification, runs under them. Margin:
+# an uncontended entry took 2.95 s on devbig030 (the issue's attempt 3), but on
+# devbig014 at load average about 55 `classify-create-journals` alone took 17.5
+# to 19.4 s (three runs, 2026-09-28) and one admitted entry reported
+# elapsed=21.963s over 1774 run handles, so about 8 s of the 30 s remained.
+#
+# The wait therefore has its own bound. A removal holds the directory lock for
+# its whole run, so the wait tracks how long one removal takes to finish: the
+# longest measured was 426.5 s. 900 s is about twice that, so one ordinary
+# removal, plus the launch or heartbeat queued behind it, is ridden out. The
+# periodic launcher runs validate-run with --no-wait inside a RuntimeMaxSec=5000
+# unit, so the whole wait fits there. One deadline covers every entry lock,
+# including the shared generation lock main takes just before entry, so the
+# total wait never exceeds it; past it entry refuses, naming the lock, the wait,
+# and the holder that /proc/locks reports when the bound expires.
+VALIDATE_ENTRY_LOCK_WAIT_SECONDS = 900.0
+VALIDATE_ENTRY_LOCK_POLL_SECONDS = 0.05
+# While waiting, look the holder up again at most this often, so a wait that
+# passes from one removal to the next names both. Each lookup reads /proc/locks
+# and /proc/self/mountinfo once.
+VALIDATE_ENTRY_LOCK_REDESCRIBE_SECONDS = 5.0
+# Naming a holder reads /proc/<pid>/cmdline, which takes the holder's mmap lock;
+# a holder stuck with that lock must not stall admission, so the read gives up.
+VALIDATE_ENTRY_HOLDER_READ_SECONDS = 1.0
 # Same-launch cleanup is the only destructive cleanup permitted while the
 # rollout fence below remains closed. A concurrent launcher normally holds the
 # shared generation side for roughly the 10.4-second Cargo seed window, so
@@ -5993,6 +6029,261 @@ def _prospective_run_handle_conflicts(
     return inspected, conflicts
 
 
+class ValidateEntryLockWaitExpired(ValidateEntryCleanupRefused):
+    """A registry lock stayed held past the entry lock-wait bound."""
+
+
+@dataclass
+class EntryLockWait:
+    """Time entry spent blocked on registry locks, kept out of classification.
+
+    One instance carries one deadline across every lock entry takes, including
+    the shared generation lock main takes just before entry, so the waits add
+    up to at most ``bound`` seconds in total.
+    """
+
+    bound: float
+    started: float
+    deadline: float
+    waited: float = 0.0
+
+    @classmethod
+    def starting_now(cls) -> EntryLockWait:
+        started = time.monotonic()
+        bound = VALIDATE_ENTRY_LOCK_WAIT_SECONDS
+        return cls(bound=bound, started=started, deadline=started + bound)
+
+
+_MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
+
+
+def _lock_device_for(path: Path) -> tuple[int, int] | None:
+    """Return the device number /proc/locks prints for locks under ``path``.
+
+    That is the superblock's device, which /proc/self/mountinfo carries. It is
+    not ``st_dev`` on btrfs: a subvolume reports its own anonymous device. On
+    devbig014, 2026-09-28, this repository stats as 0:48 while /proc/locks and
+    mountinfo both say 0:47 (printed as ``00:2f``).
+    """
+
+    target = os.path.realpath(path)
+    found: tuple[int, int] | None = None
+    longest = -1
+    with open(
+        "/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape"
+    ) as mounts:
+        for line in mounts:
+            fields = line.split()
+            if len(fields) < 5:
+                continue
+            point = _MOUNTINFO_ESCAPE.sub(
+                lambda match: chr(int(match.group(1), 8)), fields[4]
+            )
+            inside = target == point or target.startswith(point.rstrip("/") + "/")
+            # ">=": a later entry at the same mount point is mounted over it.
+            if not inside or len(point) < longest:
+                continue
+            major, _separator, minor = fields[2].partition(":")
+            try:
+                found = (int(major), int(minor))
+            except ValueError:
+                continue
+            longest = len(point)
+    return found
+
+
+def _read_proc_bounded(path: str, timeout: float) -> bytes:
+    """Read one small /proc file on a helper thread, giving up after ``timeout``.
+
+    /proc/<pid>/cmdline takes the target's mmap lock. A holder stuck with that
+    lock held could otherwise stall admission on a diagnostic. On timeout the
+    daemon reader is abandoned; its read is killable, so it cannot keep this
+    process alive.
+    """
+
+    outcome: dict[str, bytes | OSError] = {}
+
+    def read() -> None:
+        try:
+            outcome["data"] = Path(path).read_bytes()
+        except OSError as error:
+            outcome["error"] = error
+
+    reader = threading.Thread(
+        target=read, name="entry-lock-holder-read", daemon=True
+    )
+    reader.start()
+    reader.join(timeout)
+    if reader.is_alive():
+        raise TimeoutError(f"reading {path} did not finish within {timeout:g}s")
+    failure = outcome.get("error")
+    if isinstance(failure, OSError):
+        raise failure
+    data = outcome.get("data")
+    assert isinstance(data, bytes)
+    return data
+
+
+def _process_command_summary(pid: int, limit: int = 160) -> str:
+    if pid <= 0:
+        return "process outside this PID namespace"
+    try:
+        raw = _read_proc_bounded(
+            f"/proc/{pid}/cmdline", VALIDATE_ENTRY_HOLDER_READ_SECONDS
+        )
+    except OSError as error:
+        return f"command line unreadable: {error.strerror or error}"
+    # One line: a refusal is read line by line, and ``python3 -c`` programs
+    # carry newlines in their arguments.
+    command = " ".join(raw.replace(b"\0", b" ").decode("utf-8", "replace").split())
+    if not command:
+        return "no command line"
+    return command if len(command) <= limit else command[: limit - 3] + "..."
+
+
+def describe_flock_holders(path: Path) -> str:
+    """Name the processes /proc/locks lists as holding an flock on ``path``.
+
+    Diagnostic only: nothing is granted or refused on this answer, so any
+    failure to read the evidence degrades to naming an unidentified holder.
+    Blocked waiters (``->`` entries) hold nothing and are not named.
+    """
+
+    try:
+        inode = os.stat(path).st_ino
+        device = _lock_device_for(path)
+        with open("/proc/locks", encoding="ascii", errors="replace") as listing:
+            lines = listing.readlines()
+    except OSError as error:
+        return f"an unidentified holder (cannot read lock evidence: {error})"
+    if device is None:
+        return f"an unidentified holder (no mount entry contains {path})"
+    holders: list[str] = []
+    for line in lines:
+        # "<n>: FLOCK  ADVISORY  WRITE <pid> <major>:<minor>:<inode> 0 EOF",
+        # with major and minor in hexadecimal and the inode in decimal.
+        fields = line.split()
+        if len(fields) < 6 or fields[1] != "FLOCK":
+            continue
+        try:
+            pid = int(fields[4])
+            major, minor, number = fields[5].split(":")
+            identity = (int(major, 16), int(minor, 16), int(number))
+        except ValueError:
+            continue
+        if identity == (*device, inode):
+            holders.append(
+                f"pid {pid} ({fields[3].lower()}: {_process_command_summary(pid)})"
+            )
+    if not holders:
+        return (
+            f"an unidentified holder (/proc/locks lists no flock on {path}; "
+            "it may have just been released)"
+        )
+    return "; ".join(dict.fromkeys(holders))
+
+
+def _retryable_entry_lock(error: run_registry.RecordLocked) -> bool:
+    """Contention that ends when its holder finishes, so entry may wait it out.
+
+    That is another process holding the kernel lock, or another thread of this
+    process that accepts waiters (what a blocking acquisition waits for).
+    Same-thread re-entry, authority inherited through a no-exec fork, and a
+    holder that rejects waiters can never end by waiting and raise at once.
+    """
+
+    return _retryable_external_cleanup_lock(error) or isinstance(
+        error, run_registry.RecordLockedByAnotherThread
+    )
+
+
+def _entry_lock_holder(error: run_registry.RecordLocked, lock_path: Path) -> str:
+    if isinstance(error, run_registry.RecordLockedByAnotherThread):
+        return f"another thread of this process (pid {os.getpid()})"
+    return describe_flock_holders(lock_path)
+
+
+def _acquire_entry_lock(
+    held: ExitStack,
+    acquire: Callable[[], Any],
+    *,
+    lock_name: str,
+    lock_path: Path,
+    wait: EntryLockWait,
+) -> Any:
+    """Enter one nonblocking registry lock, retrying only contention that ends.
+
+    The time spent waiting is added to ``wait.waited`` and bounded by
+    ``wait.deadline``; it is never charged to the classification budget.
+    Same-thread re-entry, a no-exec fork, and a holder that rejects waiters
+    still raise at once, exactly as the blocking form did.
+    """
+
+    started = time.monotonic()
+    current: str | None = None
+    seen: list[str] = []
+    next_lookup = started
+    while True:
+        try:
+            acquired = held.enter_context(acquire())
+        except run_registry.RecordLocked as error:
+            if not _retryable_entry_lock(error):
+                raise
+            now = time.monotonic()
+            expired = now >= wait.deadline
+            if expired or now >= next_lookup:
+                current = _entry_lock_holder(error, lock_path)
+                next_lookup = now + VALIDATE_ENTRY_LOCK_REDESCRIBE_SECONDS
+                if current not in seen:
+                    # At expiry the refusal below names the holder instead.
+                    if not expired:
+                        print(
+                            (
+                                "validate-run: ENTRY-LOCK-WAIT waiting up to "
+                                f"{max(0.0, wait.deadline - now):.3f}s for the "
+                                f"{lock_name} on {lock_path}, held by {current}"
+                            )
+                            if not seen
+                            else (
+                                "validate-run: ENTRY-LOCK-WAIT still waiting "
+                                f"after {now - started:.3f}s for the {lock_name} "
+                                f"on {lock_path}, now held by {current}"
+                            ),
+                            file=sys.stderr,
+                        )
+                    seen.append(current)
+            if expired:
+                waited = now - started
+                wait.waited += waited
+                earlier = [holder for holder in seen if holder != current]
+                raise ValidateEntryLockWaitExpired(
+                    "validation entry lock wait bound expired: waited "
+                    f"{waited:.3f}s for the {lock_name} on {lock_path}, held by "
+                    f"{current}"
+                    + (
+                        f" (earlier holders: {'; '.join(earlier)})"
+                        if earlier
+                        else ""
+                    )
+                    + f"; entry waits at most {wait.bound:g}s in total for "
+                    f"registry locks and waited {wait.waited:.3f}s in total, "
+                    "none of that wait is charged to the read-only "
+                    "classification budget, and create-journal and run-handle "
+                    "classification did not start"
+                ) from error
+            time.sleep(min(VALIDATE_ENTRY_LOCK_POLL_SECONDS, wait.deadline - now))
+            continue
+        waited = time.monotonic() - started
+        wait.waited += waited
+        if seen:
+            print(
+                f"validate-run: ENTRY-LOCK-WAIT waited {waited:.3f}s for the "
+                f"{lock_name} on {lock_path}, held by {' then '.join(seen)}",
+                file=sys.stderr,
+            )
+        return acquired
+
+
 def require_validate_entry_cleanup(
     root: Path,
     *,
@@ -6001,6 +6292,7 @@ def require_validate_entry_cleanup(
     run: Runner,
     tool_root: Path = ROOT,
     generation_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    lock_wait: EntryLockWait | None = None,
 ) -> None:
     """Prove that one prospective slot/path has no competing authority.
 
@@ -6008,74 +6300,101 @@ def require_validate_entry_cleanup(
     rows for other paths stay visible to ``--sweep-completed`` while a new,
     disjoint validation proceeds.  Entry refuses only an existing prospective
     pathname, an overlapping run-handle claim, or provider evidence that cannot
-    establish that interrupted creates are disjoint from this exact slot. The
-    complete read-only classification shares one finite wall-clock budget.
-    """
-    started = time.monotonic()
-    budget = CleanupClassificationBudget(
-        started + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
-    )
-    run = budget.run
-    try:
-        journal_scopes = classify_create_journal_scopes(
-            root,
-            prospective_slot=prospective_slot,
-            prospective_checkout=prospective_checkout,
-            run=run,
-            tool_root=tool_root,
-        )
-        budget.remaining("classifying create journals")
-        prospective = _lexical_absolute_path(str(prospective_checkout))
-        if prospective.exists() or prospective.is_symlink():
-            raise RuntimeError(
-                f"prospective validation checkout already exists at {prospective}"
-            )
+    establish that interrupted creates are disjoint from this exact slot.
 
-        def inspect_population() -> tuple[int, list[str]]:
-            inspected_result, conflict_result = _prospective_run_handle_conflicts(
+    Every classification step runs while the run-writer generation and
+    run-population locks are held, and the complete read-only classification
+    shares one finite VALIDATE_ENTRY_CLASSIFICATION_SECONDS budget that starts
+    only once both locks are granted. Waiting for them is not classification:
+    it is bounded separately by VALIDATE_ENTRY_LOCK_WAIT_SECONDS (one deadline,
+    shared with the caller's generation-lock wait when ``lock_wait`` is given)
+    and reported on its own. The population lock is an exclusive flock on the
+    same directory every wrkslots mutation flocks for its whole run, so a
+    create or finish journal classified here was left by a process that is no
+    longer mutating the registry, never by a removal still in progress.
+    """
+    if lock_wait is None:
+        lock_wait = EntryLockWait.starting_now()
+    classified_from: float | None = None
+    try:
+        prospective = _lexical_absolute_path(str(prospective_checkout))
+        canonical = root.resolve(strict=True)
+        with ExitStack() as held:
+            if generation_authority is None:
+                generation = _acquire_entry_lock(
+                    held,
+                    lambda: run_registry.run_writer_generation_lock(
+                        root, exclusive=False, blocking=False
+                    ),
+                    lock_name="run-writer generation lock",
+                    lock_path=canonical / run_registry.RUN_WRITER_GENERATION_LOCK,
+                    wait=lock_wait,
+                )
+            else:
+                run_registry.require_run_writer_generation_authority(
+                    root, generation_authority, exclusive=False
+                )
+                generation = generation_authority
+            _acquire_entry_lock(
+                held,
+                lambda: run_registry.run_population_lock(
+                    root,
+                    blocking=False,
+                    _generation_authority=generation,
+                ),
+                lock_name="run-population lock",
+                lock_path=canonical,
+                wait=lock_wait,
+            )
+            # Both locks are held: classification starts here, and only it is
+            # charged to the budget.
+            classified_from = time.monotonic()
+            budget = CleanupClassificationBudget(
+                classified_from + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
+            )
+            journal_scopes = classify_create_journal_scopes(
+                root,
+                prospective_slot=prospective_slot,
+                prospective_checkout=prospective_checkout,
+                run=budget.run,
+                tool_root=tool_root,
+            )
+            budget.remaining("classifying create journals")
+            if prospective.exists() or prospective.is_symlink():
+                raise RuntimeError(
+                    f"prospective validation checkout already exists at {prospective}"
+                )
+            inspected, conflicts = _prospective_run_handle_conflicts(
                 root, prospective, budget=budget
             )
             budget.remaining("finishing run-handle classification")
             if prospective.exists() or prospective.is_symlink():
-                conflict_result.append(
+                conflicts.append(
                     f"prospective validation checkout appeared at {prospective} "
                     "while its authority was inspected"
                 )
-            return inspected_result, conflict_result
-
-        if generation_authority is None:
-            with run_registry.run_writer_generation_lock(
-                root, exclusive=False, blocking=True
-            ) as acquired_generation:
-                with run_registry.run_population_lock(
-                    root,
-                    blocking=True,
-                    _generation_authority=acquired_generation,
-                ):
-                    inspected, conflicts = inspect_population()
-        else:
-            run_registry.require_run_writer_generation_authority(
-                root, generation_authority, exclusive=False
-            )
-            with run_registry.run_population_lock(
-                root,
-                blocking=True,
-                _generation_authority=generation_authority,
-            ):
-                inspected, conflicts = inspect_population()
         if conflicts:
             raise RuntimeError(conflicts[0])
+    except ValidateEntryLockWaitExpired:
+        # Already names the lock, the wait, the holder and the bound; it is not
+        # a classification failure and must not read as one.
+        raise
     except (OSError, RuntimeError, ValueError) as error:
-        elapsed = time.monotonic() - started
+        now = time.monotonic()
+        classifying = 0.0 if classified_from is None else now - classified_from
         raise ValidateEntryCleanupRefused(
             "prospective validation slot/path authority could not be proved "
-            f"after {elapsed:.3f}s: {error}"
+            f"after {now - lock_wait.started:.3f}s ({classifying:.3f}s "
+            f"classifying, {lock_wait.waited:.3f}s waiting for registry "
+            f"locks): {error}"
         ) from error
-    elapsed = time.monotonic() - started
+    now = time.monotonic()
     print(
         "validate-run: ENTRY-AUTHORITY state=ready "
         f"journals={len(journal_scopes)} run-handles={inspected} "
-        f"elapsed={elapsed:.3f}s",
+        f"elapsed={now - lock_wait.started:.3f}s "
+        f"classification={now - classified_from:.3f}s "
+        f"lock-wait={lock_wait.waited:.3f}s",
         file=sys.stderr,
     )
 
@@ -10801,15 +11120,45 @@ def main(
     ) = None
     initial_record_durable = False
 
-    def begin_launcher_generation() -> None:
+    def begin_launcher_generation(lock_wait: EntryLockWait | None = None) -> None:
+        """Take this launch's shared run-writer generation side.
+
+        With ``lock_wait`` (the pre-entry acquisition) the wait is bounded by
+        and reported against the entry lock-wait deadline it shares with
+        validation entry. Without it the acquisition blocks: that happens only
+        for ``--in-place`` launches and for the post-create bridge. The shared
+        side conflicts only with an exclusive holder. The only exclusive holder
+        is ``destructive_cleanup_authority``, and while the rollout fence stays
+        closed (DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED is False) only its
+        same-launch form runs: that form bypasses the fence, waits at most
+        SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS to acquire, and then holds the
+        lock for as long as its own checkout removal takes. Those two waits
+        stay unbounded; https://github.com/rrnewton/dev-hermit/issues/389 is
+        about entry, which reaches neither.
+        """
+
         nonlocal launcher_generation_active, launcher_generation_authority
         if launcher_generation_active:
             raise RuntimeError("launcher-generation authority was acquired twice")
-        launcher_generation_authority = launcher_generation.enter_context(
-            run_registry.run_writer_generation_lock(
-                state_root, exclusive=False, blocking=True
+        if lock_wait is None:
+            launcher_generation_authority = launcher_generation.enter_context(
+                run_registry.run_writer_generation_lock(
+                    state_root, exclusive=False, blocking=True
+                )
             )
-        )
+        else:
+            launcher_generation_authority = _acquire_entry_lock(
+                launcher_generation,
+                lambda: run_registry.run_writer_generation_lock(
+                    state_root, exclusive=False, blocking=False
+                ),
+                lock_name="run-writer generation lock",
+                lock_path=(
+                    state_root.resolve(strict=True)
+                    / run_registry.RUN_WRITER_GENERATION_LOCK
+                ),
+                wait=lock_wait,
+            )
         launcher_generation_active = True
 
     def release_launcher_generation() -> None:
@@ -11057,8 +11406,10 @@ def main(
             # checkout mutation that follows; a second short shared generation
             # begins once creation succeeds and bridges private storage to the
             # first durable row. Other launchers take shared sides too, while
-            # destructive cleanup alone takes the exclusive side.
-            begin_launcher_generation()
+            # destructive cleanup alone takes the exclusive side. Both lock
+            # waits before entry share one bounded, reported deadline.
+            entry_lock_wait = EntryLockWait.starting_now()
+            begin_launcher_generation(entry_lock_wait)
             require_validate_entry_cleanup(
                 state_root,
                 prospective_slot=fresh_slot,
@@ -11066,6 +11417,7 @@ def main(
                 run=run,
                 tool_root=tool_root,
                 generation_authority=launcher_generation_authority,
+                lock_wait=entry_lock_wait,
             )
             release_launcher_generation()
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
@@ -11225,6 +11577,11 @@ def main(
             # subsequent rollback through descriptor-bound validation of that
             # pathname.  A missing or older row merely retains this launch's
             # new storage; it can never authorize deleting the closure paths.
+            # This write waits for the run-population lock without a bound, on
+            # purpose: the checkout and private storage already exist, so a
+            # refusal here would only trade a wait for a same-launch cleanup
+            # that needs the same registry. The entry lock-wait bound covers
+            # the waits before anything is created.
             cleanup_record_path = record_path
             run_registry.create_current_record(
                 record_path,
@@ -11406,6 +11763,13 @@ def main(
         # it can prove disposable. Missing proof still retains the checkout.
         storage_cleanup = cleanup_current_storage()
         report_storage_cleanup(storage_cleanup)
+        if isinstance(error, ValidateEntryLockWaitExpired):
+            return refuse(
+                str(error),
+                "another process held a validation registry lock past the entry "
+                "lock-wait bound and no checkout was created; retry once the "
+                "named holder (usually a wrkslots removal or another launch) exits",
+            )
         if isinstance(error, ValidateEntryCleanupRefused):
             return refuse(
                 str(error),
