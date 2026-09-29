@@ -543,9 +543,9 @@ def test_cell_populations_and_result_denominator_remain_separate() -> None:
     )
     summary = _browser_payload(files, "data/site-summary.json.gz")
     assert summary["projection_audit"] == data["projection_audit"]
-    # The published history names the retired rerun for what it is.
+    # The published history is determinism alone; parity is the panel's.
     assert summary["backend_history"]
-    assert all("parity" not in point and "legacy_rerun_parity" in point
+    assert all(set(point) == {"date", "backend", "reference_cells", "determinism"}
                for point in summary["backend_history"])
     omission = data["projection_audit"]["deliberate_omissions"][0]
     assert omission["event_references"] == [
@@ -3378,15 +3378,15 @@ def test_backend_leaderboard_requires_typed_evidence_for_partial_credit() -> Non
     assert row["denominator"] == 1
     assert row["failed"] == 1
     assert row["determinism"]["percentage"] is None
-    assert row["parity"]["percentage"] is None
+    # The leaderboard carries no parity metric: the parity panel is the only
+    # parity display.
+    assert "parity" not in row
     source = render_page._backend_leaderboard(model)
-    for title in ("Determinism", "Det. w/partial", "Parity (after determinism)", "Parity credit"):
-        assert title in source
-    # The retired rerun parity no longer feeds the leaderboard: a build with
-    # no parity summary says so rather than showing a rerun-derived figure.
-    assert "Parity w/partial" not in source
-    assert "without parity evidence" not in source
-    assert source.count("no parity summary") == 2 * len(render_page._backend_rows(model))
+    assert re.findall(r'aria-label="Explain ([^"]+)"', source) == [
+        "Backend", "Determinism", "Det. w/partial", "Evidence coverage"]
+    assert "without parity evidence" not in source and "parity summary" not in source
+    assert ('Parity is not part of this table: <a href="#parity">Parity (measured after determinism)</a>, '
+            'below it, is the only parity display.') in source
     assert "0 / 1 cells" in source
     assert "without determinism evidence" in source
 
@@ -3429,7 +3429,6 @@ def test_backend_common_reference_includes_missing_and_deduplicates() -> None:
     assert rows["kvm"]["missing"] == 1
     assert rows["kvm"]["determinism"]["full"] == 1
     assert rows["kvm"]["determinism"]["percentage"] == 0.5
-    assert rows["kvm"]["parity"]["percentage"] is None
 
 
 @pytest.mark.parametrize("reference", ["absent", "unmeasured"])
@@ -3440,9 +3439,8 @@ def test_backend_missing_reference_has_no_percentage(reference: str) -> None:
         cells.append({**model.cells[0], "state": "red" if reference == "failed" else "never-measured", "latest_result": "product_failure" if reference == "failed" else None})
     row = next(row for row in render_page._backend_rows(replace(model, cells=tuple(cells))) if row["backend"] == "kvm")
     assert row["denominator"] == 0
-    for name in ("determinism", "parity"):
-        assert row[name]["percentage"] is None
-        assert row[name]["partial_percentage"] is None
+    assert row["determinism"]["percentage"] is None
+    assert row["determinism"]["partial_percentage"] is None
 
 
 def test_backend_failed_reference_remains_in_the_common_denominator() -> None:
@@ -3461,7 +3459,7 @@ def test_backend_failed_reference_remains_in_the_common_denominator() -> None:
     assert rows["kvm"]["determinism"]["percentage"] == 1
 
 
-def test_grouped_validate_attempts_authenticate_parity_and_partial_credit() -> None:
+def test_grouped_validate_attempts_authenticate_determinism_evidence() -> None:
     model, kvm = _typed_kvm_model(matched=False, parity=True)
     kvm = copy.deepcopy(kvm)
     first = copy.deepcopy(model.series_by_event["event-kvm-current"])
@@ -3476,11 +3474,6 @@ def test_grouped_validate_attempts_authenticate_parity_and_partial_credit() -> N
     recorded["ordinary_comparison"] = "matched"
     recorded["cell_verdict"]["state"] = "compared-and-matched"
     recorded["cell_verdict"]["bitwise_parity"] = True
-    recorded["backend_parity"]["clean_match"] = False
-    recorded["backend_parity"]["summary"]["attempts"] = [
-        {"cross": {"state": "diverged"}},
-        {"cross": {"state": "diverged"}},
-    ]
     reference = model.event_run_references[first["event_id"]]
     grouped = replace(
         model,
@@ -3504,8 +3497,6 @@ def test_grouped_validate_attempts_authenticate_parity_and_partial_credit() -> N
         item["backend"]: item for item in render_page._backend_rows(grouped)
     }["kvm"]
     assert row["determinism"]["full"] == 1
-    assert row["parity"]["full"] == 0
-    assert row["parity"]["partial_percentage"] == Fraction(1, 2)
 
     subset = copy.deepcopy(kvm)
     subset["latest_event_ids"] = [first["event_id"]]
@@ -3523,13 +3514,14 @@ def test_grouped_validate_attempts_authenticate_parity_and_partial_credit() -> N
 def test_backend_parity_is_not_repeat_bitwise_parity() -> None:
     model, _ = _typed_kvm_model(matched=True, parity=True)
     row = next(row for row in render_page._backend_rows(model) if row["backend"] == "kvm")
-    assert row["determinism"]["full"] == row["parity"]["full"] == 1
+    # A record that still carries a verified legacy backend_parity witness
+    # yields determinism and no parity metric.
+    assert row["determinism"]["full"] == 1 and "parity" not in row
     for field in ("comparison_authority", "backend_parity"):
         history = copy.deepcopy(model.history_rows[0])
         del history["cell_results"]["recorded"]["cells"][1][field]
         row = next(row for row in render_page._backend_rows(replace(model, history_rows=(history,))) if row["backend"] == "kvm")
         assert row["determinism"]["full"] == 1
-        assert row["parity"]["percentage"] is None
 
 
 def test_backend_typed_divergence_retains_same_anchor_partial_only() -> None:
@@ -3538,7 +3530,6 @@ def test_backend_typed_divergence_retains_same_anchor_partial_only() -> None:
     assert row["failed"] == 1
     assert row["determinism"]["percentage"] == 0
     assert row["determinism"]["partial_percentage"] == 0.5
-    assert row["parity"]["partial_percentage"] is None
     wrong = copy.deepcopy(model.series_by_cell[kvm["cell"]][0]);wrong["series"]["tree"] = "3" * 40
     changed = replace(model, series_by_cell={**model.series_by_cell, kvm["cell"]: (wrong,)})
     row = next(row for row in render_page._backend_rows(changed) if row["backend"] == "kvm")
@@ -3584,20 +3575,18 @@ def test_backend_history_preserves_regression_then_explicit_gap() -> None:
     assert points["2026-09-01"]["determinism"]["green_cells"] == 1
     assert points["2026-09-02"]["determinism"]["green_cells"] == 0
     assert points["2026-09-03"]["determinism"]["green_cells"] is None
-    assert all(point["legacy_rerun_parity"]["green_cells"] is None for point in points.values())
-    # The retired rerun is never published under the current parity name.
-    assert all(set(point) == {"date", "backend", "reference_cells", "determinism", "legacy_rerun_parity"}
+    # The history is determinism alone; no parity series is published.
+    assert all(set(point) == {"date", "backend", "reference_cells", "determinism"}
                for point in points.values())
     assert all(point["reference_cells"] == 1 for point in points.values())
     chart = render_page._backend_history_chart(model)
     assert 'aria-label="Show kvm determinism line"' in chart
-    assert "<code>kvm</code> legacy-rerun parity (no data)" in chart
-    assert "<code>kvm</code> parity (no data)" not in chart
-    assert 'stroke-dasharray="7 4"' in chart
+    assert "parity (no data)" not in chart and "stroke-dasharray" not in chart
     assert "Green percentage" in chart and "UTC" in chart
     assert "2026-09-01: 100.0% (1 / 1 recorded ptrace-result cells)" in chart
-    assert "Determinism percentage" in chart and "Legacy-rerun parity percentage" in chart
-    assert "Dashed lines are legacy-rerun parity" in chart and 'href="#parity"' in chart
+    assert "Determinism percentage" in chart and "egacy-rerun" not in chart
+    assert ('The lines are determinism; parity is shown only in '
+            '<a href="#parity">Parity (measured after determinism)</a>.') in chart
     assert "data-history-series-toggle" in chart
     assert "The chart remains visible without JavaScript" in chart
 
@@ -3610,14 +3599,12 @@ def test_backend_history_chart_plots_percentages_when_denominator_changes() -> N
                 "backend": "kvm",
                 "reference_cells": 4,
                 "determinism": {"green_cells": 1, "unavailable_cells": 0},
-                "legacy_rerun_parity": {"green_cells": None, "unavailable_cells": 4},
             },
             {
                 "date": "2026-09-02",
                 "backend": "kvm",
                 "reference_cells": 8,
                 "determinism": {"green_cells": 4, "unavailable_cells": 0},
-                "legacy_rerun_parity": {"green_cells": None, "unavailable_cells": 8},
             },
         ],
         data={"provenance": {"parent_commit": "1" * 40}},
@@ -3727,7 +3714,9 @@ def test_backend_history_hover_preserves_overlapping_observations(
 
         ptrace_toggle.check()
         assert kvm_series.evaluate(is_shown) and ptrace_series.evaluate(is_shown)
-        assert page.locator(".history-legend").inner_text().count("kvm") == 2
+        legend = page.locator(".history-legend").inner_text()
+        # One legend entry per backend, its determinism line; parity is the panel's.
+        assert legend.count("kvm") == 1 and "kvm determinism" in legend
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         chart = page.locator(".history-chart")
         assert chart.bounding_box()["width"] >= 640
@@ -6364,12 +6353,7 @@ def test_writer_derived_recorded_population_keeps_failed_run_and_retry_verdicts(
                cell_results=None, derived_cell_results=evidence)
     recorded = evidence["recorded"]["cells"][1]
     recorded.update(comparison_authority="writer_verified_raw_census_v1", ordinary_comparison="diverged")
-    recorded["backend_parity"].pop("artifact_verified")
-    recorded["backend_parity"]["derived_operand_verified"] = True
-    recorded["backend_parity"]["clean_match"] = False
-    recorded["backend_parity"]["summary"]["attempts"] = [{"cross": {"state": "diverged"}}, {"cross": {"state": "matched"}}]
     assert render_page._repeat_state(recorded) == "diverged"
-    assert render_page._parity_state(recorded) == "diverged"
     page = render_page._run_page(replace(model, history_rows=(row,)), 0, row).decode()
     assert "Recorded population" in page
     assert "not the full planned selection" in page
@@ -6446,8 +6430,11 @@ def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
     overview = files["index.html"].decode()
     assert '<section id="parity"><h2>Parity (measured after determinism)</h2>' in overview
     assert f'<p class="parity-line"><code>{PARITY_RUN_1953_LINE}</code></p>' in overview
-    # The leaderboard reads the same summary, never the retired rerun figure.
+    # The leaderboard shows no parity: the panel is the only parity display.
+    board = overview[overview.index('id="backends"'):overview.index('id="parity"')]
     assert "Parity w/partial" not in overview
+    assert 'aria-label="Explain Parity' not in board and PARITY_RUN_1953_LINE not in board
+    assert overview.count(PARITY_RUN_1953_LINE) == 1
     assert "Parity summary refused" not in overview
     # The panel follows the leaderboard and precedes the history chart.
     assert overview.index('id="backends"') < overview.index('id="parity"') < overview.index('id="backend-history"')
@@ -6483,7 +6470,9 @@ def test_a_tampered_parity_carriage_still_produces_the_determinism_pages() -> No
     files, plain = _refused_parity_site(_data_with_parity(carriage))
     overview = files["index.html"].decode()
     assert "parity carriage is refused: parity carriage.sha256 disagrees with the bytes carried" in overview
-    assert overview.count("parity summary refused; see the parity panel") >= 2
+    assert overview.count("<strong>Parity summary refused; no parity figure is shown for this build.</strong>") == 1
+    board = overview[overview.index('id="backends"'):overview.index('id="parity"')]
+    assert "refused" not in board.lower()
     assert set(files) == set(plain)
     # Every cell page is the determinism page it would be without parity; only the
     # digest of the Stage 1 artifact, which carries runs.parity, differs.

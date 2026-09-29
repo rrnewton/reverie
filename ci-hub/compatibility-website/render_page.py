@@ -1514,34 +1514,13 @@ def _repeat_state(recorded: Mapping[str, Any]) -> str:
     return "unavailable"
 
 
-def _parity_state(recorded: Mapping[str, Any]) -> str:
-    parity = recorded.get("backend_parity")
-    if not isinstance(parity, Mapping) or not (
-        (recorded.get("comparison_authority") == "selected-attempt-v1"
-         and parity.get("artifact_verified") is True)
-        or (recorded.get("comparison_authority") == "writer_verified_raw_census_v1"
-            and parity.get("derived_operand_verified") is True)
-    ):
-        return "unavailable"
-    summary = parity.get("summary", {})
-    if (
-        summary.get("reference_backend") != "ptrace"
-        or summary.get("record_envelope") != "cross_backend_detcore_v1"
-    ):
-        return "unavailable"
-    attempts = summary.get("attempts", ())
-    if any(attempt.get("cross", {}).get("state") == "diverged" for attempt in attempts):
-        return "diverged"
-    return "matched" if parity.get("clean_match") is True else "unavailable"
-
-
 def _cell_metrics(model: SiteModel, cell: Mapping[str, Any]) -> dict[str, Any]:
     rows = _latest_series_rows(model, cell)
     records = [] if rows is None else [
         _exact_validation_cell(model, cell, str(row["event_id"])) for row in rows
     ]
     result: dict[str, Any] = {}
-    for name, reader in (("determinism", _repeat_state), ("parity", _parity_state)):
+    for name, reader in (("determinism", _repeat_state),):
         states = ["unavailable" if record is None else reader(record) for record in records]
         state = (
             "diverged" if "diverged" in states else
@@ -1589,7 +1568,7 @@ def _backend_rows(model: SiteModel) -> tuple[dict[str, Any], ...]:
             "failed": sum(cell is not None and _cell_state(cell) == "red" for cell in population),
             "missing": sum(cell is None or _cell_state(cell) == "never-measured" for cell in population),
         }
-        for name in ("determinism", "parity"):
+        for name in ("determinism",):
             values = [None if metric is None else metric[name] for metric in metrics]
             full = sum(value is not None and value["state"] == "matched" for value in values)
             known = sum(value is not None and value["state"] != "unavailable" for value in values)
@@ -1633,10 +1612,6 @@ def _metric_amount(value: Fraction | int) -> str:
 
 
 def _backend_leaderboard(model: SiteModel) -> str:
-    # Parity comes from the ledger's parity summary, never from the retired
-    # rerun evidence `_backend_rows` still reads for the legacy history lines.
-    carriage, summary = _parity_view(model)
-    parity_run = _parity_headline(summary)
     rows = []
     for item in _backend_rows(model):
         columns = []
@@ -1648,7 +1623,6 @@ def _backend_leaderboard(model: SiteModel) -> str:
                 f'<td><strong>{label}</strong><span class="secondary">'
                 f'{_metric_amount(metric[amount])} / {_integer(item["denominator"])} cells</span></td>'
             )
-        columns.append(_leaderboard_parity_columns(str(item["backend"]), parity_run, carriage))
         details = (
             f'{_integer(item["failed"])} failed; {_integer(item["missing"])} missing/unmeasured; '
             f'{_integer(item["determinism"]["unavailable"])} without determinism evidence; '
@@ -1660,22 +1634,18 @@ def _backend_leaderboard(model: SiteModel) -> str:
         ("Backend", "Recorded instrumentation backend; native and e9patch preprocessing are excluded."),
         ("Determinism", "Canonical repeat matches / all distinct test-and-mode cells with a recorded ptrace result."),
         ("Det. w/partial", "Full matches plus recorded qualifying partial fractions / the same common denominator."),
-        ("Parity (after determinism)", "Matched / selected cells of the headline validate parity run in the ledger's parity summary. Its denominator is the parity selection, not the determinism population."),
-        ("Parity credit", "Floor credit: the parity credit sum over every selected cell. The mean over credited (measured) cells is stated with its denominator; a cell without credit is never averaged."),
         ("Evidence coverage", "Determinism failures and missing/unexecuted cells stay in the determinism denominator. Missing comparison evidence earns no credit."),
     ))
     return (
         '<section id="backends"><h2>Backends</h2>' + _backend_snapshot_position(model)
         + '<p>Every determinism percentage uses the same distinct test-and-mode population with a recorded ptrace result, including ptrace failures. '
         'The <strong>w/partial</strong> column adds qualifying partial fractions to full matches. Missing and failed cells stay in the denominator. '
-        'The parity columns come from the ledger\'s parity summary and count its own selected cells; '
-        '<a href="#parity">Parity (measured after determinism)</a> has the full accounting.</p>'
+        'Parity is not part of this table: <a href="#parity">Parity (measured after determinism)</a>, below it, is the only parity display.</p>'
         '<details><summary>How comparison evidence earns credit</summary><p>'
         'Numerators count demonstrated comparisons, not generic Green labels. '
         'An absent or empty reference population is unavailable. Partial determinism uses the recorded first divergent scheduler turn '
         'and a complete same-commit ptrace execution; no missing measurement is inferred as partial. '
-        'Parity is measured after determinism from the retained logs: a cell\'s credit is the matched prefix of its log and the ptrace '
-        'reference log over the longer one, and only a complete match earns 1. A column with no supported observations is unavailable.</p></details>'
+        'A column with no supported observations is unavailable.</p></details>'
         '<div class="table-scroll"><table class="backend-leaderboard"><caption>Backend comparison coverage</caption>'
         f'<thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>'
     )
@@ -1696,7 +1666,7 @@ BACKEND_HISTORY_COLORS = (
 
 
 #: (site-summary.json backend_history key, `_backend_rows` metric) pairs.
-BACKEND_HISTORY_SERIES = (("determinism", "determinism"), ("legacy_rerun_parity", "parity"))
+BACKEND_HISTORY_SERIES = (("determinism", "determinism"),)
 
 
 def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
@@ -1743,8 +1713,6 @@ def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
         for item in _backend_rows(snapshot):
             history.append({
                 "date": day, "backend": item["backend"], "reference_cells": item["denominator"],
-                # The retired ptrace-rerun evidence is named for what it is, so no
-                # reader of site-summary.json mistakes it for current parity.
                 **{key: {
                     "green_cells": None if item[name]["percentage"] is None else item[name]["full"],
                     "unavailable_cells": item[name]["unavailable"],
@@ -1781,10 +1749,6 @@ def _backend_history_chart(model: SiteModel) -> str:
         points = [point for point in history if point["backend"] == backend]
         color = BACKEND_HISTORY_COLORS[index % len(BACKEND_HISTORY_COLORS)]
         for name, _source in BACKEND_HISTORY_SERIES:
-            # The legacy_rerun_parity lines replay the retired ptrace-rerun
-            # evidence; they are labelled legacy history, and current parity is
-            # the panel.
-            title = LEGACY_RERUN_PARITY if name == "legacy_rerun_parity" else name
             commands = []
             connected = False
             for point in points:
@@ -1799,32 +1763,31 @@ def _backend_history_chart(model: SiteModel) -> str:
                 markers.setdefault((px, py), []).append({
                     "series": series_id,
                     "label": (
-                        f'{backend} {title}, {point["date"]}: {_percentage(value)} '
+                        f'{backend} {name}, {point["date"]}: {_percentage(value)} '
                         f'({_integer(count)} / {_integer(point["reference_cells"])} recorded ptrace-result cells)'
                     ),
                 })
                 connected = True
-            dash = ' stroke-dasharray="7 4"' if name == "legacy_rerun_parity" else ''
             series_id = f"history-{index}-{name}"
             if commands:
                 lines.append(
                     f'<path data-history-series="{series_id}" d="{" ".join(commands)}" '
-                    f'fill="none" stroke="{color}" stroke-width="2"{dash}/>'
+                    f'fill="none" stroke="{color}" stroke-width="2"/>'
                 )
                 legend.append(
                     '<label class="history-series-toggle">'
                     f'<input type="checkbox" checked disabled data-history-series-toggle="{series_id}" '
-                    f'aria-label="Show {_escape(backend)} {title} line">'
+                    f'aria-label="Show {_escape(backend)} {name} line">'
                     f'<svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" '
-                    f'stroke="{color}" stroke-width="2"{dash}/></svg> '
-                    f'<span><code>{_escape(backend)}</code> {title}</span></label>'
+                    f'stroke="{color}" stroke-width="2"/></svg> '
+                    f'<span><code>{_escape(backend)}</code> {name}</span></label>'
                 )
             else:
                 legend.append(
                     '<span class="history-series-unavailable">'
                     f'<svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" '
-                    f'stroke="{color}" stroke-width="2"{dash}/></svg> '
-                    f'<span><code>{_escape(backend)}</code> {title} (no data)</span></span>'
+                    f'stroke="{color}" stroke-width="2"/></svg> '
+                    f'<span><code>{_escape(backend)}</code> {name} (no data)</span></span>'
                 )
     # Draw hit targets after every line. Co-located observations share a title,
     # so one backend's stroke or dot cannot hide another backend's details.
@@ -1857,8 +1820,8 @@ def _backend_history_chart(model: SiteModel) -> str:
         '<section id="backend-history" data-history-chart><h2>Backend history</h2>'
         '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s recorded ptrace-result population. '
         'Percentages and counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
-        'Gaps mean no supported comparison evidence, including legacy periods. Dashed lines are legacy-rerun parity: the retired ptrace rerun, '
-        'kept as history. Current parity is in <a href="#parity">Parity (measured after determinism)</a>.</p>'
+        'Gaps mean no supported comparison evidence, including legacy periods. The lines are determinism; parity is shown only in '
+        '<a href="#parity">Parity (measured after determinism)</a>.</p>'
         '<p class="history-instructions"><strong>Use the chart:</strong> Hover over or focus a point to see its exact date and percentage. '
         'Clear or select a checkbox under <em>Visible lines</em> to hide or show that series.</p>'
         f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="group" aria-label="Recorded green-cell percentages over time, by backend and comparison">'
@@ -1870,7 +1833,7 @@ def _backend_history_chart(model: SiteModel) -> str:
         '<noscript><p>The chart remains visible without JavaScript; exact values are also listed in the table below.</p></noscript>'
         f'<p>Ledger anchor: <code>{_escape(commit)}</code>. Latest recorded date: {days[-1]}. '
         '<a href="data/site-summary.json.gz">Machine-readable history and source provenance</a>.</p>'
-        '<details><summary>Recorded values by date</summary><div class="table-scroll"><table><thead><tr><th>Date (UTC)</th><th>Backend</th><th>Determinism green</th><th>Determinism percentage</th><th>Legacy-rerun parity green</th><th>Legacy-rerun parity percentage</th><th>Ptrace reference</th></tr></thead><tbody>'
+        '<details><summary>Recorded values by date</summary><div class="table-scroll"><table><thead><tr><th>Date (UTC)</th><th>Backend</th><th>Determinism green</th><th>Determinism percentage</th><th>Ptrace reference</th></tr></thead><tbody>'
         + ''.join(table_rows) + '</tbody></table></div></details></section>'
     )
 
@@ -1879,7 +1842,6 @@ def _backend_history_chart(model: SiteModel) -> str:
 # backends by population, then dbt.
 PARITY_BACKEND_ORDER = ("kvm", "liteinst", "sabre", "dbt")
 PARITY_PANEL_TITLE = "Parity (measured after determinism)"
-LEGACY_RERUN_PARITY = "legacy-rerun parity"
 
 
 def _parity_reader() -> Any:
@@ -1894,7 +1856,7 @@ def _parity_view(model: Any) -> tuple[Mapping[str, Any] | None, Mapping[str, Any
     before parity was captured). Otherwise the carriage is admitted against the
     build's series ledger commit: its summary is returned only when it is
     current or stale. A carriage the checker refuses is replaced by a refused
-    carriage naming why, which only the parity panel and columns show.
+    carriage naming why, which only the parity panel shows.
     """
     carriage = model.runs.get("parity")
     if carriage is None:
@@ -1903,16 +1865,6 @@ def _parity_view(model: Any) -> tuple[Mapping[str, Any] | None, Mapping[str, Any
     canonical = provenance.get("canonical_input_provenance") if isinstance(provenance, Mapping) else None
     series_commit = canonical.get("series_commit") if isinstance(canonical, Mapping) else None
     return _parity_reader().admit_carriage(carriage, series_commit, "parity carriage")
-
-
-def _parity_headline(summary: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
-    """The run the leaderboard shows: validate's headline, else the first producer's."""
-    if summary is None or not summary["producers"]:
-        return None
-    for run in summary["producers"]:
-        if run["producer"] == "validate":
-            return run
-    return summary["producers"][0]
 
 
 def _parity_credit(value: Any) -> str:
@@ -2248,41 +2200,6 @@ def _parity_panel(model: Any) -> str:
     parts.append("</section>")
     return "".join(parts)
 
-
-def _leaderboard_parity_columns(
-    backend: str, run: Mapping[str, Any] | None, carriage: Mapping[str, Any] | None = None
-) -> str:
-    if carriage is not None and carriage["state"] == "refused":
-        return (
-            '<td><strong>Refused</strong><span class="secondary">parity summary refused; see the parity panel</span></td>'
-            '<td><strong>Refused</strong><span class="secondary">parity summary refused; see the parity panel</span></td>'
-        )
-    if run is None:
-        return (
-            '<td><strong>Not available</strong><span class="secondary">no parity summary</span></td>'
-            '<td><strong>Not available</strong><span class="secondary">no parity summary</span></td>'
-        )
-    stale = (
-        f'; stale, as of ledger commit {_escape(str(carriage["summarized_commit"])[:12])}'
-        if carriage is not None and carriage["state"] == "stale" else ""
-    )
-    tally = run["per_backend"].get(backend)
-    if tally is None:
-        note = "ptrace is the parity reference" if backend == "ptrace" else "not a parity candidate"
-        return (
-            f'<td><strong>Not applicable</strong><span class="secondary">{_escape(note)}</span></td>'
-            f'<td><strong>Not applicable</strong><span class="secondary">{_escape(note)}</span></td>'
-        )
-    mean = (
-        f'mean {_parity_credit(tally["mean_credit"])} over {_integer(tally["credited"])} credited'
-        if tally["credited"] else "mean n/a: nothing credited"
-    )
-    return (
-        f'<td><strong>{_integer(tally["matched"])} / {_integer(tally["selected"])}</strong>'
-        f'<span class="secondary">matched / selected parity cells; {_integer(tally["measured"])} measured{stale}</span></td>'
-        f'<td><strong>{_parity_credit(tally["floor_credit"])}</strong>'
-        f'<span class="secondary">floor over {_integer(tally["selected"])} selected; {mean}{stale}</span></td>'
-    )
 
 def _overview(model: SiteModel, page: str) -> str:
     counts = model.data["counts"]

@@ -282,8 +282,6 @@ def test_zero_of_twelve_renders_as_zero_of_twelve_with_its_floor() -> None:
     text = _text(_panel(_carriage(document)))
     assert line in text
     assert "kvm | 12 | 12 | 0 | 12 | 0 | 0 | 0 | 0.5000 | 12 | 0.5000 |" in text
-    leaderboard = render_page._leaderboard_parity_columns("kvm", document["producers"][0])
-    assert "<strong>0 / 12</strong>" in leaderboard and "<strong>0.5000</strong>" in leaderboard
 
 
 def test_record_missing_keeps_the_denominator_and_lowers_the_floor() -> None:
@@ -647,8 +645,6 @@ def test_a_summary_of_an_earlier_store_the_ledger_extends_is_stale(run_1953: dic
             "bbbbbbbbbbbb not summarized) (scorecard/parity.json") in text
     # The current commit is never printed as the as-of point.
     assert "parity store at ledger commit bbbbbbbbbbbb" not in text
-    board = render_page._leaderboard_parity_columns("kvm", render_page._parity_headline(summary), carriage)
-    assert board.count("stale, as of ledger commit eeeeeeeeeeee") == 2
 
 
 @pytest.mark.parametrize(
@@ -831,9 +827,6 @@ def test_a_tampered_carriage_is_refused_in_the_panel_alone(run_1953: dict[str, A
     assert "Parity summary refused; no parity figure is shown for this build. The determinism figures are unaffected." in text
     assert f"parity carriage is refused: {_AT}.sha256 disagrees with the bytes carried" in text
     assert RUN_1953_LINE not in text and "0/" not in text
-    model = _model(carriage)
-    board = render_page._leaderboard_parity_columns("kvm", None, render_page._parity_view(model)[0])
-    assert board.count("parity summary refused; see the parity panel") == 2
 
 
 def test_a_refused_capture_says_what_it_read(run_1953: dict[str, Any]) -> None:
@@ -888,10 +881,6 @@ def test_each_absent_state_says_what_is_missing() -> None:
             "its parity records were published and never summarized.") in unsummarized
     for text in (no_capture, empty, unsummarized):
         assert "Nothing here is zero parity." in text and "0/" not in text
-    board = render_page._leaderboard_parity_columns("kvm", None)
-    assert board.count("no parity summary") == 2 and "0 / " not in board
-    assert "ptrace is the parity reference" in render_page._leaderboard_parity_columns(
-        "ptrace", {"per_backend": {}})
 
 
 def test_record_missing_source_survives_into_the_panel() -> None:
@@ -1014,10 +1003,6 @@ def test_hermit_s12_panel_shows_the_tallies_hermit_wrote() -> None:
             "summary written by Hermit tool commit not recorded.") in text
     assert "inputs-not-equalized | 0 | 0 | 0 | 14 | 14 |" in text and "candidate-missing | 1 | 1 | 1 | 0 | 3 |" in text
     assert "74 of 76 | c-programs/aio-refusal@kvm |" in text
-    for backend, tally in producer["per_backend"].items():
-        board = render_page._leaderboard_parity_columns(backend, producer)
-        assert f'<strong>{tally["matched"]} / {tally["selected"]}</strong>' in board
-        assert f'<strong>{_credit_text(tally["floor_credit"])}</strong>' in board
 
 
 def _s12_headline(data: bytes) -> str:
