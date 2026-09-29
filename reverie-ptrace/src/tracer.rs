@@ -78,6 +78,8 @@ use crate::liteinst_trap_only::LiteinstTrapOnlyConfig;
 use crate::liteinst_trap_only::LiteinstTrapOnlyHandle;
 use crate::liteinst_trap_only::SitePatching;
 use crate::liteinst_trap_only::require_ia32_emulation;
+use crate::poll_on_wake::PollOnWake;
+use crate::poll_on_wake::WakeGate;
 use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
@@ -3012,6 +3014,12 @@ impl<G, R> CompletionWork<G, R> {
 
     async fn round(&mut self) -> bool {
         let session = self.tracer.ordinary_session.clone();
+        // The task tree wakes this round at least once per ptrace stop. Poll
+        // each drain again only after its reader woke it or it made progress,
+        // not on every one of those wakes. A fresh gate polls on its first
+        // poll, so each round starts by polling both drains.
+        let stdout_gate = WakeGate::new();
+        let stderr_gate = WakeGate::new();
         let completion = future::poll_fn(|cx| {
             if !self.tree_done
                 && let std::task::Poll::Ready(result) = self.tracer.tracer.as_mut().poll(cx)
@@ -3023,11 +3031,11 @@ impl<G, R> CompletionWork<G, R> {
                     Err(error) => session.fail(error),
                 }
             }
-            for (drain, phase) in [
-                (&mut self.stdout, "ptrace stdout capture"),
-                (&mut self.stderr, "ptrace stderr capture"),
+            for (drain, gate, phase) in [
+                (&mut self.stdout, &stdout_gate, "ptrace stdout capture"),
+                (&mut self.stderr, &stderr_gate, "ptrace stderr capture"),
             ] {
-                match drain.poll(cx) {
+                match gate.poll_with(cx, |cx| drain.poll(cx)) {
                     std::task::Poll::Ready(crate::capture::DrainEvent::Error(error)) => {
                         session.fail_at(
                             reverie::BackendFailure {
@@ -3039,6 +3047,9 @@ impl<G, R> CompletionWork<G, R> {
                         );
                     }
                     std::task::Poll::Ready(crate::capture::DrainEvent::Progress) => {
+                        // More bytes may be waiting without a new readiness
+                        // wake: offer this drain another read next turn.
+                        gate.rearm();
                         cx.waker().wake_by_ref()
                     }
                     _ => {}
@@ -3051,7 +3062,8 @@ impl<G, R> CompletionWork<G, R> {
             }
         });
         futures::pin_mut!(completion);
-        let failed = session.cancelled();
+        // Completes at most once per run; poll it only after its waker fired.
+        let failed = PollOnWake::new(Box::pin(session.cancelled()));
         futures::pin_mut!(failed);
         tokio::select! {
             biased;

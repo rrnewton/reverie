@@ -47,6 +47,7 @@ mod injected_syscall;
 mod liteinst_stats;
 mod liteinst_trap_only;
 mod perf;
+mod poll_on_wake;
 pub mod regs;
 mod stack;
 mod stats;
