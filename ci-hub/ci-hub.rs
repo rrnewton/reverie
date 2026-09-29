@@ -180,6 +180,8 @@ READ-ONLY STATUS AND HISTORY
 COMPATIBILITY WEBSITE
   Build or serve the immutable static site without adding reporting authority.
   compatibility-website  Build, serve, or build-and-serve the compatibility site
+  compatibility-website-derived-census
+                          Verify a raw census and write its portable comparison operands
 
 VALIDATION ACTIONS
   Start, stop, admit, or persist validation work.
