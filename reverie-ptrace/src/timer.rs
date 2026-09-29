@@ -145,6 +145,28 @@ pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
 pub(crate) static OVERFLOW_RECORDS_DISABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Precise events recorded as skid overshoots because a stop other than
+/// their notification's decided them past their delivery point although the
+/// notification was already queued for the thread, for tests. See
+/// [`MissedTarget::notification_queued`].
+pub(crate) static OVERTAKEN_WITH_NOTIFICATION_QUEUED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The target and the overtaking clock of the first events counted in
+/// [`OVERTAKEN_WITH_NOTIFICATION_QUEUED`], at most
+/// [`OVERTAKEN_WITH_NOTIFICATION_QUEUED_KEPT`] of them since the list was
+/// last taken, for tests.
+pub(crate) static OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS: std::sync::Mutex<Vec<(u64, u64)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many events [`OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS`] keeps.
+const OVERTAKEN_WITH_NOTIFICATION_QUEUED_KEPT: usize = 1024;
+
+/// Timer signals whose signal-delivery stop found their event cancelled, and
+/// which were discarded there, for tests.
+pub(crate) static CANCELLED_TIMER_SIGNALS_DISCARDED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
 /// version cannot be read counts as one.
 fn kernel_is_preempt_rt() -> bool {
@@ -701,7 +723,9 @@ impl Timer {
 
     /// Cancels the active event, and ends the programming, where what
     /// [`Timer::disregard_stop`] or [`Timer::take_notification`] handed on
-    /// cannot be finished. A precise event that no stop has decided yet, and
+    /// cannot be finished, or where a stop that the Tool does not see must
+    /// end the event whatever was handed on (a hook trap whose injected
+    /// syscall held a guest signal for the resume). A precise event that no stop has decided yet, and
     /// whose delivery point the guest has reached, is recorded as a skid
     /// overshoot, as a stop that cancels it is. An event already delivered,
     /// or already decided by a stop, is not recorded again, whatever the
@@ -1214,6 +1238,17 @@ struct MissedTarget {
     clock_target: u64,
     offset: u64,
     stop: String,
+    /// Whether the event's own PMU notification was already queued for the
+    /// thread when the stop decided the event: the kernel had recorded an
+    /// overflow of the current programming whose notification nothing had
+    /// consumed, and the thread's pending signals, where they were read,
+    /// held it. The notification was then not lost but held back: by the
+    /// guest's signal mask, or, with the signal unblocked, by an overflow
+    /// interrupt late enough that the stop's own signal was queued too and
+    /// dequeued first, as a lower-numbered signal is. `false` without
+    /// overflow records, where a queued notification cannot be told from a
+    /// lost one.
+    notification_queued: bool,
 }
 
 /// An overflow notification of this thread's timer, taken at an injected
@@ -1612,6 +1647,14 @@ impl TimerImpl {
         self.overflow_recorded
     }
 
+    /// Whether the notification of the current programming is queued for
+    /// the thread, as far as the overflow records show: the kernel recorded
+    /// an overflow of this programming, and nothing has consumed its
+    /// notification (see [`MissedTarget::notification_queued`]).
+    fn own_notification_queued(&mut self) -> bool {
+        self.has_overflow_records() && self.programming_overflowed
+    }
+
     /// Forget the recorded overflows unless `pending`, the stopped thread's
     /// private pending signals, holds a notification with this timer's
     /// siginfo. The thread is stopped, so no overflow can be recorded between
@@ -1620,6 +1663,15 @@ impl TimerImpl {
         if self.overflow_recorded && !pending.iter().any(|s| self.owns_overflow_signal(s)) {
             self.mark_overflows_consumed();
             OVERFLOW_RECORDS_EXPIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        // The records now show whether the notification is in `pending`.
+        let queued = self.overflow_recorded && self.programming_overflowed;
+        if let Some(missed) = self
+            .observed
+            .as_mut()
+            .and_then(|observed| observed.missed.as_mut())
+        {
+            missed.notification_queued = queued;
         }
     }
 
@@ -1683,6 +1735,9 @@ impl TimerImpl {
                     clock_target,
                     offset,
                     stop: format!("{:?} stop", event),
+                    // Refined against the thread's pending signals by
+                    // `expire_overflow_records`, which follows.
+                    notification_queued: self.own_notification_queued(),
                 })
             }
             _ => None,
@@ -1755,6 +1810,16 @@ impl TimerImpl {
                  was handled; {} at counter {} cancels the event",
                 missed.clock_target, missed.offset, missed.stop, missed.clock
             );
+            if missed.notification_queued {
+                OVERTAKEN_WITH_NOTIFICATION_QUEUED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut events = OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if events.len() < OVERTAKEN_WITH_NOTIFICATION_QUEUED_KEPT {
+                    events.push((missed.clock_target, missed.clock));
+                }
+            }
         }
     }
 
@@ -1799,6 +1864,9 @@ impl TimerImpl {
                 clock_target,
                 offset,
                 stop: "the thread's exit".to_owned(),
+                // The exited thread's pending signals cannot be read, and no
+                // stop overtook the event.
+                notification_queued: false,
             })
         });
         Self::commit_missed(missed);
@@ -1967,6 +2035,9 @@ impl TimerImpl {
                     clock_target,
                     offset,
                     stop: "a stop that cannot finish it".to_owned(),
+                    // The stop's pending signals were read when it was
+                    // observed (`expire_overflow_records`).
+                    notification_queued: self.own_notification_queued(),
                 }));
             }
         }
@@ -2206,6 +2277,8 @@ impl TimerImpl {
             }
             EventStatus::Cancelled => {
                 debug!("Delivered timer signal cancelled due to status");
+                CANCELLED_TIMER_SIGNALS_DISCARDED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.disable_timer_before_stepping();
                 return Err(HandleFailure::Cancelled(task));
             }
@@ -3519,6 +3592,7 @@ mod tests {
             clock_target: PERIOD,
             offset: 0,
             stop: "test".into(),
+            notification_queued: false,
         };
 
         // Before the period the stop leaves the event and its programming as
@@ -3656,6 +3730,98 @@ mod tests {
         assert_eq!(timer.overflow_period, None);
         timer.event = super::ActiveEvent::Imprecise { clock_min: 0 };
         timer.timer.unmap_sample_records();
+
+        assert!(take_timer_signal_now().is_none());
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    // A stop that finds a precise event's delivery point reached notes
+    // whether the event's own notification was queued at the stop: only if
+    // the kernel recorded an overflow of the current programming, and the
+    // pending signals read at the stop hold its notification. A programming
+    // that has not overflowed, a notification that has left the queue, and
+    // an overflow without records are never noted as queued, so a lost
+    // notification is never taken for one held back.
+    #[test]
+    fn a_stop_past_the_target_notes_whether_the_notification_is_queued() {
+        use reverie::Pid;
+
+        use super::EventStatus;
+        use super::TimerImpl;
+        use crate::perf::do_branches;
+
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        // The clock stops counting this thread, so that it can be read for
+        // the precise event (see
+        // `a_stop_that_nothing_continues_keeps_the_event_only_before_the_period`).
+        timer.clock.disable().unwrap();
+        const PERIOD: u64 = 10_000;
+        let stop = super::TraceEvent::Signal(super::Signal::SIGUSR1);
+        // Programs the timer for `PERIOD`, runs `branches`, and observes a
+        // stop at the event's target. Returns what the stop noted.
+        let observe = |timer: &mut TimerImpl, branches: u64| {
+            timer.set_status(EventStatus::Scheduled);
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(branches);
+            timer.timer.disable().unwrap();
+            timer.event = super::ActiveEvent::Precise {
+                clock_target: timer.read_clock(),
+                offset: 0,
+            };
+            timer.observe_event(&stop);
+            queued(timer)
+        };
+        fn queued(timer: &TimerImpl) -> bool {
+            timer
+                .observed
+                .as_ref()
+                .and_then(|observed| observed.missed.as_ref())
+                .expect("the stop must find the delivery point reached")
+                .notification_queued
+        }
+
+        // The counter overflowed, and its notification is pending.
+        assert!(observe(&mut timer, PERIOD * 3));
+        let notification = take_timer_signal().expect("the counter overflowed");
+        assert!(timer.owns_overflow_signal(&notification));
+        // The stop's pending signals hold the notification: it stays queued.
+        timer.expire_overflow_records(&[notification]);
+        assert!(queued(&timer));
+        // They do not, as when the guest dequeued it: it is not.
+        timer.expire_overflow_records(&[]);
+        assert!(!queued(&timer));
+        // Nothing may commit the missed target, which would count a skid
+        // overshoot in the process-wide count that other tests read.
+        timer.observed = None;
+
+        // The programming has not overflowed, so nothing is queued, whatever
+        // the pending signals hold.
+        assert!(!observe(&mut timer, PERIOD / 2));
+        timer.expire_overflow_records(&[notification]);
+        assert!(!queued(&timer));
+        timer.observed = None;
+
+        // Without records an overflow cannot be told from a lost one.
+        timer.timer.unmap_sample_records();
+        assert!(!observe(&mut timer, PERIOD * 3));
+        assert!(take_timer_signal().is_some(), "the counter overflowed");
+        timer.observed = None;
+        timer.set_status(EventStatus::Cancelled);
+        timer.event = super::ActiveEvent::Imprecise { clock_min: 0 };
 
         assert!(take_timer_signal_now().is_none());
         unsafe {
