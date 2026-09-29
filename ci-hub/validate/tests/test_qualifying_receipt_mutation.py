@@ -45,6 +45,7 @@ Consumers driven (nine certifier sites, eight panel legs, three languages):
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -59,7 +60,6 @@ from unittest import mock
 CI_HUB = Path(__file__).resolve().parents[2]
 REPO_ROOT = CI_HUB.parent
 LIVE_PREDICATE = CI_HUB / "validate" / "qualifying-receipt.json"
-PRODUCER_REGISTRY = CI_HUB / "validate" / "producer-definition.json"
 PRODUCER_REPO = REPO_ROOT / "hermit"
 CI_HUB_RS = CI_HUB / "ci-hub.rs"
 LEDGER_DIR = CI_HUB / "ledger"
@@ -75,7 +75,9 @@ sys.path.insert(0, str(LEDGER_DIR))
 import qualifying_receipt  # noqa: E402
 import validate_rows  # noqa: E402
 
-SHA = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
+#: Any real Hermit commit. The producer map is recorded provenance only; no
+#: registered map exists (https://github.com/rrnewton/dev-hermit/issues/414).
+SHA = "ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8"
 RECEIPT_COMMIT = "b" * 40  # the parent commit a receipt was committed at
 REPO = "rrnewton/hermit"
 _MISSING = object()
@@ -384,9 +386,16 @@ def _soft_enabled_predicate(dst: Path) -> Path:
     return dst
 
 
+@functools.lru_cache(maxsize=None)
+def _recorded_producer() -> dict:
+    """The producer map a publisher records for SHA, read from its real blobs."""
+    return qualifying_receipt.observe_producer_definition(
+        {}, SHA, repositories=[PRODUCER_REPO]
+    )
+
+
 def _env(predicate: Path | None) -> dict:
     env = dict(os.environ)
-    env["PRODUCER_DEFINITION_REGISTRY"] = str(PRODUCER_REGISTRY)
     env["PRODUCER_DEFINITION_REPO"] = str(PRODUCER_REPO)
     if predicate is not None:
         env["QUALIFYING_RECEIPT_PREDICATE"] = str(predicate)
@@ -629,15 +638,13 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         target_sha = row["commit"]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            registry = json.loads(PRODUCER_REGISTRY.read_text())
+            recorded = _recorded_producer()
             producer = {
                 "resolved_from": "/fixture/worktree",
-                "definition": registry["registered"],
-                "coverage_status": registry["registered_coverage_status"],
-                "paths": sorted(registry["registered"]),
+                "definition": recorded["definition"],
+                "coverage_status": recorded["coverage_status"],
+                "paths": sorted(recorded["definition"]),
             }
-            if "registered_valid_commits" in registry:
-                producer["valid_commits"] = registry["registered_valid_commits"]
             receipt = {
                 "schema_version": 1,
                 "repository": REPO,
@@ -647,11 +654,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 "source_log_file": row["log_file"],
                 "durable_log_file": "/durable" + row["log_file"],
                 # This suite mutates the QUALIFYING-RECEIPT predicate, so the
-                # producer binding must be satisfied and held constant here --
-                # otherwise every row would be refused for the wrong reason and
-                # the predicate leg would prove nothing. Read from the live
-                # registration so this fixture follows a producer advance
-                # instead of silently rotting into a false REJECT.
+                # recorded producer map is held constant and well formed here.
                 "producer": producer,
                 "ledger_record": row,
             }
@@ -758,7 +761,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         )
 
     def test_changed_producer_map_preserves_local_and_immutable_authority(self) -> None:
-        """Local run authority and immutable producer registration are distinct."""
+        """A changed producer map needs no registration by any consumer."""
         with tempfile.TemporaryDirectory() as tmp:
             checkout = Path(tmp) / "unregistered-producer"
             subprocess.run(
@@ -773,14 +776,10 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            # Mutate a path from the LIVE registered whole map.  `validate.sh`
-            # used to be such a path, but the Rust producer cutover removed it;
-            # continuing to edit that retired path made this fixture vacuous.
-            registered_paths = sorted(
-                json.loads(PRODUCER_REGISTRY.read_text())["registered"]
-            )
-            self.assertTrue(registered_paths, "producer registry has no paths")
-            producer_path = registered_paths[0]
+            # Mutate a path from the producer map recorded at SHA.
+            recorded_paths = sorted(_recorded_producer()["definition"])
+            self.assertTrue(recorded_paths, "recorded producer map has no paths")
+            producer_path = recorded_paths[0]
             with (checkout / producer_path).open("a") as producer:
                 producer.write("\n# unregistered producer mutation\n")
             git_env = {
@@ -816,20 +815,20 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             ).stdout.strip()
             # Since 341f043979a3e5bdd2e1e827b422871716765e57, local
             # authority follows the completed run, not registered file hashes.
-            # The publisher checks the registered producer map. The verifier
-            # uses pinned PRODUCER_REPO, which lacks this clone's new commit;
-            # its required False does not establish a producer-map mismatch.
-            # Keep every leg explicit: neither policy may silently absorb the
-            # other (see validation/test_local_producer_authority.py).
+            # The publisher and the immutable verifier no longer require a
+            # registered producer map either
+            # (https://github.com/rrnewton/dev-hermit/issues/414): the
+            # publisher records this commit's blobs, and the verifier does not
+            # compare a Hermit receipt's map to anything.
             expected = {
                 "validate_status.rs": True,
                 "query.py": True,
-                "publish_receipt.py": False,
+                "publish_receipt.py": True,
                 "anchor_select.py": True,
                 "finalize_receipt.py": True,
                 "main_soft_green.py": True,
                 "receipt-digest canonical": True,
-                "verify_receipt.sh": False,
+                "verify_receipt.sh": True,
             }
             panel = self._panel(row, predicate=None)
             print(f"\nCHANGED PRODUCER MAP: panel={panel}")

@@ -12,17 +12,12 @@ trap 'rm -rf -- "$tmp"' EXIT
 receipt_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 mkdir -p "$tmp/receipts/$receipt_commit"
 
-# --- PRODUCER DEFINITION BINDING (task bind_receipt_to_producer) -------------
-# The merged verifier requires every receipt to name the check definition that
-# produced it, and to match the REGISTERED current one exactly. Point the
-# bracket at a FIXTURE registry so these cases stay stable against real blob
-# churn on hermit main -- registering real blobs here would make the bracket
-# fail every time the validation producer legitimately changes.
-# ONE fixture producer checkout and ONE registry for the whole bracket. The
-# end-to-end leg mints through the real publisher, which derives the definition
-# from `git rev-parse <sha>:<path>`, so the registered blobs must be this repo's
-# REAL blobs -- and the synthetic receipts built by make_receipt must embed the
-# SAME values, or they stop matching the moment the two disagree.
+# --- PRODUCER DEFINITION PROVENANCE -----------------------------------------
+# Every receipt names the check definition that produced it. A Hermit receipt's
+# map is provenance only: no registered map is compared against it
+# (https://github.com/rrnewton/dev-hermit/issues/414). ONE fixture producer
+# checkout serves the whole bracket; the end-to-end leg mints through the real
+# publisher, which derives the definition from `git rev-parse <sha>:<path>`.
 producer_repo=$tmp/producer-checkout
 mkdir -p "$producer_repo/.github/workflows"
 printf '#!/usr/bin/env bash\necho validate\n' >"$producer_repo/validate.sh"
@@ -34,116 +29,6 @@ producer_sha=$(git -C "$producer_repo" rev-parse HEAD)
 sha=$producer_sha
 REG_VALIDATE=$(git -C "$producer_repo" rev-parse HEAD:validate.sh)
 REG_PORTABLE=$(git -C "$producer_repo" rev-parse HEAD:.github/workflows/ci-portable.yml)
-cat >"$tmp/producer-registry.json" <<REG
-{"registered_at": "$producer_sha",
- "registered_coverage_status": "legacy-selected-paths",
- "registered_valid_commits": ["$producer_sha"],
- "registered": {"validate.sh": "$REG_VALIDATE",
-                ".github/workflows/ci-portable.yml": "$REG_PORTABLE"}}
-REG
-export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
-
-# Exact landed production primary under review. The independent literals below
-# bind all 23 primary paths and blobs plus the exact staged PR 3216 transition.
-# Historical maps remain planted negatives at the current commit and positives
-# only at their exact bounded commits.
-# The synthetic repository below retains all transition lifecycle controls.
-production_registry=$script_dir/../validate/producer-definition.json
-production_repo=$root/hermit
-production_registered_at=ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8
-production_definition=$(cat <<'PRODUCTION_DEFINITION'
-{
-  ".config/nextest.toml": "5989ccd378adc871597969880082fd3b36b3d170",
-  ".github/workflows/ci-portable.yml": "172ecf07418f284dfabd3e919eec3ca934ce9b8a",
-  "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "1f827317df1af81991743edb99ded0fc22094a5a",
-  "ci/manifest-plan/src/ledger.rs": "0d737c4dc0d4facac7ebad0be2cda3cf16f69acb",
-  "ci/manifest-plan/src/lib.rs": "506a5c5832661a31727ef918ad40fa6a3171b1b4",
-  "ci/manifest-plan/src/nextest_binaries.rs": "aa10f24d085f3f59cb8b1f68d6a9063471b67a6a",
-  "ci/manifest-plan/src/nextest_cpu.rs": "35e03425d8fed1f319fe2a2bbfce4879ba0a9fc1",
-  "ci/manifest-plan/src/runner.rs": "40bd930a76340075dfe3c7913b2c5ee32239d908",
-  "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
-  "ci/manifest-plan/src/timeouts.rs": "d4cfe464f851df78ddf72e7980220bf32b66c609",
-  "ci/nextest-binaries.rs": "fa5722934022d53723490675e983778735402693",
-  "ci/nextest-test-results.rs": "d1a2f1141250267461bf64141c5368f5102782ff",
-  "ci/nextest-timeout-config.rs": "a005fc8ba8b987923db21ea8a0b24daf4f58eccb",
-  "ci/run-nextest-counted.sh": "7839b9d80b2563d1221690ef69d388fface5d325",
-  "hermit-cli/src/canonical_verdict.rs": "7786342c9f284857cf8a5e97f8536d8b176438e4",
-  "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
-  "scripts/lib/validate_cell_results.rs": "fe0f4c75299ada11d1c138421158425ee9d05b0e",
-  "scripts/lib/validate_classification.rs": "5dff66ce5321e0bb7f13cb705ab6853fd5996872",
-  "scripts/lib/validate_history.rs": "2fd9aeba20d8d05f5ff1318bb8d3b4949b5bac7d",
-  "scripts/lib/validate_plan.rs": "cd5b3a686fa17fc8513b5f4f04398c4d8e5dea43",
-  "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
-  "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
-  "scripts/validate.rs": "33b4f778185b4d572c423291d5290be93763d937"
-}
-PRODUCTION_DEFINITION
-)
-production_transition=$(cat <<'PRODUCTION_TRANSITION'
-{
-  "id": "rrnewton-hermit-pr-3216",
-  "registered_at": "b6c6db017f1d97bbe08736dc8519c171d3814b02",
-  "provenance": {
-    "repository": "rrnewton/hermit",
-    "pull_request": 3216,
-    "head": "b6c6db017f1d97bbe08736dc8519c171d3814b02"
-  },
-  "finalize_after": "2026-09-25T07:30:00Z",
-  "expires_at": "2026-09-26T07:30:00Z",
-  "candidate_coverage_status": "complete",
-  "added_paths": [],
-  "candidate": {
-    ".config/nextest.toml": "b409b5170b8d6b9aecb1c35707aa1bd6f10045c0",
-    ".github/workflows/ci-portable.yml": "03cf982edf2beaf74b27422cb9f356ff21a5e850",
-    "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "40561f929a199c853dd5c00f190d3542b08efae6",
-    "ci/manifest-plan/src/ledger.rs": "0b36d76824b0b345ef9129f8d15f822eb38ac7f9",
-    "ci/manifest-plan/src/lib.rs": "9e343ba1f12d04fc0cadde246a9c49dd74cb5600",
-    "ci/manifest-plan/src/nextest_binaries.rs": "6d39d8ab9a225cecb044cbfbca7773513e32cfc6",
-    "ci/manifest-plan/src/nextest_cpu.rs": "f06d6cd11c3c5bffbab0a7d9267b1ede4af49f76",
-    "ci/manifest-plan/src/runner.rs": "65a94d64181950c91dda5269a6648caaed9d9ad2",
-    "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
-    "ci/manifest-plan/src/timeouts.rs": "3fc546733c390c7b0ca6612c6d10717633ed072e",
-    "ci/nextest-binaries.rs": "6ca925dd2d7eac953e85f9c48796c8baee58220c",
-    "ci/nextest-test-results.rs": "f5a10d1f2c42d6b0a4077dc7118293aa3183af11",
-    "ci/nextest-timeout-config.rs": "74e194d8762b744d77a16479b76373ed3a400173",
-    "ci/run-nextest-counted.sh": "9b29439ffbd6746c86235ca374d9eee19ecc9ea1",
-    "hermit-cli/src/canonical_verdict.rs": "5d39822bf1423357679960246df31096da5d2549",
-    "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
-    "scripts/lib/validate_cell_results.rs": "f7203f6264dbe9596b357f00905d2d528a79b481",
-    "scripts/lib/validate_classification.rs": "00cc70dd305b05a817a1e28ad389d50177f72a3f",
-    "scripts/lib/validate_history.rs": "ad3779e49e86947680a6f0c08466710c4e9817e9",
-    "scripts/lib/validate_plan.rs": "700967d9658feeed252830e3ece377d7fedf8e2c",
-    "scripts/lib/validate_receipt.rs": "f497e377622d5440e6ad904ff4b183aee2b5f833",
-    "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
-    "scripts/validate.rs": "457d150a400252a0e92a245fdadb1e71315be66a"
-  }
-}
-PRODUCTION_TRANSITION
-)
-outgoing_registered_at=2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c
-outgoing_rust=5c72a835bd766af63e35b9219eac077c1b927db7
-outgoing_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
-outgoing_plan=820806e5a50d7044175ed8d0822b1fe979e2358d
-outgoing_receipt=15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c
-outgoing_runtime=721df0c7330851ea4cc09516d3ee6a4f680943b3
-outgoing_portable=78167c8dccfa757a5348d96d479f72b1c8e63a3d
-outgoing_nextest_config=5754a6d6983000ded67562250cedcc6c1ce53cf5
-outgoing_nextest_wrapper=ca88efe6d3d270881ecbe7205373f642369ce53d
-previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
-previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
-if ! jq -e \
-    --arg at "$production_registered_at" \
-    --argjson definition "$production_definition" \
-    --argjson transition "$production_transition" '
-      .registered_at == $at
-      and .registered_coverage_status == "complete"
-      and (has("registered_valid_commits") | not)
-      and .registered == $definition
-      and .transition == $transition
-    ' "$production_registry" >/dev/null; then
-    echo "FAIL: production producer-definition registry does not match the audited primary" >&2
-    exit 1
-fi
 
 make_receipt() {
     local executed=$1 output=$2
@@ -252,7 +137,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=35
+mutation_anchors_total=20
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"
@@ -313,435 +198,17 @@ base_evidence=$("$verifier" --sha "$sha" --comments "$tmp/comments.json" \
     { echo "FAIL: primary verdict omitted legacy coverage condition" >&2; exit 1; }
 [[ $base_evidence == *"producer_paths=.github/workflows/ci-portable.yml,validate.sh"* ]] || \
     { echo "FAIL: primary verdict omitted exact two-path condition" >&2; exit 1; }
-[[ $base_evidence == *"producer_valid_commits=$producer_sha"* ]] || \
-    { echo "FAIL: primary verdict omitted exact commit bound" >&2; exit 1; }
+[[ $base_evidence == *"producer_valid_commits=unbounded"* ]] || \
+    { echo "FAIL: primary verdict invented a registered commit bound" >&2; exit 1; }
 
-# Bracket the exact live producer-definition rotation through the immutable
-# verifier rather than merely comparing JSON maps.  The wrapper bytes and
-# digest-addressed path are recomputed for every mutant, so each refusal turns
-# only on producer-definition/head binding, not on a stale outer checksum.
-retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
-    "$production_registered_at"
-jq -cS --argjson definition "$production_definition" '
-  .producer.definition = $definition
-  | .producer.paths = ($definition | keys | sort)
-  | .producer.coverage_status = "complete"
-  | del(.producer.valid_commits)
-' "$tmp/production-current-retargeted.json" >"$tmp/production-current.json"
-assert_mutated "$tmp/receipt.json" "$tmp/production-current.json" \
-    "PRODUCER production rotation from synthetic fixture"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-current.json" pass \
-    "production rotation: exact current definition qualifies" \
-    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
-
-# The outgoing complete map remains usable only at its one exact registered
-# commit. This brackets both directions of the promotion: old evidence is not
-# erased, and the old map cannot authorize a newer commit.
-retarget_receipt "$tmp/production-current.json" \
-    "$tmp/production-outgoing-retargeted.json" "$outgoing_registered_at"
-jq -cS --arg rust "$outgoing_rust" \
-  --arg history "$outgoing_history" \
-  --arg plan "$outgoing_plan" \
-  --arg receipt "$outgoing_receipt" \
-  --arg runtime "$outgoing_runtime" \
-  --arg portable "$outgoing_portable" \
-  --arg nextest_config "$outgoing_nextest_config" \
-  --arg nextest_wrapper "$outgoing_nextest_wrapper" '
-  .producer.definition = {
-    "scripts/validate.rs": $rust,
-    "scripts/lib/validate_history.rs": $history,
-    "scripts/lib/validate_plan.rs": $plan,
-    "scripts/lib/validate_receipt.rs": $receipt,
-    "scripts/lib/validate_runtime.rs": $runtime,
-    ".github/workflows/ci-portable.yml": $portable,
-    ".config/nextest.toml": $nextest_config,
-    "ci/run-nextest-counted.sh": $nextest_wrapper
-  }
-  | .producer.paths = (.producer.definition | keys | sort)
-' "$tmp/production-outgoing-retargeted.json" >"$tmp/production-outgoing.json"
-assert_mutated "$tmp/production-current.json" "$tmp/production-outgoing.json" \
-    "PRODUCER outgoing definition at its bounded commit"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-outgoing.json" pass \
-    "production rotation: outgoing definition qualifies at its bounded commit" \
-    '[impl agent, ci-hub]' "$outgoing_registered_at" "$production_repo"
-
-jq -cS --arg rust "$outgoing_rust" '
-  .producer.definition["scripts/validate.rs"] = $rust
-' "$tmp/production-current.json" >"$tmp/production-outgoing-at-current.json"
-assert_mutated "$tmp/production-current.json" \
-    "$tmp/production-outgoing-at-current.json" \
-    "PRODUCER outgoing definition at current commit"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-outgoing-at-current.json" fail \
-    "production rotation: outgoing definition cannot authorize current commit" \
-    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
-
-jq -cS --arg rust "$previous_rust" --arg portable "$previous_portable" '
-  .producer.definition = {
-    "scripts/validate.rs": $rust,
-    ".github/workflows/ci-portable.yml": $portable
-  }
-  | .producer.paths = [".github/workflows/ci-portable.yml", "scripts/validate.rs"]
-' "$tmp/production-current.json" >"$tmp/production-previous.json"
-assert_mutated "$tmp/production-current.json" "$tmp/production-previous.json" \
-    "PRODUCER previous registered definition"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-previous.json" fail \
-    "production rotation: previous definition no longer authorizes" \
-    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
-
-jq -cS '.producer.definition["scripts/validate.rs"] = ("0" * 40)' \
-    "$tmp/production-current.json" >"$tmp/production-tampered.json"
-assert_mutated "$tmp/production-current.json" "$tmp/production-tampered.json" \
-    "PRODUCER tampered current definition"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-tampered.json" fail \
-    "production rotation: one-blob tamper is refused" \
-    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
-
-jq -cS 'del(.producer.definition["ci/run-nextest-counted.sh"])
-  | .producer.paths -= ["ci/run-nextest-counted.sh"]' \
-    "$tmp/production-current.json" >"$tmp/production-wrapper-missing.json"
-assert_mutated "$tmp/production-current.json" "$tmp/production-wrapper-missing.json" \
-    "PRODUCER counted-nextest wrapper missing"
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-wrapper-missing.json" fail \
-    "production rotation: missing counted-nextest wrapper is refused" \
-    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
-
-PRODUCER_DEFINITION_REGISTRY=$production_registry \
-    verify_file "$tmp/production-current.json" fail \
-    "production rotation: current definition cannot authorize another head" \
-    '[impl agent, ci-hub]' ffffffffffffffffffffffffffffffffffffffff \
-    "$production_repo"
-
-# A synthetic transition mirrors the live repair shape: validate.sh changes,
-# ci/validate_peer_snapshot.py is added, and ci-portable.yml is unchanged.
-# Validate-only and helper-only commits prove consumers choose one whole map
-# rather than unioning values. All timestamps are fixed far from the test date:
-# the active registry remains active, while the expired registry remains expired.
-synthetic_repo=$tmp/synthetic-producer
-mkdir -p "$synthetic_repo/.github/workflows" "$synthetic_repo/ci"
-git -C "$synthetic_repo" init -q
-printf 'primary validate\n' >"$synthetic_repo/validate.sh"
-printf 'primary portable\n' >"$synthetic_repo/.github/workflows/ci-portable.yml"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e add \
-    validate.sh .github/workflows/ci-portable.yml
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit -qm primary
-synthetic_primary_head=$(git -C "$synthetic_repo" rev-parse HEAD)
-synthetic_primary_validate=$(git -C "$synthetic_repo" rev-parse HEAD:validate.sh)
-synthetic_primary_portable=$(git -C "$synthetic_repo" rev-parse HEAD:.github/workflows/ci-portable.yml)
-printf 'candidate validate\n' >"$synthetic_repo/validate.sh"
-printf 'candidate helper\n' >"$synthetic_repo/ci/validate_peer_snapshot.py"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e add \
-    validate.sh ci/validate_peer_snapshot.py
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit -qm candidate
-synthetic_candidate_head=$(git -C "$synthetic_repo" rev-parse HEAD)
-synthetic_candidate_validate=$(git -C "$synthetic_repo" rev-parse HEAD:validate.sh)
-synthetic_candidate_portable=$(git -C "$synthetic_repo" rev-parse HEAD:.github/workflows/ci-portable.yml)
-synthetic_candidate_helper=$(git -C "$synthetic_repo" rev-parse HEAD:ci/validate_peer_snapshot.py)
-git -C "$synthetic_repo" checkout -q --detach "$synthetic_primary_head"
-mkdir -p "$synthetic_repo/ci"
-printf 'candidate validate\n' >"$synthetic_repo/validate.sh"
-printf 'crossed helper\n' >"$synthetic_repo/ci/validate_peer_snapshot.py"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e add \
-    validate.sh ci/validate_peer_snapshot.py
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit -qm crossed-validate
-synthetic_crossed_validate_head=$(git -C "$synthetic_repo" rev-parse HEAD)
-synthetic_crossed_validate_helper=$(git -C "$synthetic_repo" rev-parse HEAD:ci/validate_peer_snapshot.py)
-git -C "$synthetic_repo" checkout -q --detach "$synthetic_primary_head"
-mkdir -p "$synthetic_repo/ci"
-printf 'candidate helper\n' >"$synthetic_repo/ci/validate_peer_snapshot.py"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e add \
-    ci/validate_peer_snapshot.py
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit -qm crossed-helper
-synthetic_crossed_helper_head=$(git -C "$synthetic_repo" rev-parse HEAD)
-git -C "$synthetic_repo" checkout -q --detach "$synthetic_primary_head"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit \
-    --allow-empty -qm later-legacy-map
-synthetic_legacy_replay=$(git -C "$synthetic_repo" rev-parse HEAD)
-jq -cn \
-    --arg primary_head "$synthetic_primary_head" \
-    --arg primary_validate "$synthetic_primary_validate" \
-    --arg primary_portable "$synthetic_primary_portable" \
-    --arg candidate_head "$synthetic_candidate_head" \
-    --arg candidate_validate "$synthetic_candidate_validate" \
-    --arg candidate_portable "$synthetic_candidate_portable" \
-    --arg candidate_helper "$synthetic_candidate_helper" '{
-      registered_at: $primary_head,
-      registered_coverage_status: "legacy-selected-paths",
-      registered_valid_commits: [$primary_head],
-      registered: {
-        "validate.sh": $primary_validate,
-        ".github/workflows/ci-portable.yml": $primary_portable
-      },
-      transition: {
-        id: "rrnewton-hermit-pr-999",
-        registered_at: $candidate_head,
-        provenance: {
-          repository: "rrnewton/hermit",
-          pull_request: 999,
-          head: $candidate_head
-        },
-        finalize_after: "2098-01-01T00:00:00Z",
-        expires_at: "2099-01-01T00:00:00Z",
-        candidate_coverage_status: "complete",
-        added_paths: ["ci/validate_peer_snapshot.py"],
-        candidate: {
-          "validate.sh": $candidate_validate,
-          ".github/workflows/ci-portable.yml": $candidate_portable,
-          "ci/validate_peer_snapshot.py": $candidate_helper
-        }
-      }
-    }' >"$tmp/transition-active.json"
-
-retarget_receipt "$tmp/receipt.json" "$tmp/transition-primary-retargeted.json" \
-    "$synthetic_primary_head"
-jq -cS --arg validate "$synthetic_primary_validate" \
-    --arg portable "$synthetic_primary_portable" '
-  .producer.definition = {
-    "validate.sh": $validate,
-    ".github/workflows/ci-portable.yml": $portable
-  }
-' "$tmp/transition-primary-retargeted.json" >"$tmp/transition-primary-receipt.json"
-retarget_receipt "$tmp/receipt.json" "$tmp/transition-candidate-retargeted.json" \
-    "$synthetic_candidate_head"
-jq -cS --arg validate "$synthetic_candidate_validate" \
-    --arg portable "$synthetic_candidate_portable" \
-    --arg helper "$synthetic_candidate_helper" '
-  .producer.definition = {
-    "validate.sh": $validate,
-    ".github/workflows/ci-portable.yml": $portable,
-    "ci/validate_peer_snapshot.py": $helper
-  }
-  | .producer.coverage_status = "complete"
-  | .producer.paths = [
-      ".github/workflows/ci-portable.yml", "ci/validate_peer_snapshot.py", "validate.sh"
-    ]
-' "$tmp/transition-candidate-retargeted.json" >"$tmp/transition-candidate-receipt.json"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-primary-receipt.json" pass \
-    "transition whole-map: primary remains qualifying" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-candidate-receipt.json" pass \
-    "transition whole-map: exact candidate qualifies before expiry" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-
-retarget_receipt "$tmp/receipt.json" "$tmp/transition-crossed-validate-retargeted.json" \
-    "$synthetic_crossed_validate_head"
-jq -cS --arg validate "$synthetic_candidate_validate" \
-    --arg portable "$synthetic_primary_portable" \
-    --arg helper "$synthetic_crossed_validate_helper" '
-  .producer.definition = {
-    "validate.sh": $validate,
-    ".github/workflows/ci-portable.yml": $portable,
-    "ci/validate_peer_snapshot.py": $helper
-  }
-  | .producer.coverage_status = "complete"
-  | .producer.paths = [
-      ".github/workflows/ci-portable.yml", "ci/validate_peer_snapshot.py", "validate.sh"
-    ]
-' "$tmp/transition-crossed-validate-retargeted.json" >"$tmp/transition-crossed-validate.json"
-assert_mutated "$tmp/transition-candidate-receipt.json" "$tmp/transition-crossed-validate.json" \
-    "PRODUCER crossed validate/new-helper map"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-crossed-validate.json" fail \
-    "transition whole-map: changed validate with wrong helper is refused" \
-    '[impl agent, ci-hub]' "$synthetic_crossed_validate_head" "$synthetic_repo"
-
-retarget_receipt "$tmp/receipt.json" "$tmp/transition-crossed-helper-retargeted.json" \
-    "$synthetic_crossed_helper_head"
-jq -cS --arg validate "$synthetic_primary_validate" \
-    --arg portable "$synthetic_primary_portable" \
-    --arg helper "$synthetic_candidate_helper" '
-  .producer.definition = {
-    "validate.sh": $validate,
-    ".github/workflows/ci-portable.yml": $portable,
-    "ci/validate_peer_snapshot.py": $helper
-  }
-  | .producer.coverage_status = "complete"
-  | .producer.paths = [
-      ".github/workflows/ci-portable.yml", "ci/validate_peer_snapshot.py", "validate.sh"
-    ]
-' "$tmp/transition-crossed-helper-retargeted.json" >"$tmp/transition-crossed-helper.json"
-assert_mutated "$tmp/transition-candidate-receipt.json" "$tmp/transition-crossed-helper.json" \
-    "PRODUCER crossed helper/old-validate map"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-crossed-helper.json" fail \
-    "transition whole-map: added helper with old validate is refused" \
-    '[impl agent, ci-hub]' "$synthetic_crossed_helper_head" "$synthetic_repo"
-
+# The registration gate is gone: a receipt whose producer map matches no
+# registered map is still accepted, because the map is provenance only.
 jq -cS '.producer.definition["validate.sh"] = ("0" * 40)' \
-    "$tmp/transition-candidate-receipt.json" >"$tmp/transition-tampered.json"
-assert_mutated "$tmp/transition-candidate-receipt.json" "$tmp/transition-tampered.json" \
-    "PRODUCER transition candidate tamper"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-tampered.json" fail \
-    "transition whole-map: tampered candidate is refused" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-
-jq -cS 'del(.producer.definition[".github/workflows/ci-portable.yml"])' \
-    "$tmp/transition-candidate-receipt.json" >"$tmp/transition-missing.json"
-assert_mutated "$tmp/transition-candidate-receipt.json" "$tmp/transition-missing.json" \
-    "PRODUCER transition candidate missing key"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-missing.json" fail \
-    "transition whole-map: missing candidate key is refused" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-
-jq -cS '.producer.definition["extra.yml"] = ("6" * 40)' \
-    "$tmp/transition-candidate-receipt.json" >"$tmp/transition-extra.json"
-assert_mutated "$tmp/transition-candidate-receipt.json" "$tmp/transition-extra.json" \
-    "PRODUCER transition candidate extra key"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-active.json \
-    verify_file "$tmp/transition-extra.json" fail \
-    "transition whole-map: extra candidate key is refused" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-
-jq '.transition.candidate |=
-      (del(.[".github/workflows/ci-portable.yml"])
-       | .["different.yml"] = ("7" * 40))' \
-    "$tmp/transition-active.json" >"$tmp/transition-different-key.json"
-assert_mutated "$tmp/transition-active.json" "$tmp/transition-different-key.json" \
-    "PRODUCER transition registry different key set"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-different-key.json \
-    verify_file "$tmp/transition-primary-receipt.json" deploy-defect \
-    "transition registry: different candidate key set is a deploy defect" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-
-jq '.transition.unexpected = true' \
-    "$tmp/transition-active.json" >"$tmp/transition-malformed.json"
-assert_mutated "$tmp/transition-active.json" "$tmp/transition-malformed.json" \
-    "PRODUCER transition registry unexpected field"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-malformed.json \
-    verify_file "$tmp/transition-primary-receipt.json" deploy-defect \
-    "transition registry: malformed shape is a deploy defect" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-
-jq '.transition.finalize_after = "2099-01-01T00:00:00Z"
-    | .transition.expires_at = "2000-01-01T00:00:00Z"' \
-    "$tmp/transition-active.json" >"$tmp/transition-reversed-bounds.json"
-assert_mutated "$tmp/transition-active.json" "$tmp/transition-reversed-bounds.json" \
-    "PRODUCER transition reversed lifecycle bounds"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-reversed-bounds.json \
-    verify_file "$tmp/transition-primary-receipt.json" deploy-defect \
-    "transition registry: finalize_after at/after expiry is a deploy defect" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-
-jq '.transition.finalize_after = "1999-01-01T00:00:00Z"
-    | .transition.expires_at = "2000-01-01T00:00:00Z"' \
-    "$tmp/transition-active.json" >"$tmp/transition-expired.json"
-assert_mutated "$tmp/transition-active.json" "$tmp/transition-expired.json" \
-    "PRODUCER expired transition"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-expired.json \
-    verify_file "$tmp/transition-candidate-receipt.json" fail \
-    "transition expiry: candidate is refused" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-expired.json \
-    verify_file "$tmp/transition-primary-receipt.json" pass \
-    "transition expiry: primary remains qualifying" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-
-jq '.transition.finalize_after = "2000-01-01T00:00:00Z"' \
-    "$tmp/transition-active.json" >"$tmp/transition-finalizable.json"
-transition_finalizable_digest=$(sha256sum "$tmp/transition-finalizable.json" | awk '{print $1}')
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-finalizable.json \
-    "$verifier" --producer-definition-finalize \
-    --landed-replay "$synthetic_candidate_head" \
-    --expected-registry-sha256 "$transition_finalizable_digest" \
-    >"$tmp/transition-finalized.json"
-assert_mutated "$tmp/transition-active.json" "$tmp/transition-finalized.json" \
-    "PRODUCER finalized transition registry"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-finalized.json \
-    verify_file "$tmp/transition-candidate-receipt.json" pass \
-    "transition finalization: promoted candidate qualifies" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-finalized.json \
-    verify_file "$tmp/transition-primary-receipt.json" pass \
-    "transition finalization: exact old primary remains version-bounded" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-retarget_receipt "$tmp/transition-primary-receipt.json" \
-    "$tmp/transition-legacy-replay-receipt.json" "$synthetic_legacy_replay"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-finalized.json \
-    verify_file "$tmp/transition-legacy-replay-receipt.json" fail \
-    "transition finalization: same legacy map at another commit is refused" \
-    '[impl agent, ci-hub]' "$synthetic_legacy_replay" "$synthetic_repo"
-
-# A complete primary must be rotatable again. Preserve it as a commit-bounded
-# legacy record at the replay where it became primary; do not silently retain
-# unbounded authority for the same map at later commits.
-git -C "$synthetic_repo" checkout -q --detach "$synthetic_candidate_head"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit \
-    --allow-empty -qm later-complete-map
-synthetic_complete_replay=$(git -C "$synthetic_repo" rev-parse HEAD)
-git -C "$synthetic_repo" checkout -q --detach "$synthetic_candidate_head"
-printf 'next validate\n' >"$synthetic_repo/validate.sh"
-printf 'next helper\n' >"$synthetic_repo/ci/validate_peer_snapshot.py"
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e add \
-    validate.sh ci/validate_peer_snapshot.py
-git -C "$synthetic_repo" -c user.name=t -c user.email=t@e commit -qm next-producer
-synthetic_next_head=$(git -C "$synthetic_repo" rev-parse HEAD)
-synthetic_next_validate=$(git -C "$synthetic_repo" rev-parse HEAD:validate.sh)
-synthetic_next_helper=$(git -C "$synthetic_repo" rev-parse HEAD:ci/validate_peer_snapshot.py)
-jq --arg head "$synthetic_next_head" \
-   --arg validate "$synthetic_next_validate" \
-   --arg helper "$synthetic_next_helper" \
-   --arg portable "$synthetic_candidate_portable" '
-  .transition = {
-    id: "rrnewton-hermit-pr-1000",
-    registered_at: $head,
-    provenance: {
-      repository: "rrnewton/hermit",
-      pull_request: 1000,
-      head: $head
-    },
-    finalize_after: "2000-01-01T00:00:00Z",
-    expires_at: "2099-01-01T00:00:00Z",
-    candidate_coverage_status: "complete",
-    added_paths: [],
-    candidate: {
-      "validate.sh": $validate,
-      ".github/workflows/ci-portable.yml": $portable,
-      "ci/validate_peer_snapshot.py": $helper
-    }
-  }
-' "$tmp/transition-finalized.json" >"$tmp/transition-second.json"
-transition_second_digest=$(sha256sum "$tmp/transition-second.json" | awk '{print $1}')
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-second.json \
-    "$verifier" --producer-definition-finalize \
-    --landed-replay "$synthetic_next_head" \
-    --expected-registry-sha256 "$transition_second_digest" \
-    >"$tmp/transition-second-finalized.json"
-if ! jq -e --arg at "$synthetic_candidate_head" '
-    .legacy | any(
-      .registered_at == $at
-      and .coverage_status == "complete"
-      and .valid_commits == [$at]
-    )
-  ' "$tmp/transition-second-finalized.json" >/dev/null; then
-    echo "FAIL: second rotation did not preserve outgoing complete primary at its exact replay" >&2
-    exit 1
-fi
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-second-finalized.json \
-    "$verifier" --producer-definition-resolve --sha "$synthetic_next_head" \
-    --repo-checkout "$synthetic_repo" >/dev/null
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-second-finalized.json \
-    verify_file "$tmp/transition-candidate-receipt.json" pass \
-    "second transition: outgoing complete primary remains valid at its replay" \
-    '[impl agent, ci-hub]' "$synthetic_candidate_head" "$synthetic_repo"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-second-finalized.json \
-    verify_file "$tmp/transition-primary-receipt.json" pass \
-    "second transition: first legacy primary remains valid at its replay" \
-    '[impl agent, ci-hub]' "$synthetic_primary_head" "$synthetic_repo"
-retarget_receipt "$tmp/transition-candidate-receipt.json" \
-    "$tmp/transition-complete-replay-receipt.json" "$synthetic_complete_replay"
-PRODUCER_DEFINITION_REGISTRY=$tmp/transition-second-finalized.json \
-    verify_file "$tmp/transition-complete-replay-receipt.json" fail \
-    "second transition: outgoing complete map is bounded after promotion" \
-    '[impl agent, ci-hub]' "$synthetic_complete_replay" "$synthetic_repo"
+    "$tmp/receipt.json" >"$tmp/producer-unregistered.json"
+assert_mutated "$tmp/receipt.json" "$tmp/producer-unregistered.json" \
+    "PRODUCER unregistered map (gate removed)"
+verify_file "$tmp/producer-unregistered.json" pass \
+    "unregistered producer map is accepted (registration gate removed)"
 
 # The wrapper's digest-addressed path is not permission to forge the selected
 # row identity. Change only that inner digest; verify_file recomputes the outer
@@ -937,7 +404,7 @@ verify_file "$tmp/host-absent.json" fail "ledger host absent"
 # emits an artifact-SHA-addressed body, and a current role-tagged marker
 # dereferences through the landing verifier.
 # Reuse the single fixture producer checkout created at the top, so the minted
-# definition and the registered one are the same blobs by construction.
+# definition is read from real blobs at a real commit.
 sha=$producer_sha
 strong_log=$tmp/strong-validate.log
 printf 'running 12 tests\ntest result: ok. 12 passed; 0 failed\n' >"$strong_log"
@@ -1060,16 +527,10 @@ verify_file "$tmp/typed-skip-dependent.json" fail \
 # Count-capable receipts additionally bind the per-node coverage obligation.
 # Use a second exact head so the two positive controls represent two distinct
 # legitimate landing authorizations rather than repeated parsing of one row.
-# The legacy two-path map is commit-bounded, so make that second head a real
-# same-map commit and explicitly register it in this fixture. A made-up SHA
-# would be refused by producer binding before it ever exercised coverage.
+# Make that second head a real same-map commit.
 git -C "$producer_repo" -c user.name=t -c user.email=t@e commit \
     --allow-empty -qm 'schema5 producer fixture'
 sha=$(git -C "$producer_repo" rev-parse HEAD)
-jq --arg sha "$sha" \
-    '.registered_valid_commits += [$sha] | .registered_valid_commits |= sort' \
-    "$PRODUCER_DEFINITION_REGISTRY" >"$tmp/producer-registry-schema5.json"
-export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry-schema5.json
 make_receipt 12 "$tmp/schema5-base.json"
 jq '.ledger_record.schema_version = 5
     | .ledger_record.producer = "hermit-validate-sh"
@@ -1153,4 +614,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, outgoing bounded legacy 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; outgoing-at-current/previous/tampered/missing-wrapper/wrong-head production definitions (5/5), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, current receipt missing passed_tests, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; unregistered producer map 1/1 accepted (registration gate removed); 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, current receipt missing passed_tests, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"

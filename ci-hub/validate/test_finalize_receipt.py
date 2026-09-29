@@ -30,25 +30,11 @@ BASE_FIELDS = {
 def _producer_definition_fixture(monkeypatch):
     """Keep coverage/finalizer unit fixtures focused on their own condition.
 
-    The real git-derived producer authority is bracketed end to end by
-    validation/test_local_producer_authority.py.  Individual finalizer tests
-    use synthetic SHAs and non-git paths, so provide explicit derived evidence
-    rather than weakening the production resolver.
+    Individual finalizer tests use synthetic SHAs and non-git paths. No
+    registered producer map exists to resolve against
+    (https://github.com/rrnewton/dev-hermit/issues/414).
     """
     monkeypatch.setenv("CI_HUB_LEDGER_FIXTURE_MODE", "1")
-    monkeypatch.setattr(
-        fr.qualifying_receipt,
-        "resolve_producer_definition",
-        lambda _row, _sha, **_kwargs: {
-            "definition": {
-                ".github/workflows/ci-portable.yml": "1" * 40,
-                "validate.sh": "2" * 40,
-            },
-            "coverage_status": "legacy-selected-paths",
-            "paths": [".github/workflows/ci-portable.yml", "validate.sh"],
-            "resolved_from": "/fixture/hermit",
-        },
-    )
 
 
 def _satisfied(cov: dict) -> bool:
@@ -560,10 +546,8 @@ def test_file_registry_does_not_block_finalization(tmp_path, monkeypatch):
     digest = fr.canonical_row_sha256(source, sha)
     monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
 
-    def refuse(*_args, **_kwargs):
-        raise fr.qualifying_receipt.ProducerDefinitionError("crossed whole map")
-
-    monkeypatch.setattr(fr.qualifying_receipt, "resolve_producer_definition", refuse)
+    # The registered-map resolver is gone, so nothing can refuse on it.
+    assert not hasattr(fr.qualifying_receipt, "resolve_producer_definition")
     result = fr.scan_and_finalize(str(ledger), str(tmp_path), sha, digest)
     assert result["reason"] == "minted"
     assert result["exit_code"] == 0 and result["appended"] == 1

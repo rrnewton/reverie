@@ -993,7 +993,7 @@ def test_real_newest_green_default_cache_rejects_previous_decoder_policy(tmp_pat
     authority = import_consumer("validation/test_local_producer_authority.py",
                                 "admission_cache_authority_fixture")
     fixture = authority.LocalProducerAuthorityTests()
-    repo, registry, shas = fixture.fixture(tmp_path)
+    repo, shas = fixture.fixture(tmp_path)
     target = shas["candidate"]
     authority.run("git", "update-ref", "refs/remotes/origin/main", target, cwd=repo)
     positive = fixture.row(repo, target, "2026-08-08T12:10:00Z")
@@ -1006,7 +1006,7 @@ def test_real_newest_green_default_cache_rejects_previous_decoder_policy(tmp_pat
     cache = tmp_path / "newest-green-cache.json"
     args = ("newest-green", "--branch", "main", "--repo-dir", str(repo),
             "--cache", str(cache), "--no-fetch", "--json")
-    first = fixture.hub(registry, *args)
+    first = fixture.hub(tmp_path, *args)
     assert first.returncode == 0, first.stderr
     report = json.loads(first.stdout)
     assert report["cache_hit"] is False and report["report"]["green"]["sha"] == target
@@ -1016,13 +1016,13 @@ def test_real_newest_green_default_cache_rejects_previous_decoder_policy(tmp_pat
     old["schema_version"] = 8
     old["report"]["green"]["sha"] = "0" * 40
     cache.write_text(json.dumps(old))
-    refreshed = fixture.hub(registry, *args)
+    refreshed = fixture.hub(tmp_path, *args)
     assert refreshed.returncode == 0, refreshed.stderr
     report = json.loads(refreshed.stdout)
     assert report["cache_hit"] is False and report["report"]["green"]["sha"] == target
     replacement = json.loads(cache.read_text())
     assert replacement == original
-    reused = fixture.hub(registry, *args)
+    reused = fixture.hub(tmp_path, *args)
     assert reused.returncode == 0, reused.stderr
     report = json.loads(reused.stdout)
     assert report["cache_hit"] is True and report["report"]["green"]["sha"] == target

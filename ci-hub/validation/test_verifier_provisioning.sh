@@ -3,9 +3,11 @@
 #
 # The gate does not run verify_receipt.sh from a checkout -- it fetches it into
 # $RUNNER_TEMP and runs it there. The verifier is NOT self-contained: it reads
-# its qualifying-receipt predicate and its producer-definition registration from
-# sibling files. A provisioning step that fetches only the script therefore
-# leaves those unresolvable, and the verifier exits 2 on EVERY call.
+# its qualifying-receipt predicate from a sibling file. A provisioning step that
+# fetches only the script therefore leaves it unresolvable, and the verifier
+# exits 2 on EVERY call. (The pinned step also fetches the retired producer
+# registry; the verifier no longer reads it,
+# https://github.com/rrnewton/dev-hermit/issues/414.)
 #
 # That is fail-closed, so it is not a fake green -- but it silently turns every
 # legitimate receipt into a refusal, and it presents as mass evidence loss
@@ -17,7 +19,7 @@
 # STUBBED `gh` serving fixture content. Nothing dials GitHub, dispatches a
 # workflow, or touches a PR (#243).
 #
-#   NEGATIVE  a provisioning step that omits either registry leaves the verifier
+#   NEGATIVE  a provisioning step that omits the predicate leaves the verifier
 #             unable to resolve it -> exit 2, and the bracket FAILS.
 #   POSITIVE  the real step provisions all three artifacts and the verifier
 #             reaches a genuine verdict (exit 0/1, never 2).
@@ -107,10 +109,7 @@ echo "extracted $copies copy/copies of '$step_name'"
 neg_refused=0; neg_total=0; pos_accepted=0; pos_total=0; fail=0
 
 # Serve fixture content for whatever repo path the step asks for. Provisioning
-# fetches return base64 like `--jq .content`; exact-target producer resolution
-# returns the registered blob identity like `--jq .sha`. This keeps the
-# positive leg on an actual registered commit instead of passing merely because
-# an unrelated fake SHA is correctly refused.
+# fetches return base64 like `--jq .content`.
 make_stub() { # make_stub <bin-dir>
   mkdir -p "$1"
   cat >"$1/gh" <<'STUB'
@@ -119,21 +118,6 @@ make_stub() { # make_stub <bin-dir>
 url=""
 for a in "$@"; do case "$a" in repos/*) url=$a ;; esac; done
 rel=${url#*/contents/}; rel=${rel%%\?*}
-case " $* " in
-  *" --jq .sha "*)
-    registry="$FIXTURE_ROOT/ci-hub/validate/producer-definition.json"
-    blob=$(jq -r --arg path "$rel" '.registered[$path] // empty' "$registry")
-    case "$blob" in
-      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
-        [ "${#blob}" -eq 40 ] || exit 1
-        printf '%s\n' "$blob"
-        exit 0
-        ;;
-    esac
-    echo "stub gh: no registered producer blob for $rel" >&2
-    exit 1
-    ;;
-esac
 src="$FIXTURE_ROOT/$rel"
 [ -f "$src" ] || { echo "stub gh: no fixture for $rel" >&2; exit 1; }
 base64 -w0 <"$src"; echo
@@ -152,7 +136,9 @@ run_step() { # run_step <step.sh> <label> <expect_verifier_rc_not_2>
   mkdir -p "$box/fixture/ci-hub/validation" "$box/fixture/ci-hub/validate"
   cp "$verifier_src" "$box/fixture/ci-hub/validation/verify_receipt.sh"
   cp "$root/ci-hub/validate/qualifying-receipt.json" "$box/fixture/ci-hub/validate/"
-  cp "$root/ci-hub/validate/producer-definition.json" "$box/fixture/ci-hub/validate/"
+  # The pinned step still fetches the retired producer registry; serve a
+  # placeholder so that fetch succeeds. The verifier does not read it.
+  printf '{}\n' >"$box/fixture/ci-hub/validate/producer-definition.json"
 
   # Rewrite the step's expected digests to match the fixture content, so this
   # bracket does not fail merely because the pin is older than the checkout.
@@ -201,8 +187,8 @@ PY
   verifier=$(sed -n 's/^RECEIPT_VERIFIER=//p' "$env_file" | tail -1)
   predicate=$(sed -n 's/^QUALIFYING_RECEIPT_PREDICATE=//p' "$env_file" | tail -1)
   producer=$(sed -n 's/^PRODUCER_DEFINITION_REGISTRY=//p' "$env_file" | tail -1)
-  target_sha=$(jq -r '.registered_at' \
-    "$box/fixture/ci-hub/validate/producer-definition.json")
+  # Any exact head: with no evidence comments the genuine verdict is rc 1.
+  target_sha=ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8
   printf '[[]]\n' >"$box/comments.json"
   local vrc=0
   env -i PATH="$box/bin:$PATH" HOME="$box" FIXTURE_ROOT="$box/fixture" \
@@ -271,10 +257,6 @@ strip_lines "$tmp/step1.sh" "$tmp/neg-none.sh" \
   '^\s*predicate=' '^\s*producer='
 run_step "$tmp/neg-none.sh" "SCRIPT ONLY: neither registry provisioned (the shipped defect)" NEG
 
-strip_lines "$tmp/step1.sh" "$tmp/neg-producer.sh" \
-  'producer-definition\.json' 'PRODUCER_DEFINITION_REGISTRY' '^\s*producer='
-run_step "$tmp/neg-producer.sh" "PARTIAL: predicate provisioned, producer registry omitted" NEG
-
 strip_lines "$tmp/step1.sh" "$tmp/neg-predicate.sh" \
   'qualifying-receipt\.json' 'QUALIFYING_RECEIPT_PREDICATE' '^\s*predicate='
 run_step "$tmp/neg-predicate.sh" "PARTIAL: producer registry provisioned, predicate omitted" NEG
@@ -287,4 +269,4 @@ if [ "$fail" -ne 0 ] || [ "$neg_refused" -ne "$neg_total" ] ||
   echo "FAIL: verifier-provisioning bracket" >&2
   exit 1
 fi
-echo "PASS: every copy of the gate's provisioning step gives the verifier a resolvable predicate and producer registry; omitting either is detected"
+echo "PASS: every copy of the gate's provisioning step gives the verifier a resolvable predicate; omitting it is detected"

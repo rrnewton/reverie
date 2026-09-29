@@ -11123,7 +11123,6 @@ fn publish_selected_receipt(
     sha: &str,
     selected: &QualifyingReceipt,
     dry_run: bool,
-    observe_producer_definition: bool,
 ) -> Result<VerifiedPublishedReceipt, CiHubError> {
     let _ = ledger;
     let mut command = Command::new("python3");
@@ -11151,9 +11150,6 @@ fn publish_selected_receipt(
         .stderr(Stdio::piped());
     if dry_run {
         command.arg("--dry-run");
-    }
-    if observe_producer_definition {
-        command.arg("--observe-producer-definition");
     }
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
@@ -11387,7 +11383,7 @@ fn fetch_and_verify_immutable_receipt(
         .map_err(|error| format!("immutable receipt artifact is not UTF-8 JSON: {error}"))?;
     // Reuse the same byte/row/run/log checks as a freshly published artifact.
     // The shell verifier above independently establishes marker authorship,
-    // receipt-commit reachability, producer-definition equality, and the shared
+    // receipt-commit reachability, the recorded producer definition, and the shared
     // qualifying predicate for these exact immutable bytes.
     let report = serde_json::json!({
         "schema_version": 1,
@@ -11665,7 +11661,6 @@ fn run_publish_commit_status(
         &args.sha,
         selected,
         args.dry_run,
-        true,
     )?;
     let description = local_validation_status_description(&selected.row);
     let status_action = if args.dry_run {
@@ -11928,7 +11923,6 @@ fn run_apply_local_label(
                     &head,
                     selected,
                     args.dry_run,
-                    false,
                 ) {
                     Ok(artifact) => (artifact, "published"),
                     Err(error) => {
@@ -17704,14 +17698,12 @@ mod tests {
         rewrite_report_artifact(report, &artifact, sha);
     }
 
-    /// A REAL one-commit git repo carrying the registered producer files, so the
+    /// A REAL one-commit git repo carrying producer files, so the
     /// mint-side producer binding resolves against a genuine `git rev-parse
     /// <sha>:<path>` rather than a stub. Mirrors `make_producer_checkout` in
     /// ci-hub/validation/test_publish_receipt.py; deliberately no test-only
     /// override of the resolver itself, which would be a forgery path.
-    fn make_producer_checkout(
-        root: &std::path::Path,
-    ) -> (std::path::PathBuf, String, std::path::PathBuf) {
+    fn make_producer_checkout(root: &std::path::Path) -> (std::path::PathBuf, String) {
         let repo = root.join("producer-checkout");
         std::fs::create_dir_all(repo.join(".github/workflows")).unwrap();
         std::fs::write(
@@ -17742,26 +17734,7 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "producer fixture"]);
         let sha = git(&["rev-parse", "HEAD"]);
-        let definition = serde_json::json!({
-            "validate.sh": git(&["rev-parse", &format!("{sha}:validate.sh")]),
-            ".github/workflows/ci-portable.yml": git(&[
-                "rev-parse",
-                &format!("{sha}:.github/workflows/ci-portable.yml")
-            ]),
-        });
-        let registry = root.join("producer-definition-fixture.json");
-        std::fs::write(
-            &registry,
-            serde_json::to_vec(&serde_json::json!({
-                "registered_at": sha,
-                "registered_coverage_status": "legacy-selected-paths",
-                "registered_valid_commits": [sha],
-                "registered": definition,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        (repo, sha, registry)
+        (repo, sha)
     }
 
     #[test]
@@ -17782,7 +17755,7 @@ mod tests {
         // receipt to the producer definition it was minted by, resolved from the
         // VALIDATED COMMIT. So the row must name a real checkout at a real sha;
         // the previous hard-coded RECEIPT_SHA had no repository behind it.
-        let (producer_repo, receipt_sha, producer_registry) = make_producer_checkout(&temp);
+        let (producer_repo, receipt_sha) = make_producer_checkout(&temp);
         let mut value = schema4_receipt_value();
         value["log_file"] = serde_json::json!(log.display().to_string());
         value["commit"] = serde_json::json!(receipt_sha);
@@ -17807,7 +17780,6 @@ mod tests {
                 "--dry-run",
             ])
             .current_dir(&root)
-            .env("PRODUCER_DEFINITION_REGISTRY", producer_registry)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""The validator-file registry is not a validation-status gate.
+"""Validator-file changes are not a validation-status gate.
 
-The fixtures change one or both formerly registered validator files while
-keeping the validation row itself qualifying.  Status and history must follow
-the completed run, regardless of registry contents.
+The fixtures change one or both validator files while keeping the validation
+row itself qualifying.  Status and history must follow the completed run; there
+is no producer registry (https://github.com/rrnewton/dev-hermit/issues/414).
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 HUB = ROOT / "ci-hub" / "ci-hub"
 HERMIT = ROOT / "hermit"
 LEDGER_ADAPTER = ROOT / "ci-hub" / "ledger" / "validate_rows.py"
+# A fixed Hermit commit the fixture branches from.
+PRIMARY_SHA = "ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8"
 
 
 def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
@@ -43,12 +45,10 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         ).returncode != 0:
             self.skipTest("Hermit submodule is not initialized")
 
-    def fixture(self, root: Path) -> tuple[Path, Path, dict[str, str]]:
+    def fixture(self, root: Path) -> tuple[Path, dict[str, str]]:
         repo = root / "hermit-fixture"
         run("git", "clone", "-q", "--shared", str(HERMIT), str(repo))
-        primary = json.loads((ROOT / "ci-hub/validate/producer-definition.json").read_text())
-        primary_sha = primary["registered_at"]
-        primary_paths = sorted(primary["registered"])
+        primary_sha = PRIMARY_SHA
         run("git", "checkout", "-q", "--detach", primary_sha, cwd=repo)
 
         git_env = {
@@ -94,40 +94,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         run("git", "commit", "--allow-empty", "-qm", "later legacy map", cwd=repo, env=git_env)
         legacy_replay_sha = run("git", "rev-parse", "HEAD", cwd=repo)
 
-        def blob(sha: str, path: str) -> str:
-            return run("git", "rev-parse", f"{sha}:{path}", cwd=repo)
-
-        primary_map = {
-            path: blob(primary_sha, path)
-            for path in primary_paths
-        }
-        candidate_map = {
-            path: blob(candidate_sha, path)
-            for path in (*primary_paths, "ci/validate_peer_snapshot.py")
-        }
-        registry = {
-            "registered_at": primary_sha,
-            "registered_coverage_status": "legacy-selected-paths",
-            "registered_valid_commits": [primary_sha],
-            "registered": primary_map,
-            "transition": {
-                "id": "rrnewton-hermit-pr-999",
-                "registered_at": candidate_sha,
-                "provenance": {
-                    "repository": "rrnewton/hermit",
-                    "pull_request": 999,
-                    "head": candidate_sha,
-                },
-                "finalize_after": "2098-01-01T00:00:00Z",
-                "expires_at": "2099-01-01T00:00:00Z",
-                "candidate_coverage_status": "complete",
-                "added_paths": ["ci/validate_peer_snapshot.py"],
-                "candidate": candidate_map,
-            },
-        }
-        registry_path = root / "producer-definition.json"
-        registry_path.write_text(json.dumps(registry))
-        return repo, registry_path, {
+        return repo, {
             "primary": primary_sha,
             "candidate": candidate_sha,
             "crossed_validate": crossed_validate_sha,
@@ -165,16 +132,15 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             "gates": [{"name": "full", "result": "pass", "exit_code": 0}],
         }
 
-    def hub(self, registry: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    def hub(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(HUB), *args],
             cwd=ROOT,
             env={
                 **os.environ,
                 "CI_HUB_TOOL_COST_ACTIVE": "1",
-                "PRODUCER_DEFINITION_REGISTRY": str(registry),
                 "HERMIT_VALIDATE_STOP_TEST_MODE": "1",
-                "CI_HUB_VALIDATE_LEDGER_TEST_ROOT": str(registry.parent),
+                "CI_HUB_VALIDATE_LEDGER_TEST_ROOT": str(root),
             },
             capture_output=True,
             text=True,
@@ -201,7 +167,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
     def test_validate_status_follows_the_run_not_the_file_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            repo, registry, shas = self.fixture(root)
+            repo, shas = self.fixture(root)
             cases = [
                 "primary",
                 "candidate",
@@ -216,7 +182,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                         self.row(repo, shas[name], f"2026-08-08T12:0{index}:00Z"),
                     )
                     result = self.hub(
-                        registry,
+                        root,
                         "validate-status",
                         "--sha",
                         shas[name],
@@ -232,30 +198,10 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                         report["newest_qualifying"]["producer_definition"]
                     )
 
-            primary_only = json.loads(registry.read_text())
-            primary_only.pop("transition")
-            primary_only_registry = root / "primary-only-registry.json"
-            primary_only_registry.write_text(json.dumps(primary_only))
-            self.record(
-                root,
-                self.row(repo, shas["candidate"], "2026-08-08T12:09:00Z"),
-            )
-            accepted = self.hub(
-                primary_only_registry,
-                "validate-status",
-                "--sha",
-                shas["candidate"],
-                "--repo",
-                "rrnewton/hermit",
-                "--json",
-            )
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            self.assertEqual(json.loads(accepted.stdout)["verdict"], "VALIDATED")
-
-    def test_newest_green_is_unchanged_when_the_registry_changes(self) -> None:
+    def test_newest_green_follows_the_run_not_the_file_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            repo, registry, shas = self.fixture(root)
+            repo, shas = self.fixture(root)
             candidate = shas["candidate"]
             run("git", "update-ref", "refs/remotes/origin/main", candidate, cwd=repo)
             self.record(
@@ -274,21 +220,11 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 "--no-fetch",
                 "--json",
             )
-            positive = self.hub(registry, *args)
+            positive = self.hub(root, *args)
             self.assertEqual(positive.returncode, 0, positive.stderr)
             report = json.loads(positive.stdout)["report"]
             self.assertEqual(report["green"]["sha"], candidate)
             self.assertIsNone(report["green"]["producer_definition"])
-
-            tampered = json.loads(registry.read_text())
-            tampered["transition"]["candidate"]["scripts/validate.rs"] = "0" * 40
-            tampered_path = root / "tampered-registry.json"
-            tampered_path.write_text(json.dumps(tampered))
-            still_green = self.hub(tampered_path, *args)
-            self.assertEqual(still_green.returncode, 0, still_green.stderr)
-            self.assertEqual(
-                json.loads(still_green.stdout)["report"]["green"]["sha"], candidate
-            )
 
 
 if __name__ == "__main__":

@@ -16,9 +16,13 @@ deleted_cwd=$tmp/deleted-validation-cwd
 log_file=$tmp/validate.log
 printf 'running 12 tests\ntest result: ok. 12 passed; 0 failed\n' >"$log_file"
 log_sha256=$(sha256sum "$log_file" | awk '{print $1}')
-producer_registry=$tmp/producer-definition.json
-cp "$root/ci-hub/validate/producer-definition.json" "$producer_registry"
-sha=$(jq -r '.registered_at' "$producer_registry")
+# Any real Hermit commit: the receipt records its producer blobs as provenance
+# only (https://github.com/rrnewton/dev-hermit/issues/414).
+sha=ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8
+producer_record=$tmp/producer-record.json
+"$root/ci-hub/validation/verify_receipt.sh" --producer-definition-observe \
+    --repo rrnewton/hermit --sha "$sha" --repo-checkout "$root/hermit" \
+    >"$producer_record"
 mkdir -p "$state_root"
 ln -s "$root/hermit" "$state_root/hermit"
 
@@ -68,23 +72,16 @@ DEV_HERMIT_PARENT="$state_root" \
     <"$tmp/base-row.json" >"$tmp/record.json"
 
 artifact_counter=0
-build_artifact() { # build_artifact ROW TARGET_SHA PRODUCER_MODE
-    local row=$1 target_sha=$2 producer_mode=$3
-    local canonical producer artifact
+build_artifact() { # build_artifact ROW TARGET_SHA
+    local row=$1 target_sha=$2
+    local canonical artifact
     artifact_counter=$((artifact_counter + 1))
     canonical=$tmp/canonical-$artifact_counter.json
-    producer=$tmp/producer-$artifact_counter.json
     artifact=$tmp/artifact-$artifact_counter.json
     hub_call receipt-digest --sha "$target_sha" --canonical-row \
         <"$row" >"$canonical"
     ARTIFACT_SELECTED=$(sha256sum "$canonical" | awk '{print $1}')
-    if [[ $producer_mode == wrong ]]; then
-        jq '.registered["validate.sh"] = ("0" * 40)' \
-            "$producer_registry" >"$producer"
-    else
-        cp "$producer_registry" "$producer"
-    fi
-    jq -cn --slurpfile row "$canonical" --slurpfile registry "$producer" \
+    jq -cn --slurpfile row "$canonical" --slurpfile producer "$producer_record" \
         --arg sha "$target_sha" --arg selected "$ARTIFACT_SELECTED" \
         --arg log_sha "$log_sha256" --arg cwd "$deleted_cwd" '{
           schema_version: 1,
@@ -96,10 +93,9 @@ build_artifact() { # build_artifact ROW TARGET_SHA PRODUCER_MODE
           log_sha256: $log_sha,
           producer: {
             resolved_from: $cwd,
-            definition: $registry[0].registered,
-            coverage_status: $registry[0].registered_coverage_status,
-            paths: ($registry[0].registered | keys | sort),
-            valid_commits: $registry[0].registered_valid_commits
+            definition: $producer[0].definition,
+            coverage_status: $producer[0].coverage_status,
+            paths: ($producer[0].definition | keys | sort)
           },
           selected_receipt_identity: {
             digest_algorithm: "sha256",
@@ -237,7 +233,6 @@ invoke_apply() {
     FAKE_REJECT_COMMIT="${REJECT_COMMIT:-}" \
     FAKE_GH_LOG="$tmp/gh.log" \
     FAKE_MUTATION_LOG="$tmp/mutations.log" \
-    PRODUCER_DEFINITION_REGISTRY="$producer_registry" \
     DEV_HERMIT_PARENT="$state_root" \
     "$hub" apply-local-label --pr "$pr" --repo rrnewton/hermit --json
 }
@@ -253,13 +248,13 @@ prepare_scenario() {
 }
 
 prepare_scenario
-build_artifact "$tmp/base-row.json" "$sha" valid
+build_artifact "$tmp/base-row.json" "$sha"
 register_artifact "$receipt_commit"
 exact_path=$ARTIFACT_PATH
 exact_digest=$ARTIFACT_SHA256
 jq '.finished_at = "2026-08-08T10:12:14Z"' \
     "$tmp/base-row.json" >"$tmp/positive-other-row.json"
-build_artifact "$tmp/positive-other-row.json" "$sha" valid
+build_artifact "$tmp/positive-other-row.json" "$sha"
 register_artifact "$receipt_commit"
 other_path=$ARTIFACT_PATH
 other_digest=$ARTIFACT_SHA256
@@ -305,7 +300,7 @@ run_negative() { # run_negative NAME
 jq --arg sha "$other_sha" '.commit = $sha | .tree = ("d" * 40)' \
     "$tmp/base-row.json" >"$tmp/wrong-head-row.json"
 prepare_scenario
-build_artifact "$tmp/wrong-head-row.json" "$other_sha" valid
+build_artifact "$tmp/wrong-head-row.json" "$other_sha"
 register_artifact "$receipt_commit"
 write_comments "$receipt_commit" "$ARTIFACT_PATH" "$ARTIFACT_SHA256"
 REJECT_COMMIT=
@@ -314,21 +309,14 @@ run_negative wrong-head
 jq '.finished_at = "2026-08-08T10:12:14Z"' \
     "$tmp/base-row.json" >"$tmp/wrong-row.json"
 prepare_scenario
-build_artifact "$tmp/wrong-row.json" "$sha" valid
+build_artifact "$tmp/wrong-row.json" "$sha"
 register_artifact "$receipt_commit"
 write_comments "$receipt_commit" "$ARTIFACT_PATH" "$ARTIFACT_SHA256"
 REJECT_COMMIT=
 run_negative wrong-row-digest
 
 prepare_scenario
-build_artifact "$tmp/base-row.json" "$sha" wrong
-register_artifact "$receipt_commit"
-write_comments "$receipt_commit" "$ARTIFACT_PATH" "$ARTIFACT_SHA256"
-REJECT_COMMIT=
-run_negative wrong-producer-blob
-
-prepare_scenario
-build_artifact "$tmp/base-row.json" "$sha" valid
+build_artifact "$tmp/base-row.json" "$sha"
 write_comments "$receipt_commit" "$ARTIFACT_PATH" "$ARTIFACT_SHA256"
 printf 'tampered\n' >>"$ARTIFACT_FILE"
 register_artifact "$receipt_commit"
@@ -336,18 +324,18 @@ REJECT_COMMIT=
 run_negative wrong-artifact-hash
 
 prepare_scenario
-build_artifact "$tmp/base-row.json" "$sha" valid
+build_artifact "$tmp/base-row.json" "$sha"
 register_artifact "$wrong_receipt_commit"
 write_comments "$wrong_receipt_commit" "$ARTIFACT_PATH" "$ARTIFACT_SHA256"
 REJECT_COMMIT=$wrong_receipt_commit
 run_negative wrong-receipt-commit
 
 prepare_scenario
-build_artifact "$tmp/base-row.json" "$sha" valid
+build_artifact "$tmp/base-row.json" "$sha"
 register_artifact "$receipt_commit"
 printf '[[]]\n' >"$tmp/comments.json"
 REJECT_COMMIT=
 run_negative missing-marker
 
 printf '%s\n' \
-    'PASS: split-root current-primary deleted-cwd/missing-log immutable artifact reused (including skip-over of a newer nonselected receipt); wrong head, row digest, producer blob, artifact hash, receipt commit, and missing marker all refused before label/comment/remote publish'
+    'PASS: split-root current-primary deleted-cwd/missing-log immutable artifact reused (including skip-over of a newer nonselected receipt); wrong head, row digest, artifact hash, receipt commit, and missing marker all refused before label/comment/remote publish'

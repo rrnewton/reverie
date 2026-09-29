@@ -36,7 +36,9 @@ from pathlib import Path
 
 CI_HUB = Path(__file__).resolve().parents[2]
 HERMIT = CI_HUB.parent / "hermit"
-PRODUCER_REGISTRY = CI_HUB / "validate" / "producer-definition.json"
+#: Any real Hermit commit (no registered producer map exists any more:
+#: https://github.com/rrnewton/dev-hermit/issues/414).
+PRODUCER_SHA = "ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8"
 sys.path.insert(0, str(CI_HUB))
 
 import qualifying_receipt as qr  # noqa: E402
@@ -395,7 +397,7 @@ class RustEngineParityTest(unittest.TestCase):
         cls._canonical_ledger_env = staticmethod(_canonical_ledger_env)
         cls._record_canonical_fixture = staticmethod(_record_canonical_fixture)
         cls._subprocess = subprocess
-        cls.producer_sha = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
+        cls.producer_sha = PRODUCER_SHA
         subprocess.run(
             ["git", "-C", str(HERMIT), "cat-file", "-e", f"{cls.producer_sha}^{{commit}}"],
             check=True,

@@ -544,7 +544,7 @@ def validation_evidence(row: dict[str, Any]) -> _ValidationEvidence:
 
 
 class ProducerDefinitionError(RuntimeError):
-    """The validated commit cannot be bound to one registered whole map."""
+    """The producer file blobs at the validated commit cannot be read."""
 
 
 class ProducerDefinitionUndereferenceable(ProducerDefinitionError):
@@ -568,11 +568,10 @@ class ProducerDefinitionUndereferenceable(ProducerDefinitionError):
 
 
 def producer_definition_verifier_path() -> Path:
-    """The one semantic producer-map verifier.
+    """The one producer-map reader, ``validation/verify_receipt.sh``.
 
-    Registry shape, transition provenance, expiry, and exact whole-map
-    membership live in ``validation/verify_receipt.sh``.  Ledger consumers call
-    it through this adapter instead of reimplementing those rules.
+    Ledger consumers call it through this adapter instead of reimplementing
+    how producer file blobs are read at a commit.
     """
     override = os.environ.get("PRODUCER_DEFINITION_VERIFIER")
     if override:
@@ -587,58 +586,6 @@ def _run_producer_definition_verifier(
         [str(producer_definition_verifier_path()), *arguments],
         input=input_body,
         env=os.environ.copy(),
-    )
-
-
-def registered_producer_definition() -> dict[str, str]:
-    """Return the validated primary map from the one semantic verifier."""
-    result = _run_producer_definition_verifier("--producer-definition-primary")
-    if result.returncode != 0:
-        raise RuntimeError(
-            "producer-definition verifier could not return the primary map: "
-            f"rc={result.returncode}: {result.stderr.strip()}"
-        )
-    try:
-        primary = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(
-            f"producer-definition verifier returned invalid JSON: {error}"
-        ) from error
-    # Defensive parsing before using trusted-verifier output in `git rev-parse`.
-    # This is path safety, not a second definition-membership decision.
-    if not isinstance(primary, dict) or not primary:
-        raise RuntimeError("producer-definition verifier returned no primary map")
-    for relative, blob in primary.items():
-        if (
-            not isinstance(relative, str)
-            or relative.startswith("/")
-            or any(part in ("", ".", "..") for part in relative.split("/"))
-            or not isinstance(blob, str)
-            or _SHA40.fullmatch(blob) is None
-        ):
-            raise RuntimeError(
-                "producer-definition verifier returned an unsafe primary map"
-            )
-    return primary
-
-
-def producer_definition_allowed(
-    definition: dict[str, str], *, sha: str | None = None
-) -> bool:
-    """Ask whether ``definition`` is allowed, including any exact commit bound."""
-    arguments = ["--producer-definition-check", "-"]
-    if sha is not None:
-        arguments.extend(("--sha", sha))
-    result = _run_producer_definition_verifier(
-        *arguments, input_body=json.dumps(definition)
-    )
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    raise RuntimeError(
-        "producer-definition verifier could not evaluate the resolved map: "
-        f"rc={result.returncode}: {result.stderr.strip()}"
     )
 
 
@@ -660,7 +607,7 @@ def producer_definition_repositories(
     The recorded cwd is the most specific source but is routinely reclaimed.
     Explicit caller repositories and the canonical Hermit primary are durable
     fallbacks.  A repository is evidence only if git can resolve the exact
-    commit and every registered path within it.
+    commit.
     """
     candidates: list[Path] = []
     recorded = row.get("cwd")
@@ -758,26 +705,25 @@ def _decoded_producer_definition(
     return producer
 
 
-def resolve_producer_definition(
+def observe_producer_definition(
     row: dict[str, Any],
     sha: str,
     *,
     repositories: list[str | Path] | None = None,
 ) -> dict[str, Any]:
-    """Derive and authorize the producer map at the exact validated commit.
+    """Derive current producer blobs as provenance, never as an authority.
 
-    Nothing in the ledger row may self-report the map.  Each blob id is derived
-    by git from ``sha:path`` and the complete map is then submitted to the one
-    semantic verifier.  Crossed primary/candidate maps therefore fail exactly
-    like any other unregistered map.
+    Hermit's path set is the verifier's fixed provenance list (paths absent at
+    the commit are skipped); Reverie uses its validate.sh entrypoint. Exact
+    blob hashes come from the commit being published. The result deliberately
+    reports ``legacy-selected-paths``: the map does not claim to cover every
+    module compiled by the validation entrypoint. This keeps useful producer
+    provenance in an immutable receipt without requiring any validator edit to
+    be registered in a second repository.
     """
     if _SHA40.fullmatch(sha) is None:
         raise ProducerDefinitionError("validated commit is not 40 lowercase hex")
     candidates = producer_definition_repositories(row, repositories)
-    # Separate "my checkout cannot hold this commit" from "the map is not one
-    # currently allowed" BEFORE attempting resolution, because the verifier
-    # reports both as rc 1 and the caller cannot then tell them apart. The
-    # identity primitive is the one named in policy: resolve the object itself.
     holders = [
         checkout for checkout in candidates if _checkout_holds_commit(checkout, sha)
     ]
@@ -796,74 +742,6 @@ def resolve_producer_definition(
                 )
                 or "(none existed)"
             )
-        )
-    attempted: list[str] = []
-    failures: list[str] = []
-    for checkout in holders:
-        attempted.append(str(checkout))
-        result = _run_producer_definition_verifier(
-            "--producer-definition-resolve",
-            "--repo",
-            producer_definition_repository(row),
-            "--sha",
-            sha,
-            "--repo-checkout",
-            str(checkout),
-        )
-        if result.returncode == 0:
-            producer = _decoded_producer_definition(result.stdout, checkout=checkout)
-            valid_commits = producer.get("valid_commits")
-            if valid_commits is not None and (
-                sha not in valid_commits
-            ):
-                raise RuntimeError(
-                    "producer-definition verifier returned an invalid commit bound"
-                )
-            return producer
-        if result.returncode == 1:
-            failures.append(
-                f"{checkout}: exact producer definition at {sha} is unresolvable "
-                "or not one currently allowed whole map"
-            )
-            continue
-        raise RuntimeError(
-            "producer-definition verifier could not resolve the commit map: "
-            f"rc={result.returncode}: {result.stderr.strip()}"
-        )
-    detail = "; ".join(failures) if failures else "no candidate repository existed"
-    raise ProducerDefinitionError(
-        f"cannot resolve the producing check definition for {sha} in any repository "
-        f"that durably holds it. Tried: {', '.join(attempted) or '(none)'}. {detail}"
-    )
-
-
-def observe_producer_definition(
-    row: dict[str, Any],
-    sha: str,
-    *,
-    repositories: list[str | Path] | None = None,
-) -> dict[str, Any]:
-    """Derive current producer blobs without making their registration authoritative.
-
-    Hermit's path set comes from the checked registry shape; Reverie uses its
-    validate.sh entrypoint. Exact blob hashes come from the commit being
-    published. The result deliberately reports
-    ``legacy-selected-paths``: the registry's former ``complete`` claim is not
-    reusable when the map omits modules compiled by the validation entrypoint.
-    This keeps useful producer provenance in an immutable receipt without
-    reviving the retired rule that every validator edit needs a second
-    repository blessing.
-    """
-    if _SHA40.fullmatch(sha) is None:
-        raise ProducerDefinitionError("validated commit is not 40 lowercase hex")
-    candidates = producer_definition_repositories(row, repositories)
-    holders = [
-        checkout for checkout in candidates if _checkout_holds_commit(checkout, sha)
-    ]
-    if not holders:
-        raise ProducerDefinitionUndereferenceable(
-            f"cannot dereference the producer definition for {sha}: no candidate "
-            "checkout on this host holds that commit"
         )
     attempted: list[str] = []
     for checkout in holders:
@@ -2649,75 +2527,15 @@ def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
         action="store_true",
         help="verify recorded base evidence against freshly resolved merge-boundary tips",
     )
-    parser.add_argument(
-        "--producer-definition-row",
-        action="store_true",
-        help="derive and verify the exact producer map for one ledger row",
-    )
     parser.add_argument("--current-base")
     parser.add_argument("--current-reverie-base")
     parser.add_argument("--repo-checkout")
     parser.add_argument("--reverie-checkout")
     args = parser.parse_args(argv)
     if args.coverage_base_admission_only and any(
-        (args.evidence_only, args.merge_boundary, args.producer_definition_row)
+        (args.evidence_only, args.merge_boundary)
     ):
         parser.error("--coverage-base-admission-only cannot be combined with another evidence mode")
-    if args.producer_definition_row:
-        if args.sha is None or _SHA40.fullmatch(args.sha) is None:
-            parser.error("--producer-definition-row requires --sha as 40 lowercase hex")
-        try:
-            row = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)
-            if not isinstance(row, dict):
-                raise ValueError("ledger row is not an object")
-            repositories = [args.repo_checkout] if args.repo_checkout else None
-            producer = resolve_producer_definition(
-                row, args.sha, repositories=repositories
-            )
-        except ProducerDefinitionUndereferenceable as error:
-            # rc 3, NOT rc 1. rc 1 means "this receipt does not qualify"; this
-            # means "I could not judge it". Collapsing them makes an actor with
-            # an incomplete checkout disbelieve every valid receipt in the fleet
-            # and blame the evidence for its own missing submodule.
-            print(
-                json.dumps(
-                    {
-                        "accepted": False,
-                        "producer_definition_status": "undereferenceable-reader-incomplete",
-                        "receipt_judged": False,
-                        "detail": str(error),
-                    },
-                    sort_keys=True,
-                )
-            )
-            return 3
-        except ProducerDefinitionError as error:
-            print(
-                json.dumps(
-                    {
-                        "accepted": False,
-                        "producer_definition_status": "unregistered-or-unresolvable",
-                        "receipt_judged": True,
-                        "detail": str(error),
-                    },
-                    sort_keys=True,
-                )
-            )
-            return 1
-        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
-            print(f"qualifying-receipt: {error}", file=sys.stderr)
-            return 2
-        print(
-            json.dumps(
-                {
-                    "accepted": True,
-                    "producer_definition_status": "satisfied",
-                    "producer": producer,
-                },
-                sort_keys=True,
-            )
-        )
-        return 0
     if args.evidence_only or args.coverage_base_admission_only:
         try:
             request = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)

@@ -54,10 +54,19 @@ def git_output(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def seed_registered_producer_files(path: Path) -> None:
-    """Materialize the exact allowed producer map in a Hermit fixture repo."""
+#: A real Hermit commit whose producer files seed the fixture repos. No
+#: registered producer map exists any more
+#: (https://github.com/rrnewton/dev-hermit/issues/414).
+PRODUCER_SEED_SHA = "ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8"
+
+
+def seed_producer_files(path: Path) -> None:
+    """Materialize a real Hermit commit's producer files in a fixture repo."""
     source = HERE.parents[1] / "hermit"
-    for relative, expected_blob in A.qualifying_receipt.registered_producer_definition().items():
+    definition = A.qualifying_receipt.observe_producer_definition(
+        {}, PRODUCER_SEED_SHA, repositories=[source]
+    )["definition"]
+    for relative, expected_blob in definition.items():
         content = subprocess.run(
             ["git", "-C", str(source), "cat-file", "blob", expected_blob],
             capture_output=True,
@@ -77,7 +86,7 @@ def single_commit_repo(
     git_output(path, "config", "user.email", "anchor-fixture@example.invalid")
     git_output(path, "config", "user.name", "anchor-fixture")
     if producer_definition:
-        seed_registered_producer_files(path)
+        seed_producer_files(path)
     (path / f"{name}.txt").write_text(f"{name}\n")
     git_output(path, "add", "-A")
     git_output(path, "commit", "-q", "-m", name)
@@ -232,7 +241,7 @@ class GitRepoBrackets(unittest.TestCase):
         cls.git("init", "-q", "-b", "main")
         cls.git("config", "user.email", "t@t")
         cls.git("config", "user.name", "t")
-        seed_registered_producer_files(cls.repo)
+        seed_producer_files(cls.repo)
         cls.shas = {}
         for name in ("base", "mid", "tip"):
             (cls.repo / f"{name}.txt").write_text(name)

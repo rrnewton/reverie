@@ -34,13 +34,13 @@ trap 'rm -rf -- "$tmp"' EXIT
 ledger=$tmp/ledger.jsonl
 canonical_root=$tmp/canonical
 
-# HEAD is the live registered producer commit: the authoritative consumer now
-# resolves the whole producer map from Git, so a nonexistent synthetic SHA can
-# never be a positive fixture.  The ledger and labels remain inert temp-dir
-# plants; only the map identity comes from the pinned Hermit object store.
-producer_registry=$root/ci-hub/validate/producer-definition.json
+# HEAD is a real Hermit commit: the authoritative consumer reads commits from
+# Git, so a nonexistent synthetic SHA can never be a positive fixture.  The
+# ledger and labels remain inert temp-dir plants; only commit identity comes
+# from the pinned Hermit object store.  No registered producer map exists
+# (https://github.com/rrnewton/dev-hermit/issues/414).
 producer_repo=$root/hermit
-HEAD_SHA=$(jq -er .registered_at "$producer_registry")
+HEAD_SHA=ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8
 HEAD_TREE=$(git -C "$producer_repo" rev-parse "$HEAD_SHA^{tree}")
 # OTHER and THIRD stand for stale receipts. The canonical row store now proves
 # that every named commit exists in row.cwd, so use real ancestors rather than

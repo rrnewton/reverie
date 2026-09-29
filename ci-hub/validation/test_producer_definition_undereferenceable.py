@@ -13,11 +13,10 @@ evidence, while "I cannot read the definition" blames this checkout. An actor in
 that state silently disbelieves every valid receipt in the fleet and never
 suspects itself.
 
-Bracketed BOTH ways here, because a guard that only ever fires is as useless as
-one that never does:
-  - reader incomplete  -> ProducerDefinitionUndereferenceable, CLI rc 3
-  - definition readable but the map is not allowed -> plain
-    ProducerDefinitionError, CLI rc 1, i.e. a real verdict about the receipt
+Bracketed here:
+  - reader incomplete  -> ProducerDefinitionUndereferenceable
+  - the merge-boundary consumer types a reader fault (rc 3) differently from a
+    coherent receipt refusal (rc 1)
 """
 
 from pathlib import Path
@@ -31,7 +30,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ADAPTER = ROOT / "ci-hub" / "qualifying_receipt.py"
 
 sys.path.insert(0, str(ROOT / "ci-hub"))
 import qualifying_receipt as qr  # noqa: E402
@@ -119,7 +117,7 @@ class UndereferenceableProducerDefinitionTest(unittest.TestCase):
             empty.mkdir()
             self.assertTrue(empty.is_dir(), "fixture must reproduce is_dir()==True")
             with self.assertRaises(qr.ProducerDefinitionUndereferenceable) as caught:
-                qr.resolve_producer_definition({}, SHA, repositories=[empty])
+                qr.observe_producer_definition({}, SHA, repositories=[empty])
             detail = str(caught.exception)
             # The message must accuse the checkout, not the receipt, and must
             # say the receipt was never judged.
@@ -143,39 +141,7 @@ class UndereferenceableProducerDefinitionTest(unittest.TestCase):
             repo.mkdir()
             _git("init", "-q", ".", cwd=repo)
             with self.assertRaises(qr.ProducerDefinitionUndereferenceable):
-                qr.resolve_producer_definition({}, SHA, repositories=[repo])
-
-    def test_cli_returns_3_and_says_the_receipt_was_not_judged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            empty = Path(tmp) / "hermit"
-            empty.mkdir()
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(ADAPTER),
-                    "--producer-definition-row",
-                    "--sha",
-                    SHA,
-                    "--repo-checkout",
-                    str(empty),
-                ],
-                input="{}",
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(
-                result.returncode,
-                3,
-                f"rc must be 3 (reader), never 1 (verdict): {result.stdout}{result.stderr}",
-            )
-            report = json.loads(result.stdout)
-            self.assertEqual(
-                report["producer_definition_status"],
-                "undereferenceable-reader-incomplete",
-            )
-            self.assertIs(report["receipt_judged"], False)
-            self.assertIs(report["accepted"], False)
+                qr.observe_producer_definition({}, SHA, repositories=[repo])
 
     def test_rust_consumer_types_rc3_and_coherent_rc1_differently(self) -> None:
         """Drive the real Rust parser and consumer with controlled child reports."""

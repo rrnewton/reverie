@@ -317,9 +317,6 @@ class TempParentTest(unittest.TestCase):
         self.parent = Path(self.tmp.name)
         (self.parent / "ignored" / "ci-hub").mkdir(parents=True)
         self._prev_env = os.environ.get("DEV_HERMIT_PARENT")
-        self._prev_producer_registry = os.environ.get(
-            "PRODUCER_DEFINITION_REGISTRY"
-        )
         self._prev_producer_repo = os.environ.get("PRODUCER_DEFINITION_REPO")
         os.environ["DEV_HERMIT_PARENT"] = str(self.parent)
         self.producer_repo = self.parent / "producer-repo"
@@ -367,33 +364,6 @@ class TempParentTest(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.strip()
-        definition = {
-            path: subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.producer_repo),
-                    "rev-parse",
-                    f"HEAD:{path}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            for path in ("validate.sh", ".github/workflows/ci-portable.yml")
-        }
-        self.producer_registry = self.parent / "producer-definition.json"
-        self.producer_registry.write_text(
-            json.dumps(
-                {
-                    "registered_at": self.producer_sha,
-                    "registered_coverage_status": "legacy-selected-paths",
-                    "registered_valid_commits": [self.producer_sha],
-                    "registered": definition,
-                }
-            )
-        )
-        os.environ["PRODUCER_DEFINITION_REGISTRY"] = str(self.producer_registry)
         os.environ["PRODUCER_DEFINITION_REPO"] = str(self.producer_repo)
 
     def tearDown(self):
@@ -401,10 +371,6 @@ class TempParentTest(unittest.TestCase):
             os.environ.pop("DEV_HERMIT_PARENT", None)
         else:
             os.environ["DEV_HERMIT_PARENT"] = self._prev_env
-        if self._prev_producer_registry is None:
-            os.environ.pop("PRODUCER_DEFINITION_REGISTRY", None)
-        else:
-            os.environ["PRODUCER_DEFINITION_REGISTRY"] = self._prev_producer_registry
         if self._prev_producer_repo is None:
             os.environ.pop("PRODUCER_DEFINITION_REPO", None)
         else:

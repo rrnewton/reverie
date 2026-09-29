@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Keep the old validator-file registry out of validation decisions.
+"""Keep the retired validator-file registry out of validation decisions.
 
-Historical immutable-receipt tooling may still inspect the registry, but local
-status, history, finalization, and main state must follow the completed run.
+The hand-registered producer-definition registry and its transition lifecycle
+were removed (https://github.com/rrnewton/dev-hermit/issues/414). A receipt's
+producer map is recorded provenance; nothing may compare it to a registered
+map. Local status, history, finalization, and main state follow the completed
+run.
 """
 
 from pathlib import Path
@@ -16,6 +19,7 @@ VERIFIER = CI_HUB / "validation" / "verify_receipt.sh"
 PUBLISHER = CI_HUB / "validation" / "publish_receipt.py"
 ADAPTER = CI_HUB / "qualifying_receipt.py"
 FINALIZER = CI_HUB / "validation" / "finalize_producer_transition.py"
+REGISTRY = CI_HUB / "validate" / "producer-definition.json"
 RECEIPT_FINALIZER = CI_HUB / "validate" / "finalize_receipt.py"
 ANCHOR = CI_HUB / "validate" / "anchor_select.py"
 HISTORY_QUERY = CI_HUB / "history" / "query.py"
@@ -40,16 +44,21 @@ def production_sources() -> list[Path]:
 
 
 class ProducerDefinitionCallSiteAudit(unittest.TestCase):
-    def test_only_immutable_verifier_reads_registry_or_transition_lifecycle(self):
+    def test_no_production_source_reads_registry_or_transition_lifecycle(self):
+        self.assertFalse(REGISTRY.exists(), "the producer registry was retired")
+        self.assertFalse(FINALIZER.exists(), "the transition finalizer was retired")
         registry_readers = {
             path.relative_to(ROOT)
             for path in production_sources()
-            if "producer-definition.json" in path.read_text(errors="replace")
+            if any(
+                token in path.read_text(errors="replace")
+                for token in ("producer-definition.json", "PRODUCER_DEFINITION_REGISTRY")
+            )
         }
         self.assertEqual(
             registry_readers,
-            {Path("ci-hub/validation/verify_receipt.sh")},
-            "a second production registry reader would fork authority semantics",
+            set(),
+            "a registered producer map must not gate receipt verification",
         )
 
         lifecycle_readers = {
@@ -66,8 +75,8 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         }
         self.assertEqual(
             lifecycle_readers,
-            {Path("ci-hub/validation/verify_receipt.sh")},
-            "transition shape/expiry/selection must have one implementation",
+            set(),
+            "the producer transition lifecycle was retired",
         )
 
     def test_publisher_and_adapter_delegate_map_semantics(self):
@@ -75,20 +84,32 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         self.assertNotIn("producer-definition.json", source)
         self.assertNotIn("finalize_after", source)
         self.assertNotIn("expires_at", source)
-        self.assertIn("qualifying_receipt.resolve_producer_definition(row, sha)", source)
+        self.assertNotIn("resolve_producer_definition", source)
+        self.assertNotIn("--observe-producer-definition", source)
         self.assertIn("qualifying_receipt.observe_producer_definition(row, sha)", source)
 
         adapter = ADAPTER.read_text()
         self.assertNotIn("producer-definition.json", adapter)
-        self.assertIn('"--producer-definition-resolve"', adapter)
+        self.assertNotIn("def resolve_producer_definition", adapter)
+        self.assertNotIn("def registered_producer_definition", adapter)
+        self.assertNotIn("def producer_definition_allowed", adapter)
+        self.assertNotIn("--producer-definition-row", adapter)
+        self.assertNotIn('"--producer-definition-resolve"', adapter)
         self.assertIn('"--producer-definition-observe"', adapter)
-        self.assertIn('"--producer-definition-primary"', adapter)
-        self.assertIn('"--producer-definition-check"', adapter)
+        self.assertNotIn('"--producer-definition-primary"', adapter)
+        self.assertNotIn('"--producer-definition-check"', adapter)
 
     def test_historical_immutable_receipts_still_use_one_verifier(self):
         verifier = VERIFIER.read_text()
-        self.assertEqual(verifier.count("load_producer_definitions || exit $?"), 2)
-        self.assertIn('or (.valid_commits | index($sha) != null)', verifier)
+        self.assertEqual(verifier.count("load_producer_definitions"), 0)
+        for token in (
+            "--producer-definition-resolve",
+            "--producer-definition-primary",
+            "--producer-definition-check",
+            "--producer-definition-transition",
+            "--producer-definition-finalize",
+        ):
+            self.assertNotIn(token, verifier)
 
         rust = RUST.read_text()
         reuse = re.search(
@@ -117,21 +138,6 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
                 f"{path.name} must not freeze validation on registered file hashes",
             )
 
-        finalizer = FINALIZER.read_text()
-        self.assertNotIn("producer-definition.json", finalizer)
-        self.assertNotIn("gh pr view", finalizer)
-        self.assertNotIn("git fetch", finalizer)
-        for token in (
-            "--producer-definition-transition",
-            "verify-landing",
-            "--producer-definition-resolve",
-            "--producer-definition-finalize",
-            "--expected-registry-sha256",
-            "registry_sha256",
-            "merge_commit_oid",
-            "refs/remotes/origin/main^{commit}",
-        ):
-            self.assertIn(token, finalizer)
 
     def test_python_green_consumers_share_the_run_predicate(self):
         consumers = {
@@ -157,20 +163,18 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         self.assertIn("authoritative_row_qualification", ANCHOR.read_text())
         self.assertIn("authoritative_row_qualifies", HISTORY_QUERY.read_text())
         self.assertIn("authoritative_row_qualifies", RECEIPT_FINALIZER.read_text())
-        self.assertIn("resolve_producer_definition", PUBLISHER.read_text())
+        self.assertNotIn("resolve_producer_definition", PUBLISHER.read_text())
 
-    def test_provisioned_gate_carries_the_same_verifier_and_registry(self):
+    def test_provisioned_gate_carries_the_same_verifier(self):
         source = PROVISIONING.read_text()
         self.assertIn("ci-hub/validation/verify_receipt.sh", source)
-        self.assertIn("ci-hub/validate/producer-definition.json", source)
-        self.assertIn("PRODUCER_DEFINITION_REGISTRY", source)
         self.assertIn('bash "$verifier"', source)
 
     def test_no_consumer_opens_the_registry_directly(self):
         for relative in (
             "ci-hub/qualifying_receipt.py",
             "ci-hub/validation/publish_receipt.py",
-            "ci-hub/validation/finalize_producer_transition.py",
+            "ci-hub/validation/verify_receipt.sh",
             "ci-hub/ci-hub.rs",
             "ci-hub/lib/qualifying_receipt.rs",
             "ci-hub/lib/validate_status.rs",
