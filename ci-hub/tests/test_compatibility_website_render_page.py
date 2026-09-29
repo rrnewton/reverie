@@ -1388,6 +1388,97 @@ def test_selected_by_path_is_distinct_from_in_manifest_population() -> None:
     assert "enabled" not in page.lower()
 
 
+def _record_event_1_under_a_retired_id(
+    data: dict[str, Any], *, series: bool, history: bool
+) -> dict[str, Any]:
+    """Shape fixture event-1 like a row whose recorded test id is retired.
+
+    The projection publishes such a row under its successor's cell
+    (tests/hello) and keeps the id it recorded as ``series.recorded_cell``
+    (``resolve_prepared_cell`` in ci-hub/lib/compatibility_website.rs).  The
+    run's history row keeps naming the id it selected: the retired one.
+    """
+    retired = "tests/hello-old"
+    runs = data["runs"]
+    if series:
+        (row,) = [row for row in runs["series_rows"] if row["event_id"] == "event-1"]
+        row["series"]["recorded_cell"] = _identity(retired)
+    if history:
+        # A current row may share its selection objects with its history row.
+        selected = [
+            cell
+            for field in ("validation_history_rows", "current_validation_run_rows")
+            for row in runs[field]
+            for cell in render_page._cell_evidence(row)["selected_by"]["super"]["cells"]
+        ]
+        assert selected and {cell["test"] for cell in selected} == {"tests/hello"}
+        for cell in selected:
+            cell["test"] = retired
+    _refresh_projection_digests(data)
+    return data
+
+
+def test_a_row_recorded_under_a_retired_id_binds_to_the_run_that_selected_that_id() -> None:
+    data = _record_event_1_under_a_retired_id(
+        representative_build_data(), series=True, history=True
+    )
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+
+    reference = model.event_run_references["event-1"]
+    assert reference["run_id"] == "validate-run-1"
+    assert model.selection_run_references[
+        (_identity("tests/hello-old"), "super", "validate-run-1", "1" * 40)
+    ] == reference
+    record = render_page._browser_cell_record(
+        model, model.cell_by_id[_identity("tests/hello")]
+    )
+    assert [fact["run"]["run_id"] for fact in record["selection"]["super"]] == [
+        "validate-run-1"
+    ]
+    assert model.history_paths[0] in render_page.render_site(build, data)
+
+
+@pytest.mark.parametrize(
+    ("series", "history", "message"),
+    (
+        # The run selected the retired id, but the row does not say it was
+        # recorded under that id.
+        (False, True, "selected_by fact has no exact terminal history binding"),
+        # The row says it was recorded under the retired id, but its run
+        # selected the successor.
+        (True, False, "selected_by fact has no exact terminal history binding"),
+    ),
+)
+def test_a_selected_by_fact_still_binds_only_to_the_id_its_run_selected(
+    series: bool, history: bool, message: str
+) -> None:
+    data = _record_event_1_under_a_retired_id(
+        representative_build_data(), series=series, history=history
+    )
+    with pytest.raises(render_page.RenderRefused, match=message):
+        render_page._site_model(_build(data), data, wording="fixture")
+
+
+def test_selected_cell_identity_refuses_events_outside_the_cell_or_mixed_ids() -> None:
+    rows = {
+        "a": {"series": {"cell": "c/x/verify/ptrace"}},
+        "b": {"series": {"cell": "c/x/verify/ptrace", "recorded_cell": "old/x/verify/ptrace"}},
+        "c": {"series": {"cell": "c/y/verify/ptrace"}},
+    }
+    select = render_page._selected_cell_identity
+    assert select("c/x/verify/ptrace", {"event_ids": ["a"]}, rows) == "c/x/verify/ptrace"
+    assert select("c/x/verify/ptrace", {"event_ids": ["b"]}, rows) == "old/x/verify/ptrace"
+    for event_ids, message in (
+        (["a", "b"], "does not name exactly one recorded cell"),
+        ([], "does not name exactly one recorded cell"),
+        (["c"], "series event outside its cell"),
+        (["missing"], "series event outside its cell"),
+    ):
+        with pytest.raises(render_page.RenderRefused, match=message):
+            select("c/x/verify/ptrace", {"event_ids": event_ids}, rows)
+
+
 def test_noncomparison_verdict_keeps_reason_and_omits_comparison_details() -> None:
     data = _replace_verdict_with_reason(representative_build_data())
     build = _build(data)

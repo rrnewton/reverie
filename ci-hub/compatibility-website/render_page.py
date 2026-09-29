@@ -773,6 +773,32 @@ def _unique_rows(
     return result
 
 
+def _selected_cell_identity(
+    identity: str,
+    fact: Mapping[str, Any],
+    series_by_event: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Return the cell id under which a selected_by fact's run recorded it.
+
+    The projection publishes a row recorded under a retired Hermit test id
+    under its successor's cell and keeps the id it recorded as
+    ``series.recorded_cell`` (``resolve_prepared_cell`` in
+    ci-hub/lib/compatibility_website.rs).  The run's own history row still
+    names the id it selected, which is the recorded one, so the fact binds to
+    its run through that id.  Every event of the fact must belong to this cell
+    and name the same recorded id.
+    """
+    recorded = set()
+    for event_id in fact["event_ids"]:
+        row = series_by_event.get(str(event_id))
+        if row is None or str(row["series"]["cell"]) != identity:
+            raise RenderRefused("selected_by fact names a series event outside its cell")
+        recorded.add(str(row["series"].get("recorded_cell", identity)))
+    if len(recorded) != 1:
+        raise RenderRefused("selected_by fact does not name exactly one recorded cell")
+    return recorded.pop()
+
+
 def _current_history_indices(
     history: Sequence[Mapping[str, Any]], current: Sequence[Mapping[str, Any]]
 ) -> tuple[int, ...]:
@@ -897,13 +923,14 @@ def _site_model(
                 selection_run_references[key] = _run_reference(
                     row, path=history_paths[row_index], selection=str(path)
                 )
+    series_by_event = _unique_rows(series_rows, "event_id", "series event")
     event_run_references: dict[str, Mapping[str, Any]] = {}
     for cell in cells:
         identity = str(cell["cell"])
         for path, facts in cell["selected_by"].items():
             for fact in facts:
                 key = (
-                    identity,
+                    _selected_cell_identity(identity, fact, series_by_event),
                     str(path),
                     str(fact["run_id"]),
                     str(fact["tree"]),
@@ -933,7 +960,7 @@ def _site_model(
         test_by_id=test_by_id,
         manifest_cell_ids=manifest_cells,
         series_by_cell={key: tuple(value) for key, value in series_by_cell.items()},
-        series_by_event=_unique_rows(series_rows, "event_id", "series event"),
+        series_by_event=series_by_event,
         recorded_outside_manifest=_recorded_outside_manifest(
             series_rows, manifest_cells
         ),
@@ -3720,7 +3747,12 @@ def _browser_cell_record(model: SiteModel, cell: Mapping[str, Any]) -> dict[str,
     for path, facts in sorted(cell["selected_by"].items()):
         selected_facts = []
         for fact in facts:
-            key = (identity, str(path), str(fact["run_id"]), str(fact["tree"]))
+            key = (
+                _selected_cell_identity(identity, fact, model.series_by_event),
+                str(path),
+                str(fact["run_id"]),
+                str(fact["tree"]),
+            )
             reference = model.selection_run_references.get(key)
             if reference is None:
                 raise RenderRefused(
