@@ -2599,6 +2599,14 @@ pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
 /// tests.
 pub(crate) static LITEINST_HELPER_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
 
+/// LiteInst restart landings resolved inside a precise timer's single-step
+/// window (`handle_timer`'s intercept), for tests.
+pub(crate) static LITEINST_TIMER_STEP_LANDINGS_RESOLVED: AtomicU64 = AtomicU64::new(0);
+
+/// SIGTRAP stops that `handle_sigtrap` resumed without delivering the signal
+/// because nothing claimed them, for tests.
+pub(crate) static UNCLAIMED_SIGTRAPS_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
 /// Canonical marker emitted when a guest-thread task dies of a panic.
 ///
 /// The token is what a harness greps for, in the same spirit as
@@ -3341,7 +3349,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Ok(true);
             };
             match Self::resolve_liteinst_landing(pending_restarts, task, &regs, outcome) {
-                Ok(()) => Ok(false),
+                Ok(()) => {
+                    LITEINST_TIMER_STEP_LANDINGS_RESOLVED.fetch_add(1, Ordering::Relaxed);
+                    Ok(false)
+                }
                 Err(LandingFailure::Trace(error)) => Err(error),
                 Err(LandingFailure::Invariant(message)) => {
                     *landing_failure_slot = Some(message);
@@ -4580,6 +4591,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         } else {
+            UNCLAIMED_SIGTRAPS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         })

@@ -41,6 +41,22 @@ pub fn timer_overflow_records_expired() -> u64 {
     crate::timer::OVERFLOW_RECORDS_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of LiteInst host-hybrid restart landings this process has
+/// resolved inside a precise timer's single-step window, rather than in the
+/// run loop. Concurrent tests in one process share the count.
+pub fn liteinst_timer_step_landings_resolved() -> u64 {
+    crate::task::LITEINST_TIMER_STEP_LANDINGS_RESOLVED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of SIGTRAP stops this process has resumed without delivering
+/// the signal because no breakpoint, LiteInst trap, injected-syscall trap or
+/// debugger step claimed them. A single-step trap flag left set in the guest
+/// produces one per instruction. Concurrent tests in one process share the
+/// count.
+pub fn unclaimed_sigtraps_suppressed() -> u64 {
+    crate::task::UNCLAIMED_SIGTRAPS_SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// For some tests, its nice to show what was printed.
 pub fn print_tracee_output(output: &Output) {
     println!(
