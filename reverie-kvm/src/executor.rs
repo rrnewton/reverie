@@ -6937,13 +6937,18 @@ fn prepare_host_read(memory: &GuestMemory, address: u64, length: usize) -> Resul
     Ok(vec![0; writable])
 }
 
-// Keep the established four-level guest address policy even when the host
-// admits a wider user address range. Let the kernel reject an invalid operand
-// at access_ok, after its descriptor/mode checks, rather than returning EFAULT
-// before those checks. The original guest request remains unchanged.
+// Keep the established four-level guest address policy across host kernels.
+// Linux 6.12 sets USER_PTR_MAX to TASK_SIZE_MAX - 1, so a four-level host
+// rejects the exact ceiling that our zero-length guest operand admits. Use
+// host address zero for that boundary; no bytes are copied. Let the kernel
+// reject an invalid operand at access_ok, after its descriptor/mode checks,
+// rather than returning EFAULT before those checks. The guest request stays
+// unchanged.
 fn zero_read_host_address(address: u64) -> usize {
     if address > X86_64_GUEST_USER_LIMIT {
         usize::MAX
+    } else if address == X86_64_GUEST_USER_LIMIT {
+        0
     } else {
         address as usize
     }
