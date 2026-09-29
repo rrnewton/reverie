@@ -358,19 +358,18 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
         let weak = Arc::downgrade(&owner.identities);
         let mut parent = ElfExecutor::with_test_output(test_state(&root.0), Some(owner.clone()));
         let child = parent.thread_child(2).unwrap();
-        // A strong table reference would now form a test-only cycle through
-        // capture descriptions. A retired table cannot hold a live guard.
+        // A strong table reference would form a test-only cycle through
+        // capture descriptions. This case drops both executors before the
+        // root owner; the final-descriptor test below covers a live table.
         let files = Arc::downgrade(&parent.file_table);
         let transaction = parent.state.signal_transaction.clone();
         let observed = Arc::new(AtomicBool::new(false));
         let observed_by_drop = observed.clone();
         *owner.identities.drop_probe.lock().unwrap() = Some(Box::new(move |actual| {
-            let files = files.upgrade();
-            let _files = files.as_ref().map(|files| {
-                files
-                    .try_lock()
-                    .expect("final capture close held the file-table guard")
-            });
+            assert!(
+                files.upgrade().is_none(),
+                "executor cleanup retained the file table"
+            );
             let _transaction = transaction
                 .try_lock()
                 .expect("final capture close held the signal guard");
@@ -414,6 +413,112 @@ fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
                 Some(libc::EBADF)
             );
         }
+    }
+    eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn captured_pipe_last_descriptor_releases_with_live_file_table() {
+    const TEST: &str =
+        "executor::tests::captured_pipe_last_descriptor_releases_with_live_file_table";
+    const COMPLETE: &str = "capture last descriptor cleanup completed";
+    if !capture_test_child(TEST, COMPLETE) {
+        return;
+    }
+    let root = TestDir::new();
+    let owner = CapturedOutput::try_new().unwrap();
+    let descriptors = owner.identities.descriptors();
+    let metadata = descriptors.map(capture_native_stat);
+    let physical_pins = owner.identities.physical_stdio().collect::<Vec<_>>();
+    assert_eq!(physical_pins.len(), 2);
+    let pins_at_drop = physical_pins.clone();
+    let tokens = [
+        owner.stdout_description.token.as_raw_fd(),
+        owner.stderr_description.token.as_raw_fd(),
+    ];
+    for fd in descriptors
+        .into_iter()
+        .chain(tokens)
+        .chain(physical_pins.iter().copied())
+    {
+        assert!(fd >= 3);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, libc::FD_CLOEXEC);
+    }
+    let identities = Arc::downgrade(&owner.identities);
+    let mut executor = ElfExecutor::with_test_output(test_state(&root.0), Some(owner.clone()));
+    let memory = GuestMemory::new(0, 0x4000).unwrap();
+    let files = Arc::downgrade(&executor.file_table);
+    let transaction = executor.state.signal_transaction.clone();
+    let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_by_drop = observed.clone();
+    *owner.identities.drop_probe.lock().unwrap() = Some(Box::new(move |actual| {
+        let files = files
+            .upgrade()
+            .expect("last captured descriptor closed after file-table retirement");
+        let _files = files
+            .try_lock()
+            .expect("final capture close held the file-table guard");
+        let _transaction = transaction
+            .try_lock()
+            .expect("final capture close held the signal guard");
+        assert_eq!(actual, descriptors);
+        for pin in pins_at_drop {
+            assert_eq!(unsafe { libc::fcntl(pin, libc::F_GETFD) }, libc::FD_CLOEXEC);
+        }
+        for (fd, expected) in actual.into_iter().zip(metadata) {
+            let live = capture_native_stat(fd);
+            assert_eq!(
+                (live.st_dev, live.st_ino),
+                (expected.st_dev, expected.st_ino)
+            );
+        }
+        assert_eq!(observed_by_drop.fetch_add(1, Ordering::SeqCst), 0);
+    }));
+
+    // Release the test-owned root references to isolate descriptor retirement
+    // while the executor and its table stay live. Production close does not
+    // release these root owners; it removes the descriptor references below.
+    drop(executor.output.take().unwrap());
+    drop(executor.state.capture_owner.take().unwrap());
+    drop(owner);
+    assert_eq!(observed.load(Ordering::SeqCst), 0);
+    assert!(identities.upgrade().is_some());
+
+    for (fd, expected) in [(1, 0), (1, negative_errno(libc::EBADF))] {
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [fd, 0, 0, 0, 0, 0]),
+                &memory
+            ),
+            expected
+        );
+        assert_eq!(observed.load(Ordering::SeqCst), 0);
+        assert!(identities.upgrade().is_some());
+        assert_eq!(unsafe { libc::fcntl(tokens[0], libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(tokens[1], libc::F_GETFD) },
+            libc::FD_CLOEXEC
+        );
+    }
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(libc::SYS_close as u64, [2, 0, 0, 0, 0, 0]),
+            &memory
+        ),
+        0
+    );
+    assert_eq!(observed.load(Ordering::SeqCst), 1);
+    assert!(identities.upgrade().is_none());
+    for fd in descriptors.into_iter().chain(tokens).chain(physical_pins) {
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
     }
     eprintln!("{COMPLETE}");
 }
