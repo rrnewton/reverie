@@ -619,9 +619,17 @@ struct StatusState {
 }
 
 /// Returns true for a stop whose status records more than the stop itself: a
-/// new tracee (fork, vfork, clone), a vfork release, or an exec's thread-group
-/// identity change. [`StatusState::retire_before_exit`] never retires such an
-/// entry, except an Exec queued before the exit stop (see there).
+/// new tracee (fork, vfork, clone) or an exec's thread-group identity change.
+/// [`StatusState::retire_before_exit`] never retires such an entry, except an
+/// Exec queued before the exit stop (see there).
+///
+/// A vfork-done stop is not one. The kernel releases the vfork parent before
+/// it reports that stop (`kernel_clone` returns from `wait_for_vfork_done`
+/// before `ptrace_event_pid(PTRACE_EVENT_VFORK_DONE)`), so the stop reports a
+/// release that has already happened, and no consumer reads its event
+/// message: its decode issues no ptrace request and its handler only resumes
+/// the tracee. One queued before the exit stop is a stop the tracee had left,
+/// like any other stale stop, and is retired with the prefix.
 fn stop_records_lifecycle_state(status: i32) -> bool {
     !libc::WIFSTOPPED(status)
         || matches!(
@@ -630,7 +638,6 @@ fn stop_records_lifecycle_state(status: i32) -> bool {
                 | libc::PTRACE_EVENT_VFORK
                 | libc::PTRACE_EVENT_CLONE
                 | libc::PTRACE_EVENT_EXEC
-                | libc::PTRACE_EVENT_VFORK_DONE
         )
 }
 
@@ -668,7 +675,8 @@ impl StatusState {
     /// in place of the statuses behind it. Nothing queued after the exit stop
     /// is touched. If the prefix holds a status that records lifecycle state
     /// (see [`stop_records_lifecycle_state`]), nothing is removed and the
-    /// existing consumers see the queue unchanged.
+    /// existing consumers see the queue unchanged. A vfork-done stop does not
+    /// record lifecycle state and is retired with the rest of the prefix.
     ///
     /// The one lifecycle status retired with the prefix is an Exec stop
     /// other than the epoch Exec. The tracee left that exec stop without a
@@ -3772,7 +3780,7 @@ impl TerminalCleanup {
         // it, outside the prefix. An Exec inside the prefix was reported
         // before the exit stop, so the tracee had left it; the lifecycle guard
         // in `retire_before_exit` retires it unless it is the epoch Exec, and
-        // keeps any prefix holding a fork, vfork, clone or vfork-done stop.
+        // keeps any prefix holding a fork, vfork or clone stop.
         event.status.lock().retire_before_exit();
         Ok(())
     }
@@ -6130,6 +6138,54 @@ mod test {
         assert_eq!(queued(event), [POST_EXIT_EXEC_STOP]);
         assert_eq!(event.status.lock().epoch_exec, Some(0));
         assert_eq!(event.status.lock().retired_before_exit, 1);
+    }
+
+    /// A vfork-done stop records no lifecycle state: the kernel released the
+    /// vfork parent before reporting it. Queued before the exit stop, it is
+    /// retired with the rest of the prefix, as every other stop that decodes
+    /// without a ptrace request is (seccomp, syscall, signal and group
+    /// stops), on the published and the synchronous path. A fork stop in
+    /// the prefix still keeps all of it, the vfork-done stop included.
+    #[test]
+    fn exit_retirement_retires_a_prefix_vfork_done_stop() {
+        let vfork_done = (libc::PTRACE_EVENT_VFORK_DONE << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let seccomp = (libc::PTRACE_EVENT_SECCOMP << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let syscall = ((libc::SIGTRAP | 0x80) << 8) | 0x7f;
+        let group_stop = (libc::PTRACE_EVENT_STOP << 16) | (libc::SIGSTOP << 8) | 0x7f;
+        let fork = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        let later = (libc::SIGUSR1 << 8) | 0x7f;
+
+        let event = Event::new();
+        event.update(vfork_done);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        event.update(later);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 1);
+        assert_eq!(queued(&event), [later]);
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+
+        let prefix = [seccomp, syscall, PRE_EXIT_STEP_STOP, group_stop, vfork_done];
+        let event = Event::new();
+        for status in prefix {
+            event.update(status);
+        }
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), prefix.len());
+        assert!(queued(&event).is_empty());
+        assert_eq!(event.status.lock().retired_before_exit, prefix.len() as u64);
+
+        let event = Event::new();
+        event.update(vfork_done);
+        event.update_sync_status(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(queued(&event), [PTRACE_EVENT_EXIT_STOP]);
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+
+        let event = Event::new();
+        event.update(vfork_done);
+        event.update(fork);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 0);
+        assert_eq!(queued(&event), [vfork_done, fork]);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
     }
 
     /// Only the marked capability of the exit stop whose prefix holds a
