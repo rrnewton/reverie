@@ -193,6 +193,10 @@ class FakeRun:
         self.systemd_launch_stderr = ""
         self.systemd_checkout_head: str | None = None
         self.inner_log_lines: list[str] = []
+        # Successive `git submodule status` outputs for the fresh checkout; the
+        # last entry repeats. The default is one registered, current gitlink.
+        self.fresh_submodule_status: list[str] = [f" {SHA} agent-utils (heads/main)\n"]
+        self.fresh_submodule_status_calls = 0
 
 
     def default_ledger_row(self) -> dict[str, object]:
@@ -798,6 +802,10 @@ class FakeRun:
                 self.removed.append(command[-1])
                 shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
+        if self.fresh is not None and command[:5] == ["git", "-C", str(self.fresh), "submodule", "status"]:
+            index = min(self.fresh_submodule_status_calls, len(self.fresh_submodule_status) - 1)
+            self.fresh_submodule_status_calls += 1
+            return completed(command, stdout=self.fresh_submodule_status[index])
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "submodule"]:
             return completed(command)
         if (
@@ -15534,6 +15542,110 @@ else:
             "nothing may be admitted from an unusable tree",
         )
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    def test_unregistered_submodule_after_update_refuses_before_admission(self) -> None:
+        """A populated gitlink Git calls `-` makes hermit's lint node NO_RESULT.
+
+        `git submodule update --init` is what re-registers a submodule whose
+        shared registration another worktree's `deinit` removed. If a gap
+        survives it, launching would spend a full run to learn that a node
+        cannot judge the tree. The launch must refuse, name the shared config,
+        and remove the checkout it created.
+        """
+        self.fake.fresh_submodule_status = [f"-{SHA} agent-utils\n"]
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("agent-utils (not initialized)", error)
+        self.assertIn("every linked worktree of this repository shares", error)
+        self.assertFalse(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            ),
+            "nothing may be admitted from a tree with an unregistered submodule",
+        )
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        fresh_submodule = ["git", "-C", str(self.fake.fresh), "submodule"]
+        update = self.fake.commands.index(
+            fresh_submodule + ["update", "--init", "--recursive"]
+        )
+        status = self.fake.commands.index(fresh_submodule + ["status"])
+        self.assertLess(update, status, "the check must judge the tree AFTER the update")
+
+    def test_submodule_status_gaps_each_refuse_fresh_checkout(self) -> None:
+        cases = {
+            f"+{SHA} agent-utils (heads/main)\n": "agent-utils (checked out at a different commit than recorded)",
+            f"U{SHA} agent-utils\n": "agent-utils (in a merge conflict)",
+            f" {SHA} liteinst (v1)\n-{SHA} agent-utils\n": "agent-utils (not initialized)",
+        }
+        for status, expected in cases.items():
+            with self.subTest(status=status):
+                self.fake.fresh_submodule_status = [status]
+                self.fake.fresh_submodule_status_calls = 0
+                self.fake.removed.clear()
+                with self.assertRaisesRegex(RuntimeError, re.escape(expected)) as caught:
+                    start_unit.prepare_fresh_checkout(
+                        self.checkout,
+                        SHA,
+                        state_root=self.root,
+                        run=self.fake,
+                        parent=self.root / "worktrees" / "validate",
+                        repo="rrnewton/hermit",
+                    )
+                self.assertIn("registered checkout was removed", str(caught.exception))
+                self.assertNotIn("liteinst", str(caught.exception))
+                self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    def test_submodule_registration_lost_during_run_is_named(self) -> None:
+        """Measured 2026-09-29: a deinit in ANOTHER worktree, mid-run.
+
+        Full validate s17 created its checkout at 02:49:08Z with agent-utils
+        registered. At 02:50:41Z an agent ran `git submodule deinit -f
+        agent-utils` in its own scratch hermit worktree, which deletes the
+        section from the config every worktree shares. check.lint_checks then
+        exited 75 and told the reader to initialize a populated checkout. The
+        launcher must name the real cause after the run, without changing the
+        verdict or blocking cleanup.
+        """
+        self.fake.fresh_submodule_status = [
+            f" {SHA} agent-utils (heads/main)\n",
+            f"-{SHA} agent-utils\n",
+        ]
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("SUBMODULE-REGISTRATION-LOST-DURING-RUN", error)
+        self.assertIn("agent-utils (not initialized)", error)
+        self.assertIn(
+            f"git -C {self.checkout} submodule init -- agent-utils", error
+        )
+        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
+        self.assertIn(
+            str(self.fake.fresh), self.fake.removed, "the report must not block cleanup"
+        )
+
+    def test_registered_submodules_emit_no_loss_report(self) -> None:
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertNotIn("SUBMODULE-REGISTRATION", error)
+        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
+
+    def test_a_submodule_the_run_moved_is_not_reported_as_lost(self) -> None:
+        """A run may check a submodule out elsewhere; only `-` is a lost registration."""
+        self.fake.fresh_submodule_status = [
+            f" {SHA} agent-utils (heads/main)\n",
+            f"+{SHA} agent-utils (heads/other)\n",
+        ]
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertNotIn("SUBMODULE-REGISTRATION", error)
+        self.assertEqual(2, self.fake.fresh_submodule_status_calls)
 
     def test_new_dagrun_name_is_a_usable_fresh_checkout(self) -> None:
         self.fake.fresh_runner_name = "dagrun"

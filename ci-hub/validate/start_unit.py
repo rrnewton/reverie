@@ -1683,6 +1683,137 @@ def git_common_dir(source: Path, *, run: Runner) -> Path:
     )
 
 
+# `git submodule status` prefixes each top-level gitlink with one character.
+# A space means registered and checked out at the recorded commit; every other
+# documented prefix means Git does not consider the submodule usable as-is.
+SUBMODULE_STATUS_GAPS = {
+    "-": "not initialized",
+    "+": "checked out at a different commit than recorded",
+    "U": "in a merge conflict",
+}
+
+
+def submodule_registration_gaps(
+    checkout: Path, *, run: Runner
+) -> list[tuple[str, str]]:
+    """Return (path, reason) for each top-level gitlink Git would not use as-is.
+
+    A submodule is "initialized" only while `submodule.<name>.url` or
+    `submodule.<name>.active` is set in the repository's COMMON config. A linked
+    worktree shares that one file with every other worktree of the repository,
+    so `git submodule deinit` run in ANY of them deletes the whole
+    `[submodule "<name>"]` section for ALL of them -- including a validation
+    checkout that is already populated and running. The populated tree is
+    untouched, but `git submodule status` now prints it with `-`, and a node that
+    reads that status reports NO_RESULT.
+
+    Measured 2026-09-29: an agent removing its scratch hermit worktree ran
+    `git submodule deinit -f agent-utils` there at 02:50:41Z, a minute after full
+    validate s17 created its checkout. `[submodule "agent-utils"]` vanished from
+    the shared hermit config, and s17's check.lint_checks exited 75 twenty-two
+    minutes later, telling the reader to initialize a checkout that was already
+    populated.
+
+    Parse the raw lines: `checked_output` strips the leading space that marks a
+    healthy first entry.
+    """
+
+    result = run(["git", "-C", str(checkout), "submodule", "status"], check=False)
+    if result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit {result.returncode}"
+        )
+        raise RuntimeError(f"cannot read submodule status of {checkout}: {detail}")
+    gaps: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        prefix = line[0]
+        if prefix == " ":
+            continue
+        reason = SUBMODULE_STATUS_GAPS.get(prefix)
+        if reason is None:
+            raise RuntimeError(
+                f"unrecognized `git submodule status` line in {checkout}: {line!r}"
+            )
+        fields = line[1:].split(" ", 1)
+        path = fields[1] if len(fields) == 2 else line[1:]
+        gaps.append((re.sub(r" \([^()]*\)$", "", path), reason))
+    return gaps
+
+
+def describe_submodule_gaps(gaps: Sequence[tuple[str, str]]) -> str:
+    return ", ".join(f"{path} ({reason})" for path, reason in gaps)
+
+
+def submodule_registration_config(checkout: Path, *, run: Runner) -> str:
+    """Name the config file that holds submodule registration, for messages."""
+
+    try:
+        config = git_common_dir(checkout, run=run) / "config"
+    except (OSError, RuntimeError):
+        return "the repository's common Git config"
+    try:
+        modified = datetime.fromtimestamp(
+            config.stat().st_mtime, timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except OSError:
+        return str(config)
+    return f"{config} (last modified {modified})"
+
+
+def report_submodule_registration_loss(
+    checkout: Path, *, run: Runner, restore_from: Path | None = None
+) -> list[tuple[str, str]]:
+    """After a run, name any submodule registration that vanished while it ran.
+
+    `prepare_fresh_checkout` refuses to launch unless every gitlink is usable,
+    so an unregistered gitlink observed here lost its registration DURING the
+    run. Only `-` is reported: a run may legitimately move a submodule's HEAD
+    (`+`), but nothing in a run deletes shared registration. It does not change
+    the verdict: it names the cause of NO_RESULT nodes that would otherwise read
+    as a checkout that was never initialized.
+    """
+
+    if not checkout.is_dir():
+        return []
+    try:
+        gaps = [
+            gap
+            for gap in submodule_registration_gaps(checkout, run=run)
+            if gap[1] == SUBMODULE_STATUS_GAPS["-"]
+        ]
+        config = (
+            submodule_registration_config(checkout, run=run) if gaps else ""
+        )
+    except Exception as error:  # a diagnostic must never block the cleanup after it
+        print(
+            "validate-run: could not re-read submodule registration after the "
+            f"run: {error}",
+            file=sys.stderr,
+        )
+        return []
+    if gaps:
+        paths = " ".join(shlex.quote(path) for path, _reason in gaps)
+        print(
+            "validate-run: SUBMODULE-REGISTRATION-LOST-DURING-RUN: "
+            f"{describe_submodule_gaps(gaps)}. Every submodule was registered "
+            "and checked out when this checkout was created, so this changed "
+            f"while the run was in progress. Registration lives in {config}; "
+            "every linked worktree of a repository reads that one file, and a "
+            "`git submodule deinit` run in ANY of them removes the registration "
+            "for all. A node that read `git submodule status` after the loss "
+            "(hermit's check.lint_checks exits NO_RESULT) observed an "
+            "environment change, not a product result. The next validation "
+            "checkout re-registers it; to restore it now: git -C "
+            f"{shlex.quote(str(restore_from or checkout))} submodule init -- {paths}",
+            file=sys.stderr,
+        )
+    return gaps
+
+
 @contextmanager
 def git_mutation_lock(source: Path, *, run: Runner):
     """Serialize worktree/fetch metadata mutation in the shared Git directory."""
@@ -1960,6 +2091,21 @@ def prepare_fresh_checkout(
                 ["git", "-C", str(fresh), "submodule", "update", "--init", "--recursive"],
                 check=False,
             )
+            # The update's own exit status is deliberately not the gate; this
+            # post-condition is. `update --init` re-registers a submodule whose
+            # shared registration an earlier `git submodule deinit` removed, so
+            # a gap left here is one the update itself could not repair.
+            gaps = submodule_registration_gaps(fresh, run=run)
+            if gaps:
+                raise RuntimeError(
+                    f"fresh checkout {fresh} has submodule(s) Git will not use "
+                    "after `git submodule update --init --recursive`: "
+                    f"{describe_submodule_gaps(gaps)}. Registration lives in "
+                    f"{submodule_registration_config(fresh, run=run)}, which "
+                    "every linked worktree of this repository shares; refusing to "
+                    "launch a run whose nodes would report NO_RESULT for a setup "
+                    "reason instead of a product result"
+                )
         except Exception as error:
             checkout_error = error
 
@@ -12064,6 +12210,14 @@ def main(
             f"WAIT-INTERRUPTED {unit}.service; RUN CONTINUES independently: {error}",
             f"the run is still going; re-attach with `ci-hub validate-run --attach {unit}` "
             "to resume watching it, or read its log directly",
+        )
+
+    if fresh_checkout is not None:
+        # The run is terminal and its checkout still exists. Creation proved
+        # every submodule registered, so a gap now was introduced by something
+        # outside this run; name it before any verdict or cleanup output.
+        report_submodule_registration_loss(
+            fresh_checkout, run=run, restore_from=source_checkout
         )
 
     if record_claims_refused_admission(latest):
