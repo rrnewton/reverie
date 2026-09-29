@@ -2376,7 +2376,9 @@ struct RestartTool;
 #[reverie::tool]
 impl Tool for RestartTool {
     type GlobalState = RestartLog;
-    type ThreadState = ();
+    /// The clock when the signal event requested its precise timer, so the
+    /// timer event can report how many RCBs later it fired.
+    type ThreadState = Option<u64>;
 
     fn subscriptions(config: &u64) -> Subscription {
         let mut subscription = Subscription::none();
@@ -2484,6 +2486,8 @@ impl Tool for RestartTool {
                 guest
                     .set_timer_precise(reverie::TimerSchedule::Rcbs(rcbs))
                     .unwrap();
+                let armed = guest.read_clock().unwrap();
+                *guest.thread_state_mut() = Some(armed);
             }
             if plan.inject_in_signal {
                 let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
@@ -2500,8 +2504,14 @@ impl Tool for RestartTool {
         Ok(Some(signal))
     }
 
+    /// A timer requested from a signal event reports the RCBs since the
+    /// request, which a precise timer makes exactly the requested count.
     async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
-        guest.send_rpc("timer".to_owned()).await;
+        let event = match guest.thread_state_mut().take() {
+            Some(armed) => format!("timer +{}", guest.read_clock().unwrap() - armed),
+            None => "timer".to_owned(),
+        };
+        guest.send_rpc(event).await;
     }
 }
 
@@ -3221,8 +3231,9 @@ async fn host_hybrid_fork_inside_the_deciding_handler_resolves_the_child_restart
 /// A precise timer the Tool requests at the signal that decides a restart is
 /// due after the quiet handler returns. Plain ptrace has no stop between the
 /// delivery and the timer when the read is interrupted, so the timer fires;
-/// the host-hybrid landing stop in between must not cancel it. A restarted
-/// read's re-entry is a stop on both backends, so the timer is cancelled.
+/// the host-hybrid landing stop in between must not cancel or re-arm it, so
+/// it fires exactly `SIGNAL_TIMER_RCBS` after the request. A restarted read's
+/// re-entry is a stop on both backends, so the timer is cancelled.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
     for (mode, restarted) in [
@@ -3244,13 +3255,18 @@ async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
             "{mode}"
         );
         let last = if restarted {
-            "magic read(0x7e57,1)"
+            "magic read(0x7e57,1)".to_owned()
         } else {
-            "timer"
+            format!("timer +{SIGNAL_TIMER_RCBS}")
         };
         assert_eq!(
             events,
-            ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1", last],
+            [
+                "read(warm)",
+                "magic read(0x7e57,1)",
+                "signal SIGUSR1",
+                &last
+            ],
             "{mode}"
         );
     }
@@ -3261,8 +3277,9 @@ async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
 /// single-step window covers the handler's return and the precise timer, not
 /// the run loop, executes the restart landing. The landing must be resolved
 /// inside the step loop: an interrupted read continues and the timer fires
-/// in the spin loop as under plain ptrace; a restarted read stops at its
-/// re-entry on both backends.
+/// in the spin loop exactly `SIGNAL_TIMER_NEAR_RCBS` after the request, as
+/// under plain ptrace; a restarted read stops at its re-entry on both
+/// backends.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
     for (mode, restarted) in [
@@ -3285,13 +3302,18 @@ async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
             "{mode}"
         );
         let last = if restarted {
-            "magic read(0x7e57,1)"
+            "magic read(0x7e57,1)".to_owned()
         } else {
-            "timer"
+            format!("timer +{SIGNAL_TIMER_NEAR_RCBS}")
         };
         assert_eq!(
             events,
-            ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1", last],
+            [
+                "read(warm)",
+                "magic read(0x7e57,1)",
+                "signal SIGUSR1",
+                &last
+            ],
             "{mode}"
         );
     }
