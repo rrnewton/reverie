@@ -28,8 +28,8 @@ typedef uint64_t (*count_fn)(uint64_t);
 typedef uint64_t (*value_fn)(void);
 typedef long (*call_fn)(void);
 
-static void *require(const char *name) {
-  void *symbol = dlsym(RTLD_DEFAULT, name);
+static void* require(const char* name) {
+  void* symbol = dlsym(RTLD_DEFAULT, name);
   if (symbol == NULL) {
     fprintf(stderr, "missing %s: %s\n", name, dlerror());
     exit(20);
@@ -72,7 +72,7 @@ int main(void) {
     }
   }
 
-  FILE *maps = fopen("/proc/self/maps", "r");
+  FILE* maps = fopen("/proc/self/maps", "r");
   if (maps == NULL) {
     return 22;
   }
@@ -90,8 +90,13 @@ int main(void) {
     unsigned long end = 0;
     unsigned long inode = 0;
     char permissions[8] = {0};
-    if (sscanf(line, "%lx-%lx %7s %*s %*s %lu", &start, &end, permissions,
-               &inode) != 4) {
+    if (sscanf(
+            line,
+            "%lx-%lx %7s %*s %*s %lu",
+            &start,
+            &end,
+            permissions,
+            &inode) != 4) {
       return 23;
     }
     if (permissions[2] != 'x') {
@@ -99,8 +104,9 @@ int main(void) {
     }
     if (strstr(line, "liteinst2-trampoline") != NULL) {
       ++trampoline_arenas;
-    } else if (strstr(line, "[vsyscall]") == NULL &&
-               !(start == previous_end && inode == previous_inode)) {
+    } else if (
+        strstr(line, "[vsyscall]") == NULL &&
+        !(start == previous_end && inode == previous_inode)) {
       ++exec_mappings;
     }
     previous_end = end;
@@ -108,11 +114,17 @@ int main(void) {
   }
   fclose(maps);
 
-  printf("dsos=%u calls=%u traps=%" PRIu64 " hooks=%" PRIu64
-         " dsos_hooked=%u\n",
-         (unsigned)HEAP_DSO_COUNT, calls, traps, hooks, hooked);
-  printf("exec_mappings=%u trampoline_arenas=%u\n", exec_mappings,
-         trampoline_arenas);
+  printf(
+      "dsos=%u calls=%u traps=%" PRIu64 " hooks=%" PRIu64 " dsos_hooked=%u\n",
+      (unsigned)HEAP_DSO_COUNT,
+      calls,
+      traps,
+      hooks,
+      hooked);
+  printf(
+      "exec_mappings=%u trampoline_arenas=%u\n",
+      exec_mappings,
+      trampoline_arenas);
   printf("init_heap_high_water=%" PRIu64 "\n", high_water());
   return 0;
 }

@@ -265,6 +265,57 @@ pub(crate) fn init_heap_exhausted() -> bool {
     INIT_HEAP.exhausted.load(Ordering::Acquire)
 }
 
+/// The first request the constructor heap could not serve, why, and the
+/// heap's capacity and high-water mark; meaningful once
+/// [`init_heap_exhausted`] is true.
+pub(crate) fn init_heap_first_miss() -> InitHeapMiss {
+    INIT_HEAP.first_miss()
+}
+
+/// Clears the sticky exhausted flag and the recorded first miss.
+///
+/// Test-only: production never clears them. The library's unit tests share
+/// one process, so a test that forces a miss must leave the flag as it found
+/// it for the tests that assert it is clear.
+#[cfg(test)]
+pub(crate) fn clear_init_heap_exhaustion() {
+    INIT_HEAP.first_miss_align.store(0, Ordering::Release);
+    INIT_HEAP.first_miss_bytes.store(0, Ordering::Release);
+    INIT_HEAP.exhausted.store(false, Ordering::Release);
+}
+
+/// Serializes unit tests that use the process-wide allocator state, including
+/// the constructor heap's sticky exhausted flag.
+#[cfg(test)]
+pub(crate) fn allocator_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// Whether `pointer` lies outside PATCH_HEAP, TOOL_HEAP and INIT_HEAP.
+/// [`PatchAllocator`] serves every request from one of those three static heaps
+/// or from the system allocator, so a non-null pointer it returned for which
+/// this is true came from the system allocator.
+#[cfg(test)]
+pub(crate) fn served_by_system(pointer: *mut u8) -> bool {
+    !PATCH_HEAP.contains(pointer) && !TOOL_HEAP.contains(pointer) && !INIT_HEAP.contains(pointer)
+}
+
+/// Fills a fresh 8 MiB constructor heap with two 4 MiB blocks, asks it for
+/// 3 MiB aligned to 8 (a request of the 4 MiB class), and returns that miss.
+#[cfg(test)]
+pub(crate) fn capacity_miss_on_a_full_test_heap() -> InitHeapMiss {
+    // SAFETY: every InitHeap field is valid as zero bytes, and zero bytes are
+    // exactly `InitHeap::new()` (`init_heap_starts_zeroed`).
+    let heap = unsafe { Box::<InitHeap<{ 8 << 20 }>>::new_zeroed().assume_init() };
+    let block = Layout::from_size_align(4 << 20, 1).unwrap();
+    let request = Layout::from_size_align(3 << 20, 8).unwrap();
+    assert!(!heap.allocate(block).is_null());
+    assert!(!heap.allocate(block).is_null());
+    assert!(heap.allocate(request).is_null());
+    heap.first_miss()
+}
+
 pub(crate) struct PatchAllocationScope;
 
 impl Drop for PatchAllocationScope {
@@ -437,16 +488,28 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 
 static TOOL_HEAP: ToolHeap = ToolHeap::new();
 
-// Untouched .bss pages cost no RSS. The predicted constructor peak is about
+// INIT_HEAP starts as all zero bytes (checked by `init_heap_starts_zeroed`
+// below), so it is placed in .bss: it adds nothing to the DSO file, and
+// untouched pages cost no RSS. The predicted constructor peak is about
 // 2.5 MiB: one reused 2 MiB liteinst2 maps buffer, the 192 KiB site registry
-// (a 256 KiB class) and small objects.
-const INIT_HEAP_BYTES: usize = 16 * 1024 * 1024;
+// (a 256 KiB class) and small objects. Peaks measured while reviewing
+// https://github.com/rrnewton/reverie/pull/777 were 2,487,872 bytes with 24
+// generated shared objects and 8,700,928 bytes with 1000, about 6.2 KiB more
+// per shared object. Extending that straight line, 16 MiB would run out near
+// 2,300 shared objects. That limit is extrapolated, not measured: the slope
+// between neighbouring measurements ranged from 3.7 to 8.1 KiB, and
+// power-of-two size classes can make it arrive sooner. A miss refuses
+// initialization with OutOfMemory (`init_heap_exhausted`).
+pub(crate) const INIT_HEAP_BYTES: usize = 16 * 1024 * 1024;
 /// Size class k holds blocks of `16 << k` bytes: 16 B through 4 MiB.
 const INIT_HEAP_CLASSES: usize = 19;
 const INIT_HEAP_MIN_CLASS_SHIFT: u32 = 4;
+/// The block size of the largest class, 4 MiB.
+pub(crate) const INIT_HEAP_LARGEST_CLASS_BYTES: usize =
+    1 << (INIT_HEAP_MIN_CLASS_SHIFT as usize + INIT_HEAP_CLASSES - 1);
 /// Blocks are carved aligned to min(class size, this), so any layout whose
 /// alignment is at most this fits its class without per-block headers.
-const INIT_HEAP_MAX_ALIGN: usize = 4096;
+pub(crate) const INIT_HEAP_MAX_ALIGN: usize = 4096;
 
 #[repr(C, align(4096))]
 struct InitHeapBytes<const N: usize>([u8; N]);
@@ -455,15 +518,33 @@ struct InitHeapBytes<const N: usize>([u8; N]);
 ///
 /// Headerless: dealloc and realloc receive the layout, so a block's class is
 /// recomputed rather than stored. Blocks never split or merge, so a freed
-/// 2 MiB buffer is only ever reused by the next 2 MiB-class request. Free
-/// blocks store the next free offset in their first word.
+/// 2 MiB buffer is only ever reused by the next 2 MiB-class request. A free
+/// block stores the address of the next free block of its class in its first
+/// word, and null ends a list, so an empty heap is all zero bytes.
 struct InitHeap<const N: usize> {
     bytes: UnsafeCell<InitHeapBytes<N>>,
     next: UnsafeCell<usize>,
-    free_heads: UnsafeCell<[usize; INIT_HEAP_CLASSES]>,
+    free_heads: UnsafeCell<[*mut u8; INIT_HEAP_CLASSES]>,
     locked: AtomicBool,
     high_water: AtomicUsize,
     exhausted: AtomicBool,
+    first_miss_bytes: AtomicUsize,
+    first_miss_align: AtomicUsize,
+}
+
+/// The first request a constructor heap could not serve, why it could not,
+/// and the heap's capacity and high-water mark when this was read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct InitHeapMiss {
+    pub(crate) capacity: usize,
+    pub(crate) high_water: usize,
+    pub(crate) bytes: usize,
+    pub(crate) align: usize,
+    /// The block size of the request's class. None means no class holds the
+    /// request (larger than [`INIT_HEAP_LARGEST_CLASS_BYTES`], or aligned
+    /// above [`INIT_HEAP_MAX_ALIGN`]). Some means the class had no free block
+    /// and the heap had no room left to carve one.
+    pub(crate) class_bytes: Option<usize>,
 }
 
 // SAFETY: every cursor and free-list access is serialized by `locked`.
@@ -474,10 +555,12 @@ impl<const N: usize> InitHeap<N> {
         Self {
             bytes: UnsafeCell::new(InitHeapBytes([0; N])),
             next: UnsafeCell::new(0),
-            free_heads: UnsafeCell::new([FREE_LIST_END; INIT_HEAP_CLASSES]),
+            free_heads: UnsafeCell::new([ptr::null_mut(); INIT_HEAP_CLASSES]),
             locked: AtomicBool::new(false),
             high_water: AtomicUsize::new(0),
             exhausted: AtomicBool::new(false),
+            first_miss_bytes: AtomicUsize::new(0),
+            first_miss_align: AtomicUsize::new(0),
         }
     }
 
@@ -517,22 +600,57 @@ impl<const N: usize> InitHeap<N> {
         }
     }
 
+    /// Records a request the heap cannot serve and returns null. The first
+    /// miss's size and alignment are kept for the refusal message: only the
+    /// miss that sets the size records the alignment. The flag is sticky.
+    fn miss(&self, layout: Layout) -> *mut u8 {
+        if self
+            .first_miss_bytes
+            .compare_exchange(0, layout.size(), Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.first_miss_align
+                .store(layout.align(), Ordering::Release);
+        }
+        self.exhausted.store(true, Ordering::Release);
+        ptr::null_mut()
+    }
+
+    /// The first missed request and why it missed. `allocate` misses either
+    /// because `class_of` finds no class or because the class's list is empty
+    /// and the heap has no room to carve a block, so the class of the recorded
+    /// layout tells the two apart.
+    fn first_miss(&self) -> InitHeapMiss {
+        let bytes = self.first_miss_bytes.load(Ordering::Acquire);
+        let align = self.first_miss_align.load(Ordering::Acquire);
+        let class_bytes = Layout::from_size_align(bytes, align)
+            .ok()
+            .and_then(Self::class_of)
+            .map(|class| 1usize << (class as u32 + INIT_HEAP_MIN_CLASS_SHIFT));
+        InitHeapMiss {
+            capacity: N,
+            high_water: self.high_water.load(Ordering::Acquire),
+            bytes,
+            align,
+            class_bytes,
+        }
+    }
+
     /// Returns null, and sets the sticky exhausted flag, when the layout has
     /// no class or the heap has no room for a fresh block of its class.
     fn allocate(&self, layout: Layout) -> *mut u8 {
         let Some(class) = Self::class_of(layout) else {
-            self.exhausted.store(true, Ordering::Release);
-            return ptr::null_mut();
+            return self.miss(layout);
         };
         let _guard = self.lock();
         // SAFETY: the heap lock serializes free-list access.
         let heads = unsafe { &mut *self.free_heads.get() };
         let head = heads[class];
-        if head != FREE_LIST_END {
-            let block = self.base().wrapping_add(head);
-            // SAFETY: a free block's first word holds the next free offset.
-            heads[class] = unsafe { block.cast::<usize>().read() };
-            return block;
+        if !head.is_null() {
+            // SAFETY: a free block's first word holds the next free block of
+            // its class, or null.
+            heads[class] = unsafe { head.cast::<*mut u8>().read() };
+            return head;
         }
         let class_bytes = 1usize << (class as u32 + INIT_HEAP_MIN_CLASS_SHIFT);
         // SAFETY: the heap lock serializes bump-cursor access.
@@ -541,8 +659,7 @@ impl<const N: usize> InitHeap<N> {
             .and_then(|offset| offset.checked_add(class_bytes))
             .filter(|end| *end <= N)
         else {
-            self.exhausted.store(true, Ordering::Release);
-            return ptr::null_mut();
+            return self.miss(layout);
         };
         // SAFETY: the heap lock serializes bump-cursor access.
         unsafe { *self.next.get() = end };
@@ -562,11 +679,61 @@ impl<const N: usize> InitHeap<N> {
         // least 16 bytes and 16-byte aligned, so its first word is writable.
         unsafe {
             let heads = &mut *self.free_heads.get();
-            pointer.cast::<usize>().write(heads[class]);
-            heads[class] = pointer as usize - self.base() as usize;
+            pointer.cast::<*mut u8>().write(heads[class]);
+            heads[class] = pointer;
         }
     }
 }
+
+/// Whether an empty constructor heap is all zero bytes.
+///
+/// The linker places a static whose initial value is all zero in .bss, which
+/// adds nothing to the DSO file. One nonzero field (a `usize::MAX` list end,
+/// for example) moves the whole 16 MiB static into .data. The pattern lists
+/// every field, so adding a field breaks the build until it is named here;
+/// that forces the author to look, but binding it as `_` would compile
+/// unchecked. `init_heap_is_placed_in_bss` is the backstop: it checks where
+/// the linker actually put INIT_HEAP. The byte array is `[0; N]` for every N,
+/// so a small N stands for all of them.
+const fn init_heap_starts_zeroed() -> bool {
+    let InitHeap {
+        bytes,
+        next,
+        free_heads,
+        locked,
+        high_water,
+        exhausted,
+        first_miss_bytes,
+        first_miss_align,
+    } = InitHeap::<16>::new();
+    let bytes = bytes.into_inner().0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0 {
+            return false;
+        }
+        index += 1;
+    }
+    let free_heads = free_heads.into_inner();
+    let mut class = 0;
+    while class < free_heads.len() {
+        if !free_heads[class].is_null() {
+            return false;
+        }
+        class += 1;
+    }
+    next.into_inner() == 0
+        && !locked.into_inner()
+        && high_water.into_inner() == 0
+        && !exhausted.into_inner()
+        && first_miss_bytes.into_inner() == 0
+        && first_miss_align.into_inner() == 0
+}
+
+const _: () = assert!(
+    init_heap_starts_zeroed(),
+    "INIT_HEAP must start as all zero bytes so that it is placed in .bss"
+);
 
 struct SpinGuard<'a> {
     locked: &'a AtomicBool,
@@ -582,17 +749,12 @@ static INIT_HEAP: InitHeap<INIT_HEAP_BYTES> = InitHeap::new();
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::sync::MutexGuard;
 
     use super::*;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     fn test_guard() -> MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        allocator_test_guard()
     }
 
     #[test]
@@ -758,6 +920,64 @@ mod tests {
         assert!(!HEAP.exhausted.load(Ordering::Acquire));
     }
 
+    /// For every class, from 16 B (524,288 blocks) to 4 MiB (2 blocks), the
+    /// free list chains all freed blocks, including the one at offset 0 and
+    /// the last one before N, hands them back last in first out without
+    /// carving, and ends in null. A chain that dropped or misfiled a block
+    /// would leak it silently until the heap ran out.
+    #[test]
+    fn init_heap_free_lists_reissue_every_block_last_in_first_out() {
+        const N: usize = 8 << 20;
+        for class in 0..INIT_HEAP_CLASSES {
+            // SAFETY: every InitHeap field (bytes, integers, bools, raw
+            // pointers) is valid as zero bytes, and zero bytes are exactly
+            // `InitHeap::new()` (`init_heap_starts_zeroed`), which is also how
+            // the loader hands INIT_HEAP to the DSO.
+            let heap = unsafe { Box::<InitHeap<N>>::new_zeroed().assume_init() };
+            let class_bytes = 16usize << class;
+            let layout = Layout::from_size_align(class_bytes, 1).unwrap();
+            let count = N / class_bytes;
+            let blocks: Vec<*mut u8> = (0..count).map(|_| heap.allocate(layout)).collect();
+            // Fresh blocks are carved in address order and fill the heap.
+            for (index, &block) in blocks.iter().enumerate() {
+                let expected = heap.base().wrapping_add(index * class_bytes);
+                assert_eq!(block, expected, "class {class}: block {index}");
+            }
+            assert!(heap.allocate(layout).is_null(), "class {class}: full");
+            for &block in &blocks {
+                // SAFETY: each block is live and was allocated for layout.
+                unsafe { heap.deallocate(block, layout) };
+            }
+            // No block landed on another class's list: the heap is full, so
+            // each of the other 18 classes misses unless its list holds a block.
+            for other_class in (0..INIT_HEAP_CLASSES).filter(|&other| other != class) {
+                let other = Layout::from_size_align(16usize << other_class, 1).unwrap();
+                assert!(
+                    heap.allocate(other).is_null(),
+                    "class {class}: class {other_class}'s list is empty"
+                );
+            }
+            for index in (0..count).rev() {
+                assert_eq!(
+                    heap.allocate(layout),
+                    blocks[index],
+                    "class {class}: block {index} is reissued last in first out"
+                );
+            }
+            // Reissue carved nothing, and the drained list ends in null.
+            assert_eq!(heap.high_water.load(Ordering::Acquire), N, "class {class}");
+            assert!(heap.allocate(layout).is_null(), "class {class}: drained");
+            // SAFETY: both blocks are live and were allocated for layout.
+            unsafe {
+                heap.deallocate(blocks[0], layout);
+                heap.deallocate(blocks[count - 1], layout);
+            }
+            assert_eq!(heap.allocate(layout), blocks[count - 1], "class {class}");
+            assert_eq!(heap.allocate(layout), blocks[0], "class {class}");
+            assert!(heap.allocate(layout).is_null(), "class {class}");
+        }
+    }
+
     #[test]
     fn init_heap_classes_are_powers_of_two_from_16_bytes_to_4_mib() {
         type Heap = InitHeap<4096>;
@@ -782,6 +1002,67 @@ mod tests {
         let small = Layout::from_size_align(16, 1).unwrap();
         assert!(!HEAP.allocate(small).is_null());
         assert!(HEAP.exhausted.load(Ordering::Acquire));
+        // A later miss (no class above 4 MiB) keeps the first one's size.
+        let no_class = Layout::from_size_align(5 << 20, 1).unwrap();
+        assert!(HEAP.allocate(no_class).is_null());
+        assert_eq!(HEAP.first_miss_bytes.load(Ordering::Acquire), 2 << 20);
+    }
+
+    /// The first miss's size and alignment are recorded together, a later
+    /// miss changes neither, and the recorded layout tells a class with no room
+    /// left from a request that no class holds.
+    #[test]
+    fn init_heap_first_miss_records_the_request_and_why_it_missed() {
+        assert_eq!(
+            capacity_miss_on_a_full_test_heap(),
+            InitHeapMiss {
+                capacity: 8 << 20,
+                high_water: 8 << 20,
+                bytes: 3 << 20,
+                align: 8,
+                class_bytes: Some(4 << 20),
+            }
+        );
+        // SAFETY: every InitHeap field is valid as zero bytes, and zero bytes
+        // are exactly `InitHeap::new()` (`init_heap_starts_zeroed`).
+        let heap = unsafe { Box::<InitHeap<{ 1 << 20 }>>::new_zeroed().assume_init() };
+        // 64 bytes would fit the 64 B class, but no class is aligned above
+        // 4096 bytes.
+        let over_aligned = Layout::from_size_align(64, 8192).unwrap();
+        assert!(heap.allocate(over_aligned).is_null());
+        // A later miss, of a size no class holds, changes neither field.
+        let no_class = Layout::from_size_align(5 << 20, 16).unwrap();
+        assert!(heap.allocate(no_class).is_null());
+        assert_eq!(
+            heap.first_miss(),
+            InitHeapMiss {
+                capacity: 1 << 20,
+                high_water: 0,
+                bytes: 64,
+                align: 8192,
+                class_bytes: None,
+            }
+        );
+    }
+
+    #[test]
+    fn init_heap_is_placed_in_bss() {
+        // Defined by the linker around the zero-initialised sections, which
+        // occupy no space in the file. This test executable compiles the same
+        // static as the preload DSO.
+        unsafe extern "C" {
+            static __bss_start: u8;
+            static _end: u8;
+        }
+        let bss = (&raw const __bss_start) as usize..(&raw const _end) as usize;
+        let heap = (&raw const INIT_HEAP) as usize;
+        let heap_end = heap + size_of::<InitHeap<INIT_HEAP_BYTES>>();
+        assert!(
+            bss.start <= heap && heap_end <= bss.end,
+            "INIT_HEAP at {heap:#x}..{heap_end:#x} is outside .bss {:#x}..{:#x}",
+            bss.start,
+            bss.end
+        );
     }
 
     #[test]
