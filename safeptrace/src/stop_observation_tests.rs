@@ -22,7 +22,9 @@ mod stop_observation_tests {
     /// has elapsed; this names that case instead of leaving it to the final
     /// whole-test deadline check. No new time bound is introduced: the only
     /// limit is the rest of the shared deadline, and every failure here would
-    /// also have failed that final check.
+    /// also have failed that final check. A wait that ends at its timeout
+    /// cannot tell a lost wakeup from a retirement that arrived within
+    /// scheduling latency of the deadline, so the message names both.
     fn assert_retired_by_wakeup(terminal: &TerminalCleanup, deadline: Instant, what: &str) {
         let budget = remaining(deadline);
         assert!(
@@ -34,12 +36,16 @@ mod stop_observation_tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed < budget,
-            "{what}: terminal.wait returned only at its {budget:?} timeout after {elapsed:?}; \
-             the retirement wakeup was lost"
+            "{what}: terminal.wait returned only at its {budget:?} timeout after {elapsed:?} \
+             (the retirement wakeup was lost, or retirement came within scheduling latency of \
+             the original deadline)"
         );
     }
 
     fn spawn_observed_child(deadline: Instant) -> (Pid, Stopped, TraceeCleanupGuard) {
+        // Step times are reported only if the setup check below fails, so an
+        // overrun names the step that used the budget. They add no bound.
+        let entered = Instant::now();
         let pid = match unsafe { fork() }.expect("fork observation child") {
             ForkResult::Parent { child } => child,
             ForkResult::Child => {
@@ -47,26 +53,39 @@ mod stop_observation_tests {
                 unsafe { libc::_exit(42) };
             }
         };
+        let forked = Instant::now();
         let mut cleanup = TraceeCleanupGuard::new(pid).unwrap_or_else(|error| {
             // This child is still unreaped and cannot have been reused.
             let _ = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
             let _ = reap_tracee_bounded(pid);
             panic!("open observation child pidfd: {error}");
         });
+        let pidfd_opened = Instant::now();
         let status = waitpid_status_bounded(pid, libc::WUNTRACED, remaining(deadline))
             .expect("actual initial observation stop before original deadline");
+        let stop_seen = Instant::now();
         assert!(libc::WIFSTOPPED(status), "initial status {status:#x}");
         assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
         assert_eq!(status >> 16, 0, "initial stop is not a ptrace event");
         // The sole raw wait above proved this stop before notifier registration.
         let stopped = Stopped::new_unchecked(pid.into());
         cleanup.bind_notifier(&stopped).unwrap();
+        let registered = Instant::now();
         stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT | Options::PTRACE_O_EXITKILL)
             .unwrap();
+        let set_up = Instant::now();
         assert!(
-            Instant::now() < deadline,
-            "initial setup exceeded three seconds"
+            set_up < deadline,
+            "initial setup exceeded three seconds: {:?} of the deadline was left on entry; \
+             fork {:?}, pidfd open {:?}, initial stop {:?}, notifier registration {:?}, \
+             setoptions {:?}",
+            deadline.saturating_duration_since(entered),
+            forked - entered,
+            pidfd_opened - forked,
+            stop_seen - pidfd_opened,
+            registered - stop_seen,
+            set_up - registered,
         );
         (pid, stopped, cleanup)
     }
