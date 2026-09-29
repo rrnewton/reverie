@@ -33,6 +33,24 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_ptrace::testing::KeptTimerProgrammingChecks;
+use reverie_ptrace::testing::assert_at_target_unless_witnessed;
+
+/// The skid witness count and the kept programming checks are process
+/// global; each test owns them while it runs.
+static COUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `test` on a current-thread runtime of its own, owning `COUNTS`.
+fn with_counts(test: impl std::future::Future<Output = ()>) {
+    let _owner = COUNTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(test);
+}
 
 fn preload_path() -> PathBuf {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
@@ -143,9 +161,14 @@ impl Tool for SigreturnHookTimerTool {
 // from a lost one, so no witness may be counted as overtaken with its
 // notification queued (see
 // `reverie_ptrace::testing::precise_events_overtaken_with_notification_queued`).
-#[tokio::test(flavor = "current_thread")]
-async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
+// No trap keeps an event, so none has its programming checked.
+#[test]
+fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     reverie_ptrace::ret_without_perf!();
+    with_counts(rt_sigreturn_hook_trap_past_the_target_is_witnessed_once());
+}
+
+async fn rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     reverie_ptrace::testing::disable_timer_overflow_records();
     let margin = reverie_ptrace::PmuConfig::new().skid_margin();
     let rcbs = 10_000 + margin;
@@ -162,10 +185,11 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
         0.to_string(),
         1.to_string(),
     ]);
-    // The counts are process global, and this binary runs this test alone.
+    // The counts are process global; see `COUNTS`.
     let _ = reverie::take_skid_overshoot_count();
     let overtaken_before =
         reverie_ptrace::testing::precise_events_overtaken_with_notification_queued();
+    let checks = KeptTimerProgrammingChecks::start();
     let (output, global) = tokio::time::timeout(
         Duration::from_secs(120),
         LiteinstBackend::run_host_with_output_and_preload::<SigreturnHookTimerTool>(
@@ -177,9 +201,11 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
     .await
     .expect("the rt_sigreturn hook guest did not complete")
     .unwrap();
+    let keeps = checks.keeps();
     let witnesses = reverie::take_skid_overshoot_count();
     let overtaken = reverie_ptrace::testing::precise_events_overtaken_with_notification_queued()
         - overtaken_before;
+    assert_eq!(keeps, 0, "no trap here keeps its event");
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -200,4 +226,84 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
         "without overflow records no witness may be counted as overtaken with its \
          notification queued"
     );
+}
+
+// The rt_sigreturn hook's trap before the keep point, as in
+// reverie-liteinst/tests/hybrid.rs's
+// `an_rt_sigreturn_hook_trap_keeps_the_timer_event`, without records: each
+// handler returns 5000 RCBs after its request for an event 30000 RCBs past
+// it, above the largest skid margin in Reverie's PMU table, and the trap
+// must keep the event with its PMU programming as the request made it,
+// checked at the trap and again at the thread's next stop (see
+// `reverie_ptrace::testing::check_kept_timer_programming`). Without records
+// the trap reads the guest's clock from the counter alone, so this is the
+// check's only coverage of that path.
+//
+// Every event must fire at its target, or past it only as a witnessed skid
+// overshoot. The one exception is the host timing that hybrid.rs's
+// `overtaken_rounds` identifies with records: a notification serviced only
+// at the next round's signal, which overtakes the kept event past its
+// target and witnesses it. Without records a queued notification cannot be
+// told from a lost one, so such a round is not listed as overtaken; it is
+// missing, and witnessed. At most `MISSING_CAP` rounds may be missing, the
+// cap hybrid.rs's `overtaken_cap` gives for the 15 rounds that could be
+// overtaken (the last cannot be, since the guest makes no stop between its
+// handler's return and its exit), and every witness must be a late event
+// or a missing round.
+#[test]
+fn an_rt_sigreturn_hook_trap_keeps_the_timer_event_without_records() {
+    reverie_ptrace::ret_without_perf!();
+    with_counts(rt_sigreturn_hook_trap_keeps_the_timer_event_without_records());
+}
+
+async fn rt_sigreturn_hook_trap_keeps_the_timer_event_without_records() {
+    reverie_ptrace::testing::disable_timer_overflow_records();
+    /// hybrid.rs's `overtaken_cap(15)`.
+    const MISSING_CAP: u64 = 2;
+    let rcbs: u64 = 30_000;
+    let (lead, after) = (5_000, 2 * rcbs);
+    let rounds: u64 = 16;
+    let (_directory, guest) = compile_fixture("hybrid_sigreturn_hook_timer.c");
+    let mut command = Command::new(guest);
+    command.args([lead, rounds, after, 1, 0, 0].iter().map(u64::to_string));
+    // The counts are process global; see `COUNTS`.
+    let _ = reverie::take_skid_overshoot_count();
+    let checks = KeptTimerProgrammingChecks::start();
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(120),
+        LiteinstBackend::run_host_with_output_and_preload::<SigreturnHookTimerTool>(
+            command,
+            rcbs,
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("the rt_sigreturn hook guest did not complete")
+    .unwrap();
+    let keeps = checks.keeps();
+    let witnesses = reverie::take_skid_overshoot_count();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("rounds={rounds} handled={rounds} wrong=0\n")
+    );
+    assert_eq!(global.requests.load(Ordering::SeqCst), rounds);
+    assert_eq!(
+        keeps, rounds,
+        "each round's trap must keep its event, with its programming unchanged"
+    );
+    let events = global.timer_events.into_inner().unwrap();
+    assert!(events.len() as u64 <= rounds, "{events:?}");
+    let missing = rounds - events.len() as u64;
+    assert!(
+        missing <= MISSING_CAP,
+        "{missing} of {rounds} kept events did not fire: {events:?}"
+    );
+    let late = events.iter().filter(|&&clock| clock > rcbs).count() as u64;
+    assert_eq!(
+        witnesses,
+        late + missing,
+        "every witness must be a late event or a missing round: {events:?}"
+    );
+    assert_at_target_unless_witnessed(&events, rcbs, witnesses - missing);
 }
