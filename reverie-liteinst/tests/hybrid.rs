@@ -3208,7 +3208,10 @@ async fn a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event() 
     eprintln!("notifications taken at injected syscalls: {live}, discarded as late: {late}");
     // Every round's event fires, none is lost or cancelled, and each at its
     // target unless its notification came too late (see
-    // `assert_at_target_unless_witnessed`), and fewer than half late.
+    // `assert_at_target_unless_witnessed`). At a skid margin of
+    // `LATE_BACKSTOP_LEAST_MARGIN` or more not every event may be late, and
+    // at any margin not every event may be more than `GROSS_OVERSHOOT_RCBS`
+    // late (see `late_events_within_backstop`).
     assert_eq!(events.len(), rounds as usize + 1, "{events:?}");
     assert_at_target_unless_witnessed(&events, rcbs, witnesses);
     assert_late_within_backstop(&events, rcbs);
@@ -3632,17 +3635,19 @@ const LATE_BACKSTOP_LEAST_MARGIN: u64 = 1_000;
 /// `an_rt_sigreturn_hook_trap_keeps_the_timer_event` at a margin of 1000
 /// fire 8 of its 16 events past the target, by 1259 to 7536 RCBs, all
 /// witnessed, which failed that backstop. In the 542 logs of the round-7
-/// campaigns and of both round-7 reviews on devbig014, at load averages up
-/// to 130, 1850 groups of events counted at a margin of 1000 had at most 8
-/// of 16, 4 of 44, 3 of 181 and 15 of 182 past the target, and none had
-/// every event past it; at a margin of 100, 2 of 4 groups of 16 had every
-/// event past it; and at no margin did a group have every event more than
-/// 2000 RCBs past it. A trap that re-programs every kept event's counter for
-/// a full period made 16 of 16 and 182 of 182 more than 4000 RCBs late at a
-/// margin of 1000, and 16 of 16 and 182 of 182 at a margin of 100. A trap
-/// that re-arms the counter of one kept event in four with a period change
-/// made 11 of 44 late, which no backstop on how many events are late tells
-/// from latency; the programming checks count it.
+/// campaigns and of both round-7 reviews on devbig014, 1850 groups of events
+/// counted at a margin of 1000 had at most 8 of 16, 4 of 44, 3 of 181 and 15
+/// of 182 past the target, and none had every event past it; at a margin of
+/// 100, 2 of 4 groups of 16 had every event past it; and at no margin did a
+/// group have every event more than 2000 RCBs past it. The one-minute load
+/// averages those logs recorded ranged from 26 to 332: of the 451 logs with
+/// groups that recorded one, 51 recorded one above 130. A trap that
+/// re-programs every kept event's counter for a full period made 16 of 16
+/// and 182 of 182 more than 4000 RCBs late at a margin of 1000, and 16 of 16
+/// and 182 of 182 at a margin of 100. A trap that re-arms the counter of one
+/// kept event in four with a period change made 11 of 44 late, which no
+/// backstop on how many events are late tells from latency; the programming
+/// checks count it.
 fn late_events_within_backstop(clocks: &[u64], rcbs: u64, margin: u64) -> Result<String, String> {
     let events = clocks.len() as u64;
     let late = clocks.iter().filter(|&&clock| clock > rcbs).count() as u64;
