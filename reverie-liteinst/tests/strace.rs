@@ -547,6 +547,67 @@ fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
     );
 }
 
+// https://github.com/rrnewton/reverie/issues/758: a raw vfork or clone3 that
+// strace/compatibility mode forwards from the dispatcher either runs a child
+// through the parent's suspended dispatcher frames or starts one on a fresh
+// stack with none of them. Both must be refused, and traced, before the kernel
+// sees them.
+#[test]
+fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
+    let guest = env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest");
+    let expected = format!(
+        "unsafe process creation rejected: vfork={0} clone3={0} clone3-shared={0} \
+         clone3-thread={0} clone3-stack={0} clone3-tls={0} clone3-flags={0} clone3-size={0} \
+         parent-canaries=unchanged\n",
+        libc::ENOTSUP
+    );
+
+    let (compatibility, events) = run_compat_guest_with_event_pipe(guest, &["--unsafe-process"]);
+    assert!(compatibility.status.success(), "{compatibility:?}");
+    assert_eq!(
+        compatibility.stdout,
+        expected.as_bytes(),
+        "{compatibility:?}"
+    );
+    let events = String::from_utf8(events).unwrap();
+    let traced = |syscall: i64| {
+        let suffix = format!(" syscall={syscall}");
+        events
+            .lines()
+            .filter(|line| line.ends_with(&suffix))
+            .count()
+    };
+    assert_eq!(traced(libc::SYS_vfork), 1, "{events}");
+    assert_eq!(traced(libc::SYS_clone3), 7, "{events}");
+    let pids: BTreeSet<_> = events
+        .lines()
+        .filter_map(|line| line.split_once(" pid=")?.1.split_once(" syscall="))
+        .map(|(pid, _)| pid)
+        .collect();
+    assert_eq!(pids.len(), 1, "only the parent may emit events:\n{events}");
+
+    let strace = run_guest(guest, &["--unsafe-process"]);
+    assert!(strace.status.success(), "{strace:?}");
+    assert_eq!(strace.stdout, expected.as_bytes(), "{strace:?}");
+    let stderr = String::from_utf8(strace.stderr).unwrap();
+    let refused = |syscall: i64| {
+        let prefix = format!("] syscall({syscall}, ");
+        let suffix = format!(") = -{}", libc::ENOTSUP);
+        stderr
+            .lines()
+            .filter(|line| line.contains(&prefix) && line.ends_with(&suffix))
+            .count()
+    };
+    assert_eq!(refused(libc::SYS_vfork), 1, "{stderr}");
+    assert_eq!(refused(libc::SYS_clone3), 7, "{stderr}");
+    let pids: BTreeSet<_> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("[liteinst strace pid "))
+        .filter_map(|line| line.split(']').next())
+        .collect();
+    assert_eq!(pids.len(), 1, "only the parent may emit records:\n{stderr}");
+}
+
 fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
     let (output, events) = run_compat_guest_with_event_pipe(
         env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"),
