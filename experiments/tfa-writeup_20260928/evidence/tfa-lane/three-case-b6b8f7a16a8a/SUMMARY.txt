@@ -1,0 +1,9 @@
+head b6b8f7a16a8a 2026-09-25T19:44:27-07:00
+validate rc=0 dur=4s 
+dry-run rc=0 dur=11s 
+witness-asyncssl-fail rc=1 dur=5s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102
+witness-asyncssl-pass rc=1 dur=2s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102
+witness-httpcoro-fail rc=1 dur=2s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102
+witness-httpcoro-pass rc=1 dur=4s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102
+witness-thrift-fail rc=1 dur=3s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102
+witness-thrift-pass rc=1 dur=5s HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102

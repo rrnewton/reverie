@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+{"mergeCommit":{"oid":"ccbe37e916c895215eb3240c91b3de924cb21a1a"},"mergedAt":"2026-09-21T14:23:33Z","number":3142,"state":"MERGED","title":"Accept virtual RLIMIT_CORE updates","url":"https://github.com/rrnewton/hermit/pull/3142"}

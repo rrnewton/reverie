@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+[{"number":1845,"state":"open","title":"P1: IMPLEMENT the skid-gated retry — standardize ONE overshoot marker, retry ONLY on it, count every retry; and establish WHY the EPYC skid margin is 10x tighter than the AMD default","url":"https://github.com/rrnewton/hermit/issues/1845"}]

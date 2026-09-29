@@ -1,0 +1,3 @@
+/home/newton/work/tfa/fbsource/buck-out/.tfa-runtime/7f669de9e9555710e6be08f3/__async_ssl_socket_test__/async_ssl_socket_test
+11 [  FAILED  ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (140 ms) 1
+1 [       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (129 ms) 0

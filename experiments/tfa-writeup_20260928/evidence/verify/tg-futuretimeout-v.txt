@@ -1,0 +1,107 @@
+📊 Subtree — 1/1 complete (100%)
+
+Mission View (by execution phase)
+
+Completed (1):
+  ✅ [P0] tfa-diagnose-futuretimeout-strict-hermit "Diagnose folly::FutureTimeout abort under strict Hermit (6/6 seeds, post-epoch-fix)" (i=50 e=1 v=5000) 📝 4 notes [closed] (owner: hermit-909)
+      **Files:** /home/newton/work/tfa/fbsource (eden checkout); stderr at /tmp/hermit-909-attempt4-seed{0..5}-campaign.stderr; frozen ptrace hermit sha256 000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a.
+      **Action:** Diagnose the folly::FutureTimeout abort that blocks fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test @fbcode//mode/opt under strict Hermit. Read-only + reproduction runs only.
+      **Why:** This is now the campaign's critical path. If the cause is Hermit's time model rather than this guest, it plausibly blocks ANY Meta service test with a wall-clock future timeout, which is most of them — that would be a capability statement about Hermit, not a fixture detail.
+      **DO NOT RE-DERIVE (established, attempt 4, byte-verified note on tfa-pilot-seed-sweep-attempt4):**
+      - The epoch question is SETTLED. Pinning --epoch to one host-real-now value eliminated certificate-validity errors entirely: CERT_VALIDITY_ERRORS=0/6. Do not revisit certs.
+      - 6 distinct sched-seeds, rng_seed=0 fuzz_seed=0, strict, ptrace, chaos, relaxations=none. ALL SIX: exit 134, signal 6, folly::FutureTimeout, 7.402-12.752 s.
+      - GTEST_STDOUT_SHA256 = 5e3a0c00bcdda7145e2ee278a3d7fcce52f68b00def96a6a422674bd53dd912c IDENTICAL across all six.
+      - Native accept arm for this target is reachable (earlier attempt): canonical TestInfra exit 0 in 11.065 s, ELF-direct native exit 0 in 1.009 s. Native failure rate 23/96 under TestInfra.
+      **PRIMARY QUESTION (this is the one that matters):** IS THE THING THAT PRODUCED THIS FAILURE CONFIGURABLE? Read the source for how detcore advances virtual time and how that interacts with a folly future deadline. The epoch blocker looked like a wall and was a flag; establish from source whether the same is true here, or whether it is structural. Name flags by exact spelling read from source, never reconstructed.
+      **SECOND QUESTION, and do not skip it:** six different sched-seeds produced BYTE-IDENTICAL stdout. Establish whether chaos actually perturbed anything — e.g. whether the participating thread set or scheduling order differed across seeds. If the abort happens before any schedule-sensitive divergence, the six runs are not six independent samples of a schedule space and the probability argument in the note is about the wrong population. Identical stdout does NOT by itself prove identical scheduling; say which you established.
+      **Verify:** A note stating (a) the mechanism from SOURCE with file:line, (b) whether it is configurable and by which exact flag, (c) whether chaos perturbed the guest at all across the six seeds, (d) whether this generalises beyond this target. Three outcomes permitted: WORKING / BLOCKED-WITH-NAMED-CAUSE / NOT-DETERMINABLE, the third carrying what was inspected and why it did not settle the question.
+      **Constraints:** NO buck builds. NO relaxation of --strict in any reported result; a relaxation is permitted ONLY as a localisation probe and must be reported as a probe, never as progress. Disk: stop and report if free space would fall below 322122547200 bytes. Write findings to task notes INCREMENTALLY as you establish them, not in one final summary — two agents on this fleet have lost conclusions to output refusals and incremental notes rescued both.
+      **Kill conditions, report against me:** (1) If the FutureTimeout turns out to be a property of THIS target's fixture rather than of Hermit, say so plainly — my generalisation premise is then wrong and target re-selection beats diagnosis. (2) If chaos demonstrably did not perturb the guest, then this target was never a viable bracket subject and the selection criterion needs a third condition beyond can-run and native-accept-reachable. (3) If the mechanism cannot be established without a build, stop and say so rather than building.
+      📝 Notes (4):
+      [2026-09-18 19:48]
+        STATUS=SOURCE_MECHANISM_IDENTIFIED
+        TARGET=fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test@fbcode//mode/opt
+        TIMEOUT_SOURCE=fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:36,150-151,174-175,194-195,221-224,264-265
+        TIMEOUT_VALUE_MS=3000
+        THROW_SITE=clientThread blockingWait(makeHttpConnect(...)) at TlsTerminatorTest.cpp:308; retained stack does not distinguish the three client-side 3000ms waits
+        VIRTUAL_TIME_SOURCE=hermit/detcore-model/src/time.rs:97-98,545-562,657-674,785-796,865-870
+        SCHEDULER_CHARGE=500000 virtual ns per committed non-internal turn, scaled by clock_multiplier, plus scaled syscall/RCB costs
+        POLLING_SOURCE=hermit/detcore/src/scheduler.rs:4196-4265
+        POLLING_EFFECT=internal-I/O polling retry turns advance virtual time so finite guest waits can expire while loopback protocol progress remains pending
+        CONFIG_FLAG=--clock-multiplier=<finite-positive-float>
+        CONFIG_SOURCE=hermit/detcore-model/src/config.rs:227-229,745-749,914-915 and hermit/hermit-cli/src/bin/hermit/run.rs:3348-3354
+        STRICT_COMPATIBLE=YES; strict mode does not reject the flag and a value below 1 slows all modeled clock charges without disabling determinism
+        GENERALIZATION=mechanism applies beyond this fixture to finite-timeout tests whose required guest progress consumes enough modeled scheduler/syscall/RCB time, especially polling-heavy protocols; the 3000ms constants are fixture-specific
+        NEXT=bounded strict run with clock_multiplier=0.1, then information-level seed comparison; no build
+      [2026-09-18 19:52]
+        STATUS=CONFIGURATION_PROBED
+        HERMIT_SHA256=000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a
+        MODE=strict ptrace chaos
+        SCHED_SEED=0
+        RNG_SEED=0
+        FUZZ_SEED=0
+        RELAXATIONS=none
+        CLOCK_MULTIPLIER_0_8=run_id 20260918T195140Z-2601931; exit 134; signal 6; folly::FutureTimeout; 9.026 s
+        CLOCK_MULTIPLIER_0_5=run_id 20260918T195202Z-2632161; exit 134; signal 6; folly::FutureTimeout; 9.368 s
+        CLOCK_MULTIPLIER_0_1=run_id 20260918T195023Z-2485294; exit 144; signal 16 SIGSTKFLT; 3.632 s; no GTest verdict
+        CONFIGURABLE=YES at the model interface; --clock-multiplier accepts finite positive values below 1 under strict mode
+        CONFIGURATION_CLEARS_TARGET_TIMEOUT=NO in the bounded probes; 0.8 and 0.5 retained FutureTimeout, while 0.1 exposed reserved ptrace PMU signal SIGSTKFLT instead of reaching a verdict
+        AVAILABLE_MIN_BYTES=1650838335488
+        STOP_FLOOR_BYTES=322122547200
+        BUILDS_RUN=0
+      [2026-09-18 19:56]
+        STATUS=CHAOS_PERTURBATION_ESTABLISHED
+        MODE=strict ptrace chaos info-trace
+        EPOCH=2026-09-18T19:53:59Z
+        RNG_SEED=0
+        FUZZ_SEED=0
+        SEED_0=run_id 20260918T195359Z-2784274; exit 134; folly::FutureTimeout; 8.036 s
+        SEED_1=run_id 20260918T195407Z-2797061; exit 134; folly::FutureTimeout; 7.882 s
+        SEED_0_FIRST_CHAOS_DRAW=child_priority 6198063878555692194; next_rcbs 13574201
+        SEED_1_FIRST_CHAOS_DRAW=child_priority 15803641690485367939; next_rcbs 4629810
+        FIRST_SCHEDULER_DIVERGENCE=seed1 inserts priority change at scheduler turn 26; seed0 continues with /proc/self/status
+        FIRST_GUEST_THREAD_ORDER_DIVERGENCE=57th nonempty-resource commit: seed0 dettid3 ParentContinue child9 while seed1 dettid9 MemAddrSpace; seed1 schedules child9 before seed0 does
+        CHAOS_PERTURBED_GUEST=YES
+        SEED_0_COMMITS=8660
+        SEED_1_COMMITS=9110
+        SEED_0_INTERNAL_IO_POLL_COMMITS=3905
+        SEED_1_INTERNAL_IO_POLL_COMMITS=4083
+        SEED_0_FINAL_VIRTUAL_ELAPSED_S=3.508963520 from epoch
+        SEED_1_FINAL_VIRTUAL_ELAPSED_S=3.612489410 from epoch
+        INTERPRETATION=identical FutureTimeout outcomes do not mean identical schedules; distinct seeded priorities changed actual guest-thread commit order, but both schedules exhausted the same 3000ms future deadline
+        BUILDS_RUN=0
+      [2026-09-18 19:57]
+        VERDICT=BLOCKED-WITH-NAMED-CAUSE
+        NAMED_CAUSE=the target's hard-coded 3000ms Folly future deadline expires on Hermit's modeled monotonic clock before the polling-heavy loopback TLS protocol completes
+        TARGET_TIMEOUT_SOURCE=fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:36,150-151,174-175,194-195,221-224,264-265
+        THROW_CONTEXT=TlsTerminatorTest.cpp:308 clientThread blockingWait(makeHttpConnect(...)); retained stack cannot discriminate among the three client-side 3000ms waits
+        HERMIT_TIME_SOURCE=hermit/detcore-model/src/time.rs:97-98,545-562,657-674,785-796,865-870
+        SCHEDULER_SOURCE=hermit/detcore/src/scheduler.rs:4196-4265
+        MECHANISM=each committed non-internal turn charges 500000 modeled ns plus syscall and RCB costs; internal-I/O polling retries advance this clock so the finite guest deadline can expire before required I/O progress
+        CONFIGURABLE=YES
+        CONFIG_FLAG=--clock-multiplier=<finite-positive-float>
+        CONFIG_SOURCE=hermit/detcore-model/src/config.rs:227-229,745-749,914-915 and hermit/hermit-cli/src/bin/hermit/run.rs:3348-3354
+        STRICT_COMPATIBLE=YES
+        CONFIGURATION_PROBE_RESULT=no passing configuration established: 0.8 and 0.5 still FutureTimeout; 0.1 reached ptrace reserved-PMU SIGSTKFLT instead of a test verdict
+        CHAOS_PERTURBED_GUEST=YES
+        CHAOS_EVIDENCE=seed0 and seed1 had different seeded priority/RCB draws; first scheduler divergence at turn 26; actual guest-thread order diverged at the 57th nonempty-resource commit, seed0 dettid3 ParentContinue(child9) versus seed1 dettid9 MemAddrSpace
+        TRACE_TOTALS=seed0 8660 commits and 3905 internal-I/O polls, final virtual elapsed 3.508963520s; seed1 9110 commits and 4083 internal-I/O polls, final virtual elapsed 3.612489410s
+        SIX_SEED_INTERPRETATION=attempt4 seeds did sample different schedules despite byte-identical GTest stdout; their common FutureTimeout is not pre-divergence identity
+        GENERALIZES=to finite-timeout workloads whose required progress consumes enough Hermit-modeled scheduler/syscall/RCB time, especially polling-heavy protocols
+        DOES_NOT_GENERALIZE=not evidence that every Meta service test with a wall-clock future timeout fails; the hard-coded 3000ms threshold and workload progress requirements are target-specific
+        KILL_CONDITION_1=PARTIAL; owner's universal-generalization premise is too broad, but the Hermit time-model interaction is not fixture-only
+        KILL_CONDITION_2=NOT_TRIGGERED
+        KILL_CONDITION_3=NOT_TRIGGERED
+        BUILDS_RUN=0
+        MIN_AVAILABLE_BYTES=1650838335488
+        STOP_FLOOR_BYTES=322122547200
+
+
+Legend:
+  📍 Open  🏃 In Progress  ✅ Closed
+  i=impact  e=effort(days)  v=ROI(i/e×100)
+  Phase View: Tasks grouped by execution order
+  Phase 1 = ready now, Phase 2 = unblocked after Phase 1, etc.
+  Sorted by ROI within each phase (highest first)
+
+Task closed: tfa-diagnose-futuretimeout-strict-hermit.

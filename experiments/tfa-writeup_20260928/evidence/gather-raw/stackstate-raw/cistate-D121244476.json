@@ -1,0 +1,19 @@
+{
+  "draft_ci_state": "TEST_FINISHED_WITH_WARNINGS",
+  "published_ci_state": "TEST_FINISHED_WITH_WARNINGS",
+  "submit_queue_request_id": "1808464970159952",
+  "deferred_explanation": null,
+  "ci_state": "TEST_FINISHED_WITH_WARNINGS",
+  "signal_counts": {
+    "total": 160,
+    "failed": 0,
+    "warning": 2,
+    "passed": 156,
+    "pending": 0,
+    "info": 2
+  },
+  "version_id": "2008865099781157",
+  "is_complete": true,
+  "signal_counts_available": true,
+  "verdict": "GREEN"
+}

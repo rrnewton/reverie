@@ -1,0 +1,27 @@
+The host's owner-managed Codex rolled over, so every real-release preflight
+failed locally with "release manifest identity differs" instead of reaching the
+reviewed blocked entry.
+
+Observed identities (`codex --version`, rc 0, banners already reviewed):
+- launcher `/usr/local/bin/codex_cli/codex`: `d22c52fa…` (was `71b8f5bd…`)
+- stable `codex.real`: `4b776a3e…`, `codex-cli 0.156.1`. This is byte-identical
+  to the manifest already recorded as the blocked 0.156.1 `latest` entry.
+- latest `codex_latest.real`: `d291f08a…`, `codex-cli 0.156.1`, built by MSDK
+  from fbsource `6be63a60915d` (2026-09-24).
+
+Both stay blocked with the unchanged socket-isolation blocker. The owning lane
+(devinfra_3p_ai, `third-party/codex/main/codex-rs`) has now landed the fixes:
+`de089a75d6a1` imports upstream 0.157.0 (D121728319) and `18cdc3ab303f` accepts
+verified Btrfs mount-device mismatches (D121708813). Both landed on 2026-09-25,
+after the `6be63a60` build. `linux-sandbox/src/daemon_mounts.rs` at `6be63a60`
+still rejects ancestor aliases and requires the mountinfo device to equal
+`st_dev`. Master's latest MSDK `codex_latest` is built from `24281a08`, also
+before both fixes. No installed or published release contains them, so no
+entry becomes eligible.
+
+- `_CODEX_RELEASE_MANIFESTS` pins the current stable and latest digests.
+- `_CODEX_COMPATIBILITY` replaces the two unreachable 0.156.0/0.156.1 entries
+  (old launcher) with the two current ones. Both are blocked, unbound, and use
+  `_CODEX_SOCKET_ISOLATION_BLOCKER`.
+- The unit and real-host tests pin the new digests. Their blocked, unbound and
+  blocker-text assertions are unchanged.

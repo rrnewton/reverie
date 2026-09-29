@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+{"baseRefName":"main","createdAt":"2026-09-20T14:02:33Z","headRefOid":"4dcb34b4b5b0c537405ac4d97ce6ae782bd644a5","mergedAt":null,"number":93,"state":"OPEN","title":"Import current Hermit main into fbsource","url":"https://github.com/facebookexperimental/hermit/pull/93"}

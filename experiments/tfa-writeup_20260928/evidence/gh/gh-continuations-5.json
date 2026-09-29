@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+{"closedAt":"2026-09-22T22:58:43Z","mergedAt":null,"number":3151,"state":"CLOSED","title":"Capture virtual-time epoch at run start","url":"https://github.com/rrnewton/hermit/pull/3151"}

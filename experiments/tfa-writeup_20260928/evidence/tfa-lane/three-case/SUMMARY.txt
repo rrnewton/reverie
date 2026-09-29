@@ -1,0 +1,9 @@
+head 5bc4f555dd93 2026-09-25T14:24:58-07:00
+validate-manifest rc=0 dur=1s cases=3
+dry-run rc=0 dur=5s report=/home/newton/temp/tfa-phase2/exp-5bc4f555/dry-run/experiment-report.json
+witness-asyncssl-fail.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness-asyncssl-pass.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness-httpcoro-fail.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness-httpcoro-pass.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness-thrift-fail.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness-thrift-pass.log rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH

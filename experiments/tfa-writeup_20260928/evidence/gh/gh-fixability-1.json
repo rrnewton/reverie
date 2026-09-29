@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+[{"number":1850,"state":"open","title":"Guest hangs waiting on a pipe: readiness/EOF not delivered after the writer exits (cmake epoll_wait; stdenv fixupPhase read)","url":"https://github.com/rrnewton/hermit/issues/1850"}]

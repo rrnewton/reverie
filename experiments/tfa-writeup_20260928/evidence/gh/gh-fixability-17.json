@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+[{"number":726,"state":"open","title":"Precise timer: overshoot and unstepped-at-target put timer events at host-timed places on plain ptrace","url":"https://github.com/rrnewton/reverie/issues/726"}]

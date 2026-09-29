@@ -1,0 +1,11 @@
+session: ef420c5e-34f0-4659-bbba-2967ac725a1a
+running: false
+halted: true
+workspace: /tmp/agentcloud-18498-workspace/ef420c5e-34f0-4659-bbba-2967ac725a1a
+control_modes: standard
+agent_role: agentcloud (default)
+model:  - (not reported for this session)
+effort: - (not reported for this session)
+tokens: in=7661404 out=42048
+node: devvm895.vcn0.facebook.com
+reservation: lease=28a46778-1ef6-53c4-9932-51005653fed3 node=devvm895.vcn0.facebook.com host=devvm895.vcn0.facebook.com

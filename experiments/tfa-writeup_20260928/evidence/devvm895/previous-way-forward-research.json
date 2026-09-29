@@ -1,0 +1,662 @@
+{
+ "final": "# TFA prototype: what it is and the way forward\n\n*Paths are under `fbcode/testinfra/tfa/` at stack tip a729ddf3707f unless noted. \"Refuses\" means it deliberately stops.*\n\n## TL;DR\n1. **Is Hermit ready to replicate TFA results?** Open-source Hermit 4630ee2a: yes, for all three cases on the original host (D121978137). Internal Hermit a919cce: not yet (sanitizer crashes, a CPU-counter panic, trace drift; hermit-import-compatibility.v1.json). Sandcastle: no; Hermit's own test fails there on a mount error, 53 runs straight (`meta testinfra.test metadata --id=562950400403548`).\n2. The stack is a 32.7k-line AI-written prototype for three C++ tests. Only asyncssl is still flaky (60%, disabled); httpcoro and thrift are marked OK (`meta testinfra.test metadata`). It shares an idea with old TFA, not code.\n3. Little runs end to end: internal Hermit and Codex are blocked; comments are dry-run only.\n4. **Recommendation: do not land it.** Share the asyncssl candidate patch with its owners, then wrap Hermit's existing `analyze --search`.\n5. Later, add a Hermit step to existing flaky-test agents (not a new service) once Hermit runs on Sandcastle.\n\n## 1. What does the big diff stack represent?\n22 unpublished, unreviewed diffs (D121244476 to D121978137) adding 33 files. It \"does not discover tests or schedule production work\" (README.md:3-4). Half (16.1k lines) is tests. About 5 diffs add features; 17 add pinning, tamper checks and refusals (inference from STACK_SUMMARIES.md titles).\n\n## 2. How does it connect to old TFA infra?\nOnly by idea. Old TFA (2021-22) re-ran flaky tests on Sandcastle, including Hermit chaos seeds (wiki TFA/; T106084722). It is dead: automatic runs are off (SV_TEST_FLAKINESS_ANALYZER_RATE_LIMIT per_day_limit 0) and most of its code is deleted (D82956704, D118696067).\n\nThe stack reuses the technique, `hermit run --chaos` with fixed PASS/FAIL seeds (cases.v1.json:55,72); its \"historical\" records are your own 2026-09-21 runs (manifest.py:15-35). It borrows another team's bot (comments.py:21; AutoTestRemediationScheduler.php:41-46) and puts its code under the testinfra oncall (BUCK:16).\n\n## 3. What functionality does it actually implement?\nIntended flow (state.py:21-28): check recorded runs, dry-run a comment, Codex proposes and reviews a patch, replay and test, draft a diff. Only offline pieces work. No test plan shows a real `run-case`; the full flow is tested only with mocks (tests/test_prototype.py RunCaseTest).\n\n| Component | Status | What it would take |\n|---|---|---|\n| Manifest, prompt and report validators | works offline | Allow more than 3 hard-coded cases (manifest.py:249-277) |\n| PASS/FAIL log-diff hints (`render-evidence`, hints.py) | works offline on records made elsewhere | Probably superseded by `hermit analyze` (inference) |\n| Follow-up verdict (`render-followup`) | works offline (followup.py:199-338) | Something in the package to produce its inputs |\n| `dry-run` | writes prompts; for asyncssl also reads the live task's comments and dry-runs a comment as the borrowed bot (orchestrator.py:48-80; cases.v1.json:288) | Low value |\n| Replay with internal Hermit | refuses (a919cce BLOCKED, hermit-import-compatibility.v1.json) | Newer import, re-recorded pins |\n| Replay with open-source Hermit (`run-witness`) | works on the original host only (D121978137) | Buck-built binaries instead of /home/newton paths |\n| `run-seed`, `run-case` | refuse: internal Hermit blocked (main.py:282,374) | Unblock Hermit |\n| `run-agent` and Codex review | refuse: all Codex pins blocked (process.py:104-121). Real Codex ran in D121244213's tests (2026-09-22); blocking began at D121848885 (D121848886: codex-cli 0.156.0) | An approved Codex version, or Claude |\n| Task comments | always refused (comments.py:287) | A bot identity TFA owns |\n| Draft diff | unreachable | Everything above |\n| Test discovery and scheduling | missing | `meta testinfra` queries |\n| Containment tests in Sandcastle CI | 15 of 43 fail per build mode; land-blocking warnings that also fail on the parent revision (`meta phabricator.diff.signals list --number=D121978137 --details`) | VM tests or local-only marking |\n\n## 4. Should we make this a committed pipeline?\nNo, not in this form:\n- It is hard-wired to three hash-pinned cases and /home/newton paths (manifest.py:193, :249-277).\n- Internal Hermit and Codex are blocked.\n- It borrows a bot and an oncall (\u00a72).\n- 30 land-blocking CI warnings fail (15 tests \u00d7 2 modes).\n- It would be a fixer outside Test Infra's resolver, which their wiki recommends against (wiki Test_Infra_For_Users/Getting_Started/Test_Issues/Agentic_Test_Fixers); that resolver doesn't take flaky tests today (DefaultTestFixerStrategy.php:9-11).\n\nWorth keeping: the asyncssl case (others as fixtures), candidate patches, and ~0.6k lines of hint and verdict logic (hints.py; pipeline.py:119-342; followup.py:199-338).\n\n## 5. Dev server, or Sandcastle / cloud?\nDevserver only. Tests run on any devserver with passwordless sudo and quota-enabled Btrfs (resources/bounded-run-space:95-99,191-224); devvm895 passes 215/215 unit and 37/43 containment tests. Hermit replays also need /home/newton/work files (manifest.py:193), missing on devvm895. 13 of 22 diffs are tagged devbig030, which `meta devserver.server describe` reports \"not found\".\n\nOn Sandcastle, 9 tests fail on denied `sudo mount`, 1 on a missing devserver service, 5 on Codex hash mismatches (D121978137 signals). None reached Hermit.\n\n## 6. Could we revive a small TFA as we test?\nYes, small (inference):\n- **Hermit already does the core.** `hermit analyze --search` finds a failing chaos seed, pairs it with a passing run, and prints the racing instructions' stack traces (hermetic_infra/hermit/hermit-cli/src/bin/hermit/analyze/types.rs:22-43).\n- **Existing flaky-test agents:** a fix-flaky-test skill (fbcode/claude-templates/components/skills/fix-flaky-test/SKILL.md), used by AutoTestRemediation (AutoTestRemediationCommand.php:199-201). Devmate's asyncssl attempt errored (T255721720). None appear to use Hermit (inference).\n- **Where to run:** devserver for now. Sandcastle is tightening containers (user-namespace prerequisites targeted mid-October; Workplace sandcastle.eng post 4477862635875268) and moving mount-heavy tests into VMs (T288822939), a possible Hermit route (inference).\n- **Scope:** Hermit is x86-only (commit 4620432e135b); native fbcode tests only.\n- **Posting:** inside an existing agent, no new identity (inference); standalone needs its own service user (wiki Tasks/Task_Bots), not the \"trusted issuer\" the stack awaits (README.md:13-14; inference).\n\n## 7. How much needs repair or rebuild?\nMost of it (inference). Keep \u00a74's list. Rebuild Hermit packaging, test binaries and discovery. Drop Codex and most of the 10-12k lines (60-75% of product code) of pinning and sandboxing.\n\n## Recommended next steps\n1. Mark the stack do-not-land; remove the borrowed bot ID and oncall. *Hours.*\n2. Find the host holding /home/newton/work/tfa. Retrieve the asyncssl candidate patch (D121848896: failed 5\u00d7 unfixed, passed 3\u00d7 patched; small sample); optionally share it with T255721720's owners. *Hours.*\n3. Rerun the 6 open-source Hermit runs there (D121978137; one earlier attempt timed out). Seeds depend on paths and timing (D121848893); re-check on new hosts. *Hours.*\n4. Finish your import D120908510 (rrnewton/hermit via facebookexperimental/hermit), confirm it includes 4630ee2a, re-record pins. May unblock internal Hermit (inference). *Days.*\n5. Build a thin wrapper: TestID \u2192 Buck build \u2192 `hermit analyze --search`. Start with asyncssl. *Days (inference).*\n6. Probe Sandcastle: `hermit run --namespace-only -- /bin/true`, then one chaos seed. *1-2 days.*\n7. If step 5 works, offer a Hermit step to the fix-flaky-test owners. *Weeks.*\n8. Delete /tmp/tfa-phase2 on devvm895. *Minutes.*\n\n## Open questions\n- What produced the D121848896 patches? A \"controller\" wrote the ledgers (README.md:63-74), probably on the original host, perhaps before Codex was blocked (inference).\n- Is 4630ee2a in public facebookexperimental/hermit? (GitHub is unreachable here.)\n- When did old TFA's automatic runs stop (sitevar audit log)?",
+ "research": [
+  {
+   "key": "old-infra",
+   "summary": "TFA stood for \"Test Flakiness Analyzer\". The Hermetic Infra team (Ryan Newton, Will Hughes, Kevin Guthrie and others) built it in 2021-2022. It was a WWW service that used Skycastle workflows on Sandcastle to re-run confirmed-flaky C++/Rust tests under different conditions: rr chaos, private tmpfs, no network, and Hermit chaos with seeds. When Hermit found a failing schedule, `hermit analyze` then pinpointed the two racing threads. Results appeared in a web report at internalfb.com/tfa, and from November 2022 a bot comment on the flaky-test task linked to that report. TFA never produced fix diffs. In December 2022 the org stopped funding Hermetic Infra and TFA was handed to Test Infra. Automatic runs are now switched off (the daily rate-limit sitevar is 0), and the code has been deleted as dead code from 2025 to 2026. A few orphaned files remain. The new fbcode/testinfra/tfa stack reuses the name and the core idea: Hermit chaos PASS/FAIL seeds for flaky TestInfra tests. It shares no code, infrastructure, service user or data with the old system. Its \"historical\" and \"phase-one\" records are Newton's own September 2026 dev-hermit experiments, not old TFA reports. Its hard-coded service user belongs to a different, current bot (AutoTestRemediation). Today's closest successors are AI agents that try to fix flaky-test tasks, and none of them use Hermit.",
+   "findings": [
+    {
+     "claim": "TFA = 'Test Flakiness Analyzer' (bunnylol tfa). It analyzed flaky fbcode C++/Rust tests to help developers understand, debug and fix flakiness. Its owner is listed as the Hermetic Infra team.",
+     "evidence": "Wiki https://www.internalfb.com/wiki/TFA/ (created 2022-02-08): 'Test Flakiness Analyzer (bunnylol tfa) automatically analyzes C++/Rust fbcode tests... Hermetic Infra team: The team who develop TFA'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Timeline: MVP tracking task opened Nov 2021; prototype built Q4 2021; tech preview 2021-12-20; automated launches started March 2022 at a 0.5% JustKnobs rollout; production-ready by July 2022, rate-limited to 20 runs a day; task comments linking reports reached 100% visibility in November 2022; hermit analyze race stack traces shown in December 2022.",
+     "evidence": "T106084722 (created 2021-11-17 'TFA MVP'); post fb.workplace.com/groups/hermit.fyi/permalink/634412370939545 (2021-12-20); meeting notes doc 1mrIG90BYoSb3Le6IMmf3XMp9IqO7XXHcwAw-LJnG594 [2022.03.21] '0.5% rollout'; post 770911660622948 (2022-08-01) 'rate limited to 20'; H2 2022 summary post 865638134483633 ('100% visible in November'; tfa/7145)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "People: Ryan Newton built Hermit chaos mode and hermit analyze and wrote early TFA diffs. Kevin Guthrie, Will Hughes, Jude Reiferson (intern), Alexander Mols, Logan Wendholt and Jason White built the other parts. Managers were Rob James, then Bohdan Orlov.",
+     "evidence": "H2 2021 self-eval doc 1VDOkmhgkN8YzZy6B6gBQ2SaJZV2pgGu7kYDMoVZynOU (component inventory); D34300304, D34252960 (author newton); D35320119 (kage); D40179169, D40716348 (willhughes); D37931011 (judereiferson); team history doc 1pzAa87CzH0yyE5edeFEvwP5b9RxbwoaGu7OcChUNgxs",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Inputs: a TestInfra TestID. Automatic runs were triggered by a test-journal listener when a compatible C++/Rust test entered a confirmed-flaky state. Runs could also be started from the web UI or the `phps TestFlakinessAnalyzer schedule TESTID` script.",
+     "evidence": "D34696358 '[TFA] Add a basic flaky test journal listener'; post 754651248915656 (2022-07-07) 'automatically scheduled when a compatible test enters a confirmed flaky state'; D34300304 test plan 'phps TestFlakinessAnalyzer schedule ... TESTID'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Outputs: a TFA report (diagnoses, rr/fdb replay recordings, hermit analyze stack traces) at internalfb.com/tfa/N, replay commands in TestX, and a bot comment on the flaky-test task. No fix diffs.",
+     "evidence": "T136311221 comment: 'View flakiness analysis report (2 diagnoses) (https://www.internalfb.com/tfa/4250) Test Flakiness Analyzer automatically analyzes tests...'; post 754651248915656 (TestX FDB replay commands). 'No diffs' is an inference: no source describes TFA creating code changes.",
+     "confidence": "likely"
+    },
+    {
+     "claim": "Infrastructure: Hack code in WWW (flib/intern/hermetic_infra/tfa and the TestFlakinessAnalyzer scripts), Ent plus a MySQL tier xdb.tfa (table tfa_run with hermit_analyze_* columns), and Skycastle workflows on Sandcastle running `buck test ... --tags test-flakiness-analyzer`. It originally re-ran contbuild Sandcastle jobs instead. Controls were the SV TEST_FLAKINESS_ANALYZER_RATE_LIMIT and GK tfa_update_flaky_test_tasks. The dedicated service user was 'flakytestanalyzer' (FBID 89002005368062). I found no evidence of Tupperware or Chronos.",
+     "evidence": "tools/skycastle/workflows2/hermetic_infra/tfa/tfa_run_experiment_workflow.sky:9-20; T132389440 (AOSC xdb.tfa tfa_run schema); post 754651248915656 'Migrating Away From Contbuild Sandcastle'; wiki https://www.internalfb.com/wiki/TFA/Development/ (killswitches); `sl cat -r 04c3eaade955~1 www/flib/intern/hermetic_infra/tfa/TFAServiceUser.php` -> TFA_SERVICE_USER_ID = 89002005368062; meeting notes [2022.03.21] 'service user (called flakytestanalyzer)'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Yes, it used internal Hermit with chaos seeds. Experiments included 'hermit chaos parallel stress runs' and 'hermit analyze'. Milestone 1 was to output Hermit chaos seeds that pass and fail. Failing runs produced reproducers like `hermit run --chaos --seed=N`, and hermit analyze bisected a pass/fail schedule pair down to the race.",
+     "evidence": "www/flib/intern/hermetic_infra/tfa/experiments/TFAExperimentName.php (RUN_HERMIT_CHAOS, RUN_HERMIT_ANALYZE); TFA design doc 1noouZ61ounrH0h_OFPBeuPUGkG7Cc3iM0B9qv5BWTs4 ('Output hermit chaos seeds that pass + fail'); T112780656 (recover seeds of failed hermit chaos runs); hermit.eng post 3018169378474483 ('hermit run --chaos --seed=1280345475356')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Why it stopped: in December 2022 the TIV org stopped investing in Hermetic Infra for lack of capacity, and TFA moved to Test Infra. Earlier signs: its usefulness was never measured, the input population was small, the tmpfs and port diagnoses found almost nothing, and outages (ACL revocations, a buck2 TestWarden breakage) stopped it for periods.",
+     "evidence": "Post 858293301884783 (2022-12-07): 'decided... to stop investing in Hermetic Infra technology in TIV... Test Flakiness Analysis (TFA) tool will also move to the Test Infra team'; post 754651248915656 'not yet determined how effective'; post 770911660622948 (tmpfs/port not widespread); meeting notes [2022.10.31], [2022.12.05]",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Automatic TFA runs are currently switched off: the rate-limit sitevar is at 0, the documented killswitch. The date it was set to 0 is unknown.",
+     "evidence": "www/flib/intern/__db_generated__/SitevarAutoDefaultDBCigarUpdateScript/it/SV_TEST_FLAKINESS_ANALYZER_RATE_LIMITAutoDefault.php: 'flaky_test_tailer' => per_day_limit 0, test_target_per_day_limit 0; wiki TFA/Development ('Set per_day_limit ... to 0')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The old code has been deleted as dead code from 2025 to 2026. The hermit oncall confirmed it was 'all dead code'.",
+     "evidence": "D82956704 (2025-09-22, nikk, '[ti] remove TFA tests': hermit oncall said 'Yes, that is all dead code'); D83753610 (2025-11-12 'remove more TFA code'); D89548734 (2026-01-02, deleted TFAServiceUser.php); D118696067 (2026-09-10, deleted TFAReport.php, TFADetailReport.php); `sl log www/flib/intern/hermetic_infra` in /data/repos/fbsource",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Leftovers still in fbsource: the Skycastle workflows, which are orphaned because the PHP runnable they call no longer exists; the TFAExperimentName enum; two sitevars; a logger config; a Manifold data schema; and flaky-test fixtures under fbcode/hermetic_infra/hermit/flaky-tests. The Hermit/rr-chaos options in tpx that TFA relied on were not found.",
+     "evidence": "tools/skycastle/workflows2/hermetic_infra/tfa/*.sky; search 'SkycastleTFAFinishExperimentPhpRunnable' matches only the generated .sky stubs; www/flib/intern/hermetic_infra/tfa/experiments/TFAExperimentName.php; SV_TEST_FLAKINESS_ANALYZER_{RATE_LIMIT,JOB_CONFIG}.php; TestFlakinessAnalyzerEventsLoggerConfig.php; TfaExperimentOutputFilesManifoldBucketDataSchema.php; search for 'hermit-experimental-tool|HermitMiddleware' and 'fdb-record-chaos' in fbcode: no tpx hits",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Current nearest successors: TestInfra's automatic flaky/failing TEST_ISSUE tasks, plus AI agents that pick those tasks up and draft fixes (Claude Code Tasks runs on Sandcastle, RACER, AutoTestRemediation, and many team-specific fixers). None of the descriptions I found mention Hermit or deterministic replay.",
+     "evidence": "T278900793 and T255721720 (task_type TEST_ISSUE, comments 'Starting Claude Code Tasks Run w/ Sandcastle Instance ID'); www/flib/intern/scripts/auto_test_remediation/AutoTestRemediationScheduler.php:4-12; doc 'AI Test Resolution Landscape' 1GlWbjK-nPN5NgbXT0MR6GneX55ZH5dsaW7kWxWBng2k. 'No Hermit' is inferred from these descriptions, not an exhaustive search.",
+     "confidence": "likely"
+    },
+    {
+     "claim": "Link 1, name: the new stack calls itself a Test Flakiness Analyzer prototype. It does not mention the old system (no references to hermetic_infra/tfa, Skycastle, TestFlakinessAnalyzer, internalfb.com/tfa, flakytestanalyzer, PFS or TestX).",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/README.md:3 'bounded three-case Test Flakiness Analyzer prototype'; grep -rniE 'hermetic|skycastle|internalfb.com/tfa|flakytestanalyzer|89002005368062|PFS|TestWarden' /tmp/tfa-src -> only hermetic_infra/hermit build-target paths",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Link 2, same core technique: `hermit run --chaos` with fixed PASS and FAIL seeds (now via --sched-seed), built on the same internal Hermit target the old team created. The witnesses, however, run open-source Hermit from rrnewton/hermit at commit 4630ee2a, because the current internal import (a919cce) cannot reproduce them.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/cases.v1.json:55,72 ('--chaos', '--sched-seed'); BUCK:23 actual='//hermetic_infra/hermit/hermit-cli:hermit'; comments.py:27-29 HERMIT_INSTALL_URL github.com/rrnewton/hermit/tree/4630ee2a...; README.md:122-123",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Link 3, inputs: both are keyed on TestInfra TestIDs. The new one uses a fixed three-case manifest with a TestID, a FLAKY IssueID and a TEST_ISSUE task from today's issue tracking. It does not discover tests, whereas the old TFA took them automatically from the test journal.",
+     "evidence": "cases.v1.json: httpcoro test_id 562950215319283, issue_id 224798678, task_id T278900793 (live_task false); asyncssl test_id 562950211052906, issue_id 224226669, task T255721720 (live_task true); T278900793 lists Test ID 562950215319283 / Issue ID 224798678 Type FLAKY; README.md:3-4 'does not discover tests or schedule production work'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Link 4, outputs: the new stack only prepares task comments as dry runs, plus unpublished draft diffs from a Codex candidate fix. It hard-codes service user 4533519350210414. That ID is the AutoTestRemediation Bot's Phabricator service user (owned by billing_experiences_customer_success), not the old TFA's flakytestanalyzer (89002005368062).",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/comments.py:21 SERVICE_USER_FBID='4533519350210414'; pipeline.py:2104; www/flib/intern/scripts/auto_test_remediation/AutoTestRemediationScheduler.php:34,41-46 ('AutoTestRemediation Bot \u2014 dedicated Phabricator service user... const int PHABRICATOR_SERVICE_USER_FBID = 4533519350210414', <<Oncalls('billing_experiences_customer_success')>>)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Link 5, what 'historical' means: the new stack's 'historical PASS/FAIL seeds' and 'Historical phase-one record' point to Newton's own dev-hermit experiment records from 2026-09-21 on GitHub, not to old TFA reports or its database.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/manifest.py:15-35 (DEV_HERMIT_COMMIT edd96831..., experiments/tfa-kernel71-*_20260921); comments.py:83 'Historical phase-one record'; README.md:40-45 ('authoritative dev-hermit record... historical PASS and FAIL seeds'); STACK_SUMMARIES.md:318-323",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Link 6, infrastructure: nothing is shared. The old TFA was a scheduled service (WWW, Ent/MySQL, Skycastle on Sandcastle, web UI). The new one is a local fbcode Python command run on a devserver, with cgroup containment and Codex agents.",
+     "evidence": "README.md:28-37 (buck run fbcode//testinfra/tfa:tfa_phase2; output under /tmp/tfa-phase2); README.md sections on cgroup-v2 and Codex; compare the old Skycastle workflow files above",
+     "confidence": "verified"
+    }
+   ],
+   "open_questions": [
+    "When was SV_TEST_FLAKINESS_ANALYZER_RATE_LIMIT per_day_limit set to 0, i.e. when did automatic TFA runs actually stop? That needs the sitevar audit log. December 2022 notes show it was running then, and the April 2026 snapshot shows 0.",
+    "Why does the new stack hard-code the AutoTestRemediation Bot's service user (4533519350210414, owned by billing_experiences_customer_success)? Did its owners approve that, or does TFA need its own service user? Posting is currently blocked anyway (comments.py:257-290).",
+    "Do the old xdb.tfa tables and TFA reports (e.g. internalfb.com/tfa/4250, /7145) still exist, or were they deleted? Not checked.",
+    "I could not check the contents of the dev-hermit 'authoritative records' (github.com/rrnewton/dev-hermit at edd96831) because GitHub is unreachable from this host and there is no local checkout."
+   ]
+  },
+  {
+   "key": "functionality",
+   "summary": "This isn't a general flaky-test analyzer. It's an experiment harness for 3 specific C++ tests (httpcoro, thrift, asyncssl), tied to one host, and it never talks to any TFA service. The planned end-to-end flow: check recorded Hermit PASS/FAIL runs, dry-run a task comment, have a Codex agent write a root-cause hypothesis and patch, have a second Codex agent review it, apply the patch, build, replay the seeds under Hermit, run buck test and arc lint, create an unpublished draft diff, then dry-run a final comment. Almost none of that can run today. The packaged Hermit is BLOCKED, so run-seed and run-case stop before launching anything. Every pinned Codex release is 'blocked', so no agent ever runs. Comments are always --dry-run. What does work: offline renderers that read evidence produced outside the package (a PASS-vs-FAIL log text diff; a verdict from re-judging recorded replays), manifest/report validators, a shallow dry-run, and run-witness using the separate open-source-Hermit mode. That mode only works on a host with the owner's exact /home/newton paths plus sudo and a Btrfs quota. About 49% of the 32.7k lines are tests. Of the non-test code, roughly three quarters is hash-binding, sealing, crash-recovery transactions and process/Codex containment. The flaky-test logic itself is ~0.7k lines at its core (~3.5k counted generously), and the actual root-causing is handed to the blocked LLM agent.",
+   "findings": [
+    {
+     "claim": "Scope is hard-wired: the manifest loader refuses anything other than exactly three cases named httpcoro, thrift and asyncssl. Only asyncssl may have a live task. Each case's JSON must match a pinned SHA-256. There is no test discovery and no population.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/manifest.py:249-250 ('phase two requires exactly three cases'), :253-254, :256-259, :272-277 (CANONICAL_CASE_SHA256 at :37-41); README.md:3-5 ('does not discover tests or schedule production work')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "It is locked to one host. The case argv hardcode /home/newton/work/dev-hermit/bin/safehermit, a historical Hermit binary under /home/newton/work/dev-hermit/ignored/..., and ELFs under /home/newton/work/tfa/fbsource/buck-out. Because each case is hash-pinned, those paths can't be edited for another host. /home/newton/work doesn't exist on devvm895.",
+     "evidence": "manifest.py:193-194; cases.v1.json pass_argv/fail_argv; `ls /home/newton/work/tfa` -> 'No such file or directory' on devvm895.vcn0.facebook.com",
+     "confidence": "verified"
+    },
+    {
+     "claim": "There is no TFA-service dependency. The only external executables allowed are codex, arc, buck, fbpython, jf, meta and sl, and the BUCK deps are just click, the subprocess framework and the CLI decorators. The test/issue/task IDs are hardcoded in cases.v1.json.",
+     "evidence": "process.py:31-40 ALLOWED_EXECUTABLES; BUCK tfa_phase2_lib/tfa_phase2 deps; cases.v1.json test_id/issue_id/task_id fields",
+     "confidence": "verified"
+    },
+    {
+     "claim": "CLI subcommands that are real but offline or trivial: validate-manifest prints {schema_version, cases:3}; render-prompt prints the Codex investigation prompt; validate-report checks a qualified-report JSON.",
+     "evidence": "main.py:89-93, :96-105, :166-179; prompts.py:1-159",
+     "confidence": "verified"
+    },
+    {
+     "claim": "render-evidence is real and offline. It reads a dev-hermit record directory and writes difference-hints.json (a text diff of PASS vs FAIL logs: gtest failures, fatal lines, top stack frames, reordering flag, labelled 'not a root cause') plus an unposted initial-comment.md. It needs the owner's dev-hermit record dirs, which aren't in fbsource.",
+     "evidence": "main.py:108-136; hints.py:172-204; D121848892 summary ('qualification: deterministic-text-difference; not a root cause')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "render-followup is real and offline. It re-judges replay receipts into a SUPPORTED / INCONCLUSIVE / NOT SUPPORTED verdict and writes an unposted comment containing the patch. Nothing in the package produces its inputs: no code writes tfa.followup-ledger.v2, tfa.witness-replay-run.v1, tfa.relocated-reproducer-summary.v2 or tfa.external-oss-hermit.v1. Those were made out of tree.",
+     "evidence": "main.py:139-163; followup.py:199-338 (judge/verdict); `grep -rn 'followup-ledger|witness-replay-run|relocated-reproducer|external-oss-hermit.v1'` hits only the schema constants (followup.py:32-33, relocation.py:19-20, hermit.py:1969) and tests",
+     "confidence": "verified"
+    },
+    {
+     "claim": "dry-run is shallow. It writes prompts and marks VALIDATED_REPRO without running anything. For asyncssl only, it makes real `meta tasks.comment list` and `tasks.comment create --dry-run --service-user=4533519350210414` calls against T255721720, which is an open TEST_ISSUE, '10+ tests flaky for secure_pipes', owned by Service Encryption.",
+     "evidence": "orchestrator.py:47 (ledger.append VALIDATED_REPRO {'mode':'authoritative-record'}), :50-75, :96-103 ('no diagnosis or source edit was attempted'); comments.py:199-231; `meta tasks.task describe --task T255721720` -> title '10+ tests flaky for secure_pipes', owning_team 'Service Encryption', type TEST_ISSUE, completed N/A",
+     "confidence": "verified"
+    },
+    {
+     "claim": "run-witness in packaged mode (the default) fails closed before launch. The CLI rewrites every case's argv through packaged_hermit_argv, which raises HermitError on BLOCKED or PROVENANCE_MISMATCH. The packaged a919cce record is BLOCKED (the FullTrace verifier rejects even /bin/true; sanitizer RLIMIT_CORE; PMU skid).",
+     "evidence": "main.py:41-63, :220-222; hermit.py:1770-1830 (raise at :1819); hermit-import-compatibility.v1.json packaged_executable.state=BLOCKED, qualification_probe.state=BLOCKED",
+     "confidence": "verified"
+    },
+    {
+     "claim": "run-witness with --external-oss-hermit-record is the only path that actually runs Hermit today. It accepts a self-declared, digest-pinned qualification record for the open-source Hermit 4630ee2a binary. The controller checks the record's shape but doesn't re-run its probes. It is wired only into run-witness. The author ran it 8/8 on their own host.",
+     "evidence": "main.py:219-248; README.md external-OSS paragraph ('The record is a self-declared qualification pinned by digest; the controller checks its shape... but does not re-run the probes'); D121978137 test plan (8/8 rc 0 in 210 s)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "run-seed always goes through packaged mode, so it always fails closed. run-case also fails closed at startup, and run-agent can't be reached.",
+     "evidence": "main.py:282 and :374 call _execution_manifest (packaged); orchestrator.py:233-240 (run-agent requires ledger stage INVESTIGATING/FIX_DRAFTED set by run-case)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Every Codex agent launch (both the diagnostic agent and the reviewer) is refused at preflight. Both pinned compatibility entries are 'blocked' for a Btrfs daemon-socket bug, and any unrecognised binary counts as 'unsupported'. The pins are also host-specific, so they go stale whenever Codex rolls over.",
+     "evidence": "process.py:105-121 (_CODEX_COMPATIBILITY both 'blocked'), :617-656 (refusal unless state=='eligible'), :1235-1240 (preflight on every `codex exec`); D121978134 summary",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The run-case state machine is VALIDATED_REPRO -> INITIAL_COMMENT -> INVESTIGATING -> FIX_DRAFTED -> VERIFIED -> DIFF_DRAFTED -> FINAL_COMMENT. Status by stage: validate recorded witness artifacts = real code; initial/final comment = dry-run only; Codex diagnosis and Codex review = blocked; sl import + buck build + Hermit replays at FAIL/PASS/fresh seeds + buck test + arc lint = real code but unreachable; sl commit + `jf submit --draft --no-request-review` + readback = real mutation code but unreachable. End to end it has only been exercised with mocks.",
+     "evidence": "state.py:21-28; pipeline.py:4464-4575 (run_case), :1971-2062, :2068-2108, :3207-3448, :3505-3705, :3981-4175; drafts.py:63-80, :391-470; test_prototype.py RunCaseTest patches pipeline.run_process (7x), _verify_independent_diff_review (18x), _checkout_state, _draft, etc.",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Comments can never be posted: assert_bot_authorization rejects every proof, even a perfectly formed one. The one real outward mutation the code could make is an unpublished, reviewer-free draft diff via jf, and that is unreachable today.",
+     "evidence": "comments.py:269-287 (unconditional raise CommentError(UNTRUSTED_AUTHORIZATION) at :287); drafts.py:63-80 (reviewers must be empty, exact submit contract), :82-106 (readback requires Unpublished, no reviewers, no land)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "External things it calls: codex exec (native workspace-write sandbox, network off); Hermit (historical 4630ee2a, packaged hermit-test-bin via a BUCK alias, or open-source); safehermit (bash, uses systemd-run --user); bounded-run-space (bash, `sudo -n btrfs subvolume create`, qgroup limit, delete); meta tasks.comment list and create --dry-run, phabricator.diff describe/files, metacli.command annotations; jf submit --draft; sl log/status/diff/import/revert/commit; buck build/test; arc lint; fbpython. The tests also use `sudo -n mount -o loop`, mkfs.btrfs, btrfs quota enable, sudo systemctl and systemd-run.",
+     "evidence": "pipeline.py:428,482,717,2459,2500,2520,3220,3533,3629,3636,4023; comments.py:201,218,251; drafts.py:183,357,364,401; payload_wrapper.py:184; process.py:52-59, :1553-1616; resources/safehermit:524-580; resources/bounded-run-space:95-96, :191-229; tests/test_production_containment.py:388-410, :1085-1092, :4290",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Every Hermit attempt needs a sudo-created Btrfs qgroup subvolume for verification output, and refuses to run otherwise. So you need passwordless sudo plus a Btrfs filesystem with quotas enabled; this is the same reason Sandcastle CI fails.",
+     "evidence": "hermit.py:615-658 (_prepare_verify_space; 'bounded verification space was not applied' at :658), :2731-2760; resources/bounded-run-space:191-192 ('passwordless sudo unavailable')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The containment is weaker than the machinery suggests. After a patch is approved, the controller runs buck, arc and Hermit as the host user with no outer filesystem or network isolation, relying on cgroup cleanup and the review step.",
+     "evidence": "process.py:49-51 (OUTER_FILESYSTEM_ISOLATION='none', OUTER_NETWORK_ISOLATION='none'); README.md paragraph 'Those post-approval host commands rely on the review boundary plus TFA cgroup lifecycle containment'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Line counts (32,682 total). Tests: 16,147 (49.4%): test_prototype.py 10,475, test_production_containment.py 4,932, test_process_migration_helper.py 740. Product Python: 13,555 (41.5%): pipeline 4,575, hermit 2,815, process 1,631, followup 590, report 515, state 487, drafts 470, main 387, relocation 343, orchestrator 298, comments 287, manifest 279, hints 204, payload_wrapper 194, process_supervisor 171, prompts 159, review 112, case_checkout 38. Bash containment resources: 1,766 (safehermit 1,452, bounded-run-space 314). JSON data/schemas: 688 (cases.v1.json 427). README: 357. BUCK/PACKAGE/hub.toml: 169.",
+     "evidence": "`find fbcode/testinfra/tfa -type f | xargs wc -l` in /tmp/tfa-src",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Rough split of product Python, from tagging each function as core logic or binding/containment: about 3.5k core (26%, counted generously: the whole CLI, orchestrator, manifest, prompts, hints and review count as core) vs about 10.1k (74%) hash-binding, sealing, leases, crash-recovery transactions, runtime-image staging, Codex identity and cgroup containment. Per file: pipeline.py 15% core, hermit.py 11%, process.py 7%. Adding the 1.8k lines of bash containment, core is about 23% of non-test code.",
+     "evidence": "ast-based per-function tally over /tmp/tfa-src/fbcode/testinfra/tfa/*.py (e.g. pipeline.py _materialize_external_runtime_links 281 lines, _verify_runtime_image 161, _validate_remediation_transaction 174; process.py _codex_environment_preflight 196, run_process 257; hermit.py safehermit_evidence 226, packaged_hermit_argv 167)",
+     "confidence": "inference"
+    },
+    {
+     "claim": "The actual flaky-test analysis logic is small: the PASS/FAIL text-diff hints (204 lines), the gtest PASS/FAIL/fatal checks (~220 lines), the follow-up verdict rules (~70 lines), and the LLM prompt (159 lines). Root-causing itself is handed to the Codex agent's prompt ('Emit 2-5 ranked falsifiable hypotheses... Propose the smallest principled fix'), and that agent is blocked.",
+     "evidence": "hints.py:1-204; pipeline.py:119-342; followup.py:199-338; prompts.py INVESTIGATION_CONTRACT (lines ~48-90)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "About 10.1k of the 16.1k test lines target process, Codex, containment, state and draft safety: ProcessTest 3,142, CodexIdentityHardeningTest 648, test_production_containment 4,932, helper 740, DraftTest 475, StateTest 142. About 2.0k target analysis/rendering: Followup 669, Relocation 293, Report 269, Manifest 197, Comment 158, Hint 132, InvestigationRecovery 136, DryRun 83. RunCaseTest (3,076) is mixed.",
+     "evidence": "ast per-class line counts of tests/test_prototype.py and tests/test_production_containment.py",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Most of the 22 diffs harden rather than add capability. About 5 add capability (D121244476 prototype, D121848892 hints, D121848893 relocation, D121848896 follow-up, D121978137 open-source-Hermit mode). The other ~17 bind, pin, seal or reword. The single biggest diff, D121244213 (Codex sandbox/containment), is 20,138 of ~36.4k changed lines (~55%).",
+     "evidence": "/tmp/tfa-src/STACK_SUMMARIES.md headers (line counts per diff); titles such as 'Hash-bind...', 'Bind...', 'Seal...', 'Pin...', 'Refuse...'",
+     "confidence": "inference"
+    },
+    {
+     "claim": "What a user gets today on devvm895: validate-manifest, render-prompt, and a dry-run that reads T255721720's comments and makes a --dry-run create call. render-evidence, render-followup and open-source-Hermit run-witness need evidence and binaries that exist only on the author's host (devbig030, /home/newton/work/...). The tangible results so far were produced there: text-diff hints for all 3 cases and SUPPORTED follow-up verdicts from out-of-tree replays. They are not reproducible from the stack alone.",
+     "evidence": "D121848892 test plan (hints for asyncssl/thrift/httpcoro); D121848896 test plan (thrift/asyncssl/httpcoro SUPPORTED from followup/<case>/ledger.json); `ls /home/newton/work` -> No such file or directory on devvm895",
+     "confidence": "likely"
+    },
+    {
+     "claim": "The README says runtime output must stay under /tmp/tfa-phase2 or ~/temp/tfa-phase2, but I couldn't find code that enforces this for --artifact-root.",
+     "evidence": "README.md:28; grep for Path.home/expanduser/'temp' in *.py -> no hits; only lock roots are fixed (state.py:32-33)",
+     "confidence": "likely"
+    }
+   ],
+   "open_questions": [
+    "What produced the follow-up ledgers, replay receipts, relocation summaries, open-source-Hermit qualification record and investigator candidate patches behind the SUPPORTED verdicts, given Codex was blocked the whole time? They aren't in the stack or on devvm895; presumably they are in the author's evidence tree on devbig030 (/home/newton/work/tfa/...).",
+    "Is the 4630ee2a Hermit revision the manifest relies on actually public at github.com/rrnewton/hermit? GitHub can't be reached from this host.",
+    "/tmp/tfa-phase2 on devvm895 still holds leftovers from today's containment test run (production-test-failures, fixture-recovery, tfa-production-codex-report-*). Should they be cleaned up?"
+   ]
+  },
+  {
+   "key": "runtime-env",
+   "summary": "The stack only runs on a devserver, and in practice only on one particular one: the machine the owner used, devbig030 with his /home/newton/work layout. Nothing in it is built for Sandcastle or Tupperware. The README calls it a prototype that \"does not discover tests or schedule production work\". There is no fbpkg or Tupperware spec, only a local CLI. The manifest hard-codes /home/newton paths to the Hermit binary and the test binaries (ELFs), and none of those paths exist on devvm895. Running it needs passwordless sudo, a Btrfs filesystem with quotas enabled (devvm895's /tmp is Btrfs but quotas are off, so only the disposable loop-mount fixture works), systemd --user, a delegated cgroup, the owner's own credentials, and the corp network. Two parts can't run on any host today: every pinned Codex version is marked \"blocked\", and the internal Hermit (a919cce) is marked BLOCKED. In Sandcastle CI, 28 of the 43 containment tests pass and 15 fail in each build mode. 9 fail because twsvcscm isn't allowed to sudo mount, 1 because a devserver-only chataccd unit is missing, and 5 because the Codex digest doesn't match. The background said 10 failures were sudo; it is actually 9 plus the chataccd one. To run in CI, the tests would need to become root or VM tests, the /home/newton paths would have to go, and Hermit would need a qualified internal build.",
+   "findings": [
+    {
+     "claim": "The stack is a local, single-operator prototype. It has no Sandcastle, Tupperware or service deployment design: no fbpkg, no TW spec, no mention of sandcastle/tupperware/devserver anywhere in the code. The only entry point is a local CLI binary.",
+     "evidence": "README.md:3-4 'It does not discover tests or schedule production work'; README.md:246-247 'An audited privileged helper is deferred production hardening'; BUCK has only hub_python_library/hub_python_binary + cli.metadata(binary_name='tfa-phase2'); `grep -i -E 'devserver|sandcastle|tupperware|twsvcscm' *.py tests/*.py resources/*` returned no hits except hostname/service-user lines",
+     "confidence": "verified"
+    },
+    {
+     "claim": "It was built for one specific devserver and user: every execution argv hard-codes /home/newton/work paths, and the validator requires them.",
+     "evidence": "manifest.py:193 `if argv[0] != \"/home/newton/work/dev-hermit/bin/safehermit\"`; hermit.py:58 SAFEHERMIT constant; cases.v1.json pass_argv uses Hermit binary /home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a and guest ELFs under /home/newton/work/tfa/fbsource/buck-out/...; pipeline.py:343-347 _assert_original_artifact re-hashes the ELF at that exact path (called at pipeline.py:2060, 3512); manifest.py:20-22 pins cwd /tmp/tfa-phase2/cwd/<case>",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The host was devbig030. All implementation diffs are tagged with it, and the working witness runs (8/8 rc 0) were on a disposable quota-enabled Btrfs fixture there. That devbig030 is a physical devserver is an inference from its name.",
+     "evidence": "/tmp/tfa-src/STACK_SUMMARIES.md lines 50,69,87,107,...,630 '[hermit2, ..., devbig030, role=impl]'; D121978137 test plan (STACK_SUMMARIES.md:996) 'Witnesses ... on a disposable quota-enabled Btrfs fixture ... 8/8 rc 0 in 210 s'; evidence dir /home/newton/work/tfa/external-oss-mode/",
+     "confidence": "likely"
+    },
+    {
+     "claim": "The manifest-pinned paths don't exist on devvm895, so witnesses or cases can't run here without re-recording the manifest.",
+     "evidence": "`ls /home/newton/work/dev-hermit/bin/safehermit .../hermit-4630ee2a /home/newton/work/tfa/fbsource` -> 'No such file or directory' for all three (devvm895, 2026-09-28)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Hard requirement: passwordless sudo, for btrfs subvolume create/delete and qgroup limit on every Hermit attempt. If the disk bound isn't applied, the run is refused rather than degraded.",
+     "evidence": "resources/bounded-run-space:49-53 ('everything goes through `sudo -n`'), :96 have_sudo, :191-229 create path; hermit.py:615-660 _prepare_verify_space raises 'bounded verification space was not applied' when create rc!=0; hermit.py:2594-2600 requires bound.disk == 'APPLIED:...'; README.md:174 'NOT_APPLIED or UNBOUNDED disk evidence is a refusal'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Hard requirement: a Btrfs filesystem with quotas enabled. devvm895 has Btrfs /tmp but quotas are off, so the default log root would come back UNBOUNDED and be refused. The only other log root allowed is the test fixture shape /tmp/tfa-phase2/tfa-production-btrfs-*/mount/safehermit, which needs a sudo loop mount plus `btrfs quota enable`.",
+     "evidence": "`stat -fc %T /tmp` -> btrfs; `sudo -n btrfs qgroup show /tmp` -> 'ERROR: can't list qgroups: quotas not enabled'; hermit.py:107-137 _safehermit_log_root accepts TFA_TEST_VERIFY_SPACE_ROOT only if it is under /tmp/tfa-phase2/tfa-production-btrfs-*/mount/safehermit; tests/test_production_containment.py:351-409 (truncate 128MiB image, mkfs.btrfs, `sudo -n mount -o loop`, `sudo -n btrfs quota enable`)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Hard requirement: a working systemd --user manager and a cgroup-v2 subtree the invoking user can write to. Both exist on devvm895 and on Sandcastle; the tests that use them passed in CI.",
+     "evidence": "resources/safehermit:518-530 probes `systemd-run --user`, :580 runner, :854 dies with '--sh-resource-report requires a working systemd --user transient service'; process.py:915-950 mkdirs tfa-<pid>-* child cgroups; devvm895: `systemctl --user is-system-running` -> running, /proc/self/cgroup under user@23789.service; CI D121978137: test_nested_run_process_in_transient_scope_scrubs_exec_wrapper and test_cgroup_cleanup_covers_nested_descendants_on_every_outcome both Passed",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Sandcastle CI results for D121978137, per build mode: 28 containment tests pass and 15 fail. 9 fail on sudo loop mount denied to twsvcscm, 1 on a missing chataccd-mount@ user unit, 5 on Codex manifest digest mismatch. This corrects the background's '10 sudo' to 9 sudo plus 1 chataccd. The failures ran on shared Tupperware hosts.",
+     "evidence": "`meta phabricator.diff.signals list --number=D121978137` -> containment Passed 62 / Warning 30; `testx --as-json results get <id>` for all 30: 'Sorry, user twsvcscm is not allowed to execute '/bin/mount -o loop .../verify.btrfs ...' as root on d2d3-cf56-1531-0a00.twshared17942.28.prn2.tw.fbinfra.net' (mode/dev; b5c0-f84c-152d-0a00.twshared32869.04.cco5.tw.fbinfra.net for mode/opt); killed_worktree test: 'Failed to start chataccd-mount@8b35ddbd552a08c5.service: Unit ... not found'; real_codex tests: 'ProcessError: Codex latest release manifest identity differs'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Eden clone and Sapling worktree fixtures work on Sandcastle. Only the devserver chataccd/hg_monitor service part doesn't.",
+     "evidence": "CI Passed: test_worktree_journal_is_atomic_sealed_and_private, test_real_controller_transaction_rejects_and_retries_exact_paths (both use _disposable_worktree_source -> `/usr/local/bin/eden clone`, tests/test_production_containment.py:481-545); failing test starts `systemctl --user start chataccd-mount@...` (test_production_containment.py:1581-1594); devvm895 has chataccd-mount@.service in `systemctl --user list-unit-files`",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The containment tests aren't marked to skip on Sandcastle, so CI runs them and they block landing. A `local_only` label exists that would omit them on Sandcastle (hiding the failures, not fixing them).",
+     "evidence": "tests/BUCK:21-24 labels = [tpx_labels.serialize_test_cases] only; fbsource tools/build_defs/testpilot_defs.bzl:10-12 'local_only ... the test will be omitted on Sandcastle'; all 30 warnings show land_friction LAND_BLOCKING",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Getting root in Sandcastle is possible only through job-level opt-in (run_as_root / user root) or the sudotest framework (adds a 'uses_sudo' label; the contbuild must allow root). A Sept 2026 RFC moves Sandcastle job containers to user namespaces, where filesystem mounts fail, and proposes VM tests instead. Inference: loop-mount tests in diff CI have no long-term future, and antlir2 VM tests are the realistic route.",
+     "evidence": "wiki https://www.internalfb.com/wiki/Sandcastle/Troubleshooting_FAQ/Security_ACL_and_Authorization/ ('Running as root ... run_as_root = true'); fbcode/tupperware/sudotest/defs.bzl:16-27 ('should work out of the box on your local devserver. For this to also work on sandcastle, you need to ensure that your contbuild allows for root priv execution'); RFC 'Userns for Sandcastle job containers' https://docs.google.com/document/d/1bsDXUWPQW55fv-NGrA55kNDk6Cyk8-rcSZ_wial9AJs ('These tests mount filesystems ... no amount of in-container privilege makes them work under a shifted userns ... migrate to vmtests', T288822939); fbcode/antlir/antlir2/antlir2_vm/bzl/test.bzl exists",
+     "confidence": "likely"
+    },
+    {
+     "claim": "Classic OnDemand (Tupperware containers) gives no usable sudo, so it can't run the stack. The newer DSV2 OnDemand machines are devvms with sudo, so they could in principle, but they would still lack Btrfs quotas and the /home/newton paths (inference).",
+     "evidence": "post https://fb.workplace.com/groups/devenvusers/permalink/2119178785082480/ ('On Demand does not have sudo access for users'); wiki EE_Infra_Platforms_&_Tooling/Enterprise_Virtualization_Engineering/dev/on-demand ('No Root Access'); post https://fb.workplace.com/groups/1392872742159150/permalink/1685436742902747/ ('[100%] On Demand on Devservers V2: Sudo Access ... VM-based isolation')",
+     "confidence": "likely"
+    },
+    {
+     "claim": "The Codex agent stage can't run on any host today. Every entry in the compatibility table is 'blocked'. The pins are exact SHA-256s of host-installed, owner-managed files, so they go stale whenever Codex rolls over, and they have already drifted again on devvm895. Codex is also installed on Sandcastle hosts, but with different digests.",
+     "evidence": "process.py:61-70 (_CODEX_RELEASE_MANIFESTS stable 4b776a3e\u2026, latest d291f08a\u2026), process.py:106-120 (both keys -> ('blocked', _CODEX_SOCKET_ISOLATION_BLOCKER, None)); devvm895 `sha256sum`: /usr/local/bin/codex c37d7ac7\u2026 (pinned launcher d22c52fa\u2026), codex.real d291f08a\u2026 (pinned stable 4b776a3e\u2026), codex_latest.real 7e520ac7\u2026 (pinned d291f08a\u2026); on Sandcastle the error 'release manifest identity differs' is only raised after the root-owned file was found (process.py:342-352 would say 'unavailable' otherwise; :455-456)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The Codex blocker depends on host layout: the pinned releases reject a Btrfs /tmpvol subvolume that is visible at /tmp, /var/tmp and /data/tmpvol (a devserver-style layout). The code says an owner-approved build containing two upstream fixes is needed. Per D121978134 those fixes landed in fbsource on 2026-09-25 but weren't yet in any published release.",
+     "evidence": "README.md:213-218; process.py:71-76 _CODEX_SOCKET_ISOLATION_BLOCKER; STACK_SUMMARIES.md D121978134 section ('de089a75d6a1 imports upstream 0.157.0 (D121728319) and 18cdc3ab303f ... (D121708813). Both landed on 2026-09-25 ... No installed or published release contains them')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "An internal Hermit does exist in fbsource today: buck target fbcode//hermetic_infra/hermit/hermit-cli:hermit, an fbpkg builder that installs /usr/local/bin/hermit, and an auto-bumped MSDK DotSlash binary. It isn't installed on devvm895.",
+     "evidence": "fbcode/hermetic_infra/hermit/hermit-cli/BUCK:50 name='hermit'; fbcode/hermetic_infra/hermit/fb-only/BUCK fbpkg.builder(name='hermetic_infra.hermit_cli') + install.toml '/usr/local/bin/hermit'; fbcode/hermetic_infra/hermit/hermit DotSlash (build flags @fbcode//mode/opt-clang-thinlto, commit 38a03ea7\u2026, bump D122105022 2026-09-27); `ls /usr/local/bin/hermit` -> No such file",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The internal Hermit source is still the a919cce import from July 2026. The stack bundles it as hermit-test-bin but records it as BLOCKED, so packaged_hermit_argv fails closed and run-case can't run witnesses with it on any host.",
+     "evidence": "sl log 5a90c83fbd90 (2026-07-25, newton, D113553943, 'Source: rrnewton:stable at a919cce\u2026'); `sl log fbcode/hermetic_infra/hermit/hermit-cli/src` shows no later import (only codemods); BUCK:22-23 hermit-test-bin-opt -> //hermetic_infra/hermit/hermit-cli:hermit; hermit-import-compatibility.v1.json packaged_executable.state BLOCKED ('--verify-verbose rejects /bin/true ...'), qualification_probe.blockers ['sanitizer guests cannot initialize RLIMIT_CORE','the ptrace PMU timer can exceed its single-step target on this host','the imported CLI has no retained successful verify-log option']; README.md:122-123",
+     "confidence": "verified"
+    },
+    {
+     "claim": "The external OSS Hermit mode (D121978137) needs the exact preserved binary (sha256 5c422b85\u2026, rev 4630ee2a) at the exact manifest path, plus a self-declared record naming https://github.com/rrnewton/hermit.git. It is wired only into run-witness, not run-case. Inference: anywhere else, a rebuild would have to be byte-identical or the manifest re-recorded, and GitHub isn't reachable from this host.",
+     "evidence": "hermit.py:1966-2000 (executable.sha256 == case.hermit_sha256; executable.path == str(binary) at :1980; repository check at :1982; clean version stamp), hermit.py:2037 _pin_safehermit(binary, \u2026) copies from that path; cases.v1.json hermit_sha256 5c422b8599eb\u2026; STACK_SUMMARIES.md D121978137 'The mode is wired only into run-witness, not run-case'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Hermit's own needs: user/PID/mount namespaces, ptrace, seccomp, and a PMU (hardware performance counters) for preemption. Containers often block these. devvm895 exposes a working branch counter. Whether Hermit even starts on Sandcastle is untested: every Hermit-running CI test failed at the loop mount before launching Hermit.",
+     "evidence": "fbcode/hermetic_infra/hermit/README.md:20-28, :278-282; docs/TESTING_ENVIRONMENTS.md:62-65, :80-82 ('Container ... perf perms and namespaces are commonly restricted'); devvm895 `perf stat -e branches true` -> 420,418 branches; CI errors for the 9 _serialized_nested_hermit tests are all the fixture's sudo mount (decorator at test_production_containment.py:204-213)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Identity and network needs: Codex, draft creation and task-comment dry-runs all run as the invoking human, using their certificates and the corp network. Posting as the service user is always refused. Inference: under twsvcscm in Sandcastle, these identity-bound steps wouldn't work as designed.",
+     "evidence": "process.py:31-40 ALLOWED_EXECUTABLES (/usr/local/bin/codex, arc, buck, fbpython, jf, meta, sl); process.py:1531-1548 passes CODEX_CLIENT_CERT/CODEX_CLIENT_KEY/HOME/USER; drafts.py:70-77 `jf --json submit --draft --no-request-review`; comments.py:216-231 `meta tasks.comment create --service-user=4533519350210414 --dry-run`; comments.py:269-289 assert_bot_authorization always raises; README.md:236-240 Codex bootstrap runs 'as the invoking host user so bootstrap can bind the correct identity and certificate'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "What already runs in CI: the unit layer (tfa_phase2_test, network_access='none') and 28 of 43 containment tests pass on Sandcastle. Everything that launches Hermit, uses real Codex, or needs chataccd fails there.",
+     "evidence": "tests/BUCK:8-11; background: tfa_phase2_test 215/215; CI D121978137: 528 Passed / 30 Warning / 1 Info, and all 30 warnings are containment tests",
+     "confidence": "verified"
+    },
+    {
+     "claim": "Where it can run today: a devvm or devserver with passwordless sudo, Btrfs, systemd --user and chataccd (devvm895 passes 37 of 43 containment tests). But it can't do anything end-to-end without re-recording the manifest and building the 4630ee2a Hermit and ELFs locally, and the Codex stage is blocked everywhere. Inference: running it in CI would require (1) replacing the /home/newton paths with Buck-built artifacts, (2) importing and qualifying a Hermit that can replace 4630ee2a in fbsource, (3) moving the sudo/Btrfs/chataccd tests to antlir2 VM tests or a root-enabled contbuild, or labelling them local_only, (4) replacing host-specific Codex digest pins with a release check that doesn't break on rollover. Nothing points at Tupperware.",
+     "evidence": "Synthesis of the findings above; devvm895 local run 37 pass / 6 fail (background); README.md:28 'Runtime output must stay under /tmp/tfa-phase2 or ~/temp/tfa-phase2'",
+     "confidence": "inference"
+    }
+   ],
+   "open_questions": [
+    "Is devbig030 still available with /home/newton/work/dev-hermit and /home/newton/work/tfa/fbsource intact? If so, it's the only host where the recorded witnesses can re-run unchanged.",
+    "Does Hermit's ptrace backend, with namespaces, seccomp and the PMU, work inside a Sandcastle job container? CI never got far enough to launch it.",
+    "Does devbig030's /tmp have Btrfs quotas enabled, or did every production-style run rely on the loop-mount fixture? The D121978137 test plan suggests the fixture.",
+    "Is rrnewton/hermit rev 4630ee2a (or a successor) scheduled for import into fbcode/hermetic_infra/hermit? Without it, packaged_hermit_argv stays BLOCKED.",
+    "Would the hermit oncall or testinfra accept root (sudotest) or antlir2 VM tests for this package, given the Sandcastle userns RFC (T288822939)?",
+    "Who owns service user FBID 4533519350210414, and is there any plan for the 'trusted issuer' needed before any comment could post?"
+   ]
+  },
+  {
+   "key": "revival-inputs",
+   "summary": "I checked five building blocks for a small TFA-like revival: take a flaky test, reproduce it under Hermit with a PASS seed and a FAIL seed, then comment on its task. (1) Finding flaky tests: available. TestX flags flaky tests, files FLAKY issues and auto-creates tasks, all readable with `meta testinfra`. (2) Somewhere to run it: partly available. The usual setup is a Chronos schedule that launches a Sandcastle job, and ptrace works on Sandcastle. But Hermit's own container fails there today with a permission error when it tries to mount. Root access on Sandcastle is also being tightened. (3) Posting comments: the mechanism exists, but TFA has no identity to use. The stack hard-codes another team's bot (AutoTestRemediation Bot), and that bot's permissions only cover that team's own job. The fix is a bot owned by you, not the \"receipt issuer\" the stack says is missing. (4) Hermit: it is packaged and auto-updated internally, and you and jasonwhite are its oncall. But its README says it is in maintenance mode, nothing in CI uses it, and the old TFA code is gone. (5) Overlap is large. Test Infra runs a central AI test fixer and asks teams not to build separate ones. Today that fixer only picks up outright failures, not flaky tests, and no existing fixer uses Hermit. That gap is the one real opening.",
+   "findings": [
+    {
+     "claim": "[1 Source: AVAILABLE] TestX labels tests FLAKY (state BAD_QUALITY) and gives each a flakiness score. You can query this per oncall, owner or test with the meta CLI.",
+     "evidence": "`meta testinfra.test list --help`: 'Status values for --status: OK, FLAKY, PROBLEMATIC, FAILING, BROKEN, DISABLED'. Live: `meta testinfra.test list --name=\"fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect\"` -> test_id 562950211052906 status FLAKY state BAD_QUALITY flakiness 71.51 oncall secure_pipes",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[1 Source: AVAILABLE] Flaky tests get FLAKY 'test issues' (EntTestIssue, each with a stable IssueID) that link to tasks. `meta testinfra.issue list` returns them by test, oncall or task.",
+     "evidence": "`meta testinfra.issue --help`: 'Issue types: FAILURE, FLAKY, SKIPPING, ...'. `meta testinfra.issue list --test-id=562950211052906 --output=json` -> issue 224226669 FLAKY OPEN owner secure_pipes task_numbers T255721720 (matches cases.v1.json:286-288 issue_id 224226669 / T255721720 / live_task true)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[1 Source: AVAILABLE] Tasks for flaky tests are created automatically by the TestX task bot (TEST_FAILURE_BOT) as TEST_ISSUE tasks.",
+     "evidence": "`meta tasks.task describe --task=T255721720`: title '10+ tests flaky for secure_pipes', author generatedunixname499801791, type_label TEST_ISSUE; www/flib/intern/tasks/bots/TaskBot.php: 'TEST_FAILURE_BOT = 499801791;'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[1 Source: PARTIAL] A company-wide list of open FLAKY issues times out through the CLI. Broad discovery needs the per-oncall queries or the Hive tables (dim_signalinfra_tests) that other fixers use.",
+     "evidence": "`meta testinfra.issue list --issue-type-is=FLAKY --state-is=OPEN --limit=200` -> 'QueryErrorException ... xdb.issue_tracking ... Query timeout after 20000ms'; the per-oncall query `--owner-is=secure_pipes` works. Wiki Users/dnhoule/fix-tests-by-oncall-skill queries dim_signalinfra_tests.state_cached IN ('confirmed_bad','bad_quality','suspected_bad')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[1 Source] Of the three TFA cases, only asyncssl still has an open flaky-test task. httpcoro's FLAKY issue and task are closed, and thrift never had a FLAKY issue.",
+     "evidence": "`meta testinfra.issue list --test-id=562950215319283` -> issue 224798678 FLAKY CLOSED (T278900793); `meta tasks.task describe --task=T278900793` completed 2026-07-10; cases.v1.json:145-147 thrift issue_id null / task_id null",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[2 Scheduling: AVAILABLE] The established pattern for scheduled agent jobs is a Chronos schedule that runs a www script, which launches a Sandcastle job running Claude. Devserver cron is only for personal automation; production cron jobs belong in Chronos.",
+     "evidence": "www/flib/intern/scripts/auto_test_remediation/AutoTestRemediationScheduler.php:1-30 ('Runs as a Chronos job to launch AI-powered test fix sessions on Sandcastle'); Workplace post 'Run a Claude skill on Sandcastle as your bot identity' (SandcastleClaudeWithMetaCLICommand); wiki Devservers/no-services: 'Run a cron job -> Chronos'; ChronosGuide FAQ: 'Can Chronos run jobs on my devserver? No'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[2 Privileges: PARTIAL] ptrace plus seccomp works in Sandcastle CI, at least on some hosts. A Reverie ptrace test passed on a Sandcastle job today, and the same test failed on another host with a zero-count assertion, which looks like missing PMU counters.",
+     "evidence": "`meta testinfra.run list --test-id=562950403344809` (reverie/tests:timer_semantics): PASSED CONTINUOUS result 5066549976440516... execution_type SANDCASTLE_JOB 49539596597761641; FAILED on SANDCASTLE_JOB 63050395474893144 with 'left: 0 right: 500'. The test uses reverie_ptrace::testing (timer_semantics.rs:281-285); the tracer installs seccomp (reverie-ptrace/src/tracer.rs:356,383,518). The PMU cause is an inference.",
+     "confidence": "likely"
+    },
+    {
+     "claim": "[2 Privileges: MISSING today] Hermit's namespace container does not start on standard Sandcastle. Its own end-to-end tests fail with a mount permission error (EPERM) and have been disabled.",
+     "evidence": "`meta testinfra.run list --test-id=562950400403548` (hermit/tests:hermit_run_default__custombin_minimal_hello): FAILED CONTINUOUS, 'panicked at fbcode/hermetic_infra/reverie/reverie-process/src/container.rs:842:26 ... Error { errno: EPERM, context: Mount }', 4 retries; `meta testinfra.run get` -> execution_type SANDCASTLE_JOB 13510801858672229; `meta testinfra.test list --starts-with=fbcode//hermetic_infra/hermit --status=PROBLEMATIC` -> 496 DISABLED + 4 FAILING in the first 500 rows",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[2 Privileges: PARTIAL, getting tighter] Sandcastle jobs can still ask to run as root (a run_as_root argument or the uses_sudo test label). The TFA containment test does not ask for it. Sandcastle's H2 2026 plan locks down sudo and puts job containers in user namespaces, so loop mounts in CI are a moving target.",
+     "evidence": "Wiki Sandcastle/Troubleshooting_FAQ/Security_ACL_and_Authorization ('Running as root / sudo: Hack -> run_as_root = true ...'); wiki Citadel CI Configuration Overview ('uses_sudo' label); /tmp/tfa-src/fbcode/testinfra/tfa/tests/BUCK:21-24 (labels = [tpx_labels.serialize_test_cases] only); Sandcastle Roadmap H2 2026 doc (6.1 userns for job containers, 6.4 root restriction study); Workplace post 'Userns prerequisites for Sandcastle job containers' (2026-09-17, targeting mid-October); 'Sandcastle Security: Check-in' ('Lock down sudoers file')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[2 Tupperware: PARTIAL, inference] A Tupperware job in a user namespace allows only limited mounts and no perf. Hermit might run there, but without PMU-driven preemption. Hermit says it can run without counters, with fewer preemption points.",
+     "evidence": "Wiki Infra_Cloud/.../Tupperware_Reference/User_namespaces: 'Perf cannot be used from within user namespaces'; Mini TW Agent Part 6: mounts limited to proc,sys,devpts,tmpfs,ramfs,mqueue,bpf,overlayfs,fuse; fbcode/hermetic_infra/hermit/README.md:24-28 (needs user/PID/mount namespaces, ptrace, seccomp; can run without counters)",
+     "confidence": "inference"
+    },
+    {
+     "claim": "[3 Posting: legitimate path exists] An automated job can post task comments as a secure service user. The steps: create the bot, give it Limited Tasks Access, grant act_as on its INTERN_AUTOMATION ACL to a Sandcastle tag or command, register it in SV_META_CLI_SECURE_SERVICE_USER_ACCESS with CREATE, then post with `meta --act-as-secure-service-user <FBID> tasks.comment create`.",
+     "evidence": "`meta tasks.comment create --help`: '--service-user ... Must be a service identity'; Workplace 'Secure Service Users Can Now Use MetaCLI (in Sandcastle)'; 'Run a Claude skill on Sandcastle as your bot identity' (one-time setup steps 1-6); wiki Tasks/Task_Bots ('grant it ... Tasks Limited Access (if you don't need to create new tasks)')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[3 Posting: MISSING for TFA] TFA hard-codes the service-user FBID 4533519350210414. That is the AutoTestRemediation Bot, owned by billing_experiences_customer_success, and its act_as grant covers only that team's Sandcastle command and canary tag. TFA cannot legitimately post as it.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/comments.py:21 SERVICE_USER_FBID = \"4533519350210414\"; www/flib/intern/scripts/auto_test_remediation/AutoTestRemediationScheduler.php:41-46 ('AutoTestRemediation Bot ... act_as granted to SANDCASTLE_CMD:AutoTestRemediationCommand'); `meta hipster.acl access --type=INTERN_AUTOMATION --name=4533519350210414` -> act_as: SANDCASTLE_CMD:AutoTestRemediationCommand, SANDCASTLE_TAG:auto_test_remediation_canary; maintainers ONCALL_GROUP:oncall_billing_experiences_customer_success",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[3 Posting] The stack itself keeps comments dry-run only and refuses every authorization proof, because 'no trusted issuer' exists. In practice, Meta's trusted issuer is the ACL act_as grant plus server-minted tokens (dCATs). What's missing is a bot owned by TFA, not a new receipt system (inference).",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/README.md:8-17; comments.py:23-26 and 269-287 (assert_bot_authorization ends with raise CommentError(UNTRUSTED_AUTHORIZATION)); pipeline.py:2069-2108 (_comment_stage runs only --dry-run); D121877479 summary in /tmp/tfa-src/STACK_SUMMARIES.md:795-811",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[4 Hermit: PACKAGED] Internal Hermit ships as an MSDK dotslash binary, built in opt-clang-thinlto mode and bumped by a bot every few days. The hermit oncall (Hermetic Infrastructure) owns it; the rotation alternates newton and jasonwhite.",
+     "evidence": "fbcode/hermetic_infra/hermit/hermit (dotslash; oncall+hermit; target fbcode//hermetic_infra/hermit/hermit-cli:hermit; flags @fbcode//mode/opt-clang-thinlto); `sl log` -> 23099ab65bd7 2026-09-27 '[MSDK] Update hermit component on FBS:master' (D122105022); hermit-cli/BUCK:12 oncall(\"hermit\"); `meta oncall.rotation describe --name=hermit` team_name 'Hermetic Infrastructure'; `meta oncall.rotation schedule --rotation=hermit` -> newton / jasonwhite",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[4 Hermit: MAINTENANCE / not used in CI] The Hermit README says it is in maintenance mode and points to the rrnewton fork. Nothing outside hermetic_infra consumes the binary except a CLI-deployer list. It is not installed on devvm895.",
+     "evidence": "fbcode/hermetic_infra/hermit/README.md:13 ('Hermit is in maintenance mode'), :49 (git clone https://github.com/rrnewton/hermit.git); search_files for 'hermetic_infra/hermit/hermit-cli:hermit' excluding hermetic_infra -> only fbcode/clifoundation/cli_target/cli_deployer/buck_defs/msdk.bzl:175; `ls /usr/local/bin/hermit` -> not found (fb-only/install.toml would symlink it)",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[4 Hermit] The legacy TFA service is dead. Its www report classes were deleted as dead code on 2026-09-10 (untouched by a human for over 4 years). The www handler behind its Skycastle workflow no longer exists, leaving only generated stubs.",
+     "evidence": "`sl log -r 305e9a558072`: '[Codemod][HackDeadCode] Delete code in flib/intern/hermetic_infra/tfa ... TFAReport ... This file has not been touched by a human for over 4 years'; tools/skycastle/workflows2/hermetic_infra/tfa/tfa_run_experiment_workflow.sky:152 (tpx --hermit-experimental-tool-bin); search for TFAFinishExperimentSkycastleAction in www -> only the generated .sky wrapper",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[4 Hermit] By the stack's own record, the packaged internal Hermit (a919cce import) is BLOCKED for these witnesses. That is why D121978137 falls back to open-source Hermit.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json: packaged_executable.state BLOCKED ('--verify-verbose rejects /bin/true ...'); qualification_probe blockers ('sanitizer guests cannot initialize RLIMIT_CORE', 'ptrace PMU timer can exceed its single-step target')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[5 Overlap: HIGH] Test Infra runs a central AI test fixer (Devmate Tasks with TestFixerStrategyResolver, oncall testing_core) that handles over 5k test-issue tasks a week. It explicitly asks teams to add a custom strategy rather than build a separate fixer.",
+     "evidence": "wiki Test_Infra_For_Users/Getting_Started/Test_Issues/Agentic_Test_Fixers ('We recommend against implementing your own fixer outside of our resolver'); Workplace '[Workstream 2] Devmate Tasks \ud83e\udd1d Test Issue Tasks' ('over 5k test issue tasks per week'); www/flib/intern/tasks/devmate_assignment_config/task_types/test_fixer_strategies/TestFixerStrategyResolver.php:4 Oncalls('testing_core')",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[5 Gap] Every current strategy in that central fixer handles only FAILURE issues. FLAKY issues are not auto-delegated by default, and that is where a Hermit PASS/FAIL-seed diagnosis could fit.",
+     "evidence": "SUPPORTED_ISSUE_TYPES = keyset[TestInfraIssueTracker_IssueType::FAILURE] in DefaultTestFixerStrategy.php:9-11, Sabaton:9-11, DataReady:10-12, TritonMtia:11-13, AgentQ:9-11, TestUserDump:11-13; TTestFixerStrategyTrait.php:160-167 filters issues by SUPPORTED_ISSUE_TYPES",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[5 Overlap] The central fixer has already run on both TFA tasks that exist. Both runs on the asyncssl task (T255721720) ended 'Errored'.",
+     "evidence": "`meta tasks.comment list --task=T255721720`: generatedunixname645920441477411 (DevMate Bot per www/.../TaskBot.php AI_AGENT_BOT = 645920441477411 and arvr/projects/MheMate/scripts/agent_utils.py DEVMATE_BOT_FBID) 2026-06-17 'Finished Claude Code Tasks Run w/ Sandcastle Instance ID: 45035996740438914. Status: Errored' (and 54043195993210588 Errored); tags include task_delegated_to_devmate. T278900793: same bot 2026-07-08 'Starting Claude Code Tasks Run ... 67553994911789155'",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[5 Overlap] Test Infra is actively building stress-run budgets for verifying fixes to flaky tests (15-90 runs), keyed on open FLAKY issues. It would be a natural place to plug in Hermit-based evidence.",
+     "evidence": "www/flib/intern/testinfra/multisect/verdict/TestInfraFlakyFixVerificationBudget.php (MIN_RUNS=15, MAX_RUNS=90, requires an open FLAKY issue); `sl log`: 6a6cbfe48f07 2026-09-21 and 976cf740968e 2026-09-25 by lironm",
+     "confidence": "verified"
+    },
+    {
+     "claim": "[5 Overlap] At least 7 team-level AI fixers for flaky and broken tests exist, and none uses Hermit. Deterministic PASS/FAIL-seed reproduction is the one thing a TFA revival would add.",
+     "evidence": "AutoTestRemediation (www/flib/intern/sandcastle/commands/AutoTestRemediationCommand.php; D102070157 installs the fix-flaky-test plugin); fbcode/claude-templates/components/plugins/fix-flaky-test/.claude-plugin/plugin.json (author harunoz); Workplace posts: /fix_flaky_unit_tests (cornelr), engagement-test-health, BAI Test Health Pipeline, Test Satellite, Block Client RACER pipeline; search_files for hermit usage in fbcode/claude-templates, www/flib/intern, fbcode/testinfra, tools/skycastle (excluding tfa) -> only the legacy TFAExperimentName.php enum",
+     "confidence": "verified"
+    }
+   ],
+   "open_questions": [
+    "Would testing_core accept a 'Hermit deterministic repro' step for FLAKY GTEST issues inside TestFixerStrategyResolver, or a pre-fix evidence comment? Their wiki says to integrate there rather than build a separate fixer.",
+    "Could Hermit's mount-namespace failure (EPERM) on Sandcastle be avoided with run_as_root, or will the userns rollout planned for mid-October 2026 make it better or worse? Needs one canary job running `hermit run --namespace-only -- /bin/true`.",
+    "Are PMU counters reliably available on Sandcastle fbcode hosts? The Reverie timer test passes on some jobs and gets a zero count on others.",
+    "If it runs in a Sandcastle ephemeral container, which already isolates each job's cgroup and mounts, does the TFA containment design still need sudo loop-mounted Btrfs quotas?",
+    "Who would own a new TFA secure service user (the hermit oncall?), and would the TFA oncall accept its act_as being granted to a dedicated SANDCASTLE_TAG?",
+    "The stack uses Codex as its diagnostic agent, but Meta's proven Sandcastle agent path is Claude (SandcastleClaudeJobRunner / TClaudeRunnerCommand). Is Codex viable on Sandcastle? Not checked."
+   ]
+  }
+ ],
+ "reviews": [
+  {
+   "problems": [
+    {
+     "quote": "Codex was blocked the whole time, so what produced the candidate patches and replay records behind the SUPPORTED verdicts (D121848896)?",
+     "problem": "The premise is wrong. Real Codex ran successfully early in the stack. The blocking was added later. Two related claims are also unsupported: 'the Codex prompt (prompts.py), which never runs' and 'The full flow has only been run against mocks'.",
+     "fix": "Say Codex ran in the D121244213 containment tests on 2026-09-22 and was pinned as blocked from D121848885/D121848886 on, once codex-cli 0.156.0 arrived. Reword 'never runs' and 'only against mocks' to 'no test plan shows a real run-case'. Keep the question about where the candidate reports came from.",
+     "evidence": "STACK_SUMMARIES.md D121244213: 'Real production regressions exercise fresh, resume, and reviewer tools ... prove successful publication of real Codex bytes'; test plan 'tfa_production_containment_test (11 passed)'. D121848885: 'Record versioned Codex executable identity and reject known-blocked...' (blocking introduced here). D121848886: 'four real Codex tests fail closed on unsupported codex-cli 0.156.0'. The real investigator reports in the TFA report schema (D121848896, D121848525) and README.md:63-74 ('controller stress checkout', 'ledger ... written by the controller') suggest a controller did run outside the tests."
+    },
+    {
+     "quote": "every implementation diff is tagged devbig030 in STACK_SUMMARIES.md; likely",
+     "problem": "False. Only 13 of the 22 diffs (D121649569 through D121848525) carry the '[hermit2, ..., devbig030, role=impl]' tag. Nine have no host tag: D121244476, D121244213, D121877477-D121877481, D121978134 and D121978137, which is the OSS-Hermit diff itself.",
+     "fix": "Say '13 of 22 diffs are tagged devbig030; the evidence paths in D121978137 (/home/newton/work/tfa/...) do not exist on devvm895, so the witness runs were probably on devbig030 (inference)'.",
+     "evidence": "grep '^# D' and the Summary headers in /tmp/tfa-src/STACK_SUMMARIES.md (for example lines 1-25, 720-1000 have no tag). On devvm895, 'ls /home/newton/work/tfa' gives: No such file or directory."
+    },
+    {
+     "quote": "It works only on the author's devserver. / Devserver only, and in practice only your devbig030",
+     "problem": "Overstated. The package builds and its test suites run on a second host (devvm895): 215/215 unit tests and 37/43 containment tests. Only the Hermit witness replay depends on author-specific files, and those are absent on devvm895.",
+     "fix": "Say: 'The Hermit replay path works only where /home/newton/work/{dev-hermit,tfa} exists (devbig030). Offline tools and tests run on any devserver with passwordless sudo and Btrfs.'",
+     "evidence": "Task background: buck2 build rc 0; tfa_phase2_test 215/215; containment 37 pass / 6 fail on devvm895. hostname = devvm895.vcn0.facebook.com. The required paths are missing there: /home/newton/work/dev-hermit/bin/safehermit (manifest.py:193) and the hermit-4630ee2a binary (cases.v1.json:50)."
+    },
+    {
+     "quote": "rerun the 8 open-source-Hermit test runs (8/8 passed in D121978137)",
+     "problem": "Only 6 of the 8 steps ran Hermit. The other two were validate-manifest and dry-run, which do not launch Hermit.",
+     "fix": "Say 'rerun the 6 OSS-Hermit witness runs (3 cases x pass/fail; 8/8 steps passed in D121978137)'.",
+     "evidence": "D121978137 test plan: '8/8 rc 0 in 210 s. The steps were validate-manifest, dry-run, and run-witness for asyncssl, httpcoro and thrift, each at --outcome fail and --outcome pass.'"
+    },
+    {
+     "quote": "It duplicates Test Infra's central fixer, whose wiki asks teams not to build separate fixers",
+     "problem": "This contradicts the doc's own section 6: the central fixer only handles FAILURE issues, not flaky tests. TFA does not duplicate anything that exists. It would be a separate fixer, which the wiki recommends against (the wiki says 'recommend against', not 'asks ... not to').",
+     "fix": "Say: 'It would be a fixer outside the central resolver, which the Test Infra wiki recommends against. The central fixer does not cover flaky tests today.'",
+     "evidence": "Every strategy in www/flib/intern/tasks/devmate_assignment_config/task_types/test_fixer_strategies/*.php has SUPPORTED_ISSUE_TYPES = keyset[FAILURE] (for example DefaultTestFixerStrategy.php:9-11). The wiki Test_Infra_For_Users/Getting_Started/Test_Issues/Agentic_Test_Fixers says: 'We recommend against implementing your own fixer outside of our resolver'."
+    },
+    {
+     "quote": "`run-seed`, `run-case`, `run-agent` | fail-closed (main.py:282,374) | Unblock Hermit, then Codex",
+     "problem": "run-agent does not go through the packaged-Hermit gate. main.py:282 and :374 call _execution_manifest only for run-seed and run-case. run-agent uses plain load_manifest and is blocked only by the Codex preflight.",
+     "fix": "Split the row: 'run-seed, run-case: blocked on packaged Hermit (main.py:282,374); run-agent: blocked on Codex pins (process.py:104-121)'.",
+     "evidence": "main.py:41-64 (_execution_manifest wraps packaged_hermit_argv); main.py:325-326 'run_investigation(load_manifest(manifest), ...)'."
+    },
+    {
+     "quote": "`dry-run` | dry-run | Low value; it only writes prompts (orchestrator.py:47-103)",
+     "problem": "Understated. asyncssl is the one live task. For it, dry-run also lists the real task's comments and runs `meta tasks.comment create --dry-run`, so it touches the live Tasks service under the borrowed bot identity.",
+     "fix": "Say: 'Writes prompts and ledgers; for asyncssl it also lists live task comments and runs a dry-run comment create.'",
+     "evidence": "cases.v1.json:288 '\"live_task\": true' (asyncssl); manifest.py:257-261 requires exactly this. orchestrator.py:48-80 calls list_comments and dry_run_payload when case.live_task."
+    },
+    {
+     "quote": "Worth keeping: the three test cases and about 0.7k lines ... / Keep: the three test cases and 1k-3.5k lines of analysis logic / About three quarters of the product code is hash-pinning and sandboxing / most of the ~10k lines of hashing and sandboxing",
+     "problem": "The size estimates contradict each other. The cited keep-ranges add up to about 570 lines, not 0.7k, and section 7 says 1k-3.5k. Three quarters of the roughly 16.5k product lines is about 12.4k, not ~10k (which is about 60%).",
+     "fix": "Pick one set of numbers. For example: 'about 0.6k lines of core analysis (hints.py 204 + pipeline.py:119-342 224 + followup.py:199-338 140); roughly 10-12k lines (60-75%) of pinning and sandboxing (inference)'.",
+     "evidence": "wc -l: hints.py 204; pipeline.py 119-342 = 224 lines; followup.py 199-338 = 140 lines. Total 32682 minus tests 16181 = about 16.5k product lines."
+    },
+    {
+     "quote": "Sandcastle is moving jobs into user namespaces, where mounts fail (T288822939) ... Repeat after the mid-October user-namespace rollout.",
+     "problem": "T288822939 is '[userns prereq] Move sudo twagent tests to vmtest'. It has no date and says nothing about Hermit. The mid-October date in the Sandcastle post is the target for finishing the container prerequisites, not for the user-namespace rollout itself.",
+     "fix": "Cite the Sandcastle Workplace post and RFC, and say 'userns prerequisites targeted for mid-October; enablement follows'.",
+     "evidence": "meta tasks.task describe --task=T288822939 (title and description). Workplace sandcastle.eng post 4477862635875268: 'We are targeting to complete the container prerequisites by mid-October.' RFC doc 1bsDXUWPQW55...: mounts 'checked against init_user_ns ... under a shifted userns'."
+    },
+    {
+     "quote": "TFA needs its own service user with an act_as grant (wiki Tasks/Task_Bots). The new \"trusted issuer\" the stack waits for isn't needed.",
+     "problem": "The citation does not fully support the claim. Tasks/Task_Bots says to create a service user and give it Tasks Limited or Full Access. It does not mention act_as. The act_as requirement comes from running under Sandcastle automation. 'Isn't needed' is an unlabelled inference.",
+     "fix": "Cite both: Tasks/Task_Bots (service user plus Tasks Limited Access) and AutoTestRemediationScheduler.php:41-46 (act_as ACL for a Sandcastle command). Mark 'trusted issuer isn't needed' as an inference.",
+     "evidence": "wiki Tasks/Task_Bots 'How Do I Create a Bot?' section; AutoTestRemediationScheduler.php:43-44 'ACL: INTERN_AUTOMATION:4533519350210414 \u2014 act_as granted to SANDCASTLE_CMD:AutoTestRemediationCommand'."
+    },
+    {
+     "quote": "Every Hermit run needs passwordless sudo and a Btrfs filesystem with quotas turned on (hermit.py:615-660)",
+     "problem": "The cited lines only show hermit.py refusing when the bounded space is not applied. The sudo and Btrfs-quota requirements are in the packaged helper script.",
+     "fix": "Add the citation resources/bounded-run-space:95-99,191-224, plus hermit.py:655-657 for the refusal.",
+     "evidence": "bounded-run-space:192 'passwordless sudo unavailable; subvolume create/delete both need it'; :216-224 btrfs qgroup limit/readback; hermit.py:656 'bounded verification space was not applied'."
+    },
+    {
+     "quote": "Import rrnewton/hermit 4630ee2a or later into `fbcode/hermetic_infra/hermit` ... That unblocks the internal-Hermit path.",
+     "problem": "Overstated, and it is an inference presented as fact. The packaged path also needs a QUALIFIED record in hermit-import-compatibility.v1.json and matching pinned digests. Internal builds carry fb_build_info stamps, so their digests differ from the pins, and the manifest and compatibility records would have to be re-recorded.",
+     "fix": "Say 'is a prerequisite for unblocking; the compatibility record and hash pins must also be re-qualified (inference)'.",
+     "evidence": "hermit-import-compatibility.v1.json (state BLOCKED, pinned sha256); D121848888 test plan: 'the pinned hermit-test-bin sha covers a build whose fb_build_info stamps revision, path and build time'; manifest.py:270-276 canonical per-case SHA-256."
+    },
+    {
+     "quote": "its code was deleted as dead code in 2025-26 (D82956704, D118696067)",
+     "problem": "Slightly overstated. Some old TFA code is still on master.",
+     "fix": "Say 'most of its code was deleted'.",
+     "evidence": "search_files: www/flib/intern/hermetic_infra/tfa/experiments/TFAExperimentName.php and the TestFlakinessAnalyzerEvents logger config still exist; so does SV_TEST_FLAKINESS_ANALYZER_RATE_LIMIT.php. D82956704 ('[ti] remove TFA tests') landed 2025-09-22; D118696067 is dated 2026-09."
+    },
+    {
+     "quote": "It covers exactly three flaky C++ tests.",
+     "problem": "Minor overstatement. The thrift case has no TestInfra FLAKY issue, and the package itself renders it as 'none (no exact FLAKY issue)'.",
+     "fix": "Say 'three C++ tests shown to flake under Hermit chaos (two with open FLAKY issues)'.",
+     "evidence": "cases.v1.json:145 '\"issue_id\": null' (thrift); comments.py:117; pipeline.py:2079."
+    },
+    {
+     "quote": "Hermit's own end-to-end tests also fail on Sandcastle ... / CI never got far enough to launch it.",
+     "problem": "The plural 'tests' rests on one cited test. The open question then says CI never launched Hermit, although that test did launch it and failed with EPERM on Mount. Also, the '30 land-blocking CI signals fail' are Warning-status signals that also failed on the base revision.",
+     "fix": "Say 'a Hermit e2e test (562950400403548) fails on Sandcastle with EPERM on mount; TFA's own CI never reached Hermit'. Describe the 30 signals as land-blocking warnings that also fail on the base revision.",
+     "evidence": "meta testinfra.run list --test-id=562950400403548: 'Error { errno: EPERM, context: Mount }', execution_type SANDCASTLE_JOB. meta phabricator.diff.signals list --number=D121978137: 30 Warning, LAND_BLOCKING, 'Test failed on base-rev (8969df1b...)'."
+    }
+   ],
+   "overall": "Most of the document's factual claims hold up when checked against their sources. Confirmed:\n- The stack is 22 unpublished diffs with no reviewers, adding 33 files and 32,682 lines, of which about 16.1k are tests.\n- D121244213 is 20,138 of about 36.4k changed lines, roughly 55%.\n- The hard-coded bot ID 4533519350210414 is the AutoTestRemediation service user (AutoTestRemediationScheduler.php:41-46, oncall billing_experiences_customer_success).\n- SV_TEST_FLAKINESS_ANALYZER_RATE_LIMIT has per_day_limit 0.\n- D82956704 landed 2025-09-22 and D118696067 closed in 2026-09. T106084722 is the TFA MVP task, owned by newton.\n- a919cce is BLOCKED, every Codex pin is blocked, the manifest hard-codes three cases and /home/newton paths, and comments.py:287 always refuses.\n- The CI breakdown is right: 15 failing tests (9 sudo-mount, 1 chataccd unit missing, 5 Codex digest mismatch), 28 of 43 passing. The document is more accurate here than the task background, which said 10 failed on sudo mount.\n- The Hermit e2e test fails with EPERM on mount, `hermit run --namespace-only` is a real flag, and every fixer strategy handles FAILURE only.\n\nThe main errors:\n1. The open question's premise that Codex was blocked the whole time is wrong: D121244213 ran real Codex successfully. The claims that the prompt never runs and that the full flow only ran against mocks are unsupported.\n2. It is false that every implementation diff is tagged devbig030; only 13 of 22 are.\n3. 'Works only on the author's devserver' is overstated; the test suites run on devvm895.\n4. The '8 open-source Hermit runs' were really 6 Hermit runs plus 2 other steps.\n5. 'Duplicates the central fixer' contradicts the doc's own point that the fixer ignores flaky tests.\n\nSmaller problems: the sizes given for what to keep and for pinning/sandboxing code contradict each other across sections; the run-agent and dry-run table rows are imprecise; some citations are loose (T288822939 and the mid-October date, Tasks/Task_Bots for act_as, hermit.py:615-660 for the sudo/Btrfs requirement); and 'code deleted', 'three flaky tests' and 'unblocks internal Hermit' are overstated."
+  },
+  {
+   "problems": [
+    {
+     "quote": "Build a small devserver tool: TestID in, Buck build, Hermit chaos over N seeds, PASS/FAIL seeds and a log diff out. No Codex, no posting. *1-2 weeks.*",
+     "problem": "The main recommendation misses that Hermit already does most of this. Hermit has three built-in subcommands: `hermit analyze` (\"Analyze Pass and failing runs\"), `hermit bisect` (\"Bisect passing and failing schedules to localize a race\") and `hermit log-diff`. `analyze --search` hunts across chaos seeds for a failing run, pairs it with a passing one, and prints stack traces of the racing instructions. That output is stronger than the stack's plain-text log diff (hints.py), which the doc calls the \"useful core\". The only genuinely new piece is TestID -> Buck build -> command line.",
+     "fix": "Rescope step 5 as a thin wrapper: TestID -> buck build -> `hermit analyze --search` (plus `hermit bisect`). Re-estimate it, probably in days. Say plainly that hints.py is weaker than what Hermit already ships, and cut it from 'worth keeping' unless `analyze` fails on these large gtest binaries.",
+     "evidence": "fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/main.rs:130-139 (LogDiff, Analyze, Bisect subcommands); hermit-cli/src/bin/hermit/analyze/types.rs:22-43 (\"search over runs ... find the critical events ... printing their stack traces\"); docs/USER_GUIDE.md:283-296 (`hermit analyze --search --target-exit-code=nonzero`); README.md:133."
+    },
+    {
+     "quote": "**The opening:** the central fixer only takes outright failures, not flaky tests (DefaultTestFixerStrategy.php:9-11), and no existing fixer uses Hermit.",
+     "problem": "This makes the gap look bigger than it is. It is true that every TestFixerStrategy handles only FAILURE issues. But AI agents are already sent to flaky tests, including this stack's own cases. (1) T255721720 (the asyncssl task) is tagged task_delegated_to_devmate, and its latest DEVMATE/Claude Code assignment ended in status ERROR. (2) T278900793 (httpcoro) got a DEVMATE assignment from BULK_TASKS_QUEUE. (3) AutoTestRemediation, a Claude-on-Sandcastle system started by Chronos, installs a 'fix-flaky-test' plugin. (4) A fix-flaky-test skill already does diagnose, fix, 20-run validation and a draft diff. (5) Test Infra already has flaky bisect and flaky-fix verification (15-90 stress runs), which overlaps TFA's follow-up verdict. None of these is mentioned.",
+     "fix": "List these systems. Restate the opening narrowly: none of them uses deterministic replay (inference; based on a search, not proof). Offer the cheapest integration first: add a Hermit reproduction step to the existing fix-flaky-test skill or plugin, before pitching changes to the central fixer.",
+     "evidence": "www/flib/intern/sandcastle/commands/AutoTestRemediationCommand.php:199-201 (installPlugins includes 'fix-flaky-test'); fbcode/claude-templates/components/skills/fix-flaky-test/SKILL.md:1-25; www/flib/intern/testinfra/multisect/TestInfraFlakyBisectRangeStrategy.php:4-6; www/flib/intern/testinfra/multisect/verdict/TestInfraFlakyFixVerificationBudget.php:12-13 (MIN_RUNS 15, MAX_RUNS 90); `meta tasks.task describe --task=T255721720` -> tags include task_delegated_to_devmate, latest_agent_assignment DEVMATE status ERROR; `meta tasks.task describe --task=T278900793` -> DEVMATE PAUSED, source BULK_TASKS_QUEUE."
+    },
+    {
+     "quote": "It duplicates Test Infra's central fixer, whose wiki asks teams not to build separate fixers (wiki Test_Infra_For_Users/.../Agentic_Test_Fixers).",
+     "problem": "This contradicts \u00a76, where the doc says the central fixer takes only outright failures, not flaky tests. Both cannot be true: if the fixer never sees flaky tests, TFA does not duplicate it. One of the doc's five reasons against landing is therefore shaky. The wiki warns against running your own fixer outside the resolver, which is a different point.",
+     "fix": "Reword to: \"It would run a separate fixer outside Test Infra's resolver, which their wiki advises against. The resolver does not take flaky tests today, so joining it would need testing_core to widen its scope.\"",
+     "evidence": "DefaultTestFixerStrategy.php:9-11 (SUPPORTED_ISSUE_TYPES = FAILURE only; same in Sabaton, TritonMtia, DataReady, AgentQ and TestUserDump strategies); wiki Test_Infra_For_Users/Getting_Started/Test_Issues/Agentic_Test_Fixers (\"We recommend against implementing your own fixer outside of our resolver\")."
+    },
+    {
+     "quote": "Worth keeping: the three test cases and about 0.7k lines of hint and verdict logic",
+     "problem": "The doc never checks whether the three tests are still flaky. Only one is. httpcoro now passes (0.28% flakiness); its flaky issue and task T278900793 closed on 2026-07-10. thrift reports status OK and has never had a TestX issue or task. Only asyncssl is live: DISABLED_FLAKY at 60% flakiness, with issue 224226669 and task T255721720 open. The manifest itself allows only asyncssl to have a live task. TL;DR item 1 (\"three flaky C++ tests\") overstates the current value.",
+     "fix": "State that only asyncssl is an open, disabled flaky test today. Make it the single target for any next step. Label httpcoro and thrift as historical test fixtures.",
+     "evidence": "`meta testinfra.test metadata --id=562950215319283` -> status OK, PASSING, flakiness 0.0028; `--id=281475235299286` -> OK, PASSING, flakiness 0.118; `--id=562950211052906` -> FLAKY, DISABLED_FLAKY, flakiness 0.60. `meta testinfra.issue list --test-id=...` -> 224798678 FLAKY CLOSED; thrift: no issues; 224226669 FLAKY OPEN. manifest.py:256-260 (\"only AsyncSSL may have a live task\")."
+    },
+    {
+     "quote": "Codex was blocked the whole time, so what produced the candidate patches and replay records behind the SUPPORTED verdicts (D121848896)? Probably files outside the stack on devbig030.",
+     "problem": "The most valuable and cheapest-to-test result is buried as an open question. The diff summaries report real candidate patches for all three cases that were judged SUPPORTED under Hermit replay, including asyncssl: seed 11 failed 5 times unfixed and passed 3 times patched. asyncssl is the one live, disabled flaky test, and a Devmate attempt on it errored. Finding that patch and giving it to the owning team, with the Hermit reproducer, would test the whole idea within hours. The doc also skips a caveat: the sample sizes are tiny (httpcoro: 2 patched runs).",
+     "fix": "Add an early next step: find the asyncssl candidate patch and its evidence, and share them with the secure_pipes owners of T255721720 (the owner decides whether and how). Note that SUPPORTED rests on 2-6 replays, and that a Claude agent (tfa-phase2-cyber-opus), not Codex, built the follow-up renderer.",
+     "evidence": "STACK_SUMMARIES.md:562-575 (D121848896: real ledgers; thrift, asyncssl and httpcoro all SUPPORTED; asyncssl FAIL x5 unfixed, PASS x3 patched; httpcoro PASS x2 patched); :504 (tag tfa-phase2-cyber-opus, claude-opus-5-5); :605-609 (D121848898, same verdicts)."
+    },
+    {
+     "quote": "Almost nothing runs end to end. Internal Hermit and every pinned Codex version are marked blocked, and comments are dry-run only.",
+     "problem": "The owner's actual question was whether Hermit is ready to replicate TFA results. The doc never answers that in one sentence; it lists what the stack failed to do. The evidence gives a clear three-part answer: (a) open-source Hermit 4630ee2a reproduced the PASS and FAIL seeds for all 3 cases on the author's host; (b) the internal packaged Hermit (a919cce) cannot yet, with specific blockers; (c) on Sandcastle, Hermit's own end-to-end test has failed 53 times in a row with a mount permission error.",
+     "fix": "Open the TL;DR with: \"Is Hermit ready? Open-source Hermit: yes for 3 cases on your devserver. Internal Hermit: not yet (sanitizer core-limit crashes, a CPU-counter panic, and run-to-run trace differences). Sandcastle: no, Hermit can't mount there.\"",
+     "evidence": "D121978137 test plan (6 run-witness runs, rc 0, expected fail/pass outcomes); STACK_SUMMARIES.md D121848893 (relocated-v2: every witness at its manifest seed, two decided attempts each); hermit-import-compatibility.v1.json (a919cce BLOCKED: RLIMIT_CORE sanitizer CHECK, 'ptrace PMU timer can exceed its single-step target', verify TRACE drift); `meta testinfra.test metadata --id=562950400403548` -> DISABLED_FAILING, 53 consecutive failures, EPERM on Mount in reverie-process container.rs:842."
+    },
+    {
+     "quote": "rerun the 8 open-source-Hermit test runs (8/8 passed in D121978137) to confirm they still reproduce",
+     "problem": "This overstates the evidence and leaves out a real risk. Only 6 of the 8 steps were Hermit runs; the other two were validate-manifest and dry-run. An earlier attempt with the same runner failed when the httpcoro FAIL run hit the 120 s limit. Seeds are also fragile. The stack's own diffs say changing paths or arguments can change the schedule, and thrift's FAIL seed 1 passed unfixed at another checkout path. httpcoro FAIL runs take 108-114 s against a 120 s limit. So the proposed tool's output (\"PASS and FAIL seeds\") may not reproduce on a test owner's machine, and each seed costs about 2 minutes.",
+     "fix": "Say \"6 Hermit runs passed on the third attempt.\" Add a risks line: seeds depend on paths and timing and may not carry over to other hosts or checkouts. Searching N seeds costs N x ~2 minutes per test. The tool must re-check seeds on the target host.",
+     "evidence": "STACK_SUMMARIES.md D121978137 test plan (steps: validate-manifest, dry-run, 6 run-witness; 'Previous attempt (rerun 2) ... httpcoro fail witness reached safehermit's 120 s wall bound ... failed closed'); D121848893 ('Changing paths and argv can change virtual scheduling'; httpcoro 114 s and 113 s against 120 s; v1 attempt CENSORED); D121848896 ('manifest FAIL seed 1 PASSes unfixed at the stress path')."
+    },
+    {
+     "quote": "Import rrnewton/hermit 4630ee2a or later into `fbcode/hermetic_infra/hermit` and check that it reproduces the three cases. That unblocks the internal-Hermit path. *Days.*",
+     "problem": "This step ignores an import that is already under way. The owner has an unpublished CodeSync import of public Hermit main, D120908510, from facebookexperimental/hermit PR #93. Its prerequisite D120908815 has landed. The public upstream is facebookexperimental/hermit, not the rrnewton fork. Also, \"That unblocks\" is stated as fact but is an inference. The a919cce blockers include a host CPU-counter panic and sanitizer core-limit crashes. And because TFA pins exact binary hashes, a newly built Hermit will still be refused until the manifest is re-recorded.",
+     "fix": "Rewrite: \"Finish D120908510 once 4630ee2a (or a later fix) is in facebookexperimental/hermit, rebuild, and re-record the manifest. This may unblock internal Hermit (inference).\"",
+     "evidence": "`meta phabricator.diff describe --number D120908510` -> '[hermit][PR] Import current Hermit main into fbsource', Unpublished, newton, 2026-09-20; D120908815 summary ('import attempt from https://github.com/facebookexperimental/hermit/pull/93'), Closed; hermit-import-compatibility.v1.json blockers; cases.v1.json hermit_sha256 pin."
+    },
+    {
+     "quote": "It borrows another team's bot.",
+     "problem": "The doc misses a second borrowed identity: the stack makes the Test Infra oncall own its code and its failing tests. Both BUCK files set oncall(\"testinfra\") inside Test Infra's own directory, with no reviewers. CI already routes the 30 land-blocking failures to the 'testinfra' oncall. This is a stronger reason not to land here than the bot ID, and a cleanup item if anything is kept.",
+     "fix": "Add to \u00a74's reasons and to step 1: change the oncall to hermit, or move any extracted tool under fbcode/hermetic_infra, and do not place code in fbcode/testinfra without Test Infra's agreement.",
+     "evidence": "/tmp/tfa-src/fbcode/testinfra/tfa/BUCK:16 and tests/BUCK:5 (`oncall(\"testinfra\")`); `meta testinfra.run get --id=1125900439774673.844425372925793.1790440539` -> oncall 'testinfra'."
+    },
+    {
+     "quote": "Devserver only, and in practice only your devbig030 (every implementation diff is tagged devbig030 in STACK_SUMMARIES.md; likely).",
+     "problem": "Three issues. (1) The same section says 37 of 43 tests pass on devvm895, so the test suite, which launches a Buck-built Hermit, runs on any devserver with sudo and Btrfs. Only the witness runs are tied to one host, because they need /home/newton/work. (2) Only 13 of the 22 diffs carry any host tag; the last 9, including D121978137, have none. (3) Step 2 depends on devbig030, but it is not among the owner's current devservers and the lookup returns not found.",
+     "fix": "Say: \"The test suite runs on any sudo+Btrfs devserver. The witness runs need files under /home/newton/work on the original host, whose status is unverified.\" Before keeping step 2, find out which host holds /home/newton/work/tfa.",
+     "evidence": "`meta devserver.server list --owner-is-me` -> devbig176, devbig014, devvm16873, devvm60843, devvm63187, devvm63701, devvm895 (no devbig030); `meta devserver.server describe --hostname=devbig030` -> 'Devserver not found'; `ls /home/newton/work` on devvm895 -> No such file; `grep devbig030 STACK_SUMMARIES.md` -> 13 hits (lines 50-630) only."
+    },
+    {
+     "quote": "**Keep:** the three test cases and 1k-3.5k lines of analysis logic.",
+     "problem": "This contradicts \u00a74, which puts the keepable logic at about 0.7k lines. The doc's own citations add up to about 0.57k lines.",
+     "fix": "Use one number, about 0.6k lines (hints.py plus the cited ranges), or drop \u00a77, which repeats \u00a74.",
+     "evidence": "wc -l: hints.py 204; pipeline.py:119-342 = 224 lines; followup.py:199-338 = 140 lines; total 568."
+    },
+    {
+     "quote": "Pitch a Hermit step for flaky-test issues to testing_core (TestFixerStrategyResolver.php) and request a TFA service user.",
+     "problem": "(1) If the step lives inside the central fixer, it posts under the fixer's identity, so a TFA service user is unnecessary. Requesting one conflicts with TL;DR item 5 (\"Don't revive a standalone service\") and creates the ownership question the doc then lists as open. (2) TL;DR item 5 does not mention a hard precondition: the central fixer runs its agents on Sandcastle, where Hermit cannot start today. (3) \"Mid-October\" is the Sandcastle team's target for finishing the user-namespace prerequisites, not the rollout itself, and the doc gives no source. (4) The doc never says how many flaky tests Hermit could help with at all: Hermit is x86-only and suits native fbcode tests, not WWW/Hack/Jest.",
+     "fix": "Drop the service-user request unless the tool must post on its own. Change TL;DR item 5 to \"only if Hermit can run on Sandcastle, e.g. via vmtest\". Cite the Sandcastle post and describe the date as the prerequisites target. Add one line on which kinds of test the Hermit step would cover.",
+     "evidence": "wiki Developer_Vertical_Integrations/Oncall/.../Handling_Broken_&_Flaky_Tests ('Claude Code launches a Sandcastle instance'); `meta testinfra.test metadata --id=562950400403548` (DISABLED_FAILING, EPERM Mount); Workplace sandcastle.eng/permalink/4477862635875268 ('targeting to complete the container prerequisites by mid-October'); fbsource commit 4620432e135b '[hermit][arm-ci] Gate the hermit family x86-only'."
+    },
+    {
+     "quote": "The new \"trusted issuer\" the stack waits for isn't needed.",
+     "problem": "Several judgments or negative claims are stated as fact without an inference label or a source. \"The trusted issuer isn't needed\" is a policy judgment. \"No existing fixer uses Hermit\" comes from a limited search. \"A company-wide query times out\" has no command output cited. \"That unblocks the internal-Hermit path\" is a prediction.",
+     "fix": "Mark each as inference, or cite the command, output or wiki that backs it.",
+     "evidence": "The doc text itself: \u00a76 bullets 3-4, step 3; no citation attached to the timeout claim."
+    },
+    {
+     "quote": "| Task comments | dry-run (always refuses, comments.py:287) | TFA's own service user with an act_as grant |",
+     "problem": "The doc is too long and too full of jargon for an owner who is not close to the details. There are 7 sections, a 12-row table, 7 steps and 6 open questions. The table's \"What it would take\" column mostly doesn't matter if the answer is \"don't land\". \u00a75 and \u00a77 repeat the TL;DR and \u00a74. Meta-infra terms go unexplained: fail-closed, act_as grant, Chronos, sitevar, fbpkg, Tupperware, run_as_root, local_only label, chataccd, trusted issuer, re-judger, witness, SUPPORTED verdict, TestFixerStrategyResolver.php. (Hermit terms such as ptrace and chaos seeds are fine for this owner.)",
+     "fix": "Cut to the TL;DR plus about three short sections: what it is, is Hermit ready, what to do next. Drop or shrink the table to 4-5 rows without the \"what it would take\" column. Merge \u00a75 into \u00a76 and delete \u00a77. Define or remove the infra jargon, and move file:line citations to footnotes.",
+     "evidence": "Document structure as reviewed; the jargon terms appear in \u00a73 table, \u00a75, \u00a76 and the next steps."
+    }
+   ],
+   "overall": "The \"do not land\" call is well supported. I re-checked the CI breakdown against D121978137: 9 tests fail on sudo mount, 1 on chataccd and 5 on Codex, confirmed by running `meta testinfra.run debug` on each failure, which is more precise than the background's \"10 mount\". The bot and wiki citations also check out. The plan after that is weaker and misses cheaper options.\n\n1. **Step 5 is overscoped.** Hermit already has `analyze --search`, `bisect` and `log-diff`, which search for PASS/FAIL seeds and localize the race. They do most of what the proposed 1-2 week tool would do, and do it better.\n2. **Existing flaky-test agents are left out.** These include the fix-flaky-test plugin installed by AutoTestRemediation, Devmate runs on the stack's own flaky tasks, and Test Infra's flaky bisect and flaky-fix verification. The doc also contradicts itself on whether TFA duplicates the central fixer.\n3. **It never checks whether the three tests are still flaky.** Only asyncssl is: disabled at 60% flakiness, with an open task. httpcoro is passing and thrift has never had an issue.\n4. **The most valuable artifact is buried.** A real asyncssl candidate patch judged SUPPORTED exists (D121848896) and is the cheapest way to test the idea, but the doc leaves it as an open question.\n5. **It doesn't answer the owner's actual question.** Is Hermit ready to replicate TFA results? Open-source Hermit: yes, for 3 cases on one host. Internal Hermit: blocked. Sandcastle: Hermit's own test has failed 53 times in a row there.\n6. **Step 3 ignores the import already in flight.** D120908510 imports public Hermit from facebookexperimental/hermit, not the rrnewton fork.\n7. **Risks the doc skips:**\n   - The stack makes the testinfra oncall own its code and its failing tests.\n   - PASS/FAIL seeds are fragile: they depend on paths, and httpcoro runs sit close to the 120 s limit.\n   - devbig030 cannot be found among the owner's devservers.\n   - The size of the keepable logic is given as both 0.7k and 1k-3.5k lines.\n   - Requesting a TFA service user contradicts the plan to integrate into the central fixer.\n\nThe doc is also roughly twice as long as this owner needs, with a lot of unexplained Meta-infra jargon."
+  }
+ ]
+}

@@ -1,0 +1,187 @@
+  result_id: 1125900440037545.562950220120091.1790562811
+  status: FAILED
+  test_name: fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss
+  test_id: 562950220120091
+  signal_type: TEST
+  oncall: ucache
+  execution_type: SANDCASTLE_JOB
+  execution_id: 27021600738284063
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/1125900440037545.562950220120091.1790562811/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = McRefillWrapperBucketized/0.refillOnMiss
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from McRefillWrapperBucketized/0, where TypeParam = UcacheTests
+[ RUN      ] McRefillWrapperBucketized/0.refillOnMiss
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 4-byte object <0A-00 00-00>
+  *reply.result_ref()
+    Which is: 4-byte object <0D-00 00-00>
+expected: mc_res_stored actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/test/toaster_tests/McRefillRouteWrapperTest.cpp:227: Failure
+Expected equality of these values:
+  this->setup()->mcInstances[3]->getStat("total_items")
+    Which is: 0
+  1
+
+[  FAILED  ] McRefillWrapperBucketized/0.refillOnMiss, where TypeParam = UcacheTests (2594 ms)
+[----------] 1 test from McRefillWrapperBucketized/0 (2594 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (551451 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] McRefillWrapperBucketized/0.refillOnMiss, where TypeParam = UcacheTests
+
+ 1 FAILED TEST
+
+I0927 19:31:07.365442 36234 RandomUtil.cpp:140] setting rnd state to 1804174680:0
+I0927 19:31:07.366127 36234 CodecProviderRegistry.cpp:58] Registered codec type Lz4Circular in provider registry
+I0927 19:31:07.366242 36234 CodecProviderRegistry.cpp:58] Registered codec type Lz4 in provider registry
+I0927 19:31:07.366293 36234 CodecProviderRegistry.cpp:58] Registered codec type Lz4Stream in provider registry
+I0927 19:31:07.366350 36234 CodecProviderRegistry.cpp:58] Registered codec type ZstdDict in provider registry
+I0927 19:31:07.366395 36234 CodecProviderRegistry.cpp:58] Registered codec type ZstdManaged in provider registry
+I0927 19:31:07.366438 36234 CodecProviderRegistry.cpp:58] Registered codec type Zstd in provider registry
+I0927 19:31:07.366482 36234 CodecProviderRegistry.cpp:58] Registered codec type ZstdStream in provider registry
+I0927 19:31:07.366580 36234 AuthorizationManagerCreator.cpp:61] AuthzManagerCreator for db type mysql is registered
+I0927 19:31:07.366652 36234 FactoryRegistrar.cpp:56] Mysql tailer position mode is: combined
+I0927 19:31:07.366753 36234 LogFactoryCreator.cpp:60] FactoryGetter for mysql is registered
+I0927 19:31:07.366802 36234 LogFactoryCreator.cpp:60] FactoryGetter for mysqltw is registered
+I0927 19:31:07.366848 36234 LogFactoryCreator.cpp:60] FactoryGetter for mysqlbackup is registered
+I0927 19:31:07.366891 36234 LogFactoryCreator.cpp:60] FactoryGetter for mysqldummy is registered
+I0927 19:31:07.366957 36234 LogFactoryCreator.cpp:60] FactoryGetter for axon is registered
+I0927 19:31:07.378425 36234 LogWatchDog.cpp:43] McTest: starting watchdog
+I0927 19:31:07.389359 36234 Instance.cpp:72] mc_0: stderr "/tmp/McTest.97c7-9693-e02c-1500/mc_0/stderr"
+I0927 19:31:07.389443 36234 Instance.cpp:73] mc_0: stdout "/tmp/McTest.97c7-9693-e02c-1500/mc_0/stdout"
+I0927 19:31:07.393935 36234 ServerInstance.cpp:88] mc_0: reserved 34865 for carbon0
+I0927 19:31:07.394143 36234 ServerInstance.cpp:88] mc_0: reserved 57487 for thrift0
+I0927 19:31:07.394549 36234 ServerInstance.cpp:88] mc_0: reserved 64119 for main0
+I0927 19:31:07.396641 36234 ServerInstance.cpp:88] mc_0: reserved 35963 for admin0
+E0927 19:31:07.399857 36234 McInstance.cpp:164] cmdArgs = --tao_arena_bytes
+E0927 19:31:07.399914 36234 McInstance.cpp:164] cmdArgs = 32
+E0927 19:31:07.399926 36234 McInstance.cpp:164] cmdArgs = --tao_chained_items_hashpower
+E0927 19:31:07.399936 36234 McInstance.cpp:164] cmdArgs = 16
+E0927 19:31:07.399948 36234 McInstance.cpp:164] cmdArgs = --num_listening_sockets
+E0927 19:31:07.399959 36234 McInstance.cpp:164] cmdArgs = 1
+E0927 19:31:07.399969 36234 McInstance.cpp:164] cmdArgs = --tao_items_reaper_interval_secs=1
+E0927 19:31:07.399981 36234 McInstance.cpp:164] cmdArgs = --memcache_t
+E0927 19:31:07.399991 36234 McInstance.cpp:164] cmdArgs = 1
+E0927 19:31:07.400002 36234 McInstance.cpp:164] cmdArgs = --tao_worker_threads
+E0927 19:31:07.400012 36234 McInstance.cpp:164] cmdArgs = 50
+E0927 19:31:07.400022 36234 McInstance.cpp:164] cmdArgs = --ucache_testonly_fatal_on_unknown_cmdline_settings
+E0927 19:31:07.400032 36234 McInstance.cpp:164] cmdArgs = --ucache_rpc_enable_fibers=true
+E0927 19:31:07.400043 36234 McInstance.cpp:164] cmdArgs = --tao_cache_dir
+E0927 19:31:07.400053 36234 McInstance.cpp:164] cmdArgs = /tmp/McTest.e8c7-fc4a-6975-446d/mc_0
+E0927 19:31:07.400064 36234 McInstance.cpp:164] cmdArgs = --shm_metadata_path
+E0927 19:31:07.400074 36234 McInstance.cpp:164] cmdArgs = /tmp/McTest.e8c7-fc4a-6975-446d/mc_0/meta_data
+E0927 19:31:07.400084 36234 McInstance.cpp:164] cmdArgs = --tao_use_posix_shm
+E0927 19:31:07.400094 36234 McInstance.cpp:164] cmdArgs = --tao_hashpower
+E0927 19:31:07.400105 36234 McInstance.cpp:164] cmdArgs = 10
+E0927 19:31:07.400115 36234 McInstance.cpp:164] cmdArgs = --tao_chained_items_hashpower
+E0927 19:31:07.400126 36234 McInstance.cpp:164] cmdArgs = 10
+E0927 19:31:07.400136 36234 McInstance.cpp:164] cmdArgs = --tao_recent_writes_hashpower
+E0927 19:31:07.400146 36234 McInstance.cpp:164] cmdArgs = 10
+E0927 19:31:07.400171 36234 McInstance.cpp:164] cmdArgs = --listen_sock_fd
+E0927 19:31:07.400182 36234 McInstance.cpp:164] cmdArgs = 36
+E0927 19:31:07.400192 36234 McInstance.cpp:164] cmdArgs = --thrift_server_port
+E0927 19:31:07.400202 36234 McInstance.cpp:164] cmdArgs = 57487
+E0927 19:31:07.400213 36234 McInstance.cpp:164] cmdArgs = --thrift_listen_sock_fd
+E0927 19:31:07.400223 36234 McInstance.cpp:164] cmdArgs = 38
+E0927 19:31:07.400233 36234 McInstance.cpp:164] cmdArgs = --ucache_rpc_settings_override
+E0927 19:31:07.400244 36234 McInstance.cpp:164] cmdArgs = memcache
+E0927 19:31:07.400256 36234 McInstance.cpp:164] cmdArgs = --tao_luna_settings_startup_config_path
+E0927 19:31:07.400266 36234 McInstance.cpp:164] cmdArgs = cache/server/settings/toaster/startup_settings
+E0927 19:31:07.400277 36234 McInstance.cpp:164] cmdArgs = --tao_luna_settings_runtime_config_path
+E0927 19:31:07.400287 36234 McInstance.cpp:164] cmdArgs = cache/server/settings/toaster/runtime_settings
+E0927 19:31:07.400297 36234 McInstance.cpp:164] cmdArgs = --tao_enable_preload_compression_dictionaries
+E0927 19:31:07.400307 36234 McInstance.cpp:164] cmdArgs = false
+E0927 19:31:07.400318 36234 McInstance.cpp:164] cmdArgs = --tao_enable_preload_fbtype_config_cache
+E0927 19:31:07.400328 36234 McInstance.cpp:164] cmdArgs = false
+E0927 19:31:07.400338 36234 McInstance.cpp:164] cmdArgs = --tao_enable_preload_assoc_config_cache
+E0927 19:31:07.400349 36234 McInstance.cpp:164] cmdArgs = false
+E0927 19:31:07.400359 36234 McInstance.cpp:164] cmdArgs = --tao_no_dp_mode
+E0927 19:31:07.400369 36234 McInstance.cpp:164] cmdArgs = --tao_port
+E0927 19:31:07.400380 36234 McInstance.cpp:164] cmdArgs = 64119
+E0927 19:31:07.400390 36234 McInstance.cpp:164] cmdArgs = --tao_listen_sock_fd
+E0927 19:31:07.400400 36234 McInstance.cpp:164] cmdArgs = 39
+E0927 19:31:07.400411 36234 McInstance.cpp:164] cmdArgs = --tao_ssl_admin_port
+E0927 19:31:07.400421 36234 McInstance.cpp:164] cmdArgs = 35963
+E0927 19:31:07.400432 36234 McInstance.cpp:164] cmdArgs = --tao_listen_ssl_sock_admin_fd
+E0927 19:31:07.400442 36234 McInstance.cpp:164] cmdArgs = 40
+E0927 19:31:07.400452 36234 McInstance.cpp:164] cmdArgs = --tao_role
+E0927 19:31:07.400462 36234 McInstance.cpp:164] cmdArgs = leader
+E0927 19:31:07.400473 36234 McInstance.cpp:164] cmdArgs = --tao_min_item_alloc_size
+E0927 19:31:07.400484 36234 McInstance.cpp:164] cmdArgs = 64
+I0927 19:31:07.403028 36234 Instance.cpp:72] mc_1: stderr "/tmp/McTest.97c7-9693-e02c-1500/mc_1/stderr"
+I0927 19:31:07.403062 36234 Instance.cpp:73] mc_1: stdout "/tmp/McTest.97c7-9693-e02c-1500/mc_1/stdout"
+I0927 19:31:07.405602 36234 ServerInstance.cpp:88] mc_1: reserved 44193 for carbon1
+I0927 19:31:07.405771 36234 ServerInstance.cpp:88] mc_1: reserved 62037 for thrift1
+I0927 19:31:07.406155 36234 ServerInstance.cpp:88] mc_1: reserved 47735 for main1
+I0927 19:31:07.406265 36234 ServerInstance.cpp:88] mc_1: reserved 55133 for admin1
+E0927 19:31:07.409952 36234 McInstance.cpp:164] cmdArgs = --tao_arena_bytes
+E0927 19:31:07.409978 36234 McInstance.cpp:164] cmdArgs = 32
+E0927 19:31:07.409989 36234 McInstance.cpp:164] cmdArgs = --tao_chained_items_hashpower
+E0927 19:31:07.410001 36234 McInstance.cpp:164] cmdArgs = 16
+E0927 19:31:07.410012 36234 McInstance.cpp:164] cmdArgs = --num_listening_sockets
+E0927 19:31:07.410022 36234 McInstance.cpp:164] cmdArgs = 1
+E0927 19:31:07.410032 36234 McInstance.cpp:164] cmdArgs = --tao_items_reaper_interval_secs=1
+E0927 19:31:07.410043 36234 McInstance.cpp:164] cmdArgs = --memcache_t
+E0927 19:31:07.410053 36234 McInstance.cpp:164] cmdArgs = 1
+E0927 19:31:07.410063 36234 McInstance.cpp:164] cmdArgs = --tao_worker_threads
+E0927 19:31:07.410074 36234 McInstance.cpp:164] cmdArgs = 50
+E0927 19:31:07.410084 36234 McInstance.cpp:164] cmdArgs = --ucache_testonly_fatal_on_unknown_cmdline_settings
+E0927 19:31:07.410094 36234 McInstance.cpp:164] cmdArgs = --ucache_rpc_enable_fibers=true
+E0927 19:31:07.410105 36234 McInstance.cpp:164] cmdArgs = --tao_cache_dir
+E0927 19:31:07.410115 36234 McInstance.cpp:164] cmdArgs = /tmp/McTest.e8c7-fc4a-6975-446d/mc_1
+E0927 19:31:07.410126 36234 McInstance.cpp:164] cmdArgs = --shm_metadata_path
+E0927 
+...
+...
+...
+eate.c:434
+
+Thread 1 (LWP 39675), ucache_base:
+#01  0x00005630372fd037 in __tsan_func_entry () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/e451bc7ba3ecdfcd/ucache/server/__ucache_base__/ucache_base
+#02  0x00007f0cc4f83339 in boost::intrusive::list_node_traits<void*>::set_previous () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/detail/list_node.hpp:0
+#03  0x00007f0cc5095167 in boost::intrusive::circular_list_algorithms<boost::intrusive::list_node_traits<void*> >::init_header () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/circular_list_algorithms.hpp:98
+#04  0x00007f0cc58ffb9d in boost::intrusive::list_impl<boost::intrusive::mhtraits<folly::fibers::detail::MutexWaiter<folly::fibers::Baton>, boost::intrusive::list_member_hook<boost::intrusive::link_mode<(boost::intrusive::link_mode_type)1> >, &folly::fibers::detail::MutexWaiter<folly::fibers::Baton>::hook>, unsigned long, false, void>::clear_and_dispose<boost::intrusive::detail::null_disposer> () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/list.hpp:758
+#05  0x00007f0cc58ffa86 in boost::intrusive::list_impl<boost::intrusive::mhtraits<folly::fibers::detail::MutexWaiter<folly::fibers::Baton>, boost::intrusive::list_member_hook<boost::intrusive::link_mode<(boost::intrusive::link_mode_type)1> >, &folly::fibers::detail::MutexWaiter<folly::fibers::Baton>::hook>, unsigned long, false, void>::clear () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/list.hpp:734
+#06  0x00007f0cc58ffa3a in boost::intrusive::list_impl<boost::intrusive::mhtraits<folly::fibers::detail::MutexWaiter<folly::fibers::Baton>, boost::intrusive::list_member_hook<boost::intrusive::link_mode<(boost::intrusive::link_mode_type)1> >, &folly::fibers::detail::MutexWaiter<folly::fibers::Baton>::hook>, unsigned long, false, void>::~list_impl () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/list.hpp:255
+#07  0x00007f0cc58ff9f6 in boost::intrusive::list<folly::fibers::detail::MutexWaiter<folly::fibers::Baton>, boost::intrusive::member_hook<folly::fibers::detail::MutexWaiter<folly::fibers::Baton>, boost::intrusive::list_member_hook<boost::intrusive::link_mode<(boost::intrusive::link_mode_type)1> >, &folly::fibers::detail::MutexWaiter<folly::fibers::Baton>::hook>, boost::intrusive::constant_time_size<false> >::~list () from fbcode/third-party-buck/platform010/build/boost/include/boost/intrusive/list.hpp:1450
+#08  0x00007f0cc58ff9ab in folly::fibers::TimedMutex::~TimedMutex () from fbsource/folly/fibers/TimedMutex.h:91
+#09  0x00007f0cc58ff7d6 in facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>::~Profiled () from fbcode/cachelib/common/Profiled.h:67
+#10  0x00007f0cc58ff796 in facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> >::~DefaultLockAlignment () from fbcode/cachelib/common/Mutex.h:251
+#11  0x00007f0cc58ff756 in std::destroy_at<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> > > () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/stl_construct.h:89
+#12  0x00007f0cc58ff716 in std::_Destroy<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> > > () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/stl_construct.h:142
+#13  0x00007f0cc58ff6bc in std::_Destroy_aux<false>::__destroy<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> >*> () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/stl_construct.h:152
+#14  0x00007f0cc58ff656 in std::_Destroy<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> >*> () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/stl_construct.h:184
+#15  0x00007f0cc58ff542 in std::_Destroy<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> >*, facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> > > () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/alloc_traits.h:746
+#16  0x00007f0cc58ff4df in std::vector<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> >, std::allocator<facebook::cachelib::DefaultLockAlignment<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}> > > >::~vector () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/stl_vector.h:680
+#17  0x00007f0cc58ff46b in facebook::cachelib::BaseBucketLocks<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>, facebook::cachelib::DefaultLockAlignment>::~BaseBucketLocks () from fbcode/cachelib/common/Mutex.h:272
+#18  0x00007f0cc58ff416 in facebook::cachelib::BucketLocks<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>, facebook::cachelib::DefaultLockAlignment>::~BucketLocks () from fbcode/cachelib/common/Mutex.h:328
+#19  0x00007f0cc58ff1f0 in std::default_delete<facebook::cachelib::BucketLocks<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>, facebook::cachelib::DefaultLockAlignment> >::operator() () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/unique_ptr.h:85
+#20  0x00007f0cc58ff0e9 in std::unique_ptr<facebook::cachelib::BucketLocks<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>, facebook::cachelib::DefaultLockAlignment>, std::default_delete<facebook::cachelib::BucketLocks<facebook::cachelib::trace::Profiled<folly::fibers::TimedMutex, facebook::cachelib::trace::detail::StringParam<10ul>{char [10]{(char)116, (char)97, (char)111, (char)58, (char)97, (char)115, (char)115, (char)111, (char)99}}>, facebook::cachelib::DefaultLockAlignment> > >::~unique_ptr () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/unique_ptr.h:361
+#21  0x00005630372ca26a in cxa_at_exit_callback_installed_at () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/e451bc7ba3ecdfcd/ucache/server/__ucache_base__/ucache_base
+#22  0x00007f0cc1e479ca in exit () from /usr/local/fbcode/platform010/lib/libc.so.6
+#23  0x00007f0cc1e2c65e in __libc_start_call_main () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:63
+#24  0x00007f0cc1e2c718 in __libc_start_main_alias_1 () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:379
+#25  0x000056303685ef91 in _start () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:118
+2026-09-27 19:40:18 320761: Done.
+
+E0927 19:40:18.787772 36234 ToasterSetup.cpp:371] Saving toaster logs to "/logs/tao_test_failure_logs/McTest.97c7-9693-e02c-1500"
+I0927 19:40:18.790318 36234 LogWatchDog.cpp:61] clean up shared memory in cache dir /tmp/McTest.e8c7-fc4a-6975-446d
+I0927 19:40:18.793028 36234 LogWatchDog.cpp:29] McTest: stopping watchdog, pid 39659
+
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GIAjqTAmSRVzJeAFAIw_ZOKw9NckbswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=1125900440037545.562950220120091.1790562811
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/1125900440037545.562950220120091.1790562811/

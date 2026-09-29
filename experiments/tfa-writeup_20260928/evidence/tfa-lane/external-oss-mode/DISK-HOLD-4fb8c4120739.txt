@@ -1,0 +1,71 @@
+Disk hold 2026-09-26 (coordinator: /dev/md0 583,159,808 B free at 01:19 PDT; 377,802,752 B at 01:20:07)
+Head 4fb8c4120739; sha256sum -c snapshot-4fb8c4120739/hermit.sha256 OK; sl status clean.
+Pipeline gates-4fb8c4120739.sh (Claude task b4ssavfrw) receipts, gates-4fb8c4120739.out:
+  full-tfa_phase2_test rc=0 dur=11s Pass 215 Fail 0 (full-tfa_phase2_test-4fb8c4120739.log)
+  build rc=0 dur=2s (build-4fb8c4120739.log)
+  mutants rc=0 dur=601s: 67 KILLED / 5 SURVIVED (mutants-head6/progress.log)
+    survivors: safehermit-failure-no-signal, attempt-safehermit-digest, unit-core-dump-any-failure
+      (outer-gate relaxations still refused by safehermit_evidence); reseal-metadata-file, reseal-identity
+      (real test gap: no subtest mutates metadata or pin identity during the comparator)
+  backup-wait on root devbackup tar pid 3612085: started, never completed
+Stop: 01:20:07 I sent SIGSTOP to script pid 1527740 so it could not start containment/witnesses.
+  Its parent tool shell then exited ("Stopped" job) and the orphaned script was terminated by the
+  kernel's orphaned-pgrp SIGHUP; task b4ssavfrw reported exit 0 (that is the wrapper's tail, not a gate).
+  NOT RUN: tfa_production_containment_test, final sha/status step, witness batch
+  (witnesses-4fb8c4120739-fixture has only run.sh/with_fixture.py; no artifact dir created). No ENOSPC seen.
+  Leftover orphan waiters 2290496/2290498 (timeout/tail --pid=3612085) left untouched; they write nothing.
+Nothing deleted. No stack submission.
+
+Owned-writer stop (coordinator, ~01:32 PDT, 121,507,840 B free):
+  PID 3612085 verified NOT TFA: root /usr/bin/tar --listed-incremental /var/facebook/devbackup/user-newton-set-newton-v8.snar.temp,
+    parent 3575199 root devserver-backup --real-backup, cgroup devserver-backup.service. No signal sent.
+  SIGTERM timeout 2290496 -> 2290496/2290498 exited; gates-4fb8c4120739.out unchanged.
+  buck2 kill of 11 idle TFA daemons failed under ENOSPC (all 11 stayed alive); not escalated to signals.
+Disk wait by8chlb72: 2026-09-26T03:21:06-07:00 avail=3025170432 CAP-REACHED (floor 107374182400 not met).
+Buck shutdown after cap: see buck-shutdown-20260926.txt (identity via buckd.info pid match, 0 established
+  connections on daemon port, only child = own forkserver with no children; all 11 buck2 kill rc=0, gone).
+  03:24 PDT verify: 0 TFA buck2 daemons, 0 forkservers, 0 pipeline writers (earlier nonzero counts were pgrep self-matches of my own bash -c wrapper). New wait: disk-wait-2.log, cap 4h.
+== runner correction 2026-09-26T06:19:11-07:00: submit-gate.sh re-checks head=4fb8c4120739, sha256sum -c snapshot-4fb8c4120739/hermit.sha256 and empty sl status in /home/newton/work/tfa/fbsource immediately before exec (refuse rc 7)
+9fcdf6772f1f0becb892e994b4f293e27273ecbaee77de02e0c9a1009edf72a8  floor-step.sh
+2eca9802011c8c1738904d3e57c31cff5a8fdebb659c501b52e9c2800c42adc6  resume-4fb8c4120739.sh
+e995751dcf85b901220be215461096e988d2f637b6d1df51d4032ee83c3a3198  submit-gate.sh
+5b43aad98be95f4be377f0b8e6ae580ad37fac5ad9c5b60666645efb22554d72  selftest.sh
+f380d995e41bdd55274d3ecf49d6703cec8b6a0667bca8a2e2c353a5355535bd  /home/newton/work/tfa/external-hermit/witnesses-4fb8c4120739-fixture/run-guarded.sh
+selftest: selftest rc=0 dur=36s; 108 PASS, 0 FAIL; TOTAL FAILS=0; output selftest-2.out, workdir runner-selftest-2 (prior run: selftest.out, runner-selftest, 71 PASS 0 FAIL, pre-correction)
+avail=42406592512 floor=107374182400; nothing launched or submitted
+2026-09-26T07:17:12-07:00 armed wait-backup-floor.sh (sha256 5fc77a057e581dc20882c146dea4a97a9397a88cebfb26dc2b8fa08394fe1904) log=disk-wait-3.log pid=2605914 starttime=43313259 cap=14400s; supersedes disk-wait-2 as the launch gate (FLOOR-MET alone will not launch)
+2026-09-26T07:24:48-07:00 disk-wait-2 CAP-REACHED at 07:24:39 avail=42540883968 (superseded; no action). disk-wait-3: BACKUP-EXITED 07:21:02 (pid 2605914 starttime 43313259); still waiting for floor, cap ~11:17
+== pre-launch recheck 2026-09-26T08:16:19-07:00 avail=145595396096
+head=4fb8c4120739
+status_rc=0 status_lines=0
+fbcode/testinfra/tfa/hermit.py: OK
+hermit_hash_rc=0
+floor-step.sh: OK
+resume-4fb8c4120739.sh: OK
+submit-gate.sh: OK
+/home/newton/work/tfa/external-hermit/witnesses-4fb8c4120739-fixture/run-guarded.sh: OK
+runner_hash_rc=0
+ls: cannot access 'resume-4fb8c4120739.PASS': No such file or directory
+ls: cannot access 'resume-4fb8c4120739.out': No such file or directory
+2026-09-26T08:16:29-07:00 LAUNCH bash /home/newton/work/tfa/external-oss-mode/resume-4fb8c4120739.sh avail=168184926208
+2026-09-26T08:24:28-07:00 resume rc=64 dur=479s avail=246557954048
+== 2026-09-26T08:25:39-07:00 EVALUATION STOPPED FAIL-CLOSED at containment (no PASS, no witness batch, no submission)
+  command: bash /home/newton/work/tfa/external-oss-mode/resume-4fb8c4120739.sh (launched 08:16:29, head=4fb8c4120739, hermit OK, backup wait skipped: no matching backup)
+  step: buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test rc=64 dur=478s avail_before=175069429760 avail_after=246557954048
+  summary: Tests finished: Pass 39. Fail 0. Timeout 0. Fatal 0. Skip 4. Omit 0. Infra Failure 0. Build failure 0
+  skips (all 4 are real-release Codex tests; owner-managed Codex is the reviewed blocked release):
+    Skip: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+    Skip: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected
+    Skip: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool
+    Skip: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck
+  buck2 exit-code doc: 64 = TestNothing (build ok, tests skipped); TPX: 64 = all good with warnings (skips); 32 = failures
+  prior heads 418be/dc352/2b5ed had the identical Pass 39/Skip 4 summary; their wrappers did not record rc
+  log: /home/newton/work/tfa/external-oss-mode/full-tfa_production_containment_test.log; out: /home/newton/work/tfa/external-oss-mode/resume-4fb8c4120739.out; Buck UI https://www.internalfb.com/buck2/d8953964-5316-479b-8cfc-8f7e41b267af; testrun https://www.internalfb.com/intern/testinfra/testrun/25614222932257428
+  awaiting coordinator decision on rc-64 acceptance; runner scripts unchanged
+2026-09-26T08:45:46-07:00 rc64 correction tested (selftest-5 rc=0, 632 PASS); head hashes in RUNNER-EVIDENCE; paused for exact-head adversarial review; avail=244069064704; no real rerun/witness/submit
+2026-09-26T08:51:20-07:00 launching approved rerun 2 (HEAD.sha256 51b9a6ca...d801) avail=244026138624
+2026-09-26T08:59:16-07:00 rerun 2 resume rc=1 dur=476s avail=244478410752
+2026-09-26T09:00:57-07:00 rerun 2 stopped fail-closed: containment rc=64 verified; witness httpcoro-fail safehermit wall-bound timeout (124) -> batch rc=1; no PASS; paused for post-run review
+2026-09-26T09:07:02-07:00 rerun-2 evidence preserved (rerun2-failed-4fb8c4120739/, artifact root renamed .rerun2-failed-20260926T085120); rerun 3 launched (single authorized retry, 4h cap)
+2026-09-26T09:16:07-07:00 rerun 3 PASS (rc=0, 8/8 witnesses, PASS a25299b4...); nothing submitted; paused for post-run review
+2026-09-26T09:23:59-07:00 drafts D121978134/D121978137 created via submit-gate (unpublished, no reviewers); test plan updated; paused

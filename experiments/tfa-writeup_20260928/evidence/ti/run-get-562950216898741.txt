@@ -1,0 +1,180 @@
+  result_id: 10133099364850181.562950216898741.1790607528
+  status: FAILED
+  test_name: fbcode//manifold/client/impl/tests:manifold_client_test - core/ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar
+  test_id: 562950216898741
+  signal_type: TEST
+  oncall: manifold_client
+  execution_type: SANDCASTLE_JOB
+  execution_id: 45035996971614755
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = core/ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from core/ClientTestWithBucketTypes
+[ RUN      ] core/ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar
+
+I0928 07:56:55.152659 1167804 ClientTestFixtures.cpp:736] Using serial write
+I0928 07:56:55.190635 1170676 Init.cpp:47] Initializing Hypertrace Luna Settings
+I0928 07:56:55.278062 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+W0928 07:56:56.118453 1170770 api.cpp:903] config everstore/client/client possesses a signature but this api instance has not been initialized with a ConfigSignatureVerifier object to verify it. Please initialize this api instance with an appropriate ConfigSignatureVerifier
+I0928 07:56:56.396350 1170770 ConfigProvider.cpp:619] Lazy FBType config loading enabled, skipping eager loading
+I0928 07:56:56.396476 1170770 ConfigProvider.cpp:625] ConfigHolder singleton initialized in 287 ms
+I0928 07:56:56.397917 1170770 Durable.cpp:48] DurableKnob initial load for: everstore/client/featureRollout:enable_rim_attribution succeeded and resulted in value 0
+I0928 07:56:57.453590 1169250 ConfigeratorDomainConfigs.cpp:203] Notify user with updated size: 1 removed size: 0
+I0928 07:56:58.118678 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update active object types set
+I0928 07:56:58.120130 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update deprecated object types set
+I0928 07:56:58.120249 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update seal blocklisted object types set
+I0928 07:56:58.120886 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update dead object types set
+I0928 07:56:58.121116 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update active object types for current universe
+I0928 07:56:58.139772 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update active object types set
+I0928 07:56:58.141181 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update deprecated object types set
+I0928 07:56:58.141268 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update seal blocklisted object types set
+I0928 07:56:58.141926 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update dead object types set
+I0928 07:56:58.142143 1169250 EverstoreConfigHandler-inl.h:183] everstore/common/object_types Running callback: update active object types for current universe
+W0928 07:56:58.918836 1169205 RouterZeroClient.cpp:79] Skipping Router Zero connection setup in unit test. ODS3 data will not be sent to Router Zero.
+I0928 07:57:03.693957 1170834 SCSLOLogger.cpp:479] ctx: e0892366-6064-4a41-aa9f-4b0b32bf9764, add ods counters cluster for sc.everstore.test.nha0_t9058
+W0928 07:57:03.716437 1170834 HostResourceUtilizationChecker.cpp:490] Failed to read network stats from HostNetStatsReader
+I0928 07:57:03.723319 1170834 SCSLOLogger.cpp:250] Initialized SCSLOLogger::OpCounter componentName: ContainerSmartClient, opName: WRITE_BLOBS_DATA, trackReliability: true, trackReliability: true
+W0928 07:57:03.756767 1170834 ClusterUtil.cpp:167] Failed to pull hosts for tier: sc.everstore.test.nha0_t9058.smv2, Tier 'sc.everstore.test.nha0_t9058.smv2' not found.
+I0928 07:57:03.759714 1170834 ScubaLogger.cpp:680] S451887 constructing global getScubaDataLogger::scubaLogger. Address = 0x7c043310c3b0, vptr = 140286451651120
+I0928 07:57:05.944175 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:57:16.297454 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:57:26.510754 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:57:36.640225 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:57:46.927764 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+W0928 07:57:55.485163 1170693 RolloutConfigHelper.cpp:44] SMC tier fetch returned empty; retrying with 2x timeout
+E0928 07:57:55.485350 1170693 RolloutConfigHelper.cpp:52] SMC tier fetch retry also returned empty; tier-based rollout checks may be inaccurate
+I0928 07:57:57.258737 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:58:07.409686 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:58:17.660426 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:58:27.870508 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 07:58:38.078827 1170679 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+E0928 07:58:47.064373 1167804 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+E0928 07:58:47.064414 1167804 ExceptionTracer.cpp:263] Exception type: (unknown type) (20 frames)
+    @ 0000000000004084 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::operator()(std::__exception_ptr::exception_ptr) const
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+    @ 000000000000402a folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:174
+    @ 000000000001e5a5 std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+    @ 0000000000004487 folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 0000000000004363 folly::Try<folly::Unit>::throwUnlessValue() const
+                       fbsource/folly/Try-inl.h:199
+    @ 0000000000004a18 folly::Try<folly::Unit>::value() &&
+                       fbsource/folly/Try-inl.h:163
+    @ 0000000000121faf folly::SemiFuture<folly::Unit>::get() &&
+                       fbsource/folly/futures/Future-inl.h:2416
+    @ 0000000000672f08 facebook::manifold::versioned::client::ClientTestWithBucketTypes_TestPayloadSizeBasedTimeout_Test::TestBody()
+                       ./fbcode/manifold/client/impl/tests/ClientTest.cpp:4671
+    @ 000000000010d466 void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2765
+    @ 000000000010cf7d testing::Test::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2782
+    @ 0000000000110799 testing::TestInfo::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2928
+    @ 00000000001171a4 testing::TestSuite::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:3106
+    @ 0000000000145934 testing::internal::UnitTestImpl::RunAllTests()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:6089
+    @ 0000000000144492 bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2765
+    @ 0000000000143bcf testing::UnitTest::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:5630
+    @ 0000000000002910 RUN_ALL_TESTS()
+                       third-party/googletest/HEAD/googletest/googletest/include/gtest/gtest.h:2348
+    @ 000000000000263c main
+                       ./fbcode/common/gtest/LightMain.cpp:20
+    @ 000000000002c656 __libc_start_call_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:58
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000002c717 __libc_start_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:409
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000055b1e0 _start
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:116
+
+E0928 07:58:47.218760 1167804 ExceptionTracer.cpp:265] exception stack complete
+terminate called after throwing an instance of 'facebook::manifold::blobstore::StorageException'
+  what():  [504] Everstore exception -- [Manifold Attempt 1] [direct_write] errors encountered: [exception 1] failed with HTTP 503 due to writeSingleBacking failed with httpError: 503 wsError: WSE_CLUSTER_QUOTA_EXCEEDED
+[exception 2] failed with HTTP 500 due to Failed to write to logical volume at index 0: lvid 25359062
+[exception 3] failed with HTTP 408 due to Timed out waiting for backing after 2548ms
+[exception 4] failed with HTTP 500 due to Failed to write to logical volume at index 1: lvid 25368138
+[exception 5] failed with HTTP 504 due to Write timed out. 
+*** Aborted at 1790607527 (Unix time, try 'date -d @1790607527') ***
+*** Signal 6 (SIGABRT) (0x75590011d1bc) received by PID 1167804 (pthread TID 0x7f944448bf80) (linux TID 1167804) (maybe from PID 1167804, UID 30041) (code: sent by tkill or tgkill), stack trace: ***
+==1167804==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+    @ 000000000002cf2b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000002cbc2 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 00000000000ad594 __gnu_cxx::__verbose_terminate_handler()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/vterminate.cc:95
+    @ 00000000000175e5 folly::exception_tracer::(anonymous namespace)::terminateHandler()
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracer.cpp:270
+    @ 00000000000ab0f9 __cxxabiv1::__terminate(void (*)())
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:48
+    @ 00000000000ab164 std::terminate()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:58
+    @ 00000000000ab0ef std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_ptr.cc:217
+    @ 000000000001e60e std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:244
+    @ 0000000000004487 folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 0000000000004363 folly::Try<folly::Unit>::throwUnlessValue() const
+                       fbsource/folly/Try-inl.h:199
+    @ 0000000000004a18 folly::Try<folly::Unit>::value() &&
+                       fbsource/folly/Try-inl.h:163
+    @ 0000000000121faf folly::SemiFuture<folly::Unit>::get() &&
+                       fbsource/folly/futures/Future-inl.h:2416
+    @ 0000000000672f08 facebook::manifold::versioned::client::ClientTestWithBucketTypes_TestPayloadSizeBasedTimeout_Test::TestBody()
+                       ./fbcode/manifold/client/impl/tests/ClientTest.cpp:4671
+    @ 000000000010d466 void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2765
+    @ 000000000010cf7d testing::Test::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2782
+    @ 0000000000110799 testing::TestInfo::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2928
+    @ 00000000001171a4 testing::TestSuite::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:3106
+    @ 0000000000145934 testing::internal::UnitTestImpl::RunAllTests()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:6089
+    @ 0000000000144492 bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2765
+    @ 0000000000143bcf testing::UnitTest::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:5630
+    @ 0000000000002910 RUN_ALL_TESTS()
+                       third-party/googletest/HEAD/googletest/googletest/include/gtest/gtest.h:2348
+    @ 000000000000263c main
+                       ./fbcode/common/gtest/LightMain.cpp:20
+    @ 000000000002c656 __libc_start_call_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:58
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000002c717 __libc_start_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:409
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000055b1e0 _start
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:116
+
+Test was never completed. The test process might have crashed.
+
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=10133099364850181.562950216898741.1790607528
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/10133099364850181.562950216898741.1790607528/

@@ -1,0 +1,10 @@
+head 1667ce0d7600 2026-09-25T20:46:28-07:00 record /home/newton/work/tfa/external-hermit/qual-4/external-oss-hermit.v1.json sha256 5041afd1885026e5af5b441f6456b7a0c5122a3a042e7a1ff815ad32e999a3d2
+validate rc=0 dur=7s
+dry-run rc=0 dur=16s
+witness-asyncssl-fail rc=1 dur=50s
+witness-asyncssl-pass rc=1 dur=27s
+witness-httpcoro-fail rc=1 dur=44s
+witness-httpcoro-pass rc=1 dur=21s
+witness-thrift-fail rc=1 dur=21s
+witness-thrift-pass rc=1 dur=14s
+done 2026-09-25T20:49:48-07:00

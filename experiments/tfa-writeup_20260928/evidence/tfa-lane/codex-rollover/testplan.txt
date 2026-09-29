@@ -1,0 +1,15 @@
+Evidence: `/home/newton/work/tfa/codex-drift/AUDIT.md` (version output,
+manifest `build_info`, source snapshots of `daemon_mounts.rs` at `6be63a60` and
+master) and `/home/newton/work/tfa/codex-rollover/`.
+- `buck test fbcode//testinfra/tfa/tests:tfa_phase2_test -- -r 'codex|release_manifest|compatibility'`:
+  rc 0, Pass 20, 11.2 s.
+- `buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test -- -r 'real_codex|owner_codex|eligible_codex'`:
+  Pass 4, Skip 4, Fail 0, 2m42s (rc 64 is the skip exit). The real bootstrap
+  test asserts the latest channel is refused as `blocked` with the new digests
+  and blocker text. The four real-release tests assert the refusal and that
+  nothing launched, then skip.
+- `arc f`, `arc lint`: no issues. `arc pyre check-changed-targets`: no errors.
+- Full `buck build fbcode//testinfra/tfa/...`: rc 0. Full `buck test
+  fbcode//testinfra/tfa/...`: Pass 249, Fail 0, Skip 4, Omit 1 (rc 64), 494 s.
+- Mutants (`codex-rollover/mutants*.out`): 5/5 killed. The stable-manifest digest
+  flip survives the unit regex and is killed by the real-host containment tests.

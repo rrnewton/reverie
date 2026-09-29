@@ -1,0 +1,264 @@
+  result_id: 281475509947637.281475243249473.1790481005
+  status: FAILED
+  test_name: fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test - MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest
+  test_id: 281475243249473
+  signal_type: TEST
+  oncall: ucache
+  execution_type: SANDCASTLE_JOB
+  execution_id: 49539596595254631
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0, where TypeParam = UcacheTests
+[ RUN      ] MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:161: Failure
+Expected equality of these values:
+  result
+    Which is: 3
+  *reply.result_ref()
+    Which is: 13
+expected: mc_res_found actual: mc_res_timeout. Reply message: TTransportException: Timed out
+
+fbcode/mcrouter/facebook/toaster/McToasterUtils.h:168: Failure
+Value of: reply.value_ref().has_value()
+  Actual: false
+Expected: true
+
+[  FAILED  ] MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest, where TypeParam = UcacheTests (18844 ms)
+[----------] 1 test from MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0 (18844 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (319837 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest, where TypeParam = UcacheTests
+
+ 1 FAILED TEST
+
+I0926 20:48:03.533298 40815 CodecProviderRegistry.cpp:58] Registered codec type Lz4Circular in provider registry
+I0926 20:48:03.533409 40815 CodecProviderRegistry.cpp:58] Registered codec type Lz4 in provider registry
+I0926 20:48:03.533427 40815 CodecProviderRegistry.cpp:58] Registered codec type Lz4Stream in provider registry
+I0926 20:48:03.533443 40815 CodecProviderRegistry.cpp:58] Registered codec type ZstdDict in provider registry
+I0926 20:48:03.533457 40815 CodecProviderRegistry.cpp:58] Registered codec type ZstdManaged in provider registry
+I0926 20:48:03.533473 40815 CodecProviderRegistry.cpp:58] Registered codec type Zstd in provider registry
+I0926 20:48:03.533488 40815 CodecProviderRegistry.cpp:58] Registered codec type ZstdStream in provider registry
+I0926 20:48:03.533751 40815 LogFactoryCreator.cpp:60] FactoryGetter for axon is registered
+I0926 20:48:03.533769 40815 FactoryRegistrar.cpp:56] Mysql tailer position mode is: combined
+I0926 20:48:03.533788 40815 LogFactoryCreator.cpp:60] FactoryGetter for mysql is registered
+I0926 20:48:03.533813 40815 LogFactoryCreator.cpp:60] FactoryGetter for mysqltw is registered
+I0926 20:48:03.533831 40815 LogFactoryCreator.cpp:60] FactoryGetter for mysqlbackup is registered
+I0926 20:48:03.533849 40815 LogFactoryCreator.cpp:60] FactoryGetter for mysqldummy is registered
+I0926 20:48:03.533874 40815 AuthorizationManagerCreator.cpp:61] AuthzManagerCreator for db type mysql is registered
+I0926 20:48:04.315701 40815 LogWatchDog.cpp:43] McTest: starting watchdog
+I0926 20:48:04.321041 40815 Instance.cpp:72] mc_0: stderr "/tmp/McTest.ddf6-7af4-e63b-0e47/mc_0/stderr"
+I0926 20:48:04.321094 40815 Instance.cpp:73] mc_0: stdout "/tmp/McTest.ddf6-7af4-e63b-0e47/mc_0/stdout"
+I0926 20:48:04.321827 40815 ServerInstance.cpp:88] mc_0: reserved 44637 for carbon0
+I0926 20:48:04.321934 40815 ServerInstance.cpp:88] mc_0: reserved 48823 for thrift0
+I0926 20:48:04.322136 40815 ServerInstance.cpp:88] mc_0: reserved 63685 for main0
+I0926 20:48:04.322193 40815 ServerInstance.cpp:88] mc_0: reserved 36161 for admin0
+E0926 20:48:04.322672 40815 McInstance.cpp:164] cmdArgs = --tao_arena_bytes
+E0926 20:48:04.322695 40815 McInstance.cpp:164] cmdArgs = 32
+E0926 20:48:04.322705 40815 McInstance.cpp:164] cmdArgs = --tao_chained_items_hashpower
+E0926 20:48:04.322718 40815 McInstance.cpp:164] cmdArgs = 16
+E0926 20:48:04.322731 40815 McInstance.cpp:164] cmdArgs = --num_listening_sockets
+E0926 20:48:04.322741 40815 McInstance.cpp:164] cmdArgs = 1
+E0926 20:48:04.322751 40815 McInstance.cpp:164] cmdArgs = --tao_items_reaper_interval_secs=1
+E0926 20:48:04.322762 40815 McInstance.cpp:164] cmdArgs = --memcache_t
+E0926 20:48:04.322772 40815 McInstance.cpp:164] cmdArgs = 1
+E0926 20:48:04.322790 40815 McInstance.cpp:164] cmdArgs = --tao_worker_threads
+E0926 20:48:04.322801 40815 McInstance.cpp:164] cmdArgs = 50
+E0926 20:48:04.322813 40815 McInstance.cpp:164] cmdArgs = --ucache_testonly_fatal_on_unknown_cmdline_settings
+E0926 20:48:04.322824 40815 McInstance.cpp:164] cmdArgs = --ucache_rpc_enable_fibers=true
+E0926 20:48:04.322836 40815 McInstance.cpp:164] cmdArgs = --tao_cache_dir
+E0926 20:48:04.322847 40815 McInstance.cpp:164] cmdArgs = /tmp/McTest.3eef-d145-734b-43b9/mc_0
+E0926 20:48:04.322862 40815 McInstance.cpp:164] cmdArgs = --shm_metadata_path
+E0926 20:48:04.322875 40815 McInstance.cpp:164] cmdArgs = /tmp/McTest.3eef-d145-734b-43b9/mc_0/meta_data
+E0926 20:48:04.322885 40815 McInstance.cpp:164] cmdArgs = --tao_use_posix_shm
+E0926 20:48:04.322894 40815 McInstance.cpp:164] cmdArgs = --tao_hashpower
+E0926 20:48:04.322908 40815 McInstance.cpp:164] cmdArgs = 10
+E0926 20:48:04.322918 40815 McInstance.cpp:164] cmdArgs = --tao_chained_items_hashpower
+E0926 20:48:04.322929 40815 McInstance.cpp:164] cmdArgs = 10
+E0926 20:48:04.322939 40815 McInstance.cpp:164] cmdArgs = --tao_recent_writes_hashpower
+E0926 20:48:04.322950 40815 McInstance.cpp:164] cmdArgs = 10
+E0926 20:48:04.322960 40815 McInstance.cpp:164] cmdArgs = --listen_sock_fd
+E0926 20:48:04.322975 40815 McInstance.cpp:164] cmdArgs = 35
+E0926 20:48:04.322985 40815 McInstance.cpp:164] cmdArgs = --thrift_server_port
+E0926 20:48:04.322995 40815 McInstance.cpp:164] cmdArgs = 48823
+E0926 20:48:04.323006 40815 McInstance.cpp:164] cmdArgs = --thrift_listen_sock_fd
+E0926 20:48:04.323017 40815 McInstance.cpp:164] cmdArgs = 37
+E0926 20:48:04.323027 40815 McInstance.cpp:164] cmdArgs = --ucache_rpc_settings_override
+E0926 20:48:04.323037 40815 McInstance.cpp:164] cmdArgs = memcache
+E0926 20:48:04.323048 40815 McInstance.cpp:164] cmdArgs = --tao_luna_settings_startup_config_path
+E0926 20:48:04.323060 40815 McInstance.cpp:164] cmdArgs = cache/server/settings/toaster/startup_settings
+E0926 20:48:04.323069 40815 McInstance.cpp:164] cmdArgs = --tao_luna_settings_runtime_config_path
+E0926 20:48:04.323081 40815 McInstance.cpp:164] cmdArgs = cache/server/settings/toaster/runtime_settings
+E0926 20:48:04.323091 40815 McInstance.cpp:164] cmdArgs = --tao_enable_preload_compression_dictionaries
+E0926 20:48:04.323101 40815 McInstance.cpp:164] cmdArgs = false
+E0926 20:48:04.323115 40815 McInstance.cpp:164] cmdArgs = --tao_enable_preload_fbtype_config_cache
+E0926 20:48:04.323127 40815 McInstance.cpp:164] cmdArgs = false
+E0926 20:48:04.323139 40815 McInstance.cpp:164] cmdArgs = --tao_enable_preload_assoc_config_cache
+E0926 20:48:04.323153 40815 McInstance.cpp:164] cmdArgs = false
+E0926 20:48:04
+...
+...
+...
+emoryIdler::futexWaitUntil<std::atomic<unsigned int>, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > () from fbsource/folly/detail/Futex-inl.h:0
+#03  0x000056067ae25abd in folly::SaturatingSemaphore<true, std::atomic>::tryWaitSlow<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > () from fbsource/folly/synchronization/SaturatingSemaphore.h:325
+#04  0x000056067d509ee7 in folly::observer_detail::ObserverManager::UpdatesManager::CurrentQueueProcessor::CurrentQueueProcessor()::{lambda()#1}::operator() () from fbsource/folly/synchronization/SaturatingSemaphore.h:0
+#05  0x000056067d50983e in std::thread::_State_impl<std::thread::_Invoker<std::tuple<folly::observer_detail::ObserverManager::UpdatesManager::CurrentQueueProcessor::CurrentQueueProcessor()::{lambda()#1}> > >::_M_run () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:211
+#06  0x00007fd1c52e8bc5 in execute_native_thread_routine () from /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:84
+#07  0x000056067b36a2e8 in __tsan_thread_start_func () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#08  0x000056067b355e7c in __sanitizer::DenseMapBase<__sanitizer::DenseMap<unsigned long, unsigned int, __sanitizer::DenseMapInfo<unsigned long>, __sanitizer::detail::DenseMapPair<unsigned long, unsigned int> >, unsigned long, unsigned int, __sanitizer::DenseMapInfo<unsigned long>, __sanitizer::detail::DenseMapPair<unsigned long, unsigned int> >::try_emplace<unsigned int&> () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#09  0x000056067b355b12 in __sanitizer::ThreadRegistry::CreateThread () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#10  0x000056067b36a38b in __interceptor_pthread_create () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+
+Thread 5 (LWP 41945), FuncSched:
+#01  0x00007fd1c56972c1 in __futex_abstimed_wait_cancelable64 () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/futex-internal.c:139
+#02  0x00007fd1c569a467 in __GI___pthread_cond_clockwait () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_cond_wait.c:671
+#03  0x000056067b3d4c84 in __tsan::call_pthread_cancel_with_cleanup () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#04  0x000056067b36afb6 in __interceptor_pthread_cond_clockwait () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#05  0x000056067b6f7701 in folly::FunctionScheduler::run () from ./xplat/folly/executors/FunctionScheduler.cpp:467
+#06  0x000056067b6f75d4 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<folly::FunctionScheduler::start()::$_1> > >::_M_run () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:211
+#07  0x00007fd1c52e8bc5 in execute_native_thread_routine () from /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:84
+#08  0x000056067b36a2e8 in __tsan_thread_start_func () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#09  0x000056067b35cdbb in __sanitizer::StackDepotNode::store () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#10  0x000056067b35d28e in __sanitizer::StackDepotBase<__sanitizer::StackDepotNode, 1, 20>::Put () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+
+Thread 2 (LWP 41863), ucache_base:
+#01  0x000056067b350c4e in __sanitizer::internal_usleep () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+
+Thread 1 (LWP 41281), ucache_base:
+#01  0x00007fd1c57256c9 in syscall () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/syscall.S:38
+#02  0x00007fd1c52e5f53 in std::__atomic_futex_unsigned_base::_M_futex_wait_until () from /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/futex.cc:124
+#03  0x000056067b5d442f in std::__basic_future<void>::_M_get_result () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/atomic_futex.h:111
+#04  0x000056067b3ad043 in __tsan_atomic32_fetch_or () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#05  0x000056067b3a4cb7 in __tsan_atomic32_load () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#06  0x000056067b5d4401 in std::__basic_future<void>::_M_get_result () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/atomic_base.h:481
+#07  0x000056067b5d444c in std::__basic_future<void>::_M_get_result () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/atomic_base.h:481
+#08  0x000056067b5edc9a in folly::VirtualEventBase::~VirtualEventBase () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/future:0
+#09  0x000056067b5ebbb1 in folly::VirtualEventBase::~VirtualEventBase () from ./xplat/folly/io/async/VirtualEventBase.cpp:59
+#10  0x0000560679a44cf9 in facebook::servicerouter::EventBasePool::~EventBasePool () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/unique_ptr.h:0
+#11  0x000056068d123ac4 in facebook::servicerouter::ThriftDispatcher::shutdownEventBasePool () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/unique_ptr.h:85
+#12  0x000056068d1232d4 in facebook::servicerouter::ThriftDispatcher::~ThriftDispatcher () from ./fbcode/servicerouter/dispatcher/ThriftDispatcher.cpp:301
+#13  0x0000560679a42fb8 in std::_Sp_counted_ptr_inplace<facebook::servicerouter::ThriftDispatcher, std::allocator<facebook::servicerouter::ThriftDispatcher>, (__gnu_cxx::_Lock_policy)2>::_M_dispose () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/shared_ptr_base.h:591
+#14  0x0000560678d1b5e7 in folly::detail::ReadMostlySharedPtrCore<folly::TLRefCount>::decref () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/shared_ptr_base.h:0
+#15  0x000056068cfc8d0d in facebook::servicerouter::cpp2::SRClientFactory::~SRClientFactory () from fbsource/folly/concurrency/memory/ReadMostlySharedPtr.h:165
+#16  0x000056068cfbfe7a in facebook::servicerouter::cpp2::SRClientFactory::~SRClientFactory () from ./fbcode/servicerouter/client/cpp2/SRClientFactory.cpp:177
+#17  0x000056068a0beee3 in std::_Function_handler<void (facebook::servicerouter::cpp2::ClientFactory*), folly::Singleton<facebook::servicerouter::cpp2::ClientFactory, folly::detail::DefaultTag, folly::detail::DefaultTag>::getTeardownFunc(std::function<void (facebook::servicerouter::cpp2::ClientFactory*)>)::{lambda(facebook::servicerouter::cpp2::ClientFactory*)#1}>::_M_invoke () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_function.h:290
+#18  0x000056068a0bcf16 in folly::detail::SingletonHolder<facebook::servicerouter::cpp2::ClientFactory>::destroyInstance () from fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_function.h:0
+#19  0x00005606799e4d35 in folly::SingletonVault::destroyInstances () from ./xplat/folly/Singleton.cpp:401
+#20  0x00005606799ea478 in folly::SingletonVault::scheduleDestroyInstances()::$_0::__invoke () from ./xplat/folly/Singleton.cpp:452
+#21  0x000056067b396aea in cxa_at_exit_callback_installed_at () from /data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/3e7333cd18c1f799/ucache/server/__ucache_base__/ucache_base
+#22  0x00007fd1c56479ca in exit () from /usr/local/fbcode/platform010/lib/libc.so.6
+#23  0x00007fd1c562c65e in __libc_start_call_main () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:63
+#24  0x00007fd1c562c718 in __libc_start_main_alias_1 () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:379
+#25  0x0000560678cad411 in _start () from /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:118
+2026-09-26 20:53:23 345317: Done.
+
+E0926 20:53:23.356210 40815 ToasterSetup.cpp:371] Saving toaster logs to "/logs/tao_test_failure_logs/McTest.ddf6-7af4-e63b-0e47"
+I0926 20:53:23.357759 40815 LogWatchDog.cpp:61] clean up shared memory in cache dir /tmp/McTest.3eef-d145-734b-43b9
+I0926 20:53:23.359233 40815 LogWatchDog.cpp:29] McTest: stopping watchdog, pid 41274
+
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GPHHpzCI7qgyMxwGAG2xdK13DmpbbswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=281475509947637.281475243249473.1790481005
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/281475509947637.281475243249473.1790481005/

@@ -1,0 +1,113 @@
+  result_id: 16888498808266881.562950212033102.1790518265
+  status: FATAL
+  test_name: fbcode//thrift/lib/cpp2/test:coroutine_test - CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive
+  test_id: 562950212033102
+  signal_type: TEST
+  oncall: thrift_server_investigations
+  execution_type: SANDCASTLE_JOB
+  execution_id: 49539596595949603
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Test appears to have passed but the binary exited with a non-zero exit code.
+This usually means something has crashed after the test was done.
+stdout:
+Note: Google Test filter = CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from CoroutineTest/CoroutineTest/0, where TypeParam = CoroutineServiceHandlerCoro
+[ RUN      ] CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive
+[       OK ] CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive (750 ms)
+[----------] 1 test from CoroutineTest/CoroutineTest/0 (751 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (751 ms total)
+[  PASSED  ] 1 test.
+
+stderr:
+I0927 07:11:04.356877 18616 ThriftServer.cpp:2053] Using randomly generated TLS ticket keys.
+I0927 07:11:04.360460 18616 ThriftServer.cpp:973] Using resource pools on address/port [::1]:0: thrift flag: true, enable gflag: false, disable gflag: false, runtime actions: 
+I0927 07:11:04.369057 18616 ThriftServer.cpp:1533] Resource pools configured: 2
+I0927 07:11:04.388310 18616 ThriftServer.cpp:731] ThriftServer listening on address/port: [::1]:38781
+==================
+WARNING: ThreadSanitizer: data race (pid=18392)
+  Write of size 8 at 0x72240000da50 by thread T11:
+    #0 free <null> (coroutine_test+0x24ab19) (BuildId: 73a2eacdf5229e6b16f631831927a234ec86ed43)
+    #1 apache::thrift::ServiceHandler<apache::thrift::test::Coroutine>::async_tm_computeSumThrowsUserExPrimitive(apache::thrift::util::IntrusiveSharedPtr<apache::thrift::HandlerCallback<int>, apache::thrift::HandlerCallbackBase::IntrusiveSharedPtrAccess>, int, int) buck-out/v2/art/fbcode/thrift/lib/cpp2/test/__coroutine-cpp2-Coroutine.thrift__/5d485c87fbd10363/out/gen-cpp2/Coroutine.cpp:2254 (libthrift_lib_cpp2_test_coroutine-cpp2-services.so+0x63986) (BuildId: 34401dfffa9ea58fd3c398772eeac5e3f6ca0364)
+    #2 void apache::thrift::test::CoroutineAsyncProcessor::executeRequest_computeSumThrowsUserExPrimitive<apache::thrift::CompactProtocolReader, apache::thrift::CompactProtocolWriter>(apache::thrift::ServerRequest&&) fbcode/thrift/lib/cpp2/test/gen-cpp2/Coroutine.tcc:2674 (libthrift_lib_cpp2_test_coroutine-cpp2-services.so+0xa22e6) (BuildId: 34401dfffa9ea58fd3c398772eeac5e3f6ca0364)
+    #3 void apache::thrift::detail::ap::execute<apache::thrift::test::CoroutineAsyncProcessor>(apache::thrift::test::CoroutineAsyncProcessor*, apache::thrift::ServerRequest&&, apache::thrift::protocol::PROTOCOL_TYPES, apache::thrift::AsyncProcessorFactory::MethodMetadata const&) fbcode/thrift/lib/cpp2/GeneratedCodeHelper.h:1268 (libthrift_lib_cpp2_test_coroutine-cpp2-services.so+0x82db5) (BuildId: 34401dfffa9ea58fd3c398772eeac5e3f6ca0364)
+    #4 apache::thrift::test::CoroutineAsyncProcessor::executeRequest(apache::thrift::ServerRequest&&, apache::thrift::AsyncProcessorFactory::MethodMetadata const&) buck-out/v2/art/fbcode/thrift/lib/cpp2/test/__coroutine-cpp2-Coroutine.thrift__/5d485c87fbd10363/out/gen-cpp2/Coroutine.cpp:2327 (libthrift_lib_cpp2_test_coroutine-cpp2-services.so+0x50c07) (BuildId: 34401dfffa9ea58fd3c398772eeac5e3f6ca0364)
+    #5 apache::thrift::(anonymous namespace)::MultiplexAsyncProcessor::executeRequest(apache::thrift::ServerRequest&&, apache::thrift::AsyncProcessorFactory::MethodMetadata const&) fbcode/thrift/lib/cpp2/async/MultiplexAsyncProcessor.cpp:333 (libthrift_lib_cpp2_async_multiplex_async_processor.so+0x2d910) (BuildId: 1e81c6a9ad29bcfa632077407571f01a2ab12d3a)
+    #6 apache::thrift::AsyncProcessorHelper::executeRequest(apache::thrift::ServerRequest&&) fbcode/thrift/lib/cpp2/async/AsyncProcessorHelper.cpp:57 (libthrift_lib_cpp2_async_async_processor_helper.so+0x8790) (BuildId: 61f2f2fa007da168cab5919d00e257053ff3c35d)
+    #7 apache::thrift::ParallelConcurrencyControllerBase::executeRequest(std::optional<apache::thrift::ServerRequest>) fbcode/thrift/lib/cpp2/server/ParallelConcurrencyController.cpp:196 (libthrift_lib_cpp2_server_parallel_concurrency_controller.so+0xd49a) (BuildId: f7671cd7f8487a08eeea92e70434da3716effe39)
+    #8 void folly::detail::function::call_<apache::thrift::ParallelConcurrencyController::scheduleOnExecutor()::$_0, true, false, void>(folly::detail::function::Data&) fbcode/thrift/lib/cpp2/server/ParallelConcurrencyController.cpp:146 (libthrift_lib_cpp2_server_parallel_concurrency_controller.so+0xd1c8) (BuildId: f7671cd7f8487a08eeea92e70434da3716effe39)
+    #9 folly::detail::function::FunctionTraits<void ()>::operator()() fbsource/folly/Function.h:370 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x2c573) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #10 folly::ThreadPoolExecutor::runTask(std::shared_ptr<folly::ThreadPoolExecutor::Thread> const&, folly::ThreadPoolExecutor::Task&&) fbsource/folly/lang/Exception.h:362 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x2b4ab) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #11 folly::CPUThreadPoolExecutor::threadRun(std::shared_ptr<folly::ThreadPoolExecutor::Thread>) xplat/folly/executors/CPUThreadPoolExecutor.cpp:385 (libxplat_folly_executors__fbcode_cpu_thread_pool_executor.so+0x446aa) (BuildId: 58b53a0c2e8cc51bf9cca23545b75d532ab2ed0a)
+    #12 void std::__invoke_impl<void, void (folly::ThreadPoolExecutor::*&)(std::shared_ptr<folly::ThreadPoolExecutor::Thread>), folly::ThreadPoolExecutor*&, std::shared_ptr<folly::ThreadPoolExecutor::Thread>&>(std::__invoke_memfun_deref, void (folly::ThreadPoolExecutor::*&)(std::shared_ptr<folly::ThreadPoolExecutor::Thread>), folly::ThreadPoolExecutor*&, std::shared_ptr<folly::ThreadPoolExecutor::Thread>&) fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:74 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x31376) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #13 std::__invoke_result<void (folly::ThreadPoolExecutor::*&)(std::shared_ptr<folly::ThreadPoolExecutor::Thread>), folly::ThreadPoolExecutor*&, std::shared_ptr<folly::ThreadPoolExecutor::Thread>&>::type std::__invoke<void (folly::ThreadPoolExecutor::*&)(std::shared_ptr<folly::ThreadPoolExecutor::Thread>), folly::ThreadPoolExecutor*&, std::shared_ptr<folly::ThreadPoolExecutor::Thread>&>(void (folly::ThreadPoolExecutor::*&)(std::shared_ptr<folly::ThreadPoolExecutor::Thread>), folly::ThreadPoolExecutor*&, std::shared_ptr<folly::ThreadPoolExecutor::Thread>&) fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:96 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x311a5) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #14 void std::_Bind<void (folly::ThreadPoolExecutor::* (folly::ThreadPoolExecutor*, std::shared_ptr<folly::ThreadPoolExecutor::Thread>))(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)>::__call<void, 0ul, 1ul>(std::tuple<>&&, std::_Index_tuple<0ul, 1ul>) fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/functional:420 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x3112a) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #15 void std::_Bind<void (folly::ThreadPoolExecutor::* (folly::ThreadPoolExecutor*, std::shared_ptr<folly::ThreadPoolExecutor::Thread>))(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)>::operator()<void>() fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/functional:503 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x31086) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #16 void folly::detail::function::call_<std::_Bind<void (folly::ThreadPoolExecutor::* (folly::ThreadPoolExecutor*, std::shared_ptr<folly::ThreadPoolExecutor::Thread>))(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)>, true, false, void>(folly::detail::function::Data&) fbsource/folly/Function.h:341 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x30d7d) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #17 folly::detail::function::FunctionTraits<void ()>::operator()() fbsource/folly/Function.h:370 (libxplat_folly_executors_thread_factory__fbcode_priority_thread_factory.so+0xc173) (BuildId: ed166f5193e7f29e1e10e1c8a881491b34bf8746)
+    #18 folly::InitThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()::operator()() fbsource/folly/executors/thread_factory/InitThreadFactory.h:45 (libxplat_folly_executors_thread_factory__fbcode_priority_thread_factory.so+0xc090) (BuildId: ed166f5193e7f29e1e10e1c8a881491b34bf8746)
+    #19 void folly::detail::function::call_<folly::InitThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'(), false, false, void>(folly::detail::function::Data&) fbsource/folly/Function.h:341 (libxplat_folly_executors_thread_factory__fbcode_priority_thread_factory.so+0xbe0d) (BuildId: ed166f5193e7f29e1e10e1c8a881491b34bf8746)
+    #20 folly::detail::function::FunctionTraits<void ()>::operator()() fbsource/folly/Function.h:370 (libxplat_folly_executors__fbcode_global_executor.so+0x357e3) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #21 folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()::operator()() fbsource/folly/executors/thread_factory/NamedThreadFactory.h:40 (libxplat_folly_executors__fbcode_global_executor.so+0x6b577) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #22 void std::__invoke_impl<void, folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda
+...
+...
+...
+NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()>(folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()&&) fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:96 (libxplat_folly_executors__fbcode_global_executor.so+0x6b455) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #33 void std::thread::_Invoker<std::tuple<folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()>>::_M_invoke<0ul>(std::_Index_tuple<0ul>) fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:253 (libxplat_folly_executors__fbcode_global_executor.so+0x6b40d) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #34 std::thread::_Invoker<std::tuple<folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()>>::operator()() fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:260 (libxplat_folly_executors__fbcode_global_executor.so+0x6b3b5) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #35 std::thread::_State_impl<std::thread::_Invoker<std::tuple<folly::NamedThreadFactory::newThread(folly::Function<void ()>&&)::'lambda'()>>>::_M_run() fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:211 (libxplat_folly_executors__fbcode_global_executor.so+0x6b169) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #36 execute_native_thread_routine /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82:18 (libstdc++.so.6+0xe8bc4) (BuildId: fcec47b5ec1bd07495b695f1c2a940faa96e0475)
+
+  Thread T11 'ThriftSrv.N0' (tid=18844, running) created by thread T7 at:
+    #0 pthread_create <null> (coroutine_test+0x24ba8a) (BuildId: 73a2eacdf5229e6b16f631831927a234ec86ed43)
+    #1 __gthread_create /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/include/x86_64-facebook-linux/bits/gthr-default.h:663:35 (libstdc++.so.6+0xe8eee) (BuildId: fcec47b5ec1bd07495b695f1c2a940faa96e0475)
+    #2 std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State>>, void (*)()) /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:147:37 (libstdc++.so.6+0xe8eee)
+    #3 folly::NamedThreadFactory::newThread(folly::Function<void ()>&&) fbsource/folly/executors/thread_factory/NamedThreadFactory.h:37 (libxplat_folly_executors__fbcode_global_executor.so+0x69abf) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #4 folly::InitThreadFactory::newThread(folly::Function<void ()>&&) fbsource/folly/executors/thread_factory/InitThreadFactory.h:39 (libxplat_folly_executors_thread_factory__fbcode_priority_thread_factory.so+0x6ccf) (BuildId: ed166f5193e7f29e1e10e1c8a881491b34bf8746)
+    #5 folly::ThreadPoolExecutor::tryAddOneThread() xplat/folly/executors/ThreadPoolExecutor.cpp:321 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x32d2c) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #6 folly::ThreadPoolExecutor::ensureActiveThreads() xplat/folly/executors/ThreadPoolExecutor.cpp:655 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x4cb2f) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #7 void folly::CPUThreadPoolExecutor::addImpl<folly::CPUThreadPoolExecutor::add(folly::Function<void ()>, std::chrono::duration<long, std::ratio<1l, 1000l>>, folly::Function<void ()>)::$_0>(folly::CPUThreadPoolExecutor::add(folly::Function<void ()>, std::chrono::duration<long, std::ratio<1l, 1000l>>, folly::Function<void ()>)::$_0&&, folly::CPUThreadPoolExecutor::CPUTask&&) fbsource/folly/executors/CPUThreadPoolExecutor.h:236 (libxplat_folly_executors__fbcode_cpu_thread_pool_executor.so+0xc999a) (BuildId: 58b53a0c2e8cc51bf9cca23545b75d532ab2ed0a)
+    #8 folly::CPUThreadPoolExecutor::add(folly::Function<void ()>, std::chrono::duration<long, std::ratio<1l, 1000l>>, folly::Function<void ()>) xplat/folly/executors/CPUThreadPoolExecutor.cpp:269 (libxplat_folly_executors__fbcode_cpu_thread_pool_executor.so+0x43e96) (BuildId: 58b53a0c2e8cc51bf9cca23545b75d532ab2ed0a)
+    #9 folly::CPUThreadPoolExecutor::add(folly::Function<void ()>) xplat/folly/executors/CPUThreadPoolExecutor.cpp:258 (libxplat_folly_executors__fbcode_cpu_thread_pool_executor.so+0x43b4d) (BuildId: 58b53a0c2e8cc51bf9cca23545b75d532ab2ed0a)
+    #10 void folly::ExecutorKeepAlive<folly::Executor>::add<folly::Function<void (folly::ExecutorKeepAlive<folly::Executor>&&)>>(folly::Function<void (folly::ExecutorKeepAlive<folly::Executor>&&)>&&) && fbsource/folly/Executor.h:271 (libxplat_folly_futures_detail__fbcode_core.so+0xf312) (BuildId: dbb15afdadd5f4fdeb28b6ff73b7019def9946d9)
+    #11 folly::futures::detail::DeferredExecutor::setExecutor(folly::ExecutorKeepAlive<folly::Executor>, bool) xplat/folly/futures/detail/Core.cpp:218 (libxplat_folly_futures_detail__fbcode_core.so+0x1144a) (BuildId: dbb15afdadd5f4fdeb28b6ff73b7019def9946d9)
+    #12 folly::futures::detail::DeferredExecutor::setExecutor(folly::ExecutorKeepAlive<folly::Executor>, bool) xplat/folly/futures/detail/Core.cpp:191 (libxplat_folly_futures_detail__fbcode_core.so+0x11116) (BuildId: dbb15afdadd5f4fdeb28b6ff73b7019def9946d9)
+    #13 folly::SemiFuture<std::vector<folly::Try<folly::Unit>, std::allocator<folly::Try<folly::Unit>>>>::via(folly::ExecutorKeepAlive<folly::Executor>) && fbsource/folly/futures/Future-inl.h:712 (libthrift_lib_cpp2_server.so+0x2b1b8f) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #14 apache::thrift::ThriftServer::callDecoratorsAndHandlersBeforeStartServing(apache::thrift::server::DecoratorDataPerRequestBlueprint::Setup&) fbcode/thrift/lib/cpp2/server/ThriftServer.cpp:1848 (libthrift_lib_cpp2_server.so+0x229e37) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #15 apache::thrift::ThriftServer::setup() fbcode/thrift/lib/cpp2/server/ThriftServer.cpp:705 (libthrift_lib_cpp2_server.so+0x2204a0) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #16 apache::thrift::ThriftServer::serve() fbcode/thrift/lib/cpp2/server/ThriftServer.cpp:1552 (libthrift_lib_cpp2_server.so+0x1d41f4) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #17 apache::thrift::util::ScopedServerThread::Helper::run() fbcode/thrift/lib/cpp2/util/ScopedServerThread.cpp:150 (libthrift_lib_cpp2_util_scoped_server_thread.so+0xb641) (BuildId: b34a25824c82d9916a8dd448a87e7d38048a6a16)
+    #18 apache::thrift::concurrency::PthreadThread::threadMain(void*) fbcode/thrift/lib/cpp/concurrency/PosixThreadFactory.cpp:208 (libthrift_lib_cpp_concurrency_posix_thread_factory.so+0x94c1) (BuildId: bc18e264221cb581604736212e6e7df647bed740)
+
+  Thread T10 'ThriftIO0' (tid=18824, running) created by thread T7 at:
+    #0 pthread_create <null> (coroutine_test+0x24ba8a) (BuildId: 73a2eacdf5229e6b16f631831927a234ec86ed43)
+    #1 __gthread_create /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/include/x86_64-facebook-linux/bits/gthr-default.h:663:35 (libstdc++.so.6+0xe8eee) (BuildId: fcec47b5ec1bd07495b695f1c2a940faa96e0475)
+    #2 std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State>>, void (*)()) /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:147:37 (libstdc++.so.6+0xe8eee)
+    #3 folly::NamedThreadFactory::newThread(folly::Function<void ()>&&) fbsource/folly/executors/thread_factory/NamedThreadFactory.h:37 (libxplat_folly_executors__fbcode_global_executor.so+0x69abf) (BuildId: 7feecfec05147ebea59f6c4dca095ba1f7ade863)
+    #4 folly::ThreadPoolExecutor::addThreads(unsigned long) xplat/folly/executors/ThreadPoolExecutor.cpp:305 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x2de59) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #5 folly::ThreadPoolExecutor::setNumThreads(unsigned long) xplat/folly/executors/ThreadPoolExecutor.cpp:273 (libxplat_folly_executors__fbcode_thread_pool_executor.so+0x2d717) (BuildId: b5e9a71951bb3d99e2c67e188649b3bbe1cbd8f8)
+    #6 apache::thrift::ThriftServer::setup() fbcode/thrift/lib/cpp2/server/ThriftServer.cpp:676 (libthrift_lib_cpp2_server.so+0x21f522) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #7 apache::thrift::ThriftServer::serve() fbcode/thrift/lib/cpp2/server/ThriftServer.cpp:1552 (libthrift_lib_cpp2_server.so+0x1d41f4) (BuildId: 9be5e76f43b4fa47ae19ac950a9e184eed0cc222)
+    #8 apache::thrift::util::ScopedServerThread::Helper::run() fbcode/thrift/lib/cpp2/util/ScopedServerThread.cpp:150 (libthrift_lib_cpp2_util_scoped_server_thread.so+0xb641) (BuildId: b34a25824c82d9916a8dd448a87e7d38048a6a16)
+    #9 apache::thrift::concurrency::PthreadThread::threadMain(void*) fbcode/thrift/lib/cpp/concurrency/PosixThreadFactory.cpp:208 (libthrift_lib_cpp_concurrency_posix_thread_factory.so+0x94c1) (BuildId: bc18e264221cb581604736212e6e7df647bed740)
+
+SUMMARY: ThreadSanitizer: data race (/data/sandcastle/boxes/trunk-hg-full-fbsource/buck-out/v2/art/fbcode/84d8d0d7c12eea08/thrift/lib/cpp2/test/__coroutine_test__/coroutine_test+0x24ab19) (BuildId: 73a2eacdf5229e6b16f631831927a234ec86ed43) in free
+==================
+ThreadSanitizer: reported 1 warnings
+
+exit_code:"Exit code from the process: 66"
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GCw0rjBw-pn3zsgDANiXv-sfdwthbswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=16888498808266881.562950212033102.1790518265
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/16888498808266881.562950212033102.1790518265/

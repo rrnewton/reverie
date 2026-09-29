@@ -1,0 +1,268 @@
+[2026-09-28T11:15:30.425-07:00] Buck UI: https://www.internalfb.com/buck2/57a77611-af88-48fd-a04e-de5606bd6610
+[2026-09-28T11:15:31.145-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/11258999271745765
+[2026-09-28T11:15:46.375-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (5.2s)
+[2026-09-28T11:15:46.375-07:00] test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] ======================================================================
+[2026-09-28T11:15:46.375-07:00] FAIL: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:15:46.375-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:15:46.375-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 490, in _codex_environment_preflight
+[2026-09-28T11:15:46.375-07:00]     release_channel, release_before = _codex_release_identity(environment)
+[2026-09-28T11:15:46.375-07:00]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 458, in _codex_release_identity
+[2026-09-28T11:15:46.375-07:00]     raise ProcessError(f"Codex {channel} release manifest identity differs")
+[2026-09-28T11:15:46.375-07:00] testinfra.tfa.process.ProcessError: Codex stable release manifest identity differs
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 883, in _owner_codex_is_eligible
+[2026-09-28T11:15:46.375-07:00]     process_module._codex_environment_preflight(
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 505, in _codex_environment_preflight
+[2026-09-28T11:15:46.375-07:00]     raise ProcessError(
+[2026-09-28T11:15:46.375-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-28T11:15:46.375-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:15:46.375-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3499, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+[2026-09-28T11:15:46.375-07:00]     if not _owner_codex_is_eligible(environment, control / "owner-preflight"):
+[2026-09-28T11:15:46.375-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:46.375-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 892, in _owner_codex_is_eligible
+[2026-09-28T11:15:46.375-07:00]     raise AssertionError(
+[2026-09-28T11:15:46.375-07:00] AssertionError: owner Codex refusal is not the reviewed blocked release: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:15:46.375-07:00] Ran 1 test in 5.225s
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:46.375-07:00] FAILED (failures=1)
+[2026-09-28T11:15:46.375-07:00]
+[2026-09-28T11:15:56.699-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (5.1s)
+[2026-09-28T11:15:56.699-07:00] test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] ======================================================================
+[2026-09-28T11:15:56.699-07:00] FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:15:56.699-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:15:56.699-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 490, in _codex_environment_preflight
+[2026-09-28T11:15:56.699-07:00]     release_channel, release_before = _codex_release_identity(environment)
+[2026-09-28T11:15:56.699-07:00]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 458, in _codex_release_identity
+[2026-09-28T11:15:56.699-07:00]     raise ProcessError(f"Codex {channel} release manifest identity differs")
+[2026-09-28T11:15:56.699-07:00] testinfra.tfa.process.ProcessError: Codex stable release manifest identity differs
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 883, in _owner_codex_is_eligible
+[2026-09-28T11:15:56.699-07:00]     process_module._codex_environment_preflight(
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 505, in _codex_environment_preflight
+[2026-09-28T11:15:56.699-07:00]     raise ProcessError(
+[2026-09-28T11:15:56.699-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] Traceback (most recent call last):
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-28T11:15:56.699-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:15:56.699-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3572, in test_real_codex_candidate_handoff_uses_controller_buck
+[2026-09-28T11:15:56.699-07:00]     if not _owner_codex_is_eligible(
+[2026-09-28T11:15:56.699-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:15:56.699-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 892, in _owner_codex_is_eligible
+[2026-09-28T11:15:56.699-07:00]     raise AssertionError(
+[2026-09-28T11:15:56.699-07:00] AssertionError: owner Codex refusal is not the reviewed blocked release: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:15:56.699-07:00] Ran 1 test in 5.095s
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:15:56.699-07:00] FAILED (failures=1)
+[2026-09-28T11:15:56.699-07:00]
+[2026-09-28T11:19:05.080-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_bootstraps_with_bound_agent_identity (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.5s)
+[2026-09-28T11:19:05.080-07:00] test_real_codex_bootstraps_with_bound_agent_identity (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] ======================================================================
+[2026-09-28T11:19:05.080-07:00] FAIL: test_real_codex_bootstraps_with_bound_agent_identity (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:19:05.080-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:05.080-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:05.080-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 490, in _codex_environment_preflight
+[2026-09-28T11:19:05.080-07:00]     release_channel, release_before = _codex_release_identity(environment)
+[2026-09-28T11:19:05.080-07:00]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:05.080-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 458, in _codex_release_identity
+[2026-09-28T11:19:05.080-07:00]     raise ProcessError(f"Codex {channel} release manifest identity differs")
+[2026-09-28T11:19:05.080-07:00] testinfra.tfa.process.ProcessError: Codex latest release manifest identity differs
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex latest release manifest identity differs
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] During handling of the above exception, another exception occurred:
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:05.080-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-28T11:19:05.080-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:19:05.080-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:05.080-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3336, in test_real_codex_bootstraps_with_bound_agent_identity
+[2026-09-28T11:19:05.080-07:00]     with self.assertRaisesRegex(
+[2026-09-28T11:19:05.080-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:05.080-07:00] AssertionError: "owner-managed Codex lacks daemon-socket fixes" does not match "Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex latest release manifest identity differs"
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:05.080-07:00] Ran 1 test in 4.526s
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:05.080-07:00] FAILED (failures=1)
+[2026-09-28T11:19:05.080-07:00]
+[2026-09-28T11:19:30.152-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_current_full_trace_refuses_trace_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (23.7s)
+[2026-09-28T11:19:30.152-07:00] test_current_full_trace_refuses_trace_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:19:30.152-07:00]
+[2026-09-28T11:19:30.152-07:00] ======================================================================
+[2026-09-28T11:19:30.152-07:00] FAIL: test_current_full_trace_refuses_trace_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:19:30.152-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:30.152-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:30.152-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 211, in locked
+[2026-09-28T11:19:30.152-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:19:30.152-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:30.152-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 4467, in test_current_full_trace_refuses_trace_drift_and_cleans_up
+[2026-09-28T11:19:30.152-07:00]     self.assertEqual(
+[2026-09-28T11:19:30.152-07:00] AssertionError: 124 != 1 : :: Run1...
+[2026-09-28T11:19:30.152-07:00] :: Run2...
+[2026-09-28T11:19:30.152-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:30.152-07:00]   File "<string>", line 62, in <module>
+[2026-09-28T11:19:30.152-07:00] OSError: [Errno 28] No space left on device
+[2026-09-28T11:19:30.152-07:00]
+[2026-09-28T11:19:30.152-07:00]
+[2026-09-28T11:19:30.152-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:30.152-07:00] Ran 1 test in 23.654s
+[2026-09-28T11:19:30.152-07:00]
+[2026-09-28T11:19:30.152-07:00] FAILED (failures=1)
+[2026-09-28T11:19:30.152-07:00]
+[2026-09-28T11:19:47.364-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.6s)
+[2026-09-28T11:19:47.364-07:00] test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] ======================================================================
+[2026-09-28T11:19:47.364-07:00] FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:19:47.364-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:47.364-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 490, in _codex_environment_preflight
+[2026-09-28T11:19:47.364-07:00]     release_channel, release_before = _codex_release_identity(environment)
+[2026-09-28T11:19:47.364-07:00]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 458, in _codex_release_identity
+[2026-09-28T11:19:47.364-07:00]     raise ProcessError(f"Codex {channel} release manifest identity differs")
+[2026-09-28T11:19:47.364-07:00] testinfra.tfa.process.ProcessError: Codex stable release manifest identity differs
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 883, in _owner_codex_is_eligible
+[2026-09-28T11:19:47.364-07:00]     process_module._codex_environment_preflight(
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 505, in _codex_environment_preflight
+[2026-09-28T11:19:47.364-07:00]     raise ProcessError(
+[2026-09-28T11:19:47.364-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+[2026-09-28T11:19:47.364-07:00]     yield root
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3859, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-28T11:19:47.364-07:00]     if not _owner_codex_is_eligible(environment, root / "owner-preflight"):
+[2026-09-28T11:19:47.364-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 892, in _owner_codex_is_eligible
+[2026-09-28T11:19:47.364-07:00]     raise AssertionError(
+[2026-09-28T11:19:47.364-07:00] AssertionError: owner Codex refusal is not the reviewed blocked release: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-28T11:19:47.364-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:19:47.364-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3827, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-28T11:19:47.364-07:00]     with _preserving_production_directory(
+[2026-09-28T11:19:47.364-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:47.364-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-28T11:19:47.364-07:00]     self.gen.throw(value)
+[2026-09-28T11:19:47.364-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 653, in _preserving_production_directory
+[2026-09-28T11:19:47.364-07:00]     raise AssertionError(
+[2026-09-28T11:19:47.364-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790619585073252330; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-m3cckf45
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:47.364-07:00] Ran 1 test in 4.601s
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:47.364-07:00] FAILED (failures=1)
+[2026-09-28T11:19:47.364-07:00]
+[2026-09-28T11:19:52.169-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.5s)
+[2026-09-28T11:19:52.169-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] ======================================================================
+[2026-09-28T11:19:52.169-07:00] FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-28T11:19:52.169-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:52.169-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 490, in _codex_environment_preflight
+[2026-09-28T11:19:52.169-07:00]     release_channel, release_before = _codex_release_identity(environment)
+[2026-09-28T11:19:52.169-07:00]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 458, in _codex_release_identity
+[2026-09-28T11:19:52.169-07:00]     raise ProcessError(f"Codex {channel} release manifest identity differs")
+[2026-09-28T11:19:52.169-07:00] testinfra.tfa.process.ProcessError: Codex stable release manifest identity differs
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 883, in _owner_codex_is_eligible
+[2026-09-28T11:19:52.169-07:00]     process_module._codex_environment_preflight(
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 505, in _codex_environment_preflight
+[2026-09-28T11:19:52.169-07:00]     raise ProcessError(
+[2026-09-28T11:19:52.169-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+[2026-09-28T11:19:52.169-07:00]     yield root
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3753, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-28T11:19:52.169-07:00]     if not _owner_codex_is_eligible(environment, control / "owner-preflight"):
+[2026-09-28T11:19:52.169-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 892, in _owner_codex_is_eligible
+[2026-09-28T11:19:52.169-07:00]     raise AssertionError(
+[2026-09-28T11:19:52.169-07:00] AssertionError: owner Codex refusal is not the reviewed blocked release: Codex executable preflight failed (tfa.codex-environment-preflight.v3): Codex stable release manifest identity differs
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] The above exception was the direct cause of the following exception:
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] Traceback (most recent call last):
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-28T11:19:52.169-07:00]     return function(*args, **kwargs)
+[2026-09-28T11:19:52.169-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3718, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-28T11:19:52.169-07:00]     with _preserving_production_directory(
+[2026-09-28T11:19:52.169-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-28T11:19:52.169-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-28T11:19:52.169-07:00]     self.gen.throw(value)
+[2026-09-28T11:19:52.169-07:00]   File "/data/repos/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 653, in _preserving_production_directory
+[2026-09-28T11:19:52.169-07:00]     raise AssertionError(
+[2026-09-28T11:19:52.169-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790619589897255835; retained root: /tmp/tfa-phase2/tfa-production-codex-report-q21bc3bb
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] ----------------------------------------------------------------------
+[2026-09-28T11:19:52.169-07:00] Ran 1 test in 4.506s
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:19:52.169-07:00] FAILED (failures=1)
+[2026-09-28T11:19:52.169-07:00]
+[2026-09-28T11:20:02.103-07:00] Network: up 0B  down 0B
+[2026-09-28T11:20:02.103-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/11258999271745765
+Tests finished: [38;5;10mPass 37[39m. [38;5;9mFail 6[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+6 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_bootstraps_with_bound_agent_identity (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_current_full_trace_refuses_trace_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug one of 6 failing tests
+      ^^^ just prefix your previous command! ($ fdb !!)
+For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=11258999271745765&expiry=2026-09-28T18%3A25%3A01Z&viewer=18498&signature=REDACTED-BY-INTEGRATOR\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=11258999271745765&expiry=2026-09-28T18%3A25%3A01Z&viewer=18498&signature=REDACTED-BY-INTEGRATOR]8;;\[0m

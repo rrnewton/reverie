@@ -1,0 +1,199 @@
+  result_id: 25332747955886561.281475244092464.1790593181
+  status: FAILED
+  test_name: fbcode//logdevice/admin/health_monitor:tests - LogStoreHealthMonitorTest.DisabledRebuilding
+  test_id: 281475244092464
+  signal_type: TEST
+  oncall: logdevice
+  execution_type: SANDCASTLE_JOB
+  execution_id: 40532397339163504
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = LogStoreHealthMonitorTest.DisabledRebuilding
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LogStoreHealthMonitorTest
+[ RUN      ] LogStoreHealthMonitorTest.DisabledRebuilding
+
+GMOCK WARNING:
+Uninteresting mock function call - returning default value.
+    Function call: getStatus()
+          Returns: 4-byte object <00-00 00-00>
+NOTE: You can safely ignore the above warning unless this call should not happen.  Do not suppress it by adding an EXPECT_CALL() if you don't mean to enforce the call.  See https://github.com/google/googletest/blob/main/docs/gmock_cook_book.md#knowing-when-to-expect-useoncall for details.
+
+GMOCK WARNING:
+Uninteresting mock function call - returning default value.
+    Function call: getStatus()
+          Returns: 4-byte object <00-00 00-00>
+NOTE: You can safely ignore the above warning unless this call should not happen.  Do not suppress it by adding an EXPECT_CALL() if you don't mean to enforce the call.  See https://github.com/google/googletest/blob/main/docs/gmock_cook_book.md#knowing-when-to-expect-useoncall for details.
+
+GMOCK WARNING:
+Uninteresting mock function call - returning default value.
+    Function call: getStatus()
+          Returns: 4-byte object <00-00 00-00>
+NOTE: You can safely ignore the above warning unless this call should not happen.  Do not suppress it by adding an EXPECT_CALL() if you don't mean to enforce the call.  See https://github.com/google/googletest/blob/main/docs/gmock_cook_book.md#knowing-when-to-expect-useoncall for details.
+
+GMOCK WARNING:
+Uninteresting mock function call - returning default value.
+    Function call: getStatus()
+          Returns: 4-byte object <00-00 00-00>
+NOTE: You can safely ignore the above warning unless this call should not happen.  Do not suppress it by adding an EXPECT_CALL() if you don't mean to enforce the call.  See https://github.com/google/googletest/blob/main/docs/gmock_cook_book.md#knowing-when-to-expect-useoncall for details.
+
+GMOCK WARNING:
+Uninteresting mock function call - returning default value.
+    Function call: getStatus()
+          Returns: 4-byte object <00-00 00-00>
+NOTE: You can safely ignore the above warning unless this call should not happen.  Do not suppress it by adding an EXPECT_CALL() if you don't mean to enforce the call.  See https://github.com/google/googletest/blob/main/docs/gmock_cook_book.md#knowing-when-to-expect-useoncall for details.
+
+I0928 03:59:35.454540     2 TupperwareEnlightenments.cpp:92] Determined allocated logical cores; allocated_cores: 58, hardware_concurrency: 60
+I0928 03:59:35.454638     2 ServerExecutors.cpp:52] Configuring CPU thread pool with 40 max threads, lifo_sem=(enabled,wakeup_interval=0 us)
+I0928 03:59:35.455577     2 ZelosCore.cpp:141] Defaulting to old stack
+I0928 03:59:35.455607     2 ProcessCounters.cpp:17] Bootstraping Delos process counters. Build info below.
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20] Build Information
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built by: twsvcscm
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built on: Mon Sep 28 03:53:15 2026 (1790592795)
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Built at: 2a9f-855b-156c-0a00.twshared7357.01.snb2.tw.fbinfra.net
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build path: /data/sandcastle/boxes/trunk-hg-full-fbsource
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Package Name: 
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Package Version: 
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Package Release: 
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Revision: 93fd3439619064cd42f5e50a7544acb20f27dcb9
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Revision Timestamp: 1790590540
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Upstream Revision: 93fd3439619064cd42f5e50a7544acb20f27dcb9
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Upstream Revision Timestamp: 1790590540
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Platform: platform010
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Rule: fbcode:logdevice/admin/health_monitor:tests (cpp_unittest, buck2, opt)
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20]   Build Library Versions: 
+I0928 03:59:35.455619     2 ProcessCounters.cpp:20] 
+I0928 03:59:35.456346     2 DelosServiceBase.h:563] Delos Startup: DelosServiceBase constructor begins
+I0928 03:59:35.456359     2 DelosServiceBase.h:597] Delos Startup: Init container io reporting
+I0928 03:59:35.456433     2 ContainerIoMetrics.cpp:124] Compatible kernel release "6.16.1-0_fbk5_0_g0e127f210adc": (6,16,1,5) >= (6,4,3,12). Container io stats will be reported.
+I0928 03:59:35.521464     2 DelosServiceBase.h:602] Delos Startup: Starting logical disk io aggregation
+I0928 03:59:35.521483     2 LogicalDiskIoAggregator.cpp:39] (time started.)
+I0928 03:59:35.521568     2 DelosServiceBase.h:677] Delos Startup: Creating storage engine
+I0928 03:59:35.521578     2 DelosServiceBase.h:692] Delos Startup: Creating local view
+I0928 03:59:35.521584     2 DelosServiceBase.h:702] Delos Startup: Creating applicator
+I0928 03:59:35.521620     2 DelosServiceBase.h:705] Delos Startup: Creating shared log
+I0928 03:59:35.521854     2 FaultySharedLog.cpp:34] --sharedlog_fault_injection enabled
+I0928 03:59:35.521861     2 DelosServiceBase.h:733] Delos Startup: Creating snapshot manager
+I0928 03:59:35.521870     2 DelosServiceBase.h:743] Delos Startup: Creating periodic snapshot manager
+I0928 03:59:35.521886     2 TrimTracker.cpp:55] Registering latch in TrimTracker.
+W0928 03:59:35.521889     2 TrimTracker.cpp:86] Asking for safe trim positions with nothing registered. This means we will not allow trimming until there is a safe position established.
+I0928 03:59:35.521999     2 DefaultEngineStack2.h:179] DefaultEngineStack2: Constructing stack with last read position set to -1
+I0928 03:59:35.522396     2 DelosServiceBase.h:802] Delos Startup: Creating periodic backup manager
+I0928 03:59:35.522419     2 NoOpsRemoteSnapshotManager.h:57] dummy setSnapshotCallback
+I0928 03:59:35.522768     2 ZelosDemandControlDataProvider.cpp:23] Initializing ZelosDemandControlDataProvider. Usage of Exponential avg set to 0
+I0928 03:59:35.526422     2 ZelosDemandControlScheduledLogWriter.cpp:33] ScheduledLogWriter is set to on; interval: 100 s
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364] Using ZelosDemandControlPolicy {
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   5: mode (i32) = 0,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   6: pending_request_staleness_softlimit_ms (i64) = 800,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   7: pending_request_staleness_hardlimit_ms (i64) = 1000,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   8: max_pending_read_request_per_participant (i64) = 1000000,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   9: max_pending_write_request_per_participant (i64) = 1000000,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   10: memory_softlimit_ratio (double) = 0.8,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   11: memory_hardlimit_ratio (double) = 0.9,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   12: cpu_softlimit_ratio (double) = 1.01,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   13: cpu_hardlimit_ratio (double) = 1.01,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   14: disk_space_softlimit_ratio (double) = 0.9,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   15: disk_space_hardlimit_ratio (double) = 0.95,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364]   16: demand_control_log_interval_sec (i64) = 100,
+I0928 03:59:35.526533     2 ZelosDemandControl.cpp:364] }
+I0928 03:59:35.526558     2 ZelosDemandControl.cpp:380] Initializing Zelos Demand Control in OFF mode
+I0928 03:59:35.526570     2 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 03:59:35.526574     2 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 03:59:35.526577     2 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 03:59:35.526579     2 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 03:59:35.526581     2 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 03:59:35.526583     2 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 03:59:35.526585     2 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 03:59:35.526587     2 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 03:59:35.526589     2 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 03:59:35.526591     2 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 03:59:35.526634     2 ZelosDemandControl.cpp:738] Starting ZelosDemandControl
+I0928 03:59:35.526636     2 ZelosDemandControl.cpp:740] Started ZelosDemandControl
+I0928 03:59:35.526639     2 ZelosCore.cpp:398] Delos stack is initialized 
+I0928 03:59:35.527307     2 ZelosService.cpp:197] Start ZelosService
+I0928 03:59:35.527311     2 ZelosCore.cpp:484] Start ZelosCore
+I0928 03:59:35.527321     2 Component.cpp:53] Starting DelosServiceBase
+I0928 03:59:35.527326     2 ComponentLogger.cpp:21] ComponentId: DelosServiceBase, EventType: start, Status: Starting
+I0928 03:59:35.527329     2 Component.cpp
+...
+...
+...
+:973] Using resource pools on address/port [::1]:0: thrift flag: true, enable gflag: false, disable gflag: false, runtime actions: 
+I0928 03:59:36.625374   262 ThriftServer.cpp:1533] Resource pools configured: 5
+I0928 03:59:36.626328   262 ThriftServer.cpp:731] ThriftServer listening on address/port: [::1]:41047
+W0928 03:59:36.633078    75 RolloutConfigHelper.cpp:44] SMC tier fetch returned empty; retrying with 2x timeout
+E0928 03:59:36.633096    75 RolloutConfigHelper.cpp:52] SMC tier fetch retry also returned empty; tier-based rollout checks may be inaccurate
+I0928 03:59:36.692234   316 ServiceHasUnimplementedExtraInterfaces.cpp:295] Check for unimplemented extra interfaces resulted in: IMPLEMENTED - Your service is using FacebookBase2, please migrate it away. You *may* see an error above - if you see this line, then you can safely ignore it.
+I0928 03:59:36.692562   316 ThriftServer.cpp:2053] Using randomly generated TLS ticket keys.
+I0928 03:59:36.692672   316 ThriftServer.cpp:973] Using resource pools on address/port [::1]:0: thrift flag: true, enable gflag: false, disable gflag: false, runtime actions: 
+I0928 03:59:36.693306   316 ThriftServer.cpp:1533] Resource pools configured: 5
+I0928 03:59:36.694220   316 ThriftServer.cpp:731] ThriftServer listening on address/port: [::1]:32921
+I0928 03:59:36.740547   323 ServiceHasUnimplementedExtraInterfaces.cpp:295] Check for unimplemented extra interfaces resulted in: IMPLEMENTED - Your service is using FacebookBase2, please migrate it away. You *may* see an error above - if you see this line, then you can safely ignore it.
+I0928 03:59:36.740822   323 ThriftServer.cpp:2053] Using randomly generated TLS ticket keys.
+I0928 03:59:36.740902   323 ThriftServer.cpp:973] Using resource pools on address/port [::1]:0: thrift flag: true, enable gflag: false, disable gflag: false, runtime actions: 
+I0928 03:59:36.741398   323 ThriftServer.cpp:1533] Resource pools configured: 5
+I0928 03:59:36.742568   323 ThriftServer.cpp:731] ThriftServer listening on address/port: [::1]:38667
+I0928 03:59:36.742831       2 [not-set] LogStoreHealthMonitor.cpp:160] updateTriggerQueue() N0 is down with error FAILED: apache::thrift::TApplicationException: Handler disabled at follyTryToExpected (fbcode/logdevice/admin/NodePollingUtil.h:123), attempting to add all its shards to trigger queue
+I0928 03:59:36.742848       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N0:S0 to execute in 1200s
+I0928 03:59:36.742852       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N0:S1 to execute in 1200s
+I0928 03:59:36.742854       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N1:S0 to execute in 1200s
+I0928 03:59:36.742859       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N1:S1 to execute in 1200s
+I0928 03:59:36.742862       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N2:S0 to execute in 1200s
+I0928 03:59:36.742864       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N2:S1 to execute in 1200s
+I0928 03:59:36.742866       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N3:S0 to execute in 1200s
+I0928 03:59:36.742867       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N3:S1 to execute in 1200s
+I0928 03:59:36.742869       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N4:S0 to execute in 1200s
+I0928 03:59:36.742871       2 [not-set] LogStoreHealthMonitor.cpp:481] startRebuildingCountdownForShard() Scheduling rebuilding of N4:S1 to execute in 1200s
+I0928 03:59:36.742986       2 [not-set] LogStoreHealthMonitor.cpp:487] startRebuildingCountdownForShard() N0:S0 is already in the trigger queue
+I0928 03:59:36.743065       2 [not-set] LogStoreHealthMonitor.cpp:487] startRebuildingCountdownForShard() skipped at least 10 log entries
+I0928 03:59:36.743068       2 [not-set] LogStoreHealthMonitor.cpp:487] startRebuildingCountdownForShard() N0:S1 is already in the trigger queue
+I0928 03:59:36.743070       2 [not-set] LogStoreHealthMonitor.cpp:160] updateTriggerQueue() skipped at least 10 log entries
+I0928 03:59:36.743072       2 [not-set] LogStoreHealthMonitor.cpp:160] updateTriggerQueue() N1 is down with error FAILED: apache::thrift::TApplicationException: Handler disabled at follyTryToExpected (fbcode/logdevice/admin/NodePollingUtil.h:123), attempting to add all its shards to trigger queue
+I0928 03:59:36.743234       2 [not-set] LogStoreHealthMonitor.cpp:583] evaluateQueuedShard() Not triggering rebuilding of N0:S0: Log Store Health Monitor rebuildings are disabled
+I0928 03:59:36.743442     329 [not-set] LogStoreHealthMonitor.cpp:505] operator()() Attempting to process more triggers
+I0928 03:59:36.743456       2 [not-set] LogStoreHealthMonitor.cpp:936] shutdownBlocking() Shutting down...
+*** Aborted at 1790593176 (Unix time, try 'date -d @1790593176') ***
+*** Signal 11 (SIGSEGV) (0x0) received by PID 2 (pthread TID 0x7fe3a25f3640) (linux TID 329) (code: address not mapped to object), stack trace: ***
+W0928 03:59:36.744982    75 LoggerTransport.h:148] Tracing payload for Mock should not be called
+W0928 03:59:36.745007    76 LoggerTransport.h:281] Tracing payload for Mock should not be called: privacylib_events
+I0928 03:59:36.747166    75 PolicyEnforcerScubaLogger.cpp:1371] Dropping Service Graph logs in unit test
+I0928 03:59:36.747239    76 PeriodicComponentInspector.cpp:22] [GsmLocalView:: {"GsmLocalView":{}}]
+I0928 03:59:36.747346    75 PeriodicComponentInspector.cpp:22] [DefaultEngineStack2:: {"DefaultEngineStack2":{"DelosSMREngine":{"FaultySharedLog":{"failure":"none","ChainedLog":{"backingLogs":[{"LocalInMemLogImpl":{},"stop":"-","start":0,"segmentId":0}]}},"trimLogPos":-1,"curLogPos":11},"BrainDoctorSMREngine":{"DelosSMREngine":{"FaultySharedLog":{"failure":"none","ChainedLog":{"backingLogs":[{"LocalInMemLogImpl":{},"stop":"-","start":0,"segmentId":0}]}},"trimLogPos":-1,"curLogPos":11}},"ViewTrackingSMREngine":{"stopTrims":[],"durables":[{"trackedPos":"0","hostname":"localhost","durableId":"N1"}],"liveness":[{"trackedPos":"11","hostname":"localhost","durableId":"N1"}]},"SessionOrderedEngine":{},"BatchingEngine":{}}}]
+    @ 0000000009d7ec5f folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 0000000009e952d8 folly::fibers::(anonymous namespace)::sigsegvSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/fibers/GuardPageAllocator.cpp:386
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 0000000009e483f1 facebook::logdevice::LogStoreHealthMonitor::executeDueTriggers()
+                       ./fbcode/logdevice/admin/health_monitor/LogStoreHealthMonitor.cpp:503
+    @ 0000000009e5c12f void folly::detail::function::call_<facebook::logdevice::LogStoreHealthMonitor::tryToExecuteMoreTriggers()::$_0, true, false, void>(, folly::detail::function::Data&)
+                       ./fbcode/logdevice/admin/health_monitor/LogStoreHealthMonitor.cpp:506
+    @ 0000000009e1dbdc folly::ThreadPoolExecutor::runTask(std::shared_ptr<folly::ThreadPoolExecutor::Thread> const&, folly::ThreadPoolExecutor::Task&&)
+                       fbsource/folly/Function.h:370
+    @ 0000000009e0e306 folly::CPUThreadPoolExecutor::threadRun(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)
+                       ./xplat/folly/executors/CPUThreadPoolExecutor.cpp:385
+    @ 0000000009e1edde void std::_Bind<void (folly::ThreadPoolExecutor::*(folly::ThreadPoolExecutor*, std::shared_ptr<folly::ThreadPoolExecutor::Thread>))(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)>::__call<void, , 0ul, 1ul>(std::tuple<>&&, std::_Index_tuple<0ul, 1ul>)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:74
+    @ 0000000009e1ece0 void folly::detail::function::call_<std::_Bind<void (folly::ThreadPoolExecutor::*(folly::ThreadPoolExecutor*, std::shared_ptr<folly::ThreadPoolExecutor::Thread>))(std::shared_ptr<folly::ThreadPoolExecutor::Thread>)>, true, false, void>(, folly::detail::function::Data&)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/functional:503
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Test was never completed. The test process might have crashed.
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GKlBsDCQGF33_fYDAJ8jgAPMBJo1bswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=25332747955886561.281475244092464.1790593181
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/25332747955886561.281475244092464.1790593181/

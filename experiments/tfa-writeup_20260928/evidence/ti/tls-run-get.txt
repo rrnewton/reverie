@@ -1,0 +1,91 @@
+  result_id: 24488323025770817.281475238796418.1790596002
+  status: FAILED
+  test_name: fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect
+  test_id: 281475238796418
+  signal_type: TEST
+  oncall: traffic_fwdproxy
+  execution_type: SANDCASTLE_JOB
+  execution_id: 58546795847855397
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from TlsTerminatorTest/TlsTerminatorTest
+[ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect
+
+E0928 04:46:38.225029 10711 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+E0928 04:46:38.225060 10711 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
+    @ 000000000e25aea8 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+    @ 000000000445262a std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+    @ 000000000415833f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 000000000415820e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 000000000415807e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 0000000004157ed7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+E0928 04:46:38.239579 10711 ExceptionTracer.cpp:265] exception stack complete
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  Closed.
+*** Aborted at 1790595998 (Unix time, try 'date -d @1790595998') ***
+*** Signal 6 (SIGABRT) (0x7559000029b4) received by PID 10676 (pthread TID 0x7fd6dacfe640) (linux TID 10711) (maybe from PID 10676, UID 30041) (code: sent by tkill or tgkill), stack trace: ***
+    @ 0000000004207b8f folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 00000000000ad594 __gnu_cxx::__verbose_terminate_handler()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/vterminate.cc:95
+    @ 000000000523bfa9 folly::exception_tracer::(anonymous namespace)::terminateHandler()
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracer.cpp:270
+    @ 00000000000ab0f9 __cxxabiv1::__terminate(void (*)())
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:48
+    @ 00000000000ab164 std::terminate()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:58
+    @ 00000000000ab0ef std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_ptr.cc:217
+    @ 00000000044526a5 std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:244
+    @ 000000000415833f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 000000000415820e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 000000000415807e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 0000000004157ed7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Test was never completed. The test process might have crashed.
+
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=24488323025770817.281475238796418.1790596002
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/24488323025770817.281475238796418.1790596002/

@@ -1,0 +1,11 @@
+head 2b5edff7bfde 2026-09-25T22:47:10-07:00 record /home/newton/work/tfa/external-hermit/qual-4/external-oss-hermit.v1.json sha256 5041afd1885026e5af5b441f6456b7a0c5122a3a042e7a1ff815ad32e999a3d2
+validate rc=0 dur=0s
+dry-run rc=1 dur=4s
+witness-asyncssl-fail rc=0 dur=16s
+witness-asyncssl-pass rc=0 dur=16s
+witness-httpcoro-fail rc=0 dur=126s
+witness-httpcoro-pass rc=0 dur=28s
+witness-thrift-fail rc=0 dur=29s
+witness-thrift-pass rc=0 dur=27s
+done 2026-09-25T22:51:16-07:00
+dry-run-retry1 rc=0 dur=7s (retry of transient token.service APP_QUEUE_TIMEOUT in meta tasks.comment list)

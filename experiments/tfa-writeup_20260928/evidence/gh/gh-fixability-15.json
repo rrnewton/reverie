@@ -1,0 +1,2 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+[{"number":3146,"state":"open","title":"LiteInst injected-probe retries can withhold pending signals under --strict","url":"https://github.com/rrnewton/hermit/issues/3146"},{"number":2101,"state":"open","title":"nanosleep with negative tv_sec deadlocks under Detcore instead of returning EINVAL","url":"https://github.com/rrnewton/hermit/issues/2101"}]

@@ -1,0 +1,78 @@
+== (verifier verdict from stderr, result.guest_started, diagnostic says BitwiseInfoV1=matched) -> count
+('VERIFY_DETERMINISTIC', True, True) 478
+('VERIFY_NONDETERMINISTIC', False, False) 26
+('VERIFY_NONDETERMINISTIC', True, False) 18
+('VERIFY_DETERMINISTIC', True, False) 14
+('OUTER_TIMEOUT', True, False) 1
+('OTHER', True, False) 1
+('OUTER_TIMEOUT', False, False) 1
+('HERMIT_POLICY_REFUSAL:skid-overshoot', False, False) 1
+total HERMIT_EXECUTION events: 540
+
+== per target verdict counts
+fbcode//cachelib/common/tests:event-tracker-test {'OUTER_TIMEOUT': 1}
+fbcode//folly/io/async/test:async_ssl_socket_test {'VERIFY_DETERMINISTIC': 292, 'VERIFY_NONDETERMINISTIC': 14}
+fbcode//folly/io/async/test:timerfd_timeout_manager_test {'VERIFY_DETERMINISTIC': 18}
+fbcode//logdevice/admin/health_monitor:tests {'OTHER': 1}
+fbcode//logdevice/logservice/server/log_store/test:log_store_test {'VERIFY_DETERMINISTIC': 2}
+fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test {'VERIFY_DETERMINISTIC': 2}
+fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test {'VERIFY_NONDETERMINISTIC': 29, 'VERIFY_DETERMINISTIC': 4}
+fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test {'VERIFY_DETERMINISTIC': 2}
+fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests {'VERIFY_DETERMINISTIC': 52, 'VERIFY_NONDETERMINISTIC': 1, 'OUTER_TIMEOUT': 1}
+fbcode//thrift/lib/cpp2/test:InstrumentationTest {'VERIFY_DETERMINISTIC': 120, 'HERMIT_POLICY_REFUSAL:skid-overshoot': 1}
+
+== first divergent syscall (run 1) for VERIFY_NONDETERMINISTIC events
+14 tgkill(3)
+10 clock_gettime(CLOCK_MONOTONIC)
+7 epoll_wait(11)
+4 no-syscall-context; first-mismatch=stderr
+3 epoll_wait(12)
+3 epoll_wait(5)
+2 epoll_ctl(5)
+1 read(37)
+
+== VERIFY_NONDETERMINISTIC events
+tfa-kernel71-asyncssl-factor2-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000003-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt
+tfa-kernel71-asyncssl-factor2-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000007-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-007-sched-seed-00000000000000000007-replica-1.stderr.txt
+tfa-kernel71-asyncssl-factor5-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000008-replica-1 False 1 epoll_wait(12) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-008-sched-seed-00000000000000000008-replica-1.stderr.txt
+tfa-kernel71-asyncssl-factor5-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000013-replica-1 True 1 epoll_ctl(5) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-013-sched-seed-00000000000000000013-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice10-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000003-replica-1 True 1 epoll_wait(12) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice10-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000004-replica-1 True 1 epoll_wait(12) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-004-sched-seed-00000000000000000004-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice10-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000008-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-008-sched-seed-00000000000000000008-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice20-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000003-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice20-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000004-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-004-sched-seed-00000000000000000004-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice20-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000005-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-005-sched-seed-00000000000000000005-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice20-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000007-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-007-sched-seed-00000000000000000007-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice5-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000003-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt
+tfa-kernel71-asyncssl-slice50-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000002-replica-1 False 1 epoll_ctl(5) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-002-sched-seed-00000000000000000002-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-000-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-000-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-001-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-001-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-002-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-002-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-003-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-003-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-004-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-004-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-005-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-005-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-006-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-006-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-007-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-007-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-008-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-008-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-009-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-009-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-010-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-010-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-013-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-013-replica-1.stderr.txt
+tfa-kernel71-campaign_20260921 tls-fuzz-014-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/seed-014-replica-1.stderr.txt
+tfa-kernel71-httpcoro-midpoint-continuation_20260921 httpcoro-midpoint-sched-00000000000000000001-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt
+tfa-kernel71-sched-continuation_20260921 asyncssl-sched-slowdown-sched-00000000000000000001-replica-1 False 1 clock_gettime(CLOCK_MONOTONIC) services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000000-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000001-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000002-replica-1 False 1 epoll_wait(5) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-002-sched-seed-00000000000000000002-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000003-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000004-replica-1 False 1 no-syscall-context; first-mismatch=stderr services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-004-sched-seed-00000000000000000004-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000005-replica-1 False 1 epoll_wait(5) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-005-sched-seed-00000000000000000005-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000006-replica-1 True 1 tgkill(3) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-006-sched-seed-00000000000000000006-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000007-replica-1 False 1 no-syscall-context; first-mismatch=stderr services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-007-sched-seed-00000000000000000007-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000008-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-008-sched-seed-00000000000000000008-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000009-replica-1 False 1 epoll_wait(5) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-009-sched-seed-00000000000000000009-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000010-replica-1 False 1 no-syscall-context; first-mismatch=stderr services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-010-sched-seed-00000000000000000010-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000011-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-011-sched-seed-00000000000000000011-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000012-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-012-sched-seed-00000000000000000012-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000013-replica-1 False 1 epoll_wait(11) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-013-sched-seed-00000000000000000013-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000014-replica-1 True 1 read(37) services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-014-sched-seed-00000000000000000014-replica-1.stderr.txt
+tfa-kernel71-time-input-campaign_20260921 tls-sched-now-sched-00000000000000000015-replica-1 False 1 no-syscall-context; first-mismatch=stderr services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-015-sched-seed-00000000000000000015-replica-1.stderr.txt

@@ -1,0 +1,188 @@
+  result_id: 18014398715564745.844425197050049.1790595361
+  status: FAILED
+  test_name: fbcode//logdevice/fb:tests - SslAuthenticationTest/SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption
+  test_id: 844425197050049
+  signal_type: TEST
+  oncall: logdevice
+  execution_type: SANDCASTLE_JOB
+  execution_id: 40532397339162613
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = SslAuthenticationTest/SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SslAuthenticationTest/SslAuthenticationTest
+[ RUN      ] SslAuthenticationTest/SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption
+
+I0928 04:35:06.778007  702889 [not-set] TestUtil.h:164] run() *** START *** monitoring test with timeout 240 s
+I0928 04:35:06.812278  698107 [not-set] IntegrationTestUtils.h:2347] createOneTry() ClusterType created with data in /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a
+I0928 04:35:06.815301 698107 TupperwareEnlightenments.cpp:92] Determined allocated logical cores; allocated_cores: 316, hardware_concurrency: 316
+I0928 04:35:06.815585 698107 ServerExecutors.cpp:52] Configuring CPU thread pool with 221 max threads, lifo_sem=(enabled,wakeup_interval=0 us)
+I0928 04:35:07.348395 698107 RocksStorageEngine.cpp:765] Starting setup of RocksDb.
+I0928 04:35:07.357441 698107 LogicalDiskIoAggregator.cpp:39] (time started.)
+I0928 04:35:07.386217 698107 FbRocksDBConfigManager.cpp:70] Using default config: rocksdb/fb_rocksdb/default
+I0928 04:35:07.631102 698107 RocksStorageEngine.cpp:868] Done setting up RocksDb.
+I0928 04:35:09.157493 698107 ZelosCore.cpp:141] Defaulting to old stack
+I0928 04:35:09.157854 698107 ProcessCounters.cpp:17] Bootstraping Delos process counters. Build info below.
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20] Build Information
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Built by: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Built on:  (0)
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Built at: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build path: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Package Name: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Package Version: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Package Release: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Revision: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Revision Timestamp: 0
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Upstream Revision: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Upstream Revision Timestamp: 0
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Platform: platform010
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Rule: fbcode:logdevice/fb:tests (cpp_unittest, buck2, dev)
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20]   Build Library Versions: 
+I0928 04:35:09.157998 698107 ProcessCounters.cpp:20] 
+I0928 04:35:09.171388 698107 DelosServiceBase.h:563] Delos Startup: DelosServiceBase constructor begins
+I0928 04:35:09.172526 698107 DelosServiceBase.h:597] Delos Startup: Init container io reporting
+I0928 04:35:09.173329 698107 ContainerIoMetrics.cpp:124] Compatible kernel release "6.16.1-0_fbk6_0_g8fc89c59249c": (6,16,1,6) >= (6,4,3,12). Container io stats will be reported.
+I0928 04:35:09.175193 698107 DelosServiceBase.h:602] Delos Startup: Starting logical disk io aggregation
+I0928 04:35:09.175969 698107 DelosServiceBase.h:677] Delos Startup: Creating storage engine
+I0928 04:35:09.179740 698107 StorageEngineFactory.cpp:447] One block cache per db instance
+I0928 04:35:09.180442 698107 RocksStorageEngine.cpp:765] Starting setup of RocksDb.
+I0928 04:35:09.221228 698107 FbRocksDBConfigManager.cpp:70] Using default config: rocksdb/fb_rocksdb/default
+I0928 04:35:09.234599 698107 RocksStorageEngine.cpp:868] Done setting up RocksDb.
+I0928 04:35:09.254505 698107 DelosServiceBase.h:692] Delos Startup: Creating local view
+I0928 04:35:09.255520 698107 DelosServiceBase.h:702] Delos Startup: Creating applicator
+I0928 04:35:09.256173 698107 DelosServiceBase.h:705] Delos Startup: Creating shared log
+I0928 04:35:09.259595 698107 FaultySharedLog.cpp:34] --sharedlog_fault_injection enabled
+I0928 04:35:09.259727 698107 DelosServiceBase.h:733] Delos Startup: Creating snapshot manager
+I0928 04:35:09.259922 698107 DelosServiceBase.h:743] Delos Startup: Creating periodic snapshot manager
+I0928 04:35:09.260553 698107 TrimTracker.cpp:55] Registering latch in TrimTracker.
+W0928 04:35:09.260643 698107 TrimTracker.cpp:86] Asking for safe trim positions with nothing registered. This means we will not allow trimming until there is a safe position established.
+I0928 04:35:09.263127 698107 DefaultEngineStack2.h:179] DefaultEngineStack2: Constructing stack with last read position set to -1
+I0928 04:35:09.271919 698107 DelosServiceBase.h:802] Delos Startup: Creating periodic backup manager
+I0928 04:35:09.272604 698107 NoOpsRemoteSnapshotManager.h:57] dummy setSnapshotCallback
+I0928 04:35:09.281381 698107 ZelosDemandControlDataProvider.cpp:23] Initializing ZelosDemandControlDataProvider. Usage of Exponential avg set to 0
+I0928 04:35:09.307097 698107 ZelosDemandControlScheduledLogWriter.cpp:33] ScheduledLogWriter is set to on; interval: 100 s
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364] Using ZelosDemandControlPolicy {
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   5: mode (i32) = 0,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   6: pending_request_staleness_softlimit_ms (i64) = 800,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   7: pending_request_staleness_hardlimit_ms (i64) = 1000,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   8: max_pending_read_request_per_participant (i64) = 1000000,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   9: max_pending_write_request_per_participant (i64) = 1000000,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   10: memory_softlimit_ratio (double) = 0.8,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   11: memory_hardlimit_ratio (double) = 0.9,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   12: cpu_softlimit_ratio (double) = 1.01,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   13: cpu_hardlimit_ratio (double) = 1.01,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   14: disk_space_softlimit_ratio (double) = 0.9,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   15: disk_space_hardlimit_ratio (double) = 0.95,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364]   16: demand_control_log_interval_sec (i64) = 100,
+I0928 04:35:09.308525 698107 ZelosDemandControl.cpp:364] }
+I0928 04:35:09.309260 698107 ZelosDemandControl.cpp:380] Initializing Zelos Demand Control in OFF mode
+I0928 04:35:09.310654 698107 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 04:35:09.310750 698107 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 04:35:09.310794 698107 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 04:35:09.310828 698107 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 04:35:09.310868 698107 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 04:35:09.310901 698107 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 04:35:09.310935 698107 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 04:35:09.310980 698107 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 04:35:09.311019 698107 QuotaUtils.cpp:17] Attempting to deserialize quotas with string: {}
+I0928 04:35:09.311054 698107 QuotaUtils.cpp:34] Done deserializing quotas
+I0928 04:35:09.311885 698107 ZelosDemandControl.cpp:738] Starting ZelosDemandControl
+I0928 04:35:09.311930 698107 ZelosDemandControl.cpp:740] Started ZelosDemandControl
+I0928 04:35:09.311962 698107 ZelosCore.cpp:398] Delos stack is initialized 
+I0928 04:35:09.313051 698107 ZelosService.cpp:197] Start ZelosService
+I0928 04:35:09.313124 698107 ZelosCore.cpp:484] Start ZelosCore
+I0928 04:35:09.313314 698107 Component.cpp:53] Starting DelosServiceBase
+I0928 04:35:09.313387 698107 ComponentLogger.cpp:21] ComponentId: DelosServiceBase, EventType: start, Status: Starting
+I0928 04:35:09.313455 698107 Component.cpp:53] Starting DelosServiceBase
+I0928 04:35:09.313484 698107 ComponentLogger.cpp:21] ComponentId: DelosServiceBase, EventType: start, Status: Starting
+I0928 04:35:09.313809 698107 DelosServiceBase.h:1458] Checking if virtual log is startable, attempt number: 0
+I0928 04:35:09.314051 698107 Component.cpp:53] Starting FaultySharedLog
+I0928 04:35:09.314104 698107 ComponentLogger.cpp:21] ComponentId: FaultySharedLog, EventType: start, Status: Starting
+I0928 04:35:09.314179 698107 Component.cpp:53] Starting VirtualLog
+I0928 04:35:09.314209 698107 ComponentLogger.cpp:21] ComponentId: VirtualLog, EventType: start, Status: Starting
+I0928 04:35:09.314346 698107 Component.cpp:77] Starting VirtualLog
+I0928 04:35:09.314381 698107 ComponentLogger.cpp:21] ComponentId: VirtualLog, EventType: start, Status: Starting
+I0928 04:35:09.314466 698107 Component.cpp:53] Starting VirtualLog
+I0928 04:35:09.314493 698107 ComponentLogger.cpp:21] ComponentId: VirtualLog, EventType: start, Status: Starting
+I0928 04:35:09.318847 703515 ChainedLog.cpp:78] Creating chained log for metadata DelosMetadata {
+I0928 04:35:09.318847 703515 ChainedLog.cpp:78]   3: projection (struct) = DelosLogProjection {
+I0928 04:35:09.318847 703515 ChainedLog.cpp:78]     3: logs (list) = list<struct>[1] {
+I0928 04:35:09.318847 703515 ChainedLog.cpp:78]       [0] = DelosPhysicalLog {
+...
+...
+...
+ eval: 0ms, npartitions: 1. Existing memtables: metadata A:0.002MB, []
+    I0928 04:35:45.295634  706349 [ld:s1:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() skipped at least 88 log entries
+    I0928 04:35:45.297668  706349 [ld:s1:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() Flushing: []. Total stats: active: 0.002MB in 1 memtables, flushing: 0.000MB, pinned: 0.000MB. Eval time: 0ms, flush init: 0ms, throttle eval: 0ms, npartitions: 1. Existing memtables: metadata A:0.002MB, []
+    I0928 04:35:46.319470  706363 [ld:s0:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() skipped at least 10 log entries
+    I0928 04:35:46.319703  706363 [ld:s0:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() Flushing: []. Total stats: active: 0.002MB in 1 memtables, flushing: 0.000MB, pinned: 0.000MB. Eval time: 0ms, flush init: 0ms, throttle eval: 0ms, npartitions: 1. Existing memtables: metadata A:0.002MB, []
+    I0928 04:35:55.074351  706188 [rocks-low-0] RocksDBLogger.cpp:86] Logv() [file/delete_scheduler.cc:134] Mark file: /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a/N0:1/db/shard1/000015.sst.trash as trash -- OK
+    I0928 04:35:55.075023  706206 [not-set] RocksDBLogger.cpp:86] Logv() [file/delete_scheduler.cc:335] Rate limiting is enabled with penalty 16 after deleting file /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a/N0:1/db/shard1/000015.sst.trash
+    I0928 04:35:55.095324  706190 [rocks-low-1] RocksDBLogger.cpp:86] Logv() [file/delete_scheduler.cc:134] Mark file: /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a/N0:1/db/shard0/000015.sst.trash as trash -- OK
+    I0928 04:35:55.095965  706205 [not-set] RocksDBLogger.cpp:86] Logv() [file/delete_scheduler.cc:335] Rate limiting is enabled with penalty 16 after deleting file /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a/N0:1/db/shard0/000015.sst.trash
+    I0928 04:35:55.316882  706349 [ld:s1:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() skipped at least 88 log entries
+    I0928 04:35:55.317108  706349 [ld:s1:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() Flushing: []. Total stats: active: 0.002MB in 1 memtables, flushing: 0.000MB, pinned: 0.000MB. Eval time: 0ms, flush init: 0ms, throttle eval: 0ms, npartitions: 1. Existing memtables: metadata A:0.002MB, []
+    I0928 04:35:56.338725  706363 [ld:s0:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() skipped at least 10 log entries
+    I0928 04:35:56.338955  706363 [ld:s0:db-bg-fl] PartitionedRocksDBStore.cpp:6868] flushBackgroundThreadRun() Flushing: []. Total stats: active: 0.002MB in 1 memtables, flushing: 0.000MB, pinned: 0.000MB. Eval time: 0ms, flush init: 0ms, throttle eval: 0ms, npartitions: 1. Existing memtables: metadata A:0.002MB, []
+    E0928 04:35:57.696613  705439 [logdeviced-main] StaticSequencerPlacement.h:33] StaticSequencerPlacement() Failed to activate sequencers for all logs: err = TIMEDOUT at activateAllSequencers (fbcode/logdevice/server/AllSequencers.cpp:319)
+    E0928 04:35:57.698427  705439 [logdeviced-main] Server.cpp:1408] initSequencerPlacement() Failed to initialize SequencerPlacement object
+=== end /dev/shm/tmp/logdevice/IntegrationTestUtils.95ae-2e82-c2f5-dd4a/N0:1/log
+    @ 000000000002cf2b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000002cbc2 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 0000000000096079 facebook::logdevice::dbg::ld_check_fail_impl(facebook::logdevice::dbg::CheckType, char const*, char const*, char const*, int)
+                       ./fbcode/logdevice/common/debug.cpp:682
+    @ 00000000003f799e facebook::logdevice::IntegrationTestUtils::Cluster::checkIfAnyNodeDiedUnexpectedly()
+                       ./fbcode/logdevice/test/utils/IntegrationTestUtils.cpp:3445
+    @ 00000000003f6b65 facebook::logdevice::IntegrationTestUtils::Cluster::Cluster(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::unique_ptr<facebook::logdevice::TemporaryDirectory, std::default_delete<facebook::logdevice::TemporaryDirectory> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, bool, bool, facebook::logdevice::dbg::Level, bool)::$_1::operator()() const
+                       ./fbcode/logdevice/test/utils/IntegrationTestUtils.cpp:401
+    @ 00000000003f6b1c void folly::detail::function::call_<facebook::logdevice::IntegrationTestUtils::Cluster::Cluster(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::unique_ptr<facebook::logdevice::TemporaryDirectory, std::default_delete<facebook::logdevice::TemporaryDirectory> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, bool, bool, facebook::logdevice::dbg::Level, bool)::$_1, true, false, void>(, folly::detail::function::Data&)
+                       fbsource/folly/Function.h:341
+    @ 0000000000056672 folly::detail::function::FunctionTraits<void ()>::operator()()
+                       fbsource/folly/Function.h:370
+    @ 000000000005553f folly::FunctionScheduler::runOneFunction(std::unique_lock<std::mutex>&, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
+                       ./xplat/folly/executors/FunctionScheduler.cpp:501
+    @ 0000000000052905 folly::FunctionScheduler::run()
+                       ./xplat/folly/executors/FunctionScheduler.cpp:464
+    @ 00000000000525b5 folly::FunctionScheduler::start()::$_1::operator()() const
+                       ./xplat/folly/executors/FunctionScheduler.cpp:415
+    @ 0000000000052574 void std::__invoke_impl<void, folly::FunctionScheduler::start()::$_1>(std::__invoke_other, folly::FunctionScheduler::start()::$_1&&)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:61
+    @ 0000000000052534 std::__invoke_result<folly::FunctionScheduler::start()::$_1>::type std::__invoke<folly::FunctionScheduler::start()::$_1>(folly::FunctionScheduler::start()::$_1&&)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:96
+    @ 000000000005250c void std::thread::_Invoker<std::tuple<folly::FunctionScheduler::start()::$_1> >::_M_invoke<0ul>(std::_Index_tuple<0ul>)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:253
+    @ 00000000000524e4 std::thread::_Invoker<std::tuple<folly::FunctionScheduler::start()::$_1> >::operator()()
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:260
+    @ 0000000000052468 std::thread::_State_impl<std::thread::_Invoker<std::tuple<folly::FunctionScheduler::start()::$_1> > >::_M_run()
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:211
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 00000000006cb8c6 asan_thread_start(void*) [clone .__uniq.76021633720154959548149330564886629356]
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Test was never completed. The test process might have crashed.
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GEkxqjDx7RFrzgAEANtXh7Zd3zsrbswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=18014398715564745.844425197050049.1790595361
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/18014398715564745.844425197050049.1790595361/

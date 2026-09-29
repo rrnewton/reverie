@@ -1,0 +1,9 @@
+head 0a413f6c250023c2a154119b2fc9a2671e6630b0 2026-09-25T14:45:43-07:00
+validate-manifest rc=0 dur=0s
+dry-run rc=0 dur=5s
+witness asyncssl fail rc=1 dur=0s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness asyncssl pass rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness httpcoro fail rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness httpcoro pass rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness thrift fail rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH
+witness thrift pass rc=1 dur=1s: HermitError: packaged Hermit compatibility is PROVENANCE_MISMATCH

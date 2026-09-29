@@ -1,0 +1,181 @@
+  result_id: 11540474248085839.281475236296488.1790593435
+  status: FAILED
+  test_name: fbcode//warm_storage/file_service:file_service_tests - FileCacheTest.getFilesFromNVM
+  test_id: 281475236296488
+  signal_type: TEST
+  oncall: ws_mdfs
+  execution_type: SANDCASTLE_JOB
+  execution_id: 45035996971614685
+  result_uri: https://www.internalfb.com/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/
+  has_diagnostics_report: no
+
+Stack Trace / Exception Detail
+==============================
+
+Note: Google Test filter = FileCacheTest.getFilesFromNVM
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from FileCacheTest
+[ RUN      ] FileCacheTest.getFilesFromNVM
+
+I0928 04:03:06.490982 17078 SlabAllocator.cpp:110] CacheLib slab ASAN poisoning is DISABLED
+I0928 04:03:06.529412 17078 Device.cpp:1153] Cache file: /tmp/nvm_cache size: 26214400 truncate: 1
+I0928 04:03:06.529889 17078 Device.cpp:1038] Created device with num_devices 1 size 26214400 block_size 4096,stripe_size 0 max_write_size 0 max_io_size 0 io_engine sync qdepth 0,num_fdp_devices 0
+I0928 04:03:06.769963 17078 NavySetup.cpp:285] metadataSize: 131072
+I0928 04:03:06.770127 17078 NavySetup.cpp:287] Setting up engine pair 0
+I0928 04:03:06.770192 17078 NavySetup.cpp:308] -- No bighash. blockCacheSize 26083328
+I0928 04:03:06.770244 17078 NavySetup.cpp:193] blockcache: starting offset: 131072, block cache size: 25165824
+I0928 04:03:06.770854 17078 LruPolicy.cpp:32] LRU policy: expected 6 regions
+I0928 04:03:06.801497 17078 SparseMapIndex.cpp:99] SparseMapIndex was created with numBucketMaps_ = 65536, totalMutexes_ = 1024
+I0928 04:03:06.801696 17078 RegionManager.cpp:60] 6 regions, 4194304 bytes each, allowReadDuringReclaim true, directFlush false
+I0928 04:03:06.804831 17078 Allocator.cpp:41] Enable priority-based allocation for Allocator. Number of priorities: 1
+I0928 04:03:06.805213 17078 BlockCache.cpp:257] Block cache created
+I0928 04:03:06.805232 17877 RegionManager.cpp:78] region_manager_0 started
+I0928 04:03:06.805369 17078 EnginePair.cpp:341] Small item cache is noop.
+I0928 04:03:06.805498 17078 Driver.cpp:79] Max concurrent inserts: 1000000
+I0928 04:03:06.805532 17078 Driver.cpp:80] Max parcel memory: 268435456
+I0928 04:03:06.805564 17078 Driver.cpp:81] Use Write Estimated Size: false
+I0928 04:03:06.805628 17078 Driver.cpp:255] Reset Navy
+I0928 04:03:06.805700 17078 BlockCache.cpp:1459] Reset block cache
+I0928 04:03:07.454391 17078 SettingsManagerPatcher.cpp:198] Setting file cache schema version: 0
+W0928 04:03:19.334577 17138 RouterZeroClient.cpp:79] Skipping Router Zero connection setup in unit test. ODS3 data will not be sent to Router Zero.
+F0928 04:03:41.702015 17555 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3954688 vs. 3951616)
+*** Aborted at 1790593421 (Unix time, try 'date -d @1790593421') ***
+*** Signal 6 (SIGABRT) (0x7559000042b6) received by PID 17078 (pthread TID 0x7b3b80948640) (linux TID 17555) (maybe from PID 17078, UID 30041) (code: sent by tkill or tgkill), stack trace: ***
+F0928 04:03:41.706434 17554 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3969536 vs. 3951616)
+F0928 04:03:41.707188 17546 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3980800 vs. 3951616)
+F0928 04:03:41.721358 17547 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3953664 vs. 3951616)
+F0928 04:03:41.728494 17553 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3956224 vs. 3951616)
+F0928 04:03:41.735461 17549 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3966464 vs. 3951616)
+F0928 04:03:41.741354 17566 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3961344 vs. 3951616)
+F0928 04:03:41.742713 17577 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3957760 vs. 3951616)
+F0928 04:03:41.742785 17570 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3964928 vs. 3951616)
+F0928 04:03:41.747460 17567 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3960832 vs. 3951616)
+F0928 04:03:41.749117 17548 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (4028928 vs. 3951616)
+F0928 04:03:41.750496 17562 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (4016640 vs. 3951616)
+F0928 04:03:41.754811 17563 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (4008960 vs. 3951616)
+F0928 04:03:41.755751 17574 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3954176 vs. 3951616)
+F0928 04:03:41.756491 17558 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3980288 vs. 3951616)
+F0928 04:03:41.758560 17559 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3956736 vs. 3951616)
+F0928 04:03:41.759472 17556 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3962368 vs. 3951616)
+F0928 04:03:41.759521 17569 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3953152 vs. 3951616)
+F0928 04:03:41.760385 17572 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3952128 vs. 3951616)
+F0928 04:03:41.761398 17573 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3966976 vs. 3951616)
+F0928 04:03:41.762033 17565 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3997184 vs. 3951616)
+F0928 04:03:41.762443 17560 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3976192 vs. 3951616)
+F0928 04:03:41.762810 17568 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3952640 vs. 3951616)
+F0928 04:03:41.763533 17551 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3962880 vs. 3951616)
+F0928 04:03:41.764063 17561 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3955712 vs. 3951616)
+F0928 04:03:41.766203 17576 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3969024 vs. 3951616)
+F0928 04:03:41.767322 17571 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3955200 vs. 3951616)
+F0928 04:03:41.770763 17575 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3973632 vs. 3951616)
+F0928 04:03:41.772450 17552 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3968000 vs. 3951616)
+F0928 04:03:41.772789 17550 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3967488 vs. 3951616)
+F0928 04:03:41.772809 17557 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (4021248 vs. 3951616)
+F0928 04:03:41.773760 17564 RegionManager.cpp:718] Check failed: addr.offset() + size <= region.getLastEntryEndOffset() (3981824 vs. 3951616)
+==17078==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+E0928 04:03:44.432074 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.433132 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.436255 17078 FileCache.cpp:442] Failed to convert WSFileMetadataStorage to WSFile: WSE_CORRUPT_DATA:fileId byte field and string field are both null.
+E0928 04:03:44.438028 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.438149 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.438575 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.438651 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.439032 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.439110 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.439407 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.439469 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.439713 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.439770 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.440026 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.440090 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.440356 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:44.440418 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:44.440662 17078 MetadataConverter.cpp:92] ct
+...
+...
+...
+2] ctx: , fileId byte field and string field are both null.
+E0928 04:03:45.695489 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:45.695677 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:45.695722 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+E0928 04:03:45.695912 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:45.695956 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+    @ 000000000002cf2b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000002cbc2 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 00000000000af183 folly::LogCategory::admitMessage(folly::LogMessage const&, bool) const
+                       ./xplat/folly/logging/LogCategory.cpp:73
+    @ 00000000000cf3aa folly::LogStreamProcessor::logNow()
+                       ./xplat/folly/logging/LogStreamProcessor.cpp:190
+    @ 00000000000cf7e8 folly::LogStreamVoidify<true>::operator&(std::ostream&)
+                       ./xplat/folly/logging/LogStreamProcessor.cpp:223
+    @ 00000000002f1ebb facebook::cachelib::navy::RegionManager::read(facebook::cachelib::navy::RegionDescriptor const&, facebook::cachelib::navy::RelAddress, unsigned long) const
+                       ./fbcode/cachelib/navy/block_cache/RegionManager.cpp:718
+    @ 00000000001c60d5 facebook::cachelib::navy::BlockCache::readEntry(facebook::cachelib::navy::RegionDescriptor&, facebook::cachelib::navy::BlockCache::LookupData&, facebook::cachelib::navy::RelAddress, unsigned int, std::optional<facebook::cachelib::HashedKey>)
+                       ./fbcode/cachelib/navy/block_cache/BlockCache.cpp:1379
+    @ 00000000001c2999 facebook::cachelib::navy::BlockCache::LookupData facebook::cachelib::navy::BlockCache::lookupInternal<facebook::cachelib::HashedKey, facebook::cachelib::navy::BlockCache::lookupInternal(facebook::cachelib::HashedKey)::$_0>(facebook::cachelib::HashedKey const&, facebook::cachelib::navy::BlockCache::lookupInternal(facebook::cachelib::HashedKey)::$_0&&)
+                       ./fbcode/cachelib/navy/block_cache/BlockCache.cpp:408
+    @ 00000000001c1e1f facebook::cachelib::navy::BlockCache::lookupInternal(facebook::cachelib::HashedKey)
+                       ./fbcode/cachelib/navy/block_cache/BlockCache.cpp:467
+    @ 000000000015adaf facebook::cachelib::navy::BlockCache::lookup(facebook::cachelib::HashedKey, facebook::cachelib::navy::Buffer&, unsigned int&)
+                       ./fbcode/cachelib/navy/block_cache/BlockCache.cpp:477
+    @ 0000000000039371 facebook::cachelib::navy::EnginePair::lookupInternal(facebook::cachelib::HashedKey, facebook::cachelib::navy::Buffer&, bool&, unsigned int&) const
+                       ./fbcode/cachelib/navy/engine/EnginePair.cpp:167
+    @ 000000000003a085 facebook::cachelib::navy::EnginePair::scheduleLookup(facebook::cachelib::HashedKey, folly::Function<void (facebook::cachelib::navy::Status, facebook::cachelib::HashedKey, facebook::cachelib::navy::Buffer, unsigned int)>)::$_0::operator()()
+                       ./fbcode/cachelib/navy/engine/EnginePair.cpp:189
+    @ 0000000000039dcd facebook::cachelib::navy::JobExitCode folly::detail::function::call_<facebook::cachelib::navy::EnginePair::scheduleLookup(facebook::cachelib::HashedKey, folly::Function<void (facebook::cachelib::navy::Status, facebook::cachelib::HashedKey, facebook::cachelib::navy::Buffer, unsigned int)>)::$_0, false, false, facebook::cachelib::navy::JobExitCode>(, folly::detail::function::Data&)
+                       fbsource/folly/Function.h:343
+    @ 000000000008dd92 folly::detail::function::FunctionTraits<facebook::cachelib::navy::JobExitCode ()>::operator()()
+                       fbsource/folly/Function.h:370
+    @ 00000000000eb3b4 facebook::cachelib::navy::OrderedThreadPoolJobScheduler::scheduleJobLocked(facebook::cachelib::navy::OrderedThreadPoolJobScheduler::JobParams, unsigned long)::$_0::operator()()
+                       ./fbcode/cachelib/navy/scheduler/ThreadPoolJobScheduler.cpp:212
+    @ 00000000000eafdd facebook::cachelib::navy::JobExitCode folly::detail::function::call_<facebook::cachelib::navy::OrderedThreadPoolJobScheduler::scheduleJobLocked(facebook::cachelib::navy::OrderedThreadPoolJobScheduler::JobParams, unsigned long)::$_0, false, false, facebook::cachelib::navy::JobExitCode>(, folly::detail::function::Data&)
+                       fbsource/folly/Function.h:343
+    @ 000000000008dd92 folly::detail::function::FunctionTraits<facebook::cachelib::navy::JobExitCode ()>::operator()()
+                       fbsource/folly/Function.h:370
+    @ 00000000000cfedf facebook::cachelib::navy::JobQueue::runJob(facebook::cachelib::navy::JobQueue::QueueEntry&)::$_0::operator()() const
+                       ./fbcode/cachelib/navy/scheduler/ThreadPoolJobQueue.cpp:115
+    @ 00000000000ced6d facebook::cachelib::navy::JobQueue::runJob(facebook::cachelib::navy::JobQueue::QueueEntry&)
+                       ./fbcode/cachelib/navy/scheduler/ThreadPoolJobQueue.cpp:127
+    @ 00000000000ce2b3 facebook::cachelib::navy::JobQueue::process()
+                       ./fbcode/cachelib/navy/scheduler/ThreadPoolJobQueue.cpp:84
+    @ 00000000000dd941 facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1::operator()() const
+                       ./fbcode/cachelib/navy/scheduler/ThreadPoolJobScheduler.cpp:62
+    @ 00000000000dce64 void std::__invoke_impl<void, facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1>(std::__invoke_other, facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1&&)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:61
+    @ 00000000000dce24 std::__invoke_result<facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1>::type std::__invoke<facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1>(facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1&&)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/invoke.h:96
+    @ 00000000000dcdfc void std::thread::_Invoker<std::tuple<facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1> >::_M_invoke<0ul>(std::_Index_tuple<0ul>)
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:253
+    @ 00000000000dcdd4 std::thread::_Invoker<std::tuple<facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1> >::operator()()
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:260
+    @ 00000000000dcbc8 std::thread::_State_impl<std::thread::_Invoker<std::tuple<facebook::cachelib::navy::ThreadPoolExecutor::ThreadPoolExecutor(unsigned int, folly::Range<char const*>, int)::$_1> > >::_M_run()
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/bits/std_thread.h:211
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 0000000005470096 asan_thread_start(void*) [clone .__uniq.76021633720154959548149330564886629356]
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+E0928 04:03:45.696166 17078 MetadataConverter.cpp:92] ctx: , fileId byte field and string field are both null.
+E0928 04:03:45.696212 17078 MetadataConverter.cpp:229] ctx: , extract fileId error, caused by:  fileId byte field and string field are both null.
+
+Test was never completed. The test process might have crashed.
+(Truncated to 18976 bytes by Tpx; full output at https://fburl.com/b/everpaste%20GL9EsDC4o3OTjvEDAKnJGAzbMp4MbswMAAAz)
+
+Next Steps
+----------
+  Debug with LLM: meta testinfra.run debug --id=11540474248085839.281475236296488.1790593435
+  View in browser: https://www.internalfb.com/intern/testinfra/diagnostics/11540474248085839.281475236296488.1790593435/
