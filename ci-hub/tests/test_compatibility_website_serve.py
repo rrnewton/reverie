@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from dataclasses import dataclass
+from unittest import mock
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -212,6 +213,19 @@ def tree_snapshot(root: Path) -> tuple[tuple[str, str, int, str], ...]:
 class CompatibilityWebsiteServeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        # rust-script 0.36 builds every script in one shared target directory
+        # under $XDG_CACHE_HOME/rust-script and holds Cargo's build locks there
+        # for each --force run, including the no-op freshness check. On a
+        # shared host another agent's build can hold those locks for longer
+        # than this class's 120-second compile bound or the 20-second server
+        # start bound, so every test in the class would error at setup. A
+        # class-private cache removes that cross-process wait; the compile is
+        # the same one a cold shared cache performs.
+        cache = tempfile.TemporaryDirectory(prefix="compatibility-serve-rust-script-")
+        cls.addClassCleanup(cache.cleanup)
+        environment = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache.name})
+        environment.start()
+        cls.addClassCleanup(environment.stop)
         result = subprocess.run(
             [*SERVER_COMMAND, "--help"],
             cwd=ROOT,
