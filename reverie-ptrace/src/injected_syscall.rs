@@ -119,12 +119,14 @@ impl InjectedSyscallFrame {
     /// Re-dispatches this frame as `restart_syscall`, leaving every argument
     /// register untouched, exactly as Linux rewrites `RAX` before restarting a
     /// syscall that returned `-ERESTART_RESTARTBLOCK`.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_restart_syscall(&mut self) {
         self.rax = Sysno::restart_syscall as u64;
     }
 
     /// The raw syscall number the frame will dispatch, before a result is
     /// stored in its place.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn raw_syscall_number(&self) -> u64 {
         self.rax
     }
@@ -132,6 +134,7 @@ impl InjectedSyscallFrame {
     /// Replaces the syscall number the frame will re-dispatch, as a signal
     /// handler that edits `rax` before a kernel restart changes the syscall
     /// the restarted `syscall` instruction makes.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_raw_syscall_number(&mut self, number: u64) {
         self.rax = number;
     }
@@ -314,6 +317,7 @@ mod tests {
         assert_eq!(frame.r11, 0x246);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn restart_syscall_rewrite_keeps_every_argument_register() {
         let original = frame();
@@ -331,6 +335,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn repeated_syscall_entry_emulation_is_idempotent() {
         // A rewound LiteInst trap re-enters dispatch and emulates the entry

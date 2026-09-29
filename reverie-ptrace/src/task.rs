@@ -97,21 +97,32 @@ use crate::gdbstub::ResumeInferior;
 use crate::gdbstub::StopEvent;
 use crate::gdbstub::StopReason;
 use crate::gdbstub::StoppedInferior;
+#[cfg(target_arch = "x86_64")]
 use crate::injected_syscall::InjectedSyscallFrame;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::LANDING_LEN;
 use crate::liteinst_restart::LANDING_OFFSET;
 use crate::liteinst_restart::LandingOutcome;
 use crate::liteinst_restart::PrivateStep;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::RUNTIME_OWNED_HANDLERS;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::RestartAction;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::changed_landing_register;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::check_landing_bytes;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::check_rewind_preconditions;
 use crate::liteinst_restart::classify_landing_trap;
 use crate::liteinst_restart::classify_private_step;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::landing_regs;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::liteinst_restart_action;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::restart_depends_on_handler;
+#[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::signal_bit;
 use crate::liteinst_stats::LiteinstPatchOutcome;
 use crate::regs::Reg;
@@ -1139,6 +1150,8 @@ fn callback_observation_decision(
 /// A fork child inherits the parent's stack with the address space it
 /// resolves (`inherited_liteinst_restarts`); a thread starts with none.
 #[derive(Clone, Copy, Debug)]
+// Only the x86_64 host-hybrid path pushes an entry.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 struct LiteinstPendingRestart {
     /// Address of the runtime `int3` the controller was rewound to.
     restart_rip: u64,
@@ -1167,6 +1180,7 @@ impl LiteinstPendingRestart {
     /// dropped entry that was still armed makes its landing fail closed
     /// (`finish_liteinst_restart_landing`); the syscall itself is dispatched
     /// the same either way.
+    #[cfg(target_arch = "x86_64")]
     fn is_retrap(&self, restart_rip: u64, frame_address: usize, rsp: u64) -> bool {
         self.landing.is_none()
             && self.restart_rip == restart_rip
@@ -1177,6 +1191,7 @@ impl LiteinstPendingRestart {
 
 /// Deepest nesting of pending host-hybrid restarts kept per thread; see
 /// `push_liteinst_pending_restart`.
+#[cfg(target_arch = "x86_64")]
 const LITEINST_PENDING_RESTART_LIMIT: usize = 64;
 
 /// The private-page landing address (see `liteinst_restart::landing_regs`).
@@ -1199,11 +1214,25 @@ impl From<TraceError> for LandingFailure {
     }
 }
 
+/// Whether `regs` carry the LiteInst syscall marker the runtime loads into
+/// `rax` before its `int3`. Only the x86_64 runtime has that trap.
+#[cfg(target_arch = "x86_64")]
+fn holds_liteinst_syscall_marker(regs: &libc::user_regs_struct, marker: u64) -> bool {
+    regs.rax == marker
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn holds_liteinst_syscall_marker(_regs: &libc::user_regs_struct, _marker: u64) -> bool {
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
 fn read_injected_frame(task: &Stopped, address: usize) -> Result<InjectedSyscallFrame, TraceError> {
     let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
     Ok(task.read_value(address)?)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn write_injected_frame(
     task: &Stopped,
     address: usize,
@@ -2458,6 +2487,7 @@ impl<L: Tool> TracedTask<L> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn read_injected_syscall_frame(
         &self,
         task: &Stopped,
@@ -2466,6 +2496,7 @@ impl<L: Tool> TracedTask<L> {
         read_injected_frame(task, address)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn write_injected_syscall_frame(
         &self,
         task: &Stopped,
@@ -2475,6 +2506,7 @@ impl<L: Tool> TracedTask<L> {
         write_injected_frame(task, address, frame)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn write_injected_syscall_result(
         &self,
         task: &Stopped,
@@ -3293,7 +3325,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .any(|pending| pending.landing.is_some())
                 .then(|| classify_landing_trap(regs.ip(), liteinst_landing()))
                 .flatten();
-            let syscall_trap = regs.rax == *marker
+            let syscall_trap = holds_liteinst_syscall_marker(&regs, *marker)
                 && runtime
                     .lock()
                     .unwrap()
@@ -3865,6 +3897,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// controller is parked at the landing (`landing_regs`); the `int3` it
     /// reaches reports the outcome to `finish_liteinst_restart_landing`. A
     /// SIGTRAP delivery fails closed instead (`RUNTIME_OWNED_HANDLERS`).
+    #[cfg(target_arch = "x86_64")]
     fn arm_liteinst_restart_landing(
         &mut self,
         task: &Stopped,
@@ -3976,6 +4009,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// return register. Without the marker the re-executed `int3` would not be
     /// recognised as the syscall trap, and an armed landing would restore the
     /// clobbered value for the re-trap.
+    #[cfg(target_arch = "x86_64")]
     fn restore_liteinst_restart_marker(&self, task: &Stopped) -> Result<(), TraceError> {
         let Some(config) = self.global_state.liteinst_runtime.as_ref() else {
             return Ok(());
@@ -4012,6 +4046,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   That entry is live only if a handler abandoned more than the limit
     ///   of restarts at distinct stack depths inside it; its landing or
     ///   re-trap then fails closed.
+    #[cfg(target_arch = "x86_64")]
     fn push_liteinst_pending_restart(&mut self, pending: LiteinstPendingRestart) {
         self.liteinst_pending_restarts
             .retain(|older| older.controller_rsp != pending.controller_rsp);
@@ -4076,6 +4111,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// in the same state: at the rewound runtime `int3` of a restart that
     /// will re-trap, or at the instruction after it with the frame completed.
     /// The caller resumes the thread.
+    #[cfg(target_arch = "x86_64")]
     fn resolve_liteinst_landing(
         pending_restarts: &mut Vec<LiteinstPendingRestart>,
         task: &Stopped,
@@ -4134,6 +4170,36 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
         Ok(())
+    }
+
+    // Only the x86_64 host-hybrid path pushes a pending restart, so elsewhere
+    // no landing is armed and no rewound `int3` carries the marker. These
+    // match the x86_64 functions with an empty pending stack.
+    #[cfg(not(target_arch = "x86_64"))]
+    fn arm_liteinst_restart_landing(
+        &mut self,
+        _task: &Stopped,
+        _signal: Signal,
+    ) -> Result<(), TraceError> {
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn restore_liteinst_restart_marker(&self, _task: &Stopped) -> Result<(), TraceError> {
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn resolve_liteinst_landing(
+        _pending_restarts: &mut Vec<LiteinstPendingRestart>,
+        _task: &Stopped,
+        regs: &libc::user_regs_struct,
+        _outcome: LandingOutcome,
+    ) -> Result<(), LandingFailure> {
+        Err(LandingFailure::Invariant(format!(
+            "restart landing trap at {:#x} matches no armed restart",
+            regs.ip()
+        )))
     }
 
     #[cfg(target_arch = "x86_64")]

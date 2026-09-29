@@ -18,6 +18,11 @@
 //! returns `-EINTR` depends on the code and on the handler's `SA_RESTART`; the
 //! tracer lets the kernel decide by presenting a restartable syscall at a
 //! private-page landing (`landing_regs`). The helpers here are pure.
+//!
+//! Only the x86_64 host-hybrid path uses them; `landing_regs` and
+//! `changed_landing_register` name x86_64 registers and exist only there.
+
+#![cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 
 use nix::sys::signal::Signal;
 use reverie::Errno;
@@ -175,6 +180,7 @@ pub(crate) const LANDING_LEN: usize = 3;
 /// so it marks "in a syscall", and on a restart the kernel copies it to `rax`,
 /// where a handler sees it as it would under plain ptrace and the landing
 /// reads back the number to re-dispatch.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn landing_regs(
     controller: &libc::user_regs_struct,
     landing: u64,
@@ -197,6 +203,7 @@ pub(crate) fn landing_regs(
 /// armed unless the handler edited its `ucontext`. Those registers belong to
 /// the runtime's trap context rather than to the guest's syscall, so an edit
 /// has no plain-ptrace meaning the tracer could apply.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn changed_landing_register(
     armed: &libc::user_regs_struct,
     trapped: &libc::user_regs_struct,
@@ -345,6 +352,7 @@ mod tests {
         assert!(!restart_depends_on_handler(Errno::EINTR));
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn landing_regs_present_a_restartable_syscall_at_the_landing() {
         let mut controller: libc::user_regs_struct = unsafe { std::mem::zeroed() };
@@ -372,6 +380,7 @@ mod tests {
         assert_eq!(changed_landing_register(&controller, &regs), None);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn changed_landing_register_ignores_only_what_the_kernel_writes() {
         let mut armed: libc::user_regs_struct = unsafe { std::mem::zeroed() };
@@ -391,6 +400,7 @@ mod tests {
         assert_eq!(changed_landing_register(&armed, &moved), Some("rsp"));
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn landing_trap_reports_restart_and_interrupted_outcomes() {
         let landing = PRIVATE + 0x100;
@@ -412,6 +422,7 @@ mod tests {
         assert_eq!(classify_landing_trap(0, u64::MAX), None);
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn landing_regs_rip(landing: u64) -> u64 {
         let controller: libc::user_regs_struct = unsafe { std::mem::zeroed() };
         landing_regs(&controller, landing, Errno::ERESTARTSYS, 0).rip
