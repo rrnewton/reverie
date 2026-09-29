@@ -15,6 +15,30 @@ mod stop_observation_tests {
         deadline.saturating_duration_since(Instant::now())
     }
 
+    /// Requires the notifier to retire within the shared deadline, and to be
+    /// observed through its retirement notification rather than through this
+    /// wait's own timeout. A lost worker-done wakeup still makes
+    /// `TerminalCleanup::wait` return true, but only once its whole timeout
+    /// has elapsed; this names that case instead of leaving it to the final
+    /// whole-test deadline check. No new time bound is introduced: the only
+    /// limit is the rest of the shared deadline, and every failure here would
+    /// also have failed that final check.
+    fn assert_retired_by_wakeup(terminal: &TerminalCleanup, deadline: Instant, what: &str) {
+        let budget = remaining(deadline);
+        assert!(
+            !budget.is_zero(),
+            "{what}: the original deadline expired before the retirement wait"
+        );
+        let started = Instant::now();
+        assert!(terminal.wait(budget), "{what}: notifier did not retire");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < budget,
+            "{what}: terminal.wait returned only at its {budget:?} timeout after {elapsed:?}; \
+             the retirement wakeup was lost"
+        );
+    }
+
     fn spawn_observed_child(deadline: Instant) -> (Pid, Stopped, TraceeCleanupGuard) {
         let pid = match unsafe { fork() }.expect("fork observation child") {
             ForkResult::Parent { child } => child,
@@ -105,14 +129,14 @@ mod stop_observation_tests {
         assert!(matches!(
             tokio::time::timeout(remaining(deadline), duplicate.as_mut())
                 .await
-                .unwrap(),
+                .expect("duplicate EXIT refusal exceeded original deadline"),
             Err(Error::Errno(Errno::EALREADY))
         ));
         if let Some(competing) = competing {
             assert!(matches!(
                 tokio::time::timeout(remaining(deadline), competing)
                     .await
-                    .unwrap(),
+                    .expect("competing EXIT refusal exceeded original deadline"),
                 Err(Error::Errno(Errno::EALREADY))
             ));
         }
@@ -127,10 +151,7 @@ mod stop_observation_tests {
             final_wait.assume_exited(),
             (pid.into(), crate::ExitStatus::Exited(42))
         );
-        assert!(
-            terminal.wait(remaining(deadline)),
-            "notifier did not retire"
-        );
+        assert_retired_by_wakeup(&terminal, deadline, "observed child");
         assert!(pidfd_exited(&cleanup.pidfd).unwrap());
         assert!(
             Instant::now() < deadline,
@@ -250,7 +271,8 @@ mod stop_observation_tests {
             }
         };
         let mut root_cleanup = TraceeCleanupGuard::new(root).unwrap();
-        let status = waitpid_status_bounded(root, libc::WUNTRACED, remaining(deadline)).unwrap();
+        let status = waitpid_status_bounded(root, libc::WUNTRACED, remaining(deadline))
+            .expect("actual initial exec-root stop before original deadline");
         assert!(libc::WIFSTOPPED(status));
         assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
         let stopped = Stopped::new_unchecked(root.into());
@@ -272,7 +294,7 @@ mod stop_observation_tests {
             stopped.resume_retaining(None).unwrap().wait_owned(),
         )
         .await
-        .unwrap()
+        .expect("actual clone stop exceeded original deadline")
         .unwrap();
         let (parent, crate::Event::NewChild(crate::ChildOp::Clone, child)) = wait.assume_stopped()
         else {
@@ -292,7 +314,7 @@ mod stop_observation_tests {
         child_cleanup.bind_running_notifier(&child).unwrap();
         let initial = tokio::time::timeout(remaining(deadline), child.wait_owned())
             .await
-            .unwrap()
+            .expect("new thread's initial stop exceeded original deadline")
             .unwrap();
         let (child, event) = initial.assume_stopped();
         assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
@@ -300,7 +322,7 @@ mod stop_observation_tests {
         let old_running = parent.resume_retaining(None).unwrap();
         let first = tokio::time::timeout(remaining(deadline), old_exit.as_mut())
             .await
-            .unwrap()
+            .expect("old leader's actual EXIT exceeded original deadline")
             .unwrap();
         root_cleanup.mark_claimed_exit();
         drop(old_running);
@@ -314,7 +336,7 @@ mod stop_observation_tests {
             first.resume_retaining(None).unwrap().wait_owned(),
         )
         .await
-        .unwrap()
+        .expect("actual replacement Exec exceeded original deadline")
         .unwrap();
         let (replacement, crate::Event::Exec(actual_former)) = next.assume_stopped() else {
             panic!("missing actual replacement exec");
@@ -343,13 +365,13 @@ mod stop_observation_tests {
         assert!(matches!(
             tokio::time::timeout(remaining(deadline), old_exit.as_mut())
                 .await
-                .unwrap(),
+                .expect("old EXIT refusal exceeded original deadline"),
             Err(Error::Errno(Errno::EALREADY))
         ));
         let running = replacement.resume_retaining(None).unwrap();
         let second = tokio::time::timeout(remaining(deadline), next_exit.as_mut())
             .await
-            .unwrap()
+            .expect("replacement's actual EXIT exceeded original deadline")
             .unwrap();
         root_cleanup.mark_claimed_exit();
         drop(running);
@@ -359,7 +381,7 @@ mod stop_observation_tests {
             second.resume_retaining(None).unwrap().wait_owned(),
         )
         .await
-        .unwrap()
+        .expect("terminal wait exceeded original deadline")
         .unwrap();
         assert_eq!(
             final_wait.assume_exited(),
@@ -368,11 +390,11 @@ mod stop_observation_tests {
         assert!(matches!(
             tokio::time::timeout(remaining(deadline), former_wait.as_mut())
                 .await
-                .unwrap(),
+                .expect("former thread's ECHILD exceeded original deadline"),
             Err(OwnedWaitError::Errno(Errno::ECHILD))
         ));
-        assert!(terminal.wait(remaining(deadline)));
-        assert!(child_terminal.wait(remaining(deadline)));
+        assert_retired_by_wakeup(&terminal, deadline, "exec leader");
+        assert_retired_by_wakeup(&child_terminal, deadline, "exec former thread");
         assert!(pidfd_exited(&root_cleanup.pidfd).unwrap());
         assert!(pidfd_exited(&child_cleanup.pidfd).unwrap());
         assert!(
@@ -396,7 +418,7 @@ mod stop_observation_tests {
         let running = stopped.resume_retaining(None).unwrap();
         let exiting = tokio::time::timeout(remaining(deadline), exit.as_mut())
             .await
-            .unwrap()
+            .expect("actual EXIT exceeded original deadline")
             .unwrap();
         cleanup.mark_claimed_exit();
         drop(running);
@@ -433,17 +455,20 @@ mod stop_observation_tests {
         release.send(()).unwrap();
         let actual = tokio::time::timeout(remaining(deadline), original_wait.as_mut())
             .await
-            .unwrap()
+            .expect("terminal wait exceeded original deadline")
             .unwrap();
         assert_eq!(
             actual.assume_exited(),
             (pid.into(), crate::ExitStatus::Exited(42))
         );
-        assert!(terminal.wait(remaining(deadline)));
+        assert_retired_by_wakeup(&terminal, deadline, "reaped child");
         assert!(pidfd_exited(&cleanup.pidfd).unwrap());
         cleanup.disarm();
         finish_observed_child(sentinel, sentinel_stop, sentinel_cleanup, deadline, None).await;
-        assert!(Instant::now() < deadline);
+        assert!(
+            Instant::now() < deadline,
+            "reap observation exceeded three seconds"
+        );
     }
 
     #[test]
