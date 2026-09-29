@@ -943,7 +943,7 @@ fn native_read_register_shape_short_with_valid_cs_refuses_before_decode() {
         bytes[PRSTATUS_CS..PRSTATUS_CS + 8].copy_from_slice(&0x33u64.to_ne_bytes());
         // CS is entirely present, but the final native register byte is not.
         // Bypassing only the exact-length guard must incorrectly return Ok.
-        assert!(PRSTATUS_CS + 8 < PRSTATUS_BYTES);
+        const { assert!(PRSTATUS_CS + 8 < PRSTATUS_BYTES) };
         Ok(PRSTATUS_BYTES - 1)
     });
     assert_eq!(calls, 1);

@@ -160,6 +160,13 @@ struct BoundedTestPause {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyncWaitTestTransition {
+    WaitingForNotifier,
+    Returned,
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 struct ExactTestMember {
     pid: Pid,
@@ -436,6 +443,14 @@ struct Event {
 
     /// Wakes synchronous cancellation cleanup when a status is published.
     status_changed: Condvar,
+    #[cfg(test)]
+    sync_wait_entered: Mutex<Option<mpsc::SyncSender<SyncWaitTestTransition>>>,
+    #[cfg(test)]
+    sync_wait_ineligible_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    sync_wait_owner_entered: Mutex<Option<mpsc::SyncSender<()>>>,
+    #[cfg(test)]
+    notifier_registration_pause: Mutex<Option<(i32, BoundedTestPause)>>,
 
     /// Independently retained `PTRACE_EVENT_EXIT` publication. Keeping this
     /// separate prevents a following final wait status from stealing the exit
@@ -682,6 +697,14 @@ impl Event {
                 terminal: INVALID_STATUS,
             }),
             status_changed: Condvar::new(),
+            #[cfg(test)]
+            sync_wait_entered: Mutex::new(None),
+            #[cfg(test)]
+            sync_wait_ineligible_pause: Mutex::new(None),
+            #[cfg(test)]
+            sync_wait_owner_entered: Mutex::new(None),
+            #[cfg(test)]
+            notifier_registration_pause: Mutex::new(None),
             exit_status: AtomicI32::new(EXIT_PENDING),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
             exit_epoch: AtomicUsize::new(0),
@@ -1021,6 +1044,24 @@ impl Event {
         self.wait_owner_changed.notify_all();
     }
 
+    #[cfg(test)]
+    fn pause_notifier_registration_for_test(&self, phase: i32) {
+        let pause = {
+            let mut installed = self.notifier_registration_pause.lock();
+            if installed.as_ref().is_some_and(|(at, _)| *at == phase) {
+                installed.take().map(|(_, pause)| pause)
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            // Observe the real provisional claim or STARTING transition. This
+            // hook neither installs an owner nor changes the worker state.
+            let _ = pause.captured.try_send(());
+            let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+        }
+    }
+
     /// Linearizes a typed status return before decoding can acquire the PID
     /// registry, inspect procfs, or lock a newly materialized child Event.
     /// The owner mutex is deliberately released before decode; cleanup treats
@@ -1076,6 +1117,10 @@ impl Event {
                 }
                 WAIT_OWNER_NOTIFIER => match self.worker_state.load(Ordering::Acquire) {
                     WORKER_NOT_STARTED | WORKER_STARTING => {
+                        #[cfg(test)]
+                        if let Some(entered) = self.sync_wait_owner_entered.lock().take() {
+                            let _ = entered.try_send(());
+                        }
                         self.wait_owner_changed.wait(&mut guard)
                     }
                     WORKER_RUNNING | WORKER_FINISHING | WORKER_DONE => {
@@ -1247,7 +1292,16 @@ impl Event {
                 });
             }
             match state.terminal {
-                INVALID_STATUS => self.status_changed.wait(&mut state),
+                INVALID_STATUS => {
+                    // Report the actual original Event wait transition while
+                    // its empty-status predicate is locked. No status or wait
+                    // ownership is supplied by this one-use test observer.
+                    #[cfg(test)]
+                    if let Some(entered) = self.sync_wait_entered.lock().take() {
+                        let _ = entered.send(SyncWaitTestTransition::WaitingForNotifier);
+                    }
+                    self.status_changed.wait(&mut state);
+                }
                 ECHILD_STATUS => return Err(Errno::ECHILD),
                 status => {
                     return Ok(StatusReservation {
@@ -1885,6 +1939,8 @@ fn spawn_worker(
     identity: Arc<WorkerIdentity>,
 ) -> io::Result<PendingWorker> {
     #[cfg(test)]
+    event.pause_notifier_registration_for_test(WORKER_STARTING);
+    #[cfg(test)]
     if let Some(error) = SPAWN_WORKER_ERRORS.lock().remove(&pid) {
         if let Some(pause) = SPAWN_FAILURE_PAUSES.lock().remove(&pid) {
             pause.captured.wait();
@@ -1998,6 +2054,106 @@ fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wai
     })
 }
 
+/// Join an already-running original notifier for final status, without a new
+/// numeric identity capture. A queued ordinary stop is left untouched for the
+/// existing live-generation validation below; this path grants no stop/source
+/// capability merely because an Event or an old pidfd remains allocated.
+fn try_wait_retained_notifier_terminal(
+    pid: Pid,
+    handle: &EventHandle,
+) -> Option<Result<Wait, Error>> {
+    let identity = handle.identity()?;
+    let event = handle.event();
+    if identity.pid != pid || !event.worker_is_running() {
+        #[cfg(test)]
+        {
+            // Observe the actual negative eligibility decision before numeric
+            // recapture. The one-use pause supplies no identity or wait owner,
+            // and no Event mutex is held while the fixture releases it.
+            let pause = event.sync_wait_ineligible_pause.lock().take();
+            if let Some(pause) = pause {
+                let _ = pause.captured.try_send(());
+                let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+            }
+        }
+        return None;
+    }
+    match event.claim_sync_wait() {
+        Ok(SyncWaitOwnership::Notifier) => {}
+        // Do not acquire a new kernel wait owner through this terminal join.
+        // Dropping the temporary claim restores the original path unchanged.
+        Ok(SyncWaitOwnership::Claimed(_)) => return None,
+        Err(error) => return Some(Err(error.into())),
+    }
+    wait_retained_notifier_terminal_status(pid, handle)
+}
+
+/// The caller has selected this original Event's committed notifier through
+/// wait-owner arbitration. Only a real final status may bypass live capture.
+fn wait_retained_notifier_terminal_status(
+    pid: Pid,
+    handle: &EventHandle,
+) -> Option<Result<Wait, Error>> {
+    let event = handle.event();
+    let reservation = match event.wait_status_reservation_sync() {
+        Ok(reservation) => reservation,
+        Err(error) => return Some(Err(error.into())),
+    };
+    if !libc::WIFEXITED(reservation.status) && !libc::WIFSIGNALED(reservation.status) {
+        return None;
+    }
+    Some(
+        event
+            .decode_status_return(reservation, |status| {
+                Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle.clone()))
+            })
+            .and_then(|result| match result {
+                StatusReturn::Returned(wait) => Ok(wait),
+                StatusReturn::Cancelled(_) => Err(Errno::ECANCELED.into()),
+            }),
+    )
+}
+
+/// Numeric capture can lose a race with registration and the original
+/// notifier's actual reap. Reconcile ownership even if the early eligibility
+/// check saw no worker: NOTIFIER/NOT_STARTED and STARTING are provisional, and
+/// the existing arbitration waits for their commit or rollback. No kernel
+/// wait, new registration, or generation adoption is authorized here.
+fn reconcile_failed_sync_capture(
+    pid: Pid,
+    requested: &EventHandle,
+    capture_error: Errno,
+) -> Result<Wait, Error> {
+    loop {
+        let handle = requested.resolved_handle();
+        let event = Arc::clone(handle.event());
+        let ownership = event.claim_sync_wait()?;
+        if !Arc::ptr_eq(handle.event(), &event) {
+            // Registration may have resolved a pre-existing same-generation
+            // authority while we waited. Release any temporary claim before
+            // following that already-validated resolution.
+            drop(ownership);
+            continue;
+        }
+        if !handle
+            .identity()
+            .is_some_and(|identity| identity.pid == pid)
+        {
+            return Err(capture_error.into());
+        }
+        return match ownership {
+            SyncWaitOwnership::Notifier => wait_retained_notifier_terminal_status(pid, &handle)
+                .unwrap_or_else(|| Err(capture_error.into())),
+            SyncWaitOwnership::Claimed(_owner) => {
+                // Rollback/no owner supplies no wait authority. A terminal
+                // publication during arbitration can still be replayed; in
+                // its absence preserve the failed capture, then release SYNC.
+                try_replay_sync_terminal(pid, &handle).unwrap_or_else(|| Err(capture_error.into()))
+            }
+        };
+    }
+}
+
 fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
     if !libc::WIFSTOPPED(status) {
         return Ok(());
@@ -2027,13 +2183,16 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
     if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
         return replayed;
     }
+    if let Some(terminal) = try_wait_retained_notifier_terminal(pid, &requested) {
+        return terminal;
+    }
     let handle = match NOTIFIER.sync_handle(pid, &requested) {
         Ok(handle) => handle,
         Err(error) => {
             if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
                 return replayed;
             }
-            return Err(error.into());
+            return reconcile_failed_sync_capture(pid, &requested, error);
         }
     };
     let token = TraceeToken::from_event(handle);
@@ -2471,6 +2630,8 @@ impl Notifier {
                 drop(owner);
                 continue;
             }
+            #[cfg(test)]
+            requested.pause_notifier_registration_for_test(WORKER_NOT_STARTED);
             match self.event_with_owner(pid, handle, &requested, owner)? {
                 EventRegistration::Registered(handle) => return Ok(handle),
                 EventRegistration::Adopted => {}
@@ -3585,6 +3746,7 @@ impl Future for ExitFuture {
 mod test {
     include!("stop_observation_tests.rs");
     include!("worker_retirement_tests.rs");
+    include!("native_final_wait_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
