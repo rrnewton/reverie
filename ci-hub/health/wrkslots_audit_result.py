@@ -16,7 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from wrkslots_audit_contract import (
     ContractError,
@@ -89,6 +89,66 @@ def _gitlink(repo: Path, commit: str, path: str) -> str | None:
         return None
     parts = line.split()
     return parts[2] if len(parts) >= 3 and SHA.fullmatch(parts[2]) else None
+
+
+#: The unit that produces the result this gate reads (scripts/systemd/).
+REFRESHER_TIMER = "hermit-wrkslots-audit.timer"
+
+
+def refresher_state() -> str:
+    """The refresher timer's unit-file and activity state, read-only.
+
+    WHY A STALE RESULT NOW SAYS THIS.  Measured 2026-09-28: the result was
+    345384 s old against the 7200 s bound, and the only thing the tick said was
+    that number.  The tick's own log (hermit-health-tick-invocations.log) shows
+    the history behind it: the last completed audit was read at
+    2026-09-21T11:17Z; from 2026-09-21T12:17Z to 2026-09-24T07:49Z every tick
+    read NO_RESULT and none read a verdict: 114 of those 136 ticks because the
+    audit was killed at its 240 CPU-second budget (the rest: 12 refusals, 8
+    missing cgroup CPU measurements, 2 provenance objections).  From
+    2026-09-24T08:19Z the result simply aged, because
+    hermit-wrkslots-audit.timer was no longer running (it is disabled).
+    One manual run at 2026-09-24T23:30Z was killed the same way (latest.json:
+    `termination: cpu_budget`, 240.19 of 240 CPU-s), and that is the result
+    still being read.  Naming the timer's state and the last run's outcome in
+    the stale verdict makes all of that visible from the tick itself.  This
+    never enables, starts, or changes the unit.
+    """
+    try:
+        done = subprocess.run(
+            ["systemctl", "--user", "show", REFRESHER_TIMER,
+             "-p", "UnitFileState", "-p", "ActiveState"],
+            capture_output=True, text=True,
+            timeout=GIT_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"unreadable ({error.__class__.__name__})"
+    if done.returncode != 0:
+        return f"unreadable (systemctl exited {done.returncode})"
+    properties = dict(
+        line.partition("=")[::2] for line in done.stdout.splitlines() if "=" in line
+    )
+    enabled = properties.get("UnitFileState") or "unknown"
+    active = properties.get("ActiveState") or "unknown"
+    return f"{enabled}/{active}"
+
+
+def _last_run(result: dict[str, Any]) -> str:
+    """How the run that wrote this (stale) result ended, from its own record."""
+    text = (
+        f"the last run started {result.get('started_at', 'at an unrecorded time')} "
+        f"and ended {result.get('verdict')}: {result.get('summary')}"
+    )
+    cost = result.get("cost")
+    if isinstance(cost, dict):
+        spent = cost.get("cpu_seconds")
+        budget = cost.get("cpu_budget_seconds")
+        if isinstance(spent, (int, float)) and isinstance(budget, (int, float)):
+            text += f" ({spent:.1f} of {budget:g} CPU-s"
+            if cost.get("termination"):
+                text += f", termination {cost['termination']}"
+            text += ")"
+    return text
 
 
 def provenance_objection(
@@ -173,9 +233,16 @@ def evaluate(
     expected_hermit_sha: str,
     expected_agent_utils_sha: str,
     now: float | None = None,
+    refresher: Callable[[], str] = refresher_state,
 ) -> tuple[str, str, dict[str, object]]:
     if not path.is_file():
-        return "NO_RESULT", f"no result at {path}: audit has never completed", {}
+        timer = refresher()
+        return (
+            "NO_RESULT",
+            f"no result at {path}: audit has never completed; its refresher "
+            f"{REFRESHER_TIMER} is {timer}",
+            {"refresher_timer": timer},
+        )
     try:
         result = _read(path)
     except (OSError, json.JSONDecodeError, ValueError) as error:
@@ -204,10 +271,16 @@ def evaluate(
     if age < -60:
         return "NO_RESULT", f"result timestamp is {-age:.0f}s in the future", {}
     if age > max_age_seconds:
+        timer = refresher()
         return (
             "NO_RESULT",
-            f"result is {age:.0f}s old, beyond {max_age_seconds}s freshness",
-            {},
+            f"result is {age:.0f}s old, beyond {max_age_seconds}s freshness; "
+            f"{_last_run(result)}; its refresher {REFRESHER_TIMER} is {timer}",
+            {
+                "age_secs": int(age),
+                "last_verdict": result.get("verdict"),
+                "refresher_timer": timer,
+            },
         )
 
     verdict = result.get("verdict")

@@ -260,11 +260,13 @@ def test_installer_still_arms_retry_timer_when_live_check_is_unknown(
     assert "--user restart hermit-herdr-agent-snapshot.timer" in calls
 
 
-def test_slot_parity_consumes_the_fresh_cross_substrate_snapshot() -> None:
+def test_slot_parity_reads_the_live_herdr_census() -> None:
+    # The snapshot this gate used to read stopped being produced (its producer
+    # exits 75 without agentctl); the herdr source reads herdr and /proc live.
     config = yaml.safe_load((ROOT / "ci-hub/health/tick-hub.yaml").read_text())
     reminder = {row["name"]: row for row in config["reminders"]}[
         "slot_agent_parity"
     ]
-    assert reminder["gate"]["cmd"].endswith("--agent-source snapshot")
+    assert reminder["gate"]["cmd"].endswith("--agent-source herdr")
     assert reminder["gate"]["when"] == "failure"
     assert reminder["gate"]["capture"] is True

@@ -122,6 +122,8 @@ class WrkslotsAuditResultTests(unittest.TestCase):
             "expected_hermit_sha": SHA_B,
             "expected_agent_utils_sha": SHA_C,
             "now": 1100.0,
+            # Never ask the host's systemd from a unit test.
+            "refresher": lambda: "fixture-enabled/fixture-active",
         }
         arguments.update(overrides)
         return wrkslots_audit_result.evaluate(self.path, **arguments)  # type: ignore[arg-type]
@@ -167,6 +169,99 @@ class WrkslotsAuditResultTests(unittest.TestCase):
             state, summary, _fields = self.evaluate(now=now)
             self.assertEqual("NO_RESULT", state)
             self.assertIn(fragment, summary)
+
+    def test_stale_result_names_the_last_run_and_the_refresher(self) -> None:
+        # The 2026-09-28 shape: a result days old whose run was itself killed
+        # at the CPU budget, and a refresher timer that is no longer running.
+        # A stale verdict that says only "Ns old" hides both.
+        self.write(
+            verdict="NO_RESULT",
+            summary="CPU budget exhausted before the audit completed",
+            exit_code=137,
+            audit=None,
+            cost=audit_cost(
+                exit_code=137,
+                wall=130.3,
+                usage_usec=240_185_397,
+                reaped=True,
+                termination="cpu_budget",
+            )
+            | {
+                "cpu_source": "systemd CPUUsageNSec after scope exit",
+                "cpu_usage_nsec": 240_185_397_000,
+            },
+            observer_cost=observer_cost(exit_code=137, wall=130.3),
+        )
+        state, summary, fields = self.evaluate(
+            now=1_000.0 + 345_384, refresher=lambda: "disabled/inactive"
+        )
+        self.assertEqual("NO_RESULT", state, summary)
+        self.assertIn("result is 345384s old, beyond 7200s freshness", summary)
+        self.assertIn("the last run started 1970-01-01T00:16:00Z", summary)
+        self.assertIn(
+            "ended NO_RESULT: CPU budget exhausted before the audit completed",
+            summary,
+        )
+        self.assertIn("240.2 of 240 CPU-s, termination cpu_budget", summary)
+        self.assertIn("hermit-wrkslots-audit.timer is disabled/inactive", summary)
+        self.assertEqual(345_384, fields["age_secs"])
+        self.assertEqual("NO_RESULT", fields["last_verdict"])
+        self.assertEqual("disabled/inactive", fields["refresher_timer"])
+
+    def test_missing_result_names_the_refresher(self) -> None:
+        state, summary, fields = self.evaluate(refresher=lambda: "disabled/inactive")
+        self.assertEqual("NO_RESULT", state)
+        self.assertIn("never completed", summary)
+        self.assertIn("hermit-wrkslots-audit.timer is disabled/inactive", summary)
+        self.assertEqual("disabled/inactive", fields["refresher_timer"])
+
+    def test_a_fresh_result_does_not_ask_the_refresher(self) -> None:
+        def refuse() -> str:
+            raise AssertionError("a fresh result must not consult systemd")
+
+        self.write()
+        state, _summary, _fields = self.evaluate(refresher=refuse)
+        self.assertEqual("ok", state)
+
+    def test_refresher_state_reads_systemctl_without_changing_it(self) -> None:
+        import os
+        import stat
+        from unittest import mock
+
+        bin_dir = Path(self.temporary.name) / "bin"
+        bin_dir.mkdir()
+        argv_log = bin_dir / "argv"
+        systemctl = bin_dir / "systemctl"
+
+        def install(body: str) -> None:
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                f'printf "%s\\n" "$*" >> "{argv_log}"\n' + body,
+                encoding="utf-8",
+            )
+            systemctl.chmod(systemctl.stat().st_mode | stat.S_IXUSR)
+
+        for body, expected in (
+            (
+                "printf 'UnitFileState=disabled\\nActiveState=inactive\\n'\n",
+                "disabled/inactive",
+            ),
+            ("printf 'ActiveState=active\\n'\n", "unknown/active"),
+            ("exit 1\n", "unreadable (systemctl exited 1)"),
+        ):
+            with self.subTest(expected=expected):
+                install(body)
+                with mock.patch.dict(os.environ, {"PATH": str(bin_dir)}):
+                    self.assertEqual(expected, wrkslots_audit_result.refresher_state())
+        for line in argv_log.read_text(encoding="utf-8").splitlines():
+            self.assertTrue(line.startswith("--user show hermit-wrkslots-audit.timer"), line)
+
+        systemctl.unlink()
+        with mock.patch.dict(os.environ, {"PATH": str(bin_dir)}):
+            self.assertEqual(
+                "unreadable (FileNotFoundError)",
+                wrkslots_audit_result.refresher_state(),
+            )
 
     def test_wrong_provenance_or_incomplete_cost_is_no_result(self) -> None:
         self.write()

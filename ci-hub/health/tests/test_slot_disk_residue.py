@@ -620,11 +620,15 @@ class TickHubScopeTest(unittest.TestCase):
         commands = self._active_gate_cmds()
         parity = next(cmd for cmd in commands if "slot_agent_parity.py" in cmd)
         residue = next(cmd for cmd in commands if "slot_disk_residue.py" in cmd)
+        # The herdr source reads the fleet live; it names no TaskGraph at all.
+        # (a6be4a9f15 moved the tick to `--agent-source snapshot` on 2026-09-19
+        # without updating this assertion, which stayed red until 2026-09-28.)
         self.assertEqual(
             'python3 ci-hub/health/slot_agent_parity.py --gate --root '
-            '"$DEV_HERMIT_PARENT"',
+            '"$DEV_HERMIT_PARENT" --agent-source herdr',
             parity,
         )
+        self.assertNotIn("--db", parity)
         self.assertNotIn("worktree-state.json", residue)
 
 

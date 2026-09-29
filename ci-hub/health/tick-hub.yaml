@@ -118,7 +118,7 @@ reminders:
   - name: slot_agent_parity
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT" --agent-source snapshot
+      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT" --agent-source herdr
       when: failure
       capture: true
     emit:
