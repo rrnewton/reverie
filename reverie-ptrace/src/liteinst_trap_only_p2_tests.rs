@@ -1975,6 +1975,64 @@ async fn trap_only_p2_t6c_process_madvise_restores_every_site() {
     }
 }
 
+/// T6c: a site whose first call is `process_madvise` is not patched at that
+/// call. Here the call is `MADV_DONTNEED`, through a pidfd for the guest
+/// itself, on the page of the calling site (`tp_site`). Had the tracer
+/// patched the site at that stop, the tail-injected call would have run
+/// after the patch and dropped the page copy that holds it, leaving the site
+/// live in the table over `0f 05`. In both Tool configurations: right after
+/// the call the guest reads `0f 05` at the site on both backends, unmasked;
+/// `warm()` then patches the site through getpid, and at the end of the run
+/// the table holds it live while the guest's last read of it is `cd 80` (the
+/// disclosed text residual, masked on that one line as in T6a). The table
+/// holds the site live exactly when its bytes hold the patch. The call's
+/// result depends on the host kernel (see
+/// `process_madvise_dontneed_on_self`), and only a kernel that accepts it
+/// can drop the page. The runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6c_process_madvise_first_call_leaves_its_site_unpatched() {
+    let mode = "process_madvise_first";
+    let expected_call = if process_madvise_dontneed_on_self() {
+        "process_madvise first ret=4096"
+    } else {
+        "process_madvise first ret=-22"
+    };
+    for tail in [false, true] {
+        let ptrace = run_p2(mode, None, tail).await;
+        let trap_only = run_p2(mode, Some(SitePatching::On), tail).await;
+        assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+        assert_report_has(
+            &ptrace,
+            &[
+                expected_call,
+                "after process_madvise first site bytes 0f 05",
+                "after warm site bytes 0f 05",
+                "done",
+            ],
+        );
+        assert_report_has(&trap_only, &["after warm site bytes cd 80"]);
+        let masked = P2Run {
+            report: trap_only
+                .report
+                .replace("after warm site bytes cd 80", "after warm site bytes 0f 05"),
+            ..clone_run(&trap_only)
+        };
+        assert_equal_runs(&masked, &ptrace);
+        let root = trap_only
+            .root_table
+            .as_ref()
+            .expect("a trap-only root table");
+        assert_eq!(root.state(), TableState::Patchable, "tail={tail}");
+        assert_eq!(
+            root.site_state(trap_only.site),
+            Some(SiteState::Live),
+            "tail={tail}: warm() patched the site"
+        );
+        assert!(trap_only.patched_sites >= 1, "tail={tail}: counts the site");
+        lifecycle_has(&trap_only, "mapping process_madvise restored=");
+    }
+}
+
 /// T6a, undecided: when a new-child stop has no recorded clone flags (a
 /// Tool-injected clone; here the test makes the tracer drop them), every
 /// site is restored in both tasks and they share the disabled table. The
