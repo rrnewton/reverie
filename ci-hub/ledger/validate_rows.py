@@ -32,7 +32,16 @@ from pathlib import Path
 from datetime import datetime
 from typing import Iterable
 
-from ledger import LedgerError, parse_line, read_shard, union_events, validate_event, validate_events
+from ledger import (
+    LedgerError,
+    parse_line,
+    read_shard,
+    shared_type_line,
+    union_events,
+    validate_each_event,
+    validate_event,
+    validate_events,
+)
 from publisher import retained, spool, spooled
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1258,6 +1267,8 @@ def _admission_event_identity(value):
 
 def _legacy_row_corrections(
     items: list[dict],
+    *,
+    accepted_lines: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, tuple[str, dict]], set[str]]:
     """Validated ``run.correct`` replacements for the compatibility view.
 
@@ -1266,6 +1277,10 @@ def _legacy_row_corrections(
     whole-ledger ``fold()`` cannot be used here: enrichment chains deliberately
     collapse by ``run_id``, while this compatibility view historically exposes
     each distinct legacy receipt.
+
+    ``accepted_lines`` are correction lines the shared checker accepted while
+    ``_checked_events`` read these same event objects; see
+    ``ledger.validate_each_event``.
     """
     by_id = {
         str(event.get("event_id")): event
@@ -1275,10 +1290,19 @@ def _legacy_row_corrections(
     known_ids = set(by_id)
     replacements: dict[str, tuple[str, dict]] = {}
     correction_ids: set[str] = set()
+    corrections = [
+        event
+        for event in items
+        if event.get("event_type") == "run.correct" and "legacy_row" in event
+    ]
+    # One result per correction, in order: the same codes as
+    # validate_event(event, known_ids=known_ids), from at most one shared
+    # checker run for all corrections instead of one per correction.
+    checks = validate_each_event(
+        corrections, known_ids=known_ids, accepted_lines=accepted_lines,
+    )
 
-    for event in items:
-        if event.get("event_type") != "run.correct" or "legacy_row" not in event:
-            continue
+    for event in corrections:
         event_id = event.get("event_id")
 
         def refuse(reason: str) -> None:
@@ -1288,7 +1312,7 @@ def _legacy_row_corrections(
 
         if not isinstance(event_id, str) or not event_id:
             refuse("event_id is missing")
-        violations = validate_event(event, known_ids=known_ids)
+        violations = next(checks)
         if violations:
             refuse(f"event violates {','.join(violations)}")
         supersedes = event.get("supersedes")
@@ -1399,14 +1423,50 @@ def _validated_events(
     committed_source: tuple[Path, str] | None = None,
 ) -> tuple[list[dict], frozenset[str]]:
     """Read the event union once and refuse every malformed member."""
+    items, historical_source_digests, _accepted = _checked_events(
+        root=root, preserve_admission=preserve_admission,
+        committed_source=committed_source,
+    )
+    return items, historical_source_digests
+
+
+def _checked_events(
+    *, root: Path, preserve_admission: bool = False,
+    committed_source: tuple[Path, str] | None = None,
+) -> tuple[list[dict], frozenset[str], frozenset[str]]:
+    """``_validated_events``, plus the correction lines the checker accepted.
+
+    The third value holds ``shared_type_line(event)`` for every
+    ``run.correct`` with a ``legacy_row`` whose line is exactly the line the
+    shared checker judged here. It is returned only when every event passed,
+    which means the checker accepted every line it was sent. Passing it to
+    ``_rows_from_events`` for these same, unmodified items lets the
+    correction check reuse that verdict instead of sending the lines again.
+    """
     items = events(root=root, preserve_admission=preserve_admission)
     historical_source_digests = _historical_repository_mismatch_source_digests(
         root, committed_source=committed_source,
     )
     # Preserve the original envelope too: normalizing a duplicate legacy_row
     # could erase an earlier admission claim before Rust judges its shape.
-    validation_options = ({"serializer": _admission_event_identity} if preserve_admission else {})
-    for index, codes in enumerate(validate_events(items, **validation_options), 1):
+    encode = _admission_event_identity if preserve_admission else shared_type_line
+    accepted: set[str] = set()
+
+    def serializer(event):
+        line = encode(event)
+        if event.get("event_type") == "run.correct" and "legacy_row" in event:
+            try:
+                # The correction check sends shared_type_line(event). An extra
+                # encoding that fails here only forgoes the reuse; that check
+                # still meets the failure where it always did.
+                same = not preserve_admission or line == shared_type_line(event)
+            except Exception:
+                same = False
+            if same:
+                accepted.add(line)
+        return line
+
+    for index, codes in enumerate(validate_events(items, serializer=serializer), 1):
         event = items[index - 1]
         if codes:
             if event.get("event_type") == "run.correct":
@@ -1430,12 +1490,16 @@ def _validated_events(
                 f"validation event {index} ({event.get('event_id')!r}) is invalid: "
                 f"{error}"
             ) from error
-    return items, historical_source_digests
+    return items, historical_source_digests, frozenset(accepted)
 
 
-def _row_projections(items: list[dict], *, root: Path) -> Iterable[tuple[str, dict]]:
+def _row_projections(
+    items: list[dict], *, root: Path, accepted_lines: frozenset[str] = frozenset(),
+) -> Iterable[tuple[str, dict]]:
     """Keep each projected row's actual terminal envelope identity."""
-    replacements, correction_ids = _legacy_row_corrections(items)
+    replacements, correction_ids = _legacy_row_corrections(
+        items, accepted_lines=accepted_lines,
+    )
     for event in items:
         event_id = str(event.get("event_id") or "")
         if event_id in correction_ids:
@@ -1467,11 +1531,15 @@ def _row_projections(items: list[dict], *, root: Path) -> Iterable[tuple[str, di
             yield current, restored
 
 
-def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
+def _rows_from_events(
+    items: list[dict], *, root: Path, accepted_lines: frozenset[str] = frozenset(),
+) -> list[dict]:
     """Project the already-read event union to the HistoryRow compatibility view."""
     out: list[dict] = []
     seen: set[str] = set()
-    for _event_id, restored in _row_projections(items, root=root):
+    for _event_id, restored in _row_projections(
+        items, root=root, accepted_lines=accepted_lines,
+    ):
         identity = _admission_event_identity(restored)
         if identity not in seen:
             seen.add(identity)
@@ -1546,8 +1614,10 @@ def _record_identities(
 def status_input(*, root: Path | None = None, preserve_admission: bool = False) -> dict:
     """One-read input for status: projected rows plus every raw record identity."""
     root = (root or repository_root()).resolve()
-    items, historical_source_digests = _validated_events(root=root, preserve_admission=preserve_admission)
-    projected = _rows_from_events(items, root=root)
+    items, historical_source_digests, accepted = _checked_events(
+        root=root, preserve_admission=preserve_admission,
+    )
+    projected = _rows_from_events(items, root=root, accepted_lines=accepted)
     return {
         "schema_version": 1,
         "rows": projected,
@@ -1564,10 +1634,10 @@ def rows(
 ) -> list[dict]:
     """HistoryRow view, with explicit Git provenance for an immutable snapshot."""
     root = (root or repository_root()).resolve()
-    items, _historical_source_digests = _validated_events(
+    items, _historical_source_digests, accepted = _checked_events(
         root=root, preserve_admission=preserve_admission, committed_source=committed_source,
     )
-    return _rows_from_events(items, root=root)
+    return _rows_from_events(items, root=root, accepted_lines=accepted)
 
 
 def canonical_finalized_row(
@@ -1925,7 +1995,7 @@ class CommittedValidationNamespace:
                 path.write_bytes(source["data"])
             # This reader still validates the entire event union, the original
             # admission pairs, and the two exact historical exception shards.
-            items, _ = _validated_events(
+            items, _, accepted = _checked_events(
                 root=snapshot, preserve_admission=True,
                 committed_source=(self._root, self._commit),
             )
@@ -1945,10 +2015,12 @@ class CommittedValidationNamespace:
                         "event_line_sha256": hashlib.sha256(line).hexdigest(),
                     })
         self._events = {event["event_id"]: event for event in items}
-        self._projections = list(_row_projections(items, root=state))
+        self._projections = list(_row_projections(
+            items, root=state, accepted_lines=accepted,
+        ))
         # Identity -> event ids of self._projections, built by the first select().
         self._projection_event_ids: dict[str, list[str]] | None = None
-        self._rows = _rows_from_events(items, root=state)
+        self._rows = _rows_from_events(items, root=state, accepted_lines=accepted)
         self._origin_cache: dict[tuple[str, str, str], bytes] = {}
         self._views: dict[str, list] = {}
 

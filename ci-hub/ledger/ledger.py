@@ -41,7 +41,7 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 ENVELOPE_VERSION = "validate-ledger/v1"
 
@@ -651,19 +651,18 @@ def prepare_shared_checker() -> None:
         raise SharedTypeCheckerUnavailable(f"cannot prepare ledger checker: {detail}")
 
 
+def shared_type_line(event: dict) -> str:
+    """The line the shared checker reads for ``event`` unless told otherwise."""
+    return json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+
 def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[str]]:
     """Check envelope shape and closed values with the producer-owned type."""
     if not events:
         return []
-    payload = "".join(
-        (
-            serializer(event)
-            if serializer is not None
-            else json.dumps(event, sort_keys=True, separators=(",", ":"))
-        )
-        + "\n"
-        for event in events
-    )
+    if serializer is None:
+        serializer = shared_type_line
+    payload = "".join(serializer(event) + "\n" for event in events)
     try:
         result = _run_shared_type_checker(payload)
     except (OSError, SharedTypeCheckerUnavailable, subprocess.TimeoutExpired) as error:
@@ -971,6 +970,89 @@ def validate_event(
     )
     codes.extend(_shared_type_codes([event])[0])
     return codes
+
+
+def _single_event_shared_codes(
+    events: Sequence[dict], accepted_lines: frozenset[str] = frozenset()
+) -> list[list[str] | None]:
+    """Each event's single-event shared-type codes, from at most one checker run.
+
+    ``validate_event`` sends the checker one line per call. The checker is a
+    pure function of each line: it judges every stdin line on its own and
+    exits at the first line it refuses (``check-ledger-events.rs``).
+
+    So a line in ``accepted_lines`` -- one the caller saw this checker accept
+    earlier in the same read -- needs no new run: its codes are ``[]``. One run
+    over all the other lines gives, for every line up to and including the
+    first refused one, exactly the result a run over that line alone would
+    give. The checker never looked at the lines after that one, so they come
+    back as ``None``. So does every line not yet accepted if the events do not
+    serialize, or if the checker fails or refuses without naming a line. A
+    caller asks ``_shared_type_codes([event])`` about any ``None`` entry, which
+    reproduces the single-event result, including its exceptions.
+    """
+    unknown: list[list[str] | None] = [None] * len(events)
+    try:
+        lines = [shared_type_line(event) for event in events]
+    except Exception:
+        return unknown
+    codes: list[list[str] | None] = [
+        [] if line in accepted_lines else None for line in lines
+    ]
+    pending = [index for index, line in enumerate(lines) if line not in accepted_lines]
+    if not pending:
+        return codes
+    try:
+        result = _run_shared_type_checker("".join(lines[index] + "\n" for index in pending))
+    except Exception:
+        return codes
+    if result.returncode == 0:
+        for index in pending:
+            codes[index] = []
+        return codes
+    detail = result.stderr.strip() or result.stdout.strip() or "no output"
+    match = re.search(r"stdin line (\d+): (.*)", detail, re.DOTALL)
+    if not match:
+        return codes
+    refused = int(match.group(1)) - 1
+    if not 0 <= refused < len(pending):
+        return codes
+    for index in pending[:refused]:
+        codes[index] = []
+    codes[pending[refused]] = [match.group(2).strip()]
+    return codes
+
+
+def validate_each_event(
+    events: Sequence[dict],
+    *,
+    known_ids: set[str] | None = None,
+    accepted_lines: frozenset[str] = frozenset(),
+) -> Iterator[list[str]]:
+    """Yield ``validate_event(event, known_ids=known_ids)`` for each event, in order.
+
+    Same codes in the same order as a loop of ``validate_event`` calls, but
+    with at most one shared-checker run for the whole sequence instead of one
+    per event. That was 99 checker runs for the 99 corrections in each replay
+    of the 2026-09-29 ledger, each one taking the host-wide checker cache lock
+    (https://github.com/rrnewton/dev-hermit/issues/390). ``accepted_lines``
+    holds ``shared_type_line`` values this checker already accepted during the
+    same read; those events are not sent again.
+
+    Lazy on purpose. Nothing runs until the first result is requested, and
+    each event's contextual checks run only when its result is requested, so a
+    caller that refuses at event ``k`` has done the same checks as the loop
+    would have up to ``k``, plus the one batched checker run.
+    """
+    items = list(events)
+    shared: list[list[str] | None] | None = None
+    for index, event in enumerate(items):
+        codes = _contextual_event_codes(event, None, known_ids=known_ids)
+        if shared is None:
+            shared = _single_event_shared_codes(items, accepted_lines)
+        single = shared[index]
+        codes.extend(single if single is not None else _shared_type_codes([event])[0])
+        yield codes
 
 
 def _contains_owner_path(value: Any) -> bool:

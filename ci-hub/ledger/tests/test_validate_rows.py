@@ -1036,6 +1036,182 @@ def test_malformed_correction_never_hides_original_row(tmp_path: Path, case: str
     assert path.read_text(encoding="utf-8").splitlines()[0] == original_line
 
 
+# https://github.com/rrnewton/dev-hermit/issues/390: each replay ran the shared
+# checker once for the whole union and then once more for every correction
+# (101 runs, each under the host-wide checker cache lock, for the 99
+# corrections in the 2026-09-29 ledger). These pin the batched replacement.
+
+
+def _corrected_pairs(root: Path, count: int) -> list[dict]:
+    """``count`` originals, each followed by its valid correction."""
+    events = []
+    for index in range(count):
+        source = row(root, record_id=f"historical-null-{index}")
+        source.update(
+            result="fail",
+            exit_code=1,
+            failures=1,
+            gates=[{
+                "name": "check.example",
+                "result": "fail",
+                "failure_origin": "outer_gate",
+                "failed_substeps": None,
+            }],
+        )
+        original = validate_rows._event_for_row(source, root)
+        correction = correction_for(original)
+        correction["event_id"] = f"historical-null-correction-{index}"
+        events += [original, correction]
+    return events
+
+
+def _count_checker_runs(monkeypatch) -> list[int]:
+    """Lines sent on each real shared-checker run, in order."""
+    real = ledger._run_shared_type_checker
+    runs: list[int] = []
+
+    def counting(payload, arguments=()):
+        runs.append(payload.count("\n"))
+        return real(payload, arguments)
+
+    monkeypatch.setattr(ledger, "_run_shared_type_checker", counting)
+    return runs
+
+
+@pytest.mark.parametrize("preserve_admission", [False, True])
+def test_replay_checks_every_correction_in_one_checker_run(
+    tmp_path: Path, monkeypatch, preserve_admission: bool
+):
+    events = _corrected_pairs(tmp_path, 4)
+    write_events(tmp_path, *events)
+    runs = _count_checker_runs(monkeypatch)
+
+    replayed = validate_rows.rows(root=tmp_path, preserve_admission=preserve_admission)
+    # One run over all eight events. The corrections reuse its verdict on
+    # their exact lines instead of four more single-line runs.
+    assert runs == [8]
+    assert [r["record_id"] for r in replayed] == [f"historical-null-{i}" for i in range(4)]
+    assert all(r["gates"][0]["failed_substeps"] == [] for r in replayed)
+
+    runs.clear()
+    assert validate_rows.status_input(
+        root=tmp_path, preserve_admission=preserve_admission,
+    )["rows"] == replayed
+    assert runs == [8]
+
+    # A caller without that verdict still checks all four corrections in one
+    # run rather than one run each.
+    items = validate_rows.events(root=tmp_path, preserve_admission=preserve_admission)
+    runs.clear()
+    assert validate_rows._rows_from_events(items, root=tmp_path) == replayed
+    assert runs == [4]
+
+
+def test_replay_without_a_comparable_line_checks_corrections_again(
+    tmp_path: Path, monkeypatch
+):
+    events = _corrected_pairs(tmp_path, 4)
+    write_events(tmp_path, *events)
+    expected = validate_rows.rows(root=tmp_path, preserve_admission=True)
+    runs = _count_checker_runs(monkeypatch)
+
+    def unavailable(event):
+        raise TypeError("no comparable line")
+
+    # Preserve mode sends the admission identity. When the plain line it is
+    # compared with cannot be built, nothing is reused and the corrections get
+    # their own run.
+    monkeypatch.setattr(validate_rows, "shared_type_line", unavailable)
+    assert validate_rows.rows(root=tmp_path, preserve_admission=True) == expected
+    assert runs == [8, 4]
+
+
+def test_committed_namespace_checks_corrections_in_one_checker_run(
+    tmp_path: Path, monkeypatch
+):
+    source = _producer_selector_row(tmp_path, gates=[{
+        "name": "check.example", "result": "fail", "failure_origin": "outer_gate",
+        "failed_substeps": None,
+    }])
+    original = _producer_selector_event(source, tmp_path)
+    write_events(tmp_path, original, correction_for(original))
+    commit = _commit_namespace(tmp_path)
+    runs = _count_checker_runs(monkeypatch)
+    # It projects the union twice; before the batching that was 1 + 2 runs.
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        assert runs == [2]
+        [corrected] = ns.rows()
+        assert corrected["gates"][0]["failed_substeps"] == []
+
+
+def test_batched_correction_refusal_is_validate_events_refusal(tmp_path: Path):
+    events = _corrected_pairs(tmp_path, 2)
+    events[3]["producer"]["source"] = "bogus-source"
+    expected = ledger.validate_event(
+        events[3], known_ids={event["event_id"] for event in events},
+    )
+    assert expected, "the shared checker must refuse the unknown producer source"
+
+    with pytest.raises(ValueError) as refused:
+        validate_rows._rows_from_events(events, root=tmp_path)
+    assert str(refused.value) == (
+        f"HistoryRow correction {events[3]['event_id']!r} is invalid: "
+        f"event violates {','.join(expected)}"
+    )
+
+
+def test_validate_each_event_matches_validate_event_per_event(
+    tmp_path: Path, monkeypatch
+):
+    events = _corrected_pairs(tmp_path, 3)
+    ok, bad_type, later_ok, owner, bad_outcome = (
+        events[1], copy.deepcopy(events[3]), events[5],
+        copy.deepcopy(events[1]), copy.deepcopy(events[0]),
+    )
+    bad_type["producer"]["source"] = "bogus-source"
+    owner["reason"] = "copied from /home/someone/notes"
+    bad_outcome["outcome"] = "bogus-outcome"
+    mixed = [ok, bad_type, later_ok, owner, bad_outcome]
+    known = {event["event_id"] for event in events}
+    expected = [ledger.validate_event(event, known_ids=known) for event in mixed]
+    assert [bool(codes) for codes in expected] == [False, True, False, True, True]
+
+    runs = _count_checker_runs(monkeypatch)
+    assert list(ledger.validate_each_event(mixed, known_ids=known)) == expected
+    # The checker stops at its first refused line, so the three lines after it
+    # are each checked again on their own.
+    assert runs == [5, 1, 1, 1]
+
+    runs.clear()
+    clean = [ok, later_ok, events[0]]
+    assert list(ledger.validate_each_event(clean, known_ids=known)) == [[], [], []]
+    assert runs == [3]
+
+
+def test_validate_each_event_reuses_only_an_exactly_accepted_line(
+    tmp_path: Path, monkeypatch
+):
+    events = _corrected_pairs(tmp_path, 1)
+    accepted = events[1]
+    changed = copy.deepcopy(accepted)
+    changed["producer"]["source"] = "bogus-source"
+    known = {event["event_id"] for event in events}
+    expected = ledger.validate_event(changed, known_ids=known)
+    assert expected
+    lines = frozenset({ledger.shared_type_line(accepted)})
+
+    runs = _count_checker_runs(monkeypatch)
+    assert list(ledger.validate_each_event(
+        [accepted], known_ids=known, accepted_lines=lines,
+    )) == [[]]
+    assert runs == []
+    # Reuse is keyed by the exact line, so a changed event is checked again.
+    assert list(ledger.validate_each_event(
+        [changed], known_ids=known, accepted_lines=lines,
+    )) == [expected]
+    assert runs == [1]
+
+
 def _producer_selector_row(root: Path, **changes) -> dict:
     # Data-only event/selection fixture, not a qualified finalized-run proof.
     return {
