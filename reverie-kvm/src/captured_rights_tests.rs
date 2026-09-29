@@ -608,6 +608,411 @@ fn captured_rights_failed_staging_and_unknown_tokens_do_not_publish_metadata() {
 }
 
 #[test]
+fn captured_rights_ofd_query_selection_rejects_errors_and_contradictory_controls() {
+    use PhysicalStdioOfdQuery::Fcntl;
+    use PhysicalStdioOfdQuery::Kcmp;
+
+    assert_eq!(Fcntl.decode_result(1), Ok(true));
+    assert_eq!(Fcntl.decode_result(0), Ok(false));
+    assert_eq!(Kcmp.decode_result(0), Ok(true));
+    for result in 1..=3 {
+        assert_eq!(Kcmp.decode_result(result), Ok(false));
+    }
+    for result in [-2, -1, 4, libc::c_long::MAX] {
+        assert_eq!(Fcntl.decode_result(result), Err(negative_errno(libc::EIO)));
+        assert_eq!(Kcmp.decode_result(result), Err(negative_errno(libc::EIO)));
+    }
+    for result in [2, 3] {
+        assert_eq!(Fcntl.decode_result(result), Err(negative_errno(libc::EIO)));
+    }
+
+    // Pure selection controls use synthetic fd numbers only here; successful
+    // product comparisons below always use the real kernel query.
+    let mut calls = Vec::new();
+    assert_eq!(
+        select_physical_stdio_query(7, 9, |method, left, right| {
+            calls.push((method, left, right));
+            Ok(left == right)
+        }),
+        Ok(Fcntl)
+    );
+    assert_eq!(calls, [(Fcntl, 7, 7), (Fcntl, 7, 9)]);
+    calls.clear();
+    assert_eq!(
+        select_physical_stdio_query(7, 9, |method, left, right| {
+            calls.push((method, left, right));
+            if method == Fcntl {
+                Err(negative_errno(libc::EINVAL))
+            } else {
+                Ok(left == right)
+            }
+        }),
+        Ok(Kcmp)
+    );
+    assert_eq!(calls, [(Fcntl, 7, 7), (Kcmp, 7, 7), (Kcmp, 7, 9)]);
+    for errors in [
+        [libc::EINVAL, libc::ENOSYS],
+        [libc::EPERM, libc::EACCES],
+        [libc::EINTR, libc::EBADF],
+    ] {
+        calls.clear();
+        assert_eq!(
+            select_physical_stdio_query(7, 9, |method, left, right| {
+                calls.push((method, left, right));
+                Err(negative_errno(errors[usize::from(method == Kcmp)]))
+            }),
+            Err(errors.map(negative_errno))
+        );
+        assert_eq!(calls, [(Fcntl, 7, 7), (Kcmp, 7, 7)]);
+    }
+    for answer in [false, true] {
+        assert_eq!(
+            select_physical_stdio_query(7, 9, |_, _, _| Ok(answer)),
+            Err([negative_errno(libc::EIO); 2]),
+            "neither always-different nor always-same may qualify"
+        );
+    }
+    for fcntl_answer in [false, true] {
+        assert_eq!(
+            select_physical_stdio_query(7, 9, |method, left, right| {
+                Ok(if method == Fcntl {
+                    fcntl_answer
+                } else {
+                    left == right
+                })
+            }),
+            Ok(Kcmp),
+            "a malformed first method must not prevent exact fallback"
+        );
+    }
+}
+
+// Install only in the exact child below. The filter injects kernel errno for
+// the two identity queries; F_GETFD, fd allocation and all I/O remain native.
+fn capture_deny_ofd_queries_in_child() {
+    assert_eq!(std::env::consts::ARCH, "x86_64");
+    assert_eq!(std::mem::size_of::<usize>(), 8);
+    let instruction = |code: u32, jt, jf, k| libc::sock_filter {
+        code: code as u16,
+        jt,
+        jf,
+        k,
+    };
+    // Linux seccomp_data: nr at 0, arch at 4, args[1] at 24. The command is a
+    // c_int on x86-64. Reject a different audit ABI rather than filtering the
+    // wrong syscall numbers. This child never executes x32 system calls.
+    let load = libc::BPF_LD | libc::BPF_W | libc::BPF_ABS;
+    let equal = libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K;
+    let ret = libc::BPF_RET | libc::BPF_K;
+    let unavailable = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+    let unknown_command = libc::SECCOMP_RET_ERRNO | libc::EINVAL as u32;
+    let mut filter = [
+        instruction(load, 0, 0, 4),
+        instruction(equal, 1, 0, 0xc000_003e),
+        instruction(ret, 0, 0, libc::SECCOMP_RET_KILL_PROCESS),
+        instruction(load, 0, 0, 0),
+        instruction(equal, 0, 1, libc::SYS_kcmp as u32),
+        instruction(ret, 0, 0, unavailable),
+        instruction(equal, 0, 3, libc::SYS_fcntl as u32),
+        instruction(load, 0, 0, 24),
+        instruction(equal, 0, 1, HOST_F_DUPFD_QUERY as u32),
+        instruction(ret, 0, 0, unknown_command),
+        instruction(ret, 0, 0, libc::SECCOMP_RET_ALLOW),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    assert_eq!(
+        unsafe {
+            libc::prctl(
+                libc::PR_SET_NO_NEW_PRIVS,
+                1 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(
+        unsafe {
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER as libc::c_ulong,
+                &program as *const libc::sock_fprog,
+            )
+        },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[test]
+fn captured_rights_unavailable_ofd_query_refuses_every_stdio_topology() {
+    const TEST: &str =
+        "executor::tests::captured_rights_unavailable_ofd_query_refuses_every_stdio_topology";
+    const DONE: &str = "captured rights unavailable identity and closed stdio checked";
+    if !capture_test_child(TEST, DONE) {
+        return;
+    }
+    struct Restore([std::fs::File; 2]);
+    impl Restore {
+        fn restore(&self) {
+            for (fd, file) in [1, 2].into_iter().zip(&self.0) {
+                assert_eq!(unsafe { libc::dup2(file.as_raw_fd(), fd) }, fd);
+            }
+        }
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+    let restore = Restore([1, 2].map(|fd| {
+        let raw = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(raw >= 3);
+        unsafe { std::fs::File::from_raw_fd(raw) }
+    }));
+    let root = TestDir::new();
+    let physical = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(root.0.join("ordinary"))
+        .unwrap();
+    let devnull = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let mut pipe = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let pipe = pipe.map(|raw| unsafe { std::fs::File::from_raw_fd(raw) });
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut m = GuestMemory::new(0, 0x4000).unwrap();
+    let pair = capture_rights_pair(&mut e, &mut m);
+    write_c_string(&mut m, 0xc00, "ordinary");
+    let ordinary = capture_rights_call(
+        &mut e,
+        &m,
+        libc::SYS_open,
+        [0xc00, (libc::O_RDWR | libc::O_CLOEXEC) as u64, 0, 0, 0, 0],
+    ) as i32;
+    assert!(ordinary >= 3);
+    let owner = e.state.capture_owner.as_ref().unwrap().clone();
+    let writer = owner.writer(OutputAlias::Stdout);
+    let uncaptured = test_state(&root.0);
+    assert!(uncaptured.capture_owner.is_none());
+
+    // Qualify on real owned pipes, then close stdio after all fd-allocating
+    // setup. Sendmsg does not install new fds here; restore before recvmsg so
+    // this case proves *still closed*, not a low number reused by receive.
+    qualify_physical_stdio_query(&owner).unwrap();
+    for fd in [1, 2] {
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+        assert_eq!(physical_stdio_is_open(fd), Ok(false));
+    }
+    assert_eq!(capture_rights_send(&mut e, &mut m, pair[0], &[ordinary]), 1);
+    for fd in [1, 2] {
+        assert_eq!(physical_stdio_is_open(fd), Ok(false));
+    }
+    restore.restore();
+    let received = capture_rights_receive(&mut e, &mut m, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(received.len(), 1);
+    assert_eq!(read_guest_bytes::<1>(&m, 0xa00).unwrap(), *b"R");
+    assert_eq!(close(&mut e.state, received[0] as u64), 0);
+
+    capture_deny_ofd_queries_in_child();
+    assert_eq!(
+        PhysicalStdioOfdQuery::Fcntl.same(writer.as_raw_fd(), writer.as_raw_fd()),
+        Err(negative_errno(libc::EINVAL))
+    );
+    assert_eq!(
+        PhysicalStdioOfdQuery::Kcmp.same(writer.as_raw_fd(), writer.as_raw_fd()),
+        Err(negative_errno(libc::ENOSYS))
+    );
+    assert_eq!(
+        qualify_physical_stdio_query(&owner),
+        Err([negative_errno(libc::EINVAL), negative_errno(libc::ENOSYS)])
+    );
+    assert_eq!(unlabelled_capture_carrier(&uncaptured, -1), Ok(false));
+    for topology in [Some(&physical), Some(&devnull), Some(&pipe[1]), None] {
+        for fd in [1, 2] {
+            match topology {
+                Some(file) => assert_eq!(unsafe { libc::dup2(file.as_raw_fd(), fd) }, fd),
+                None => assert_eq!(unsafe { libc::close(fd) }, 0),
+            }
+            assert_eq!(physical_stdio_is_open(fd), Ok(topology.is_some()));
+        }
+        for rights in [&[ordinary][..], &[1, ordinary][..]] {
+            assert_eq!(
+                capture_rights_send(&mut e, &mut m, pair[0], rights),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(
+                capture_rights_count(&e),
+                0,
+                "mixed registration must roll back"
+            );
+            let expected_control = rights_control(rights);
+            let mut actual_control = vec![0; expected_control.len()];
+            m.read(0x500, &mut actual_control).unwrap();
+            assert_eq!(
+                actual_control, expected_control,
+                "guest control is unchanged"
+            );
+            assert_eq!(
+                capture_rights_call(
+                    &mut e,
+                    &m,
+                    libc::SYS_recvfrom,
+                    [pair[1] as u64, 0xa00, 1, libc::MSG_DONTWAIT as u64, 0, 0],
+                ),
+                negative_errno(libc::EAGAIN),
+                "refusal must not queue even the payload"
+            );
+        }
+        for fd in [1, 2] {
+            assert_eq!(physical_stdio_is_open(fd), Ok(topology.is_some()));
+        }
+    }
+    restore.restore();
+    // Authenticated capture tokens still use their earlier route even when
+    // neither identity query is available for ordinary rights.
+    assert_eq!(capture_rights_send(&mut e, &mut m, pair[0], &[1, 2]), 1);
+    assert_eq!(capture_rights_count(&e), 2);
+    let received = capture_rights_receive(&mut e, &mut m, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(received.len(), 2);
+    assert_eq!(capture_rights_count(&e), 0);
+    for (index, fd) in received.into_iter().enumerate() {
+        m.write(0xb00, if index == 0 { b"O" } else { b"E" })
+            .unwrap();
+        assert_eq!(
+            capture_rights_call(&mut e, &m, libc::SYS_write, [fd as u64, 0xb00, 1, 0, 0, 0]),
+            1
+        );
+        assert_eq!(close(&mut e.state, fd as u64), 0);
+    }
+    assert_eq!(e.take_output(), (b"O".to_vec(), b"E".to_vec()));
+    drop(e);
+    drop(restore);
+    eprintln!("{DONE}");
+}
+
+// This positive control uses real guest open/send/receive dispatch. It does
+// not infer that same-inode OFDs are independent from the predicate under test:
+// successful Linux opens create them, and flag/offset isolation is observed.
+fn capture_same_inode_ordinary_transfer(
+    e: &mut ElfExecutor,
+    m: &mut GuestMemory,
+    pair: [i32; 2],
+    path: &str,
+    physical: &std::fs::File,
+) {
+    let before_flags = unsafe { libc::fcntl(physical.as_raw_fd(), libc::F_GETFL) };
+    assert!(before_flags >= 0);
+    let before_offset = unsafe { libc::lseek(physical.as_raw_fd(), 0, libc::SEEK_CUR) };
+    assert!(before_offset >= 0);
+    write_c_string(m, 0xc00, path);
+    let opened = capture_rights_call(
+        e,
+        m,
+        libc::SYS_open,
+        [0xc00, (libc::O_RDWR | libc::O_CLOEXEC) as u64, 0, 0, 0, 0],
+    ) as i32;
+    assert!(opened >= 3);
+    assert_eq!(
+        host_file_key(e.state.files[&opened].as_raw_fd()).unwrap(),
+        host_file_key(physical.as_raw_fd()).unwrap(),
+        "positive control must actually share the physical inode"
+    );
+    assert_eq!(capture_rights_send(e, m, pair[0], &[opened]), 1);
+    let received = capture_rights_receive(e, m, pair[1], libc::MSG_CMSG_CLOEXEC);
+    assert_eq!(received.len(), 1);
+    assert_eq!(read_guest_bytes::<1>(m, 0xa00).unwrap(), *b"R");
+    let received = received[0];
+    for fd in [opened, received] {
+        assert_eq!(output_alias(&e.state, fd), None);
+        assert!(!e.state.capture_descriptions.contains_key(&fd));
+        assert!(!e.state.fdinfo_files.contains_key(&fd));
+        assert_eq!(
+            capture_rights_call(
+                e,
+                m,
+                libc::SYS_fcntl,
+                [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+            ),
+            libc::FD_CLOEXEC as i64
+        );
+    }
+    let changed_flags = capture_rights_flags(e, m, opened) ^ libc::O_APPEND;
+    assert_eq!(
+        capture_rights_call(
+            e,
+            m,
+            libc::SYS_fcntl,
+            [
+                received as u64,
+                libc::F_SETFL as u64,
+                changed_flags as u64,
+                0,
+                0,
+                0
+            ]
+        ),
+        0
+    );
+    assert_eq!(capture_rights_flags(e, m, opened), changed_flags);
+    assert_eq!(capture_rights_flags(e, m, received), changed_flags);
+    let expected_offset =
+        if capture_native_stat(physical.as_raw_fd()).st_mode & libc::S_IFMT == libc::S_IFREG {
+            7
+        } else {
+            0
+        };
+    assert_eq!(
+        capture_rights_call(
+            e,
+            m,
+            libc::SYS_lseek,
+            [received as u64, 7, libc::SEEK_SET as u64, 0, 0, 0]
+        ),
+        expected_offset
+    );
+    assert_eq!(
+        capture_rights_call(
+            e,
+            m,
+            libc::SYS_lseek,
+            [opened as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+        ),
+        expected_offset
+    );
+    assert_eq!(
+        unsafe { libc::fcntl(physical.as_raw_fd(), libc::F_GETFL) },
+        before_flags
+    );
+    assert_eq!(
+        unsafe { libc::lseek(physical.as_raw_fd(), 0, libc::SEEK_CUR) },
+        before_offset
+    );
+    for fd in [opened, received] {
+        assert_eq!(
+            capture_rights_call(e, m, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
+    assert_eq!(capture_rights_count(e), 0);
+}
+
+#[test]
 fn captured_rights_never_mutate_shared_physical_stdout_stderr() {
     const TEST: &str =
         "executor::tests::captured_rights_never_mutate_shared_physical_stdout_stderr";
@@ -641,11 +1046,30 @@ fn captured_rights_never_mutate_shared_physical_stdout_stderr() {
     }
     let before = unsafe { libc::fcntl(physical.as_raw_fd(), libc::F_GETFL) };
     let metadata_before = capture_native_stat(physical.as_raw_fd());
-    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut state = test_state(&root.0);
+    state.stdin = Some(physical.try_clone().unwrap());
+    let mut e = ElfExecutor::new(state, true);
     let mut m = GuestMemory::new(0, 0x4000).unwrap();
     let pair = capture_rights_pair(&mut e, &mut m);
+    capture_same_inode_ordinary_transfer(&mut e, &mut m, pair, "physical", &physical);
+    // Explicit stdin remains a guest input even under capture. A true
+    // physical OFD alias must not be donated through that ordinary-fd route.
+    assert_eq!(
+        capture_rights_send(&mut e, &mut m, pair[0], &[0]),
+        negative_errno(libc::ENOSYS)
+    );
+    assert_eq!(capture_rights_count(&e), 0);
+    assert_eq!(
+        capture_rights_call(
+            &mut e,
+            &m,
+            libc::SYS_recvfrom,
+            [pair[1] as u64, 0xa00, 1, libc::MSG_DONTWAIT as u64, 0, 0],
+        ),
+        negative_errno(libc::EAGAIN)
+    );
     // Deliberately remove provenance from an actual physical duplicate. Its
-    // matching inode is refusal evidence, never authority to restore capture.
+    // shared OFD is refusal evidence, never authority to restore capture.
     let unlabelled =
         insert_file_with_flags(&mut e.state, physical.try_clone().unwrap(), false, None) as i32;
     let mut control = rights_control(&[unlabelled]);
@@ -716,6 +1140,19 @@ fn captured_rights_never_mutate_shared_physical_stdout_stderr() {
             metadata_before.st_size
         )
     );
+    drop(e);
+    // A device inode is shared by independent opens too; it is not an OFD.
+    let devnull = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    for fd in [1, 2] {
+        assert_eq!(unsafe { libc::dup2(devnull.as_raw_fd(), fd) }, fd);
+    }
+    let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let pair = capture_rights_pair(&mut e, &mut m);
+    capture_same_inode_ordinary_transfer(&mut e, &mut m, pair, "/dev/null", &devnull);
     drop(e);
     drop(restore);
     eprintln!("{DONE}");
