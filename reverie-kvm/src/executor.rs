@@ -36038,13 +36038,15 @@ mod tests {
         PayloadAliasesInput,
         NamedZeroCapacity,
         PayloadAliasesNameLength,
+        NameBufferFault,
+        NameLengthFault,
     }
 
     impl ReceiveHeaderCase {
         fn layout(self, batch: bool) -> (usize, Option<usize>) {
             let page = PAGE_SIZE as usize;
             match self {
-                Self::ReadonlyInput => (page - 40, Some(0)),
+                Self::ReadonlyInput | Self::NameLengthFault => (page - 40, Some(0)),
                 Self::ReadonlyPadding => (page - if batch { 60 } else { 52 }, Some(page)),
                 Self::FlagsFault => (page - 48, Some(page)),
                 Self::FlagsCrossFault => (page - 50, Some(page)),
@@ -36053,7 +36055,8 @@ mod tests {
                 Self::MessageLengthCrossFault => (page - 58, Some(page)),
                 Self::PayloadAliasesInput
                 | Self::NamedZeroCapacity
-                | Self::PayloadAliasesNameLength => (128, None),
+                | Self::PayloadAliasesNameLength
+                | Self::NameBufferFault => (128, None),
             }
         }
 
@@ -36064,7 +36067,10 @@ mod tests {
         fn named_peer(self) -> bool {
             matches!(
                 self,
-                Self::NamedZeroCapacity | Self::PayloadAliasesNameLength
+                Self::NamedZeroCapacity
+                    | Self::PayloadAliasesNameLength
+                    | Self::NameBufferFault
+                    | Self::NameLengthFault
             )
         }
 
@@ -36116,13 +36122,21 @@ mod tests {
         // with Rust/C padding whose initialization cannot be assumed.
         assert_eq!(std::mem::size_of::<libc::msghdr>(), 56);
         assert_eq!(std::mem::size_of::<libc::mmsghdr>(), 64);
+        assert_eq!(std::mem::offset_of!(libc::msghdr, msg_namelen), 8);
+        assert_eq!(std::mem::size_of::<libc::socklen_t>(), 4);
         assert_eq!(std::mem::offset_of!(libc::msghdr, msg_controllen), 40);
         assert_eq!(std::mem::offset_of!(libc::msghdr, msg_flags), 48);
         assert_eq!(std::mem::offset_of!(libc::mmsghdr, msg_len), 56);
         let mut header = [0xa5; 64];
         header[0..8].copy_from_slice(&name.to_ne_bytes());
         header[8..12].copy_from_slice(
-            &(if name == 0 || case.named_peer() {
+            &(if name == 0
+                || matches!(
+                    case,
+                    ReceiveHeaderCase::NamedZeroCapacity
+                        | ReceiveHeaderCase::PayloadAliasesNameLength
+                )
+            {
                 0u32
             } else {
                 64u32
@@ -36160,14 +36174,19 @@ mod tests {
         if let Some(offset) = case.payload_alias_offset() {
             expected[offset as usize..offset as usize + 8].copy_from_slice(&case.wire_payload());
         }
-        if case.has_name() {
+        if case.has_name() && case != ReceiveHeaderCase::NameLengthFault {
+            // A read-only namelen faults before the address copy; a read-only
+            // address faults after this scalar, matching move_addr_to_user.
             // The actual address length is stored even with input capacity zero.
             // The unnamed-peer cases require this before the later flags fault.
             expected[8..12].copy_from_slice(&(expected_address.len() as u32).to_ne_bytes());
         }
         if !matches!(
             case,
-            ReceiveHeaderCase::FlagsFault | ReceiveHeaderCase::FlagsCrossFault
+            ReceiveHeaderCase::FlagsFault
+                | ReceiveHeaderCase::FlagsCrossFault
+                | ReceiveHeaderCase::NameBufferFault
+                | ReceiveHeaderCase::NameLengthFault
         ) {
             expected[48..52].copy_from_slice(&libc::MSG_CMSG_CLOEXEC.to_ne_bytes());
             if case != ReceiveHeaderCase::ControlLengthFaultAfterFlags {
@@ -36298,6 +36317,22 @@ mod tests {
         let mut payload = [0xa5; 8];
         let mut control = [0xa5; 64];
         let mut name = [0xa5; 64];
+        let name_fault = (case == ReceiveHeaderCase::NameBufferFault).then(NativeFaultBuffer::new);
+        let name_pointer = if let Some(buffer) = &name_fault {
+            // SAFETY: the owned first page is writable during initialization.
+            unsafe {
+                std::ptr::copy_nonoverlapping(name.as_ptr(), buffer.mapping.cast(), name.len());
+            }
+            // Keep the whole input capacity readable, so only name copyout faults.
+            // SAFETY: the first page is aligned and belongs to this mapping.
+            assert_eq!(
+                unsafe { libc::mprotect(buffer.mapping, PAGE_SIZE as usize, libc::PROT_READ) },
+                0
+            );
+            buffer.mapping.cast::<u8>()
+        } else {
+            name.as_mut_ptr()
+        };
         let mut iov = libc::iovec {
             iov_base: if let Some(alias) = case.payload_alias_offset() {
                 // SAFETY: each alias selects eight writable bytes in this header.
@@ -36311,7 +36346,7 @@ mod tests {
             std::ptr::from_mut(&mut iov) as usize as u64,
             control.as_mut_ptr() as usize as u64,
             if case.has_name() {
-                name.as_mut_ptr() as usize as u64
+                name_pointer as usize as u64
             } else {
                 0
             },
@@ -36369,6 +36404,10 @@ mod tests {
         let mut after = [0; 64];
         // SAFETY: all pages stay readable even in fault cases.
         unsafe { std::ptr::copy_nonoverlapping(header, after.as_mut_ptr(), after.len()) };
+        if name_fault.is_some() {
+            // SAFETY: the full name buffer remains readable after the failed copyout.
+            unsafe { std::ptr::copy_nonoverlapping(name_pointer, name.as_mut_ptr(), name.len()) };
+        }
         let observed = ReceiveHeaderObservation {
             result,
             header: after,
@@ -36432,7 +36471,19 @@ mod tests {
                 .map_user_permissions(page as u64, PAGE_SIZE, true, false)
                 .unwrap();
         }
+        if case == ReceiveHeaderCase::NameBufferFault {
+            memory
+                .map_user_permissions(NAME, PAGE_SIZE, true, false)
+                .unwrap();
+        }
         memory.enable_user_access();
+        if case == ReceiveHeaderCase::NameBufferFault {
+            assert_eq!(
+                memory.user().user_writable_prefix(NAME, 64).unwrap(),
+                0,
+                "mediated receive header {case:?}: readonly name geometry"
+            );
+        }
         if let Some(page) = readonly {
             assert_eq!(
                 memory
@@ -36507,6 +36558,10 @@ mod tests {
                 ReceiveHeaderCase::MessageLengthCrossFault,
             ]);
         }
+        cases.extend([
+            ReceiveHeaderCase::NameBufferFault,
+            ReceiveHeaderCase::NameLengthFault,
+        ]);
         for case in cases {
             let native = native_receive_header_case(case, batch);
             let mediated = mediated_receive_header_case(case, batch);
