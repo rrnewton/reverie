@@ -325,7 +325,8 @@ fn assert_baseline_is_not_vacuous(
     );
     // The fixture keeps SIGCHLD blocked from before each fork and vfork until
     // after the matching waitpid, so each child's SIGCHLD is delivered at a
-    // fixed point: right after the parent's wait4 stop, never before it.
+    // fixed point: when the rt_sigprocmask that follows the parent's wait4
+    // restores the old mask, never before the wait4.
     let root_stops = ptrace
         .stops
         .get(root)
@@ -335,13 +336,13 @@ fn assert_baseline_is_not_vacuous(
         .filter(|stop| *stop == "Signal(SIGCHLD)")
         .count();
     let sigchld_after_wait4 = root_stops
-        .windows(2)
-        .filter(|pair| pair[0] == "seccomp 61" && pair[1] == "Signal(SIGCHLD)")
+        .windows(3)
+        .filter(|stops| stops == &["seccomp 61", "seccomp 14", "Signal(SIGCHLD)"])
         .count();
     assert_eq!(
         (sigchld_stops, sigchld_after_wait4),
         (2, 2),
-        "root's two SIGCHLD stops must each follow its wait4 stop: {root_stops:?}"
+        "root's two SIGCHLD stops must each follow its wait4 and unblock stops: {root_stops:?}"
     );
     let mut expected_tasks = vec![root.to_owned(), fork.to_owned(), vfork.to_owned()];
     expected_tasks.sort();
