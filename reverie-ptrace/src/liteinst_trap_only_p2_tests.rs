@@ -748,6 +748,7 @@ struct P2Options {
     displace_hop_exit_rip: bool,
     forget_clone_flags: bool,
     flip_recorded_clone_vm: bool,
+    flip_recorded_clone_vfork: bool,
     /// `TP_ORDER` in the guest's environment (see the fixture's
     /// `order_delay`).
     order: Option<&'static str>,
@@ -777,6 +778,8 @@ enum P2Hook {
     ForgetCloneFlags,
     /// `liteinst_trap_only_flip_recorded_clone_vm_for_test`.
     FlipRecordedCloneVm,
+    /// `liteinst_trap_only_flip_recorded_clone_vfork_for_test`.
+    FlipRecordedCloneVfork,
 }
 
 /// `run_p2_with`, with a test-only control and with `TP_ORDER` set in the
@@ -793,6 +796,7 @@ async fn run_p2_env(
         skip_patch_write: hook == P2Hook::SkipPatchWrite,
         forget_clone_flags: hook == P2Hook::ForgetCloneFlags,
         flip_recorded_clone_vm: hook == P2Hook::FlipRecordedCloneVm,
+        flip_recorded_clone_vfork: hook == P2Hook::FlipRecordedCloneVfork,
         order,
         ..Default::default()
     };
@@ -829,6 +833,9 @@ async fn run_p2_options(
         }
         if options.flip_recorded_clone_vm {
             builder = builder.liteinst_trap_only_flip_recorded_clone_vm_for_test();
+        }
+        if options.flip_recorded_clone_vfork {
+            builder = builder.liteinst_trap_only_flip_recorded_clone_vfork_for_test();
         }
         if options.displace_hop_exit_rip {
             builder = builder.liteinst_trap_only_displace_hop_exit_rip_for_test();
@@ -1882,6 +1889,93 @@ async fn trap_only_p2_t6c_self_write_and_mremap_destination() {
     }
 }
 
+/// Whether this host's kernel lets a process pass `MADV_DONTNEED` for
+/// itself to `process_madvise` (Linux 6.13 and later; older kernels accept
+/// only the advice that newer ones allow for another address space, and
+/// fail with EINVAL).
+fn process_madvise_dontneed_on_self() -> bool {
+    // SAFETY: an anonymous private page of our own, a pidfd for ourselves,
+    // and an iovec that names only that page; all are released below.
+    unsafe {
+        let page = libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        assert_ne!(page, libc::MAP_FAILED, "map a probe page");
+        let pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0);
+        assert!(
+            pidfd >= 0,
+            "pidfd_open: {}",
+            std::io::Error::last_os_error()
+        );
+        let iov = libc::iovec {
+            iov_base: page,
+            iov_len: 4096,
+        };
+        let result = libc::syscall(
+            libc::SYS_process_madvise,
+            pidfd,
+            &iov as *const libc::iovec,
+            1,
+            libc::MADV_DONTNEED,
+            0,
+        );
+        let error = std::io::Error::last_os_error();
+        libc::close(pidfd as libc::c_int);
+        libc::munmap(page, 4096);
+        match result {
+            4096 => true,
+            -1 if error.raw_os_error() == Some(libc::EINVAL) => false,
+            _ => panic!("process_madvise probe returned {result}: {error}"),
+        }
+    }
+}
+
+/// T6c: `process_madvise` restores every site of the caller's table before
+/// it runs, since the tracer reads neither its iovec array nor which process
+/// its pidfd names: here `MADV_DONTNEED` through a pidfd for the guest
+/// itself, on the fixture's own patched text page, also restores the site of
+/// a JIT page the call does not name. The call's result depends on the host
+/// kernel (see `process_madvise_dontneed_on_self`); the restore does not.
+/// The runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6c_process_madvise_restores_every_site() {
+    let expected_call = if process_madvise_dontneed_on_self() {
+        "process_madvise ret=4096 errno=0"
+    } else {
+        "process_madvise ret=-1 errno=22"
+    };
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("process_madvise").await;
+    assert_report_has(
+        &ptrace,
+        &[
+            "pm jit 2 pid=1",
+            expected_call,
+            "after process_madvise site bytes 0f 05",
+            "after process_madvise jit bytes 0f 05",
+            "pm jit2 2 pid=1",
+            "done",
+        ],
+    );
+    let mapping = Some(SiteState::Retired(RetiredReason::Mapping));
+    for run in [&trap_only, &trap_only_tail] {
+        let root = run.root_table.as_ref().expect("a trap-only root table");
+        assert_eq!(root.state(), TableState::Patchable);
+        // The page the call names, and a JIT page it does not name.
+        for site in [run.site, 0x5200_0005] {
+            assert_eq!(root.site_state(site), mapping, "site {site:#x}");
+        }
+        assert!(
+            lifecycle_has(run, "mapping process_madvise restored=").unwrap() >= 2,
+            "the call restored both sites"
+        );
+    }
+}
+
 /// T6a, undecided: when a new-child stop has no recorded clone flags (a
 /// Tool-injected clone; here the test makes the tracer drop them), every
 /// site is restored in both tasks and they share the disabled table. The
@@ -2045,6 +2139,137 @@ async fn trap_only_p2_t6a_clone_flags_disagreeing_with_kcmp_take_the_undecided_p
             Some(SiteState::Retired(RetiredReason::MultiTask))
         );
         assert_eq!(trap_only.patched_sites, 0);
+    }
+}
+
+/// T6a, `CLONE_VFORK` cross-check: when the clone flags recorded at the
+/// creating stop disagree with the kind of new-child stop that arrives
+/// (here the test flips `CLONE_VFORK` in what the new-child stop sees; the
+/// `CLONE_VM` half and kcmp agree), the stop takes the undecided path for
+/// each kind of child.
+/// - A real fork recorded as a vfork (flags 0x4000): the creating stop left
+///   the site live, so the new-child stop restores it in both copies of the
+///   address space, and both read the original bytes; the two tasks share
+///   one disabled table. Believing the recorded flags instead would give the
+///   child a fork table with a live site.
+/// - A real vfork recorded without `CLONE_VFORK` (flags 0x100): the creating
+///   stop left the site live, so the new-child stop restores it before the
+///   child runs, and the child, which shares the address space, reads the
+///   original bytes. Believing the recorded flags instead would fail the run
+///   with live sites in a table shared by a second executor.
+/// - A real thread recorded as a vfork: the creating stop already restored
+///   every site, so nothing is left to restore, and the thread shares the
+///   parent's disabled table.
+///
+/// The runs equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6a_clone_flags_disagreeing_with_the_vfork_stop_take_the_undecided_path() {
+    let run = |mode, patching, tail| async move {
+        run_p2_env(mode, patching, tail, P2Hook::FlipRecordedCloneVfork, None)
+            .await
+            .unwrap_or_else(|error| panic!("{mode} {patching:?} tail={tail} failed: {error}"))
+    };
+    let assert_one_disabled_shared_table = |run: &P2Run, what: &str| {
+        assert!(tables(run, "fork").is_empty(), "{what}: no fork table");
+        let shared = tables(run, "share");
+        assert_eq!(
+            shared.len(),
+            1,
+            "{what}: the child shares the parent's table"
+        );
+        assert_eq!(
+            shared[0].state(),
+            TableState::Disabled(DisabledReason::MultiTask),
+            "{what}"
+        );
+        assert_eq!(
+            run.table_state,
+            Some(TableState::Disabled(DisabledReason::MultiTask)),
+            "{what}"
+        );
+        assert_eq!(
+            run.site_state,
+            Some(SiteState::Retired(RetiredReason::MultiTask)),
+            "{what}"
+        );
+        assert_eq!(run.patched_sites, 0, "{what}");
+    };
+    for tail in [false, true] {
+        // A real fork, recorded as a vfork.
+        let ptrace = run("fork_undecided", None, tail).await;
+        let trap_only = run("fork_undecided", Some(SitePatching::On), tail).await;
+        assert_equal_runs(&trap_only, &ptrace);
+        assert_eq!(ptrace.status, ExitStatus::Exited(0));
+        assert_report_has(
+            &ptrace,
+            &[
+                "undecided fork child site bytes 0f 05",
+                "undecided fork child exited=1 code=7",
+                "undecided fork parent site bytes 0f 05",
+                "done",
+            ],
+        );
+        let restored = lifecycle_has(
+            &trap_only,
+            "new-child Fork undecided recorded=Some(4000) restored=",
+        );
+        assert!(
+            restored.unwrap() >= 1,
+            "the mismatched fork restored the live site"
+        );
+        assert_one_disabled_shared_table(&trap_only, "fork");
+
+        // A real vfork, recorded without CLONE_VFORK.
+        let ptrace = run("vfork_undecided", None, tail).await;
+        let trap_only = run("vfork_undecided", Some(SitePatching::On), tail).await;
+        assert_equal_runs(&trap_only, &ptrace);
+        assert_eq!(ptrace.status, ExitStatus::Exited(0));
+        assert_report_has(
+            &ptrace,
+            &[
+                "undecided vfork child site bytes 0f 05",
+                "undecided vfork child exited=1 code=7",
+                "undecided vfork parent site bytes 0f 05",
+                "done",
+            ],
+        );
+        let restored = lifecycle_has(
+            &trap_only,
+            "new-child Vfork undecided recorded=Some(100) restored=",
+        );
+        assert!(
+            restored.unwrap() >= 1,
+            "the mismatched vfork restored the live site before the child ran"
+        );
+        assert_one_disabled_shared_table(&trap_only, "vfork");
+
+        // A real thread, recorded as a vfork.
+        let ptrace = run("thread_mismatch", None, tail).await;
+        let trap_only = run("thread_mismatch", Some(SitePatching::On), tail).await;
+        assert_equal_runs(&trap_only, &ptrace);
+        assert_eq!(ptrace.status, ExitStatus::Exited(0));
+        assert_report_has(
+            &ptrace,
+            &[
+                "mismatch thread ret=1",
+                "mismatch thread parent site bytes 0f 05",
+                "done",
+            ],
+        );
+        let restored = lifecycle_has(&trap_only, "creating clone flags=0x250f00 restored=");
+        assert!(
+            restored.unwrap() >= 1,
+            "the creating stop restored the live site"
+        );
+        assert_eq!(
+            lifecycle_has(
+                &trap_only,
+                "new-child Clone undecided recorded=Some(254f00) restored=",
+            ),
+            Some(0),
+            "the creating stop left nothing to restore"
+        );
+        assert_one_disabled_shared_table(&trap_only, "thread");
     }
 }
 
