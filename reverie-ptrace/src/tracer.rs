@@ -612,6 +612,9 @@ async fn finish_ordinary_terminal(
     let mut exit_status = None;
     // Whether this path has already failed the session for a non-exit stop.
     let mut unexpected_stop_failed = false;
+    // Whether this path has already failed the session for a fork, vfork or
+    // clone stop queued before the exit stop.
+    let mut new_child_refused = false;
     #[cfg(test)]
     record_fatal_phase_for_test(|| format!("finish_ordinary_terminal entered: {current:?}"));
     loop {
@@ -671,6 +674,18 @@ async fn finish_ordinary_terminal(
                                 continue;
                             }
                         }
+                    }
+                    // A fork, vfork or clone stop queued before this exit
+                    // stop names a live child that no status still reports:
+                    // its event message now reads the exit status, and after
+                    // the resume below it reads nothing. Fail the session
+                    // once with that typed refusal. The stop stays queued, so
+                    // the wait below meets its death rather than a guessed PID.
+                    if let Err(refusal) = stopped.superseded_new_child()
+                        && !new_child_refused
+                    {
+                        new_child_refused = true;
+                        session.fail(anyhow::Error::new(refusal).into());
                     }
                     #[cfg(test)]
                     if let Some(bypass) =
