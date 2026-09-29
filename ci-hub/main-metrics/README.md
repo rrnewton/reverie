@@ -32,6 +32,20 @@ Two refusals are deliberate:
   `rrnewton/hermit`, while `reverie` values use `rrnewton/reverie`. An unknown
   repository, unavailable object, or non-commit object refuses the whole
   population; the refusal names the repository with every object ID.
+  One exception to "unavailable refuses": a commit this checkout lacks
+  and that GitHub itself reports as nonexistent ("No commit found for SHA",
+  HTTP 404 or 422, for that exact SHA in that repository) cannot be on
+  main. Its rows are excluded, counted, and named in the output
+  (`absent_upstream_rows`, `absent_upstream_shas`). Anything short of that
+  answer still refuses: a timeout, a transport, authentication or rate-limit
+  failure, a 5xx, a repository-level "Not Found", HTTP 200 (the commit exists
+  and just needs fetching), or no `FLEET_REAL_GH` route. Only the affirmative
+  answers are cached, for 7 days, in
+  `$DEV_HERMIT_PARENT/ignored/ci-hub/main-metrics/github-absent-commits.json`.
+  Lookups stop at the first failure and use at most 10 s per run; nine cold
+  lookups took 3.22 s on devbig014 and 0 s once cached. That does not keep the
+  gate within tick-hub's 30 s kill: loading the ledger alone measured 124 s on
+  a busy host. See https://github.com/rrnewton/dev-hermit/issues/400.
 - **`INSUFFICIENT` instead of a guess.** A wall time without its concurrency is
   uninterpretable. Median wall measured **490s at 0–3 concurrent validates and
   852s at 14+**, so comparing two unconditioned samples can manufacture a 74%

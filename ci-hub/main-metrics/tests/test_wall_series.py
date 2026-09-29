@@ -228,7 +228,8 @@ def test_main_commits_admits_on_main_and_refuses_off_main(monkeypatch):
         ws.HERMIT_REPOSITORY,
     )
 
-    assert found == {onmain}
+    assert found.on_main == {onmain}
+    assert found.absent_upstream == {}
     assert len(calls) == 2
 
 
@@ -268,7 +269,7 @@ def test_main_commits_uses_two_subprocesses_for_the_whole_population(monkeypatch
 
     found = ws.main_commits(Path("/repo"), commits, ws.HERMIT_REPOSITORY)
 
-    assert found == onmain
+    assert found.on_main == onmain
     assert len(calls) == 2
     assert calls[0][0] == [
         "git", "-C", "/repo", "rev-list", "origin/main",
@@ -328,9 +329,9 @@ def test_rows_on_main_queries_each_commit_in_its_own_repository(monkeypatch):
     reverie_sha = "2" * 40
     calls = []
 
-    def main_commits(repo, commits, repository, ref="origin/main"):
+    def main_commits(repo, commits, repository, ref="origin/main", upstream=None):
         calls.append((repo, commits, repository, ref))
-        return set(commits)
+        return ws.Ancestry(set(commits))
 
     monkeypatch.setattr(ws, "main_commits", main_commits)
     rows = [
@@ -343,7 +344,7 @@ def test_rows_on_main_queries_each_commit_in_its_own_repository(monkeypatch):
     assert ws.rows_on_main(rows, {
         ws.HERMIT_REPOSITORY: Path("/hermit"),
         ws.REVERIE_REPOSITORY: Path("/reverie"),
-    }) == rows
+    }).rows == rows
     assert calls == [
         (Path("/hermit"), {hermit_sha}, ws.HERMIT_REPOSITORY, "origin/main"),
         (Path("/reverie"), {reverie_sha}, ws.REVERIE_REPOSITORY, "origin/main"),
@@ -353,9 +354,10 @@ def test_rows_on_main_queries_each_commit_in_its_own_repository(monkeypatch):
 def test_rows_on_main_keeps_same_sha_separate_between_repositories(monkeypatch):
     shared_sha = "3" * 40
 
-    def main_commits(_repo, commits, repository, ref="origin/main"):
+    def main_commits(_repo, commits, repository, ref="origin/main", upstream=None):
         assert commits == {shared_sha}
-        return set() if repository == ws.HERMIT_REPOSITORY else {shared_sha}
+        return ws.Ancestry(
+            set() if repository == ws.HERMIT_REPOSITORY else {shared_sha})
 
     monkeypatch.setattr(ws, "main_commits", main_commits)
     hermit_row = {"commit": shared_sha, "repo": "hermit"}
@@ -364,7 +366,7 @@ def test_rows_on_main_keeps_same_sha_separate_between_repositories(monkeypatch):
     assert ws.rows_on_main([hermit_row, reverie_row], {
         ws.HERMIT_REPOSITORY: Path("/hermit"),
         ws.REVERIE_REPOSITORY: Path("/reverie"),
-    }) == [reverie_row]
+    }).rows == [reverie_row]
 
 
 def test_rows_on_main_checks_every_repository_before_refusing(monkeypatch):
@@ -372,7 +374,7 @@ def test_rows_on_main_checks_every_repository_before_refusing(monkeypatch):
     reverie_sha = "8" * 40
     calls = []
 
-    def main_commits(_repo, commits, repository, ref="origin/main"):
+    def main_commits(_repo, commits, repository, ref="origin/main", upstream=None):
         calls.append((repository, commits))
         raise RuntimeError(
             f"main ancestry check refused 1 unavailable object(s): "
@@ -482,6 +484,374 @@ def test_both_gate_commands_emit_refusal_when_ancestry_refuses(monkeypatch, caps
     output = capsys.readouterr().out
     assert "state=refused" in output
     assert "summary=REFUSED: main ancestry check refused" in output
+
+
+# ------------------------------------------ commits GitHub says do not exist
+#
+# From 2026-09-25 the ledger carried 9 reverie rows for commits validated in
+# local slots (8 on devbig030, 1 on devbig014) and never pushed. The checkout
+# can never fetch them, so the ancestry
+# check refused every tick and this gate could not produce a wall-time verdict.
+# GitHub's affirmative "No commit found" now excludes such a row as not on main;
+# every other outcome still refuses. The fixtures below copy the bytes gh 2.x
+# printed on 2026-09-28 for `gh api --include repos/rrnewton/reverie/commits/<sha>`
+# (first line LF, header lines CRLF, blank CRLF separator).
+
+MAIN_HERMIT = "a1" * 20
+MAIN_REVERIE = "b2" * 20
+LOCAL_ONLY = "c3" * 20  # validated on some host, never pushed
+UNFETCHED = "d4" * 20
+
+
+def _http(status_line, body):
+    return (f"{status_line}\nContent-Type: application/json; charset=utf-8\r\n"
+            f"X-Ratelimit-Remaining: 4975\r\n\r\n{json.dumps(body)}")
+
+
+def gh_absent(sha, status=422):
+    reason = {404: "Not Found", 422: "Unprocessable Entity"}[status]
+    return (1, _http(f"HTTP/2.0 {status} {reason}", {
+        "message": f"No commit found for SHA: {sha}",
+        "documentation_url": "https://docs.github.com/rest/commits/commits#get-a-commit",
+        "status": str(status)}),
+        f"gh: No commit found for SHA: {sha} (HTTP {status})")
+
+
+GH_REPO_NOT_FOUND = (1, _http("HTTP/2.0 404 Not Found", {"message": "Not Found"}),
+                     "gh: Not Found (HTTP 404)")
+GH_TRANSPORT = (1, "", 'error connecting to api.github.com\n'
+                'check your internet connection or https://githubstatus.com')
+GH_BAD_GATEWAY = (1, _http("HTTP/2.0 502 Bad Gateway", {"message": "Server Error"}),
+                  "gh: Server Error (HTTP 502)")
+GH_RATE_LIMIT = (1, _http("HTTP/2.0 403 Forbidden", {
+    "message": "API rate limit exceeded for user ID 1."}),
+    "gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+GH_BAD_CREDENTIALS = (1, _http("HTTP/2.0 401 Unauthorized", {
+    "message": "Bad credentials"}), "gh: Bad credentials (HTTP 401)")
+
+
+def gh_present(sha):
+    return (0, _http("HTTP/2.0 200 OK", {"sha": sha}), "")
+
+
+class FakeHost:
+    """Fake git for both checkouts plus a scripted GitHub.
+
+    ``on_main`` and ``missing`` are per checkout path; ``github`` maps a SHA to
+    a (returncode, stdout, stderr) triple, an exception instance to raise, or is
+    absent -- in which case asking GitHub fails the test.
+    """
+
+    def __init__(self, monkeypatch, tmp_path, *, on_main, missing, github):
+        self.on_main = on_main
+        self.missing = missing
+        self.github = github
+        self.gh_calls = []
+        gh = tmp_path / "gh"
+        gh.write_text("#!/bin/sh\nexit 99\n")
+        gh.chmod(0o755)
+        monkeypatch.setenv("FLEET_REAL_GH", str(gh))
+        monkeypatch.setattr(ws.subprocess, "run", self.run)
+
+    def run(self, argv, **kwargs):
+        if argv[0] == "with-proxy":
+            self.gh_calls.append(argv)
+            assert argv[2:4] == ["api", "--include"], argv
+            sha = argv[4].rsplit("/", 1)[1]
+            assert argv[4] == f"repos/{ws.REVERIE_REPOSITORY}/commits/{sha}", argv
+            assert kwargs.get("timeout"), "a GitHub lookup must be time-bounded"
+            if sha not in self.github:
+                raise AssertionError(f"GitHub must not be asked about {sha}")
+            answer = self.github[sha]
+            if isinstance(answer, BaseException):
+                raise answer
+            rc, stdout, stderr = answer
+            return subprocess.CompletedProcess(argv, rc, stdout=stdout, stderr=stderr)
+        checkout = argv[2]
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="".join(f"{c}\n" for c in self.on_main.get(checkout, ())),
+                stderr="")
+        assert "cat-file" in argv, argv
+        missing = self.missing.get(checkout, set())
+        lines = [f"{c} missing" if c in missing else "commit"
+                 for c in kwargs["input"].splitlines()]
+        return subprocess.CompletedProcess(argv, 0, stdout="\n".join(lines) + "\n",
+                                           stderr="")
+
+
+def _rows():
+    return [
+        ledger_row(MAIN_HERMIT, "2026-09-26T00:00:00Z"),
+        ledger_row(MAIN_HERMIT, "2026-09-26T01:00:00Z"),
+        {**ledger_row(MAIN_REVERIE, "2026-09-26T02:00:00Z"), "repo": "reverie"},
+        {**ledger_row(LOCAL_ONLY, "2026-09-26T03:00:00Z"), "repo": "reverie"},
+        {**ledger_row(LOCAL_ONLY, "2026-09-26T04:00:00Z"), "repo": "rrnewton/reverie"},
+    ]
+
+
+def _host(monkeypatch, tmp_path, github, *, missing=(LOCAL_ONLY,)):
+    return FakeHost(monkeypatch, tmp_path,
+                    on_main={"/hermit": [MAIN_HERMIT], "/reverie": [MAIN_REVERIE]},
+                    missing={"/reverie": set(missing)}, github=github)
+
+
+def _build(monkeypatch, cache, rows=None):
+    rows = _rows() if rows is None else rows
+    monkeypatch.setattr(ws, "load_population", lambda _path: (rows, len(rows), 0))
+    return ws.build(Path("/ledger"), Path("/hermit"), True, "full", "pass",
+                    Path("/reverie"), cache)
+
+
+def _gate_fields(monkeypatch, capsys, cache, *extra):
+    rc = ws.main(["--ledger", "/ledger", "--repo", "/hermit", "--reverie-repo",
+                  "/reverie", "--absent-cache", str(cache), "--gate-regression",
+                  *extra])
+    lines = capsys.readouterr().out.splitlines()
+    return rc, dict(line.split("=", 1) for line in lines)
+
+
+@pytest.mark.parametrize("status", [422, 404])
+def test_a_commit_github_says_does_not_exist_is_excluded_and_counted(
+        monkeypatch, capsys, tmp_path, status):
+    """The gate stops refusing, excludes the row, and says so in its output."""
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY, status)})
+    monkeypatch.setattr(ws, "load_population", lambda _path: (_rows(), 5, 0))
+
+    rc, fields = _gate_fields(monkeypatch, capsys, tmp_path / "absent.json")
+
+    assert rc == 0, fields
+    assert fields["state"] == "holding", fields
+    assert fields["absent_upstream_rows"] == "2"
+    assert fields["absent_upstream_commits"] == "1"
+    assert fields["absent_upstream_shas"] == f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}"
+    assert fields["github_lookups"] == "1"
+    assert fields["absent_cache_hits"] == "0"
+    # Only the three main rows reach the series.
+    assert fields["n"] == "3"
+    assert host.gh_calls == [[
+        "with-proxy", str(tmp_path / "gh"), "api", "--include",
+        f"repos/{ws.REVERIE_REPOSITORY}/commits/{LOCAL_ONLY}"]]
+
+
+def test_main_rows_still_count_next_to_an_excluded_row(monkeypatch, tmp_path):
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY)})
+    rows = _rows()
+
+    selection = ws.rows_on_main(rows, {
+        ws.HERMIT_REPOSITORY: Path("/hermit"),
+        ws.REVERIE_REPOSITORY: Path("/reverie"),
+    }, ws.UpstreamAbsence(tmp_path / "absent.json"))
+
+    assert selection.rows == rows[:3]
+    assert selection.absent_upstream_rows == 2
+    assert [a.commit for a in selection.absent_upstream] == [LOCAL_ONLY]
+
+    rep = _build(monkeypatch, tmp_path / "absent.json")
+    assert rep["rows_on_main"] == 3
+    assert rep["summary"]["n"] == 3
+    assert rep["summary"]["distinct_commits"] == 2
+    assert rep["rows_absent_upstream"] == 2
+
+
+@pytest.mark.parametrize("answer", [
+    GH_TRANSPORT,
+    subprocess.TimeoutExpired(["gh"], 20),
+    FileNotFoundError(2, "No such file or directory", "with-proxy"),
+    GH_BAD_GATEWAY,
+    GH_RATE_LIMIT,
+    GH_BAD_CREDENTIALS,
+    GH_REPO_NOT_FOUND,
+    # The right words about a DIFFERENT commit prove nothing about this one.
+    gh_absent(UNFETCHED),
+    # gh reporting success on a "No commit found" body is not an HTTP answer
+    # this gate understands; it must not be read as absence.
+    (0,) + gh_absent(LOCAL_ONLY)[1:],
+], ids=["transport", "timeout", "gh-missing", "http-502", "rate-limit",
+        "bad-credentials", "repo-not-found", "other-sha", "rc0"])
+def test_a_failed_lookup_still_refuses_and_caches_nothing(monkeypatch, tmp_path,
+                                                          answer):
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: answer})
+    cache = tmp_path / "absent.json"
+
+    with pytest.raises(RuntimeError, match="refused 1 unavailable") as exc:
+        _build(monkeypatch, cache)
+
+    assert f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}" in str(exc.value)
+    assert not cache.exists()
+
+
+def test_no_github_route_still_refuses(monkeypatch, tmp_path):
+    host = _host(monkeypatch, tmp_path, {})
+    monkeypatch.delenv("FLEET_REAL_GH")
+
+    with pytest.raises(RuntimeError, match="no GitHub route"):
+        _build(monkeypatch, tmp_path / "absent.json")
+
+    assert host.gh_calls == []
+    assert not (tmp_path / "absent.json").exists()
+
+
+def test_github_having_the_commit_still_refuses(monkeypatch, tmp_path):
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_present(LOCAL_ONLY)})
+
+    with pytest.raises(RuntimeError, match="GitHub HAS this commit"):
+        _build(monkeypatch, tmp_path / "absent.json")
+
+    assert not (tmp_path / "absent.json").exists()
+
+
+def test_a_cached_absence_is_reused_without_asking_github(monkeypatch, tmp_path):
+    cache = tmp_path / "absent.json"
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY)})
+    first = _build(monkeypatch, cache)
+    assert first["github_absence_lookup"]["github_lookups"] == 1
+    stored = json.loads(cache.read_text())
+    assert stored["schema"] == ws.ABSENT_CACHE_SCHEMA
+    entry = stored["entries"][f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}"]
+    assert entry["http_status"] == 422
+    assert entry["message"] == f"No commit found for SHA: {LOCAL_ONLY}"
+
+    # GitHub is now unreachable -- and not consulted, because the answer is cached.
+    host = _host(monkeypatch, tmp_path, {})
+    second = _build(monkeypatch, cache)
+
+    assert host.gh_calls == []
+    assert second["github_absence_lookup"]["github_lookups"] == 0
+    assert second["github_absence_lookup"]["cache_hits"] == 1
+    assert second["rows_on_main"] == 3
+    assert second["rows_absent_upstream"] == 2
+    assert [r["source"] for r in second["commits_absent_upstream"]] == ["cache"]
+
+
+def test_a_network_failure_never_enters_the_cache(monkeypatch, tmp_path):
+    """Affirmative answers are kept even when the run refuses; failures never are."""
+    cache = tmp_path / "absent.json"
+    _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY),
+                                  UNFETCHED: GH_TRANSPORT},
+          missing=(LOCAL_ONLY, UNFETCHED))
+    rows = _rows() + [{**ledger_row(UNFETCHED, "2026-09-26T05:00:00Z"),
+                       "repo": "reverie"}]
+
+    with pytest.raises(RuntimeError, match=UNFETCHED):
+        _build(monkeypatch, cache, rows)
+    assert set(json.loads(cache.read_text())["entries"]) == {
+        f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}"}
+
+    # A second run that cannot reach GitHub still refuses on the same commit.
+    host = _host(monkeypatch, tmp_path, {UNFETCHED: GH_TRANSPORT},
+                 missing=(LOCAL_ONLY, UNFETCHED))
+    with pytest.raises(RuntimeError, match=UNFETCHED):
+        _build(monkeypatch, cache, rows)
+    assert len(host.gh_calls) == 1
+
+
+def test_one_failed_lookup_stops_further_lookups(monkeypatch, tmp_path):
+    """A dead network costs one timeout per run, not one per missing commit."""
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: GH_TRANSPORT,
+                                         UNFETCHED: gh_absent(UNFETCHED)},
+                 missing=(LOCAL_ONLY, UNFETCHED))
+    rows = _rows() + [{**ledger_row(UNFETCHED, "2026-09-26T05:00:00Z"),
+                       "repo": "reverie"}]
+
+    with pytest.raises(RuntimeError, match="refused 2 unavailable") as exc:
+        _build(monkeypatch, tmp_path / "absent.json", rows)
+
+    assert len(host.gh_calls) == 1
+    assert "GitHub lookups stopped at" in str(exc.value)
+
+
+def _cache_with(tmp_path, observed_at, *, status=422, message=None):
+    cache = tmp_path / "absent.json"
+    cache.write_text(json.dumps({"schema": ws.ABSENT_CACHE_SCHEMA, "entries": {
+        f"{ws.REVERIE_REPOSITORY}:{LOCAL_ONLY}": {
+            "http_status": status,
+            "message": message or f"No commit found for SHA: {LOCAL_ONLY}",
+            "observed_at": observed_at}}}))
+    return cache
+
+
+def _stamp(delta):
+    from datetime import datetime, timezone
+    return (datetime.now(timezone.utc) + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.mark.parametrize("entry", [
+    {"observed_at": "expired"},
+    {"observed_at": "future"},
+    {"observed_at": "fresh", "status": 200},
+    {"observed_at": "fresh", "message": "Not Found"},
+    {"observed_at": "2026-09-28T00:00:00"},  # no timezone
+], ids=["expired", "future", "status-200", "wrong-message", "naive-time"])
+def test_an_expired_or_invalid_cache_entry_is_asked_again(monkeypatch, tmp_path,
+                                                          entry):
+    from datetime import timedelta
+    stamps = {"expired": _stamp(-ws.ABSENT_CACHE_TTL - timedelta(hours=1)),
+              "future": _stamp(timedelta(hours=1)),
+              "fresh": _stamp(-timedelta(hours=1))}
+    observed = stamps.get(entry["observed_at"], entry["observed_at"])
+    cache = _cache_with(tmp_path, observed, status=entry.get("status", 422),
+                        message=entry.get("message"))
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: GH_TRANSPORT})
+
+    with pytest.raises(RuntimeError, match="refused 1 unavailable"):
+        _build(monkeypatch, cache)
+
+    assert len(host.gh_calls) == 1
+    # The rejected entry is dropped from the rewritten cache.
+    assert json.loads(cache.read_text())["entries"] == {}
+
+
+def test_an_unreadable_cache_is_reported_and_costs_only_a_lookup(monkeypatch, capsys,
+                                                                 tmp_path):
+    cache = tmp_path / "absent.json"
+    cache.write_text("{not json")
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY)})
+    monkeypatch.setattr(ws, "load_population", lambda _path: (_rows(), 5, 0))
+
+    rc, fields = _gate_fields(monkeypatch, capsys, cache)
+
+    assert rc == 0
+    assert len(host.gh_calls) == 1
+    assert fields["absent_upstream_rows"] == "2"
+    assert fields["absent_cache_error"] == "cache is not JSON, ignored"
+
+
+def test_the_lookup_budget_bounds_one_run_and_the_next_run_resumes(monkeypatch,
+                                                                  tmp_path):
+    """tick-hub kills this gate at 30 s; lookups must not push it over."""
+    host = _host(monkeypatch, tmp_path, {LOCAL_ONLY: gh_absent(LOCAL_ONLY),
+                                         UNFETCHED: gh_absent(UNFETCHED)},
+                 missing=(LOCAL_ONLY, UNFETCHED))
+    cache = tmp_path / "absent.json"
+    now = [100.0]
+
+    def slow_lookup(argv, **kwargs):
+        # Each lookup takes 6 of the 10 budgeted seconds, so a second one
+        # would no longer fit a whole 5 s timeout.
+        now[0] += 6.0
+        return FakeHost.run(host, argv, **kwargs)
+
+    monkeypatch.setattr(ws.subprocess, "run", slow_lookup)
+    upstream = ws.UpstreamAbsence(cache, budget=10.0, timeout=5.0,
+                                  clock=lambda: now[0])
+
+    absent, unresolved = upstream.classify(ws.REVERIE_REPOSITORY,
+                                           [LOCAL_ONLY, UNFETCHED])
+    upstream.save()
+
+    assert len(host.gh_calls) == 1
+    assert set(absent) == {min(LOCAL_ONLY, UNFETCHED)}
+    assert "budget is spent" in unresolved[max(LOCAL_ONLY, UNFETCHED)]
+    assert upstream.report()["github_lookup_seconds"] == 6.0
+
+    nxt = ws.UpstreamAbsence(cache, budget=10.0, timeout=5.0, clock=lambda: now[0])
+    absent, unresolved = nxt.classify(ws.REVERIE_REPOSITORY, [LOCAL_ONLY, UNFETCHED])
+
+    assert unresolved == {}
+    assert set(absent) == {LOCAL_ONLY, UNFETCHED}
+    assert (nxt.cache_hits, nxt.lookups) == (1, 1)
+
 
 
 # ------------------------------------------------- readiness / wireable gate

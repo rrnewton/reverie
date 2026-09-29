@@ -47,10 +47,11 @@ import json
 import os
 import re
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -58,6 +59,7 @@ VALIDATE_DIR = Path(__file__).resolve().parents[1] / "validate"
 if str(VALIDATE_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATE_DIR))
 
+import gh_route  # noqa: E402
 from qualified_rows import DEFAULT_LEDGER  # noqa: E402
 from qualified_rows import load_rows as load_ledger_rows  # noqa: E402
 from qualified_rows import qualified_rows  # noqa: E402
@@ -81,6 +83,47 @@ REPOSITORY_ALIASES = {
     "reverie": REVERIE_REPOSITORY,
     REVERIE_REPOSITORY: REVERIE_REPOSITORY,
 }
+
+# GitHub's AFFIRMATIVE answer that a repository has no such commit, and nothing
+# weaker. Measured 2026-09-28 against rrnewton/reverie for a ledger commit that
+# was validated on devbig030 and never pushed:
+#     HTTP/2.0 422 Unprocessable Entity
+#     {"message":"No commit found for SHA: <sha>", ...}
+# The coordinator saw the same message with HTTP 404 earlier that day, so both
+# statuses are accepted -- but only together with that exact message naming that
+# exact SHA. An unknown or inaccessible REPOSITORY is also HTTP 404, with the
+# message "Not Found"; that proves nothing about the commit and must refuse.
+ABSENT_HTTP_STATUSES = frozenset({404, 422})
+ABSENT_MESSAGE = "No commit found for SHA: {sha}"
+ABSENT_CACHE_SCHEMA = "wall-series-github-absent-commits/v1"
+# A local-only commit can be pushed later. Re-asking once a week bounds how long
+# an old "no such commit" answer can stand, at a cost of one request per SHA.
+ABSENT_CACHE_TTL = timedelta(days=7)
+# Tolerated clock skew for an entry stamped in the future; beyond it the entry is
+# not trusted and GitHub is asked again.
+ABSENT_CACHE_FUTURE_SKEW = timedelta(minutes=5)
+# tick-hub kills this gate at 30 s, and loading the ledger already takes most of
+# that: 5 of the 12 hourly runs up to 2026-09-28T23:29Z timed out before GitHub
+# was ever involved. So one run spends at most GITHUB_LOOKUP_BUDGET_SECONDS on
+# lookups (a lookup is only started while a whole per-lookup timeout still fits)
+# and one failed lookup stops the rest (see UpstreamAbsence.classify). A healthy
+# lookup measured 0.43 s; commits not reached are left for the next run, which
+# starts from the cache, and this run refuses meanwhile.
+GITHUB_LOOKUP_TIMEOUT_SECONDS = 5.0
+GITHUB_LOOKUP_BUDGET_SECONDS = 10.0
+
+
+def default_absent_cache() -> Path:
+    """Mutable state belongs under the parent checkout, never the tool tree.
+
+    tick-hub runs this module from an immutable materialized tool tree and names
+    the mutable parent in DEV_HERMIT_PARENT. An ad-hoc run from a checkout falls
+    back to that checkout's own ignored/ directory.
+    """
+    state_root = os.environ.get("DEV_HERMIT_PARENT") or str(
+        Path(__file__).resolve().parents[2])
+    return (Path(state_root) / "ignored" / "ci-hub" / "main-metrics"
+            / "github-absent-commits.json")
 
 
 def bucket_of(n: int | None) -> str:
@@ -124,8 +167,281 @@ def load_population(path: Path) -> tuple[list[dict], int, int]:
     return qualified_rows(rows), len(rows), malformed
 
 
+@dataclass(frozen=True)
+class Absence:
+    """GitHub affirmed that ``repository`` has no commit ``commit``."""
+    repository: str
+    commit: str
+    http_status: int
+    observed_at: str
+    source: str  # "github" (asked this run) or "cache" (an earlier answer)
+
+    def record(self) -> dict:
+        return {"repository": self.repository, "commit": self.commit,
+                "http_status": self.http_status, "observed_at": self.observed_at,
+                "source": self.source}
+
+
+class _LookupHalt(Exception):
+    """A lookup failed in a way that says nothing about the commit."""
+
+
+def _split_http_response(stdout: str) -> tuple[int | None, object]:
+    """Parse ``gh api --include`` output into (HTTP status, decoded body)."""
+    text = stdout.replace("\r\n", "\n")
+    head, separator, body = text.partition("\n\n")
+    if not separator:
+        return None, None
+    match = re.fullmatch(r"HTTP/[0-9.]+ ([0-9]{3})(?: .*)?", head.split("\n", 1)[0])
+    if match is None:
+        return None, None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        payload = None
+    return int(match.group(1)), payload
+
+
+class UpstreamAbsence:
+    """Classify commits a checkout lacks by asking GitHub whether they exist.
+
+    WHY. The ancestry check refuses its whole population when an object is
+    missing from the checkout, because a missing object can mean an incomplete
+    checkout whose ``rev-list origin/main`` is also incomplete. From 2026-09-25
+    the ledger carried 9 reverie rows, finished 2026-09-25T16:47Z to
+    2026-09-27T03:47Z, for commits validated in local slots and never pushed:
+    8 on devbig030 (reverie-kvm-reparent, reverie-kvm-exit-eof) and 1 on
+    devbig014 (precise-miss), with ``git_ahead`` 1 to 14. Nothing can ever fetch
+    those, so every tick refused and the wall-time alarm could not fire at all
+    (https://github.com/rrnewton/dev-hermit/issues/400).
+
+    WHAT COUNTS. Only GitHub's affirmative "No commit found for SHA: <sha>"
+    (HTTP 404 or 422) for the canonical repository. A commit the host of main
+    does not have cannot be an ancestor of main, whatever this checkout holds.
+    Every other outcome -- HTTP 200 (exists upstream, just not fetched here),
+    any other status or message, a timeout, a transport or authentication
+    failure, a missing gh route -- leaves the commit UNRESOLVED and the caller
+    still refuses. Absence has to be proven; a failure to look is not proof.
+
+    THE CACHE holds only affirmative answers, written from a parsed HTTP status
+    and message, and re-validated field by field on every load. A network failure
+    never produces an entry, so it can never later be read back as absence. An
+    unreadable or malformed cache is reported and ignored, which only costs
+    lookups. Entries expire after ABSENT_CACHE_TTL: a commit pushed after it was
+    recorded absent is asked about again within a week. Until then it stays
+    excluded -- the same staleness this gate already accepts for a commit that is
+    present locally and lands on GitHub main after the checkout's last fetch.
+    """
+
+    def __init__(self, cache_path: Path | None, *, now: datetime | None = None,
+                 ttl: timedelta = ABSENT_CACHE_TTL,
+                 budget: float = GITHUB_LOOKUP_BUDGET_SECONDS,
+                 timeout: float = GITHUB_LOOKUP_TIMEOUT_SECONDS,
+                 clock=time.monotonic) -> None:
+        self.cache_path = cache_path
+        self.now = now or datetime.now(timezone.utc)
+        self.ttl = ttl
+        self.budget = budget
+        self.timeout = timeout
+        self.clock = clock
+        self._deadline: float | None = None
+        self.lookup_seconds = 0.0
+        self.lookups = 0
+        self.cache_hits = 0
+        self.cache_rejected = 0
+        self.cache_error: str | None = None
+        self.cache_written = False
+        self._dirty = False
+        # Why this run stopped asking GitHub, if it did. Public so a refusal can
+        # name the one real error instead of N copies of "not asked".
+        self.halt_reason: str | None = None
+        self._entries = self._load()
+
+    # ------------------------------------------------------------ cache
+    def _entry(self, key: object, value: object) -> Absence | None:
+        if not isinstance(key, str) or not isinstance(value, dict):
+            return None
+        repository, separator, commit = key.rpartition(":")
+        if (not separator or repository not in set(REPOSITORY_ALIASES.values())
+                or re.fullmatch(r"[0-9a-f]{40}", commit) is None):
+            return None
+        status = value.get("http_status")
+        if (isinstance(status, bool) or not isinstance(status, int)
+                or status not in ABSENT_HTTP_STATUSES):
+            return None
+        if value.get("message") != ABSENT_MESSAGE.format(sha=commit):
+            return None
+        observed_at = value.get("observed_at")
+        try:
+            observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if observed.tzinfo is None:
+            return None
+        if observed > self.now + ABSENT_CACHE_FUTURE_SKEW:
+            return None
+        if self.now - observed > self.ttl:
+            return None
+        return Absence(repository, commit, status, str(observed_at), "cache")
+
+    def _load(self) -> dict[str, Absence]:
+        if self.cache_path is None:
+            return {}
+        try:
+            raw = self.cache_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError as error:
+            self.cache_error = f"cache unreadable, ignored: {error}"
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self.cache_error = "cache is not JSON, ignored"
+            return {}
+        if (not isinstance(data, dict) or data.get("schema") != ABSENT_CACHE_SCHEMA
+                or not isinstance(data.get("entries"), dict)):
+            self.cache_error = f"cache is not {ABSENT_CACHE_SCHEMA}, ignored"
+            return {}
+        entries = {}
+        for key, value in data["entries"].items():
+            absence = self._entry(key, value)
+            if absence is None:
+                self.cache_rejected += 1
+                continue
+            entries[key] = absence
+        if self.cache_rejected:
+            # Expired or invalid entries are dropped from the next write.
+            self._dirty = True
+        return entries
+
+    def save(self) -> None:
+        """Persist affirmative answers. A failed write costs lookups, not truth."""
+        if self.cache_path is None or not self._dirty:
+            return
+        payload = {
+            "schema": ABSENT_CACHE_SCHEMA,
+            "about": ("Commits GitHub answered 'No commit found for SHA' for. "
+                      "Written by ci-hub/main-metrics/wall_series.py; only "
+                      "affirmative answers are ever recorded."),
+            "entries": {
+                key: {"http_status": absence.http_status,
+                      "message": ABSENT_MESSAGE.format(sha=absence.commit),
+                      "observed_at": absence.observed_at}
+                for key, absence in sorted(self._entries.items())
+            },
+        }
+        temporary = self.cache_path.with_name(
+            f".{self.cache_path.name}.{os.getpid()}.tmp")
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(payload, indent=1) + "\n",
+                                 encoding="utf-8")
+            os.replace(temporary, self.cache_path)
+        except OSError as error:
+            self.cache_error = f"cache not written: {error}"
+            return
+        self.cache_written = True
+        self._dirty = False
+
+    # ------------------------------------------------------------ lookup
+    def _lookup(self, repository: str, commit: str) -> Absence | str:
+        """Return an Absence, or the reason the answer was not one.
+
+        Raises _LookupHalt when the failure says nothing about the commit and
+        later lookups in this run would most likely fail the same way.
+        """
+        try:
+            argv = gh_route.command(
+                "api", "--include", f"repos/{repository}/commits/{commit}")
+        except ValueError as error:
+            raise _LookupHalt(f"no GitHub route: {error}") from error
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=self.timeout)
+        except subprocess.TimeoutExpired as error:
+            raise _LookupHalt(
+                f"GitHub lookup exceeded {self.timeout:.0f}s") from error
+        except (OSError, subprocess.SubprocessError) as error:
+            raise _LookupHalt(f"GitHub lookup failed to run: {error}") from error
+        status, payload = _split_http_response(proc.stdout or "")
+        if status is None:
+            detail = (proc.stderr or "").strip().splitlines()
+            raise _LookupHalt(
+                f"gh api exited {proc.returncode} without an HTTP response"
+                + (f": {detail[-1][:200]}" if detail else ""))
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if (status in ABSENT_HTTP_STATUSES and proc.returncode != 0
+                and message == ABSENT_MESSAGE.format(sha=commit)):
+            observed = self.now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return Absence(repository, commit, status, observed, "github")
+        if status == 200 and proc.returncode == 0:
+            return ("GitHub HAS this commit (HTTP 200); this checkout does not, "
+                    "so fetch it")
+        raise _LookupHalt(
+            f"GitHub answered HTTP {status} {str(message)[:120]!r}, which is not "
+            "an affirmative 'No commit found'")
+
+    def classify(self, repository: str,
+                 commits: Iterable[str]) -> tuple[dict[str, Absence], dict[str, str]]:
+        """Split commits into proven-absent and unresolved (with reasons)."""
+        absent: dict[str, Absence] = {}
+        unresolved: dict[str, str] = {}
+        for commit in sorted(commits):
+            key = f"{repository}:{commit}"
+            cached = self._entries.get(key)
+            if cached is not None:
+                self.cache_hits += 1
+                absent[commit] = cached
+                continue
+            if self.halt_reason is not None:
+                unresolved[commit] = "not asked: an earlier lookup failed"
+                continue
+            if self._deadline is None:
+                self._deadline = self.clock() + self.budget
+            if self._deadline - self.clock() < self.timeout:
+                unresolved[commit] = (
+                    f"not asked: this run's {self.budget:.0f}s GitHub lookup "
+                    "budget is spent; the next run continues from the cache")
+                continue
+            self.lookups += 1
+            started = self.clock()
+            try:
+                answer = self._lookup(repository, commit)
+            except _LookupHalt as error:
+                unresolved[commit] = str(error)
+                self.halt_reason = f"{key}: {error}"
+                continue
+            finally:
+                self.lookup_seconds += self.clock() - started
+            if isinstance(answer, Absence):
+                absent[commit] = answer
+                self._entries[key] = replace(answer, source="cache")
+                self._dirty = True
+            else:
+                unresolved[commit] = answer
+        return absent, unresolved
+
+    def report(self) -> dict:
+        return {"path": str(self.cache_path) if self.cache_path else None,
+                "github_lookups": self.lookups,
+                "github_lookup_seconds": round(self.lookup_seconds, 2),
+                "cache_hits": self.cache_hits,
+                "cache_rejected": self.cache_rejected,
+                "cache_written": self.cache_written, "cache_error": self.cache_error,
+                "halt_reason": self.halt_reason}
+
+
+@dataclass
+class Ancestry:
+    """Commits that are on main, and missing commits GitHub proved absent."""
+    on_main: set[str]
+    absent_upstream: dict[str, Absence] = field(default_factory=dict)
+
+
 def main_commits(repo: Path, commits: Iterable[str], repository: str,
-                 ref: str = "origin/main") -> set[str]:
+                 ref: str = "origin/main",
+                 upstream: UpstreamAbsence | None = None) -> Ancestry:
     """Which commits are ancestors of main.
 
     Ancestry, not a branch label on the row: a row can be produced from a branch
@@ -134,7 +450,10 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
 
     Read main once, then batch-check only requested IDs that are not in that
     history. The second query distinguishes valid off-main commits from missing
-    objects; any missing or non-commit object refuses the whole population.
+    objects. A non-commit object refuses the whole population. A missing object
+    refuses it too, unless ``upstream`` is given and GitHub affirmatively reports
+    that the commit does not exist there (see UpstreamAbsence); such a commit is
+    returned in ``absent_upstream`` -- provably not on main, and never counted.
 
     A subprocess per ledger commit made this gate grow linearly with retained
     evidence until tick-hub's 30-second bound killed it before it emitted a
@@ -144,7 +463,7 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
     """
     requested = {commit for commit in commits if commit}
     if not requested:
-        return set()
+        return Ancestry(set())
     # --stdin accepts rev-list options as well as revisions. Ledger commit IDs
     # are full lowercase object IDs; refusing anything else prevents a row from
     # changing the query and also makes malformed IDs fail closed.
@@ -166,7 +485,7 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
     on_main = requested.intersection(proc.stdout.splitlines())
     outside_main = requested.difference(on_main)
     if not outside_main:
-        return on_main
+        return Ancestry(on_main)
     try:
         checked = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "--batch-check=%(objecttype)"],
@@ -182,16 +501,24 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
         raise RuntimeError(
             f"main ancestry check refused for {repository}: "
             "batch object check was incomplete")
-    unavailable = []
+    missing: list[str] = []
     non_commits = []
     for commit, object_type in zip(sorted(outside_main), object_types):
         if object_type == "commit":
             continue
-        qualified = f"{repository}:{commit}"
         if object_type == "missing" or object_type.endswith(" missing"):
-            unavailable.append(qualified)
+            missing.append(commit)
         else:
-            non_commits.append(qualified)
+            non_commits.append(f"{repository}:{commit}")
+    absent_upstream: dict[str, Absence] = {}
+    if missing and upstream is not None:
+        absent_upstream, reasons = upstream.classify(repository, missing)
+    else:
+        reasons = {commit: "" for commit in missing}
+    unavailable = [
+        f"{repository}:{commit}" + (f" ({reasons[commit]})" if reasons[commit] else "")
+        for commit in sorted(reasons)
+    ]
     if unavailable or non_commits:
         problems = []
         if unavailable:
@@ -211,23 +538,26 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
             # them; it only means the SHA is not an advertised ref tip, and an
             # explicit fetch by SHA succeeds. Reading that message as an existence
             # claim is what makes the condition look unfixable.
+            halted = (f" [GitHub lookups stopped at {upstream.halt_reason}]"
+                      if upstream is not None and upstream.halt_reason else "")
             problems.append(
                 f"{len(unavailable)} unavailable object(s): "
-                f"{', '.join(unavailable[:4])}"
+                f"{', '.join(unavailable[:4])}{halted}"
                 f" -- absent from this checkout, which does NOT mean absent"
                 f" upstream. Try `git -C <checkout> fetch --no-tags origin <sha>`"
                 f" for each; that succeeds for an off-main commit that was pushed,"
                 f" even though `git cat-file` calls it \"not our ref\". If the fetch"
                 f" also fails, confirm with"
                 f" `gh api repos/<owner>/<repo>/commits/<sha>`: a \"No commit found\""
-                f" there means the commit never left the host that validated it, and"
-                f" the row cannot be resolved from here")
+                f" there means the commit never left the host that validated it."
+                f" This gate asks that itself and excludes such a row as not on"
+                f" main; it refused here because it could not get that answer")
         if non_commits:
             problems.append(
                 f"{len(non_commits)} non-commit object(s): "
                 f"{', '.join(non_commits[:4])}")
         raise RuntimeError("main ancestry check refused " + "; ".join(problems))
-    return on_main
+    return Ancestry(on_main, absent_upstream)
 
 
 def repository_name(row: dict) -> str:
@@ -248,8 +578,24 @@ def repository_name(row: dict) -> str:
             f"{raw!r} for {qualified_repository}:{commit}") from error
 
 
-def rows_on_main(rows: Sequence[dict], repositories: dict[str, Path]) -> list[dict]:
-    """Filter rows by ancestry in the repository that owns each commit."""
+@dataclass
+class MainSelection:
+    """Rows on main, plus the rows excluded because their commit does not exist."""
+    rows: list[dict]
+    absent_upstream: list[Absence] = field(default_factory=list)
+    absent_upstream_rows: int = 0
+
+
+def rows_on_main(rows: Sequence[dict], repositories: dict[str, Path],
+                 upstream: UpstreamAbsence | None = None) -> MainSelection:
+    """Filter rows by ancestry in the repository that owns each commit.
+
+    There is no cheaper filter to apply first. Rows carry no trustworthy "main"
+    label: reverie's ``git_ahead`` is measured against the validating checkout's
+    origin/main at run time, and a commit that was ahead then can land unchanged
+    later. Ancestry at read time is the source of truth, so every qualified row
+    reaches this check and the question is only how to classify the missing ones.
+    """
     commits_by_repository: dict[str, set[str]] = {}
     keys = []
     for row in rows:
@@ -259,6 +605,7 @@ def rows_on_main(rows: Sequence[dict], repositories: dict[str, Path]) -> list[di
         commits_by_repository.setdefault(repository, set()).add(commit)
 
     keep: set[tuple[str, str]] = set()
+    absent: dict[tuple[str, str], Absence] = {}
     failures = []
     for repository, commits in commits_by_repository.items():
         checkout = repositories.get(repository)
@@ -267,14 +614,20 @@ def rows_on_main(rows: Sequence[dict], repositories: dict[str, Path]) -> list[di
                 f"main ancestry check refused: no checkout configured for {repository}")
             continue
         try:
-            on_main = main_commits(checkout, commits, repository)
+            ancestry = main_commits(checkout, commits, repository, upstream=upstream)
         except RuntimeError as error:
             failures.append(str(error))
             continue
-        keep.update((repository, commit) for commit in on_main)
+        keep.update((repository, commit) for commit in ancestry.on_main)
+        absent.update(((repository, commit), absence)
+                      for commit, absence in ancestry.absent_upstream.items())
     if failures:
         raise RuntimeError(" | ".join(failures))
-    return [row for row, key in zip(rows, keys) if key in keep]
+    return MainSelection(
+        rows=[row for row, key in zip(rows, keys) if key in keep],
+        absent_upstream=[absent[key] for key in sorted(absent)],
+        absent_upstream_rows=sum(1 for key in keys if key in absent),
+    )
 
 
 def to_points(rows: Sequence[dict], keep: set[str] | None) -> list[Point]:
@@ -384,7 +737,8 @@ def compare(baseline: Sequence[Point], candidate: Sequence[Point],
 
 
 def build(ledger: Path, repo: Path, only_main: bool, profile: str | None,
-          result: str | None, reverie_repo: Path = Path("reverie")) -> dict:
+          result: str | None, reverie_repo: Path = Path("reverie"),
+          absent_cache: Path | None = None) -> dict:
     rows, total, malformed = load_population(ledger)
     sel = rows
     if profile:
@@ -392,11 +746,20 @@ def build(ledger: Path, repo: Path, only_main: bool, profile: str | None,
     if result:
         sel = [r for r in sel if r.get("result") == result]
     rows_after_profile_result_filter = len(sel)
+    selection = None
+    upstream = None
     if only_main:
-        sel = rows_on_main(sel, {
-            HERMIT_REPOSITORY: repo,
-            REVERIE_REPOSITORY: reverie_repo,
-        })
+        upstream = UpstreamAbsence(absent_cache)
+        try:
+            selection = rows_on_main(sel, {
+                HERMIT_REPOSITORY: repo,
+                REVERIE_REPOSITORY: reverie_repo,
+            }, upstream)
+        finally:
+            # Affirmative answers are worth keeping even when another object
+            # makes this run refuse; nothing else is ever written.
+            upstream.save()
+        sel = selection.rows
     pts = to_points(sel, None)
     rep = {
         "ledger_rows_total": total,
@@ -404,6 +767,13 @@ def build(ledger: Path, repo: Path, only_main: bool, profile: str | None,
         "qualified_rows_total": len(rows),
         "rows_after_profile_result_filter": rows_after_profile_result_filter,
         "rows_on_main": len(pts) if only_main else None,
+        # Rows excluded because GitHub reports their commit does not exist, so
+        # it cannot be on main. Counted and named, never silently dropped.
+        "rows_absent_upstream": selection.absent_upstream_rows if selection else None,
+        "commits_absent_upstream": (
+            [absence.record() for absence in selection.absent_upstream]
+            if selection else []),
+        "github_absence_lookup": upstream.report() if upstream else None,
         "only_main": only_main,
         "summary": summarize(pts),
         "gates_top": gate_breakdown(pts),
@@ -421,6 +791,13 @@ def render(rep: dict) -> str:
     L.append(f"  after profile/result filter       : {rep['rows_after_profile_result_filter']}")
     if rep["only_main"]:
         L.append(f"  ON MAIN (ancestry-checked)        : {rep['rows_on_main']}")
+        absent = rep.get("commits_absent_upstream") or []
+        L.append(f"  excluded, commit not on GitHub    : {rep.get('rows_absent_upstream') or 0}"
+                 f" row(s) at {len(absent)} commit(s)")
+        for record in absent:
+            L.append(f"    {record['repository']}:{record['commit']}"
+                     f"  HTTP {record['http_status']} at {record['observed_at']}"
+                     f" ({record['source']})")
     L.append(f"  distinct main commits with a point: {s['distinct_commits']}")
     L.append(f"  span                              : {' -> '.join(s['span']) if s['span'] else '-'}")
     L.append("")
@@ -448,6 +825,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="Hermit checkout for Hermit ancestry checks")
     ap.add_argument("--reverie-repo", default="reverie",
                     help="Reverie checkout for Reverie ancestry checks")
+    ap.add_argument("--absent-cache", type=Path, default=None,
+                    help="cache of GitHub 'No commit found' answers (default: "
+                         "$DEV_HERMIT_PARENT/ignored/ci-hub/main-metrics/"
+                         "github-absent-commits.json)")
     ap.add_argument("--all-commits", action="store_true",
                     help="do NOT restrict to main (default is main-only)")
     ap.add_argument("--profile", default="full")
@@ -470,7 +851,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         rep = build(args.ledger, Path(args.repo), not args.all_commits,
                     args.profile or None, args.result or None,
-                    Path(args.reverie_repo))
+                    Path(args.reverie_repo),
+                    args.absent_cache or default_absent_cache())
     except RuntimeError as error:
         if args.gate_regression or args.readiness:
             _emit("refused", f"REFUSED: {error}")
@@ -544,11 +926,27 @@ def _emit(state: str, summary: str, **fields: object) -> None:
 def _gate(rep: dict, args) -> int:
     ready = series_readiness(rep, args.min_days, args.min_conditioned_frac)
     shortfalls = "; ".join(ready["shortfalls"])
+    absent = rep.get("commits_absent_upstream") or []
+    lookup = rep.get("github_absence_lookup") or {}
+    # Rows excluded as provably not on main (GitHub says the commit does not
+    # exist). Emitted on EVERY verdict so an exclusion is never silent.
+    exclusion: dict[str, object] = {
+        "absent_upstream_rows": rep.get("rows_absent_upstream") or 0,
+        "absent_upstream_commits": len(absent),
+        "absent_upstream_shas": ",".join(
+            f"{record['repository']}:{record['commit']}" for record in absent) or "none",
+        "github_lookups": lookup.get("github_lookups", 0),
+        "github_lookup_seconds": lookup.get("github_lookup_seconds", 0.0),
+        "absent_cache_hits": lookup.get("cache_hits", 0),
+    }
+    if lookup.get("cache_error"):
+        exclusion["absent_cache_error"] = lookup["cache_error"]
     common = {
         "span_days": ready["span_days"],
         "conditioned": ready["conditioned"],
         "n": ready["n"],
         "conditioned_frac": ready["conditioned_frac"],
+        **exclusion,
     }
     if args.readiness:
         if ready["ready"]:
@@ -586,14 +984,16 @@ def _gate(rep: dict, args) -> int:
               threshold=args.threshold,
               cause=verdict["cause"],
               baseline_n=verdict.get("baseline_n"),
-              candidate_n=verdict.get("candidate_n"))
+              candidate_n=verdict.get("candidate_n"),
+              **exclusion)
         return 1
     _emit("ok",
           f"wall OK: {verdict['verdict']} "
           f"(baseline n={verdict.get('baseline_n')}, candidate n={verdict.get('candidate_n')})",
           verdict=verdict["verdict"],
           baseline_n=verdict.get("baseline_n"),
-          candidate_n=verdict.get("candidate_n"))
+          candidate_n=verdict.get("candidate_n"),
+          **exclusion)
     return 0
 
 
