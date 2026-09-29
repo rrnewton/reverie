@@ -272,8 +272,22 @@ pub unsafe extern "C" fn reverie_liteinst_initialize_host(
     let config = unsafe { *config };
     match runtime::initialize_host_runtime_explicit(config) {
         Ok(()) => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+            // Constructor-heap exhaustion carries a message, not an errno.
+            -error.raw_os_error().unwrap_or(libc::ENOMEM)
+        }
         Err(error) => -error.raw_os_error().unwrap_or(libc::EIO),
     }
+}
+
+/// Bytes ever carved from the host-runtime constructor heap.
+///
+/// The Begin..Ready window allocates from a dedicated reclaiming heap so the
+/// guest's allocator is untouched at `main`. This is its peak footprint, for
+/// tests and diagnostics; it does not change after Ready.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_host_init_heap_high_water() -> u64 {
+    patch_alloc::init_heap_high_water() as u64
 }
 
 // TODO-HUMAN-REVIEW(PR-127): Review public per-site instrumentation counters.
