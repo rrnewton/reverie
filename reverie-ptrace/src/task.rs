@@ -1448,6 +1448,17 @@ impl FatalSession {
         self.tree.lock().unwrap().cleanup_refusal.is_some()
     }
 
+    /// A session with a root owner on this ptracer thread and no Tool to
+    /// report a failure to, for tests that drive one cleanup owner directly.
+    #[cfg(test)]
+    pub(crate) fn for_test(root: Pid) -> Self {
+        Self {
+            root: Some(root),
+            ptracer_thread: Some(std::thread::current().id()),
+            ..Self::default()
+        }
+    }
+
     fn register(&self, task: Arc<FatalTaskStop>) -> Option<FatalNewborn> {
         #[cfg(test)]
         crate::tracer::record_fatal_task_for_test(&task);
