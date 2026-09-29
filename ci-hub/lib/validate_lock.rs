@@ -3213,7 +3213,13 @@ pub fn execute(
                 eprintln!("REFUSED: {reason}");
                 return Ok(REFUSED_EXIT_CODE);
             }
-            lock.acquire(&args.agent, args.kind, &args.target, budget.remaining(), args.hold)
+            lock.acquire(
+                &args.agent,
+                args.kind,
+                &args.target,
+                budget.remaining(),
+                args.hold,
+            )
         }
         ValidateLockCommand::Renew(args) => {
             let selected = (0..VALIDATE_SLOT_COUNT)
@@ -9510,7 +9516,7 @@ fn supervise_child(
 /// always true.
 const TERMINATION_CAUSE_DEADLINE: &str = "child-deadline reached";
 
-/// SIGTERM then (after a grace period) SIGKILL the child's process group and reap
+/// SIGTERM then (after up to a grace period) SIGKILL the child's process group and reap
 /// the direct child. The group signals are reused from landing_lock.
 ///
 /// `cause` names why the teardown is happening; it does NOT affect what the
@@ -9544,14 +9550,21 @@ fn terminate_child_group(
     let pgid = child.id();
     let group = format!("-{pgid}");
     eprintln!("{}", termination_notice(cause, target, &group));
-    term_payload_group(
+    let grace_emptied = term_payload_group(
         lineage,
         pgid,
         Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
         "validate-lock",
     );
-    eprintln!("validate-lock: grace expired for {target}; SIGKILL process group {group}");
-    let kill_sent = kill_payload_group(lineage, pgid, "validate-lock");
+    if grace_emptied {
+        eprintln!(
+            "validate-lock: every recorded payload process exited during the grace for {target}; \
+             SIGKILL process group {group}"
+        );
+    } else {
+        eprintln!("validate-lock: grace expired for {target}; SIGKILL process group {group}");
+    }
+    let kill_sent = kill_payload_group(lineage, pgid, grace_emptied, "validate-lock");
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -12531,12 +12544,8 @@ os._exit(exit_code)
                 &gated.domain_token,
                 gated.pgid,
             );
-            let outcome = supervise_child(
-                &mut gated.child,
-                5,
-                "periodic-reap-bracket",
-                &mut lineage,
-            );
+            let outcome =
+                supervise_child(&mut gated.child, 5, "periodic-reap-bracket", &mut lineage);
             observer.join().unwrap();
             match outcome {
                 ChildOutcome::Exited { status, pgid } => {
@@ -13544,7 +13553,11 @@ exit 0
     fn read_lineage_facts(path: &Path, expected_fields: usize) -> Vec<String> {
         let text = fs::read_to_string(path).unwrap();
         let fields: Vec<String> = text.split_whitespace().map(String::from).collect();
-        assert_eq!(fields.len(), expected_fields, "unexpected facts line {text:?}");
+        assert_eq!(
+            fields.len(),
+            expected_fields,
+            "unexpected facts line {text:?}"
+        );
         fields
     }
 
@@ -13649,10 +13662,22 @@ exit 0
         let sid = outcome.facts[0].parse::<u32>().unwrap();
         let pgrp = outcome.facts[1].parse::<u32>().unwrap();
         let ppid = outcome.facts[2].parse::<u32>().unwrap();
-        assert_eq!(sid, grandchild.pid, "the grandchild must lead its own session");
-        assert_eq!(pgrp, grandchild.pid, "the grandchild must lead its own group");
-        assert_eq!(ppid, parent.pid, "the grandchild must be the parent's child");
-        assert_eq!(outcome.facts[3], "unset", "the grandchild must carry no payload token");
+        assert_eq!(
+            sid, grandchild.pid,
+            "the grandchild must lead its own session"
+        );
+        assert_eq!(
+            pgrp, grandchild.pid,
+            "the grandchild must lead its own group"
+        );
+        assert_eq!(
+            ppid, parent.pid,
+            "the grandchild must be the parent's child"
+        );
+        assert_eq!(
+            outcome.facts[3], "unset",
+            "the grandchild must carry no payload token"
+        );
     }
 
     /// Review of https://github.com/rrnewton/dev-hermit/issues/419 (parent-waits):
@@ -13807,8 +13832,14 @@ exit 0
         let _ = fs::remove_dir_all(&root);
 
         assert_eq!(helper.len(), 1, "fixture must record the helper");
-        assert_eq!(helper_fields[0], leader_pgrp, "the helper must stay in the original group");
-        assert_eq!(helper_fields[1], "unset", "the helper must carry no payload token");
+        assert_eq!(
+            helper_fields[0], leader_pgrp,
+            "the helper must stay in the original group"
+        );
+        assert_eq!(
+            helper_fields[1], "unset",
+            "the helper must carry no payload token"
+        );
         assert_eq!(
             escapee.len(),
             1,
@@ -13816,9 +13847,18 @@ exit 0
              (run result {result:?})"
         );
         let escapee_pid = escapee[0].pid.to_string();
-        assert_eq!(escapee_fields[0], escapee_pid, "the escapee must lead its own session");
-        assert_eq!(escapee_fields[1], escapee_pid, "the escapee must lead its own group");
-        assert_eq!(escapee_fields[2], "unset", "the escapee must carry no payload token");
+        assert_eq!(
+            escapee_fields[0], escapee_pid,
+            "the escapee must lead its own session"
+        );
+        assert_eq!(
+            escapee_fields[1], escapee_pid,
+            "the escapee must lead its own group"
+        );
+        assert_eq!(
+            escapee_fields[2], "unset",
+            "the escapee must carry no payload token"
+        );
         assert!(
             survivors.is_empty(),
             "a process started by a SIGTERM handler survived teardown: {survivors:?} \
@@ -14110,7 +14150,10 @@ exit 0
             Some("auto-reclaim:second-crossing-waiter"),
             "the attempt must discharge the proven-empty quarantine itself"
         );
-        assert!(!cleanup_left, "the discharge must remove the cleanup record");
+        assert!(
+            !cleanup_left,
+            "the discharge must remove the cleanup record"
+        );
         match token {
             Ok(AcquireToken::Yield { .. }) => {}
             Ok(AcquireToken::YieldUnknown { reason }) => {

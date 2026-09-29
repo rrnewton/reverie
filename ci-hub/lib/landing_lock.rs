@@ -3550,7 +3550,7 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 ///     starts during teardown leaves its own group, so such a process was
 ///     reparented here from a payload process that exited while teardown ran
 ///     -- for example one forked by a SIGTERM handler that exited before the
-///     next 20 ms poll.
+///     next poll.
 ///
 /// A recorded identity stays recorded after it is reparented. Each is a
 /// teardown target, and one still alive when [`kill_payload_domain`] finishes
@@ -3712,8 +3712,19 @@ impl PayloadLineage {
     /// process group are counted as already signalled, because the caller
     /// just sent the group SIGTERM. Returns the identities signalled here.
     fn term_unsignalled(&mut self, group_signalled: Option<u32>) -> Vec<ProcessIdentity> {
+        let live = self.live_or_recorded();
+        self.term_listed(&live, group_signalled)
+    }
+
+    /// [`Self::term_unsignalled`] on `live`, identities an observation the
+    /// caller already made returned, without scanning `/proc` again.
+    fn term_listed(
+        &mut self,
+        live: &[ProcessIdentity],
+        group_signalled: Option<u32>,
+    ) -> Vec<ProcessIdentity> {
         let mut reached = Vec::new();
-        for identity in self.live_or_recorded() {
+        for identity in live.iter().cloned() {
             if self.termed.contains(&identity) || exempt_from_teardown_signals(identity.pid) {
                 continue;
             }
@@ -3788,22 +3799,46 @@ fn signal_identities(
 
 /// Deadline and supervisor-signal path, first half: SIGTERM the payload's
 /// process group `pgid` and, by exact identity, every recorded payload process
-/// outside it, then keep recording for `grace` and SIGTERM each process found
-/// during it.
+/// outside it, then keep recording for up to `grace` and SIGTERM each process
+/// found during it.
 ///
 /// The lineage is observed BEFORE the first signal, so a child of a process
-/// about to be signalled is recorded while its parent link is visible. The
-/// grace loop polls every 20 ms and never reaps: the unreaped leader keeps the
-/// number `pgid` from being reused before the final SIGKILL.
+/// about to be signalled is recorded while its parent link is visible. That
+/// observation also supplies the identities signalled outside the group, so
+/// no second scan runs before the grace. The grace loop never reaps: the
+/// unreaped leader keeps the number `pgid` from being reused before the final
+/// SIGKILL.
+///
+/// The grace ends early when a successful observation finds no recorded
+/// process alive other than test-exempt ones. The leader is then a zombie
+/// and every other recorded process has exited, so waiting longer would only
+/// delay the SIGKILL that follows. Returns whether it ended that way; the
+/// caller passes that to [`kill_payload_group`].
+///
+/// ⚠️ COST. Each poll is one full `/proc` scan, which took over a second on
+/// devbig014 at load average 200 (2026-09-29), so the number of scans is what
+/// a teardown costs. Revision 42ddf70e3b4b8476b1de68487eb6967d5e0220e0 polled
+/// every 20 ms for the whole grace: under strace, a `--child-deadline 1` run
+/// of `/bin/sleep 30` scanned `/proc` 14 to 16 times, against 5 at
+/// 0539a4b915f2d4dc7253cfc6b30890f0f41e1f3e, spent 4.7 to 11.9 s of system
+/// CPU, and made `test_land_lock_full_protocol_is_bounded` in
+/// ci-hub/tests/test_operational_bounds.py exceed its 5 s CPU limit. With the
+/// early end and [`pace_teardown_poll`], that run scans 5 times again: a
+/// payload that exits on SIGTERM costs the scan before the signal plus one
+/// scan per poll until it is gone, usually one.
 pub(crate) fn term_payload_group(
     lineage: &mut PayloadLineage,
     pgid: u32,
     grace: Duration,
     label: &str,
-) {
-    let _ = lineage.observe();
+) -> bool {
+    let scan_started = Instant::now();
+    let (live, _) = lineage.observe_or_recorded();
+    // The first poll is paced by this scan too, which gives processes that
+    // exit on SIGTERM that long to do so before they are looked for.
+    let mut last_scan = scan_started.elapsed();
     signal_group(libc::SIGTERM, pgid);
-    let reached = lineage.term_unsignalled(Some(pgid));
+    let reached = lineage.term_listed(&live, Some(pgid));
     if !reached.is_empty() {
         eprintln!(
             "{label}: SIGTERM {} payload process(es) outside process group -{pgid}: {}",
@@ -3813,8 +3848,11 @@ pub(crate) fn term_payload_group(
     }
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
-        let reached = lineage.term_unsignalled(Some(pgid));
+        pace_teardown_poll(last_scan, deadline);
+        let scan_started = Instant::now();
+        let (live, observed) = lineage.observe_or_recorded();
+        last_scan = scan_started.elapsed();
+        let reached = lineage.term_listed(&live, Some(pgid));
         if !reached.is_empty() {
             eprintln!(
                 "{label}: SIGTERM {} further payload process(es) found during the grace period: {}",
@@ -3822,16 +3860,47 @@ pub(crate) fn term_payload_group(
                 describe_identities(&reached)
             );
         }
+        if observed
+            && live
+                .iter()
+                .all(|identity| exempt_from_teardown_signals(identity.pid))
+        {
+            return true;
+        }
     }
+    false
+}
+
+/// Sleep before the next teardown poll for at least [`TEARDOWN_POLL_MILLIS`]
+/// and at least `last_scan`, the time the previous poll's `/proc` scan took,
+/// but not past `deadline`. Scanning therefore takes at most about half of a
+/// grace or settle window however slow `/proc` is, instead of all of it.
+fn pace_teardown_poll(last_scan: Duration, deadline: Instant) {
+    let pause = last_scan.max(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    thread::sleep(pause.min(remaining));
 }
 
 /// Deadline and supervisor-signal path, second half: SIGKILL the process group
 /// `pgid` and every live recorded payload process outside it. Returns whether
-/// the group signal was delivered. A process a killed parent forked after the
-/// last observation is reparented to this subreaper and recorded by the
-/// normal-exit teardown that follows.
-pub(crate) fn kill_payload_group(lineage: &mut PayloadLineage, pgid: u32, label: &str) -> bool {
+/// the group signal was delivered.
+///
+/// `grace_emptied` is [`term_payload_group`]'s result. When it is true, the
+/// last observation found no recorded process alive, so no recorded process
+/// was left to fork and this skips its own `/proc` scan and sends only the
+/// group signal. A process a killed parent forked after the last observation
+/// is reparented to this subreaper and recorded by the normal-exit teardown
+/// that follows.
+pub(crate) fn kill_payload_group(
+    lineage: &mut PayloadLineage,
+    pgid: u32,
+    grace_emptied: bool,
+    label: &str,
+) -> bool {
     let kill_sent = signal_group(libc::SIGKILL, pgid);
+    if grace_emptied {
+        return kill_sent;
+    }
     let live = lineage.live_or_recorded();
     let reached = signal_identities(&live, Some(pgid), libc::SIGKILL);
     if !reached.is_empty() {
@@ -3994,7 +4063,8 @@ const TEARDOWN_POLL_MILLIS: u64 = 20;
 ///
 /// Worst case this spends [`TEARDOWN_KILL_ROUNDS`] ×
 /// [`TEARDOWN_KILL_SETTLE_MILLIS`] (6 s) waiting for kills to land, plus one
-/// census per round and one `/proc` scan per 20 ms settle poll.
+/// census per round and one `/proc` scan per settle poll. Polls are paced by
+/// [`pace_teardown_poll`]: every 20 ms, or less often when a scan takes longer.
 ///
 /// Callers must have reaped, or given up on, the direct payload child first:
 /// the census reaps adopted children with `waitpid(-1)`.
@@ -4038,8 +4108,10 @@ pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> 
             // A killed member whose parent was also killed is reparented to
             // this subreaper as a zombie; reaping it is what makes it absent.
             reap_exited_children();
-            let forked: Vec<_> = lineage
-                .live_or_recorded()
+            let scan_started = Instant::now();
+            let live = lineage.live_or_recorded();
+            let last_scan = scan_started.elapsed();
+            let forked: Vec<_> = live
                 .into_iter()
                 .filter(|identity| {
                     !targets.contains(identity) && !exempt_from_teardown_signals(identity.pid)
@@ -4064,7 +4136,7 @@ pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> 
             {
                 break;
             }
-            thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+            pace_teardown_poll(last_scan, settle);
         }
         capture = census(lineage);
     }
@@ -4103,7 +4175,8 @@ pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> 
 ///
 /// The lineage is observed before any signal. Every live recorded identity
 /// gets SIGTERM and up to `grace` to exit on its own, so a publication or
-/// cleanup step can finish writing. Each 20 ms poll of that grace observes the
+/// cleanup step can finish writing. Each poll of that grace (every 20 ms, or
+/// less often when a scan is slower; see [`pace_teardown_poll`]) observes the
 /// lineage again and sends SIGTERM to every newly recorded process, including
 /// a child a SIGTERM handler forked and a process reparented here when its
 /// parent exited. Whatever remains is then disposed of by
@@ -4136,7 +4209,9 @@ pub(crate) fn tear_down_payload_domain(
         let deadline = Instant::now() + grace;
         loop {
             reap_exited_children();
+            let scan_started = Instant::now();
             let more = lineage.term_unsignalled(None);
+            let last_scan = scan_started.elapsed();
             if !more.is_empty() {
                 eprintln!(
                     "{label}: SIGTERM {} further payload process(es) found during the grace \
@@ -4145,13 +4220,14 @@ pub(crate) fn tear_down_payload_domain(
                     describe_identities(&more)
                 );
             }
-            let all_gone = lineage.termed.iter().all(|identity| {
-                matches!(exact_process_liveness(identity), Ok(false))
-            });
+            let all_gone = lineage
+                .termed
+                .iter()
+                .all(|identity| matches!(exact_process_liveness(identity), Ok(false)));
             if all_gone || Instant::now() >= deadline {
                 break;
             }
-            thread::sleep(Duration::from_millis(TEARDOWN_POLL_MILLIS));
+            pace_teardown_poll(last_scan, deadline);
         }
     }
     kill_payload_domain(lineage, label)
@@ -4764,7 +4840,7 @@ fn supervise_child(
     }
 }
 
-/// SIGTERM then (after a grace period) SIGKILL the child's process group, and
+/// SIGTERM then (after up to a grace period) SIGKILL the child's process group, and
 /// reap the direct child. The child was spawned with `process_group(0)`, so its
 /// pid equals its pgid and signalling `-pid` reaches the whole land subtree
 /// (gh / git / cargo), not just the wrapper shell.
@@ -4784,14 +4860,21 @@ fn terminate_child_group(child: &mut Child, pr: &str, lineage: &mut PayloadLinea
     // Do not reap the leader during the grace: its exact PID keeps the
     // captured process group identity from disappearing or being reused
     // before final KILL.
-    term_payload_group(
+    let grace_emptied = term_payload_group(
         lineage,
         pgid,
         Duration::from_secs(CHILD_TERM_GRACE_SECONDS),
         "landing-lock",
     );
-    eprintln!("landing-lock: grace expired for PR #{pr}; SIGKILL process group {group}");
-    let kill_sent = kill_payload_group(lineage, pgid, "landing-lock");
+    if grace_emptied {
+        eprintln!(
+            "landing-lock: every recorded payload process exited during the grace for PR #{pr}; \
+             SIGKILL process group {group}"
+        );
+    } else {
+        eprintln!("landing-lock: grace expired for PR #{pr}; SIGKILL process group {group}");
+    }
+    let kill_sent = kill_payload_group(lineage, pgid, grace_emptied, "landing-lock");
     let child_reaped = if kill_sent {
         child.wait().is_ok()
     } else {
@@ -7497,7 +7580,9 @@ exit 0
             child: vec![
                 OsString::from("/bin/bash"),
                 OsString::from("-c"),
-                OsString::from(parent_waits_payload(&format!("env -u {PAYLOAD_DOMAIN_ENV}"))),
+                OsString::from(parent_waits_payload(&format!(
+                    "env -u {PAYLOAD_DOMAIN_ENV}"
+                ))),
                 OsString::from("payload-leader"),
                 identities_path.clone().into_os_string(),
                 fifo.clone().into_os_string(),
@@ -7540,12 +7625,26 @@ exit 0
         let holder_left = lock.read_holder().unwrap().is_some();
         let _ = fs::remove_dir_all(&root);
 
-        assert_eq!(identities.len(), 2, "fixture must record the parent and the grandchild");
+        assert_eq!(
+            identities.len(),
+            2,
+            "fixture must record the parent and the grandchild"
+        );
         assert_eq!(facts.len(), 4, "unexpected grandchild facts {facts:?}");
         let grandchild = identities[1].pid.to_string();
-        assert_eq!(facts[0], grandchild, "the grandchild must lead its own session");
-        assert_eq!(facts[2], identities[0].pid.to_string(), "the grandchild must be the parent's child");
-        assert_eq!(facts[3], "unset", "the grandchild must carry no payload token");
+        assert_eq!(
+            facts[0], grandchild,
+            "the grandchild must lead its own session"
+        );
+        assert_eq!(
+            facts[2],
+            identities[0].pid.to_string(),
+            "the grandchild must be the parent's child"
+        );
+        assert_eq!(
+            facts[3], "unset",
+            "the grandchild must carry no payload token"
+        );
         assert!(
             survivors.is_empty(),
             "the parent-waits payload survived teardown: {survivors:?} (run result {result:?})"
@@ -7568,6 +7667,109 @@ exit 0
     #[test]
     fn deadline_teardown_kills_the_tokenless_grandchild_of_a_waiting_setsid_landing_parent() {
         run_parent_waits_landing_payload("parent-waits-deadline", "wait", 2);
+    }
+
+    /// Run `program args` as a gated payload, wait for `ready` to exist when
+    /// given, SIGTERM its group through [`term_payload_group`] with `grace`,
+    /// then SIGKILL through [`kill_payload_group`]. Returns what the grace
+    /// reported, how long it took, and the leader's terminating signal.
+    fn deadline_grace_outcome(
+        program: &str,
+        args: &[OsString],
+        ready: Option<&Path>,
+        grace: Duration,
+    ) -> (bool, Duration, Option<i32>) {
+        let mut gated = spawn_gated_child(&OsString::from(program), args, |_| {}).unwrap();
+        gated.release().unwrap();
+        if let Some(ready) = ready {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !ready.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "payload never created {}",
+                    ready.display()
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let mut lineage = PayloadLineage::new(
+            std::process::id(),
+            gated.leader.start_ticks,
+            &gated.domain_token,
+            gated.pgid,
+        );
+        let started = Instant::now();
+        let emptied = term_payload_group(&mut lineage, gated.pgid, grace, "grace-test");
+        let elapsed = started.elapsed();
+        kill_payload_group(&mut lineage, gated.pgid, emptied, "grace-test");
+        let status = gated.child.wait().unwrap();
+        reap_exited_children();
+        (emptied, elapsed, status.signal())
+    }
+
+    /// The deadline path's SIGTERM grace ends once a successful observation
+    /// finds no recorded payload process alive. An earlier revision of this
+    /// change scanned `/proc` every 20 ms for the whole 5 s grace, which spent
+    /// 7.4 to 11.9 s of system CPU per `--child-deadline 1` run on devbig014
+    /// and made `test_land_lock_full_protocol_is_bounded` in
+    /// ci-hub/tests/test_operational_bounds.py exceed its 5 s CPU limit.
+    #[test]
+    fn deadline_grace_ends_once_no_recorded_payload_process_is_alive() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let grace = Duration::from_secs(60);
+        let (emptied, elapsed, signal) =
+            deadline_grace_outcome("/bin/sleep", &[OsString::from("30")], None, grace);
+        assert_eq!(
+            signal,
+            Some(libc::SIGTERM),
+            "the payload leader must die of SIGTERM"
+        );
+        assert!(
+            emptied,
+            "the grace ran to its end after {elapsed:?} although the payload died of SIGTERM"
+        );
+        assert!(
+            elapsed < grace,
+            "the grace took {elapsed:?}, all of its {grace:?}"
+        );
+    }
+
+    /// NEGATIVE CONTROL for the early end: a recorded payload process that
+    /// ignores SIGTERM keeps the grace running to its end, and the SIGKILL half
+    /// still kills it.
+    #[test]
+    fn deadline_grace_runs_to_its_end_while_a_recorded_payload_process_lives() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("grace-negative-control");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let ready = root.join("trap-installed");
+        let grace = Duration::from_secs(1);
+        let (emptied, elapsed, signal) = deadline_grace_outcome(
+            "/bin/bash",
+            &[
+                OsString::from("-c"),
+                OsString::from(r#"trap '' TERM; : > "$1"; exec /bin/sleep 30"#),
+                OsString::from("grace-negative-control"),
+                ready.clone().into_os_string(),
+            ],
+            Some(&ready),
+            grace,
+        );
+        let _ = fs::remove_dir_all(&root);
+        assert!(!emptied, "the grace reported every recorded process gone");
+        assert!(
+            elapsed >= grace,
+            "the grace ended after {elapsed:?}, before {grace:?}"
+        );
+        assert_eq!(
+            signal,
+            Some(libc::SIGKILL),
+            "the payload leader must die of SIGKILL"
+        );
     }
 
     #[test]

@@ -83,7 +83,7 @@ status` prints it. No new validation starts while any record exists, and that
 includes records in this repository's other slots.
 
 At normal exit, teardown sends SIGTERM, waits up to 5 s, and then sends
-SIGKILL. Before the first signal and at every 20 ms poll after it, teardown
+SIGKILL. Before the first signal and at every poll after it, teardown
 records by exact identity (pid and start time) every process that started no
 earlier than the payload leader, does not carry another run's payload token,
 and is one of these:
@@ -98,10 +98,14 @@ and is one of these:
 
 A recorded process stays recorded after its parent dies. The teardown kills
 it, and if it is still alive after the last kill round the run quarantines
-instead of releasing. One case is not reached: a process that dropped the
-token, left the original group, and was already detached from its parent
-before teardown began. <https://github.com/rrnewton/dev-hermit/issues/428>
-tracks cgroup-based teardown for that case.
+instead of releasing. Each poll is one scan of `/proc`, which can take over a
+second on a loaded host, so polls run every 20 ms or, when the previous scan
+took longer than that, after a pause as long as that scan.
+
+One case is not reached: a process that dropped the token, left the original
+group, and was already detached from its parent before teardown began.
+<https://github.com/rrnewton/dev-hermit/issues/428> tracks cgroup-based
+teardown for that case.
 
 An acquirer with `--wait N` (N > 0) classifies the record on every poll:
 
@@ -144,9 +148,10 @@ overrun by one 3 s poll. After the child exits normally, teardown adds about
 a check that the payload domain is empty (another 11 s: the check stops
 starting new work after 5 s, but a set of 3 kill rounds started just before
 then still runs its 6 s). When the child deadline or a signal
-to the supervisor ends the run, the supervisor first spends 5 s of SIGTERM
-grace on the payload's process group and up to 5 s waiting for its SIGKILL,
-about 32 s in all. Each figure excludes the time the `/proc` scans and the
+to the supervisor ends the run, the supervisor first spends up to 5 s of
+SIGTERM grace on the payload's process group, ending it early once no recorded
+payload process is alive, and up to 5 s waiting for its SIGKILL, about 32 s
+in all. Each figure excludes the time the `/proc` scans and the
 residual census themselves take. The Hermit service's `RuntimeMaxSec` is
 `--wait` plus the child deadline plus 600 s, which covers all of these.
 
