@@ -3536,10 +3536,18 @@ def test_phase_timing_changes_no_output_file_and_no_stdout_result(
         r"wall=\d+\.\ds cpu=\d+\.\ds children_cpu=\d+\.\ds"
     )
     names = []
+    validations = []
     for text in timed_err.splitlines():
         match = line.fullmatch(text)
         assert match is not None, text
-        names.append(match["name"])
+        if match["name"].startswith("validate."):
+            validations.append(match["name"])
+        else:
+            names.append(match["name"])
+    # Every Stage 1 validation in the timed build sees data the silent build
+    # already validated in this process, so each one reuses that verdict.
+    assert validations
+    assert validations == ["validate.key", "validate.hit"] * (len(validations) // 2)
     # The live data is supplied directly here, so no stage1.* line appears.
     # verify_sources runs at both final publication boundaries inside
     # build.publish, and once more inside the CLI's recheck.

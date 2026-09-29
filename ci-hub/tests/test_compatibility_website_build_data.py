@@ -1973,10 +1973,13 @@ def test_phase_timing_lines_go_to_stderr_only_and_never_change_stage1_data(
     assert build_data._canonical_bytes(timed) == build_data._canonical_bytes(silent)
     assert build_data._canonical_bytes(again) == build_data._canonical_bytes(silent)
     assert first.out == "" and second.out == ""
+    # The silent build already validated byte-identical Stage 1 data in this
+    # process, so both timed builds reuse that verdict.
     expected = [
         "stage1.checkouts", "stage1.export", "stage1.manifest_metadata",
         "stage1.checkouts", "stage1.provenance", "stage1.projection",
-        "stage1.reduce", "stage1.validate", "stage1.checkouts", "stage1.total",
+        "stage1.reduce", "validate.key", "validate.hit", "stage1.validate",
+        "stage1.checkouts", "stage1.total",
     ]
     lines = _phase_lines(first.err)
     later = _phase_lines(second.err)
@@ -2024,3 +2027,345 @@ def test_phase_timing_reports_a_raising_phase_and_reraises_the_same_error(
     [line] = _phase_lines(captured.err)
     assert line["name"] == "stage1.projection" and line["build"] is None
     assert line["status"] == " status=raised"
+
+
+@pytest.fixture
+def counted_validation(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
+    """Start and end with an empty memo, and count every full validation."""
+    build_data._VALIDATION_MEMO.clear()
+    calls: list[int] = []
+    real = build_data._validate_build_data
+
+    def counted(value: Any) -> bytes:
+        calls.append(1)
+        return real(value)
+
+    monkeypatch.setattr(build_data, "_validate_build_data", counted)
+    yield calls
+    build_data._VALIDATION_MEMO.clear()
+
+
+def _verdict(value: Any) -> tuple[str, Any]:
+    try:
+        return ("pass", build_data._canonical_bytes(build_data.validate_build_data(value)))
+    except build_data.BuildRefused as error:
+        return ("refused", str(error))
+
+
+def _unmemoized_verdict(monkeypatch: pytest.MonkeyPatch, value: Any) -> tuple[str, Any]:
+    with monkeypatch.context() as patch:
+        patch.setattr(build_data, "_plain_value_digest", lambda _value: None)
+        return _verdict(value)
+
+
+def test_validation_memo_reuses_a_pass_only_for_byte_identical_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    before = len(counted_validation)
+    first = build_data.validate_build_data(value)
+    assert len(counted_validation) == before + 1
+    second = build_data.validate_build_data(copy.deepcopy(value))
+    assert len(counted_validation) == before + 1
+    assert second == first and second is not first and second is not value
+    # A caller mutating a returned verdict cannot change a later one.
+    first["cells"].clear()
+    first["counts"]["in_manifest_cell_count"] = -1
+    third = build_data.validate_build_data(value)
+    assert len(counted_validation) == before + 1
+    assert third == second
+
+
+def _reordered(value: dict[str, Any]) -> dict[str, Any]:
+    return dict(reversed(list(value.items())))
+
+
+def _count_to_bool(value: dict[str, Any]) -> dict[str, Any]:
+    assert value["counts"]["in_manifest_cell_count"] == 1
+    value["counts"]["in_manifest_cell_count"] = True
+    return value
+
+
+def _count_to_float(value: dict[str, Any]) -> dict[str, Any]:
+    value["counts"]["in_manifest_cell_count"] = 1.0
+    return value
+
+
+def _cells_to_tuple(value: dict[str, Any]) -> dict[str, Any]:
+    value["cells"] = tuple(value["cells"])
+    return value
+
+
+def _one_character(value: dict[str, Any]) -> dict[str, Any]:
+    value["cells"][0]["test"] += "x"
+    return value
+
+
+def _false_admitted_count(value: dict[str, Any]) -> dict[str, Any]:
+    value["runs"]["projection_admitted_physical_row_count"] = 0
+    return value
+
+
+def _dropped_field(value: dict[str, Any]) -> dict[str, Any]:
+    del value["runs"]
+    return value
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        _reordered,
+        _count_to_bool,
+        _count_to_float,
+        _cells_to_tuple,
+        _one_character,
+        _false_admitted_count,
+        _dropped_field,
+    ],
+)
+def test_validation_memo_revalidates_any_byte_difference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    counted_validation: list[int],
+    change: Any,
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    assert _verdict(value)[0] == "pass"
+    changed = change(copy.deepcopy(value))
+    expected = _unmemoized_verdict(monkeypatch, changed)
+    before = len(counted_validation)
+    assert _verdict(changed) == expected
+    assert len(counted_validation) == before + 1
+    # Asking again gives the same verdict.  Only a pass is remembered.
+    assert _verdict(changed) == expected
+    assert len(counted_validation) == before + 1 + (expected[0] == "refused")
+
+
+def test_validation_memo_never_turns_a_refusal_into_a_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    value["runs"]["projection_admitted_physical_row_count"] = 0
+    entries = dict(build_data._VALIDATION_MEMO)
+    before = len(counted_validation)
+    messages = []
+    for _ in range(3):
+        with pytest.raises(build_data.BuildRefused, match="admitted counts") as raised:
+            build_data.validate_build_data(value)
+        messages.append(str(raised.value))
+    assert len(set(messages)) == 1
+    assert len(counted_validation) == before + 3
+    assert build_data._VALIDATION_MEMO == entries
+
+
+class _Text(str):
+    pass
+
+
+class _Object(dict):
+    pass
+
+
+def _text_subclass(value: dict[str, Any]) -> dict[str, Any]:
+    value["cells"][0]["test"] = _Text(value["cells"][0]["test"])
+    return value
+
+
+def _object_subclass(value: dict[str, Any]) -> dict[str, Any]:
+    return _Object(value)
+
+
+def _cyclic(value: dict[str, Any]) -> dict[str, Any]:
+    value["cells"].append(value["cells"])
+    return value
+
+
+@pytest.mark.parametrize("change", [_text_subclass, _object_subclass, _cyclic])
+def test_validation_memo_never_remembers_a_value_that_is_not_plain_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    counted_validation: list[int],
+    change: Any,
+) -> None:
+    value = change(_validated_stage1_fixture(monkeypatch, tmp_path))
+    assert build_data._plain_value_digest(value) is None
+    expected = _unmemoized_verdict(monkeypatch, value)
+    entries = dict(build_data._VALIDATION_MEMO)
+    before = len(counted_validation)
+    assert _verdict(value) == expected
+    assert _verdict(value) == expected
+    assert len(counted_validation) == before + 2
+    assert build_data._VALIDATION_MEMO == entries
+
+
+def test_plain_value_digest_separates_values_that_compare_equal() -> None:
+    digest = build_data._plain_value_digest
+    assert digest([1]) != digest([True]) != digest([1.0])
+    assert digest([1]) != digest((1,))
+    assert digest({"a": 1, "b": 2}) != digest({"b": 2, "a": 1})
+    assert digest({"a": "x"}) == digest({"a": "x"})
+    assert digest(_Text("x")) is None and digest({"a": _Object()}) is None
+
+
+def _patched(target: str) -> tuple[Any, str, Any]:
+    refusal = build_data.BuildRefused("patched validator refuses")
+
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise refusal
+
+    modules = build_data._modules()
+    stand_in = type(modules.reducer)("stand_in_reducer")
+    vars(stand_in).update(
+        {key: item for key, item in vars(modules.reducer).items() if not key.startswith("__")}
+    )
+    stand_in.reduce_inputs = refuse
+    return {
+        "publishable_output": (build_data, "_require_publishable_output", refuse),
+        "schema_version": (build_data, "SCHEMA_VERSION", build_data.SCHEMA_VERSION + 1),
+        "reducer": (modules.reducer, "reduce_inputs", refuse),
+        "loaded_modules": (
+            build_data,
+            "_LOADED_MODULES",
+            build_data.Modules(
+                export_inputs=modules.export_inputs,
+                reducer=stand_in,
+                rust_toolchain=modules.rust_toolchain,
+            ),
+        ),
+    }[target]
+
+
+@pytest.mark.parametrize(
+    "target", ["publishable_output", "schema_version", "reducer", "loaded_modules"]
+)
+def test_validation_memo_revalidates_when_reachable_validator_state_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    counted_validation: list[int],
+    target: str,
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    passed = _verdict(value)
+    assert passed[0] == "pass"
+    before = len(counted_validation)
+    owner, name, replacement = _patched(target)
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, name, replacement)
+        with pytest.raises(build_data.BuildRefused):
+            build_data.validate_build_data(value)
+    assert len(counted_validation) == before + 1
+    # Restoring the same objects restores the same state, so the first pass
+    # is reused.
+    assert _verdict(value) == passed
+    assert len(counted_validation) == before + 1
+
+
+def test_validation_memo_revalidates_when_a_recorded_digest_disagrees(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    passed = _verdict(value)
+    key = next(
+        key
+        for key in build_data._VALIDATION_MEMO
+        if key[0] == build_data._plain_value_digest(value)
+    )
+    anchors = build_data._VALIDATION_MEMO[key][1]
+    build_data._VALIDATION_MEMO[key] = (bytes(32), anchors)
+    before = len(counted_validation)
+    assert _verdict(value) == passed
+    assert len(counted_validation) == before + 1
+
+
+def test_validation_memo_keeps_at_most_sixteen_recent_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    import itertools
+
+    orders = [
+        {key: value[key] for key in order}
+        for order in itertools.islice(itertools.permutations(value), 24)
+    ]
+    assert len(orders) > build_data._VALIDATION_MEMO_LIMIT + 1
+    build_data._VALIDATION_MEMO.clear()
+    start = len(counted_validation)
+    for ordered in orders:
+        assert _verdict(ordered)[0] == "pass"
+        # Keep the first ordering recent; it must survive every eviction.
+        assert _verdict(orders[0])[0] == "pass"
+    # One full validation per distinct ordering: the recently used first
+    # ordering was never evicted and validated again.
+    assert len(counted_validation) - start == len(orders)
+    assert len(build_data._VALIDATION_MEMO) == build_data._VALIDATION_MEMO_LIMIT
+    before = len(counted_validation)
+    assert _verdict(orders[0])[0] == "pass"
+    assert len(counted_validation) == before
+    assert _verdict(orders[1])[0] == "pass"
+    assert len(counted_validation) == before + 1
+
+
+def test_validation_never_mutates_its_input_and_performs_no_io(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, counted_validation: list[int]
+) -> None:
+    import pickle
+
+    value = _validated_stage1_fixture(monkeypatch, tmp_path)
+    exact = pickle.dumps(value)
+    build_data._VALIDATION_MEMO.clear()
+    events: list[str] = []
+    active = [True]
+
+    def audit(event: str, _args: Any) -> None:
+        if active[0] and (
+            event in {"open", "socket.connect", "subprocess.Popen"}
+            or event.startswith(("os.exec", "os.posix_spawn", "os.spawn", "os.system"))
+            or event.startswith(("os.listdir", "os.scandir", "os.remove", "os.rename"))
+        ):
+            events.append(event)
+
+    sys.addaudithook(audit)
+    before = len(counted_validation)
+    try:
+        miss = build_data.validate_build_data(value)
+        hit = build_data.validate_build_data(value)
+    finally:
+        active[0] = False
+    assert len(counted_validation) == before + 1
+    assert events == []
+    assert miss == hit
+    assert pickle.dumps(value) == exact
+
+
+def test_validation_state_reaches_the_loaded_modules_and_holds_no_hidden_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _validated_stage1_fixture(monkeypatch, tmp_path)
+    identities, anchors = build_data._validation_state()
+    assert build_data._validation_state()[0] == identities
+    namespaces = {
+        id(anchor): anchor
+        for anchor in anchors
+        if isinstance(anchor, dict) and "__builtins__" in anchor
+    }
+    modules = build_data._modules()
+    for module in (build_data, modules.export_inputs, modules.reducer, modules.rust_toolchain):
+        assert id(vars(module)) in namespaces
+    tests = str(REPOSITORY / "ci-hub/tests") + os.sep
+    # Only the memo itself and phase-timing bookkeeping may change without
+    # rebinding.  The two reader tables are never read by validation.
+    allowed = {
+        ("build_data.py", "_PHASE_STATE"),
+        ("build_data.py", "_VALIDATION_MEMO"),
+        ("validate_rows.py", "HISTORICAL_REPOSITORY_MISMATCHES"),
+        ("ledger.py", "_SHARED_TYPE_CACHE_MODES"),
+    }
+    mutable = {
+        (Path(namespace["__file__"]).name, name)
+        for namespace in namespaces.values()
+        if not str(namespace.get("__file__", "")).startswith(tests)
+        for name, item in namespace.items()
+        if not name.startswith("__")
+        and isinstance(item, (dict, list, set, bytearray))
+    }
+    assert mutable <= allowed, sorted(mutable - allowed)

@@ -13,11 +13,13 @@ import hashlib
 import importlib.util
 import json
 import os
+import pickle
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import types
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -2021,7 +2023,8 @@ def _validate_stage_provenance(
     return dict(item)
 
 
-def _validate_build_data(value: Any) -> dict[str, Any]:
+def _validate_build_data(value: Any) -> bytes:
+    """Check Stage 1 data and return its canonical bytes; see validate_build_data."""
     data = _exact_object(
         value,
         "build data",
@@ -2219,14 +2222,153 @@ def _validate_build_data(value: Any) -> dict[str, Any]:
         raise BuildRefused("published cells omit or add a reducer result")
 
     _require_publishable_output(data)
-    return json.loads(_canonical_bytes(data))
+    return _canonical_bytes(data)
+
+
+# validate_build_data runs about 14 times per hosted rebuild, at about 48 s
+# each, mostly on Stage 1 data that is byte-identical across the rebuild's five
+# Stage 1 builds.  Its verdict is a pure function of the input value and of the
+# code it runs, so one process remembers the passes it has already computed.
+#
+# The key has two parts.  The first is the SHA-256 of a pickle of the input
+# that admits only exact built-in value types: any difference in a value, a
+# type (list or tuple, int or bool or float), a dict key order, or a list order
+# changes it.  An input holding any other type, such as a str or dict subclass
+# or a custom Mapping, is never memoized.  The second is the identity of every
+# global of every ci-hub module the validator can reach, with strong
+# references held so no identity is reused: rebinding a function, module,
+# constant or reader re-validates.  Only passes are remembered.  A refusal is
+# recomputed and raised afresh on every call, so an identical later call
+# raises the same error.  A hit re-encodes the input and returns a fresh
+# object only when those canonical bytes have the digest the first pass
+# returned; otherwise it re-validates.
+_VALIDATION_MEMO: dict[
+    tuple[bytes, tuple[int, ...]], tuple[bytes, tuple[Any, ...]]
+] = {}
+_VALIDATION_MEMO_LIMIT = 16
+
+
+class _Unmemoizable(Exception):
+    pass
+
+
+class _PlainValuePickler(pickle.Pickler):
+    def reducer_override(self, obj: Any) -> Any:
+        # The C pickler calls this for every object it does not encode
+        # natively.  That includes every subclass of a built-in value type.
+        raise _Unmemoizable(type(obj).__name__)
+
+
+class _DigestWriter:
+    __slots__ = ("digest",)
+
+    def __init__(self) -> None:
+        self.digest = hashlib.sha256()
+
+    def write(self, data: Any) -> int:
+        self.digest.update(data)
+        return len(data)
+
+
+def _plain_value_digest(value: Any) -> bytes | None:
+    """Digest the exact value tree, or return None when it is not plain data."""
+    writer = _DigestWriter()
+    pickler = _PlainValuePickler(writer, protocol=5)
+    # Without the pickle memo, shared references are written out in full, so
+    # the bytes describe the value tree, not its aliasing.  The validator never
+    # mutates its input and never compares object identities, so aliasing
+    # cannot change its verdict.  A cyclic value is refused here and is then
+    # validated without the memo.
+    pickler.fast = True
+    try:
+        pickler.dump(value)
+    except Exception:
+        return None
+    return writer.digest.digest()
+
+
+def _ci_hub_namespace(value: Any, prefix: str) -> dict[str, Any] | None:
+    """Return the globals of a ci-hub module, or of a ci-hub function's module."""
+    if isinstance(value, types.ModuleType):
+        namespace = vars(value)
+    elif isinstance(value, types.FunctionType):
+        namespace = value.__globals__
+    else:
+        return None
+    origin = namespace.get("__file__")
+    if not isinstance(origin, str):
+        return None
+    if origin.startswith(prefix) or os.path.realpath(origin).startswith(prefix):
+        return namespace
+    return None
+
+
+def _validation_state() -> tuple[tuple[int, ...], tuple[Any, ...]]:
+    """Identify every global of every ci-hub module the validator can reach.
+
+    The walk starts at this module and follows every global that is a ci-hub
+    module, a function defined in a ci-hub module, or a field of the loaded
+    ``Modules``.  The standard library is treated as fixed for the life of
+    the process.
+    """
+    prefix = os.path.realpath(CI_HUB) + os.sep
+    identities: list[int] = []
+    anchors: list[Any] = []
+    visited: set[int] = set()
+    pending: list[dict[str, Any]] = [validate_build_data.__globals__]
+    while pending:
+        namespace = pending.pop()
+        if id(namespace) in visited:
+            continue
+        visited.add(id(namespace))
+        identities.append(id(namespace))
+        anchors.append(namespace)
+        for name, value in list(namespace.items()):
+            identities.extend((id(name), id(value)))
+            anchors.extend((name, value))
+            children = [value]
+            if isinstance(value, Modules):
+                children = [getattr(value, field) for field in Modules.__dataclass_fields__]
+                identities.extend(id(child) for child in children)
+                anchors.extend(children)
+            for child in children:
+                reached = _ci_hub_namespace(child, prefix)
+                if reached is not None:
+                    pending.append(reached)
+    return tuple(identities), tuple(anchors)
 
 
 def validate_build_data(value: Any) -> dict[str, Any]:
-    try:
-        return _validate_build_data(value)
-    except (KeyError, RecursionError, TypeError) as error:
-        raise BuildRefused(f"build data is malformed: {error}") from error
+    with phase("validate.key"):
+        digest = _plain_value_digest(value)
+        key = recorded = None
+        if digest is not None:
+            key = (digest, _validation_state()[0])
+            recorded = _VALIDATION_MEMO.get(key)
+    if key is not None and recorded is not None:
+        with phase("validate.hit"):
+            encoded = _canonical_bytes(value)
+            if hashlib.sha256(encoded).digest() == recorded[0]:
+                _VALIDATION_MEMO[key] = _VALIDATION_MEMO.pop(key)
+                return json.loads(encoded)
+    with phase("validate.miss" if digest is not None else "validate.unmemoized"):
+        try:
+            encoded = _validate_build_data(value)
+            result = json.loads(encoded)
+        except (KeyError, RecursionError, TypeError) as error:
+            raise BuildRefused(f"build data is malformed: {error}") from error
+    if digest is not None:
+        # Record the state after the pass: a lazily loaded reader bound during
+        # the first call is part of the state later calls see.
+        identities, anchors = _validation_state()
+        _VALIDATION_MEMO.pop((digest, identities), None)
+        _VALIDATION_MEMO[(digest, identities)] = (
+            hashlib.sha256(encoded).digest(),
+            anchors,
+        )
+        while len(_VALIDATION_MEMO) > _VALIDATION_MEMO_LIMIT:
+            del _VALIDATION_MEMO[next(iter(_VALIDATION_MEMO))]
+    return result
 
 
 def _build_from_captured(
