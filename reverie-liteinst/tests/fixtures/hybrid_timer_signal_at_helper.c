@@ -32,26 +32,27 @@
  * conditional branches.
  * Nothing else between the two syscalls retires a conditional branch.
  */
-#define ROUND(n)                                                               \
-  __asm__ volatile("mov $229, %%eax\n"                                         \
-                   "xor %%edi, %%edi\n"                                        \
-                   "xor %%esi, %%esi\n"                                        \
-                   "syscall\n"                                                 \
-                   "mov %0, %%rcx\n"                                           \
-                   "1: dec %%rcx\n"                                            \
-                   "jnz 1b\n"                                                  \
-                   "mov $110, %%eax\n"                                         \
-                   "mov $" #n ", %%edi\n"                                      \
-                   "syscall\n"                                                 \
-                   "mov %1, %%rcx\n"                                           \
-                   "2: dec %%rcx\n"                                            \
-                   "jnz 2b\n"                                                  \
-                   :                                                           \
-                   : "r"((uint64_t)(NOTIFICATION - 4 + (n) % OFFSETS)),        \
-                     "r"(after)                                                \
-                   : "rax", "rcx", "rdi", "rsi", "r11", "memory")
+#define ROUND(n)                                                      \
+  __asm__ volatile(                                                   \
+      "mov $229, %%eax\n"                                             \
+      "xor %%edi, %%edi\n"                                            \
+      "xor %%esi, %%esi\n"                                            \
+      "syscall\n"                                                     \
+      "mov %0, %%rcx\n"                                               \
+      "1: dec %%rcx\n"                                                \
+      "jnz 1b\n"                                                      \
+      "mov $110, %%eax\n"                                             \
+      "mov $" #n                                                      \
+      ", %%edi\n"                                                     \
+      "syscall\n"                                                     \
+      "mov %1, %%rcx\n"                                               \
+      "2: dec %%rcx\n"                                                \
+      "jnz 2b\n"                                                      \
+      :                                                               \
+      : "r"((uint64_t)(NOTIFICATION - 4 + (n) % OFFSETS)), "r"(after) \
+      : "rax", "rcx", "rdi", "rsi", "r11", "memory")
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc != 2) {
     return 2;
   }
