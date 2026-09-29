@@ -245,10 +245,13 @@ impl Default for HostRuntimeConfig {
 /// Initializes the host runtime from explicit controller configuration.
 ///
 /// Returns zero after the existing Begin/Ready handshake and instrumentation
-/// preparation, or a negative errno on failure. Null or unsupported-version
-/// configuration is rejected before initialization starts. A repeated or
-/// reentrant valid host attempt returns `-EALREADY`, including after a preparation
-/// failure: partially published runtime state cannot be rolled back here.
+/// preparation, or a negative errno on failure. A preparation failure after
+/// Begin is first reported at the Ready trap site with the distinct failed
+/// marker in RAX, closing the handshake without activating the runtime. Null
+/// or unsupported-version configuration is rejected before initialization
+/// starts. A repeated or reentrant valid host attempt returns `-EALREADY`,
+/// including after a preparation failure: partially published runtime state
+/// cannot be rolled back here.
 /// The existing constructor continues to select behavior from the environment.
 ///
 /// # Safety

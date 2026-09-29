@@ -2234,3 +2234,322 @@ async fn timer_overflow_in_the_patch_helper_is_the_timers() {
         "no helper run had the timer's signal: {output:?}"
     );
 }
+
+/// Records, in delivery order, every syscall the Tool receives and whether
+/// the backend attributed it to its runtime's bootstrap. The log lives in a
+/// file so that a failed session, which returns no global state, still
+/// yields it.
+#[derive(Default)]
+struct BootstrapLog {
+    path: PathBuf,
+}
+
+/// The log path, and whether the Tool refuses every file open that the
+/// backend attributes to the runtime's bootstrap.
+type BootstrapLogConfig = (PathBuf, bool);
+
+#[reverie::global_tool]
+impl GlobalTool for BootstrapLog {
+    type Request = String;
+    type Response = ();
+    type Config = BootstrapLogConfig;
+
+    async fn init_global_state(config: &BootstrapLogConfig) -> Self {
+        Self {
+            path: config.0.clone(),
+        }
+    }
+
+    async fn receive_rpc(&self, _from: Tid, line: String) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
+}
+
+#[derive(Default)]
+struct RecordRuntimeBootstrap;
+
+#[reverie::tool]
+impl Tool for RecordRuntimeBootstrap {
+    type GlobalState = BootstrapLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &BootstrapLogConfig) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), reverie::Errno> {
+        let bootstrap = u8::from(guest.is_backend_runtime_bootstrap());
+        guest.send_rpc(format!("exec {bootstrap}")).await;
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (nr, args) = syscall.into_parts();
+        let in_bootstrap = guest.is_backend_runtime_bootstrap();
+        // hybrid_exec_generation.c tags its own application calls this way.
+        let marker = u8::from(nr == Sysno::getpid && args.arg0 == 0x6e786578);
+        guest
+            .send_rpc(format!(
+                "syscall {} {} {marker}",
+                nr as i64,
+                u8::from(in_bootstrap)
+            ))
+            .await;
+        if marker == 1 {
+            return Ok(0x4242);
+        }
+        if in_bootstrap && guest.config().1 && matches!(nr, Sysno::open | Sysno::openat) {
+            return Err(reverie::Errno::EPERM.into());
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RecordedSyscall {
+    nr: Sysno,
+    bootstrap: bool,
+    marker: bool,
+}
+
+/// The recorded syscalls, split at each post-exec callback. Element zero
+/// holds what preceded the first successful exec (the launcher).
+fn read_bootstrap_log(path: &std::path::Path) -> Vec<Vec<RecordedSyscall>> {
+    let text = fs::read_to_string(path).expect("the Tool recorded no events");
+    let mut generations = vec![Vec::new()];
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split(' ').collect();
+        match fields.as_slice() {
+            ["exec", bootstrap] => {
+                assert_eq!(
+                    *bootstrap, "0",
+                    "a post-exec callback ran inside the runtime bootstrap window"
+                );
+                generations.push(Vec::new());
+            }
+            ["syscall", nr, bootstrap, marker] => {
+                generations.last_mut().unwrap().push(RecordedSyscall {
+                    nr: Sysno::from(nr.parse::<i32>().unwrap()),
+                    bootstrap: *bootstrap == "1",
+                    marker: *marker == "1",
+                })
+            }
+            _ => panic!("malformed bootstrap log line {line:?}"),
+        }
+    }
+    generations
+}
+
+fn format_generation(syscalls: &[RecordedSyscall]) -> String {
+    syscalls
+        .iter()
+        .map(|s| format!("{}{}", s.nr, if s.bootstrap { "*" } else { "" }))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Returns the exact index range of the one contiguous run of syscalls
+/// attributed to the runtime bootstrap in one exec generation, requiring it
+/// to contain each of `runtime_work`.
+fn bootstrap_window(
+    generation: usize,
+    syscalls: &[RecordedSyscall],
+    runtime_work: &[Sysno],
+) -> std::ops::Range<usize> {
+    let first = syscalls
+        .iter()
+        .position(|s| s.bootstrap)
+        .unwrap_or_else(|| {
+            panic!(
+                "generation {generation}: no syscall was attributed to the runtime bootstrap: {}",
+                format_generation(syscalls)
+            )
+        });
+    let end = first
+        + syscalls[first..]
+            .iter()
+            .position(|s| !s.bootstrap)
+            .unwrap_or(syscalls.len() - first);
+    assert!(
+        syscalls[end..].iter().all(|s| !s.bootstrap),
+        "generation {generation}: the bootstrap window is not one contiguous run: {}",
+        format_generation(syscalls)
+    );
+    // The dynamic loader maps the preload before its constructor reaches the
+    // begin trap, so the window never starts at the generation's first call.
+    assert!(
+        first > 0,
+        "generation {generation}: loader syscalls before the begin trap were attributed to the runtime: {}",
+        format_generation(syscalls)
+    );
+    let window = &syscalls[first..end];
+    for &expected in runtime_work {
+        assert!(
+            window.iter().any(|s| s.nr == expected),
+            "generation {generation}: the bootstrap window lacks the runtime's {expected}: {}",
+            format_generation(syscalls)
+        );
+    }
+    assert!(
+        window.iter().all(|s| !s.marker),
+        "generation {generation}: an application call was attributed to the runtime: {}",
+        format_generation(syscalls)
+    );
+    first..end
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_bootstrap_window_is_exactly_between_begin_and_ready_in_every_exec_generation() {
+    let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
+    let log_directory = tempfile::tempdir().unwrap();
+    let log = log_directory.path().join("bootstrap.log");
+    let mut command = Command::new(&guest);
+    command.arg("hot").arg("0");
+    let (output, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_host_with_output_and_preload::<RecordRuntimeBootstrap>(
+            command,
+            (log.clone(), false),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("exec generations did not finish")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"exec-generations-finished\n");
+
+    let generations = read_bootstrap_log(&log);
+    // The launcher, then the initial image and its two replacement execs.
+    assert_eq!(generations.len(), 4, "{generations:?}");
+    assert!(
+        generations[0].iter().all(|s| !s.bootstrap),
+        "the launcher's syscalls were attributed to the runtime: {}",
+        format_generation(&generations[0])
+    );
+    for (generation, syscalls) in generations.iter().enumerate().skip(1) {
+        // The runtime reads /proc/self/maps and allocates memfd-backed
+        // trampoline arenas between its begin and ready traps.
+        let window = bootstrap_window(generation, syscalls, &[Sysno::openat, Sysno::memfd_create]);
+        // Everything after the ready trap is guest work, including the
+        // application's three tagged calls through its (then hooked) site
+        // and the final exec or exit.
+        let after_ready = &syscalls[window.end..];
+        assert_eq!(
+            after_ready.iter().filter(|s| s.marker).count(),
+            3,
+            "generation {generation}: {}",
+            format_generation(syscalls)
+        );
+        let last = after_ready.last().expect("no syscall followed Ready");
+        let expected_last = if generation == 3 {
+            Sysno::exit_group
+        } else {
+            Sysno::execve
+        };
+        assert_eq!(
+            last.nr,
+            expected_last,
+            "generation {generation}: {}",
+            format_generation(syscalls)
+        );
+    }
+}
+
+/// Runs the stage-2 image, whose runtime preparation fails after the begin
+/// trap, and returns its one exec generation and the session's refusal.
+async fn run_failed_runtime_preparation(
+    refuse_bootstrap_opens: bool,
+    invalid_staleness: bool,
+) -> (Vec<RecordedSyscall>, String) {
+    let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
+    let log_directory = tempfile::tempdir().unwrap();
+    let log = log_directory.path().join("bootstrap.log");
+    let mut command = Command::new(&guest);
+    command.arg("hot").arg("2");
+    if invalid_staleness {
+        // Preparation parses this before it issues any syscall.
+        command.env(STRADDLER_STALENESS_TICKS_ENV, "not-a-tick-count");
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_host_with_output_and_preload::<RecordRuntimeBootstrap>(
+            command,
+            (log.clone(), refuse_bootstrap_opens),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("failed runtime preparation hung");
+    let error = match result {
+        Ok((output, _)) => panic!("failed runtime preparation reported a run: {output:?}"),
+        Err(error) => error.to_string(),
+    };
+    let mut generations = read_bootstrap_log(&log);
+    assert_eq!(generations.len(), 2, "{generations:?}");
+    (generations.pop().unwrap(), error)
+}
+
+/// The constructor reports a failed preparation and calls _exit(127): the
+/// failure report must end the window, so its report and exit are not the
+/// runtime's bootstrap, and the session still refuses the run.
+fn assert_failure_closed_the_window(syscalls: &[RecordedSyscall], window_end: usize, error: &str) {
+    assert!(
+        error.contains(
+            "tracee terminated after its preload runtime reported that preparation failed"
+        ),
+        "the session did not refuse the failed runtime precisely: {error}"
+    );
+    let after = &syscalls[window_end..];
+    assert!(
+        after.iter().all(|s| !s.bootstrap && !s.marker),
+        "the window did not end at the failure report, or application code ran: {}",
+        format_generation(syscalls)
+    );
+    assert!(
+        after.iter().any(|s| s.nr == Sysno::write),
+        "the constructor's failure report followed no closed window: {}",
+        format_generation(syscalls)
+    );
+    assert_eq!(
+        after.last().map(|s| s.nr),
+        Some(Sysno::exit_group),
+        "{}",
+        format_generation(syscalls)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_preparation_failure_ends_the_bootstrap_window_and_fails_the_session() {
+    let (syscalls, error) = run_failed_runtime_preparation(true, false).await;
+    // The refused /proc/self/maps open is the runtime's last call in the
+    // window; the failure report at the ready site closes it.
+    let window = bootstrap_window(1, &syscalls, &[Sysno::openat]);
+    assert_eq!(
+        syscalls[window.end - 1].nr,
+        Sysno::openat,
+        "{}",
+        format_generation(&syscalls)
+    );
+    assert_failure_closed_the_window(&syscalls, window.end, &error);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_preparation_failure_before_any_runtime_syscall_leaves_no_window() {
+    let (syscalls, error) = run_failed_runtime_preparation(false, true).await;
+    assert!(
+        syscalls.iter().all(|s| !s.bootstrap),
+        "{}",
+        format_generation(&syscalls)
+    );
+    assert_failure_closed_the_window(&syscalls, 0, &error);
+}

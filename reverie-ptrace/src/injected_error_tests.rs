@@ -365,7 +365,7 @@ async fn run_with_transient_refusal(
         // Exercise the production legacy cleanup owner, using the maintained
         // activation bypass. This does not validate a real LiteInst preload.
         builder = builder
-            .liteinst_runtime("/not/used.so", 1, 2, 3, 4)
+            .liteinst_runtime("/not/used.so", 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test();
     }
     if let Some(refusal) = refusal {
@@ -541,7 +541,7 @@ async fn refusal_body(mode: &str, name: &str, deadline_ns: u64) {
     let mut tracer = TracerBuilder::<TrapTool>::new(command)
         .config(Mode::ChildToolError)
         .injected_syscall_trap(MARKER, fixture.trap_rip)
-        .liteinst_runtime("/not/used.so", 1, 2, 3, 4)
+        .liteinst_runtime("/not/used.so", 1, 2, 3, 4, 5)
         .activate_liteinst_without_handshake_for_test()
         .spawn()
         .await
@@ -686,7 +686,7 @@ async fn legacy_guard_capture_and_discard_preserve_success() {
         let tracer = TracerBuilder::<TrapTool>::new(command)
             .config(Mode::Success)
             .injected_syscall_trap(MARKER, fixture.trap_rip)
-            .liteinst_runtime("/not/used.so", 1, 2, 3, 4)
+            .liteinst_runtime("/not/used.so", 1, 2, 3, 4, 5)
             .activate_liteinst_without_handshake_for_test()
             .spawn()
             .await
@@ -874,7 +874,7 @@ async fn legacy_fatal_external_reaper_refusal_keeps_terminal_observation_and_own
     let tracer = TracerBuilder::<TrapTool>::new(guest)
         .config(Mode::ChildToolError)
         .injected_syscall_trap(MARKER, fixture.trap_rip)
-        .liteinst_runtime("/not/used.so", 1, 2, 3, 4)
+        .liteinst_runtime("/not/used.so", 1, 2, 3, 4, 5)
         .activate_liteinst_without_handshake_for_test()
         .spawn()
         .await

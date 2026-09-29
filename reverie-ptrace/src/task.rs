@@ -682,6 +682,9 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
+    /// RAX of the runtime's report, at the ready trap site, that its
+    /// preparation failed after the begin trap.
+    pub(crate) failed_marker: u64,
     pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
     /// Records a fail-closed LiteInst refusal raised by any task.
@@ -902,14 +905,25 @@ impl ActiveHookFootprint {
 enum LiteinstRuntimePhase {
     PreExec,
     Waiting,
+    /// Between the validated begin trap and the matching ready or failed
+    /// report of this execution generation.
     Bootstrap,
     Ready,
+    /// The runtime reported that its preparation failed after the begin trap.
+    /// Terminal for this execution generation: nothing leaves it, so every
+    /// exit, exec, signal, or executable-entry arrival fails closed exactly
+    /// as it does before Ready.
+    Failed,
 }
 
 #[derive(Clone, Debug)]
 struct LiteinstRuntimeState {
     phase: LiteinstRuntimePhase,
     frame: Option<LiteinstHandshakeFrame>,
+    /// The thread that executed the begin trap and so runs the runtime's
+    /// bootstrap. Another thread of the same process, or a process forked
+    /// from it, keeps running guest code while the phase is `Bootstrap`.
+    bootstrap_tid: Option<Pid>,
     generation: u64,
     ready_generation: Option<u64>,
     attempted_sites: HashSet<u64>,
@@ -928,6 +942,7 @@ impl Default for LiteinstRuntimeState {
         Self {
             phase: LiteinstRuntimePhase::PreExec,
             frame: None,
+            bootstrap_tid: None,
             generation: 0,
             ready_generation: None,
             attempted_sites: HashSet::new(),
@@ -1101,6 +1116,7 @@ fn callback_observation_decision(
 enum LiteinstTrap {
     HandshakeBegin,
     HandshakeReady,
+    HandshakeFailed,
     #[cfg(target_arch = "x86_64")]
     Syscall(usize),
     Invalid,
@@ -3459,16 +3475,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             state.phase = LiteinstRuntimePhase::Bootstrap;
             state.frame = Some(frame);
+            state.bootstrap_tid = Some(self.tid());
             return Some(LiteinstTrap::HandshakeBegin);
         }
-        if regs.rax == config.ready_marker {
+        if regs.rax == config.ready_marker || regs.rax == config.failed_marker {
+            // Both outcomes are reported at the ready trap site.
             let frame =
                 self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), true)?;
             let state = self.liteinst_runtime.lock().unwrap();
             if state.phase != LiteinstRuntimePhase::Bootstrap || state.frame != Some(frame) {
                 return None;
             }
-            return Some(LiteinstTrap::HandshakeReady);
+            return Some(if regs.rax == config.ready_marker {
+                LiteinstTrap::HandshakeReady
+            } else {
+                LiteinstTrap::HandshakeFailed
+            });
         }
         if regs.rax != config.syscall_marker {
             return None;
@@ -3600,6 +3622,23 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     state.phase = LiteinstRuntimePhase::Ready;
                     state.ready_generation = Some(state.generation);
+                }
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                ));
+            }
+            Some(LiteinstTrap::HandshakeFailed) => {
+                // The runtime returns its error to its caller. It is not
+                // active, so the executable-entry guard stays armed and this
+                // generation can no longer reach Ready: whatever the guest does
+                // next ends in a fail-closed refusal. Leaving Bootstrap now
+                // stops attributing the guest's own syscalls to the runtime.
+                {
+                    let mut state = self.liteinst_runtime.lock().unwrap();
+                    if state.phase != LiteinstRuntimePhase::Bootstrap {
+                        return Err(Errno::EPROTO.into());
+                    }
+                    state.phase = LiteinstRuntimePhase::Failed;
                 }
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
@@ -3761,7 +3800,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             LiteinstRuntimePhase::Ready => LiteinstActivationStage::PostReady,
             LiteinstRuntimePhase::PreExec
             | LiteinstRuntimePhase::Waiting
-            | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
+            | LiteinstRuntimePhase::Bootstrap
+            | LiteinstRuntimePhase::Failed => LiteinstActivationStage::PreReady,
         };
         let failure = LiteinstActivationFailure::new(stage, reason, error);
         if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
@@ -7227,15 +7267,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
             if phase != LiteinstRuntimePhase::Ready {
+                let detail = if phase == LiteinstRuntimePhase::Failed {
+                    "tracee terminated after its preload runtime reported that preparation failed"
+                        .to_owned()
+                } else {
+                    format!(
+                        "tracee terminated before the required preload handshake completed (phase {phase:?})"
+                    )
+                };
                 self.record_liteinst_failure(
                     LiteinstActivationFailureReason::TerminatedBeforeHandshake,
-                    Error::runtime(
-                        self.tid(),
-                        "verify LiteInst runtime activation",
-                        format!(
-                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
-                        ),
-                    ),
+                    Error::runtime(self.tid(), "verify LiteInst runtime activation", detail),
                 );
             }
         }
@@ -8506,6 +8548,22 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         self.command_bootstrap
     }
 
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        // Bootstrap is entered only by a validated begin trap in the Waiting
+        // phase and left only by the matching validated ready or failed report
+        // (classify_liteinst_trap, handle_sigtrap). The state is shared by the
+        // threads of one address space, copied into a forked child, and
+        // replaced on exec, so the window also names the one thread that runs
+        // the bootstrap: other threads and forked children run guest code.
+        // Exit, exec, a signal, or reaching the guarded executable entry inside
+        // the window fails the session closed.
+        if self.global_state.liteinst_runtime.is_none() {
+            return false;
+        }
+        let state = self.liteinst_runtime.lock().unwrap();
+        state.phase == LiteinstRuntimePhase::Bootstrap && state.bootstrap_tid == Some(self.tid())
+    }
+
     fn memory(&self) -> Self::Memory {
         self.assume_stopped()
     }
@@ -8918,6 +8976,7 @@ mod tests {
         old.phase = LiteinstRuntimePhase::Ready;
         old.generation = 41;
         old.ready_generation = Some(41);
+        old.bootstrap_tid = Some(Pid::from_raw(4242));
         old.frame = Some(LiteinstHandshakeFrame {
             begin_rip: 0x7000_1000,
             ..Default::default()
@@ -8934,6 +8993,7 @@ mod tests {
         assert_eq!(next.generation, 42);
         assert!(next.ready_generation.is_none());
         assert!(next.frame.is_none());
+        assert!(next.bootstrap_tid.is_none());
         assert!(next.attempted_sites.is_empty());
         assert!(next.fallback_sites.is_empty());
         assert!(next.active_hooks.is_empty());

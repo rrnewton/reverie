@@ -461,6 +461,14 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
         self.ppid
     }
 
+    // This in-process host has no begin/ready runtime window: the Tool
+    // receives syscalls only through the seccomp filter that
+    // reverie_preload::install arms as the last step of runtime installation,
+    // so the runtime's own setup is never delivered to it.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         LocalMemory::new()
     }

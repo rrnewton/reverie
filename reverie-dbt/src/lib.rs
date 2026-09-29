@@ -348,6 +348,12 @@ where
         self.ppid
     }
 
+    // DynamoRIO's own initialization is not delivered as application
+    // syscalls, and this backend has no begin/ready runtime window.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         LocalMemory::new()
     }

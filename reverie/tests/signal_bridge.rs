@@ -96,6 +96,11 @@ impl<T: Tool<GlobalState = (), ThreadState = ()>> Guest<T> for TestGuest {
         None
     }
 
+    // A test fake with no backend runtime.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         LocalMemory::new()
     }
