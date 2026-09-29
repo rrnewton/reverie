@@ -33,7 +33,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -2010,6 +2010,24 @@ fn publish_run_process_identity(
     record: &Path,
     owner: &ProcessOwner,
 ) -> Result<(), ValidateLockError> {
+    publish_run_process_identity_reporting(
+        tool_root,
+        record,
+        owner,
+        Duration::from_secs(LOCK_WAIT_REPORT_SECONDS),
+        &report_to_stderr,
+    )
+}
+
+/// `publish_run_process_identity`, reporting lock waits through `report` and
+/// repeating a report every `every` while one lasts.
+fn publish_run_process_identity_reporting(
+    tool_root: &Path,
+    record: &Path,
+    owner: &ProcessOwner,
+    every: Duration,
+    report: LockWaitReport<'_>,
+) -> Result<(), ValidateLockError> {
     if owner.pid == 0 || owner.start_ticks == 0 || owner.boot_id.trim().is_empty() {
         return Err(ValidateLockError::InvalidState(
             "run process_identity requires pid>0, start_ticks>0, and nonempty boot_id".into(),
@@ -2044,9 +2062,7 @@ fn publish_run_process_identity(
             start_ticks: owner.start_ticks,
             boot_id: owner.boot_id.clone(),
         };
-        validate_run_handle::bind_process_identity(tool_root, record, &identity)
-            .map_err(ValidateLockError::InvalidState)?;
-        return Ok(());
+        return bind_current_run_process_identity(tool_root, record, &identity, every, report);
     }
     let lock_path = parent.join(format!(".{file_name}.lock"));
     let lock = OpenOptions::new()
@@ -2060,8 +2076,8 @@ fn publish_run_process_identity(
         &lock_path,
         "the run-record lock",
         HolderLine::Never,
-        Duration::from_secs(LOCK_WAIT_REPORT_SECONDS),
-        &report_to_stderr,
+        every,
+        report,
     )
     .map_err(|source| io_error("lock run record", &lock_path, source))?;
 
@@ -2133,6 +2149,279 @@ fn publish_run_process_identity(
     let unlock =
         FileExt::unlock(&lock).map_err(|source| io_error("unlock run record", &lock_path, source));
     result.and(unlock)
+}
+
+/// run_registry.py's `RUN_WRITER_GENERATION_LOCK`, relative to a state root.
+const RUN_WRITER_GENERATION_LOCK: &str = "ignored/validate/run-writer-generation-v1.lock";
+
+/// The state root that run_registry.py's `_state_root_for_run_handle`
+/// derives for `record`: the directory above `ignored/validate/runs/`,
+/// matched by name on the absolute path, before any symlink is resolved.
+/// None for a record anywhere else; for such a record run_registry.py takes
+/// only the record's own lock, not the generation or population lock.
+fn run_handle_state_root(record: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(record).ok()?;
+    let runs = absolute.parent()?;
+    let validate = runs.parent()?;
+    let ignored = validate.parent()?;
+    let named =
+        |directory: &Path, name: &str| directory.file_name().and_then(|n| n.to_str()) == Some(name);
+    if named(runs, "runs") && named(validate, "validate") && named(ignored, "ignored") {
+        ignored.parent().map(Path::to_path_buf)
+    } else {
+        None
+    }
+}
+
+/// One of run_registry.py's locks, opened by this process only so that it can
+/// wait for the lock where the wait can be reported.
+struct RunRegistryLock {
+    file: File,
+    path: PathBuf,
+    what: &'static str,
+}
+
+impl RunRegistryLock {
+    /// The generation lock, opened as run_registry.py opens it (created 0600,
+    /// no symlink followed), and accepted only as the regular single-link
+    /// file that run_registry.py accepts.
+    fn generation(canonical_root: &Path) -> Result<Self, String> {
+        let path = canonical_root.join(RUN_WRITER_GENERATION_LOCK);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| format!("cannot stat {}: {error}", path.display()))?;
+        let named = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot lstat {}: {error}", path.display()))?;
+        if !opened.is_file()
+            || opened.nlink() != 1
+            || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
+        {
+            return Err(format!(
+                "{} is not the regular single-link file run_registry.py requires",
+                path.display()
+            ));
+        }
+        Ok(Self {
+            file,
+            path,
+            what: "the run-writer generation lock",
+        })
+    }
+
+    /// The population lock: a flock on the canonical state-root directory.
+    fn population(canonical_root: &Path) -> Result<Self, String> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(canonical_root)
+            .map_err(|error| format!("cannot open {}: {error}", canonical_root.display()))?;
+        Ok(Self {
+            file,
+            path: canonical_root.to_path_buf(),
+            what: "the run-population lock on the state root",
+        })
+    }
+
+    /// The record's own `.<name>.lock` beside it, as `exclusive_record` names it.
+    fn record(record: &Path) -> Result<Self, String> {
+        let name = record
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("run record has no UTF-8 filename: {}", record.display()))?;
+        let path = record.with_file_name(format!(".{name}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+        Ok(Self {
+            file,
+            path,
+            what: "the run-record lock",
+        })
+    }
+
+    /// Wait for the lock, logged. False, after saying why, when the wait
+    /// itself failed; run_registry.py then meets the lock unannounced.
+    fn wait(&self, mode: LockMode, every: Duration, report: LockWaitReport<'_>) -> bool {
+        match lock_logged(
+            &self.file,
+            &self.path,
+            self.what,
+            HolderLine::Never,
+            mode,
+            every,
+            report,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                report(&format!(
+                    "validate-lock: could not wait for {} {} before run_registry.py takes it \
+                     ({error}); run_registry.py may wait for it without reporting",
+                    self.what,
+                    self.path.display()
+                ));
+                false
+            }
+        }
+    }
+
+    fn release(&self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+/// Bind `identity` into a current-format record through run_registry.py
+/// without leaving a lock wait unreported.
+///
+/// run_registry.py's `bind_process_identity` takes three flocks in its lock
+/// order and blocks on each one without a word: the run-writer generation
+/// lock shared, the run-population lock (the state-root directory)
+/// exclusive, and the record's own lock exclusive. It runs as a child whose
+/// stderr is read only after it exits, so it cannot report a wait itself.
+/// This process waits for each lock first, in the same order and reported as
+/// its other lock waits are (WAITING before it blocks, still WAITING every
+/// `every`, acquired at the end), and only then starts the child.
+///
+/// The generation lock stays held, shared, until the child exits. Its only
+/// exclusive taker is destructive cleanup, so no cleanup can start between
+/// this wait and the child's request. The child's shared request is granted
+/// alongside this one: Linux grants a compatible flock even while an
+/// exclusive request is queued. The population and record locks are only
+/// probed, taken and released at once. The child must take them itself, and
+/// it would deadlock against a parent that held them. Generation first, then
+/// population, then record, one at a time, is the registry's own order, so
+/// the probes cannot deadlock against a registry writer either.
+///
+/// ⚠️ WHAT CAN STILL BLOCK BEFORE ANY LINE: another writer, which also holds
+/// the generation lock shared, can take the population or record lock between
+/// a probe's release and the child's request. The child then waits for that
+/// writer with no WAITING line before it blocks. The wait is one ordinary
+/// writer's critical section, never a cleanup's, and
+/// `run_registry_call_reported` reports it after `every`, with both locks'
+/// holders, and every `every` after that.
+///
+/// A lock this process cannot open or wait for is reported and skipped, never
+/// a new refusal: run_registry.py still takes, checks and refuses every lock
+/// itself.
+fn bind_current_run_process_identity(
+    tool_root: &Path,
+    record: &Path,
+    identity: &validate_run_handle::ProcessIdentity,
+    every: Duration,
+    report: LockWaitReport<'_>,
+) -> Result<(), ValidateLockError> {
+    let skipped = |reason: String| {
+        report(&format!(
+            "validate-lock: cannot wait for a run registry lock before run_registry.py binds \
+             process identity into {}: {reason}; run_registry.py may wait for it without \
+             reporting",
+            record.display()
+        ))
+    };
+    let opened = |lock: Result<RunRegistryLock, String>| lock.map_err(&skipped).ok();
+    let canonical_root = run_handle_state_root(record).and_then(|root| {
+        fs::canonicalize(&root)
+            .map_err(|error| {
+                skipped(format!(
+                    "cannot resolve the state root {}: {error}",
+                    root.display()
+                ))
+            })
+            .ok()
+    });
+    let generation = canonical_root
+        .as_deref()
+        .and_then(|root| opened(RunRegistryLock::generation(root)));
+    let generation_held = generation
+        .as_ref()
+        .is_some_and(|lock| lock.wait(LockMode::Shared, every, report));
+    let population = canonical_root
+        .as_deref()
+        .and_then(|root| opened(RunRegistryLock::population(root)));
+    let record_lock = opened(RunRegistryLock::record(record));
+    for lock in [&population, &record_lock].into_iter().flatten() {
+        if lock.wait(LockMode::Exclusive, every, report) {
+            lock.release();
+        }
+    }
+    let result = run_registry_call_reported(
+        record,
+        &[population.as_ref(), record_lock.as_ref()],
+        every,
+        report,
+        || validate_run_handle::bind_process_identity(tool_root, record, identity),
+    );
+    if generation_held {
+        if let Some(lock) = &generation {
+            lock.release();
+        }
+    }
+    result.map(|_| ()).map_err(ValidateLockError::InvalidState)
+}
+
+/// Run a run_registry.py call that can still block on a lock after the
+/// probes in `bind_current_run_process_identity`, and report it every
+/// `every` while it lasts, with the holders of `locks`: the call's own stderr
+/// is read only after it exits.
+fn run_registry_call_reported<T>(
+    record: &Path,
+    locks: &[Option<&RunRegistryLock>],
+    every: Duration,
+    report: LockWaitReport<'_>,
+    call: impl FnOnce() -> T,
+) -> T {
+    let started = Instant::now();
+    let reported = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let reported = &reported;
+        scope.spawn(move || {
+            while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
+                let waited = started.elapsed().as_secs();
+                let lead = if reported.swap(true, Ordering::Relaxed) {
+                    format!("still WAITING after {waited}s")
+                } else {
+                    format!("WAITING {waited}s so far")
+                };
+                let mut line = format!(
+                    "validate-lock: {lead} for run_registry.py to bind process identity into {}; \
+                     it waits for the run registry's locks without reporting, and they were \
+                     free when this process checked them",
+                    record.display()
+                );
+                for lock in locks.iter().flatten() {
+                    line.push_str(&format!(
+                        "; {} {}: {}",
+                        lock.what,
+                        lock.path.display(),
+                        describe_lock_holder(&lock.file, &lock.path, HolderLine::Never)
+                    ));
+                }
+                report(&line);
+            }
+        });
+        let result = call();
+        drop(stop);
+        result
+    });
+    if reported.load(Ordering::Relaxed) {
+        report(&format!(
+            "validate-lock: run_registry.py finished binding process identity into {} after {:.1}s",
+            record.display(),
+            started.elapsed().as_secs_f64()
+        ));
+    }
+    result
 }
 
 fn publish_required_run_process_identity(
@@ -3087,8 +3376,16 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
 /// proven": nobody held the lock when it was examined, and no log line shows
 /// either run waiting here. The mechanism does not depend on that incident:
 /// an unbounded flock is granted to whichever waiter the kernel wakes first.
-/// A bound turns that back into launch order, to within this many seconds,
-/// and the WAITING lines below make the next occurrence attributable.
+/// A bound turns that back into launch order, and the WAITING lines below make
+/// the next occurrence attributable.
+///
+/// The order it restores is loose by about a minute, not by this bound alone.
+/// Before it joins the queue a run can spend this wait, plus at most one
+/// holder description past it (`LOCK_HOLDER_SCAN_MILLIS`, 2 s), and then its
+/// own fetch under the lock, which `timeout` ends after
+/// `CURRENT_MAIN_FETCH_TIMEOUT_SECONDS` plus a 1 s kill-after. So a run can
+/// reach the queue behind one launched up to about 63 s (30 + 2 + 30 + 1)
+/// after it. The other calls before the queue are not bounded here.
 ///
 /// Deferring is safe because this check is an early refusal, not the admission
 /// gate. A queued run rechecks freshness every `CURRENT_MAIN_RECHECK_SECONDS`;
@@ -3181,10 +3478,11 @@ fn report_to_stderr(line: &str) {
 #[derive(Debug)]
 enum LockWait {
     Acquired,
-    /// The bound expired first. Carries the wait and the holder description.
+    /// The bound expired first. Carries the wait and, when the wait asked for
+    /// one (`BoundedWait::describe_on_timeout`), the holder description.
     TimedOut {
         waited: Duration,
-        holder: String,
+        holder: Option<String>,
     },
 }
 
@@ -3196,15 +3494,21 @@ struct BoundedWait {
     quiet: Duration,
     /// Interval between "still WAITING" lines.
     every: Duration,
+    /// Describe the holder when the bound expires. Describing reads /proc for
+    /// up to `LOCK_HOLDER_SCAN_MILLIS`, so a caller that drops the
+    /// description should not pay for it.
+    describe_on_timeout: bool,
 }
 
 /// The internal guards keep their existing bound and poll; only the report is
-/// new.
+/// new. Their callers turn a timeout into `GuardTimeout`, which carries no
+/// holder, so a timeout does not describe one.
 fn guard_wait() -> BoundedWait {
     BoundedWait {
         bound: Duration::from_secs(GUARD_WAIT_SECONDS),
         quiet: Duration::from_millis(GUARD_WAIT_QUIET_MILLIS),
         every: Duration::from_secs(LOCK_WAIT_REPORT_SECONDS),
+        describe_on_timeout: false,
     }
 }
 
@@ -3228,6 +3532,10 @@ fn lock_wait_line(
     waited: Option<Duration>,
 ) -> String {
     let holder = describe_lock_holder(file, path, holder_line);
+    lock_wait_line_for(path, what, &holder, waited)
+}
+
+fn lock_wait_line_for(path: &Path, what: &str, holder: &str, waited: Option<Duration>) -> String {
     match waited {
         None => format!(
             "validate-lock: WAITING for {what} {}; {holder}",
@@ -3262,7 +3570,44 @@ fn lock_exclusive_logged(
     every: Duration,
     report: LockWaitReport<'_>,
 ) -> io::Result<()> {
-    match file.try_lock_exclusive() {
+    lock_logged(
+        file,
+        path,
+        what,
+        holder_line,
+        LockMode::Exclusive,
+        every,
+        report,
+    )
+}
+
+/// Which flock a logged wait asks for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+/// `lock_exclusive_logged` for either mode. A shared request's WAITING line
+/// names every holder /proc/locks lists, shared ones included, although only
+/// an exclusive holder blocks it.
+///
+/// The fs2 calls are spelled out: `File` now has inherent `lock_shared` and
+/// `try_lock_shared` methods, which method syntax would pick instead.
+fn lock_logged(
+    file: &File,
+    path: &Path,
+    what: &str,
+    holder_line: HolderLine,
+    mode: LockMode,
+    every: Duration,
+    report: LockWaitReport<'_>,
+) -> io::Result<()> {
+    let attempt = match mode {
+        LockMode::Shared => FileExt::try_lock_shared(file),
+        LockMode::Exclusive => FileExt::try_lock_exclusive(file),
+    };
+    match attempt {
         Ok(()) => return Ok(()),
         Err(source) if source.kind() == io::ErrorKind::WouldBlock => {}
         Err(source) => return Err(source),
@@ -3282,7 +3627,10 @@ fn lock_exclusive_logged(
                 ));
             }
         });
-        let result = file.lock_exclusive();
+        let result = match mode {
+            LockMode::Shared => FileExt::lock_shared(file),
+            LockMode::Exclusive => FileExt::lock_exclusive(file),
+        };
         drop(stop);
         result
     });
@@ -3295,9 +3643,14 @@ fn lock_exclusive_logged(
 /// `lock_exclusive_logged`, after `wait.quiet` of contention, and returns
 /// `LockWait::TimedOut` instead of waiting past the bound.
 ///
-/// The bound holds against the holder too: describing the holder reads only
-/// /proc and gives up after `LOCK_HOLDER_SCAN_MILLIS`, so a holder stuck on a
-/// hung mount cannot stretch the wait by more than that per report.
+/// The bound holds against the holder too, to within one holder description.
+/// Describing the holder reads only /proc and gives up after
+/// `LOCK_HOLDER_SCAN_MILLIS`, so a holder stuck on a hung mount cannot stall
+/// a report for longer. The time a report spends counts against the bound,
+/// and the bound is checked before a report is due, so the wait makes at
+/// most one description past the bound: a report that crosses it is reused
+/// for the timeout rather than followed by a second, and a timeout describes
+/// the holder only when `wait.describe_on_timeout` asks for it.
 fn lock_exclusive_within(
     file: &File,
     path: &Path,
@@ -3310,6 +3663,9 @@ fn lock_exclusive_within(
     let deadline = started + wait.bound;
     let mut next_report = started + wait.quiet;
     let mut announced = false;
+    // The description the last report made, when it made one and no poll has
+    // slept since, so a timeout straight after it need not describe again.
+    let mut fresh_holder: Option<String> = None;
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => {
@@ -3322,28 +3678,46 @@ fn lock_exclusive_within(
             Err(source) => return Err(source),
         }
         let now = Instant::now();
+        if now >= deadline {
+            let holder = if wait.describe_on_timeout {
+                Some(
+                    fresh_holder
+                        .take()
+                        .unwrap_or_else(|| describe_lock_holder(file, path, holder_line)),
+                )
+            } else {
+                None
+            };
+            return Ok(LockWait::TimedOut {
+                waited: now - started,
+                holder,
+            });
+        }
         if now >= next_report {
-            report(&lock_wait_line(
-                file,
+            let holder = describe_lock_holder(file, path, holder_line);
+            report(&lock_wait_line_for(
                 path,
                 what,
-                holder_line,
+                &holder,
                 announced.then(|| now - started),
             ));
             announced = true;
-            next_report = now + wait.every;
+            next_report = Instant::now() + wait.every;
+            fresh_holder = Some(holder);
         }
+        // Read the clock again: the report above may have spent up to
+        // `LOCK_HOLDER_SCAN_MILLIS`, and that time is part of the bound.
+        let now = Instant::now();
         if now >= deadline {
-            return Ok(LockWait::TimedOut {
-                waited: now - started,
-                holder: describe_lock_holder(file, path, holder_line),
-            });
+            // Try the lock once more, then time out with the description just made.
+            continue;
         }
         let nap = Duration::from_millis(LOCK_WAIT_POLL_MILLIS)
             .min(deadline - now)
             .min(next_report.saturating_duration_since(now))
             .max(Duration::from_millis(1));
         thread::sleep(nap);
+        fresh_holder = None;
     }
 }
 
@@ -3565,16 +3939,26 @@ fn scan_lock_holders(
             None => ", not confirmed through /proc/<pid>/fdinfo",
         };
         let mut holder = format!("pid {pid} ({}){confirmed}", process_command_line(pid));
-        if let Some(record) = record {
-            let same_start = match (record.start_ticks, u32::try_from(pid).ok()) {
-                (Some(recorded), Some(pid)) => {
-                    process_start_ticks(pid).map_or(true, |ticks| ticks == recorded)
-                }
-                _ => true,
+        if let Some(record) = record.filter(|record| record.pid == Some(pid)) {
+            // A pid is reused; only a matching start time makes the line this
+            // holder's. When the start time cannot be compared, the line is
+            // attributed as unverified, and not called stale either.
+            let attribution = match (record.start_ticks, u32::try_from(pid)) {
+                (Some(recorded), Ok(pid)) => match process_start_ticks(pid) {
+                    Ok(ticks) if ticks == recorded => Some(String::new()),
+                    Ok(_) => None,
+                    Err(error) => Some(format!(
+                        ", unverified (pid {pid}'s start time could not be read: {error})"
+                    )),
+                },
+                (None, _) => Some(", unverified (the holder line records no start time)".into()),
+                (Some(_), Err(_)) => Some(format!(
+                    ", unverified (pid {pid} is out of range for /proc/<pid>/stat)"
+                )),
             };
-            if record.pid == Some(pid) && same_start {
+            if let Some(unverified) = attribution {
                 record_matched = true;
-                holder.push_str(&format!(", recorded as: {}", record.text));
+                holder.push_str(&format!(", recorded{unverified} as: {}", record.text));
             }
         }
         holders.push(holder);
@@ -3613,30 +3997,48 @@ fn scan_lock_holders_within(
 }
 
 #[cfg(test)]
-static LOCK_HOLDER_SCAN_TEST_DELAY: std::sync::Mutex<Option<(u64, Duration)>> =
-    std::sync::Mutex::new(None);
+static LOCK_HOLDER_SCAN_TEST_DELAY: std::sync::Mutex<Vec<(u64, Duration)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Test-only: stall the scan for one inode, standing in for a /proc read that
-/// blocks. Keyed on the inode so that parallel tests are unaffected.
+/// blocks. Keyed on the inode so that parallel tests are unaffected, and
+/// kept per inode so that two tests stalling their own inodes at once do not
+/// clear each other's stall.
 #[cfg(test)]
 fn lock_holder_scan_test_delay(ino: u64) {
-    let delay = *LOCK_HOLDER_SCAN_TEST_DELAY
+    let delay = LOCK_HOLDER_SCAN_TEST_DELAY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|(delayed, _)| *delayed == ino)
+        .map(|(_, duration)| *duration);
+    if let Some(duration) = delay {
+        thread::sleep(duration);
+    }
+}
+
+/// Test-only: stall (Some) or stop stalling (None) the scan for `ino`.
+#[cfg(test)]
+fn set_lock_holder_scan_test_delay(ino: u64, delay: Option<Duration>) {
+    let mut delays = LOCK_HOLDER_SCAN_TEST_DELAY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((delayed, duration)) = delay {
-        if delayed == ino {
-            thread::sleep(duration);
-        }
+    delays.retain(|(delayed, _)| *delayed != ino);
+    if let Some(duration) = delay {
+        delays.push((ino, duration));
     }
 }
 
 /// Name who holds `file`'s flock, for a waiter's log line.
 ///
 /// The kernel's /proc/locks is the authority. The holder line recorded in the
-/// file is trusted only when it names a pid (and start time) that the kernel
-/// lists as a holder. Older validate-lock versions and start_unit.py take the
-/// same lock without writing a line, and a holder that was killed leaves a
-/// stale one behind. Only a `HolderLine::Recorded` file is read for a line.
+/// file is trusted only when it names a pid that the kernel lists as a holder,
+/// with that process's start time. When the start time cannot be compared
+/// (the line records none, or the pid's /proc/<pid>/stat cannot be read), the
+/// line is attributed but labelled unverified. Older validate-lock versions
+/// and start_unit.py take the same lock without writing a line, and a holder
+/// that was killed leaves a stale one behind. Only a `HolderLine::Recorded`
+/// file is read for a line.
 fn describe_lock_holder(file: &File, path: &Path, holder_line: HolderLine) -> String {
     let record = match holder_line {
         HolderLine::Recorded => read_lock_holder_record(file),
@@ -3893,6 +4295,7 @@ fn current_main_freshness_check_within(
                 bound,
                 quiet: Duration::ZERO,
                 every,
+                describe_on_timeout: true,
             };
             match lock_exclusive_within(
                 &git_lock,
@@ -3906,6 +4309,7 @@ fn current_main_freshness_check_within(
             {
                 LockWait::Acquired => {}
                 LockWait::TimedOut { waited, holder } => {
+                    let holder = holder.unwrap_or_else(|| "holder not described".into());
                     return Ok(FreshnessCheck::Deferred(format!(
                         "the shared Git lock {} was still held after {:.1}s; {holder}",
                         git_lock_path.display(),
@@ -8544,6 +8948,213 @@ finally: os.close(held)
                 .to_string()
                 .contains("unknown field(s) for kind 'validate': unexpected_contract_field"),
             "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// run_registry.py binds a current record's identity after three flocks
+    /// it waits for without a word: the run-writer generation lock (shared),
+    /// the run-population lock on the state root, and the record's own lock.
+    /// With another holder on each in turn, the bind must log a WAITING line
+    /// naming that lock before it blocks, then finish once the holder lets go.
+    #[test]
+    fn current_record_identity_bind_reports_each_registry_lock_wait() {
+        for case in ["generation", "population", "record"] {
+            let name = format!("validate-bind-wait-{case}");
+            let (root, _record, _args, verified) = current_validation_attribution_fixture(&name);
+            let canonical_root = fs::canonicalize(&root).unwrap();
+            let (held_path, what) = match case {
+                "generation" => (
+                    canonical_root.join(RUN_WRITER_GENERATION_LOCK),
+                    "the run-writer generation lock",
+                ),
+                "population" => (
+                    canonical_root.clone(),
+                    "the run-population lock on the state root",
+                ),
+                _ => (
+                    verified.record.with_file_name(format!(".{name}.json.lock")),
+                    "the run-record lock",
+                ),
+            };
+            let held = if case == "population" {
+                File::open(&held_path).unwrap()
+            } else {
+                OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(&held_path)
+                    .unwrap()
+            };
+            // Exclusive, as a destructive cleanup holds the generation lock.
+            FileExt::lock_exclusive(&held).unwrap();
+            let owner = ProcessOwner {
+                host: "fixture".into(),
+                boot_id: "boot-fixture".into(),
+                pid: 123,
+                start_ticks: 456,
+            };
+            let lines = std::sync::Mutex::new(Vec::<String>::new());
+            let report = |line: &str| lines.lock().unwrap().push(line.to_string());
+            let waiting = format!(
+                "validate-lock: WAITING for {what} {}; ",
+                held_path.display()
+            );
+            let still = format!("s for {what} {}; ", held_path.display());
+            let is_still = |line: &String| {
+                line.starts_with("validate-lock: still WAITING after ") && line.contains(&still)
+            };
+            let result = thread::scope(|scope| {
+                let publisher = scope.spawn(|| {
+                    publish_run_process_identity_reporting(
+                        &root,
+                        &verified.record,
+                        &owner,
+                        Duration::from_millis(200),
+                        &report,
+                    )
+                });
+                // Hold until the wait has been announced and repeated once, or
+                // 20 s have passed; a silent wait fails below either way.
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(50));
+                    let seen = lines.lock().unwrap();
+                    if seen.iter().any(|line| line.starts_with(&waiting))
+                        && seen.iter().any(is_still)
+                    {
+                        break;
+                    }
+                }
+                // The bind must still be blocked on the held lock.
+                let finished_early = publisher.is_finished();
+                FileExt::unlock(&held).unwrap();
+                assert!(!finished_early, "{case}: the bind did not wait for {what}");
+                publisher.join().unwrap()
+            });
+            let lines = lines.into_inner().unwrap();
+            let announced = lines.iter().position(|line| line.starts_with(&waiting));
+            assert!(
+                announced.is_some(),
+                "{case}: no WAITING line before the bind blocked on {what}: {lines:?}"
+            );
+            assert!(
+                lines[announced.unwrap()..].iter().any(is_still),
+                "{case}: no still-WAITING line after the first: {lines:?}"
+            );
+            assert!(
+                lines.iter().any(|line| line.starts_with(&format!(
+                    "validate-lock: acquired {what} {} after ",
+                    held_path.display()
+                ))),
+                "{case}: {lines:?}"
+            );
+            result.unwrap_or_else(|error| panic!("{case}: the bind must finish: {error}"));
+            let published: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&verified.record).unwrap()).unwrap();
+            assert_eq!(
+                published.get("process_identity"),
+                Some(&serde_json::json!({
+                    "pid": 123,
+                    "start_ticks": 456,
+                    "boot_id": "boot-fixture",
+                })),
+                "{case}"
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    /// A lock taken by another writer after this process found it free makes
+    /// run_registry.py wait with no line before it blocks. The call is then
+    /// reported every `every` while it lasts, with the holders of the locks it
+    /// may be waiting for. A registry that sleeps before binding stands in for
+    /// that wait.
+    #[test]
+    fn a_slow_current_record_identity_bind_is_reported_while_it_lasts() {
+        let name = "validate-bind-heartbeat";
+        let (root, _record, _args, verified) = current_validation_attribution_fixture(name);
+        let authority = root.join("ci-hub/validate");
+        fs::rename(
+            authority.join("run_registry.py"),
+            authority.join("run_registry_actual.py"),
+        )
+        .unwrap();
+        fs::write(
+            authority.join("run_registry.py"),
+            "import runpy, sys, time\nfrom pathlib import Path\n\
+             actual = Path(__file__).with_name('run_registry_actual.py')\n\
+             if __name__ == '__main__':\n    time.sleep(1.5)\n    sys.argv[0] = str(actual)\n    \
+             runpy.run_path(str(actual), run_name='__main__')\n\
+             else:\n    exec(compile(actual.read_text(), str(actual), 'exec'))\n",
+        )
+        .unwrap();
+        let owner = ProcessOwner {
+            host: "fixture".into(),
+            boot_id: "boot-fixture".into(),
+            pid: 123,
+            start_ticks: 456,
+        };
+        let lines = std::sync::Mutex::new(Vec::<String>::new());
+        let report = |line: &str| lines.lock().unwrap().push(line.to_string());
+        publish_run_process_identity_reporting(
+            &root,
+            &verified.record,
+            &owner,
+            Duration::from_millis(300),
+            &report,
+        )
+        .expect("the slow bind must still finish");
+        let lines = lines.into_inner().unwrap();
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let subject = format!(
+            "for run_registry.py to bind process identity into {}; it waits for the run \
+             registry's locks without reporting, and they were free when this process checked \
+             them; the run-population lock on the state root {}: ",
+            verified.record.display(),
+            canonical_root.display()
+        );
+        let first = lines
+            .first()
+            .unwrap_or_else(|| panic!("a 1.5 s bind reported every 0.3 s said nothing"));
+        assert!(
+            first.starts_with("validate-lock: WAITING 0s so far ") && first.contains(&subject),
+            "{lines:?}"
+        );
+        assert!(
+            first.contains(&format!(
+                "; the run-record lock {}: ",
+                verified
+                    .record
+                    .with_file_name(format!(".{name}.json.lock"))
+                    .display()
+            )),
+            "{first}"
+        );
+        assert!(
+            lines[1..lines.len() - 1].iter().all(|line| {
+                line.starts_with("validate-lock: still WAITING after ") && line.contains(&subject)
+            }) && lines.len() >= 3,
+            "{lines:?}"
+        );
+        assert!(
+            lines.last().unwrap().starts_with(&format!(
+                "validate-lock: run_registry.py finished binding process identity into {} after ",
+                verified.record.display()
+            )),
+            "{lines:?}"
+        );
+        let published: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&verified.record).unwrap()).unwrap();
+        assert_eq!(
+            published.get("process_identity"),
+            Some(&serde_json::json!({
+                "pid": 123,
+                "start_ticks": 456,
+                "boot_id": "boot-fixture",
+            }))
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -14039,13 +14650,17 @@ garbage
             "a guard's file is never read for a holder line: {guard}"
         );
         let git = describe_lock_holder(&observer, &path, HolderLine::Recorded);
+        // A line with no start time names the holder's pid, which a reused
+        // pid could also match, so it is attributed as unverified.
         assert!(
             git.contains(&format!(
-                ", recorded as: {GIT_LOCK_HOLDER_SCHEMA} pid={} target=x",
+                ", recorded, unverified (the holder line records no start time) as: \
+                 {GIT_LOCK_HOLDER_SCHEMA} pid={} target=x",
                 holder.pid
             )),
             "{git}"
         );
+        assert!(!git.contains("stale"), "{git}");
         holder.finish();
         let _ = fs::remove_dir_all(root);
     }
@@ -14119,15 +14734,11 @@ garbage
             .open(&path)
             .unwrap();
         let ino = observer.metadata().unwrap().ino();
-        *LOCK_HOLDER_SCAN_TEST_DELAY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((ino, Duration::from_secs(8)));
+        set_lock_holder_scan_test_delay(ino, Some(Duration::from_secs(8)));
         let started = Instant::now();
         let described = describe_lock_holder(&observer, &path, HolderLine::Recorded);
         let waited = started.elapsed();
-        *LOCK_HOLDER_SCAN_TEST_DELAY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        set_lock_holder_scan_test_delay(ino, None);
         let bound = Duration::from_millis(LOCK_HOLDER_SCAN_MILLIS);
         assert!(
             waited >= bound && waited < bound + Duration::from_secs(3),
@@ -14155,6 +14766,171 @@ garbage
             "{described}"
         );
         holder.finish();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The time a bounded wait spends describing the holder counts against its
+    /// bound, and the wait makes at most one description past the bound. With
+    /// every description stalled to its 2 s deadline, a 1 s wait used to
+    /// describe once in its first report and again at the timeout, about 4 s.
+    #[test]
+    fn a_bounded_wait_overruns_its_bound_by_at_most_one_holder_description() {
+        let paths = temp_paths("bounded-wait-one-description");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let path = root.join("ci-hub-validate.lock");
+        let mut holder = OldStyleLockHolder::spawn(&path, &root);
+        let waiter = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let ino = waiter.metadata().unwrap().ino();
+        set_lock_holder_scan_test_delay(ino, Some(Duration::from_secs(8)));
+        let scan = Duration::from_millis(LOCK_HOLDER_SCAN_MILLIS);
+        let bound = Duration::from_secs(1);
+        let slack = Duration::from_millis(900);
+        let lines = std::sync::Mutex::new(Vec::<String>::new());
+        let report = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let wait_for = |quiet: Duration, describe_on_timeout: bool| {
+            let started = Instant::now();
+            let outcome = lock_exclusive_within(
+                &waiter,
+                &path,
+                "the shared Git lock",
+                HolderLine::Recorded,
+                BoundedWait {
+                    bound,
+                    quiet,
+                    every: Duration::from_secs(30),
+                    describe_on_timeout,
+                },
+                &report,
+            )
+            .unwrap();
+            (outcome, started.elapsed())
+        };
+
+        // The first report is due at once and its description crosses the
+        // bound: the timeout reuses it instead of describing again.
+        let (outcome, waited) = wait_for(Duration::ZERO, true);
+        let LockWait::TimedOut {
+            holder: Some(described),
+            ..
+        } = outcome
+        else {
+            panic!("expected a described timeout, got {outcome:?}");
+        };
+        assert!(
+            described.contains("did not finish within 2.0s"),
+            "{described}"
+        );
+        assert!(
+            waited >= scan && waited < scan + slack,
+            "one description, not two: took {waited:?}"
+        );
+        assert_eq!(
+            lines.lock().unwrap().len(),
+            1,
+            "{:?}",
+            lines.lock().unwrap()
+        );
+
+        // No report due before the bound, and a description asked for: one
+        // description past the bound.
+        let (outcome, waited) = wait_for(Duration::from_secs(30), true);
+        assert!(
+            matches!(
+                outcome,
+                LockWait::TimedOut {
+                    holder: Some(_),
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert!(
+            waited >= bound + scan && waited < bound + scan + slack,
+            "took {waited:?}"
+        );
+
+        // No report due, and no description asked for: nothing past the bound.
+        let (outcome, waited) = wait_for(Duration::from_secs(30), false);
+        assert!(
+            matches!(outcome, LockWait::TimedOut { holder: None, .. }),
+            "{outcome:?}"
+        );
+        assert!(waited >= bound && waited < bound + slack, "took {waited:?}");
+        assert_eq!(lines.lock().unwrap().len(), 1, "no report was due");
+
+        set_lock_holder_scan_test_delay(ino, None);
+        holder.finish();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A holder line naming a listed holder's pid is attributed to that holder
+    /// only as far as its start time can be checked. When the holder's start
+    /// time cannot be read, the attribution says unverified: it is neither
+    /// vouched for nor called stale. A readable start time decides.
+    #[test]
+    fn a_holder_line_whose_start_time_cannot_be_read_is_attributed_unverified() {
+        let paths = temp_paths("lock-holder-unverified-start");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let path = root.join("ci-hub-validate.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let own = LockFileIdentity::of(&file, &file.metadata().unwrap());
+
+        // pid_max is at most 2^22, so this pid has no /proc entry, and whether
+        // it has the file open is undecided rather than refuted.
+        let absent: i64 = 2_000_000_000;
+        let line = parse_lock_holder_record(&format!(
+            "{GIT_LOCK_HOLDER_SCHEMA} pid={absent} start_ticks=1 target=x"
+        ))
+        .unwrap();
+        let scan = scan_lock_holders(&[absent], &own, Some(&line));
+        assert!(scan.record_matched, "an unverifiable line is not stale");
+        assert_eq!(scan.holders.len(), 1, "{:?}", scan.holders);
+        let described = &scan.holders[0];
+        assert!(
+            described.contains(&format!(
+                ", recorded, unverified (pid {absent}'s start time could not be read: "
+            )) && described.ends_with(&format!(" as: {}", line.text)),
+            "{described}"
+        );
+        assert!(!described.contains(", recorded as: "), "{described}");
+
+        let pid = std::process::id();
+        let ticks = process_start_ticks(pid).unwrap();
+        let matching = parse_lock_holder_record(&format!(
+            "{GIT_LOCK_HOLDER_SCHEMA} pid={pid} start_ticks={ticks} target=x"
+        ))
+        .unwrap();
+        let scan = scan_lock_holders(&[i64::from(pid)], &own, Some(&matching));
+        assert!(scan.record_matched);
+        assert!(
+            scan.holders[0].ends_with(&format!(", recorded as: {}", matching.text)),
+            "{:?}",
+            scan.holders
+        );
+        let reused = parse_lock_holder_record(&format!(
+            "{GIT_LOCK_HOLDER_SCHEMA} pid={pid} start_ticks={} target=x",
+            ticks + 1
+        ))
+        .unwrap();
+        let scan = scan_lock_holders(&[i64::from(pid)], &own, Some(&reused));
+        assert!(
+            !scan.record_matched,
+            "a different start time is another process"
+        );
+        assert!(!scan.holders[0].contains("recorded"), "{:?}", scan.holders);
+        drop(file);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -15686,8 +16462,9 @@ garbage
             false,
         );
         assert!(
-            matches!(unresolved, Err(ValidateLockError::StaleBase(message))
-            if message.contains("did not resolve") && message.contains("offline compare refused by fixture"))
+            matches!(&unresolved, Err(ValidateLockError::StaleBase(message))
+            if message.contains("did not resolve") && message.contains("offline compare refused by fixture")),
+            "an unresolved base must reach the refused compare: {unresolved:?}"
         );
         assert_eq!(fs::read_to_string(&compare_marker).unwrap(), "attempted\n");
         let unresolved = base_admission_check(
@@ -15698,8 +16475,9 @@ garbage
             false,
         );
         assert!(
-            matches!(unresolved, Err(ValidateLockError::StaleBase(message))
-            if message.contains("did not resolve") && message.contains("offline compare refused by fixture"))
+            matches!(&unresolved, Err(ValidateLockError::StaleBase(message))
+            if message.contains("did not resolve") && message.contains("offline compare refused by fixture")),
+            "an unresolved base must reach the refused compare: {unresolved:?}"
         );
         assert_eq!(
             fs::read_to_string(compare_marker).unwrap(),
