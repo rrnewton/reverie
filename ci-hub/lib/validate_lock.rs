@@ -2313,6 +2313,18 @@ impl RunRegistryLock {
 /// A lock this process cannot open or wait for is reported and skipped, never
 /// a new refusal: run_registry.py still takes, checks and refuses every lock
 /// itself.
+///
+/// ⚠️ THESE WAITS ARE LOGGED BUT NOT BOUNDED, AND THEY CAN REORDER THE QUEUE.
+/// `run` binds before the run enters the box-global queue, and the queue ranks
+/// runs by the time they reach it. Every `wrkslots` mutation holds the
+/// run-population lock for its whole run; the measured holds were
+/// 30.6-426.5 s, behind `wrkslots remove --validate-complete`
+/// (https://github.com/rrnewton/dev-hermit/issues/389), and flock wakes its
+/// waiters in no fixed order. So two launches blocked behind one removal can
+/// reach the queue in either order. Binding after the run is queued would
+/// leave a queued run without the process identity that
+/// `run_registry.request_termination` requires before it will stop a run.
+/// https://github.com/rrnewton/dev-hermit/issues/422 tracks this gap.
 fn bind_current_run_process_identity(
     tool_root: &Path,
     record: &Path,
@@ -3385,37 +3397,39 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
 /// own fetch under the lock, which `timeout` ends after
 /// `CURRENT_MAIN_FETCH_TIMEOUT_SECONDS` plus a 1 s kill-after. So a run can
 /// reach the queue behind one launched up to about 63 s (30 + 2 + 30 + 1)
-/// after it. The other calls before the queue are not bounded here.
+/// after it.
+///
+/// ⚠️ THIS BOUNDS ONLY THE SHARED GIT LOCK, SO LAUNCH ORDER IS NOT GUARANTEED.
+/// Two other waits before the queue have no time limit:
+/// - The run-population lock in `bind_current_run_process_identity`: an
+///   exclusive flock on the validate state-root directory. The wait is logged
+///   (WAITING, still WAITING, acquired) but not bounded. Every `wrkslots`
+///   mutation holds that lock for its whole run; the measured holds were
+///   30.6-426.5 s, behind `wrkslots remove --validate-complete`
+///   (https://github.com/rrnewton/dev-hermit/issues/389). flock wakes its
+///   waiters in no fixed order, so two launches blocked behind one removal can
+///   reach the queue in either order.
+/// - `base_admission_check` runs `preflight_validate.py` with no wall-clock
+///   bound and logs nothing while it runs.
+///
+/// Neither was bounded here, because every option found either leaves a
+/// queued run without the process identity other tools use to stop it, or
+/// changes when runs are refused, or is unsafe while old and new builds share
+/// the queue file. https://github.com/rrnewton/dev-hermit/issues/422 tracks
+/// this gap.
 ///
 /// Deferring is safe because this check is an early refusal, not the admission
-/// gate. A queued run rechecks freshness every `CURRENT_MAIN_RECHECK_SECONDS`;
-/// a run whose check deferred rechecks without bound at the head of the queue
-/// and is refused there, with this check's verdict and no slot taken; and the
-/// boundary and final checks still run, unbounded and fail-closed, before any
-/// admission. The value equals the fetch timeout, so a peer's
-/// ordinary freshness fetch under this lock (at most about 31 s) normally
-/// finishes inside it.
-const PRE_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = CURRENT_MAIN_FETCH_TIMEOUT_SECONDS;
-/// How long a QUEUED run's periodic recheck waits for the same lock while the
-/// run is not at the head of the queue. Short, because the recheck stalls this
-/// waiter's queue poll, and a missed recheck only postpones the early eviction
-/// to the next one.
+/// gate. A run whose check deferred rechecks at its first queue poll, and that
+/// recheck waits for this lock without a bound, keeping the queue position the
+/// run already has. At the head of the queue it completes this check, with
+/// this check's verdict, before any slot is taken; elsewhere in the queue it
+/// evicts a stale target. Every queued run also rechecks every
+/// `CURRENT_MAIN_RECHECK_SECONDS`, and the boundary and final checks still
+/// run, unbounded and fail-closed, before any admission.
 ///
-/// ⚠️ THE TRADE-OFF, STATED. Under sustained contention (start_unit.py holds
-/// this lock for minutes while it prepares a checkout) every periodic recheck
-/// can defer. A waiter whose target went stale then keeps its queue position,
-/// never a slot, until it reaches the head, instead of being evicted within
-/// `CURRENT_MAIN_RECHECK_SECONDS`. At the head it may not take a slot until a
-/// check has decided: `wait_for_global_turn` rechecks there WITHOUT a bound
-/// whenever the last check deferred or was unresolved, and refuses a stale
-/// target with no slot taken. What is lost is only the earlier removal, which
-/// costs the runs behind it nothing while it is not the head, plus one Git-lock
-/// wait and one fetch at the head. The label can also differ: a stale waiter
-/// removed away from the head logs `validate-lock: EVICTED` and publishes
-/// `validation-lock-refusal`; one refused at the head logs the pre-queue
-/// check's `REFUSE:` line and publishes `stale-base`. Both exit 3, and both
-/// name the same remedy, a rebase.
-const IN_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = POLL_SECONDS;
+/// The value equals the fetch timeout, so a peer's ordinary freshness fetch
+/// under this lock (at most about 31 s) normally finishes inside it.
+const PRE_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = CURRENT_MAIN_FETCH_TIMEOUT_SECONDS;
 
 /// The timings of the freshness checks around the queue and of the queue poll.
 /// Production uses the constants; a test thread may override them so that an
@@ -3424,8 +3438,6 @@ const IN_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = POLL_SECONDS;
 struct QueueTiming {
     /// `PRE_QUEUE_GIT_LOCK_WAIT_SECONDS`.
     pre_queue_git_lock_wait: Duration,
-    /// `IN_QUEUE_GIT_LOCK_WAIT_SECONDS`.
-    in_queue_git_lock_wait: Duration,
     /// `CURRENT_MAIN_RECHECK_SECONDS`.
     recheck_every: Duration,
     /// `POLL_SECONDS`.
@@ -3435,7 +3447,6 @@ struct QueueTiming {
 impl QueueTiming {
     const PRODUCTION: Self = Self {
         pre_queue_git_lock_wait: Duration::from_secs(PRE_QUEUE_GIT_LOCK_WAIT_SECONDS),
-        in_queue_git_lock_wait: Duration::from_secs(IN_QUEUE_GIT_LOCK_WAIT_SECONDS),
         recheck_every: Duration::from_secs(CURRENT_MAIN_RECHECK_SECONDS),
         poll: Duration::from_secs(POLL_SECONDS),
     };
@@ -4189,6 +4200,22 @@ enum FreshnessCheck {
     Checked(Option<AdmissionFloor>),
     /// Carries the lock path, how long it waited, and who held the lock.
     Deferred(String),
+}
+
+/// The line `run` logs when its pre-queue freshness check defers.
+///
+/// It must not claim that launch order is kept: the bound covers only the
+/// shared Git lock, and other waits before the queue have none (see
+/// `PRE_QUEUE_GIT_LOCK_WAIT_SECONDS`).
+fn pre_queue_deferred_line(target: &str, reason: &str) -> String {
+    format!(
+        "validate-lock: pre-queue freshness DEFERRED for target={target}: {reason}. Entering \
+         the queue now rather than waiting longer for this lock. Only this lock's wait is \
+         bounded, not the other waits before the queue, so launch order is not guaranteed \
+         (https://github.com/rrnewton/dev-hermit/issues/422). Freshness is rechecked while \
+         queued, and at the head of the queue, fail-closed and before any validation slot \
+         is taken."
+    )
 }
 
 /// The admission-grade freshness check: waits for the shared Git lock as long
@@ -5124,11 +5151,11 @@ impl ValidateLock {
         let mut recheck_now = freshness_deferred;
         // ⚠️ A RUN WHOSE FRESHNESS IS UNDECIDED MUST NOT TAKE A SLOT. True
         // while the latest freshness check decided nothing: the pre-queue
-        // check or a queued recheck deferred on the shared Git lock, or a
-        // queued recheck was unresolved. Such a run may still wait and move
-        // up, but at the head it checks WITHOUT a bound before it may take a
-        // slot, so a stale target is refused with no slot taken instead of
-        // taking an anchor only to be refused by the boundary check.
+        // check deferred on the shared Git lock, or a queued recheck was
+        // unresolved. Such a run may still wait and move up, but at the head
+        // it checks WITHOUT a bound before it may take a slot, so a stale
+        // target is refused with no slot taken instead of taking an anchor
+        // only to be refused by the boundary check.
         let mut freshness_undecided = freshness_deferred;
         loop {
             let gate = if freshness_undecided {
@@ -5265,26 +5292,18 @@ impl ValidateLock {
             if recheck_now || last_freshness.elapsed() >= timing.recheck_every {
                 recheck_now = false;
                 last_freshness = Instant::now();
-                // Bounded: this wait stalls the queue poll, and a deferral
-                // only postpones the eviction to the next recheck, or to the
-                // unbounded check at the head. See the trade-off at
-                // `IN_QUEUE_GIT_LOCK_WAIT_SECONDS`.
-                let checked = current_main_freshness_check_within(
-                    root,
-                    &args.target,
-                    args.kind,
-                    Some(timing.in_queue_git_lock_wait),
-                    report,
-                );
+                // The wait for the shared Git lock is NOT bounded here, as
+                // before the pre-queue bound was added. This run already has
+                // its queue position, and an owned entry leaves the queue only
+                // when this run removes it or its owner dies, so a long wait
+                // here cannot reorder the queue. The wait is logged, naming the
+                // lock and its holder, before it blocks, every
+                // `LOCK_WAIT_REPORT_SECONDS` while it lasts, and when it ends.
+                // It stalls this waiter's queue poll until then.
+                let checked =
+                    current_main_freshness_check_reported(root, &args.target, args.kind, report);
                 match checked {
-                    Ok(FreshnessCheck::Checked(_)) => freshness_undecided = false,
-                    Ok(FreshnessCheck::Deferred(reason)) => {
-                        freshness_undecided = true;
-                        report(&format!(
-                            "validate-lock: mid-wait freshness DEFERRED for target={}, keeping queue position: {reason}",
-                            args.target
-                        ));
-                    }
+                    Ok(_) => freshness_undecided = false,
                     Err(error) if stale_base_is_definite(&error) => {
                         self.remove_own_global_waiter(args, owner)?;
                         if let ValidateLockError::StaleBase(message) = &error {
@@ -7368,6 +7387,10 @@ impl ValidateLock {
         // The wait for the shared Git lock is BOUNDED here. An unbounded wait
         // lets whichever waiter the kernel wakes first reach the queue first,
         // regardless of launch order; see `PRE_QUEUE_GIT_LOCK_WAIT_SECONDS`.
+        // That bounds only this lock: the run-population lock wait in
+        // `prepare_run_before_admission` above has no time limit, so launch
+        // order is still not guaranteed
+        // (https://github.com/rrnewton/dev-hermit/issues/422).
         // A deferral decides nothing: the run may not take a slot until a
         // queued recheck, or the unbounded one at the head of the queue, has
         // decided, and the boundary and final checks below still run before
@@ -7382,10 +7405,7 @@ impl ValidateLock {
         ) {
             Ok(FreshnessCheck::Checked(_)) => false,
             Ok(FreshnessCheck::Deferred(reason)) => {
-                eprintln!(
-                    "validate-lock: pre-queue freshness DEFERRED for target={}: {reason}. Entering the queue now so launch order is kept; freshness is rechecked while queued, and at the head of the queue, fail-closed and before any validation slot is taken.",
-                    args.target
-                );
+                eprintln!("{}", pre_queue_deferred_line(&args.target, &reason));
                 true
             }
             Err(error) => return stale_base_refusal_with_record(tool_root, &attribution, error),
@@ -13811,7 +13831,6 @@ with open(path, "a+") as lock:
     /// pre-queue Git-lock wait gives up after 1 s instead of 30 s.
     const FAST_QUEUE_TIMING: QueueTiming = QueueTiming {
         pre_queue_git_lock_wait: Duration::from_millis(1_000),
-        in_queue_git_lock_wait: Duration::from_millis(300),
         recheck_every: Duration::from_millis(500),
         poll: Duration::from_millis(100),
     };
@@ -14368,13 +14387,21 @@ garbage
         assert_eq!(foreign.pid, None, "only this schema's pid is trusted");
     }
 
-    /// A QUEUED waiter that is not at the head, whose periodic recheck finds
-    /// the shared Git lock held. The recheck defers: the waiter keeps its
-    /// queue position and its enqueued_at and is not evicted. Once the lock is
-    /// released the next recheck decides, and a target that main has left
-    /// behind is still evicted: removed from the queue and refused, no slot.
+    /// A QUEUED waiter that is not at the head, whose recheck finds the shared
+    /// Git lock held. The recheck waits for the lock WITHOUT a time limit, as
+    /// it did before the pre-queue bound was added, and says so: one WAITING
+    /// line naming the lock and its holder before it blocks, and one acquired
+    /// line when the wait ends. While it waits the waiter keeps its queue
+    /// position and its enqueued_at, and it neither defers nor reports the
+    /// check unresolved. Once the lock is released that same recheck decides,
+    /// and a target that main has left behind is evicted: removed from the
+    /// queue and refused, with no slot taken.
+    ///
+    /// The lock is held for `HOLD` after the WAITING line, many times the
+    /// poll, the recheck period and the pre-queue bound. A recheck bounded by
+    /// any of them would have given up before the release.
     #[test]
-    fn a_queued_recheck_on_a_held_git_lock_keeps_its_place_until_it_decides() {
+    fn a_queued_recheck_waits_for_a_held_git_lock_without_a_limit_and_keeps_its_place() {
         let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
             return;
         };
@@ -14388,6 +14415,7 @@ garbage
         // declared before the waiter.
         const HEAD: &str = "git-lock-in-queue-head";
         const AGENT: &str = "git-lock-in-queue-waiter";
+        const HOLD: Duration = Duration::from_millis(2_500);
         lock.write_global_queue(&[GlobalQueueEntry {
             enqueued_at: epoch_seconds().unwrap() - 60,
             priority: QueuePriority::Routine,
@@ -14403,32 +14431,46 @@ garbage
         let mut args = global_queue_run_args(AGENT, &target);
         args.wait = 60;
         let timing = QueueTiming {
-            pre_queue_git_lock_wait: Duration::from_millis(1_000),
-            in_queue_git_lock_wait: Duration::from_millis(300),
-            recheck_every: Duration::from_millis(400),
+            pre_queue_git_lock_wait: Duration::from_millis(200),
+            recheck_every: Duration::from_millis(200),
             poll: Duration::from_millis(100),
         };
-        // Each DEFERRED line snapshots the waiter's queue entry. The second
-        // one releases the Git lock, so a later recheck can decide.
+        // (position, enqueued_at, queue length) of the waiter's entry.
+        let snapshot = || {
+            let queue = lock.read_global_queue().unwrap();
+            let position = queue.iter().position(|entry| entry.agent == AGENT);
+            let enqueued_at = position.map(|index| queue[index].enqueued_at);
+            (position, enqueued_at, queue.len())
+        };
         let lines = capture_lines();
-        let snapshots: std::sync::Mutex<Vec<(Option<usize>, Option<i64>, usize)>> =
-            std::sync::Mutex::new(Vec::new());
+        let at_waiting = std::sync::Mutex::new(None);
+        let acquired_at = std::sync::Mutex::new(None);
+        let (blocked, blocked_seen) = mpsc::channel::<Instant>();
+        let blocked = std::sync::Mutex::new(blocked);
         let report = |line: &str| {
             lines.lock().unwrap().push(line.to_string());
-            if line.starts_with("validate-lock: mid-wait freshness DEFERRED") {
-                let queue = lock.read_global_queue().unwrap();
-                let position = queue.iter().position(|entry| entry.agent == AGENT);
-                let enqueued_at = position.map(|index| queue[index].enqueued_at);
-                let mut snapshots = snapshots.lock().unwrap();
-                snapshots.push((position, enqueued_at, queue.len()));
-                if snapshots.len() == 2 {
-                    fs::write(&release, "release\n").unwrap();
-                }
+            if line.starts_with("validate-lock: WAITING for the shared Git lock") {
+                *at_waiting.lock().unwrap() = Some(snapshot());
+                let _ = blocked.lock().unwrap().send(Instant::now());
+            } else if line.starts_with("validate-lock: acquired the shared Git lock") {
+                *acquired_at.lock().unwrap() = Some(Instant::now());
             }
         };
         let started = Instant::now();
-        let waited = lock
-            .wait_for_global_turn(
+        let (waited, released) = thread::scope(|scope| {
+            // Once the recheck says it is blocked, keep the lock for `HOLD`,
+            // look at the queue while the waiter is still blocked, and release.
+            let releaser = scope.spawn(|| {
+                let blocked_seen = blocked_seen;
+                let seen = blocked_seen.recv_timeout(Duration::from_secs(20)).ok();
+                let during = seen.map(|waiting_at| {
+                    thread::sleep(HOLD);
+                    (waiting_at, snapshot(), Instant::now())
+                });
+                fs::write(&release, "release\n").unwrap();
+                during
+            });
+            let waited = lock.wait_for_global_turn(
                 &args,
                 &owner,
                 "fixture=git-lock-in-queue",
@@ -14437,50 +14479,84 @@ garbage
                 true,
                 timing,
                 &report,
-            )
-            .unwrap();
+            );
+            (waited, releaser.join().unwrap())
+        });
+        let waited = waited.unwrap();
         let elapsed = started.elapsed();
         holder.finish();
         let lines = lines.lock().unwrap().clone();
-        let snapshots = snapshots.lock().unwrap().clone();
-        eprintln!("IN-QUEUE DEFERRAL after {elapsed:?}: {snapshots:?}\n{lines:#?}");
-
-        // Phase 1: every deferral kept the waiter second, with its enqueued_at.
-        assert!(
-            snapshots.len() >= 2,
-            "the held lock must defer at least two rechecks: {lines:#?}"
+        let at_waiting = at_waiting.lock().unwrap().take();
+        let acquired_at = acquired_at.lock().unwrap().take();
+        eprintln!(
+            "IN-QUEUE UNBOUNDED WAIT after {elapsed:?}: at WAITING {at_waiting:?}; during \
+             {released:?}\n{lines:#?}"
         );
-        let first_enqueued_at = snapshots[0].1;
-        assert!(first_enqueued_at.is_some(), "{snapshots:?}");
-        for (position, enqueued_at, length) in &snapshots {
-            assert_eq!(
-                *position,
-                Some(1),
-                "a deferred recheck must keep the waiter second in the queue: {snapshots:?}"
-            );
-            assert_eq!(
-                *enqueued_at, first_enqueued_at,
-                "a deferred recheck must keep the waiter's enqueued_at: {snapshots:?}"
-            );
-            assert_eq!(*length, 2, "{snapshots:?}");
-        }
-        let deferred: Vec<usize> = lines
+
+        // Phase 1: the recheck blocked, said so once, and kept the waiter
+        // second with its enqueued_at for the whole wait.
+        let Some((waiting_at, during, released_at)) = released else {
+            panic!("the recheck never reported a wait for the held Git lock: {lines:#?}");
+        };
+        let at_waiting = at_waiting.expect("the WAITING line was captured");
+        assert_eq!(at_waiting.0, Some(1), "{at_waiting:?}");
+        assert!(at_waiting.1.is_some(), "{at_waiting:?}");
+        assert_eq!(at_waiting.2, 2, "{at_waiting:?}");
+        assert_eq!(
+            during, at_waiting,
+            "a blocked recheck must keep the waiter second with its enqueued_at"
+        );
+        let waiting: Vec<usize> = lines
             .iter()
             .enumerate()
-            .filter(|(_, line)| line.starts_with("validate-lock: mid-wait freshness DEFERRED"))
+            .filter(|(_, line)| line.starts_with("validate-lock: WAITING for the shared Git lock"))
             .map(|(index, _)| index)
             .collect();
-        let deferral = &lines[deferred[0]];
+        assert_eq!(
+            waiting.len(),
+            1,
+            "one recheck, blocked once, must log one WAITING line: {lines:#?}"
+        );
+        let waiting_line = &lines[waiting[0]];
         assert!(
-            mentions_path(deferral, &git_lock),
-            "a deferral must name the lock: {deferral}"
+            mentions_path(waiting_line, &git_lock),
+            "the WAITING line must name the lock: {waiting_line}"
         );
         assert!(
-            deferral.contains(&format!("held by pid {} (", holder.pid)),
-            "a deferral must name the holder: {deferral}"
+            waiting_line.contains(&format!("held by pid {} (", holder.pid)),
+            "the WAITING line must name the holder: {waiting_line}"
         );
         assert!(
-            lines
+            waiting_line.contains("no holder line"),
+            "an old-style holder writes no line and must be reported as such: {waiting_line}"
+        );
+        let acquired_line = lines
+            .get(waiting[0] + 1)
+            .expect("a line must follow the WAITING line");
+        assert!(
+            acquired_line.starts_with("validate-lock: acquired the shared Git lock")
+                && mentions_path(acquired_line, &git_lock),
+            "the wait must end with the lock acquired, with nothing in between: {lines:#?}"
+        );
+        let acquired_at = acquired_at.expect("the acquired line was captured");
+        assert!(
+            acquired_at >= released_at,
+            "the recheck stopped waiting before the lock was released: {lines:#?}"
+        );
+        assert!(
+            acquired_at.duration_since(waiting_at) >= HOLD,
+            "the recheck waited {:?}, less than the {HOLD:?} the lock was held",
+            acquired_at.duration_since(waiting_at)
+        );
+        for forbidden in ["DEFERRED", "mid-wait freshness UNRESOLVED"] {
+            assert!(
+                lines.iter().all(|line| !line.contains(forbidden)),
+                "a queued recheck must wait for the Git lock, not give up ({forbidden}): \
+                 {lines:#?}"
+            );
+        }
+        assert!(
+            lines[..waiting[0]]
                 .iter()
                 .any(|line| line.starts_with("validate-lock: YIELD")
                     && line.contains("position=2")
@@ -14488,7 +14564,7 @@ garbage
             "the waiter must have waited second, behind {HEAD}: {lines:#?}"
         );
 
-        // Phase 2: the first recheck after the release decided and evicted.
+        // Phase 2: that same recheck decided once it had the lock, and evicted.
         let evicted: Vec<usize> = lines
             .iter()
             .enumerate()
@@ -14497,11 +14573,11 @@ garbage
             .collect();
         assert_eq!(evicted.len(), 1, "exactly one eviction: {lines:#?}");
         assert!(
-            evicted[0] > *deferred.last().unwrap(),
-            "no deferred recheck may evict: {lines:#?}"
+            evicted[0] > waiting[0] + 1,
+            "the eviction must follow the acquired lock: {lines:#?}"
         );
         assert!(
-            lines[..evicted[0]]
+            lines[waiting[0] + 1..evicted[0]]
                 .iter()
                 .any(|line| line.contains("does not contain freshly fetched origin/main")),
             "the eviction must rest on a definite stale result: {lines:#?}"
@@ -14529,6 +14605,32 @@ garbage
         assert_eq!(fs::read(&git_lock).unwrap(), b"");
         assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// The pre-queue DEFERRED line keeps the prefix that logs are read by, and
+    /// no longer promises launch order: the bound covers only the shared Git
+    /// lock (https://github.com/rrnewton/dev-hermit/issues/422).
+    #[test]
+    fn the_pre_queue_deferral_line_does_not_promise_launch_order() {
+        let line = pre_queue_deferred_line(HEX_SHA, "the shared Git lock /x was still held");
+        assert!(
+            line.starts_with(&format!(
+                "validate-lock: pre-queue freshness DEFERRED for target={HEX_SHA}: the shared \
+                 Git lock /x was still held. "
+            )),
+            "{line}"
+        );
+        assert!(!line.contains('\n'), "one log line: {line}");
+        assert!(!line.contains("launch order is kept"), "{line}");
+        assert!(line.contains("launch order is not guaranteed"), "{line}");
+        assert!(
+            line.contains("https://github.com/rrnewton/dev-hermit/issues/422"),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("fail-closed and before any validation slot is taken."),
+            "{line}"
+        );
     }
 
     #[test]

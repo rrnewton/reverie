@@ -13160,10 +13160,12 @@ else:
                 self.assertIn(f"(run log: {line})", explanation.detail)
                 self.assertIn("repair the fetch, network or repository", explanation.remedy)
 
-        # A mid-wait line is not a refusal: it kept the queue position.
+        # A mid-wait line is not a refusal: it kept the queue position, even
+        # though the error it carries names an UNRESOLVED freshness check.
         mid_wait = (
-            f"validate-lock: mid-wait freshness DEFERRED for target={SHA}, keeping "
-            "queue position: timed out after 3s"
+            f"validate-lock: mid-wait freshness UNRESOLVED for target={SHA}, keeping "
+            f"queue position: validate-lock: current-main freshness for {SHA} is "
+            "UNRESOLVED: boom"
         )
         explanation = self.explain_log("mid-wait", mid_wait)
         self.assertEqual("REFUSED", explanation.label)
