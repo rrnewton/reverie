@@ -226,6 +226,10 @@ class ValidatedWebsite:
     semantic_validation: _TreeValidation | None = None
 
     def recheck(self) -> None:
+        with _modules().build_data.phase("recheck"):
+            self._recheck()
+
+    def _recheck(self) -> None:
         if self.output_root is not None:
             _return_target(
                 self.output_root,
@@ -814,6 +818,14 @@ def _manifest(
 def compose(
     data: Mapping[str, Any], *, wording: str = "live",
     presentation: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    with _modules().build_data.phase("compose"):
+        return _compose(data, wording=wording, presentation=presentation)
+
+
+def _compose(
+    data: Mapping[str, Any], *, wording: str,
+    presentation: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     before = _generator_files()
     modules = _modules()
@@ -1921,24 +1933,30 @@ def build(output_root: Path = DEFAULT_OUTPUT_ROOT, *, series_ref: str | None = N
     def live_data() -> dict[str, Any]:
         return _live_data(**options)
 
-    data = json.loads(_json_bytes(live_data()))
-    presentation = capture_presentation(data, build_started_at, state_root=state_root)
-    expected_stage_1 = _stage_1_files(data)
+    phase = _modules().build_data.phase
+    with phase("build.stage1"):
+        data = json.loads(_json_bytes(live_data()))
+    with phase("build.presentation"):
+        presentation = capture_presentation(data, build_started_at, state_root=state_root)
+    with phase("build.stage1_tree"):
+        expected_stage_1 = _stage_1_files(data)
 
     def verify_live_sources() -> None:
-        _require_live_sources(data)
-        observed_stage_1 = _stage_1_files(live_data())
-        _require_live_sources(data)
-        if observed_stage_1 != expected_stage_1:
-            raise WebsiteRefused("Stage 1 source bytes changed during website build")
+        with phase("verify_sources"):
+            _require_live_sources(data)
+            observed_stage_1 = _stage_1_files(live_data())
+            _require_live_sources(data)
+            if observed_stage_1 != expected_stage_1:
+                raise WebsiteRefused("Stage 1 source bytes changed during website build")
 
-    return publish(
-        data,
-        output_root,
-        wording="live",
-        verify_sources=verify_live_sources,
-        presentation=presentation,
-    )
+    with phase("build.publish"):
+        return publish(
+            data,
+            output_root,
+            wording="live",
+            verify_sources=verify_live_sources,
+            presentation=presentation,
+        )
 
 
 def build_historical(

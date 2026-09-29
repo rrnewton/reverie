@@ -1907,3 +1907,120 @@ def test_portable_proof_real_native_current_terminal_credit(tmp_path, monkeypatc
         assert result["counts"]["projection_admitted_physical_row_count"] == 0
         assert result["counts"]["projection_excluded_physical_row_count"] == 1
         assert "validation cell evidence unavailable" in json.dumps(result["projection_exclusion_counts"])
+
+
+PHASE_LINE = (
+    r"compatibility-website: phase (?P<name>[a-z0-9_.]+)(?: build=(?P<build>\d+))? "
+    r"wall=\d+\.\ds cpu=\d+\.\ds children_cpu=\d+\.\ds(?P<status> status=raised)?"
+)
+
+
+def _phase_lines(text: str) -> list[dict[str, str | None]]:
+    import re
+
+    lines = text.splitlines()
+    parsed = [re.fullmatch(PHASE_LINE, line) for line in lines]
+    assert all(parsed), lines
+    return [match.groupdict() for match in parsed if match is not None]
+
+
+@pytest.mark.parametrize("setting", [None, "", "0", "true", "yes", " 1", "1 "])
+def test_phase_timing_is_silent_unless_enabled_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    setting: str | None,
+) -> None:
+    if setting is None:
+        monkeypatch.delenv(build_data.PHASE_TIMING_ENVIRONMENT, raising=False)
+    else:
+        monkeypatch.setenv(build_data.PHASE_TIMING_ENVIRONMENT, setting)
+    assert build_data.phase_timing_enabled() is False
+    with build_data.phase("stage1.export"):
+        pass
+    with pytest.raises(ValueError, match="kept"):
+        with build_data.phase("stage1.export"):
+            raise ValueError("kept")
+    assert capfd.readouterr() == ("", "")
+
+
+def test_phase_timing_lines_go_to_stderr_only_and_never_change_stage1_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    parent, parent_commit, hermit, hermit_commit = make_checkouts(tmp_path)
+    row = validation_row(hermit_commit)
+    canonical = canonical_input(
+        parent_commit, [series_row("event-1", hermit_commit)], validation_rows=[row]
+    )
+    install_inputs(monkeypatch, canonical, manifest_metadata())
+
+    def build() -> dict[str, Any]:
+        return build_data.build_data(
+            parent, parent_commit, hermit, hermit_commit, hermit_commit
+        )
+
+    monkeypatch.delenv(build_data.PHASE_TIMING_ENVIRONMENT, raising=False)
+    silent = build()
+    assert capfd.readouterr() == ("", "")
+
+    monkeypatch.setenv(build_data.PHASE_TIMING_ENVIRONMENT, "1")
+    timed = build()
+    first = capfd.readouterr()
+    again = build()
+    second = capfd.readouterr()
+
+    assert build_data._canonical_bytes(timed) == build_data._canonical_bytes(silent)
+    assert build_data._canonical_bytes(again) == build_data._canonical_bytes(silent)
+    assert first.out == "" and second.out == ""
+    expected = [
+        "stage1.checkouts", "stage1.export", "stage1.manifest_metadata",
+        "stage1.checkouts", "stage1.provenance", "stage1.projection",
+        "stage1.reduce", "stage1.validate", "stage1.checkouts", "stage1.total",
+    ]
+    lines = _phase_lines(first.err)
+    later = _phase_lines(second.err)
+    assert [line["name"] for line in lines] == expected
+    assert [line["name"] for line in later] == expected
+    assert all(line["status"] is None for line in lines + later)
+    # Every line of one build carries that build's ordinal, and the next
+    # build in the same process gets the next ordinal.
+    ordinals = {line["build"] for line in lines}
+    assert len(ordinals) == 1 and None not in ordinals
+    assert {line["build"] for line in later} == {str(int(ordinals.pop()) + 1)}
+
+
+def test_phase_timing_clamps_child_cpu_that_steps_backwards(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(build_data.PHASE_TIMING_ENVIRONMENT, "1")
+    samples = iter(
+        [
+            os.times_result((1.0, 1.0, 5.0, 5.0, 0.0)),
+            os.times_result((1.0, 1.0, 4.9, 5.0, 0.0)),
+        ]
+    )
+    monkeypatch.setattr(build_data.os, "times", lambda: next(samples))
+    with build_data.phase("compose"):
+        pass
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    [line] = captured.err.splitlines()
+    assert _phase_lines(line)[0]["name"] == "compose"
+    assert line.endswith(" children_cpu=0.0s")
+
+
+def test_phase_timing_reports_a_raising_phase_and_reraises_the_same_error(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(build_data.PHASE_TIMING_ENVIRONMENT, "1")
+    error = build_data.BuildRefused("expected refusal")
+    with pytest.raises(build_data.BuildRefused) as raised:
+        with build_data.phase("stage1.projection"):
+            raise error
+    assert raised.value is error
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    [line] = _phase_lines(captured.err)
+    assert line["name"] == "stage1.projection" and line["build"] is None
+    assert line["status"] == " status=raised"

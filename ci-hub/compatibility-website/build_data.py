@@ -17,8 +17,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -196,6 +198,71 @@ class Modules:
 
 
 _LOADED_MODULES: Modules | None = None
+
+# Phase timing is diagnostic output only.  It is off unless this variable is
+# exactly "1", so the CLI single-channel contracts (empty stderr on success, a
+# lone REFUSED line on refusal) are unchanged by default.  The hosted rebuild
+# step sets it to show where its wall time goes.  The lines go to stderr and
+# never into an output file, a receipt, or the stdout JSON result.
+PHASE_TIMING_ENVIRONMENT = "COMPATIBILITY_WEBSITE_PHASE_TIMING"
+# One mutable object, so the counters never rebind a module global.
+_PHASE_STATE: dict[str, int | None] = {"builds": 0, "build": None}
+
+
+def phase_timing_enabled() -> bool:
+    return os.environ.get(PHASE_TIMING_ENVIRONMENT) == "1"
+
+
+@contextmanager
+def phase(name: str) -> Iterator[None]:
+    """Report one builder phase's wall, own CPU, and child CPU seconds.
+
+    Inside a Stage 1 build the line carries that build's ordinal in this
+    process (``build=N``).  Phases nest: a ``stage1.total`` line includes its
+    ``stage1.*`` lines, and ``verify_sources`` and ``recheck`` include the
+    Stage 1 rebuild they run.  A phase that raises is still reported, with
+    ``status=raised``, and the exception propagates unchanged.
+    """
+    if not phase_timing_enabled():
+        yield
+        return
+    wall, cpu, before = time.monotonic(), time.process_time(), os.times()
+    status = " status=raised"
+    try:
+        yield
+        status = ""
+    finally:
+        after = os.times()
+        # os.times() child totals can step backwards by a rounding tick.
+        children = max(
+            0.0,
+            after.children_user + after.children_system
+            - before.children_user - before.children_system,
+        )
+        build = _PHASE_STATE["build"]
+        ordinal = "" if build is None else f" build={build}"
+        print(
+            f"compatibility-website: phase {name}{ordinal} "
+            f"wall={time.monotonic() - wall:.1f}s "
+            f"cpu={time.process_time() - cpu:.1f}s "
+            f"children_cpu={children:.1f}s{status}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+@contextmanager
+def _stage1_build() -> Iterator[None]:
+    """Number one Stage 1 build and time it as ``stage1.total``."""
+    builds = int(_PHASE_STATE["builds"] or 0) + 1
+    _PHASE_STATE["builds"] = builds
+    previous = _PHASE_STATE["build"]
+    _PHASE_STATE["build"] = builds
+    try:
+        with phase("stage1.total"):
+            yield
+    finally:
+        _PHASE_STATE["build"] = previous
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -2171,12 +2238,13 @@ def _build_from_captured(
     *, state_root: Path | None = None,
 ) -> dict[str, Any]:
     historical = historical_identity is not None
-    canonical_provenance = _canonical_provenance(
-        canonical_document.value.get("provenance"),
-        commits["parent"],
-        historical=historical,
-        validation_history_commit=commits.get("validation_history"),
-    )
+    with phase("stage1.provenance"):
+        canonical_provenance = _canonical_provenance(
+            canonical_document.value.get("provenance"),
+            commits["parent"],
+            historical=historical,
+            validation_history_commit=commits.get("validation_history"),
+        )
     if historical:
         request = _object(canonical_provenance["historical"], "historical request")
         if (request["record_id"], request["run_id"]) != historical_identity:
@@ -2202,23 +2270,26 @@ def _build_from_captured(
                 "historical reader Hermit gitlink disagrees with the gitlink "
                 "recorded by the generator base commit"
             )
-    projection = _run_projection(
-        manifest_document,
-        canonical_document,
-        hermit,
-        commits["hermit_main"],
-        historical_identity,
-        **({"state_root": state_root} if state_root is not None else {}),
-    )
-    reduced = _reduce_projection(projection)
-    provenance = _build_provenance(
-        canonical_document,
-        canonical_provenance,
-        manifest_document,
-        projection,
-        commits,
-    )
-    return _artifact_result(projection, reduced, provenance)
+    with phase("stage1.projection"):
+        projection = _run_projection(
+            manifest_document,
+            canonical_document,
+            hermit,
+            commits["hermit_main"],
+            historical_identity,
+            **({"state_root": state_root} if state_root is not None else {}),
+        )
+    with phase("stage1.reduce"):
+        reduced = _reduce_projection(projection)
+        provenance = _build_provenance(
+            canonical_document,
+            canonical_provenance,
+            manifest_document,
+            projection,
+            commits,
+        )
+    with phase("stage1.validate"):
+        return _artifact_result(projection, reduced, provenance)
 
 
 def build_data(
@@ -2234,40 +2305,46 @@ def build_data(
     validation_history_commit: str | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic reduction from exact current authorities."""
-    _modules()
-    parent_commit = _sha(parent_commit_value, "parent commit")
-    hermit_commit = _sha(hermit_commit_value, "Hermit commit")
-    main = _sha(hermit_main_commit_value, "Hermit main commit")
-    parent = _require_checkout(
-        parent_value, parent_commit, label="dev-hermit", clean=True
-    )
-    hermit = _require_checkout(hermit_value, hermit_commit, label="Hermit", clean=True)
-    _require_main_target(hermit, main)
-    options = {}
-    if series_ref is not None or published_only:
-        options.update(series_ref=series_ref, published_only=published_only)
-    if state_root is not None:
-        options["state_root"] = state_root
-    if validation_history_commit is not None:
-        options["validation_history_commit"] = _sha(validation_history_commit, "validation history commit")
-    canonical = _capture_canonical_input(parent, parent_commit, **options)
-    manifest = _run_manifest_metadata(hermit)
-    _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
-    _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)
-    _require_main_target(hermit, main)
-    result = _build_from_captured(
-        canonical,
-        manifest,
-        hermit,
-        {"hermit": hermit_commit, "hermit_main": main, "parent": parent_commit,
-         **({"validation_history": validation_history_commit} if validation_history_commit is not None else {})},
-        None,
-        **({"state_root": state_root} if state_root is not None else {}),
-    )
-    _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
-    _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)
-    _require_main_target(hermit, main)
-    return result
+    with _stage1_build():
+        _modules()
+        parent_commit = _sha(parent_commit_value, "parent commit")
+        hermit_commit = _sha(hermit_commit_value, "Hermit commit")
+        main = _sha(hermit_main_commit_value, "Hermit main commit")
+        with phase("stage1.checkouts"):
+            parent = _require_checkout(
+                parent_value, parent_commit, label="dev-hermit", clean=True
+            )
+            hermit = _require_checkout(hermit_value, hermit_commit, label="Hermit", clean=True)
+            _require_main_target(hermit, main)
+        options = {}
+        if series_ref is not None or published_only:
+            options.update(series_ref=series_ref, published_only=published_only)
+        if state_root is not None:
+            options["state_root"] = state_root
+        if validation_history_commit is not None:
+            options["validation_history_commit"] = _sha(validation_history_commit, "validation history commit")
+        with phase("stage1.export"):
+            canonical = _capture_canonical_input(parent, parent_commit, **options)
+        with phase("stage1.manifest_metadata"):
+            manifest = _run_manifest_metadata(hermit)
+        with phase("stage1.checkouts"):
+            _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
+            _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)
+            _require_main_target(hermit, main)
+        result = _build_from_captured(
+            canonical,
+            manifest,
+            hermit,
+            {"hermit": hermit_commit, "hermit_main": main, "parent": parent_commit,
+             **({"validation_history": validation_history_commit} if validation_history_commit is not None else {})},
+            None,
+            **({"state_root": state_root} if state_root is not None else {}),
+        )
+        with phase("stage1.checkouts"):
+            _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
+            _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)
+            _require_main_target(hermit, main)
+        return result
 
 
 def build_historical_data(

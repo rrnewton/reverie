@@ -3474,3 +3474,81 @@ def test_website_build_json_bound_admits_the_measured_proof_growth(tmp_path: Pat
             )
     finally:
         os.close(directory)
+
+
+def _published_files(root: Path) -> dict[str, bytes]:
+    files = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            files[str(path.relative_to(root))] = path.read_bytes()
+    return files
+
+
+def test_phase_timing_changes_no_output_file_and_no_stdout_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    import re
+
+    builder = website._modules().build_data
+    data = build_data(tmp_path, monkeypatch)
+    monkeypatch.setattr(website, "_live_data", lambda **_: copy.deepcopy(data))
+    monkeypatch.setattr(website, "_require_live_sources", lambda _data: None)
+    monkeypatch.setattr(website, "_runtime_source_identity", lambda: ("same",) * 4)
+
+    class FixedClock(website.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return website.datetime(2026, 9, 28, 12, 0, 0, tzinfo=tz)
+
+    # The build start time is published, so both builds share one clock.
+    monkeypatch.setattr(website, "datetime", FixedClock)
+    capfd.readouterr()
+
+    results = {}
+    for setting in ("unset", "1"):
+        if setting == "unset":
+            monkeypatch.delenv(builder.PHASE_TIMING_ENVIRONMENT, raising=False)
+        else:
+            monkeypatch.setenv(builder.PHASE_TIMING_ENVIRONMENT, setting)
+        output_root = tmp_path / f"site-{setting}"
+        assert website.main(["build", "--output-root", str(output_root)]) == 0
+        captured = capfd.readouterr()
+        result = json.loads(captured.out)
+        assert captured.out == website._json_bytes(result).decode() + "\n"
+        results[setting] = (output_root, result, captured.err)
+
+    silent_root, silent, silent_err = results["unset"]
+    timed_root, timed, timed_err = results["1"]
+    assert silent_err == ""
+    # The stdout result differs only in the output path the caller chose.
+    silent_tree = Path(silent.pop("path"))
+    timed_tree = Path(timed.pop("path"))
+    assert list(silent_root.iterdir()) == [silent_tree]
+    assert list(timed_root.iterdir()) == [timed_tree]
+    assert timed_tree.name == silent_tree.name
+    assert timed == silent
+    assert _published_files(timed_tree) == _published_files(silent_tree)
+
+    line = re.compile(
+        r"compatibility-website: phase (?P<name>[a-z0-9_.]+) "
+        r"wall=\d+\.\ds cpu=\d+\.\ds children_cpu=\d+\.\ds"
+    )
+    names = []
+    for text in timed_err.splitlines():
+        match = line.fullmatch(text)
+        assert match is not None, text
+        names.append(match["name"])
+    # The live data is supplied directly here, so no stage1.* line appears.
+    # verify_sources runs at both final publication boundaries inside
+    # build.publish, and once more inside the CLI's recheck.
+    assert names == [
+        "build.stage1", "build.presentation", "build.stage1_tree", "compose",
+        "verify_sources", "verify_sources", "build.publish",
+        "verify_sources", "recheck",
+    ]
+    assert set(names) == {
+        "build.stage1", "build.presentation", "build.stage1_tree", "compose",
+        "verify_sources", "build.publish", "recheck",
+    }
