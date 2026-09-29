@@ -959,8 +959,19 @@ impl Tool for DoubleInjectGetpid {
     }
 }
 
+// Prefer the run-time values, which the fbsource BUCK rule sets. The
+// compile-time values are paths on the build host and are missing on the test
+// host when the binary was built remotely. Cargo sets CARGO_MANIFEST_DIR at run
+// time too, but CARGO_BIN_EXE_* only at compile time.
+fn build_path(name: &str, compile_time: &str) -> PathBuf {
+    std::env::var_os(name).map_or_else(|| PathBuf::from(compile_time), PathBuf::from)
+}
+
 fn preload_path() -> PathBuf {
-    let launcher = PathBuf::from(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
+    let launcher = build_path(
+        "CARGO_BIN_EXE_reverie-liteinst-strace",
+        env!("CARGO_BIN_EXE_reverie-liteinst-strace"),
+    );
     let target = launcher.parent().unwrap();
     [
         target.join("libreverie_liteinst.so"),
@@ -973,7 +984,7 @@ fn preload_path() -> PathBuf {
 
 fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let source = build_path("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let output = directory.path().join(name.trim_end_matches(".c"));
@@ -996,7 +1007,7 @@ fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
 
 fn compile_static_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let source = build_path("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let output = directory.path().join("li-static-exit");
