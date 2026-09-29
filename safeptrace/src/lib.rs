@@ -1535,13 +1535,17 @@ mod test {
 
         let (pid, tracee) = trace(
             move || {
-                // Create a handful of threads that do nothing but exit.
+                // Create a handful of threads that do nothing but exit. They
+                // are raw pthreads: see `spawn_tracee_thread`.
+                extern "C" fn exit_at_once(_: *mut libc::c_void) -> *mut libc::c_void {
+                    std::ptr::null_mut()
+                }
                 let threads = (0..THREAD_COUNT)
-                    .map(|i| thread::spawn(move || i))
+                    .map(|_| spawn_tracee_thread(exit_at_once, std::ptr::null_mut()))
                     .collect::<Vec<_>>();
 
                 for t in threads {
-                    t.join().unwrap();
+                    assert_eq!(unsafe { libc::pthread_join(t, std::ptr::null_mut()) }, 0);
                 }
 
                 42
@@ -1592,6 +1596,26 @@ mod test {
         Ok(())
     }
 
+    /// Starts a thread in a tracee forked by [`trace`] with a raw
+    /// `pthread_create`.
+    ///
+    /// The test harness is multithreaded, and `fork` copies only the calling
+    /// thread. A lock another harness thread held at the fork stays held in
+    /// the child forever. `std::thread::spawn` takes such a lock (the thread
+    /// info lock of std's stack overflow handler), so a tracee that uses it
+    /// can block before its first clone. `pthread_create` needs no lock that
+    /// glibc does not reset in the child of a fork.
+    #[cfg(not(sanitized))]
+    fn spawn_tracee_thread(
+        start: extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
+        arg: *mut libc::c_void,
+    ) -> libc::pthread_t {
+        let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+        let rc = unsafe { libc::pthread_create(thread.as_mut_ptr(), std::ptr::null(), start, arg) };
+        assert_eq!(rc, 0, "pthread_create in a tracee failed");
+        unsafe { thread.assume_init() }
+    }
+
     #[cfg(not(sanitized))]
     fn group_exit(thread_count: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
         use std::sync::Arc;
@@ -1603,15 +1627,21 @@ mod test {
             move || {
                 let counter = Arc::new(AtomicUsize::new(0));
 
-                // Create a handful of threads that sleep forever.
+                // Create a handful of threads that sleep forever. They are
+                // raw pthreads: see `spawn_tracee_thread`.
+                extern "C" fn count_and_sleep(counter: *mut libc::c_void) -> *mut libc::c_void {
+                    // SAFETY: `counter` comes from `Arc::into_raw` below and
+                    // owns one strong count, which this thread never drops:
+                    // it sleeps until exit_group ends the process.
+                    let counter = unsafe { &*(counter as *const AtomicUsize) };
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    unsafe { libc::sleep(Duration::from_mins(1).as_secs() as libc::c_uint) };
+                    std::ptr::null_mut()
+                }
                 let _threads = (0..thread_count)
                     .map(|_i| {
-                        let counter = counter.clone();
-
-                        thread::spawn(move || {
-                            counter.fetch_add(1, Ordering::Relaxed);
-                            thread::sleep(Duration::from_mins(1));
-                        })
+                        let counter = Arc::into_raw(counter.clone()) as *mut libc::c_void;
+                        spawn_tracee_thread(count_and_sleep, counter)
                     })
                     .collect::<Vec<_>>();
 
