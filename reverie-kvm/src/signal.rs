@@ -1722,7 +1722,15 @@ mod tests {
     }
 
     fn run_c_abi_probe(name: &str) -> BTreeMap<String, usize> {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        // Prefer the run-time CARGO_MANIFEST_DIR, which Cargo and the fbsource
+        // BUCK rule set. The compile-time value is a directory on the build
+        // host and is missing on the test host when the binary was built
+        // remotely.
+        let source = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map_or_else(
+                || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+                std::path::PathBuf::from,
+            )
             .join("tests/fixtures")
             .join(format!("signal_abi_{name}.c"));
         let binary = std::env::temp_dir().join(format!(

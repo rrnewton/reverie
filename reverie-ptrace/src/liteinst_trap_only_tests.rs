@@ -109,8 +109,13 @@ fn parity_guest() -> &'static std::path::Path {
         if let Some(prebuilt) = std::env::var_os(PARITY_GUEST_ENV) {
             return PathBuf::from(prebuilt);
         }
-        let source =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trap_only_parity.c");
+        // Prefer the run-time CARGO_MANIFEST_DIR, which Cargo and the fbsource
+        // BUCK rule set. The compile-time value is a directory on the build
+        // host and is missing on the test host when the binary was built
+        // remotely.
+        let source = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+            .join("tests/fixtures/trap_only_parity.c");
         // One fixture beside the test binary, inside the build tree, rather
         // than one leaked file per test process under /tmp. Each process
         // compiles its own copy and renames it into place, so the source is
