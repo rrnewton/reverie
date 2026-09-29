@@ -34,6 +34,11 @@ static const unsigned char getrandom_239[] = {
 /* cmpb $0x7f,-0x1234(%rip); a negative displacement and a nonzero imm8. */
 static const unsigned char cmpb_negative[] = {0x80, 0x3d, 0xcc, 0xed,
                                               0xff, 0xff, 0x7f, 0x90};
+/* cmpb $0x0,0x800(%rip): the 4 KiB move turns this displacement into
+ * -0x800, which changes its upper 16 bits, so a relocation that kept only the
+ * low 16 bits fails here. */
+static const unsigned char cmpb_borrow[] = {0x80, 0x3d, 0x00, 0x08,
+                                            0x00, 0x00, 0x00, 0x90};
 /* cmpl $0x5,0x2000(%rip) */
 static const unsigned char cmpl_imm8[] = {0x83, 0x3d, 0x00, 0x20,
                                           0x00, 0x00, 0x05, 0x90};
@@ -53,6 +58,7 @@ static const unsigned char cmpb_segment[] = {0x64, 0x80, 0x3d, 0x40,
 static const struct prologue prologues[] = {
     {"getrandom-2.39", getrandom_239, sizeof(getrandom_239), 1, 0x80, 2},
     {"cmpb-negative", cmpb_negative, sizeof(cmpb_negative), 0, 0x80, 2},
+    {"cmpb-borrow", cmpb_borrow, sizeof(cmpb_borrow), 0, 0x80, 2},
     {"cmpl-imm8", cmpl_imm8, sizeof(cmpl_imm8), 0, 0x83, 2},
     {"cmpl-imm32", cmpl_imm32, sizeof(cmpl_imm32), 0, 0x81, 2},
     {"cmpq-rex", cmpq_rex, sizeof(cmpq_rex), 0, 0x83, 3},
