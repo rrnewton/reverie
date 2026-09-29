@@ -38751,11 +38751,13 @@ mod tests {
         const TEST: &str =
             "executor::tests::received_rights_stage_every_owner_before_a_later_clone_failure";
         const CHILD_ENV: &str = "REVERIE_RECEIVED_RETIREMENT_CHILD";
+        const COMPLETED: &str = "REVERIE_RECEIVED_RETIREMENT_COMPLETE_V1";
         if std::env::var_os(CHILD_ENV).is_none() {
             let output = std::process::Command::new("timeout")
                 .args(["--kill-after=2s", "10s"])
                 .arg(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
+                .arg("--test-threads=1")
                 .env(CHILD_ENV, "1")
                 .output()
                 .expect("failed to run isolated received-retirement regression");
@@ -38765,6 +38767,29 @@ mod tests {
                 output.status,
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout
+                    .lines()
+                    .filter(|line| line.starts_with("running "))
+                    .collect::<Vec<_>>(),
+                ["running 1 test"]
+            );
+            let completed_test = format!("test {TEST} ... ok");
+            assert_eq!(
+                stdout
+                    .lines()
+                    .filter(|line| line.starts_with("test ") && line.contains(" ... "))
+                    .collect::<Vec<_>>(),
+                [completed_test.as_str()]
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .filter(|line| *line == COMPLETED)
+                    .count(),
+                1
             );
             return;
         }
@@ -38820,6 +38845,7 @@ mod tests {
         assert_stream_peer_closed(&first_peer);
         assert_stream_peer_closed(&second_peer);
         state.file_retirement.set_probe(None);
+        eprintln!("{COMPLETED}");
     }
 
     #[test]
