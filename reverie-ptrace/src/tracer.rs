@@ -8677,7 +8677,10 @@ mod tests {
     /// vfork-done stop, and another thread then calls exit_group. The
     /// vfork-done stop is retired with the prefix when the exit stop is
     /// resumed, so the group exit completes with the actual status and the
-    /// terminal path never meets it as an unexpected non-exit stop.
+    /// terminal path never meets it as an unexpected non-exit stop. The
+    /// exiting thread passes status 0 only if it saw the parent move from
+    /// its vfork wait into its vfork-done stop, and 3 otherwise, so the test
+    /// fails instead of passing when that stop was not reached.
     #[tokio::test(flavor = "current_thread")]
     async fn group_exit_retires_vfork_done_queued_before_exit() {
         static RUNNING: AtomicUsize = AtomicUsize::new(0);
@@ -8758,23 +8761,29 @@ mod tests {
                 }
             });
             // The group exit, once the parent has left wait_for_vfork_done
-            // for its vfork-done stop. Bounded, so a missed state only
-            // leaves the prefix unexercised.
+            // for its vfork-done stop. Bounded: if that move is not seen
+            // within 3 s, the group exits with status 3 instead of 0, so the
+            // test fails rather than passing with the prefix unexercised.
             std::thread::spawn(|| {
                 after_go();
                 let tid = PARENT_TID.load(Ordering::SeqCst);
                 let deadline = Instant::now() + Duration::from_secs(3);
                 let mut waited_for_vfork_done = false;
+                let mut saw_vfork_done_stop = false;
                 while Instant::now() < deadline {
                     match thread_state(tid) {
                         Some(b'D') => waited_for_vfork_done = true,
-                        Some(b't') if waited_for_vfork_done => break,
+                        Some(b't') if waited_for_vfork_done => {
+                            saw_vfork_done_stop = true;
+                            break;
+                        }
                         _ => {}
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 std::thread::sleep(Duration::from_millis(20));
-                unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+                let status: libc::c_long = if saw_vfork_done_stop { 0 } else { 3 };
+                unsafe { libc::syscall(libc::SYS_exit_group, status) };
             });
             while RUNNING.load(Ordering::SeqCst) < 2 {
                 std::hint::spin_loop();
@@ -8808,7 +8817,11 @@ mod tests {
                 panic!("the vfork group exit failed: {error}");
             }
         };
-        assert_eq!(status, ExitStatus::Exited(0));
+        assert_eq!(
+            status,
+            ExitStatus::Exited(0),
+            "Exited(3) means the parent was not seen moving from its vfork wait (D) into its vfork-done stop (t), so no vfork-done stop was known to be queued before EXIT"
+        );
     }
 
     use std::sync::atomic::AtomicUsize;
