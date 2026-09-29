@@ -15,8 +15,20 @@ https://github.com/rrnewton/hermit/issues/3301.
 This module checks a summary before anything renders it. The shape must be
 exactly what the scorecard writes, and every count and credit must be what its
 own per-cell list implies: each tally is recomputed from `cells`, each one-line
-summary is re-rendered from its tally, and a credit that is null is never
-counted as 0 or 1. Anything else is refused with a message naming the field.
+summary is re-rendered from its tally, a null credit adds nothing to any sum,
+and a mean or floor with nothing to divide by is null, never 0. Anything else
+is refused with a message naming the field.
+
+A cell that is not measured (matched or diverged) carries the ledger's typed
+`unavailable_class` and `operand`, and a tally counts it by that class, never
+by its reason text, in one of four groups: no golden (an operand left no
+deterministic golden log, so the cell has no parity; outside the mean and the
+floor), not compared (the backend's inputs cannot be equalized; outside
+both), unmeasured (a golden log could exist but nothing was compared; in the
+floor as 0) and record-missing (in the floor as 0). A refused row is in the
+floor as 0 too. The mean is over the measured cells. A backend hermit
+declares inputs-not-equalizable (only dbt) enters no mean or floor at all,
+per backend or in the total.
 
 The website carries the summary as its exact committed bytes (a "carriage",
 `CARRIAGE_FIELDS`), so the same checks run when the export captures it, when
@@ -47,8 +59,10 @@ ROW_STORE = "parity"
 RUN_STORE = "parity-runs"
 PRODUCERS = ("validate", "pressure-test")
 BACKENDS = ("dbt", "kvm", "liteinst", "sabre")
+#: The ledger's verdicts, most to least adverse (parity_ledger.LEDGER_VERDICTS).
 LEDGER_VERDICTS = (
     "record-missing",
+    "nondeterministic",
     "unavailable",
     "reference-missing",
     "candidate-missing",
@@ -58,18 +72,50 @@ LEDGER_VERDICTS = (
 )
 MEASURED_VERDICTS = frozenset({"matched", "diverged"})
 #: A cell verdict is a ledger verdict, or `refused` for a row the scorecard
-#: could attribute to its run but could not admit.
+#: could attribute to its run but could not admit. Most adverse first: a cell
+#: reported twice in one run keeps its most adverse report.
 CELL_VERDICTS = ("refused",) + LEDGER_VERDICTS
-UNAVAILABLE_CLASSES = (
-    "determinism-fail",
+#: The ledger's typed classes (parity_ledger.py), in the groups a tally counts
+#: them in, each in the order a line prints it. NO GOLDEN: an operand's own
+#: outcome left no deterministic golden log, so the cell has no parity;
+#: outside the mean and the floor.
+NO_GOLDEN_CLASSES = (
+    "determinism-mismatch",
+    "timeout",
+    "crash",
+    "oom",
+    "infrastructure-error",
+    "sandbox-denied",
+    "failed-untyped",
+    "ended",
     "host-inapplicable",
-    "operand-ended",
-    "log-not-retained",
-    "inputs-not-equalized",
-    "reference-missing",
-    "candidate-missing",
-    "other",
 )
+#: NOT COMPARED: the backend's inputs cannot be equalized with the
+#: reference's; outside the mean and the floor.
+NOT_COMPARED_CLASSES = ("inputs-not-equalized",)
+#: UNMEASURED: a golden log could exist but no comparison was made; in the
+#: floor as 0.
+UNMEASURED_CLASSES = (
+    "log-not-retained",
+    "log-unreadable",
+    "no-result-row",
+    "log-diff-failed",
+    "invalid-test-id",
+    "golden-not-written",
+    "epoch-not-shared",
+)
+#: A selected cell the run wrote no record for; in the floor as 0.
+RECORD_MISSING_CLASS = "record-missing"
+UNAVAILABLE_CLASSES = NO_GOLDEN_CLASSES + NOT_COMPARED_CLASSES + UNMEASURED_CLASSES + (RECORD_MISSING_CLASS,)
+OPERANDS = ("reference", "candidate")
+#: The backends hermit declares inputs-not-equalizable (the keys of
+#: parity_ledger.INPUTS_NOT_EQUALIZABLE). No cell of theirs enters any mean or
+#: floor, per backend or in the total, not even a record-missing or refused one.
+INPUTS_NOT_EQUALIZABLE_BACKENDS = ("dbt",)
+#: The group a cell is counted in (`cell_group`), in tally order.
+CELL_GROUPS = ("measured", "no-golden", "not-compared", "unmeasured", "record-missing", "refused")
+#: The groups outside every floor, whatever the backend.
+_OUTSIDE_THE_FLOOR = ("no-golden", "not-compared")
 CREDIT_BASES = ("clean", "unequalized")
 LEGACY_RERUN_LABEL = "legacy-rerun"
 #: The one-line text for a ledger capture that has no summary at all.
@@ -109,18 +155,41 @@ TALLY_FIELDS = (
     "measured",
     "matched",
     "diverged",
-    "unavailable",
-    "unavailable_by_class",
+    "no_golden",
+    "no_golden_by_class",
+    "not_compared",
+    "unmeasured",
+    "unmeasured_by_class",
     "record_missing",
     "refused",
     "credited",
     "clean_credited",
     "unequalized_credited",
     "credit_sum",
+    "floor_cells",
     "mean_credit",
     "floor_credit",
     "first_divergence",
+    "line",
 )
+#: The tally fields that are counts.
+_TALLY_COUNTS = (
+    "selected",
+    "measured",
+    "matched",
+    "diverged",
+    "no_golden",
+    "not_compared",
+    "unmeasured",
+    "record_missing",
+    "refused",
+    "credited",
+    "clean_credited",
+    "unequalized_credited",
+    "floor_cells",
+)
+#: The tally fields that count by class, with their classes.
+_TALLY_BY_CLASS = (("no_golden_by_class", NO_GOLDEN_CLASSES), ("unmeasured_by_class", UNMEASURED_CLASSES))
 GROUP_FIELDS = (
     "first_divergent_record",
     "syscall",
@@ -138,6 +207,7 @@ CELL_FIELDS = (
     "backend",
     "verdict",
     "unavailable_class",
+    "operand",
     "reason",
     "credit",
     "credit_basis",
@@ -330,14 +400,51 @@ def credit_text(value: float | None) -> str:
     return text
 
 
+def _class_counts(by_class: Mapping[str, int], classes: Sequence[str]) -> str:
+    """`name n, name n` over the nonzero classes, in the group's own order."""
+    return ", ".join(f"{name} {by_class[name]}" for name in classes if by_class[name] > 0)
+
+
 def render_line(tally: Mapping[str, Any]) -> str:
     """hermit's `ParityTally::line`: the one-line summary of a tally.
 
-    Mean credit is over the credited (measured) cells and floor credit over
-    every selected cell; a tally with nothing credited prints `n/a`, never 0.
+    A tally whose every selected cell is not compared (a backend whose inputs
+    cannot be equalized) prints `parity: not compared: 0 measured of N
+    selected (inputs cannot be equalized)`. Any other tally prints its matched
+    count, its mean over the measured cells, and its floor with the coverage
+    it is over: `floor F over N measured of M selected (K no golden: <class
+    counts>; J not compared; ...)`, where the parenthesis names every cell
+    the floor's denominator leaves out or counts as 0. A mean or floor with
+    nothing to divide by prints `n/a`, never 0.
     """
-    refused = f"; refused {tally['refused']}" if tally["refused"] > 0 else ""
-    over = f" over {tally['credited']} credited" if tally["credited"] != tally["measured"] else ""
+    selected = tally["selected"]
+    if selected > 0 and tally["not_compared"] == selected:
+        return (
+            f"parity: not compared: {tally['measured']} measured of {selected} selected "
+            "(inputs cannot be equalized)"
+        )
+    no_golden = f"{tally['no_golden']} no golden"
+    if tally["no_golden"] > 0:
+        no_golden += f": {_class_counts(tally['no_golden_by_class'], NO_GOLDEN_CLASSES)}"
+    parts = [no_golden, f"{tally['not_compared']} not compared"]
+    if tally["unmeasured"] > 0:
+        parts.append(
+            f"{tally['unmeasured']} unmeasured: {_class_counts(tally['unmeasured_by_class'], UNMEASURED_CLASSES)}"
+        )
+    if tally["record_missing"] > 0:
+        parts.append(f"{tally['record_missing']} record-missing")
+    if tally["refused"] > 0:
+        parts.append(f"{tally['refused']} refused")
+    # A record-missing or refused cell of a backend whose inputs cannot be
+    # equalized is in no floor; say so, or the parenthesis would imply a
+    # larger denominator than the floor's.
+    unequalizable = selected - tally["no_golden"] - tally["not_compared"] - tally["floor_cells"]
+    if unequalizable > 0:
+        parts.append(
+            f"floor excludes {unequalizable} record-missing or refused cell(s) whose inputs "
+            "cannot be equalized"
+        )
+    credited = f" ({tally['credited']} credited)" if tally["credited"] != tally["measured"] else ""
     if tally["credited"] > 0 and tally["clean_credited"] == 0:
         inputs = " [inputs not equalized]"
     elif tally["unequalized_credited"] > 0:
@@ -347,10 +454,10 @@ def render_line(tally: Mapping[str, Any]) -> str:
     else:
         inputs = ""
     return (
-        f"parity: {tally['matched']}/{tally['selected']} matched; measured {tally['measured']}; "
-        f"unavailable {tally['unavailable']}; record-missing {tally['record_missing']}{refused}; "
-        f"mean credit (measured) {credit_text(tally['mean_credit'])}{over}; "
-        f"floor credit (selected) {credit_text(tally['floor_credit'])}{inputs}"
+        f"parity: {tally['matched']}/{selected} matched; "
+        f"mean {credit_text(tally['mean_credit'])} over {tally['measured']} measured{credited}; "
+        f"floor {credit_text(tally['floor_credit'])} over {tally['measured']} measured of "
+        f"{selected} selected ({'; '.join(parts)}){inputs}"
     )
 
 
@@ -367,50 +474,102 @@ def _group_key(cell: Mapping[str, Any]) -> tuple:
     )
 
 
+def cell_group(cell: Mapping[str, Any]) -> str:
+    """The group of `CELL_GROUPS` a cell is counted in.
+
+    `refused` for a refused row, `measured` for a matched or diverged cell,
+    and otherwise the group of the cell's typed `unavailable_class`: no
+    golden, not compared, unmeasured or record-missing. The reason text is
+    never read.
+    """
+    verdict = cell["verdict"]
+    if verdict == "refused":
+        return "refused"
+    if verdict in MEASURED_VERDICTS:
+        return "measured"
+    name = cell["unavailable_class"]
+    if name in NO_GOLDEN_CLASSES:
+        return "no-golden"
+    if name in NOT_COMPARED_CLASSES:
+        return "not-compared"
+    if name in UNMEASURED_CLASSES:
+        return "unmeasured"
+    if name == RECORD_MISSING_CLASS:
+        return "record-missing"
+    raise ParitySummaryError(f"cell {cell['cell']}: unavailable_class {name!r} is in no group")
+
+
+def in_a_floor(cell: Mapping[str, Any]) -> bool:
+    """Whether a cell is in a floor's denominator.
+
+    No-golden and not-compared cells never are. No cell of a backend whose
+    inputs cannot be equalized is either, record-missing and refused ones
+    included: such a backend enters no mean or floor, per backend or in the
+    total. Every other cell is, as its credit or as 0.
+    """
+    return cell_group(cell) not in _OUTSIDE_THE_FLOOR and cell["backend"] not in INPUTS_NOT_EQUALIZABLE_BACKENDS
+
+
 def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """hermit's `ParityTally::over`: counts and credit over some cells.
 
-    `selected = measured + unavailable + record_missing + refused` and
-    `measured = matched + diverged`. Only a cell with a credit adds to the
-    credit sum; `mean_credit` divides that sum by the credited cells and
-    `floor_credit` by every selected cell. Neither is ever computed from a
-    null credit.
+    `selected = measured + no_golden + not_compared + unmeasured +
+    record_missing + refused`, `measured = matched + diverged`, and each
+    by-class count sums to its group. Only a cell with a credit adds to the
+    credit sum. `mean_credit` is that sum over the measured cells, null when
+    none is measured. `floor_credit` is that sum over `floor_cells`, the cells
+    `in_a_floor` (every selected cell but the no-golden and not-compared ones
+    and any cell of a backend whose inputs cannot be equalized), null when
+    there is none. Neither ever counts a null credit as anything but 0 in a
+    sum, and neither is 0 for want of a denominator.
     """
     result: dict[str, Any] = {
         "selected": 0,
         "measured": 0,
         "matched": 0,
         "diverged": 0,
-        "unavailable": 0,
-        "unavailable_by_class": {name: 0 for name in UNAVAILABLE_CLASSES},
+        "no_golden": 0,
+        "no_golden_by_class": {name: 0 for name in NO_GOLDEN_CLASSES},
+        "not_compared": 0,
+        "unmeasured": 0,
+        "unmeasured_by_class": {name: 0 for name in UNMEASURED_CLASSES},
         "record_missing": 0,
         "refused": 0,
         "credited": 0,
         "clean_credited": 0,
         "unequalized_credited": 0,
         "credit_sum": 0.0,
+        "floor_cells": 0,
         "mean_credit": None,
         "floor_credit": None,
         "first_divergence": None,
+        "line": "",
     }
     groups: dict[tuple, list[Mapping[str, Any]]] = {}
     for cell in cells:
         result["selected"] += 1
-        verdict = cell["verdict"]
-        if verdict == "refused":
-            result["refused"] += 1
-        elif verdict == "record-missing":
+        group = cell_group(cell)
+        if group == "measured":
+            result["measured"] += 1
+            if cell["verdict"] == "matched":
+                result["matched"] += 1
+            else:
+                result["diverged"] += 1
+                groups.setdefault(_group_key(cell), []).append(cell)
+        elif group == "no-golden":
+            result["no_golden"] += 1
+            result["no_golden_by_class"][cell["unavailable_class"]] += 1
+        elif group == "not-compared":
+            result["not_compared"] += 1
+        elif group == "unmeasured":
+            result["unmeasured"] += 1
+            result["unmeasured_by_class"][cell["unavailable_class"]] += 1
+        elif group == "record-missing":
             result["record_missing"] += 1
-        elif verdict == "matched":
-            result["measured"] += 1
-            result["matched"] += 1
-        elif verdict == "diverged":
-            result["measured"] += 1
-            result["diverged"] += 1
-            groups.setdefault(_group_key(cell), []).append(cell)
         else:
-            result["unavailable"] += 1
-            result["unavailable_by_class"][cell["unavailable_class"] or "other"] += 1
+            result["refused"] += 1
+        if in_a_floor(cell):
+            result["floor_cells"] += 1
         if cell["credit"] is not None:
             result["credited"] += 1
             result["credit_sum"] += cell["credit"]
@@ -418,10 +577,10 @@ def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
                 result["clean_credited"] += 1
             else:
                 result["unequalized_credited"] += 1
-    if result["credited"] > 0:
-        result["mean_credit"] = result["credit_sum"] / result["credited"]
-    if result["selected"] > 0:
-        result["floor_credit"] = result["credit_sum"] / result["selected"]
+    if result["measured"] > 0:
+        result["mean_credit"] = result["credit_sum"] / result["measured"]
+    if result["floor_cells"] > 0:
+        result["floor_credit"] = result["credit_sum"] / result["floor_cells"]
     best = None
     for key in sorted(groups):
         if best is None or len(groups[key]) > len(groups[best]):
@@ -438,6 +597,7 @@ def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             "reference_message": example["reference_message"],
             "candidate_message": example["candidate_message"],
         }
+    result["line"] = render_line(result)
     return result
 
 
@@ -455,6 +615,18 @@ def _validate_cell(value: Any, at: str) -> Mapping[str, Any]:
     _optional_string(cell["emitted_cell"], f"{at}.emitted_cell")
     verdict = _choice(cell["verdict"], CELL_VERDICTS, f"{at}.verdict")
     reason = _optional_string(cell["reason"], f"{at}.reason")
+    # A cell's typed class and operand obey the ledger's own rule for its
+    # verdict (parity_ledger.check_class); a refused row was never admitted,
+    # so it has neither.
+    if verdict == "refused":
+        if cell["unavailable_class"] is not None or cell["operand"] is not None:
+            raise ParitySummaryError(f"{at}: a refused cell has no unavailable class or operand")
+    else:
+        ledger = parity_ledger_module()
+        try:
+            ledger.check_class(at, backend, verdict, cell["unavailable_class"], cell["operand"])
+        except ledger.ParityLedgerError as error:
+            raise ParitySummaryError(str(error)) from None
     credit = _credit_value(cell["credit"], f"{at}.credit")
     basis = cell["credit_basis"]
     if basis is not None:
@@ -491,17 +663,6 @@ def _validate_cell(value: Any, at: str) -> Mapping[str, Any]:
         raise ParitySummaryError(
             f"{at}: a {verdict} cell is unmeasured and carries no compared lengths or divergence"
         )
-    stated_class = cell["unavailable_class"]
-    if verdict in MEASURED_VERDICTS or verdict in {"record-missing", "refused"}:
-        if stated_class is not None:
-            raise ParitySummaryError(f"{at}: a {verdict} cell has no unavailable class, got {stated_class!r}")
-    else:
-        _choice(stated_class, UNAVAILABLE_CLASSES, f"{at}.unavailable_class")
-        derived = parity_ledger_module().unavailable_class(verdict, reason)
-        if stated_class != derived:
-            raise ParitySummaryError(
-                f"{at}: unavailable class {stated_class} is not the {derived} its verdict and reason imply"
-            )
     if verdict == "refused":
         if reason is None:
             raise ParitySummaryError(f"{at}: a refused cell must carry its refusal as its reason")
@@ -519,24 +680,21 @@ def _same_number(left: float | None, right: float | None) -> bool:
     return left == right
 
 
-def _validate_tally(value: Any, cells: Sequence[Mapping[str, Any]], at: str) -> Mapping[str, Any]:
+def _validate_tally(
+    value: Any, cells: Sequence[Mapping[str, Any]], at: str, backend: str | None = None
+) -> Mapping[str, Any]:
+    """Check one tally against its own arithmetic and its cells.
+
+    `backend` is the backend of a per-backend tally and None for a run's
+    total.
+    """
     stated = _exact(value, TALLY_FIELDS, at)
-    for field in (
-        "selected",
-        "measured",
-        "matched",
-        "diverged",
-        "unavailable",
-        "record_missing",
-        "refused",
-        "credited",
-        "clean_credited",
-        "unequalized_credited",
-    ):
+    for field in _TALLY_COUNTS:
         _count(stated[field], f"{at}.{field}")
-    by_class = _exact(stated["unavailable_by_class"], UNAVAILABLE_CLASSES, f"{at}.unavailable_by_class")
-    for name in UNAVAILABLE_CLASSES:
-        _count(by_class[name], f"{at}.unavailable_by_class.{name}")
+    for field, classes in _TALLY_BY_CLASS:
+        by_class = _exact(stated[field], classes, f"{at}.{field}")
+        for name in classes:
+            _count(by_class[name], f"{at}.{field}.{name}")
     credit_sum = _number(stated["credit_sum"], f"{at}.credit_sum")
     mean = _credit_value(stated["mean_credit"], f"{at}.mean_credit")
     floor = _credit_value(stated["floor_credit"], f"{at}.floor_credit")
@@ -544,36 +702,69 @@ def _validate_tally(value: Any, cells: Sequence[Mapping[str, Any]], at: str) -> 
         group = _exact(stated["first_divergence"], GROUP_FIELDS, f"{at}.first_divergence")
         _count(group["cells"], f"{at}.first_divergence.cells")
         _count(group["of_diverged"], f"{at}.first_divergence.of_diverged")
-    if stated["selected"] != (
-        stated["measured"] + stated["unavailable"] + stated["record_missing"] + stated["refused"]
+    line = _string(stated["line"], f"{at}.line")
+    selected, measured = stated["selected"], stated["measured"]
+    if selected != (
+        measured
+        + stated["no_golden"]
+        + stated["not_compared"]
+        + stated["unmeasured"]
+        + stated["record_missing"]
+        + stated["refused"]
     ):
         raise ParitySummaryError(
-            f"{at}: selected {stated['selected']} is not measured + unavailable + record-missing + refused"
+            f"{at}: selected {selected} is not measured + no golden + not compared + unmeasured "
+            "+ record-missing + refused"
         )
-    if stated["measured"] != stated["matched"] + stated["diverged"]:
-        raise ParitySummaryError(f"{at}: measured {stated['measured']} is not matched + diverged")
-    if stated["unavailable"] != sum(by_class.values()):
-        raise ParitySummaryError(f"{at}: unavailable {stated['unavailable']} is not the sum of its classes")
+    if measured != stated["matched"] + stated["diverged"]:
+        raise ParitySummaryError(f"{at}: measured {measured} is not matched + diverged")
+    if stated["no_golden"] != sum(stated["no_golden_by_class"].values()):
+        raise ParitySummaryError(f"{at}: no_golden {stated['no_golden']} is not the sum of its classes")
+    if stated["unmeasured"] != sum(stated["unmeasured_by_class"].values()):
+        raise ParitySummaryError(f"{at}: unmeasured {stated['unmeasured']} is not the sum of its classes")
     if stated["credited"] != stated["clean_credited"] + stated["unequalized_credited"]:
         raise ParitySummaryError(f"{at}: credited is not clean_credited + unequalized_credited")
-    if stated["credited"] > stated["measured"]:
-        raise ParitySummaryError(f"{at}: {stated['credited']} credited cell(s) exceed {stated['measured']} measured")
-    # Null credit is never averaged: the mean exists exactly when a cell was
-    # credited, and it and the floor are the stated sum over their own
-    # denominators.
-    expected_mean = credit_sum / stated["credited"] if stated["credited"] else None
-    expected_floor = credit_sum / stated["selected"] if stated["selected"] else None
+    if stated["credited"] > measured:
+        raise ParitySummaryError(f"{at}: {stated['credited']} credited cell(s) exceed {measured} measured")
+    # The floor's denominator: every selected cell but the no-golden and
+    # not-compared ones, and none of a backend whose inputs cannot be
+    # equalized. The total leaves out such a backend's record-missing and
+    # refused cells as well, which only its cells can count.
+    floor_cells = stated["floor_cells"]
+    open_cells = selected - stated["no_golden"] - stated["not_compared"]
+    if backend in INPUTS_NOT_EQUALIZABLE_BACKENDS:
+        if floor_cells != 0:
+            raise ParitySummaryError(
+                f"{at}: floor_cells {floor_cells} must be 0: {backend} inputs cannot be equalized, "
+                "so none of its cells is in a floor"
+            )
+    elif backend is not None:
+        if floor_cells != open_cells:
+            raise ParitySummaryError(
+                f"{at}: floor_cells {floor_cells} is not selected - no golden - not compared = {open_cells}"
+            )
+    elif floor_cells > open_cells:
+        raise ParitySummaryError(
+            f"{at}: floor_cells {floor_cells} exceeds selected - no golden - not compared = {open_cells}"
+        )
+    # Null credit is never averaged in as anything but 0, and a mean or floor
+    # with nothing to divide by is null: each is the stated sum over its own
+    # denominator.
+    expected_mean = credit_sum / measured if measured else None
+    expected_floor = credit_sum / floor_cells if floor_cells else None
     if not _same_number(mean, expected_mean):
         raise ParitySummaryError(
-            f"{at}: mean_credit {mean!r} is not credit_sum / credited = {expected_mean!r}"
+            f"{at}: mean_credit {mean!r} is not credit_sum / measured = {expected_mean!r}"
         )
     if not _same_number(floor, expected_floor):
         raise ParitySummaryError(
-            f"{at}: floor_credit {floor!r} is not credit_sum / selected = {expected_floor!r}"
+            f"{at}: floor_credit {floor!r} is not credit_sum / floor_cells = {expected_floor!r}"
         )
+    if line != render_line(stated):
+        raise ParitySummaryError(f"{at}: line {line!r} is not its tally's {render_line(stated)!r}")
     recomputed = tally(cells)
     for field in TALLY_FIELDS:
-        if field in {"credit_sum", "mean_credit", "floor_credit"}:
+        if field in {"credit_sum", "mean_credit", "floor_credit", "line"}:
             continue
         if stated[field] != recomputed[field]:
             raise ParitySummaryError(
@@ -590,8 +781,10 @@ def _check_declared_measurability(cells: Sequence[Mapping[str, Any]], at: str) -
     """parity_ledger.check_declared_measurability over one run's cells.
 
     A backend whose cells are `inputs-not-equalized` is one hermit declared
-    not equalizable for that run; its reason is the declaration. Such a
-    backend has one declaration and no measured cell in the run.
+    not equalizable for that run, and each such cell's reason is the
+    declaration: a run's hermit makes one declaration per backend.
+    `check_class` already refuses a measured cell of such a backend, and that
+    verdict for any other.
     """
     declared: dict[str, str] = {}
     for cell in cells:
@@ -603,13 +796,6 @@ def _check_declared_measurability(cells: Sequence[Mapping[str, Any]], at: str) -
                 f"{at}: cell {cell['cell']} declares {cell['backend']} inputs not equalizable for "
                 f"{cell['reason']!r}, but another cell of the run declares {known!r}; a run's hermit "
                 "makes one declaration per backend"
-            )
-    for cell in cells:
-        why = declared.get(cell["backend"])
-        if why is not None and cell["verdict"] in MEASURED_VERDICTS:
-            raise ParitySummaryError(
-                f"{at}: cell {cell['cell']}: {cell['backend']} inputs cannot be equalized, so it "
-                f"reports no measured comparison and never equal inputs: {why}"
             )
 
 
@@ -638,6 +824,7 @@ def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
             per_backend[backend],
             [cell for cell in cells if cell["backend"] == backend],
             f"{at}.per_backend.{backend}",
+            backend,
         )
     total = _validate_tally(run["total"], cells, f"{at}.total")
     line = _string(run["line"], f"{at}.line")
@@ -1136,7 +1323,8 @@ def _cell_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "test_id": row["test_id"],
         "backend": row["backend"],
         "verdict": row["verdict"],
-        "unavailable_class": ledger.unavailable_class(row["verdict"], row["reason"]),
+        "unavailable_class": row["unavailable_class"],
+        "operand": row["operand"],
         "reason": row["reason"],
         "credit": credit,
         "credit_basis": basis,

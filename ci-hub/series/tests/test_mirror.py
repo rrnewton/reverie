@@ -3007,7 +3007,7 @@ class DirectLedgerFixture(unittest.TestCase):
     def parity_sources(self) -> list[dict]:
         fixture = Path(__file__).resolve().parents[2] / "tests/fixtures/parity-run-1953"
         parity = series.parity_ledger_module()
-        text = (fixture / "ledger-sources.jsonl").read_text(encoding="utf-8")
+        text = (fixture / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
         return [parity.loads(line, "fixture") for line in text.splitlines()]
 
     def spool_parity(self, events: list[dict] | None = None) -> Path:

@@ -3,9 +3,13 @@
 
 The fixture `ci-hub/tests/fixtures/parity-run-1953/ledger-sources.jsonl` is the
 verbatim output of hermit's `test-harness parity export` over RUN 1953's two
-post-pass files (192 cells; see its `provenance.json`). Every guard here is
-shown REFUSING with its message asserted, not merely passing: a validator whose
-negative case is untested cannot be told apart from one that returns True.
+post-pass files (192 cells; see its `provenance.json`). That run predates the
+typed `unavailable_class` and `operand` fields, so the store refuses it as it
+stands. `ledger-sources-typed.jsonl` beside it adds the two fields by the rule
+its provenance states, and `test_the_typed_fixture_is_its_stated_derivation`
+applies that rule again. Every guard here is shown REFUSING with its message
+asserted, not merely passing: a validator whose negative case is untested
+cannot be told apart from one that returns True.
 
 Design: https://github.com/rrnewton/hermit/issues/3301
 
@@ -34,10 +38,38 @@ HERMIT_SHA = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
 EMITTED_AT = "2026-09-28T21:40:00Z"
 
 
-def fixture_sources() -> list[dict]:
-    text = (FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+VERBATIM = "ledger-sources.jsonl"
+TYPED = "ledger-sources-typed.jsonl"
+
+
+def fixture_sources(name: str = TYPED) -> list[dict]:
+    text = (FIXTURE / name).read_text(encoding="utf-8")
     return [parity.loads(line, f"fixture line {number}")
             for number, line in enumerate(text.splitlines(), 1)]
+
+
+def typed(value: dict, unavailable_class, operand) -> dict:
+    """`value` with the two typed fields inserted right after `verdict`."""
+    out = {}
+    for key, field in value.items():
+        out[key] = field
+        if key == "verdict":
+            out["unavailable_class"] = unavailable_class
+            out["operand"] = operand
+    return out
+
+
+def derived_class(source: dict) -> tuple:
+    """The rule `provenance.json` states for `ledger-sources-typed.jsonl`."""
+    verdict, backend, reason = source["verdict"], source["backend"], source["reason"]
+    if verdict in parity.MEASURED_VERDICTS:
+        return None, None
+    if verdict == "inputs-not-equalized" and reason == parity.INPUTS_NOT_EQUALIZABLE.get(backend):
+        return "inputs-not-equalized", "candidate"
+    if verdict == "candidate-missing" and reason == (
+            f"the {backend} candidate verify cell of {source['test_id']} has no result row in this run"):
+        return "no-result-row", "candidate"
+    raise AssertionError(f"no derivation rule for {source['cell']}: {verdict} {reason!r}")
 
 
 def build(sources, **overrides):
@@ -59,9 +91,32 @@ def measured_like(source: dict, template: dict) -> dict:
     fields of `template` (a diverged source of another backend)."""
     record = copy.deepcopy(template["record"])
     record.update(test_id=source["test_id"], backend=source["backend"])
-    source["verdict"] = "diverged"
-    source["reason"] = None
+    source.update(verdict="diverged", unavailable_class=None, operand=None, reason=None)
     source["record"] = record
+    return source
+
+
+def unmeasured_like(source: dict, verdict: str, unavailable_class, operand,
+                    reason: str = "fixture: why this cell was not compared") -> dict:
+    """Make `source` a well-formed unmeasured row with the given typed reason.
+    Neither log is named, so a missing verdict never names its missing log."""
+    source.update(verdict=verdict, unavailable_class=unavailable_class, operand=operand,
+                  reason=reason)
+    source["record"].update(
+        verdict=verdict, unavailable_class=unavailable_class, operand=operand, reason=reason,
+        inputs_equalized=False, credit=None, unequalized_credit=None, first_divergent_record=None,
+        left_len=None, right_len=None, matched_prefix=None, first_difference=None,
+        reference_log=None, candidate_log=None)
+    return source
+
+
+def matched_like(source: dict) -> dict:
+    """Make the measured `source` a well-formed match: full credit."""
+    record = source["record"]
+    length = record["left_len"]
+    record.update(verdict="matched", matched_prefix=length, right_len=length, unequalized_credit=1.0,
+                  first_divergent_record=None, first_difference=None)
+    source["verdict"] = "matched"
     return source
 
 
@@ -69,7 +124,7 @@ def record_missing(test_id: str = "backend-parity-c/never-ran", backend: str = "
     """What `parity::ledger_sources` emits for a node that left no status."""
     return {
         "cell": f"{test_id}@{backend}", "test_id": test_id, "backend": backend,
-        "verdict": "record-missing",
+        "verdict": "record-missing", "unavailable_class": "record-missing", "operand": None,
         "reason": "the parity post-pass of privileged/manifest_backend_parity_c left no "
                   "parity.status.json",
         "run_id": None, "hermit_sha": None,
@@ -85,12 +140,48 @@ class RealRunTransport(unittest.TestCase):
     def test_fixture_matches_its_provenance(self):
         provenance = json.loads((FIXTURE / "provenance.json").read_text(encoding="utf-8"))
         import hashlib
-        for name, binding in provenance["files"].items():
+        bindings = {**provenance["files"], **provenance["derived_files"]}
+        self.assertEqual({VERBATIM, TYPED, "portable/parity.jsonl", "portable/parity.status.json",
+                          "privileged/parity.jsonl", "privileged/parity.status.json"}, set(bindings))
+        for name, binding in bindings.items():
             data = (FIXTURE / name).read_bytes()
             self.assertEqual(binding["sha256"], hashlib.sha256(data).hexdigest(), name)
             self.assertEqual(binding["bytes"], len(data), name)
+            self.assertEqual(binding["lines"], data.count(b"\n"), name)
+        self.assertEqual(VERBATIM, provenance["derived_files"][TYPED]["derived_from"])
         self.assertEqual(HERMIT_SHA, provenance["hermit_sha"])
         self.assertEqual(RUN_ID, provenance["validate_unit"])
+
+    def test_the_typed_fixture_is_its_stated_derivation(self):
+        # Every line of the verbatim export re-encodes byte for byte, so the
+        # typed file differs from it by the two inserted fields alone.
+        verbatim = (FIXTURE / VERBATIM).read_text(encoding="utf-8").splitlines(keepends=True)
+        lines = []
+        for line in verbatim:
+            source = json.loads(line)
+            self.assertEqual(line, json.dumps(source, separators=(",", ":"), ensure_ascii=False) + "\n")
+            unavailable_class, operand = derived_class(source)
+            source = typed(source, unavailable_class, operand)
+            source["record"] = typed(source["record"], unavailable_class, operand)
+            lines.append(json.dumps(source, separators=(",", ":"), ensure_ascii=False) + "\n")
+        self.assertEqual("".join(lines), (FIXTURE / TYPED).read_text(encoding="utf-8"))
+
+    def test_the_verbatim_untyped_export_is_refused(self):
+        # parity-ledger/v1 was never published, so no row without the typed
+        # fields is admitted; there is no text-parsing fallback.
+        with self.assertRaises(parity.ParityLedgerError) as caught:
+            build(fixture_sources(VERBATIM))
+        self.assertEqual(
+            "input row 1: parity ledger source fields are not exactly its schema's: missing "
+            "unavailable_class, operand", str(caught.exception))
+        sources = fixture_sources()
+        for field in ("unavailable_class", "operand"):
+            del sources[0]["record"][field]
+        with self.assertRaises(parity.ParityLedgerError) as caught:
+            build(sources)
+        self.assertEqual(
+            f"input row 1: parity ledger source {sources[0]['cell']}: parity record fields are not "
+            "exactly its schema's: missing unavailable_class, operand", str(caught.exception))
 
     def test_all_192_rows_wrap_and_validate(self):
         sources = fixture_sources()
@@ -99,10 +190,18 @@ class RealRunTransport(unittest.TestCase):
         marker, rows = parity.validate_batch(events)
         self.assertEqual(192, marker["records"])
         self.assertEqual(
-            {"record-missing": 0, "unavailable": 0, "reference-missing": 0,
-             "candidate-missing": 3, "inputs-not-equalized": 14, "diverged": 175,
-             "matched": 0},
+            {"record-missing": 0, "nondeterministic": 0, "unavailable": 0,
+             "reference-missing": 0, "candidate-missing": 3, "inputs-not-equalized": 14,
+             "diverged": 175, "matched": 0},
             marker["verdicts"])
+        classes: dict = {}
+        for row in rows:
+            key = (row["backend"] if row["verdict"] == "inputs-not-equalized" else "*",
+                   row["unavailable_class"], row["operand"])
+            classes[key] = classes.get(key, 0) + 1
+        self.assertEqual({("*", None, None): 175,
+                          ("dbt", "inputs-not-equalized", "candidate"): 14,
+                          ("*", "no-result-row", "candidate"): 3}, classes)
         self.assertEqual(
             [("portable", "manifest_backend_parity_c", 190),
              ("privileged", "manifest_backend_parity_c", 2)],
@@ -175,30 +274,39 @@ class MalformedRecordsAreRefusedLoudly(unittest.TestCase):
         sources[0]["record"]["bonus"] = 1
         self.refuse(sources, "parity record fields are not exactly its schema's: unknown bonus")
 
+    def test_the_mirrored_declaration_is_the_one_run_1953s_hermit_wrote(self):
+        # `INPUTS_NOT_EQUALIZABLE` mirrors hermit's `inputs_not_equalizable`:
+        # dbt alone, with the reason hermit writes on each of its rows.
+        reasons = {source["reason"] for source in fixture_sources()
+                   if source["verdict"] == "inputs-not-equalized"}
+        self.assertEqual(["dbt"], list(parity.INPUTS_NOT_EQUALIZABLE))
+        self.assertEqual({parity.INPUTS_NOT_EQUALIZABLE["dbt"]}, reasons)
+
     def test_dbt_cannot_report_a_measured_comparison(self):
-        # RUN 1953's hermit declares dbt not equalizable: its 14 dbt rows are
-        # inputs-not-equalized with the declaration as their reason. A
-        # well-formed measured dbt record in the same run is refused.
-        sources = fixture_sources()
-        index, source = first(sources, "dbt", "inputs-not-equalized")
-        declaration = source["reason"]
-        measured_like(source, first(sources, "kvm", "diverged")[1])
-        ledger_index = index + 2  # after the run marker, 1-based
-        self.refuse(sources,
-                    f"event {ledger_index} ({source['cell']}): dbt inputs cannot be equalized, so it "
-                    f"reports no measured comparison and never equal inputs: {declaration}")
+        # hermit declares dbt not equalizable, so a well-formed measured dbt
+        # row, diverged or matched, is refused.
+        declaration = parity.INPUTS_NOT_EQUALIZABLE["dbt"]
+        for verdict in ("diverged", "matched"):
+            with self.subTest(verdict):
+                sources = fixture_sources()
+                index, source = first(sources, "dbt", "inputs-not-equalized")
+                measured_like(source, first(sources, "kvm", "diverged")[1])
+                if verdict == "matched":
+                    matched_like(source)
+                self.refuse(sources,
+                            f"input row {index + 1}: parity ledger source {source['cell']}: dbt inputs "
+                            "cannot be equalized, so it reports no measured comparison and never equal "
+                            f"inputs: {declaration}")
 
     def test_a_declared_backend_never_reports_equal_inputs(self):
         sources = fixture_sources()
-        _, declared = first(sources, "dbt", "inputs-not-equalized")
-        index, source = [(i, s) for i, s in enumerate(sources)
-                         if s["backend"] == "dbt" and s is not declared][0]
-        source["verdict"] = source["record"]["verdict"] = "unavailable"
-        source["reason"] = source["record"]["reason"] = "fixture: an unavailable dbt operand"
+        _, source = first(sources, "dbt", "inputs-not-equalized")
+        unmeasured_like(source, "unavailable", "timeout", "candidate")
         source["record"]["inputs_equalized"] = True
         self.refuse(sources,
-                    f"event {index + 2} ({source['cell']}): dbt inputs cannot be equalized, so it "
-                    f"reports no measured comparison and never equal inputs: {declared['reason']}")
+                    f"parity record {source['cell']}: dbt inputs cannot be equalized, so it "
+                    f"reports no measured comparison and never equal inputs: "
+                    f"{parity.INPUTS_NOT_EQUALIZABLE['dbt']}")
 
     def test_a_run_declares_one_reason_per_backend(self):
         sources = fixture_sources()
@@ -210,44 +318,27 @@ class MalformedRecordsAreRefusedLoudly(unittest.TestCase):
                     f"'some other declaration', but an earlier row of the run declares "
                     f"{dbt[0][1]['reason']!r}; a run's hermit makes one declaration per backend")
 
-    def test_a_kvm_declaration_holds_the_runs_kvm_rows_to_it(self):
-        # The rule follows the declaration the run's rows make, not a
-        # backend named in this store: a kvm row that says its inputs could
-        # not be equalized makes the run's measured kvm rows refusable.
-        sources = fixture_sources()
-        index, source = first(sources, "kvm", "diverged")
-        why = "fixture: kvm declared not equalizable"
-        source["verdict"] = "inputs-not-equalized"
-        source["reason"] = why
-        source["record"].update(
-            verdict="inputs-not-equalized", reason=why, unequalized_credit=None,
-            first_divergent_record=None, left_len=None, right_len=None, matched_prefix=None,
-            first_difference=None)
-        later, other = next((i, s) for i, s in enumerate(sources)
-                            if i > index and s["backend"] == "kvm" and s["verdict"] == "diverged")
-        message = self.refuse(sources, f"event {later + 2} ({other['cell']}): kvm inputs cannot be equalized")
-        self.assertTrue(message.endswith(why), message)
+    def test_inputs_not_equalized_is_only_for_a_declared_backend(self):
+        # hermit declares only dbt inputs_not_equalizable; any other backend's
+        # comparison with unequal inputs is measured (unequalized_credit).
+        for backend in ("kvm", "liteinst", "sabre"):
+            with self.subTest(backend):
+                sources = fixture_sources()
+                index, source = first(sources, backend, "diverged")
+                unmeasured_like(source, "inputs-not-equalized", "inputs-not-equalized", "candidate",
+                                parity.INPUTS_NOT_EQUALIZABLE["dbt"])
+                self.refuse(sources,
+                            f"input row {index + 1}: parity ledger source {source['cell']}: {backend} "
+                            "inputs can be equalized; a comparison with unequal inputs is measured and "
+                            "reports unequalized_credit")
 
     def test_inputs_not_equalized_with_equalized_inputs_is_refused(self):
         sources = fixture_sources()
         _, source = first(sources, "dbt", "inputs-not-equalized")
         source["record"]["inputs_equalized"] = True
         self.refuse(sources,
-                    f"parity record {source['cell']}: inputs-not-equalized says the inputs could not "
-                    "be equalized, but inputs_equalized is true")
-
-    def test_a_run_whose_hermit_makes_dbt_measurable_is_admitted(self):
-        # No dbt rule is hardcoded here: once hermit stops declaring dbt not
-        # equalizable, a run whose dbt rows are all measured is admitted.
-        sources = fixture_sources()
-        template = first(sources, "kvm", "diverged")[1]
-        for source in sources:
-            if source["backend"] == "dbt":
-                measured_like(source, template)
-        marker, rows = parity.validate_batch(build(sources))
-        self.assertEqual((0, 175 + 14),
-                         (marker["verdicts"]["inputs-not-equalized"], marker["verdicts"]["diverged"]))
-        self.assertEqual({"diverged"}, {row["verdict"] for row in rows if row["backend"] == "dbt"})
+                    f"parity record {source['cell']}: dbt inputs cannot be equalized, so it reports "
+                    f"no measured comparison and never equal inputs: {parity.INPUTS_NOT_EQUALIZABLE['dbt']}")
 
     def test_an_unmeasured_record_carries_no_credit(self):
         sources = fixture_sources()
@@ -609,35 +700,237 @@ class CreditIsNeverInvented(unittest.TestCase):
                 self.assertIsNone(measured, source["cell"])
 
 
-class UnavailableClassReadsTheTwoWordRole(unittest.TestCase):
-    """The post-pass names an operand in two words (`kvm candidate`,
-    `ptrace reference`); the class must come from the role's last word."""
+#: One verdict and operand that fit each class, for a kvm row (dbt for
+#: inputs-not-equalized).
+FITTING = {
+    "determinism-mismatch": ("nondeterministic", "reference"),
+    "timeout": ("unavailable", "candidate"),
+    "crash": ("unavailable", "reference"),
+    "oom": ("unavailable", "candidate"),
+    "infrastructure-error": ("unavailable", "candidate"),
+    "sandbox-denied": ("unavailable", "reference"),
+    "failed-untyped": ("unavailable", "candidate"),
+    "ended": ("unavailable", "candidate"),
+    "host-inapplicable": ("candidate-missing", "candidate"),
+    "inputs-not-equalized": ("inputs-not-equalized", "candidate"),
+    "log-not-retained": ("reference-missing", "reference"),
+    "log-unreadable": ("candidate-missing", "candidate"),
+    "no-result-row": ("reference-missing", "reference"),
+    "log-diff-failed": ("unavailable", None),
+    "invalid-test-id": ("unavailable", None),
+    "golden-not-written": ("unavailable", "reference"),
+    "epoch-not-shared": ("unavailable", None),
+}
 
-    def test_run_1953_candidate_missing_reasons(self):
-        reasons = [(source["verdict"], source["reason"]) for source in fixture_sources()
-                   if source["verdict"] == "candidate-missing"]
-        self.assertEqual(3, len(reasons))
-        for verdict, reason in reasons:
-            self.assertEqual("candidate-missing", parity.unavailable_class(verdict, reason))
 
-    def test_role_and_reason_prefixes(self):
-        cell = "backend-parity-c/pthread-lifecycle"
+class TypedUnavailableClass(unittest.TestCase):
+    """`unavailable_class` and `operand` are typed fields, checked against the
+    closed set and the verdict; the reason text is never read."""
+
+    def refuse(self, sources, message):
+        with self.assertRaises(parity.ParityLedgerError) as caught:
+            build(sources)
+        self.assertIn(message, str(caught.exception))
+
+    def row(self, unavailable_class, verdict=None, operand="fitting", backend=None):
+        """The fixture with one row, of `backend` (kvm, or dbt for
+        inputs-not-equalized), made an unmeasured row of the class."""
+        fit_verdict, fit_operand = FITTING[unavailable_class]
+        backend = backend or ("dbt" if unavailable_class == "inputs-not-equalized" else "kvm")
+        sources = fixture_sources()
+        verdict_now = "inputs-not-equalized" if backend == "dbt" else "diverged"
+        index, source = first(sources, backend, verdict_now)
+        reason = (parity.INPUTS_NOT_EQUALIZABLE["dbt"] if unavailable_class == "inputs-not-equalized"
+                  else f"fixture: a {unavailable_class} cell")
+        unmeasured_like(source, verdict or fit_verdict, unavailable_class,
+                        fit_operand if operand == "fitting" else operand, reason)
+        return sources, index, source
+
+    def test_the_closed_set_and_its_groups(self):
+        self.assertEqual(
+            ("determinism-mismatch", "timeout", "crash", "oom", "infrastructure-error",
+             "sandbox-denied", "failed-untyped", "ended", "host-inapplicable"),
+            parity.NO_GOLDEN_CLASSES)
+        self.assertEqual(("inputs-not-equalized",), parity.NOT_COMPARED_CLASSES)
+        self.assertEqual(
+            ("log-not-retained", "log-unreadable", "no-result-row", "log-diff-failed",
+             "invalid-test-id", "golden-not-written", "epoch-not-shared"),
+            parity.UNMEASURED_CLASSES)
+        self.assertEqual(
+            parity.NO_GOLDEN_CLASSES + parity.NOT_COMPARED_CLASSES + parity.UNMEASURED_CLASSES
+            + ("record-missing",), parity.UNAVAILABLE_CLASSES)
+        self.assertEqual(len(parity.UNAVAILABLE_CLASSES), len(set(parity.UNAVAILABLE_CLASSES)))
+        self.assertEqual(set(parity.UNAVAILABLE_CLASSES) - {"record-missing"}, set(FITTING))
+
+    def test_every_class_is_admitted_with_a_verdict_and_operand_that_fit_it(self):
+        for unavailable_class in FITTING:
+            with self.subTest(unavailable_class):
+                sources, index, source = self.row(unavailable_class)
+                marker, rows = parity.validate_batch(build(sources))
+                row = rows[index]
+                self.assertEqual((source["verdict"], unavailable_class, source["operand"]),
+                                 (row["verdict"], row["unavailable_class"], row["operand"]))
+                self.assertEqual((unavailable_class, source["operand"]),
+                                 (row["record"]["unavailable_class"], row["record"]["operand"]))
+        marker, rows = parity.validate_batch(build([*fixture_sources()[:2], record_missing()]))
+        self.assertEqual(("record-missing", None), (rows[-1]["unavailable_class"], rows[-1]["operand"]))
+
+    def test_a_nondeterministic_row_is_admitted_and_counted(self):
+        sources, index, source = self.row("determinism-mismatch")
+        marker, rows = parity.validate_batch(build(sources))
+        self.assertEqual((1, 174), (marker["verdicts"]["nondeterministic"], marker["verdicts"]["diverged"]))
+        self.assertIsNone(parity.measured_credit(rows[index]["record"]))
+
+    def test_an_unknown_class_is_refused(self):
+        for name in ("other", "determinism-fail", "candidate-missing", "Timeout"):
+            with self.subTest(name):
+                sources, index, source = self.row("timeout")
+                source["unavailable_class"] = source["record"]["unavailable_class"] = name
+                self.refuse(sources,
+                            f"input row {index + 1}: parity ledger source {source['cell']}: "
+                            "unavailable_class must be one of determinism-mismatch, timeout, crash, oom, "
+                            "infrastructure-error, sandbox-denied, failed-untyped, ended, host-inapplicable, "
+                            "inputs-not-equalized, log-not-retained, log-unreadable, no-result-row, "
+                            "log-diff-failed, invalid-test-id, golden-not-written, epoch-not-shared, "
+                            f"record-missing, got {name!r}")
+
+    def test_an_unknown_operand_is_refused(self):
+        sources, index, source = self.row("timeout", operand="ptrace")
+        self.refuse(sources, f"parity ledger source {source['cell']}: operand must be one of "
+                             "reference, candidate, got 'ptrace'")
+
+    def test_a_measured_row_carries_no_class_and_no_operand(self):
+        for verdict in ("diverged", "matched"):
+            sources = fixture_sources()
+            index, source = first(sources, "kvm", "diverged")
+            if verdict == "matched":
+                matched_like(source)
+            at = f"input row {index + 1}: parity ledger source {source['cell']}"
+            with self.subTest(verdict=verdict, field="unavailable_class"):
+                classed = copy.deepcopy(sources)
+                classed[index]["unavailable_class"] = classed[index]["record"]["unavailable_class"] = "timeout"
+                self.refuse(classed, f"{at}: a {verdict} verdict is measured and carries no "
+                                     "unavailable_class, got timeout")
+            with self.subTest(verdict=verdict, field="operand"):
+                named = copy.deepcopy(sources)
+                named[index]["operand"] = named[index]["record"]["operand"] = "candidate"
+                self.refuse(named, f"{at}: a {verdict} verdict is measured and names no operand, "
+                                   "got candidate")
+            with self.subTest(verdict=verdict, field="none"):
+                parity.validate_batch(build(sources))
+
+    def test_an_unmeasured_row_needs_a_class(self):
+        sources, index, source = self.row("no-result-row")
+        source["unavailable_class"] = source["record"]["unavailable_class"] = None
+        self.refuse(sources, f"parity ledger source {source['cell']}: verdict reference-missing needs "
+                             "an unavailable_class")
+
+    def test_the_class_must_fit_the_verdict(self):
         cases = [
-            ("unavailable", f"the ptrace reference verify cell of {cell} has no result row in this run",
-             "reference-missing"),
-            ("unavailable", f"the kvm candidate verify cell of {cell} failed determinism: 2 of 3 runs differ",
-             "determinism-fail"),
-            ("unavailable", f"the sabre candidate verify cell of {cell} ended with signal 9", "operand-ended"),
-            ("unavailable", f"the kvm candidate verify cell of {cell} was host-inapplicable, so it left no log",
-             "host-inapplicable"),
-            ("unavailable", "no operand phrase at all", "other"),
-            ("inputs-not-equalized", "anything", "inputs-not-equalized"),
-            ("diverged", None, None),
-            ("record-missing", "the node left no status", None),
+            ("timeout", "nondeterministic",
+             "unavailable_class timeout cannot go with verdict nondeterministic; it needs "
+             "unavailable or reference-missing or candidate-missing"),
+            ("determinism-mismatch", "unavailable",
+             "unavailable_class determinism-mismatch cannot go with verdict unavailable; it needs "
+             "nondeterministic"),
+            ("no-result-row", "unavailable",
+             "unavailable_class no-result-row cannot go with verdict unavailable; it needs "
+             "reference-missing or candidate-missing"),
+            ("log-unreadable", "unavailable",
+             "unavailable_class log-unreadable cannot go with verdict unavailable; it needs "
+             "reference-missing or candidate-missing"),
+            ("inputs-not-equalized", "unavailable",
+             "unavailable_class inputs-not-equalized cannot go with verdict unavailable; it needs "
+             "inputs-not-equalized"),
+            ("timeout", "inputs-not-equalized", None),
         ]
-        for verdict, reason, expected in cases:
-            with self.subTest(verdict=verdict, reason=reason):
-                self.assertEqual(expected, parity.unavailable_class(verdict, reason))
+        for unavailable_class, verdict, message in cases:
+            with self.subTest(unavailable_class=unavailable_class, verdict=verdict):
+                backend = "dbt" if "inputs-not-equalized" in (unavailable_class, verdict) else None
+                sources, index, source = self.row(unavailable_class, verdict=verdict, backend=backend)
+                self.refuse(sources, message or (
+                    "unavailable_class timeout cannot go with verdict inputs-not-equalized; it needs "
+                    "unavailable or reference-missing or candidate-missing"))
+        sources = [*fixture_sources()[:2], dict(record_missing(), unavailable_class="timeout", operand="candidate")]
+        self.refuse(sources, "unavailable_class timeout cannot go with verdict record-missing; it needs "
+                             "unavailable or reference-missing or candidate-missing")
+
+    def test_the_operand_must_fit_the_class(self):
+        cases = [
+            ("golden-not-written", "candidate", "needs operand reference, got candidate"),
+            ("golden-not-written", None, "needs operand reference, got null"),
+            ("log-diff-failed", "candidate", "needs operand null, got candidate"),
+            ("invalid-test-id", "reference", "needs operand null, got reference"),
+            ("timeout", None, "needs operand reference or candidate, got null"),
+            ("determinism-mismatch", None, "needs operand reference or candidate, got null"),
+            ("inputs-not-equalized", "reference", "needs operand candidate, got reference"),
+            ("inputs-not-equalized", None, "needs operand candidate, got null"),
+        ]
+        for unavailable_class, operand, message in cases:
+            with self.subTest(unavailable_class=unavailable_class, operand=operand):
+                sources, index, source = self.row(unavailable_class, operand=operand)
+                self.refuse(sources, f"parity ledger source {source['cell']}: unavailable_class "
+                                     f"{unavailable_class} {message}")
+        sources = [*fixture_sources()[:2], dict(record_missing(), operand="candidate")]
+        self.refuse(sources, "unavailable_class record-missing needs operand null, got candidate")
+        for operand in ("reference", "candidate", None):
+            with self.subTest("epoch-not-shared", operand=operand):
+                sources, _, _ = self.row("epoch-not-shared", operand=operand)
+                parity.validate_batch(build(sources))
+
+    def test_a_missing_verdict_names_its_side(self):
+        cases = [("no-result-row", "candidate-missing", "reference", "candidate"),
+                 ("log-unreadable", "reference-missing", "candidate", "reference"),
+                 ("epoch-not-shared", "candidate-missing", None, "candidate")]
+        for unavailable_class, verdict, operand, side in cases:
+            with self.subTest(unavailable_class=unavailable_class, verdict=verdict):
+                sources, index, source = self.row(unavailable_class, verdict=verdict, operand=operand)
+                shown = "null" if operand is None else operand
+                self.refuse(sources, f"parity ledger source {source['cell']}: verdict {verdict} names "
+                                     f"the {side} operand, got {shown}")
+
+    def test_a_dbt_row_may_carry_a_no_golden_class(self):
+        # hermit checks each operand's determinism before the
+        # inputs-not-equalized label, so a dbt cell can have no golden.
+        for unavailable_class in parity.NO_GOLDEN_CLASSES:
+            with self.subTest(unavailable_class):
+                sources, index, source = self.row(unavailable_class, backend="dbt")
+                marker, rows = parity.validate_batch(build(sources))
+                self.assertEqual(("dbt", unavailable_class),
+                                 (rows[index]["backend"], rows[index]["unavailable_class"]))
+                self.assertEqual(13, marker["verdicts"]["inputs-not-equalized"])
+        marker, rows = parity.validate_batch(build([*fixture_sources()[:2],
+                                                    record_missing(backend="dbt")]))
+        self.assertEqual(("dbt", "record-missing"), (rows[-1]["backend"], rows[-1]["unavailable_class"]))
+
+    def test_a_dbt_row_never_carries_an_unmeasured_class(self):
+        # dbt stops at inputs-not-equalized before any comparison is tried.
+        for unavailable_class in parity.UNMEASURED_CLASSES:
+            with self.subTest(unavailable_class):
+                sources, index, source = self.row(unavailable_class, backend="dbt")
+                self.refuse(sources,
+                            f"input row {index + 1}: parity ledger source {source['cell']}: dbt inputs "
+                            "cannot be equalized, so no comparison is attempted and it carries no "
+                            f"unmeasured class, got {unavailable_class}")
+
+    def test_the_row_and_its_record_name_one_class_and_one_operand(self):
+        sources, index, source = self.row("timeout")
+        source["record"]["unavailable_class"] = "crash"
+        self.refuse(sources, f"parity ledger source {source['cell']}: row unavailable_class timeout "
+                             "disagrees with the record's crash")
+        sources, index, source = self.row("timeout")
+        source["record"]["operand"] = "reference"
+        self.refuse(sources, f"parity ledger source {source['cell']}: row operand candidate disagrees "
+                             "with the record's reference")
+
+    def test_the_reason_text_decides_nothing(self):
+        # A reason that reads like another class changes neither the class
+        # nor the admission: the typed field is the only input.
+        sources, index, source = self.row("timeout")
+        source["reason"] = source["record"]["reason"] = (
+            f"the kvm candidate verify cell of {source['test_id']} has no result row in this run")
+        marker, rows = parity.validate_batch(build(sources))
+        self.assertEqual("timeout", rows[index]["unavailable_class"])
 
 
 class SeriesGlobIsUnaffected(unittest.TestCase):

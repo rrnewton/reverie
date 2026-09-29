@@ -2284,11 +2284,16 @@ class AppendParityCli(unittest.TestCase):
     """`series.py append-parity` as validate calls it: a real process fed
     hermit's `test-harness parity export` bytes on stdin.
 
-    The input is RUN 1953's verbatim export (ci-hub/tests/fixtures/
-    parity-run-1953, 192 cells). https://github.com/rrnewton/hermit/issues/3301
+    The input is RUN 1953's export (ci-hub/tests/fixtures/parity-run-1953,
+    192 cells) with the typed unavailable_class and operand fields that
+    parity-ledger/v1 requires: ledger-sources-typed.jsonl, derived from the
+    verbatim ledger-sources.jsonl by the rule in its provenance.json. The
+    verbatim export, which predates those fields, is refused.
+    https://github.com/rrnewton/hermit/issues/3301
     """
 
     FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "parity-run-1953"
+    TYPED = "ledger-sources-typed.jsonl"
     RUN_ID = "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da"
     TREE = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
 
@@ -2330,7 +2335,7 @@ class AppendParityCli(unittest.TestCase):
         return refusal
 
     def test_round_trip_of_a_real_run_then_an_identical_replay(self):
-        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        data = (self.FIXTURE / self.TYPED).read_bytes()
         first = self._run(data)
         self.assertEqual(0, first.returncode, first.stderr.decode())
         self.assertIn(
@@ -2353,7 +2358,7 @@ class AppendParityCli(unittest.TestCase):
         self.assertEqual([batch], self._batches())
 
     def test_a_malformed_record_refuses_the_batch_and_names_it(self):
-        lines = (self.FIXTURE / "ledger-sources.jsonl").read_text().splitlines()
+        lines = (self.FIXTURE / self.TYPED).read_text().splitlines()
         tampered = json.loads(lines[7])
         self.assertEqual("diverged", tampered["verdict"])
         tampered["verdict"] = "matched"
@@ -2377,8 +2382,24 @@ class AppendParityCli(unittest.TestCase):
         self.assertIn("the refusal is already recorded", again.stderr.decode())
         self.assertEqual([batch], self._batches())
 
+    def test_the_verbatim_untyped_export_is_refused_and_the_refusal_recorded(self):
+        # parity-ledger/v1 was never published without the typed fields, so a
+        # row without them has no admissible reading.
+        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        refused = self._run(data)
+        self.assertEqual(1, refused.returncode)
+        self.assertEqual(b"", refused.stdout)
+        error = ("input row 1: parity ledger source fields are not exactly its schema's: missing "
+                 "unavailable_class, operand")
+        (batch,) = self._batches()
+        self.assertIn(
+            "series: REFUSED the parity batch, no row was written; the refusal is recorded -> "
+            f"{self.spool / batch}: {error}", refused.stderr.decode())
+        refusal = self._only_refusal(data, error, False)
+        self.assertEqual(192, refusal["input_lines"])
+
     def test_a_blank_line_or_bad_json_is_refused_not_skipped(self):
-        line = (self.FIXTURE / "ledger-sources.jsonl").read_text().splitlines()[0]
+        line = (self.FIXTURE / self.TYPED).read_text().splitlines()[0]
         blank = self._run((line + "\n\n" + line + "\n").encode())
         self.assertEqual(1, blank.returncode)
         self.assertIn("stdin line 2 is blank", blank.stderr.decode())
@@ -2429,7 +2450,7 @@ class AppendParityCli(unittest.TestCase):
     # --source-tree-dirty is evidence, so append-parity never defaults it.
 
     def test_an_append_without_the_tree_state_is_a_usage_error_and_a_recorded_refusal(self):
-        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        data = (self.FIXTURE / self.TYPED).read_bytes()
         refused = self._run(data, dirty=None)
         self.assertEqual(2, refused.returncode)
         self.assertEqual(b"", refused.stdout)
@@ -2442,7 +2463,7 @@ class AppendParityCli(unittest.TestCase):
         self.assertEqual(192, refusal["input_lines"])
 
     def test_a_dirty_tree_is_stamped_on_the_marker_and_every_row(self):
-        data = (self.FIXTURE / "ledger-sources.jsonl").read_bytes()
+        data = (self.FIXTURE / self.TYPED).read_bytes()
         appended = self._run(data, dirty="true")
         self.assertEqual(0, appended.returncode, appended.stderr.decode())
         ((marker, rows),) = self._recorded()

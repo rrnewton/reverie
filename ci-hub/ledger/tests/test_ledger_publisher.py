@@ -804,7 +804,7 @@ def parity_store(monkeypatch):
 
 
 def _parity_sources(parity) -> list[dict]:
-    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    text = (PARITY_FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
     return [parity.loads(line, f"fixture line {n}") for n, line in enumerate(text.splitlines(), 1)]
 
 
@@ -962,7 +962,7 @@ def test_a_node_that_never_ran_publishes_as_record_missing(tmp_path, remote_and_
     portable = [s for s in _parity_sources(parity) if s["source"]["lane"] == "portable"]
     missing = {
         "cell": "backend-parity-c/never-ran@kvm", "test_id": "backend-parity-c/never-ran",
-        "backend": "kvm", "verdict": "record-missing",
+        "backend": "kvm", "verdict": "record-missing", "unavailable_class": "record-missing", "operand": None,
         "reason": "the parity post-pass of privileged/manifest_backend_parity_c left no parity.status.json",
         "run_id": None, "hermit_sha": None,
         "source": {"lane": "privileged", "node": "manifest_backend_parity_c",
@@ -980,6 +980,7 @@ def test_a_node_that_never_ran_publishes_as_record_missing(tmp_path, remote_and_
             _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]
     (published_missing,) = [row for row in rows if row["verdict"] == "record-missing"]
     assert published_missing["record"] is None
+    assert (published_missing["unavailable_class"], published_missing["operand"]) == ("record-missing", None)
     assert published_missing["source"]["post_pass_state"] == "absent"
     (marker,) = [json.loads(line) for line in
                  _remote_text(bare, f"parity-runs/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]

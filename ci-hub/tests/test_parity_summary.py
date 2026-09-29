@@ -3,8 +3,10 @@
 The real-shaped data is RUN 1953, the first validate whose
 `manifest_backend_parity_c` post-pass wrote parity records on both lanes
 (`ci-hub/tests/fixtures/parity-run-1953`, provenance beside it). Its 192
-sources are wrapped exactly as `series.py append-parity` wraps them, then
-summarized by the Python reference of hermit's `summarize_parity`; the
+sources, with the typed `unavailable_class` and `operand` their untyped
+verdicts imply (`ledger-sources-typed.jsonl`; provenance.json records the
+derivation), are wrapped exactly as `series.py append-parity` wraps them,
+then summarized by the Python reference of hermit's `summarize_parity`; the
 figures asserted below are that run's, not invented ones.
 
 See https://github.com/rrnewton/hermit/issues/3301 for the parity design.
@@ -32,10 +34,31 @@ RUN_ID = "validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da"
 HERMIT_SHA = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
 EMITTED_AT = "2026-09-28T21:40:00Z"
 LEDGER_COMMIT = "b" * 40
+#: RUN 1953: 175 measured cells, all diverged; dbt's 14 cells not compared;
+#: 3 candidate cells with no result row, unmeasured and 0 in the floor. The
+#: floor is the credit sum over 192 - 14 = 178 cells, the mean over the 175.
 RUN_1953_LINE = (
-    "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
-    "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
+#: The typed classes, written out here so a class moved between groups in the
+#: code fails a test instead of moving silently with it.
+NO_GOLDEN = (
+    "determinism-mismatch", "timeout", "crash", "oom", "infrastructure-error", "sandbox-denied",
+    "failed-untyped", "ended", "host-inapplicable",
+)
+NOT_COMPARED = ("inputs-not-equalized",)
+UNMEASURED = (
+    "log-not-retained", "log-unreadable", "no-result-row", "log-diff-failed", "invalid-test-id",
+    "golden-not-written", "epoch-not-shared",
+)
+RECORD_MISSING = "record-missing"
+GROUP_OF = {
+    **{name: "no-golden" for name in NO_GOLDEN},
+    **{name: "not-compared" for name in NOT_COMPARED},
+    **{name: "unmeasured" for name in UNMEASURED},
+    RECORD_MISSING: "record-missing",
+}
 
 
 def _load(name: str, path: Path) -> Any:
@@ -52,10 +75,11 @@ render_page = _load(
 )
 summary_module = render_page._parity_reader()
 ledger = summary_module.parity_ledger_module()
+WHY_DBT = ledger.INPUTS_NOT_EQUALIZABLE["dbt"]
 
 
 def _sources() -> list[dict[str, Any]]:
-    text = (FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    text = (FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
     return [ledger.loads(line, f"fixture line {n}") for n, line in enumerate(text.splitlines(), 1)]
 
 
@@ -128,6 +152,17 @@ def _text(markup: str) -> str:
     return re.sub(r"<[^>]+>", "", markup).replace("&#x27;", "'").replace("&quot;", '"').replace("&amp;", "&")
 
 
+def _parity_table(markup: str) -> dict[str, list[str]]:
+    """The panel's summary table: each row's label and its cells' text."""
+    table = re.search(r'<table class="parity-summary">.*?<tbody>(.*?)</tbody>', markup, re.S)
+    assert table is not None
+    rows = {}
+    for row in re.findall(r"<tr>(.*?)</tr>", table.group(1), re.S):
+        label = re.sub(r"<[^>]+>", "", re.search(r"<th[^>]*>(.*?)</th>", row, re.S).group(1))
+        rows[label] = [re.sub(r"<[^>]+>", "", cell) for cell in re.findall(r"<td>(.*?)</td>", row, re.S)]
+    return rows
+
+
 @pytest.fixture(scope="module")
 def run_1953() -> dict[str, Any]:
     return _summary(_rows(_sources()))
@@ -149,24 +184,51 @@ def _lengths(verdict: str, credit: float | None) -> tuple[int | None, int | None
     return lengths
 
 
-def _cell(test_id: str, backend: str = "kvm", *, verdict: str = "diverged", credit: float | None = 0.25,
-          basis: str | None = "clean") -> dict[str, Any]:
-    """One parity-summary cell, the way `_cell_from_row` shapes it."""
-    unavailable = verdict not in {"matched", "diverged", "record-missing", "refused"}
+_IMPLIED: Any = object()
+#: The class and operand these verdicts imply; a cell with any other verdict
+#: names both.
+_IMPLIED_CLASS = {
+    "matched": (None, None),
+    "diverged": (None, None),
+    "refused": (None, None),
+    "record-missing": ("record-missing", None),
+    "inputs-not-equalized": ("inputs-not-equalized", "candidate"),
+}
+
+
+def _cell(test_id: str, backend: str = "kvm", *, verdict: str = "diverged", credit: Any = _IMPLIED,
+          basis: str = "clean", unavailable_class: Any = _IMPLIED, operand: Any = _IMPLIED,
+          reason: Any = _IMPLIED) -> dict[str, Any]:
+    """One parity-summary cell, the way `_cell_from_row` shapes it.
+
+    A matched cell has credit 1 and a diverged one 0.25 unless `credit` says
+    otherwise; no other cell has a credit. An inputs-not-equalized cell's
+    reason is hermit's declaration for its backend.
+    """
+    if credit is _IMPLIED:
+        credit = {"matched": 1.0, "diverged": 0.25}.get(verdict)
+    if unavailable_class is _IMPLIED or operand is _IMPLIED:
+        implied_class, implied_operand = _IMPLIED_CLASS[verdict]
+        unavailable_class = implied_class if unavailable_class is _IMPLIED else unavailable_class
+        operand = implied_operand if operand is _IMPLIED else operand
+    if reason is _IMPLIED:
+        reason = {"matched": None, "diverged": None}.get(verdict, "fixture")
+        if verdict == "inputs-not-equalized":
+            reason = ledger.INPUTS_NOT_EQUALIZABLE[backend]
     prefix, left, right = _lengths(verdict, credit)
+    diverged = verdict == "diverged"
+    refused = verdict == "refused"
     return {
         "cell": f"{test_id}@{backend}", "emitted_cell": f"{test_id}@{backend}", "test_id": test_id,
-        "backend": backend, "verdict": verdict,
-        "unavailable_class": ledger.unavailable_class(verdict, "fixture") if unavailable else None,
-        "reason": "fixture" if verdict not in {"matched", "diverged"} else None,
-        "credit": credit, "credit_basis": basis if credit is not None else None,
+        "backend": backend, "verdict": verdict, "unavailable_class": unavailable_class, "operand": operand,
+        "reason": reason, "credit": credit, "credit_basis": basis if credit is not None else None,
         "matched_prefix": prefix, "left_len": left, "right_len": right,
-        "first_divergent_record": 4 if verdict == "diverged" else None,
-        "first_difference_field": "token 1: `a` vs `b`" if verdict == "diverged" else None,
-        "first_difference_syscall": 7 if verdict == "diverged" else None,
-        "reference_message": "left" if verdict == "diverged" else None,
-        "candidate_message": "right" if verdict == "diverged" else None,
-        "lane": None if verdict == "refused" else "portable", "node": None if verdict == "refused" else "manifest_backend_parity_c",
+        "first_divergent_record": 4 if diverged else None,
+        "first_difference_field": "token 1: `a` vs `b`" if diverged else None,
+        "first_difference_syscall": 7 if diverged else None,
+        "reference_message": "left" if diverged else None,
+        "candidate_message": "right" if diverged else None,
+        "lane": None if refused else "portable", "node": None if refused else "manifest_backend_parity_c",
     }
 
 
@@ -196,6 +258,19 @@ def _document(cells: list[dict[str, Any]]) -> dict[str, Any]:
     return document
 
 
+RUN_AT = f"parity summary.producers[0] (validate run {RUN_ID})"
+
+
+def _refused(document: dict[str, Any], message: str) -> None:
+    with pytest.raises(summary_module.ParitySummaryError, match=re.escape(message)):
+        summary_module.validate_summary(document)
+
+
+def _named(document: dict[str, Any], index: int) -> tuple[dict[str, Any], str]:
+    cell = document["producers"][0]["cells"][index]
+    return cell, f"{RUN_AT}.cells[{index}] ({cell['cell']})"
+
+
 # --- RUN 1953: real-shaped records, end to end -------------------------------------
 
 
@@ -206,28 +281,36 @@ def test_run_1953_total_line_is_the_committed_figure(run_1953: dict[str, Any]) -
     assert run["line"] == RUN_1953_LINE
     total = run["total"]
     assert (total["selected"], total["measured"], total["matched"], total["diverged"]) == (192, 175, 0, 175)
-    assert (total["unavailable"], total["record_missing"], total["refused"], total["credited"]) == (17, 0, 0, 175)
-    assert {k: v for k, v in total["unavailable_by_class"].items() if v} == {
-        "inputs-not-equalized": 14, "candidate-missing": 3,
-    }
-    # The mean divides by the 175 credited cells and the floor by all 192.
+    assert (total["no_golden"], total["not_compared"], total["unmeasured"], total["record_missing"],
+            total["refused"]) == (0, 14, 3, 0, 0)
+    assert (total["credited"], total["clean_credited"], total["floor_cells"]) == (175, 0, 178)
+    assert not any(total["no_golden_by_class"].values())
+    assert {k: v for k, v in total["unmeasured_by_class"].items() if v} == {"no-result-row": 3}
+    # The mean divides by the 175 measured cells. The floor divides by the 178
+    # left when dbt's 14 not-compared cells leave the 192 selected; the 3
+    # unmeasured cells stay in it as 0.
+    assert total["credit_sum"] == 9.072559709158929
     assert total["mean_credit"] == total["credit_sum"] / 175
-    assert total["floor_credit"] == total["credit_sum"] / 192
+    assert total["floor_credit"] == total["credit_sum"] / 178
 
 
 def test_run_1953_per_backend_and_first_divergences(run_1953: dict[str, Any]) -> None:
     [run] = run_1953["producers"]
     lines = {backend: summary_module.render_line(run["per_backend"][backend]) for backend in summary_module.BACKENDS}
     assert lines == {
-        "dbt": "parity: 0/14 matched; measured 0; unavailable 14; record-missing 0; "
-               "mean credit (measured) n/a; floor credit (selected) 0.000",
-        "kvm": "parity: 0/77 matched; measured 76; unavailable 1; record-missing 0; "
-               "mean credit (measured) 0.101; floor credit (selected) 0.100 [inputs not equalized]",
-        "liteinst": "parity: 0/99 matched; measured 98; unavailable 1; record-missing 0; "
-                    "mean credit (measured) 0.014; floor credit (selected) 0.014 [inputs not equalized]",
-        "sabre": "parity: 0/2 matched; measured 1; unavailable 1; record-missing 0; "
-                 "mean credit (measured) 0.020; floor credit (selected) 0.010 [inputs not equalized]",
+        "dbt": "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized)",
+        "kvm": "parity: 0/77 matched; mean 0.101 over 76 measured; floor 0.100 over 76 measured of 77 selected "
+               "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
+        "liteinst": "parity: 0/99 matched; mean 0.014 over 98 measured; floor 0.014 over 98 measured of 99 "
+                    "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
+        "sabre": "parity: 0/2 matched; mean 0.020 over 1 measured; floor 0.010 over 1 measured of 2 selected "
+                 "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
     }
+    assert {backend: run["per_backend"][backend]["line"] for backend in summary_module.BACKENDS} == lines
+    assert {backend: run["per_backend"][backend]["floor_cells"] for backend in summary_module.BACKENDS} == {
+        "dbt": 0, "kvm": 77, "liteinst": 99, "sabre": 2}
+    dbt = run["per_backend"]["dbt"]
+    assert (dbt["mean_credit"], dbt["floor_credit"], dbt["not_compared"]) == (None, None, 14)
     groups = {backend: run["per_backend"][backend]["first_divergence"] for backend in summary_module.BACKENDS}
     assert groups["dbt"] is None
     assert (groups["kvm"]["first_divergent_record"], groups["kvm"]["syscall"], groups["kvm"]["cells"],
@@ -256,18 +339,156 @@ def test_run_1953_panel_quotes_the_line_and_the_data_as_of(run_1953: dict[str, A
     assert "Hermit commit d3a0a4ae3d16 measured" in text
     assert "parity store at ledger commit bbbbbbbbbbbb (scorecard/parity.json" in text
     assert "Stale:" not in text and "Parity summary refused" not in text
-    assert ("Mean credit 0.0518 is the credit sum 9.0726 over the 175 credited (measured) cell(s); "
-            "floor credit 0.0473 is the same sum over all 192 selected cell(s). The 17 selected cell(s) "
-            "without a credit") in text
-    assert "kvm | 77 | 76 | 0 | 76 | 1 | 0 | 0 | 0.1010 | 76 | 0.0997 |" in text
-    assert "dbt | 14 | 0 | 0 | 0 | 14 | 0 | 0 | n/a | 0 | 0.0000 |" in text
-    assert "TOTAL | 192 | 175 | 0 | 175 | 17 | 0 | 0 | 0.0518 | 175 | 0.0473 |" in text
-    assert "inputs-not-equalized | 0 | 0 | 0 | 14 | 14 |" in text
-    assert "candidate-missing | 1 | 1 | 1 | 0 | 3 |" in text
+    assert ("Mean credit 0.0518 is the credit sum 9.0726 over the 175 measured cell(s); floor credit 0.0510 is "
+            "the same sum over the 178 floor cell(s): the 192 selected cell(s) less 0 with no parity (no "
+            "deterministic golden) and 14 not compared. Unmeasured, record-missing and refused cells count as 0 "
+            "in the floor.") in text
+    assert "kvm | 77 | 76 | 0 | 76 | 0 | 0 | 1 | 0 | 0 | 0.1010 | 0.0997 | 77 |" in text
+    assert "dbt | 14 | 0 | 0 | 0 | 0 | 14 | 0 | 0 | 0 | n/a | n/a | 0 |" in text
+    assert "TOTAL | 192 | 175 | 0 | 175 | 0 | 14 | 3 | 0 | 0 | 0.0518 | 0.0510 | 178 |" in text
+    assert "No parity (no deterministic golden): 0 cells." in text
+    assert "Not compared (inputs cannot be equalized), outside the mean and the floor: dbt 14; TOTAL 14." in text
+    assert "no-result-row | 1 | 1 | 1 | 0 | 3 |" in text
     assert ("kvm | 13 | 2 | token 12: `Ok(93824992251904)` vs `Ok(2117632)` | 74 of 76 | "
             "backend-parity-c/aio-refusal@kvm |") in text
-    assert "First divergence of each of the 175 diverged cell(s), and every other unmatched cell (192 in all)" in text
+    assert ("Every cell that is not a full match (192 in all): 175 diverged, 0 no parity (no deterministic "
+            "golden), 14 not compared, 3 unmeasured, 0 record-missing, 0 refused") in text
     assert "legacy-rerun history: the retired ptrace rerun, never part of the parity above" in text
+
+
+# --- the typed classes: each in its group, read from the typed field alone ---------
+
+#: For each class, a verdict and an operand it fits (`parity_ledger.check_class`).
+FITTING = {
+    "determinism-mismatch": ("nondeterministic", "reference"),
+    "timeout": ("unavailable", "candidate"),
+    "crash": ("reference-missing", "reference"),
+    "oom": ("candidate-missing", "candidate"),
+    "infrastructure-error": ("unavailable", "reference"),
+    "sandbox-denied": ("unavailable", "candidate"),
+    "failed-untyped": ("unavailable", "reference"),
+    "ended": ("unavailable", "candidate"),
+    "host-inapplicable": ("unavailable", "reference"),
+    "inputs-not-equalized": ("inputs-not-equalized", "candidate"),
+    "log-not-retained": ("unavailable", "reference"),
+    "log-unreadable": ("candidate-missing", "candidate"),
+    "no-result-row": ("reference-missing", "reference"),
+    "log-diff-failed": ("unavailable", None),
+    "invalid-test-id": ("unavailable", None),
+    "golden-not-written": ("unavailable", "reference"),
+    "epoch-not-shared": ("unavailable", None),
+    "record-missing": ("record-missing", None),
+}
+
+
+def _classed(test_id: str, name: str, backend: str | None = None) -> dict[str, Any]:
+    """A cell of class `name`: on dbt for inputs-not-equalized, else on kvm."""
+    verdict, operand = FITTING[name]
+    backend = backend or ("dbt" if name == "inputs-not-equalized" else "kvm")
+    return _cell(test_id, backend, verdict=verdict, unavailable_class=name, operand=operand)
+
+
+def test_the_class_sets_and_the_dedup_order_are_the_contract() -> None:
+    for module in (summary_module, ledger):
+        assert module.NO_GOLDEN_CLASSES == NO_GOLDEN
+        assert module.NOT_COMPARED_CLASSES == NOT_COMPARED
+        assert module.UNMEASURED_CLASSES == UNMEASURED
+        assert module.RECORD_MISSING_CLASS == RECORD_MISSING
+        assert module.UNAVAILABLE_CLASSES == (*NO_GOLDEN, *NOT_COMPARED, *UNMEASURED, RECORD_MISSING)
+        assert module.OPERANDS == ("reference", "candidate")
+    assert tuple(FITTING) == tuple(GROUP_OF) == ledger.UNAVAILABLE_CLASSES
+    assert summary_module.INPUTS_NOT_EQUALIZABLE_BACKENDS == tuple(ledger.INPUTS_NOT_EQUALIZABLE) == ("dbt",)
+    # A cell reported twice in one run keeps the first of these.
+    assert summary_module.CELL_VERDICTS == (
+        "refused", "record-missing", "nondeterministic", "unavailable", "reference-missing",
+        "candidate-missing", "inputs-not-equalized", "diverged", "matched")
+    assert summary_module.CELL_GROUPS == (
+        "measured", "no-golden", "not-compared", "unmeasured", "record-missing", "refused")
+
+
+@pytest.mark.parametrize("name", list(FITTING))
+def test_each_class_is_counted_in_its_group(name: str) -> None:
+    group = GROUP_OF[name]
+    cell = _classed("t/x", name)
+    document = _document([_cell("t/a", credit=0.5), cell])
+    total = document["producers"][0]["total"]
+    assert summary_module.cell_group(cell) == group
+    counts = {field: total[field] for field in ("no_golden", "not_compared", "unmeasured", "record_missing")}
+    field = group.replace("-", "_")
+    assert counts == {key: int(key == field) for key in counts}
+    for by_class in ("no_golden_by_class", "unmeasured_by_class"):
+        assert total[by_class] == {key: int(key == name) for key in total[by_class]}
+    # The mean is over the one measured cell whatever the class; the floor
+    # leaves out a no-golden or not-compared cell and counts any other as 0.
+    assert total["mean_credit"] == 0.5
+    assert total["floor_credit"] == (0.5 if group in ("no-golden", "not-compared") else 0.25)
+    part = {
+        "no-golden": f"1 no golden: {name} 1; 0 not compared",
+        "not-compared": "0 no golden; 1 not compared",
+        "unmeasured": f"0 no golden; 0 not compared; 1 unmeasured: {name} 1",
+        "record-missing": "0 no golden; 0 not compared; 1 record-missing",
+    }[group]
+    floor = "0.500" if group in ("no-golden", "not-compared") else "0.250"
+    assert total["line"] == (f"parity: 0/2 matched; mean 0.500 over 1 measured; floor {floor} over 1 measured "
+                             f"of 2 selected ({part})")
+
+
+def test_an_unknown_class_is_refused_and_is_in_no_group() -> None:
+    document = _document([_cell("t/a", credit=0.5), _classed("t/x", "timeout")])
+    cell, at = _named(document, 1)
+    cell["unavailable_class"] = "other"
+    _refused(document, f"{at}: unavailable_class must be one of {', '.join(ledger.UNAVAILABLE_CLASSES)}, "
+                       "got 'other'")
+    assert ", ".join(ledger.UNAVAILABLE_CLASSES) == ", ".join((*NO_GOLDEN, *NOT_COMPARED, *UNMEASURED, RECORD_MISSING))
+    with pytest.raises(summary_module.ParitySummaryError) as error:
+        summary_module.cell_group(cell)
+    assert str(error.value) == "cell t/x@kvm: unavailable_class 'other' is in no group"
+
+
+def _unmeasured_like(source: dict[str, Any], verdict: str, unavailable_class: str, operand: str | None,
+                     reason: str = "fixture: why this cell was not compared") -> dict[str, Any]:
+    """A ledger source turned into an unmeasured one of the given verdict and class."""
+    source.update(verdict=verdict, unavailable_class=unavailable_class, operand=operand, reason=reason)
+    source["record"].update(
+        verdict=verdict, unavailable_class=unavailable_class, operand=operand, reason=reason,
+        inputs_equalized=False, credit=None, unequalized_credit=None, first_divergent_record=None,
+        left_len=None, right_len=None, matched_prefix=None, first_difference=None,
+        reference_log=None, candidate_log=None)
+    return source
+
+
+def test_a_cell_reported_twice_keeps_its_most_adverse_report() -> None:
+    measured = _sources()[0]
+    assert measured["verdict"] == "diverged"
+    nondeterministic = _unmeasured_like(copy.deepcopy(measured), "nondeterministic", "determinism-mismatch",
+                                        "reference")
+    nondeterministic["source"]["lane"] = "privileged"
+    missing = {
+        "cell": measured["cell"], "test_id": measured["test_id"], "backend": measured["backend"],
+        "verdict": "record-missing", "unavailable_class": "record-missing", "operand": None,
+        "reason": "the parity post-pass of privileged/manifest_backend_parity_c left no parity.status.json",
+        "run_id": None, "hermit_sha": None,
+        "source": {"lane": "privileged", "node": "manifest_backend_parity_c", "post_pass_state": "absent",
+                   "status_sha256": None, "records_sha256": None, "hermit_bin_sha256": None,
+                   "scope_source": "expected-scope"},
+        "record": None,
+    }
+    portable = _unmeasured_like(copy.deepcopy(measured), "nondeterministic", "determinism-mismatch", "reference")
+    for pair, verdict, lane, line in (
+        ((measured, nondeterministic), "nondeterministic", "privileged",
+         "parity: 0/1 matched; mean n/a over 0 measured; floor n/a over 0 measured of 1 selected "
+         "(1 no golden: determinism-mismatch 1; 0 not compared)"),
+        ((missing, portable), "record-missing", "privileged",
+         "parity: 0/1 matched; mean n/a over 0 measured; floor 0.000 over 0 measured of 1 selected "
+         "(0 no golden; 0 not compared; 1 record-missing)"),
+    ):
+        for order in (pair, pair[::-1]):
+            document = _summary(_rows(list(order)))
+            summary_module.validate_summary(document)
+            [run] = document["producers"]
+            [cell] = run["cells"]
+            assert (document["duplicate_rows"], cell["verdict"], cell["lane"], run["line"]) == (
+                1, verdict, lane, line)
 
 
 # --- honest accounting --------------------------------------------------------------
@@ -277,58 +498,241 @@ def test_zero_of_twelve_renders_as_zero_of_twelve_with_its_floor() -> None:
     cells = [_cell(f"t/{n:02d}", credit=0.5) for n in range(12)]
     document = _document(cells)
     line = document["producers"][0]["line"]
-    assert line == ("parity: 0/12 matched; measured 12; unavailable 0; record-missing 0; "
-                    "mean credit (measured) 0.500; floor credit (selected) 0.500")
+    assert line == ("parity: 0/12 matched; mean 0.500 over 12 measured; floor 0.500 over 12 measured of "
+                    "12 selected (0 no golden; 0 not compared)")
     text = _text(_panel(_carriage(document)))
     assert line in text
-    assert "kvm | 12 | 12 | 0 | 12 | 0 | 0 | 0 | 0.5000 | 12 | 0.5000 |" in text
+    assert "kvm | 12 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0.5000 | 0.5000 | 12 |" in text
 
 
 def test_record_missing_keeps_the_denominator_and_lowers_the_floor() -> None:
     cells = [_cell(f"t/{n:02d}", credit=0.5) for n in range(9)]
-    cells += [_cell(f"t/{n:02d}", verdict="record-missing", credit=None) for n in range(9, 12)]
+    cells += [_cell(f"t/{n:02d}", verdict="record-missing") for n in range(9, 12)]
     document = _document(cells)
     total = document["producers"][0]["total"]
-    assert (total["selected"], total["measured"], total["record_missing"], total["credited"]) == (12, 9, 3, 9)
+    assert (total["selected"], total["measured"], total["record_missing"], total["credited"],
+            total["floor_cells"]) == (12, 9, 3, 9, 12)
     assert document["producers"][0]["line"] == (
-        "parity: 0/12 matched; measured 9; unavailable 0; record-missing 3; "
-        "mean credit (measured) 0.500; floor credit (selected) 0.375")
+        "parity: 0/12 matched; mean 0.500 over 9 measured; floor 0.375 over 9 measured of 12 selected "
+        "(0 no golden; 0 not compared; 3 record-missing)")
     text = _text(_panel(_carriage(document)))
-    assert "t/11@kvm | record-missing | n/a |" in text
-    assert "over the 9 credited (measured) cell(s); floor credit 0.3750 is the same sum over all 12 selected" in text
+    assert "t/11@kvm | record-missing | record-missing | record-missing | none | none: 0 in the floor |" in text
+    assert ("Mean credit 0.5000 is the credit sum 4.5000 over the 9 measured cell(s); floor credit 0.3750 is the "
+            "same sum over the 12 floor cell(s): the 12 selected cell(s) less 0 with no parity (no deterministic "
+            "golden) and 0 not compared") in text
 
 
-def test_null_credits_are_excluded_from_the_mean_never_averaged_as_zero() -> None:
+def test_the_mean_is_over_the_measured_cells_and_the_floor_leaves_out_no_golden_ones() -> None:
     cells = [
         _cell("t/a", credit=0.5),
-        _cell("t/b", verdict="candidate-missing", credit=None),
-        _cell("t/c", verdict="record-missing", credit=None),
-        _cell("t/d", verdict="refused", credit=None),
+        _cell("t/b", credit=None),
+        _classed("t/c", "no-result-row"),
+        _cell("t/d", verdict="record-missing"),
+        _cell("t/e", verdict="refused"),
+        _classed("t/f", "determinism-mismatch"),
     ]
     result = summary_module.tally(cells)
-    assert result["credited"] == 1 and result["selected"] == 4
-    assert result["mean_credit"] == 0.5  # not 0.125: null is not 0
-    assert result["floor_credit"] == 0.125
+    assert (result["selected"], result["measured"], result["no_golden"], result["unmeasured"],
+            result["record_missing"], result["refused"], result["credited"], result["floor_cells"]) == (
+        6, 2, 1, 1, 1, 1, 1, 5)
+    # The mean is the credit sum over the 2 measured cells, the uncredited one
+    # as 0. The floor is that sum over the 5 cells left when the no-golden one
+    # leaves the 6 selected: the unmeasured, record-missing and refused cells
+    # count as 0 in it, the no-golden cell as nothing at all.
+    assert result["mean_credit"] == 0.25
+    assert result["floor_credit"] == 0.1
     assert summary_module.render_line(result) == (
-        "parity: 0/4 matched; measured 1; unavailable 1; record-missing 1; refused 1; "
-        "mean credit (measured) 0.500; floor credit (selected) 0.125"
-    )
+        "parity: 0/6 matched; mean 0.250 over 2 measured (1 credited); floor 0.100 over 2 measured of 6 selected "
+        "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing; "
+        "1 refused)")
     text = _text(_panel(_carriage(_document(cells))))
-    assert ("Mean credit 0.5000 is the credit sum 0.5000 over the 1 credited (measured) cell(s); "
-            "floor credit 0.1250 is the same sum over all 4 selected cell(s). The 3 selected cell(s) "
-            "without a credit (unavailable, record-missing or refused) are left out of the mean") in text
-    nothing = summary_module.tally([_cell("t/e", verdict="candidate-missing", credit=None)])
-    assert nothing["mean_credit"] is None and nothing["floor_credit"] == 0.0
-    assert "mean credit (measured) n/a" in summary_module.render_line(nothing)
+    assert ("Mean credit 0.2500 is the credit sum 0.5000 over the 2 measured cell(s), 1 of them without a credit "
+            "and counted as 0; floor credit 0.1000 is the same sum over the 5 floor cell(s): the 6 selected "
+            "cell(s) less 1 with no parity (no deterministic golden) and 0 not compared") in text
+    unmeasured = summary_module.tally([_classed("t/g", "no-result-row")])
+    assert (unmeasured["mean_credit"], unmeasured["floor_credit"]) == (None, 0.0)
+    assert unmeasured["line"] == ("parity: 0/1 matched; mean n/a over 0 measured; floor 0.000 over 0 measured of "
+                                  "1 selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
+    no_golden = summary_module.tally([_classed("t/h", "determinism-mismatch")])
+    assert (no_golden["mean_credit"], no_golden["floor_credit"]) == (None, None)
+    assert no_golden["line"] == ("parity: 0/1 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+                                 "1 selected (1 no golden: determinism-mismatch 1; 0 not compared)")
 
 
-def test_a_mean_that_averages_nulls_as_zero_is_refused() -> None:
-    cells = [_cell("t/a", credit=0.5), _cell("t/b", verdict="candidate-missing", credit=None)]
+def test_a_mean_that_averages_an_unmeasured_cell_as_zero_is_refused() -> None:
+    document = _document([_cell("t/a", credit=0.5), _classed("t/b", "no-result-row")])
+    total = document["producers"][0]["total"]
+    total["mean_credit"] = total["credit_sum"] / total["selected"]
+    _refused(document, f"{RUN_AT}.total: mean_credit 0.25 is not credit_sum / measured = 0.5")
+
+
+def test_a_floor_that_counts_a_no_golden_cell_as_zero_is_refused() -> None:
+    document = _document([_cell("t/a", credit=0.5), _classed("t/b", "determinism-mismatch")])
+    total = document["producers"][0]["total"]
+    total["floor_credit"] = total["credit_sum"] / total["selected"]
+    _refused(document, f"{RUN_AT}.total: floor_credit 0.25 is not credit_sum / floor_cells = 0.5")
+
+
+def test_every_credit_is_printed_with_the_cells_it_is_over() -> None:
+    cells = [_cell("t/matched", verdict="matched"),
+             *(_classed(f"t/{name}", name) for name in NO_GOLDEN)]
     document = _document(cells)
+    line = ("parity: 1/10 matched; mean 1.000 over 1 measured; floor 1.000 over 1 measured of 10 selected "
+            "(9 no golden: determinism-mismatch 1, timeout 1, crash 1, oom 1, infrastructure-error 1, "
+            "sandbox-denied 1, failed-untyped 1, ended 1, host-inapplicable 1; 0 not compared)")
     run = document["producers"][0]
-    run["total"]["mean_credit"] = run["total"]["credit_sum"] / run["total"]["selected"]
-    with pytest.raises(summary_module.ParitySummaryError, match=r"mean_credit .* is not credit_sum / credited"):
-        summary_module.validate_summary(document)
+    assert run["line"] == run["total"]["line"] == run["per_backend"]["kvm"]["line"] == line
+    coverage = "over 1 measured of 10 selected (9 no golden: "
+    # The summary: the run's line, its total's and kvm's, and the run's brief.
+    assert summary_module.encode_summary(document).decode().count(coverage) == 4
+    # The panel: the headline and the kvm and TOTAL rows' coverage.
+    markup = _panel(_carriage(document))
+    assert _text(markup).count(coverage) == 3
+    table = _parity_table(markup)
+    assert table["kvm"] == table["TOTAL"] == ["10", "1", "1", "0", "9", "0", "0", "0", "0", "1.0000", "1.0000",
+                                              "1", line]
+
+
+def _dbt_run(cells: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    document = _document(cells)
+    return document, _text(_panel(_carriage(document)))
+
+
+def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() -> None:
+    not_compared = [_cell(f"d/ine-{n:02d}", "dbt", verdict="inputs-not-equalized") for n in range(14)]
+    # Every selected dbt cell not compared.
+    document, text = _dbt_run(not_compared)
+    run = document["producers"][0]
+    line = "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized)"
+    assert run["line"] == run["total"]["line"] == run["per_backend"]["dbt"]["line"] == line
+    assert f"dbt | 14 | 0 | 0 | 0 | 0 | 14 | 0 | 0 | 0 | n/a | n/a | 0 | {line} |" in text
+    assert ("Mean credit is n/a: no selected cell was measured; floor credit is n/a: no cell is in the floor, "
+            "which is the 14 selected cell(s) less 0 with no parity (no deterministic golden) and 14 not "
+            "compared.") in text
+    assert "0.0000" not in text and "0.000 " not in text
+    # Two with no golden: the ordinary coverage line, each credit n/a.
+    document, text = _dbt_run([_classed("d/nondet-0", "determinism-mismatch", "dbt"),
+                               _classed("d/nondet-1", "determinism-mismatch", "dbt"), *not_compared[2:]])
+    dbt = document["producers"][0]["per_backend"]["dbt"]
+    assert (dbt["selected"], dbt["no_golden"], dbt["not_compared"], dbt["floor_cells"]) == (14, 2, 12, 0)
+    assert dbt["line"] == ("parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+                           "14 selected (2 no golden: determinism-mismatch 2; 12 not compared)")
+    assert "dbt | 14 | 0 | 0 | 0 | 2 | 12 | 0 | 0 | 0 | n/a | n/a | 0 |" in text
+    # Its record-missing and refused cells stay counted, and stay out of every
+    # floor: dbt's own, and the total's beside a measured kvm cell.
+    document, text = _dbt_run([_cell("k/matched", verdict="matched"), *not_compared[2:],
+                               _cell("d/missing", "dbt", verdict="record-missing"),
+                               _cell("d/refused", "dbt", verdict="refused")])
+    run = document["producers"][0]
+    dbt, total = run["per_backend"]["dbt"], run["total"]
+    assert (dbt["selected"], dbt["not_compared"], dbt["record_missing"], dbt["refused"], dbt["floor_cells"]) == (
+        14, 12, 1, 1, 0)
+    assert (dbt["mean_credit"], dbt["floor_credit"]) == (None, None)
+    assert dbt["line"] == ("parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+                           "14 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
+                           "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
+    assert (total["selected"], total["floor_cells"], total["mean_credit"], total["floor_credit"]) == (
+        15, 1, 1.0, 1.0)
+    assert run["line"] == ("parity: 1/15 matched; mean 1.000 over 1 measured; floor 1.000 over 1 measured of "
+                           "15 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
+                           "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
+    assert ("floor credit 1.0000 is the same sum over the 1 floor cell(s): the 15 selected cell(s) less 0 with "
+            "no parity (no deterministic golden) and 12 not compared, and less 2 record-missing or refused "
+            "cell(s) whose inputs cannot be equalized.") in text
+    assert ("d/missing@dbt | record-missing | record-missing | record-missing | none | "
+            "none: outside every floor (inputs cannot be equalized) |") in text
+    assert "d/refused@dbt | refused | refused | none | none | none: outside every floor (inputs cannot be equalized) |" in text
+
+
+def test_a_dbt_cell_with_no_golden_is_accepted_and_in_no_floor() -> None:
+    cell = _classed("d/nondet", "determinism-mismatch", "dbt")
+    document = _document([_cell("t/a", credit=0.5), cell])
+    run = document["producers"][0]
+    assert summary_module.cell_group(cell) == "no-golden" and not summary_module.in_a_floor(cell)
+    assert (run["per_backend"]["dbt"]["no_golden"], run["per_backend"]["dbt"]["floor_cells"]) == (1, 0)
+    assert (run["total"]["floor_cells"], run["total"]["floor_credit"]) == (1, 0.5)
+
+
+#: A corpus with every group, on every backend: kvm, liteinst and sabre
+#: measured, and dbt with two no-golden cells beside twelve not compared.
+MIXED = [
+    ("m/matched", "kvm", dict(verdict="matched")),
+    ("m/diverged", "kvm", dict(credit=0.3)),
+    ("m/nondet", "kvm", dict(verdict="nondeterministic", unavailable_class="determinism-mismatch", operand="reference")),
+    ("m/no-row", "kvm", dict(verdict="candidate-missing", unavailable_class="no-result-row", operand="candidate")),
+    ("m/missing", "kvm", dict(verdict="record-missing")),
+    ("m/diverged", "liteinst", dict(credit=0.5, basis="unequalized")),
+    ("m/timeout", "liteinst", dict(verdict="unavailable", unavailable_class="timeout", operand="candidate")),
+    ("m/not-retained", "liteinst", dict(verdict="unavailable", unavailable_class="log-not-retained",
+                                        operand="reference")),
+    ("m/refused", "sabre", dict(verdict="refused")),
+    ("m/diverged", "sabre", dict(credit=0.4)),
+    ("m/nondet-0", "dbt", dict(verdict="nondeterministic", unavailable_class="determinism-mismatch", operand="reference")),
+    ("m/nondet-1", "dbt", dict(verdict="nondeterministic", unavailable_class="determinism-mismatch", operand="candidate")),
+    *((f"m/ine-{n:02d}", "dbt", dict(verdict="inputs-not-equalized")) for n in range(12)),
+]
+MIXED_LINES = {
+    "kvm": "parity: 1/5 matched; mean 0.650 over 2 measured; floor 0.325 over 2 measured of 5 selected "
+           "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing)",
+    "liteinst": "parity: 0/3 matched; mean 0.500 over 1 measured; floor 0.250 over 1 measured of 3 selected "
+                "(1 no golden: timeout 1; 0 not compared; 1 unmeasured: log-not-retained 1) [inputs not equalized]",
+    "sabre": "parity: 0/2 matched; mean 0.400 over 1 measured; floor 0.200 over 1 measured of 2 selected "
+             "(0 no golden; 0 not compared; 1 refused)",
+    "dbt": "parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected "
+           "(2 no golden: determinism-mismatch 2; 12 not compared)",
+    "TOTAL": "parity: 1/24 matched; mean 0.550 over 4 measured; floor 0.275 over 4 measured of 24 selected "
+             "(4 no golden: determinism-mismatch 3, timeout 1; 12 not compared; 2 unmeasured: log-not-retained 1, "
+             "no-result-row 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited]",
+}
+
+
+def test_a_mixed_corpus_renders_every_group_with_its_breakdown() -> None:
+    document = _document([_cell(test_id, backend, **options) for test_id, backend, options in MIXED])
+    run = document["producers"][0]
+    assert {backend: run["per_backend"][backend]["line"] for backend in summary_module.BACKENDS} == {
+        backend: MIXED_LINES[backend] for backend in summary_module.BACKENDS}
+    assert run["line"] == run["total"]["line"] == MIXED_LINES["TOTAL"]
+    markup = _panel(_carriage(document))
+    assert _parity_table(markup) == {
+        "kvm": ["5", "2", "1", "1", "1", "0", "1", "1", "0", "0.6500", "0.3250", "4", MIXED_LINES["kvm"]],
+        "liteinst": ["3", "1", "0", "1", "1", "0", "1", "0", "0", "0.5000", "0.2500", "2", MIXED_LINES["liteinst"]],
+        "sabre": ["2", "1", "0", "1", "0", "0", "0", "0", "1", "0.4000", "0.2000", "2", MIXED_LINES["sabre"]],
+        "dbt": ["14", "0", "0", "0", "2", "12", "0", "0", "0", "n/a", "n/a", "0", MIXED_LINES["dbt"]],
+        "TOTAL": ["24", "4", "1", "3", "4", "12", "2", "1", "1", "0.5500", "0.2750", "8", MIXED_LINES["TOTAL"]],
+    }
+    text = _text(markup)
+    assert ("Mean credit 0.5500 is the credit sum 2.2000 over the 4 measured cell(s); floor credit 0.2750 is the "
+            "same sum over the 8 floor cell(s): the 24 selected cell(s) less 4 with no parity (no deterministic "
+            "golden) and 12 not compared. Unmeasured, record-missing and refused cells count as 0 in the floor.") in text
+    assert ("No parity (no deterministic golden): 4 cell(s) by class, outside the mean and the floor\n"
+            "Class | kvm | liteinst | sabre | dbt | TOTAL | \n"
+            "determinism-mismatch | 1 | 0 | 0 | 2 | 3 | \n"
+            "timeout | 0 | 1 | 0 | 0 | 1 | \n") in text
+    assert "Not compared (inputs cannot be equalized), outside the mean and the floor: dbt 12; TOTAL 12." in text
+    assert ("Unmeasured: 2 cell(s) by class, each 0 in the floor\n"
+            "Class | kvm | liteinst | sabre | dbt | TOTAL | \n"
+            "log-not-retained | 0 | 1 | 0 | 0 | 1 | \n"
+            "no-result-row | 1 | 0 | 0 | 0 | 1 | \n") in text
+    assert ("Every cell that is not a full match (23 in all): 3 diverged, 4 no parity (no deterministic golden), "
+            "12 not compared, 2 unmeasured, 1 record-missing, 1 refused") in text
+    for row in (
+        "m/nondet-0@dbt | no parity (no deterministic golden) | nondeterministic | determinism-mismatch | "
+        "reference | none: no parity, outside the mean and the floor |",
+        "m/ine-00@dbt | not compared | inputs-not-equalized | inputs-not-equalized | candidate | "
+        "none: not compared, outside the mean and the floor |",
+        "m/no-row@kvm | unmeasured | candidate-missing | no-result-row | candidate | none: 0 in the floor |",
+        "m/not-retained@liteinst | unmeasured | unavailable | log-not-retained | reference | none: 0 in the floor |",
+        "m/missing@kvm | record-missing | record-missing | record-missing | none | none: 0 in the floor |",
+        "m/refused@sabre | refused | refused | none | none | none: 0 in the floor |",
+        "m/diverged@liteinst | diverged | diverged | none | none | 0.5000 (inputs not equalized) |",
+        "m/diverged@kvm | diverged | diverged | none | none | 0.3000 |",
+    ):
+        assert row in text
+    # No cell without a golden is shown as 0 credit or as a failure.
+    no_golden = [row.split(" | ") for row in text.splitlines() if " | no parity (no deterministic golden) | " in row]
+    assert sorted(columns[0] for columns in no_golden) == [
+        "m/nondet-0@dbt", "m/nondet-1@dbt", "m/nondet@kvm", "m/timeout@liteinst"]
+    assert {columns[5] for columns in no_golden} == {"none: no parity, outside the mean and the floor"}
 
 
 def test_a_below_one_credit_never_prints_as_one() -> None:
@@ -348,7 +752,7 @@ def test_a_below_one_credit_never_prints_as_one() -> None:
         (lambda d: d["producers"][0].__setitem__("line", RUN_1953_LINE.replace("0/192", "192/192")),
          r"line 'parity: 192/192 matched; .*' is not its total's 'parity: 0/192 matched; "),
         (lambda d: d["producers"][0]["total"].__setitem__("credit_sum", 99.0),
-         r"\.total: mean_credit .* is not credit_sum / credited = "),
+         r"\.total: mean_credit .* is not credit_sum / measured = "),
         (lambda d: d["producers"][0]["cells"][0].__setitem__("credit", 1.0),
          r"backend-parity-c/aio-refusal@kvm\): a diverged cell's credit 1\.0 must be below 1"),
         (lambda d: d.__setitem__("schema", "parity-summary/v0"),
@@ -369,22 +773,9 @@ def test_a_tampered_summary_is_refused_with_its_reason(run_1953: dict[str, Any],
 # lets the tampered summary through or refuses it for another reason, and the
 # case fails.
 
-RUN_AT = f"parity summary.producers[0] (validate run {RUN_ID})"
-
-
-def _refused(document: dict[str, Any], message: str) -> None:
-    with pytest.raises(summary_module.ParitySummaryError, match=re.escape(message)):
-        summary_module.validate_summary(document)
-
-
-def _named(document: dict[str, Any], index: int) -> tuple[dict[str, Any], str]:
-    cell = document["producers"][0]["cells"][index]
-    return cell, f"{RUN_AT}.cells[{index}] ({cell['cell']})"
-
-
 # RUN 1953's cells[0] is backend-parity-c/aio-refusal@kvm, diverged at 12 of
 # 106 | 106; cells[14] and [160] are dbt inputs-not-equalized; cells[59] is
-# the liteinst candidate-missing cell.
+# a liteinst candidate-missing cell of class no-result-row.
 
 
 def test_a_matched_cell_must_carry_full_credit(run_1953: dict[str, Any]) -> None:
@@ -400,15 +791,10 @@ def test_a_matched_cell_must_carry_full_credit(run_1953: dict[str, Any]) -> None
 def test_only_a_measured_cell_is_credited(run_1953: dict[str, Any]) -> None:
     document = copy.deepcopy(run_1953)
     cell, at = _named(document, 59)
+    assert (cell["verdict"], cell["unavailable_class"], cell["operand"]) == (
+        "candidate-missing", "no-result-row", "candidate")
     cell.update(credit=0.5, credit_basis="unequalized")
     _refused(document, f"{at}: a candidate-missing cell carries credit 0.5; only a measured cell is credited")
-
-
-def test_an_unavailable_class_is_the_one_its_verdict_and_reason_imply(run_1953: dict[str, Any]) -> None:
-    document = copy.deepcopy(run_1953)
-    cell, at = _named(document, 59)
-    cell["unavailable_class"] = "other"
-    _refused(document, f"{at}: unavailable class other is not the candidate-missing its verdict and reason imply")
 
 
 def test_a_cell_credit_is_recomputed_from_its_matched_prefix(run_1953: dict[str, Any]) -> None:
@@ -445,17 +831,87 @@ def test_an_unmeasured_cell_carries_no_lengths_or_divergence(run_1953: dict[str,
     _refused(document, f"{at}: a candidate-missing cell is unmeasured and carries no compared lengths or divergence")
 
 
+_TIMEOUT = dict(verdict="unavailable", unavailable_class="timeout", operand="candidate")
+_NO_ROW = dict(verdict="candidate-missing", unavailable_class="no-result-row", operand="candidate")
+_NONDETERMINISTIC = dict(verdict="nondeterministic", unavailable_class="determinism-mismatch", operand="reference")
+_NOT_COMPARED = dict(verdict="inputs-not-equalized")
+_MEASURED_DBT = f"dbt inputs cannot be equalized, so it reports no measured comparison and never equal inputs: {WHY_DBT}"
+
+
+@pytest.mark.parametrize(
+    ("backend", "target", "change", "message"),
+    [
+        # The operand is one of the closed set, or null.
+        ("kvm", _NO_ROW, {"operand": "both"}, "operand must be one of reference, candidate, got 'both'"),
+        # Only a backend hermit declares inputs-not-equalizable (dbt) is not compared...
+        ("kvm", _TIMEOUT, {"verdict": "inputs-not-equalized", "unavailable_class": "inputs-not-equalized"},
+         "kvm inputs can be equalized; a comparison with unequal inputs is measured and reports unequalized_credit"),
+        # ...and such a backend is never measured.
+        ("dbt", _NOT_COMPARED, {"verdict": "diverged", "unavailable_class": None, "operand": None}, _MEASURED_DBT),
+        ("dbt", _NOT_COMPARED, {"verdict": "matched", "unavailable_class": None, "operand": None}, _MEASURED_DBT),
+        # A measured verdict has no class and no operand.
+        ("kvm", dict(verdict="matched"), {"unavailable_class": "timeout"},
+         "a matched verdict is measured and carries no unavailable_class, got timeout"),
+        ("kvm", {}, {"operand": "candidate"}, "a diverged verdict is measured and names no operand, got candidate"),
+        # Any other verdict has a class that fits it.
+        ("kvm", _TIMEOUT, {"unavailable_class": None}, "verdict unavailable needs an unavailable_class"),
+        ("kvm", _TIMEOUT, {"unavailable_class": "determinism-mismatch"},
+         "unavailable_class determinism-mismatch cannot go with verdict unavailable; it needs nondeterministic"),
+        ("kvm", _NONDETERMINISTIC, {"unavailable_class": "timeout"},
+         "unavailable_class timeout cannot go with verdict nondeterministic; it needs unavailable or "
+         "reference-missing or candidate-missing"),
+        ("dbt", _NOT_COMPARED, {"verdict": "unavailable"},
+         "unavailable_class inputs-not-equalized cannot go with verdict unavailable; it needs inputs-not-equalized"),
+        ("dbt", _NOT_COMPARED, {"unavailable_class": "timeout"},
+         "unavailable_class timeout cannot go with verdict inputs-not-equalized; it needs unavailable or "
+         "reference-missing or candidate-missing"),
+        ("kvm", dict(verdict="record-missing"), {"unavailable_class": "timeout"},
+         "unavailable_class timeout cannot go with verdict record-missing; it needs unavailable or "
+         "reference-missing or candidate-missing"),
+        ("kvm", dict(verdict="record-missing"), {"verdict": "unavailable"},
+         "unavailable_class record-missing cannot go with verdict unavailable; it needs record-missing"),
+        ("kvm", _NO_ROW, {"verdict": "unavailable"},
+         "unavailable_class no-result-row cannot go with verdict unavailable; it needs reference-missing or "
+         "candidate-missing"),
+        # dbt may have no golden, but no comparison is attempted, so nothing is unmeasured.
+        ("dbt", _NONDETERMINISTIC, {"verdict": "unavailable", "unavailable_class": "log-not-retained"},
+         "dbt inputs cannot be equalized, so no comparison is attempted and it carries no unmeasured class, "
+         "got log-not-retained"),
+        # The operand fits the class, and a side the verdict names.
+        ("dbt", _NOT_COMPARED, {"operand": "reference"},
+         "unavailable_class inputs-not-equalized needs operand candidate, got reference"),
+        ("kvm", dict(verdict="unavailable", unavailable_class="log-diff-failed", operand=None), {"operand": "candidate"},
+         "unavailable_class log-diff-failed needs operand null, got candidate"),
+        ("kvm", dict(verdict="unavailable", unavailable_class="golden-not-written", operand="reference"),
+         {"operand": "candidate"}, "unavailable_class golden-not-written needs operand reference, got candidate"),
+        ("kvm", _TIMEOUT, {"operand": None}, "unavailable_class timeout needs operand reference or candidate, got null"),
+        ("kvm", dict(verdict="record-missing"), {"operand": "reference"},
+         "unavailable_class record-missing needs operand null, got reference"),
+        ("kvm", _NO_ROW, {"operand": "reference"}, "verdict candidate-missing names the candidate operand, got reference"),
+        # A refused row was never admitted, so it has neither.
+        ("kvm", dict(verdict="refused"), {"unavailable_class": "timeout"},
+         "a refused cell has no unavailable class or operand"),
+        ("kvm", dict(verdict="refused"), {"operand": "candidate"}, "a refused cell has no unavailable class or operand"),
+    ],
+)
+def test_each_class_guard_refuses_its_own_tamper(backend: str, target: dict[str, Any], change: dict[str, Any],
+                                                 message: str) -> None:
+    document = _document([_cell("t/a", credit=0.5), _cell("t/x", backend, **target)])
+    cell, at = _named(document, 1)
+    cell.update(change)
+    _refused(document, f"{at}: {message}")
+
+
 def test_a_declared_backend_has_no_measured_cell_in_its_run(run_1953: dict[str, Any]) -> None:
     document = copy.deepcopy(run_1953)
     measured, _ = _named(document, 0)
-    cell, _ = _named(document, 14)
-    declaration = cell["reason"]
-    for field in ("verdict", "reason", "unavailable_class", "credit", "credit_basis", "matched_prefix",
+    cell, at = _named(document, 14)
+    assert (cell["verdict"], cell["reason"]) == ("inputs-not-equalized", WHY_DBT)
+    for field in ("verdict", "reason", "unavailable_class", "operand", "credit", "credit_basis", "matched_prefix",
                   "left_len", "right_len", "first_divergent_record", "first_difference_field",
                   "first_difference_syscall", "reference_message", "candidate_message"):
         cell[field] = measured[field]
-    _refused(document, f"{RUN_AT}: cell {cell['cell']}: dbt inputs cannot be equalized, so it reports no "
-                       f"measured comparison and never equal inputs: {declaration}")
+    _refused(document, f"{at}: {_MEASURED_DBT}")
 
 
 def test_a_run_declares_one_reason_per_backend(run_1953: dict[str, Any]) -> None:
@@ -468,21 +924,39 @@ def test_a_run_declares_one_reason_per_backend(run_1953: dict[str, Any]) -> None
                        "a run's hermit makes one declaration per backend")
 
 
-def test_the_floor_is_the_credit_sum_over_every_selected_cell(run_1953: dict[str, Any]) -> None:
+def test_the_floor_is_the_credit_sum_over_the_floor_cells(run_1953: dict[str, Any]) -> None:
     document = copy.deepcopy(run_1953)
     kvm = document["producers"][0]["per_backend"]["kvm"]
     floor = kvm["floor_credit"]
     kvm["floor_credit"] = kvm["mean_credit"]
     _refused(document, f"{RUN_AT}.per_backend.kvm: floor_credit {kvm['mean_credit']!r} is not "
-                       f"credit_sum / selected = {floor!r}")
+                       f"credit_sum / floor_cells = {floor!r}")
+
+
+def test_the_floor_cells_are_the_selected_less_the_no_golden_and_not_compared(run_1953: dict[str, Any]) -> None:
+    document = copy.deepcopy(run_1953)
+    kvm = document["producers"][0]["per_backend"]["kvm"]
+    kvm.update(floor_cells=76, floor_credit=kvm["credit_sum"] / 76)
+    kvm["line"] = summary_module.render_line(kvm)
+    _refused(document, f"{RUN_AT}.per_backend.kvm: floor_cells 76 is not selected - no golden - not compared = 77")
+    document = copy.deepcopy(run_1953)
+    dbt = document["producers"][0]["per_backend"]["dbt"]
+    dbt.update(floor_cells=14, floor_credit=0.0)
+    _refused(document, f"{RUN_AT}.per_backend.dbt: floor_cells 14 must be 0: dbt inputs cannot be equalized, so "
+                       "none of its cells is in a floor")
+    document = copy.deepcopy(run_1953)
+    total = document["producers"][0]["total"]
+    total.update(floor_cells=179, floor_credit=total["credit_sum"] / 179)
+    _refused(document, f"{RUN_AT}.total: floor_cells 179 exceeds selected - no golden - not compared = 178")
 
 
 def test_every_tally_field_is_recomputed_from_the_cells(run_1953: dict[str, Any]) -> None:
     document = copy.deepcopy(run_1953)
     total = document["producers"][0]["total"]
-    stated = dict(total["unavailable_by_class"])
-    total["unavailable_by_class"].update({"candidate-missing": 2, "other": 1})  # same sum, 17
-    _refused(document, f"{RUN_AT}.total: unavailable_by_class {total['unavailable_by_class']!r} disagrees "
+    stated = dict(total["unmeasured_by_class"])
+    total["unmeasured_by_class"].update({"no-result-row": 2, "log-not-retained": 1})  # same sum, 3
+    total["line"] = summary_module.render_line(total)
+    _refused(document, f"{RUN_AT}.total: unmeasured_by_class {total['unmeasured_by_class']!r} disagrees "
                        f"with its cells, which give {stated!r}")
     document = copy.deepcopy(run_1953)
     kvm = document["producers"][0]["per_backend"]["kvm"]
@@ -497,14 +971,15 @@ def test_the_credit_sum_is_the_sum_of_the_cells_credits(run_1953: dict[str, Any]
     kvm = document["producers"][0]["per_backend"]["kvm"]
     true_sum = kvm["credit_sum"]
     kvm["credit_sum"] = true_sum + 0.5
-    kvm["mean_credit"] = kvm["credit_sum"] / kvm["credited"]
-    kvm["floor_credit"] = kvm["credit_sum"] / kvm["selected"]
+    kvm["mean_credit"] = kvm["credit_sum"] / kvm["measured"]
+    kvm["floor_credit"] = kvm["credit_sum"] / kvm["floor_cells"]
+    kvm["line"] = summary_module.render_line(kvm)
     _refused(document, f"{RUN_AT}.per_backend.kvm: credit_sum {kvm['credit_sum']!r} disagrees with its cells, "
                        f"which give {true_sum!r}")
 
 
 def _with_one_refused_cell() -> dict[str, Any]:
-    document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="refused", credit=None)])
+    document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="refused")])
     assert (document["refused_rows"], len(document["refusals"])) == (1, 1)
     return document
 
@@ -553,12 +1028,11 @@ def test_a_headline_credit_below_one_never_prints_as_one() -> None:
     assert summary_module.credit_text(None) == "n/a"
     # Three matches and one divergence at 999 of 1000: the mean is 0.99975,
     # which three decimals alone would print as full credit.
-    document = _document([*(_cell(f"t/{n}", verdict="matched", credit=1.0) for n in range(3)),
-                          _cell("t/d", credit=0.999)])
+    document = _document([*(_cell(f"t/{n}", verdict="matched") for n in range(3)), _cell("t/d", credit=0.999)])
     run = document["producers"][0]
     assert f"{run['total']['mean_credit']:.3f}" == "1.000" and run["total"]["mean_credit"] < 1.0
-    assert run["line"] == ("parity: 3/4 matched; measured 4; unavailable 0; record-missing 0; "
-                           "mean credit (measured) 0.999; floor credit (selected) 0.999")
+    assert run["line"] == ("parity: 3/4 matched; mean 0.999 over 4 measured; floor 0.999 over 4 measured of "
+                           "4 selected (0 no golden; 0 not compared)")
 
 
 def test_duplicate_keys_and_non_finite_numbers_are_refused() -> None:
@@ -888,7 +1362,7 @@ def test_record_missing_source_survives_into_the_panel() -> None:
     # (the same source test_parity_ledger.py transports).
     missing = {
         "cell": "backend-parity-c/never-ran@kvm", "test_id": "backend-parity-c/never-ran", "backend": "kvm",
-        "verdict": "record-missing",
+        "verdict": "record-missing", "unavailable_class": "record-missing", "operand": None,
         "reason": "the parity post-pass of privileged/manifest_backend_parity_c left no parity.status.json",
         "run_id": None, "hermit_sha": None,
         "source": {"lane": "privileged", "node": "manifest_backend_parity_c", "post_pass_state": "absent",
@@ -899,26 +1373,38 @@ def test_record_missing_source_survives_into_the_panel() -> None:
     document = _summary(_rows([*_sources()[:3], missing]))
     run = document["producers"][0]
     total = run["total"]
-    assert (total["selected"], total["record_missing"], total["credited"]) == (4, 1, 3)
-    assert "; record-missing 1; " in run["line"]
+    assert (total["selected"], total["record_missing"], total["credited"], total["floor_cells"]) == (4, 1, 3, 4)
+    assert run["line"] == ("parity: 0/4 matched; mean 0.069 over 3 measured; floor 0.052 over 3 measured of "
+                           "4 selected (0 no golden; 0 not compared; 1 record-missing) [inputs not equalized]")
     [cell] = [cell for cell in run["cells"] if cell["verdict"] == "record-missing"]
     assert cell["credit"] is None and cell["lane"] == "privileged"
+    assert (cell["unavailable_class"], cell["operand"]) == ("record-missing", None)
     text = _text(_panel(_carriage(document)))
-    assert "backend-parity-c/never-ran@kvm | record-missing | n/a |" in text
-    # Selected 3 on kvm keeps the missing cell: mean over the 2 credited, floor over all 3.
-    assert "kvm | 3 | 2 | 0 | 2 | 0 | 1 | 0 | 0.0963 | 2 | 0.0642 |" in text
-    assert "TOTAL | 4 | 3 | 0 | 3 | 0 | 1 | 0 | 0.0691 | 3 | 0.0518 |" in text
+    assert ("backend-parity-c/never-ran@kvm | record-missing | record-missing | record-missing | none | "
+            "none: 0 in the floor |") in text
+    # kvm keeps the missing cell among its 3 selected: the mean is over its 2
+    # measured cells, the floor over all 3.
+    assert "kvm | 3 | 2 | 0 | 2 | 0 | 0 | 0 | 1 | 0 | 0.0963 | 0.0642 | 3 |" in text
+    assert "TOTAL | 4 | 3 | 0 | 3 | 0 | 0 | 0 | 1 | 0 | 0.0691 | 0.0518 | 4 |" in text
 
 
 # --- hermit's own scorecard writer (S12) ---------------------------------------------
 #
 # The Python reference above is written in the same change as the checker, so it
-# cannot catch a format the two share by mistake. These tests read a summary
-# hermit's Rust scorecard actually wrote, with the rows it summarized, copied byte
-# for byte from hermit (provenance.json names the commit and every file's digest).
+# cannot catch a format the two share by mistake. The fixture is a summary hermit's
+# Rust scorecard wrote at S12 commit 69feeee188e, with the rows it summarized,
+# copied byte for byte from hermit (provenance.json names the commit and every
+# file's digest).
+#
+# That commit predates the typed `unavailable_class` and `operand` fields, so this
+# reader refuses its summary and its rows. The byte-for-byte comparison with the
+# Rust writer needs the fixture re-vendored from the typed S12 commit; until then
+# the tests below prove the refusal, and that the reference over the same rows,
+# typed, agrees with S12 on everything the typed accounting did not change.
 
 S12 = REPOSITORY / "ci-hub/tests/fixtures/parity-s12-69feeee188e"
 S12_COMMIT = "69feeee188e8480c34645716b57bc87f3f857cc5"
+S12_REFUSAL = f"parity summary.producers[0] (validate run {RUN_ID}).cells[0] is missing field(s): operand"
 
 
 def _s12() -> tuple[bytes, bytes, dict[str, Any]]:
@@ -946,70 +1432,42 @@ def _s12_capture(data: bytes, rows: bytes, provenance: dict[str, Any]) -> dict[s
     )
 
 
-def test_hermit_s12_summary_is_admitted_byte_for_byte() -> None:
-    data, rows, provenance = _s12()
-    assert len(data) == 217963
-    document = json.loads(data)
-    assert summary_module.validate_summary(document) == document
-    summary = summary_module.load_summary(data.decode())
-    # The reader's own encoding reproduces hermit's bytes, so field order, float
-    # text and layout all agree with the Rust writer.
-    assert summary_module.encode_summary(summary) == data
-    # Every row is a parity-ledger/v1 record the dev-hermit writer would publish.
-    events = ledger.parse_lines(rows.decode(), "S12 rows.jsonl")
-    assert len(events) == summary["rows_read"] == 192
-    assert all(ledger.validate_event(event)["event_type"] == "parity.record" for event in events)
-    # The summary's store digest is the one this reader recomputes from that store.
-    digest = summary_module.store_digest({provenance["store_shard"]: rows})
-    assert digest == summary["generated_from"]["store_sha256"] == provenance["store_sha256"]
-    assert digest == "d2750e52eb70b0bf984f3b4798f05aa32e413261bf3a127f90f8f4de46cbc9b3"
-    carriage = _s12_capture(data, rows, provenance)
-    assert carriage["state"] == "current", carriage["refusal"]
-    assert (carriage["store_records"], carriage["unsummarized_records"]) == (192, 0)
-    assert summary_module.admit_carriage(carriage, LEDGER_COMMIT, "S12 carriage") == (carriage, summary)
-
-
-def _parity_table(markup: str) -> dict[str, list[str]]:
-    table = re.search(r'<table class="parity-summary">.*?<tbody>(.*?)</tbody>', markup, re.S)
-    assert table is not None
-    rows = {}
-    for row in re.findall(r"<tr>(.*?)</tr>", table.group(1), re.S):
-        label = re.sub(r"<[^>]+>", "", re.search(r"<th[^>]*>(.*?)</th>", row, re.S).group(1))
-        rows[label] = [re.sub(r"<[^>]+>", "", cell) for cell in re.findall(r"<td>(.*?)</td>", row, re.S)]
-    return rows
-
-
-def _credit_text(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.4f}"
-
-
-def test_hermit_s12_panel_shows_the_tallies_hermit_wrote() -> None:
-    data, rows, provenance = _s12()
-    producer = json.loads(data)["producers"][0]
-    markup = _panel(_s12_capture(data, rows, provenance))
-    table = _parity_table(markup)
-    expected = {backend: producer["per_backend"][backend] for backend in producer["per_backend"]}
-    expected["TOTAL"] = producer["total"]
-    assert sorted(table) == sorted(expected) == ["TOTAL", "dbt", "kvm", "liteinst", "sabre"]
-    for label, tally in expected.items():
-        assert table[label] == [
-            str(tally["selected"]), str(tally["measured"]), str(tally["matched"]), str(tally["diverged"]),
-            str(tally["unavailable"]), str(tally["record_missing"]), str(tally["refused"]),
-            _credit_text(tally["mean_credit"]), str(tally["credited"]), _credit_text(tally["floor_credit"]),
-        ], label
-    text = _text(markup)
-    assert producer["line"] in text and producer["line"] == _s12_headline(data)
-    assert ("parity store at ledger commit bbbbbbbbbbbb (scorecard/parity.json, sha256 d139a53f1a86); "
-            "summary written by Hermit tool commit not recorded.") in text
-    assert "inputs-not-equalized | 0 | 0 | 0 | 14 | 14 |" in text and "candidate-missing | 1 | 1 | 1 | 0 | 3 |" in text
-    assert "74 of 76 | c-programs/aio-refusal@kvm |" in text
-
-
 def _s12_headline(data: bytes) -> str:
     hermit_provenance = json.loads((S12 / "hermit-provenance.json").read_text(encoding="utf-8"))
     [run] = json.loads(data)["runs"]
     assert run["line"] == hermit_provenance["expected_summary"]
     return run["line"]
+
+
+def test_hermit_s12_predates_the_typed_classes_and_is_refused() -> None:
+    data, rows, provenance = _s12()
+    assert len(data) == 217963
+    with pytest.raises(summary_module.ParitySummaryError) as error:
+        summary_module.validate_summary(json.loads(data))
+    assert str(error.value) == S12_REFUSAL
+    # Every row lacks the typed fields, so none is a row this ledger publishes.
+    events = ledger.parse_lines(rows.decode(), "S12 rows.jsonl")
+    assert len(events) == 192
+    for event in events:
+        with pytest.raises(ledger.ParityLedgerError) as error:
+            ledger.validate_event(event)
+        assert str(error.value) == (
+            "parity ledger row fields are not exactly its schema's: missing unavailable_class, operand")
+    # The store digest still agrees: the refusal is the schema, not the binding.
+    digest = summary_module.store_digest({provenance["store_shard"]: rows})
+    assert digest == json.loads(data)["generated_from"]["store_sha256"] == provenance["store_sha256"]
+    assert digest == "d2750e52eb70b0bf984f3b4798f05aa32e413261bf3a127f90f8f4de46cbc9b3"
+
+
+def test_hermit_s12_panel_shows_the_refusal_and_no_figure() -> None:
+    data, rows, provenance = _s12()
+    carriage = _s12_capture(data, rows, provenance)
+    assert _refused_by(carriage) == S12_REFUSAL
+    text = _text(_panel(carriage))
+    assert ("Parity summary refused; no parity figure is shown for this build. The determinism figures are "
+            "unaffected.") in text
+    assert S12_REFUSAL in text
+    assert _s12_headline(data) not in text and "0/" not in text
 
 
 def _catalogue_renamed(summary: dict[str, Any]) -> tuple[dict[str, Any], int]:
@@ -1041,13 +1499,81 @@ def _catalogue_renamed(summary: dict[str, Any]) -> tuple[dict[str, Any], int]:
     return renamed, count
 
 
-def test_the_python_reference_matches_hermit_s12_apart_from_the_catalogue_renames() -> None:
+def _typed(value: dict[str, Any], unavailable_class: str | None, operand: str | None) -> dict[str, Any]:
+    typed = {}
+    for key, item in value.items():
+        typed[key] = item
+        if key == "verdict":
+            typed.update(unavailable_class=unavailable_class, operand=operand)
+    return typed
+
+
+def _typed_s12_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """S12's rows with the typed class and operand their untyped verdicts imply.
+
+    Besides measured cells RUN 1953 has two shapes: dbt's declared inputs not
+    equalized, and a candidate cell with no result row. Any other shape fails.
+    """
+    rows = []
+    for row in events:
+        verdict, backend = row["verdict"], row["backend"]
+        if verdict in ("matched", "diverged"):
+            implied = (None, None)
+        elif verdict == "inputs-not-equalized" and row["reason"] == ledger.INPUTS_NOT_EQUALIZABLE.get(backend):
+            implied = ("inputs-not-equalized", "candidate")
+        elif verdict == "candidate-missing" and row["reason"] == (
+                f"the {backend} candidate verify cell of {row['test_id']} has no result row in this run"):
+            implied = ("no-result-row", "candidate")
+        else:
+            raise AssertionError(f"no typed class for {row['cell']}: {verdict} {row['reason']!r}")
+        typed = _typed(row, *implied)
+        if typed["record"] is not None:
+            typed["record"] = _typed(typed["record"], *implied)
+        rows.append(dict(ledger.validate_row(typed)))
+    return rows
+
+
+def test_the_reference_over_typed_s12_rows_agrees_with_s12_but_for_the_typed_accounting() -> None:
     data, rows, provenance = _s12()
     theirs = json.loads(data)
-    events = ledger.parse_lines(rows.decode(), "S12 rows.jsonl")
-    mine = summary_module.summarize_rows(events, store_sha256=summary_module.store_digest(
-        {provenance["store_shard"]: rows}))
-    assert mine != theirs
-    renamed, count = _catalogue_renamed(mine)
+    digest = summary_module.store_digest({provenance["store_shard"]: rows})
+    typed = _typed_s12_rows(ledger.parse_lines(rows.decode(), "S12 rows.jsonl"))
+    mine, count = _catalogue_renamed(summary_module.summarize_rows(typed, store_sha256=digest))
     assert count == 192
-    assert renamed == theirs
+    summary_module.validate_summary(mine)
+    [run], [s12] = mine["producers"], theirs["producers"]
+    assert run["line"] == RUN_1953_LINE
+    # Every cell agrees but for its class, which is now the typed one; S12 had
+    # no operand.
+    assert len(run["cells"]) == len(s12["cells"]) == 192
+    classes = set()
+    for ours, hermit in zip(run["cells"], s12["cells"]):
+        assert "operand" not in hermit
+        assert {key: value for key, value in ours.items() if key not in ("unavailable_class", "operand")} == {
+            key: value for key, value in hermit.items() if key != "unavailable_class"}
+        classes.add((hermit["unavailable_class"], ours["unavailable_class"], ours["operand"]))
+    assert classes == {(None, None, None), ("inputs-not-equalized", "inputs-not-equalized", "candidate"),
+                       ("candidate-missing", "no-result-row", "candidate")}
+    # Every tally agrees on what was measured and credited. S12's one
+    # "unavailable" count is split three ways, and its floor divided by every
+    # selected cell, dbt's 14 not-compared ones too.
+    for label in ("total", *summary_module.BACKENDS):
+        ours = run["total"] if label == "total" else run["per_backend"][label]
+        hermit = s12["total"] if label == "total" else s12["per_backend"][label]
+        for field in ("selected", "measured", "matched", "diverged", "record_missing", "refused", "credited",
+                      "clean_credited", "unequalized_credited", "credit_sum", "mean_credit", "first_divergence"):
+            assert ours[field] == hermit[field], (label, field)
+        assert hermit["unavailable"] == ours["no_golden"] + ours["not_compared"] + ours["unmeasured"], label
+        if label in ("kvm", "liteinst", "sabre"):
+            assert ours["floor_credit"] == hermit["floor_credit"], label
+    assert s12["total"]["floor_credit"] == s12["total"]["credit_sum"] / 192
+    assert run["total"]["floor_credit"] == run["total"]["credit_sum"] / 178
+    assert (s12["per_backend"]["dbt"]["floor_credit"], run["per_backend"]["dbt"]["floor_credit"]) == (0.0, None)
+    # Everything else is the same: the document around the producers, each
+    # run's identity, and each brief but for its line.
+    assert {key: value for key, value in mine.items() if key not in ("producers", "runs")} == {
+        key: value for key, value in theirs.items() if key not in ("producers", "runs")}
+    identity = ("line", "per_backend", "total", "cells")
+    assert {key: value for key, value in run.items() if key not in identity} == {
+        key: value for key, value in s12.items() if key not in identity}
+    assert [dict(brief, line=None) for brief in mine["runs"]] == [dict(brief, line=None) for brief in theirs["runs"]]

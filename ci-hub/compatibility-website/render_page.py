@@ -1962,7 +1962,66 @@ def _parity_append_refusals(carriage: Mapping[str, Any] | None) -> str:
     )
 
 
+#: How the cell table names each group of `parity_summary.CELL_GROUPS`; a
+#: measured cell shows its verdict.
+PARITY_GROUP_LABELS = {
+    "no-golden": "no parity (no deterministic golden)",
+    "not-compared": "not compared",
+    "unmeasured": "unmeasured",
+    "record-missing": "record-missing",
+    "refused": "refused",
+}
+
+
+def _parity_class_table(run: Mapping[str, Any], field: str, classes: Sequence[str], caption: str, css: str) -> str:
+    """One group's cells by typed class: a row per class with cells, a column per backend."""
+    total = run["total"]
+    backends = _parity_backends(run)
+    rows = "".join(
+        f'<tr><th scope="row"><code>{_escape(name)}</code></th>'
+        + "".join(f'<td>{_integer(run["per_backend"][b][field][name])}</td>' for b in backends)
+        + f'<td>{_integer(total[field][name])}</td></tr>'
+        for name in classes
+        if total[field][name]
+    )
+    return (
+        f'<div class="table-scroll"><table class="{css}"><caption>{caption}</caption>'
+        '<thead><tr><th scope="col">Class</th>'
+        + "".join(f'<th scope="col"><code>{_escape(b)}</code></th>' for b in backends)
+        + f'<th scope="col">TOTAL</th></tr></thead><tbody>{rows}</tbody></table></div>'
+    )
+
+
+def _parity_unequalizable(reader: Any) -> str:
+    names = [f"<code>{_escape(backend)}</code>" for backend in reader.INPUTS_NOT_EQUALIZABLE_BACKENDS]
+    if not names:
+        return ""
+    joined = ", ".join(names)
+    verb = "is" if len(names) == 1 else "are"
+    return (
+        f"The inputs of {joined} cannot be equalized with the ptrace reference's, so {joined} {verb} not compared "
+        "and none of its cells enters any mean or floor, per backend or in the total."
+    )
+
+
+def _parity_cell_credit(reader: Any, cell: Mapping[str, Any]) -> str:
+    """A cell's credit, or what its missing credit means for the mean and the floor."""
+    group = reader.cell_group(cell)
+    if group == "measured":
+        if cell["credit"] is None:
+            return "none (counts as 0)"
+        return _parity_credit(cell["credit"]) + (" (inputs not equalized)" if cell["credit_basis"] == "unequalized" else "")
+    if group == "no-golden":
+        return "none: no parity, outside the mean and the floor"
+    if group == "not-compared":
+        return "none: not compared, outside the mean and the floor"
+    if not reader.in_a_floor(cell):
+        return "none: outside every floor (inputs cannot be equalized)"
+    return "none: 0 in the floor"
+
+
 def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], summary: Mapping[str, Any]) -> str:
+    reader = _parity_reader()
     total = run["total"]
     generated = summary["generated_from"]
     as_of = (
@@ -1978,37 +2037,53 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
         + f'(<code>{_escape(carriage["path"])}</code>, sha256 {_short_sha(carriage["sha256"])}); '
         f'summary written by Hermit tool commit {_short_sha(generated["tool_hermit_commit"])}.</p>'
     )
-    if total["credited"]:
-        mean_basis = (
-            f'Mean credit {_parity_credit(total["mean_credit"])} is the credit sum '
-            f'{total["credit_sum"]:.4f} over the {_integer(total["credited"])} credited (measured) cell(s)'
-        )
+    if total["mean_credit"] is None:
+        mean_basis = "Mean credit is n/a: no selected cell was measured"
     else:
-        mean_basis = "Mean credit is n/a: no selected cell was credited"
-    floor_basis = (
-        f'floor credit {_parity_credit(total["floor_credit"])} is the same sum over all '
-        f'{_integer(total["selected"])} selected cell(s)'
-        if total["selected"] else "floor credit is n/a: no cell was selected"
+        uncredited = total["measured"] - total["credited"]
+        mean_basis = (
+            f'Mean credit {_parity_credit(total["mean_credit"])} is the credit sum {total["credit_sum"]:.4f} over the '
+            f'{_integer(total["measured"])} measured cell(s)'
+            + (f", {_integer(uncredited)} of them without a credit and counted as 0" if uncredited else "")
+        )
+    excluded = total["selected"] - total["no_golden"] - total["not_compared"] - total["floor_cells"]
+    floor_denominator = (
+        f'the {_integer(total["selected"])} selected cell(s) less {_integer(total["no_golden"])} with no parity '
+        f'(no deterministic golden) and {_integer(total["not_compared"])} not compared'
+        + (
+            f", and less {_integer(excluded)} record-missing or refused cell(s) whose inputs cannot be equalized"
+            if excluded else ""
+        )
     )
-    uncredited = total["selected"] - total["credited"]
+    if total["floor_credit"] is None:
+        floor_basis = f"floor credit is n/a: no cell is in the floor, which is {floor_denominator}"
+    else:
+        floor_basis = (
+            f'floor credit {_parity_credit(total["floor_credit"])} is the same sum over the '
+            f'{_integer(total["floor_cells"])} floor cell(s): {floor_denominator}'
+        )
     basis = (
-        f"<p>{mean_basis}; {floor_basis}. The {_integer(uncredited)} selected cell(s) without a credit "
-        "(unavailable, record-missing or refused) are left out of the mean and are never averaged as 0 or 1.</p>"
+        f"<p>{mean_basis}; {floor_basis}. Unmeasured, record-missing and refused cells count as 0 in the floor. "
+        "A cell with no parity (no deterministic golden) is outside the mean and the floor: it is never 0 credit "
+        f"and never a failure. {_parity_unequalizable(reader)}</p>"
     )
     headings = "".join(
         _column_heading(title, help_text)
         for title, help_text in (
-            ("Candidate backend", "The backend whose log is compared with the ptrace reference log."),
-            ("Selected", "Cells the parity selection named for this run: measured + unavailable + record-missing + refused."),
-            ("Measured", "Cells whose two logs were compared: matched + diverged."),
+            ("Candidate backend", "The backend whose log is compared with the ptrace reference log, unless its inputs cannot be equalized."),
+            ("Selected", "Cells the parity selection named for this run: measured + no parity + not compared + unmeasured + record-missing + refused."),
+            ("Measured", "Cells whose two logs were compared: matched + diverged. The mean credit's denominator."),
             ("Matched", "Cells whose candidate log matched the reference log completely (credit 1)."),
             ("Diverged", "Cells whose logs differ; credit is the matched prefix over the longer log, below 1."),
-            ("Not compared (unavailable)", "Cells that could not be compared; the reasons are in the table below."),
-            ("Record-missing", "Selected cells for which the run wrote no parity record."),
-            ("Refused", "Records the scorecard could attribute to this run but not admit."),
-            ("Mean credit (measured)", "Credit sum over the credited (measured) cells; n/a when none."),
-            ("Credited", "The mean credit's denominator."),
-            ("Floor credit (selected)", "Credit sum over every selected cell."),
+            ("No parity (no deterministic golden)", "Cells whose reference or candidate left no deterministic golden log, so there is nothing to compare; outside the mean and the floor, never 0 credit. The classes are in the table below."),
+            ("Not compared", "Cells of a backend whose inputs cannot be equalized with the reference's; outside the mean and the floor."),
+            ("Unmeasured", "Cells that could have been compared but were not; each counts as 0 in the floor. The classes are in the table below."),
+            ("Record-missing", "Selected cells for which the run wrote no parity record; 0 in the floor."),
+            ("Refused", "Records the scorecard could attribute to this run but not admit; 0 in the floor."),
+            ("Mean credit (over measured)", "Credit sum over the measured cells; n/a when none was measured."),
+            ("Floor credit (over floor cells)", "Credit sum over the floor cells; n/a when there are none."),
+            ("Floor cells", "The floor credit's denominator: the selected cells less the no-parity and not-compared ones, and less every cell of a backend whose inputs cannot be equalized."),
+            ("Coverage", "The scorecard's line: each credit with the cells it is over."),
         )
     )
     rows = []
@@ -2018,32 +2093,42 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
             f'<tr><th scope="row">{label}</th>'
             f'<td>{_integer(tally["selected"])}</td><td>{_integer(tally["measured"])}</td>'
             f'<td>{_integer(tally["matched"])}</td><td>{_integer(tally["diverged"])}</td>'
-            f'<td>{_integer(tally["unavailable"])}</td><td>{_integer(tally["record_missing"])}</td>'
+            f'<td>{_integer(tally["no_golden"])}</td><td>{_integer(tally["not_compared"])}</td>'
+            f'<td>{_integer(tally["unmeasured"])}</td><td>{_integer(tally["record_missing"])}</td>'
             f'<td>{_integer(tally["refused"])}</td><td>{_parity_credit(tally["mean_credit"])}</td>'
-            f'<td>{_integer(tally["credited"])}</td><td>{_parity_credit(tally["floor_credit"])}</td></tr>'
+            f'<td>{_parity_credit(tally["floor_credit"])}</td><td>{_integer(tally["floor_cells"])}</td>'
+            f'<td><code>{_escape(tally["line"])}</code></td></tr>'
         )
     table = (
         '<div class="table-scroll"><table class="parity-summary">'
         f'<caption>Parity of {_escape(run["producer"])} run {_escape(run["run_id"])}</caption>'
         f'<thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     )
-    reasons = [name for name in total["unavailable_by_class"] if total["unavailable_by_class"][name]]
     backends = _parity_backends(run)
-    if reasons:
-        reason_rows = "".join(
-            f'<tr><th scope="row"><code>{_escape(name)}</code></th>'
-            + "".join(f'<td>{_integer(run["per_backend"][b]["unavailable_by_class"][name])}</td>' for b in backends)
-            + f'<td>{_integer(total["unavailable_by_class"][name])}</td></tr>'
-            for name in reasons
+    no_golden_table = (
+        _parity_class_table(
+            run, "no_golden_by_class", reader.NO_GOLDEN_CLASSES,
+            f'No parity (no deterministic golden): {_integer(total["no_golden"])} cell(s) by class, outside the mean '
+            "and the floor",
+            "parity-no-golden",
         )
-        reason_table = (
-            '<div class="table-scroll"><table class="parity-unavailable"><caption>Cells not compared (unavailable), by reason</caption>'
-            '<thead><tr><th scope="col">Reason</th>'
-            + "".join(f'<th scope="col"><code>{_escape(b)}</code></th>' for b in backends)
-            + f'<th scope="col">TOTAL</th></tr></thead><tbody>{reason_rows}</tbody></table></div>'
+        if total["no_golden"] else "<p>No parity (no deterministic golden): 0 cells.</p>"
+    )
+    not_compared = [(b, run["per_backend"][b]["not_compared"]) for b in backends if run["per_backend"][b]["not_compared"]]
+    not_compared_text = (
+        "<p>Not compared (inputs cannot be equalized), outside the mean and the floor: "
+        + "; ".join(f"<code>{_escape(b)}</code> {_integer(count)}" for b, count in not_compared)
+        + f'; TOTAL {_integer(total["not_compared"])}.</p>'
+        if total["not_compared"] else "<p>Not compared: 0 cells.</p>"
+    )
+    unmeasured_table = (
+        _parity_class_table(
+            run, "unmeasured_by_class", reader.UNMEASURED_CLASSES,
+            f'Unmeasured: {_integer(total["unmeasured"])} cell(s) by class, each 0 in the floor',
+            "parity-unmeasured",
         )
-    else:
-        reason_table = "<p>No selected cell was unavailable.</p>"
+        if total["unmeasured"] else "<p>Unmeasured: 0 cells.</p>"
+    )
     divergence_rows = []
     for backend in backends:
         group = run["per_backend"][backend]["first_divergence"]
@@ -2071,35 +2156,40 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
         )
     else:
         divergence_table = "<p>No measured cell diverged.</p>"
-    unmatched = [cell for cell in run["cells"] if cell["verdict"] != "matched"]
+    others = [cell for cell in run["cells"] if cell["verdict"] != "matched"]
     cell_rows = "".join(
         f'<tr><th scope="row"><code>{_escape(cell["cell"])}</code></th>'
-        f'<td>{_escape(cell["verdict"])}{"" if cell["unavailable_class"] in (None, cell["verdict"]) else " (" + _escape(cell["unavailable_class"]) + ")"}</td>'
-        f'<td>{_parity_credit(cell["credit"])}{"" if cell["credit_basis"] != "unequalized" else " (inputs not equalized)"}</td>'
+        f'<td>{_escape(PARITY_GROUP_LABELS.get(reader.cell_group(cell), cell["verdict"]))}</td>'
+        f'<td>{_escape(cell["verdict"])}</td>'
+        f'<td>{_parity_optional(cell["unavailable_class"])}</td>'
+        f'<td>{_parity_optional(cell["operand"])}</td>'
+        f'<td>{_parity_cell_credit(reader, cell)}</td>'
         f'<td>{_parity_optional(cell["first_divergent_record"])}</td>'
         f'<td>{_parity_optional(cell["first_difference_syscall"])}</td>'
         f'<td>{_parity_message(cell["first_difference_field"])}</td>'
         f'<td>{_parity_message(cell["reference_message"])}</td>'
         f'<td>{_parity_message(cell["candidate_message"])}</td>'
         f'<td>{_parity_message(cell["reason"])}</td></tr>'
-        for cell in unmatched
+        for cell in others
     )
-    diverged = sum(cell["verdict"] == "diverged" for cell in unmatched)
     cell_table = (
-        f"<details><summary>First divergence of each of the {_integer(diverged)} diverged cell(s), and every other "
-        f"unmatched cell ({_integer(len(unmatched))} in all)</summary>"
-        '<div class="table-scroll"><table class="parity-cells"><caption>Unmatched parity cells</caption>'
-        '<thead><tr><th scope="col">Cell</th><th scope="col">Verdict</th><th scope="col">Credit</th>'
+        f"<details><summary>Every cell that is not a full match ({_integer(len(others))} in all): "
+        f'{_integer(total["diverged"])} diverged, {_integer(total["no_golden"])} no parity (no deterministic golden), '
+        f'{_integer(total["not_compared"])} not compared, {_integer(total["unmeasured"])} unmeasured, '
+        f'{_integer(total["record_missing"])} record-missing, {_integer(total["refused"])} refused</summary>'
+        '<div class="table-scroll"><table class="parity-cells"><caption>Parity cells that are not a full match</caption>'
+        '<thead><tr><th scope="col">Cell</th><th scope="col">Group</th><th scope="col">Verdict</th>'
+        '<th scope="col">Class</th><th scope="col">Operand</th><th scope="col">Credit</th>'
         '<th scope="col">Record</th><th scope="col">Syscall</th><th scope="col">Differing field</th>'
         '<th scope="col">Reference (left) message</th><th scope="col">Candidate (right) message</th>'
         f'<th scope="col">Reason</th></tr></thead><tbody>{cell_rows}</tbody></table></div></details>'
-        if unmatched else "<p>Every selected cell matched.</p>"
+        if others else "<p>Every selected cell matched.</p>"
     )
     return (
         f'<h3>{_escape(run["producer"])} run <code>{_escape(run["run_id"])}</code></h3>'
         + as_of
         + f'<p class="parity-line"><code>{_escape(run["line"])}</code></p>'
-        + basis + table + reason_table + divergence_table + cell_table
+        + basis + table + no_golden_table + not_compared_text + unmeasured_table + divergence_table + cell_table
     )
 
 
@@ -2138,13 +2228,17 @@ def _parity_legacy_section(summary: Mapping[str, Any]) -> str:
 
 def _parity_panel(model: Any) -> str:
     carriage, summary = _parity_view(model)
+    reader = _parity_reader()
+    compared = [backend for backend in PARITY_BACKEND_ORDER if backend not in reader.INPUTS_NOT_EQUALIZABLE_BACKENDS]
     intro = (
         f'<section id="parity"><h2>{PARITY_PANEL_TITLE}</h2>'
-        "<p>After the determinism checks, each candidate backend's retained verify log is compared with the "
-        "ptrace reference log. A cell's credit is the matched prefix of the two logs over the longer one, in "
-        "[0, 1]; only a complete match earns 1. This panel shows the ledger's committed parity summary after "
-        "checking it against the parity records it summarizes; it is separate from determinism and recomputes "
-        "no credit.</p>"
+        "<p>After the determinism checks, the retained verify log of each candidate backend whose inputs can be "
+        f"equalized with the ptrace reference's ({', '.join(f'<code>{_escape(b)}</code>' for b in compared)}) is "
+        "compared with the ptrace reference log. A cell's credit is the matched prefix of the two logs over the "
+        "longer one, in [0, 1]; only a complete match earns 1. A cell whose reference or candidate left no "
+        "deterministic golden log has no parity: it is outside the mean and the floor, never 0 credit. "
+        f"{_parity_unequalizable(reader)} This panel shows the ledger's committed parity summary after checking it "
+        "against the parity records it summarizes; it is separate from determinism and recomputes no credit.</p>"
     )
     if summary is None:
         body = _parity_refused_text(carriage) if carriage is not None and carriage["state"] == "refused" \

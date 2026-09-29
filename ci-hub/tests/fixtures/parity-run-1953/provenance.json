@@ -6,6 +6,16 @@
     "privileged/parity.status.json": "ignored/validate/artifacts/<validate_unit>/e2e/privileged/manifest_backend_parity_c/parity.status.json"
   },
   "copied_on": "devbig014, 2026-09-28, paths relative to the dev-hermit parent checkout",
+  "derived_files": {
+    "ledger-sources-typed.jsonl": {
+      "bytes": 370957,
+      "derived_from": "ledger-sources.jsonl",
+      "lines": 192,
+      "rule": "Each source and its record gain unavailable_class and operand, inserted right after verdict; nothing else changes. matched and diverged: null and null. A dbt inputs-not-equalized row whose reason is hermit's dbt declaration (parity_ledger.INPUTS_NOT_EQUALIZABLE['dbt']): inputs-not-equalized and candidate. A candidate-missing row whose reason is 'the <backend> candidate verify cell of <test_id> has no result row in this run': no-result-row and candidate. Any other row has no rule and the derivation fails. Lines are json.dumps(value, separators=(',', ':'), ensure_ascii=False) plus a newline, which re-encodes every line of ledger-sources.jsonl byte for byte.",
+      "sha256": "624dbb7059d1e29ab4d6b5f04924c0e42b9f202626488b95d6b29dc568bbc163",
+      "why": "RUN 1953 predates the typed unavailable_class and operand fields of parity-ledger/v1 (https://github.com/rrnewton/hermit/issues/3301), so its verbatim export has neither and the ledger refuses it. The run has only two unmeasured shapes, 14 dbt inputs-not-equalized rows and 3 candidate rows with no result row, and the typed contract of that issue fixes the class of each: an inputs-not-equalized verdict has class inputs-not-equalized, and a missing result row has class no-result-row with the side that lacks it as operand. The rows' verdicts, reasons, records and credits are the run's own. Replace this file with a verbatim typed export once hermit's typed producer is on main."
+    }
+  },
   "description": "RUN 1953: the first validate whose manifest_backend_parity_c post-pass wrote parity.jsonl and parity.status.json on both lanes (192 parity cells). The four post-pass files are verbatim copies, never edited. ledger-sources.jsonl is the verbatim stdout of hermit's `test-harness parity export` over those four files.",
   "files": {
     "ledger-sources.jsonl": {

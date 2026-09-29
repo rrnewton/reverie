@@ -39,8 +39,18 @@ turned into 0 or 1. A refused append is recorded as a refusal, never as a run
 that did not happen.
 
 Which backends cannot have their inputs equalized is hermit's declaration
-(`ParityBackend::inputs_not_equalizable`), carried in each run's rows; this
-module holds a run to the declaration its own rows make and hardcodes none.
+(`ParityBackend::inputs_not_equalizable`): only dbt today.
+`INPUTS_NOT_EQUALIZABLE` mirrors it, with hermit's reason, so a row of any
+other backend that claims unequalizable inputs is refused, and so is a dbt
+row that claims a measured comparison or an unmeasured class. A run is also
+held to the one declaration its own rows make.
+
+Every record that is not `matched` or `diverged` names why in two typed
+fields: `unavailable_class`, from the closed set `UNAVAILABLE_CLASSES`, and
+`operand`, the side it concerns (`reference`, `candidate` or null). They are
+required on every record and row, null exactly on a measured one, and must
+fit the verdict and each other (`check_class`). Nothing here reads the
+reason text to decide a class: `reason` is prose for a person.
 """
 
 from __future__ import annotations
@@ -70,9 +80,12 @@ RUN_ROOT = "parity-runs"
 PRODUCERS = ("validate", "pressure-test")
 BACKENDS = ("dbt", "kvm", "liteinst", "sabre")
 REFERENCE_BACKEND = "ptrace"
-#: Most to least adverse, hermit's `LedgerVerdict` order.
+#: Most to least adverse, hermit's `LedgerVerdict` order. `nondeterministic`
+#: is a real verify mismatch in an operand's history: that operand has no
+#: deterministic golden log, so nothing is compared.
 LEDGER_VERDICTS = (
     "record-missing",
+    "nondeterministic",
     "unavailable",
     "reference-missing",
     "candidate-missing",
@@ -84,17 +97,73 @@ RECORD_VERDICTS = LEDGER_VERDICTS[1:]
 MEASURED_VERDICTS = frozenset({"matched", "diverged"})
 POST_PASS_STATES = ("complete", "failed", "running", "absent")
 SCOPE_SOURCES = ("status-scope", "status-count", "expected-scope")
-#: hermit's `UnavailableClass`, in the order the scorecard prints them.
-UNAVAILABLE_CLASSES = (
-    "determinism-fail",
+#: hermit's `UnavailableClass`, in three groups, each in the order the
+#: scorecard prints it. NO GOLDEN: an operand's own outcome left no
+#: deterministic golden log; outside the mean and the floor.
+NO_GOLDEN_CLASSES = (
+    "determinism-mismatch",
+    "timeout",
+    "crash",
+    "oom",
+    "infrastructure-error",
+    "sandbox-denied",
+    "failed-untyped",
+    "ended",
     "host-inapplicable",
-    "operand-ended",
-    "log-not-retained",
-    "inputs-not-equalized",
-    "reference-missing",
-    "candidate-missing",
-    "other",
 )
+#: NOT COMPARED: the backend's inputs cannot be equalized with the
+#: reference's; outside the mean and the floor.
+NOT_COMPARED_CLASSES = ("inputs-not-equalized",)
+#: UNMEASURED: a golden log could exist but no comparison was made, a harness
+#: or parity-tool defect; in the floor as 0.
+UNMEASURED_CLASSES = (
+    "log-not-retained",
+    "log-unreadable",
+    "no-result-row",
+    "log-diff-failed",
+    "invalid-test-id",
+    "golden-not-written",
+    "epoch-not-shared",
+)
+#: The synthesized row of a selected cell with no record; in the floor as 0.
+RECORD_MISSING_CLASS = "record-missing"
+UNAVAILABLE_CLASSES = NO_GOLDEN_CLASSES + NOT_COMPARED_CLASSES + UNMEASURED_CLASSES + (RECORD_MISSING_CLASS,)
+OPERANDS = ("reference", "candidate")
+#: The backends hermit declares `inputs_not_equalizable`, with its reason
+#: (hermit's `DBT_INPUTS_NOT_EQUALIZABLE`). Such a backend is never compared,
+#: so it enters no mean or floor.
+INPUTS_NOT_EQUALIZABLE = {
+    "dbt": (
+        "the dbt backend refuses --bind and --mount (hermit-cli/src/bin/hermit/run.rs: "
+        '"its DynamoRIO adapter does not enter the guest mount namespace"), so its guest '
+        "cannot be given the ptrace cell's input paths"
+    ),
+}
+#: The verdicts a class may go with. Any other class is an operand's failure
+#: or an unmeasured comparison.
+_CLASS_VERDICTS = {
+    "determinism-mismatch": ("nondeterministic",),
+    "inputs-not-equalized": ("inputs-not-equalized",),
+    RECORD_MISSING_CLASS: ("record-missing",),
+    "log-unreadable": ("reference-missing", "candidate-missing"),
+    "no-result-row": ("reference-missing", "candidate-missing"),
+}
+_OTHER_CLASS_VERDICTS = ("unavailable", "reference-missing", "candidate-missing")
+#: The operands a class may name; None is null.
+_CLASS_OPERANDS: dict[str, tuple[str | None, ...]] = {
+    **{name: OPERANDS for name in NO_GOLDEN_CLASSES},
+    "inputs-not-equalized": ("candidate",),
+    "log-not-retained": OPERANDS,
+    "log-unreadable": OPERANDS,
+    "no-result-row": OPERANDS,
+    "log-diff-failed": (None,),
+    "invalid-test-id": (None,),
+    "golden-not-written": ("reference",),
+    "epoch-not-shared": (*OPERANDS, None),
+    RECORD_MISSING_CLASS: (None,),
+}
+#: A verdict that names a side names the operand.
+_VERDICT_OPERAND = {"reference-missing": "reference", "candidate-missing": "candidate"}
 #: The largest f64 below 1.0: a divergence can never round up to a match.
 BELOW_ONE = 1.0 - sys.float_info.epsilon / 2
 _U64_MAX = (1 << 64) - 1
@@ -118,6 +187,8 @@ RECORD_FIELDS = (
     "test_id",
     "backend",
     "verdict",
+    "unavailable_class",
+    "operand",
     "inputs_equalized",
     "reason",
     "credit",
@@ -146,6 +217,8 @@ SOURCE_FIELDS = (
     "test_id",
     "backend",
     "verdict",
+    "unavailable_class",
+    "operand",
     "reason",
     "run_id",
     "hermit_sha",
@@ -167,6 +240,8 @@ ROW_FIELDS = (
     "test_id",
     "backend",
     "verdict",
+    "unavailable_class",
+    "operand",
     "reason",
     "source",
     "record",
@@ -489,52 +564,72 @@ def credit(matched_prefix: int, left_len: int, right_len: int) -> float | None:
     return min(max(matched / longer, 0.0), BELOW_ONE)
 
 
-def unavailable_class(verdict: str, reason: str | None) -> str | None:
-    """hermit's `unavailable_class`: why a cell that is neither measured nor
-    record-missing was not measured."""
-    if verdict in MEASURED_VERDICTS or verdict == "record-missing":
-        return None
-    if verdict == "inputs-not-equalized":
-        return "inputs-not-equalized"
-    by_verdict = {
-        "reference-missing": "reference-missing",
-        "candidate-missing": "candidate-missing",
-        "unavailable": "other",
-    }[verdict]
-    parsed = _operand_reason(reason) if reason is not None else None
-    if parsed is None:
-        return by_verdict
-    role, rest = parsed
-    if rest.startswith("failed determinism:"):
-        return "determinism-fail"
-    if rest.startswith("was host-inapplicable, so it left no log"):
-        return "host-inapplicable"
-    if rest.startswith("ended "):
-        return "operand-ended"
-    if rest.startswith("retained "):
-        return "log-not-retained"
-    if rest == "has no result row in this run":
-        return "reference-missing" if role == "reference" else "candidate-missing"
-    return by_verdict
+def _shown(value: str | None) -> str:
+    return "null" if value is None else value
 
 
-def _operand_reason(reason: str) -> tuple[str, str] | None:
-    """Split `the <role> verify cell of <test> <rest>` into the role's last
-    word (`candidate` or `reference`) and `rest`.
+def check_class(
+    at: str, backend: str, verdict: str, unavailable_class: Any, operand: Any
+) -> None:
+    """The typed reason a record, row or summary cell gives for its verdict.
 
-    The post-pass names a role in two words, `<backend> candidate` and
-    `ptrace reference` (hermit ci/manifest-plan/src/parity.rs), so the role is
-    everything before ` verify cell of `, not one word.
+    `unavailable_class` is null exactly on a measured (matched or diverged)
+    verdict. Otherwise it is one class of the closed set, it fits the verdict
+    (`determinism-mismatch` goes with exactly `nondeterministic`, and so on),
+    and `operand` is the side the class concerns (`_CLASS_OPERANDS`), which a
+    `reference-missing` or `candidate-missing` verdict also names. A backend
+    hermit declares inputs-not-equalizable is never compared: it has no
+    measured verdict and no unmeasured class, and no other backend has an
+    `inputs-not-equalized` verdict. The reason text is never read.
     """
-    if not reason.startswith("the "):
-        return None
-    role, found, rest = reason[len("the "):].partition(" verify cell of ")
-    if not found:
-        return None
-    _test, space, rest = rest.partition(" ")
-    if not space:
-        return None
-    return role.rsplit(" ", 1)[-1], rest
+    if unavailable_class is not None:
+        _choice(unavailable_class, UNAVAILABLE_CLASSES, f"{at}: unavailable_class")
+    if operand is not None:
+        _choice(operand, OPERANDS, f"{at}: operand")
+    why = INPUTS_NOT_EQUALIZABLE.get(backend)
+    if verdict == "inputs-not-equalized" and why is None:
+        raise ParityLedgerError(
+            f"{at}: {backend} inputs can be equalized; a comparison with unequal inputs is "
+            "measured and reports unequalized_credit"
+        )
+    if verdict in MEASURED_VERDICTS:
+        if why is not None:
+            raise ParityLedgerError(
+                f"{at}: {backend} inputs cannot be equalized, so it reports no measured "
+                f"comparison and never equal inputs: {why}"
+            )
+        if unavailable_class is not None:
+            raise ParityLedgerError(
+                f"{at}: a {verdict} verdict is measured and carries no unavailable_class, "
+                f"got {unavailable_class}"
+            )
+        if operand is not None:
+            raise ParityLedgerError(
+                f"{at}: a {verdict} verdict is measured and names no operand, got {operand}"
+            )
+        return
+    if unavailable_class is None:
+        raise ParityLedgerError(f"{at}: verdict {verdict} needs an unavailable_class")
+    verdicts = _CLASS_VERDICTS.get(unavailable_class, _OTHER_CLASS_VERDICTS)
+    if verdict not in verdicts:
+        raise ParityLedgerError(
+            f"{at}: unavailable_class {unavailable_class} cannot go with verdict {verdict}; "
+            f"it needs {' or '.join(verdicts)}"
+        )
+    if why is not None and unavailable_class in UNMEASURED_CLASSES:
+        raise ParityLedgerError(
+            f"{at}: {backend} inputs cannot be equalized, so no comparison is attempted and "
+            f"it carries no unmeasured class, got {unavailable_class}"
+        )
+    operands = _CLASS_OPERANDS[unavailable_class]
+    if operand not in operands:
+        raise ParityLedgerError(
+            f"{at}: unavailable_class {unavailable_class} needs operand "
+            f"{' or '.join(_shown(side) for side in operands)}, got {_shown(operand)}"
+        )
+    side = _VERDICT_OPERAND.get(verdict)
+    if side is not None and operand != side:
+        raise ParityLedgerError(f"{at}: verdict {verdict} names the {side} operand, got {_shown(operand)}")
 
 
 def measured_credit(record: Mapping[str, Any]) -> float | None:
@@ -556,6 +651,8 @@ def validate_record(record: Any) -> None:
     at = f"parity record {test_id}@{backend}"
     schema = _count(value["schema"], f"{at}: schema")
     verdict = _choice(value["verdict"], RECORD_VERDICTS, f"{at}: verdict")
+    unavailable_class = _optional_string(value["unavailable_class"], f"{at}: unavailable_class")
+    operand = _optional_string(value["operand"], f"{at}: operand")
     inputs_equalized = _boolean(value["inputs_equalized"], f"{at}: inputs_equalized")
     reason = _optional_string(value["reason"], f"{at}: reason")
     clean = _optional_float(value["credit"], f"{at}: credit")
@@ -599,16 +696,18 @@ def validate_record(record: Any) -> None:
         raise ParityLedgerError(f"{at}: unequalized_credit is set but the inputs were equalized")
     measured = verdict in MEASURED_VERDICTS
     # Which backends cannot have their inputs equalized is hermit's
-    # declaration (`ParityBackend::inputs_not_equalizable`), not this store's:
-    # the post-pass writes `inputs-not-equalized`, with the declaration as its
-    # reason, for exactly those backends. A record alone says only that it is
-    # such a row; `check_declared_measurability` holds a batch to the
-    # declaration its own rows make.
-    if verdict == "inputs-not-equalized" and inputs_equalized:
+    # declaration (`ParityBackend::inputs_not_equalizable`), mirrored in
+    # `INPUTS_NOT_EQUALIZABLE`: such a backend is never compared, so none of
+    # its records claims equal inputs. `check_class` refuses a measured
+    # verdict of such a backend and an `inputs-not-equalized` verdict of any
+    # other.
+    why = INPUTS_NOT_EQUALIZABLE.get(backend)
+    if why is not None and inputs_equalized:
         raise ParityLedgerError(
-            f"{at}: inputs-not-equalized says the inputs could not be equalized, but "
-            "inputs_equalized is true"
+            f"{at}: {backend} inputs cannot be equalized, so it reports no measured "
+            f"comparison and never equal inputs: {why}"
         )
+    check_class(at, backend, verdict, unavailable_class, operand)
     amount = clean if clean is not None else unequalized
     if measured:
         if reason is not None:
@@ -670,6 +769,8 @@ def _check_ledger_fields(
     test_id: str,
     backend: str,
     verdict: str,
+    unavailable_class: str | None,
+    operand: str | None,
     reason: str | None,
     run_id: str | None,
     hermit_sha: str | None,
@@ -683,6 +784,7 @@ def _check_ledger_fields(
         raise ParityLedgerError(f"{at}: source lane and node must be non-empty")
     if verdict not in MEASURED_VERDICTS and (reason is None or not reason.strip()):
         raise ParityLedgerError(f"{at}: verdict {verdict} needs a reason")
+    check_class(at, backend, verdict, unavailable_class, operand)
     if origin["post_pass_state"] == "absent" and verdict != "record-missing":
         raise ParityLedgerError(
             f"{at}: a node that left no status can only owe record-missing rows, got {verdict}"
@@ -703,6 +805,15 @@ def _check_ledger_fields(
         )
     if record["test_id"] != test_id or record["backend"] != backend:
         raise ParityLedgerError(f"{at}: record names {record['test_id']}@{record['backend']}")
+    if record["unavailable_class"] != unavailable_class:
+        raise ParityLedgerError(
+            f"{at}: row unavailable_class {_shown(unavailable_class)} disagrees with the "
+            f"record's {_shown(record['unavailable_class'])}"
+        )
+    if record["operand"] != operand:
+        raise ParityLedgerError(
+            f"{at}: row operand {_shown(operand)} disagrees with the record's {_shown(record['operand'])}"
+        )
     if record["reason"] != reason:
         raise ParityLedgerError(f"{at}: row reason disagrees with the record's")
     if run_id is not None and run_id != record["run_id"]:
@@ -725,12 +836,15 @@ def validate_source(source: Any) -> Mapping[str, Any]:
     test_id = _string(value["test_id"], f"{at}: test_id")
     backend = _backend(value["backend"], at)
     verdict = _choice(value["verdict"], LEDGER_VERDICTS, f"{at}: verdict")
+    unavailable_class = _optional_string(value["unavailable_class"], f"{at}: unavailable_class")
+    operand = _optional_string(value["operand"], f"{at}: operand")
     reason = _optional_string(value["reason"], f"{at}: reason")
     run_id = _optional_string(value["run_id"], f"{at}: run_id")
     hermit_sha = _optional_string(value["hermit_sha"], f"{at}: hermit_sha")
     origin = validate_origin(value["source"], at)
     _check_ledger_fields(
-        at, cell, test_id, backend, verdict, reason, run_id, hermit_sha, origin, value["record"]
+        at, cell, test_id, backend, verdict, unavailable_class, operand, reason, run_id, hermit_sha,
+        origin, value["record"],
     )
     return value
 
@@ -782,6 +896,8 @@ def validate_row(row: Any) -> Mapping[str, Any]:
     test_id = _string(value["test_id"], f"{at}: test_id")
     backend = _backend(value["backend"], at)
     verdict = _choice(value["verdict"], LEDGER_VERDICTS, f"{at}: verdict")
+    unavailable_class = _optional_string(value["unavailable_class"], f"{at}: unavailable_class")
+    operand = _optional_string(value["operand"], f"{at}: operand")
     reason = _optional_string(value["reason"], f"{at}: reason")
     origin = validate_origin(value["source"], at)
     stated = _string(value["event_id"], f"{at}: event_id")
@@ -791,7 +907,8 @@ def validate_row(row: Any) -> Mapping[str, Any]:
             f"{at}: event_id {stated} is not sha256(producer, run_id, cell, lane, node) = {expected}"
         )
     _check_ledger_fields(
-        at, cell, test_id, backend, verdict, reason, run_id, hermit_sha, origin, value["record"]
+        at, cell, test_id, backend, verdict, unavailable_class, operand, reason, run_id, hermit_sha,
+        origin, value["record"],
     )
     return value
 
@@ -951,17 +1068,17 @@ def validate_event(event: Any) -> Mapping[str, Any]:
 
 
 def check_declared_measurability(rows: Sequence[Mapping[str, Any]], label: str) -> dict[str, str]:
-    """Hold one run's rows to the measurability hermit declared for them.
+    """Hold one run's rows to one declaration per backend.
 
     hermit declares, per backend, whether the ptrace reference's inputs can be
     given to that backend's guest (`ParityBackend::inputs_not_equalizable`),
     and its post-pass writes an `inputs-not-equalized` record, with the
-    declaration as its reason, for every cell of a backend declared not
-    equalizable. The declaration is read from the run's own rows, so a
-    backend hermit later makes measurable is admitted without changing this
-    store. Within one run a declared backend reports one declaration, no
-    measured comparison and no equal inputs, exactly as hermit's
-    `ParityRecord::validate` requires. Returns backend -> declaration.
+    declaration as its reason, for such a backend's cells. `check_class`
+    already refuses that verdict for any backend outside
+    `INPUTS_NOT_EQUALIZABLE`, and `validate_record` refuses a measured or
+    equal-input record of a backend inside it; what is left for a run is that
+    its hermit makes one declaration per backend. Returns backend ->
+    declaration.
     """
     declared: dict[str, str] = {}
     for index, row in enumerate(rows, 2):
@@ -974,17 +1091,6 @@ def check_declared_measurability(rows: Sequence[Mapping[str, Any]], label: str) 
                 f"{label}: event {index} ({row['cell']}) declares {backend} inputs not "
                 f"equalizable for {why!r}, but an earlier row of the run declares {known!r}; "
                 "a run's hermit makes one declaration per backend"
-            )
-    for index, row in enumerate(rows, 2):
-        why = declared.get(row["backend"])
-        record = row["record"]
-        if why is None or record is None:
-            continue
-        if row["verdict"] in MEASURED_VERDICTS or record["inputs_equalized"]:
-            raise ParityLedgerError(
-                f"{label}: event {index} ({row['cell']}): {row['backend']} inputs cannot be "
-                "equalized, so it reports no measured comparison and never equal inputs: "
-                f"{why}"
             )
     return declared
 
@@ -1119,6 +1225,8 @@ def build_batch(
             "test_id": value["test_id"],
             "backend": value["backend"],
             "verdict": value["verdict"],
+            "unavailable_class": value["unavailable_class"],
+            "operand": value["operand"],
             "reason": value["reason"],
             "source": {field: origin[field] for field in ORIGIN_FIELDS},
             "record": _canonical_record(value["record"]),

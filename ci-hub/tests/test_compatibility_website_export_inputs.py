@@ -2080,7 +2080,7 @@ def _parity_run_1953_shards() -> dict[str, bytes]:
     """RUN 1953's 192 sources, wrapped as `append-parity` wraps them and laid
     out in the ledger's `parity/` and `parity-runs/` shards."""
     ledger_store = export_inputs._parity_reader().parity_ledger_module()
-    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    text = (PARITY_FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
     sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
     batch = ledger_store.build_batch(
         sources, producer="validate",
@@ -2124,8 +2124,8 @@ def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
 
 
 RUN_1953_LINE = (
-    "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
-    "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
 
 

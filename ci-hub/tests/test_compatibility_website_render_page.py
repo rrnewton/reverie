@@ -6377,8 +6377,8 @@ def test_writer_derived_recorded_population_keeps_failed_run_and_retry_verdicts(
 PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
 PARITY_LEDGER_COMMIT = "e" * 40
 PARITY_RUN_1953_LINE = (
-    "parity: 0/192 matched; measured 175; unavailable 17; record-missing 0; "
-    "mean credit (measured) 0.052; floor credit (selected) 0.047 [inputs not equalized]"
+    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
 
 
@@ -6387,7 +6387,7 @@ def _parity_carriage() -> dict[str, Any]:
     the summary of that store, and the digest recomputed from the shard."""
     reader = render_page._parity_reader()
     ledger_store = reader.parity_ledger_module()
-    text = (PARITY_FIXTURE / "ledger-sources.jsonl").read_text(encoding="utf-8")
+    text = (PARITY_FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
     sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
     batch = ledger_store.build_batch(
         sources, producer="validate",
@@ -6434,7 +6434,10 @@ def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
     board = overview[overview.index('id="backends"'):overview.index('id="parity"')]
     assert "Parity w/partial" not in overview
     assert 'aria-label="Explain Parity' not in board and PARITY_RUN_1953_LINE not in board
-    assert overview.count(PARITY_RUN_1953_LINE) == 1
+    # The line is the panel's headline and its TOTAL row's coverage, and
+    # appears nowhere else.
+    panel = overview[overview.index('id="parity"'):overview.index('id="backend-history"')]
+    assert overview.count(PARITY_RUN_1953_LINE) == panel.count(PARITY_RUN_1953_LINE) == 2
     assert "Parity summary refused" not in overview
     # The panel follows the leaderboard and precedes the history chart.
     assert overview.index('id="backends"') < overview.index('id="parity"') < overview.index('id="backend-history"')
