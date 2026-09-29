@@ -24,6 +24,7 @@ mod read_zero_guest_tests {
     const RETURNED_READ: u32 = 99;
     const HIGH_FD: u64 = 0x5a5a_5a5a_0000_0000;
     const ADDRESS: u64 = 0x100;
+    const READ_RESULT_SENTINEL: [u8; 8] = *b"READSTOP";
     const WAIT: Duration = Duration::from_secs(30);
 
     #[derive(Default)]
@@ -64,6 +65,26 @@ mod read_zero_guest_tests {
             guest.send_rpc((request.number(), *request.args())).await;
             if matches!(syscall, Syscall::Exit(_) | Syscall::ExitGroup(_)) {
                 guest.tail_inject(syscall).await
+            }
+            if request.number() == libc::SYS_read as u64 {
+                assert!(
+                    request
+                        == SyscallRequest::new(
+                            libc::SYS_read as u64,
+                            [HIGH_FD | 3, ADDRESS, 0, 0, 0, 0],
+                        )
+                        || request
+                            == SyscallRequest::new(
+                                libc::SYS_read as u64,
+                                [HIGH_FD, ADDRESS, 0, 0, 0, 0],
+                            ),
+                    "unexpected read in the selected guest: {request:?}"
+                );
+                let returned = guest.inject(syscall).await;
+                // This must be synchronous and precede `?` or any other await:
+                // terminal admission could suppress a later observation, and
+                // both Ok and Err returns violate this read's cancellation.
+                panic!("selected terminal zero-read injection returned: {returned:?}");
             }
             Ok(guest.inject(syscall).await?)
         }
@@ -191,6 +212,8 @@ mod read_zero_guest_tests {
         let exits = backend.exit_collector.as_ref().unwrap().clone();
         let group = backend.thread_group.clone();
         let registry = group.terminal_reads.clone();
+        let frame_memory = backend.memory.clone();
+        let frame_address = backend.syscall_frame_address;
         let (finished, completion) = mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
             let result = if tool {
@@ -216,6 +239,28 @@ mod read_zero_guest_tests {
             completion.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
+        assert_eq!(
+            SyscallRequest::read_from(&frame_memory, frame_address).unwrap(),
+            request,
+            "the stopped transport frame must belong to the observed read"
+        );
+        let result_address =
+            frame_address + (crate::syscall::RESULT_WORD * std::mem::size_of::<u64>()) as u64;
+        let result_word = frame_memory
+            .user()
+            .retain_translated_range(result_address, READ_RESULT_SENTINEL.len())
+            .unwrap();
+        // The exact reader is blocked, the vCPU is stopped at this transport,
+        // and this controller has not requested cancellation yet. Retain the
+        // actual result word before writing it; retaining an operand preserves
+        // its mapping without holding a copy token or preventing teardown.
+        frame_memory
+            .write_raw(result_address, &READ_RESULT_SENTINEL)
+            .unwrap();
+        let mut stored = [0; READ_RESULT_SENTINEL.len()];
+        frame_memory.read_raw(result_address, &mut stored).unwrap();
+        assert_eq!(stored, READ_RESULT_SENTINEL);
+        drop(frame_memory);
         // This is deliberately after the exact kernel read witness, not after
         // a delay or merely after registration/handle publication.
         group.request_exit_group(ExitStatus::Exited(STOP));
@@ -257,8 +302,19 @@ mod read_zero_guest_tests {
         } else {
             assert!(forwarded.is_empty());
         }
-        println!("ZERO_READ_GUEST_RETIRED tool={tool} rebound={rebound} status={status}");
         drop(backend);
+        // SAFETY: the runner has joined, the reader's exact thread generation
+        // is gone, and backend teardown has completed. No guest or host writer
+        // remains. The retained operand owns the exact mapping and prevents
+        // its replacement, so this check does not depend on post-terminal
+        // admission or on a pointer into the now-dropped backend.
+        assert_eq!(
+            unsafe { result_word.read_volatile::<[u8; 8]>() },
+            READ_RESULT_SENTINEL,
+            "terminal cancellation stored a fabricated syscall result"
+        );
+        drop(result_word);
+        println!("ZERO_READ_GUEST_RETIRED tool={tool} rebound={rebound} status={status}");
     }
 
     #[test]
