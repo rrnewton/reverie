@@ -2020,7 +2020,11 @@ impl TimerImpl {
         // target stays in `event` until the next request), or cancelled by
         // a stop that recorded any overshoot itself, or being stepped to its
         // target, which the steps have not passed. A Cancelled one was
-        // decided too.
+        // decided too. As in `observe_event` and `settle_at_exit`, a held
+        // initial-command request has no physical notification to be late,
+        // so it is never recorded. That clause is defensive: no test retires
+        // an event before the first post-exec callback, and removing it
+        // fails none.
         if self.timer_status == EventStatus::Scheduled
             && self.initial_command == InitialCommand::Ordinary
             && let ActiveEvent::Precise {
@@ -3813,6 +3817,26 @@ mod tests {
         assert!(!observe(&mut timer, PERIOD / 2));
         timer.expire_overflow_records(&[notification]);
         assert!(!queued(&timer));
+        timer.observed = None;
+
+        // An earlier programming overflowed, and its record survives the
+        // reprogramming unconsumed, with its notification still pending.
+        // The current programming has not overflowed, so its own
+        // notification is not queued: neither at the stop, nor once the
+        // pending signals, which hold the earlier one, are read.
+        assert!(observe(&mut timer, PERIOD * 3));
+        timer.observed = None;
+        assert!(!observe(&mut timer, PERIOD / 2));
+        assert!(timer.overflow_recorded, "the earlier record is unconsumed");
+        assert!(!timer.programming_overflowed);
+        let earlier = take_timer_signal().expect("the earlier programming overflowed");
+        timer.expire_overflow_records(&[earlier]);
+        assert!(
+            timer.overflow_recorded,
+            "the earlier notification is pending"
+        );
+        assert!(!queued(&timer));
+        timer.expire_overflow_records(&[]);
         timer.observed = None;
 
         // Without records an overflow cannot be told from a lost one.
