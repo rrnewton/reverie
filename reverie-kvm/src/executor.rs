@@ -6937,14 +6937,26 @@ fn prepare_host_read(memory: &GuestMemory, address: u64, length: usize) -> Resul
     Ok(vec![0; writable])
 }
 
+// Keep the established four-level guest address policy even when the host
+// admits a wider user address range. Let the kernel reject an invalid operand
+// at access_ok, after its descriptor/mode checks, rather than returning EFAULT
+// before those checks. The original guest request remains unchanged.
+fn zero_read_host_address(address: u64) -> usize {
+    if address > X86_64_GUEST_USER_LIMIT {
+        usize::MAX
+    } else {
+        address as usize
+    }
+}
+
 // A zero-length scalar read still invokes the endpoint and validates the
 // numeric user address. Only actual host endpoints may use this helper.
 fn host_read_zero(fd: RawFd, address: u64) -> i64 {
     // SAFETY: this relies on the endpoint honoring count zero without copying
-    // through the buffer. Keep the original numeric address for Linux's
-    // access_ok check; do not create a slice, probe guest memory, or substitute
-    // an empty allocation's pointer.
-    let result = unsafe { libc::read(fd, address as usize as *mut libc::c_void, 0) };
+    // through the buffer. Apply the guest numeric-address policy without
+    // creating a slice, probing guest memory, or using an empty allocation's
+    // pointer. The all-ones substitute is outside every host user address range.
+    let result = unsafe { libc::read(fd, zero_read_host_address(address) as *mut libc::c_void, 0) };
     if result < 0 {
         io_error(std::io::Error::last_os_error())
     } else {
@@ -7177,11 +7189,16 @@ fn read(
         };
         if requested_length == 0 {
             if let Some((context, identity)) = terminal_read {
-                // Preserve the owned C reader's cancellation and join protocol,
-                // but let the endpoint validate the original numeric address.
-                // A zero count forms no reference to guest memory.
-                let returned =
-                    context.read(&mut state.stdin, identity, *request, args[1] as usize, 0)?;
+                // Preserve the owned C reader's cancellation and join protocol.
+                // Adapt only its host operand; retain the original request and
+                // let the kernel enforce descriptor-before-address ordering.
+                let returned = context.read(
+                    &mut state.stdin,
+                    identity,
+                    *request,
+                    zero_read_host_address(args[1]),
+                    0,
+                )?;
                 return Ok(if returned.count < 0 {
                     io_error(std::io::Error::from_raw_os_error(returned.errno))
                 } else {
@@ -7214,7 +7231,7 @@ fn read(
                 &mut endpoint.endpoint,
                 identity,
                 *request,
-                args[1] as usize,
+                zero_read_host_address(args[1]),
                 0,
             )?;
             return Ok(if returned.count < 0 {
@@ -38796,6 +38813,174 @@ mod tests {
             },
             tid: reverie::Pid::from_raw(11),
             task_generation: 14,
+        }
+    }
+
+    #[test]
+    fn read_zero_count_numeric_address_policy_preserves_endpoint_ordering() {
+        // These are literal expectations for the existing four-level guest
+        // model. A host may admit the higher addresses, so its raw result is
+        // deliberately not the oracle for these guest calls. Even the valid
+        // ceiling is outside this fixture's GuestMemory and remains unmapped.
+        const ADDRESSES: [(u64, bool); 5] = [
+            (0x0000_7fff_ffff_f000, true),
+            (0x0000_7fff_ffff_f001, false),
+            (0x0000_8000_0000_0000, false),
+            (0x0080_0000_0000_0000, false),
+            (u64::MAX, false),
+        ];
+        for inherited in [false, true] {
+            for with_context in [false, true] {
+                for kind in [
+                    "file",
+                    "eventfd",
+                    "write-only",
+                    "opath",
+                    "directory",
+                    "missing",
+                ] {
+                    let file = match kind {
+                        "file" => {
+                            // SAFETY: successful memfd_create returns one owned fd.
+                            let raw = unsafe {
+                                libc::memfd_create(c"read-zero-limit".as_ptr(), libc::MFD_CLOEXEC)
+                            };
+                            assert!(raw >= 0);
+                            let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
+                            file.write_all(b"ABCDEFGH").unwrap();
+                            assert_eq!(unsafe { libc::lseek(raw, 3, libc::SEEK_SET) }, 3);
+                            Some(file)
+                        }
+                        "eventfd" => {
+                            // SAFETY: successful eventfd returns one owned fd.
+                            let raw =
+                                unsafe { libc::eventfd(9, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+                            assert!(raw >= 0);
+                            Some(unsafe { std::fs::File::from_raw_fd(raw) })
+                        }
+                        "write-only" => Some(
+                            std::fs::OpenOptions::new()
+                                .write(true)
+                                .open("/dev/null")
+                                .unwrap(),
+                        ),
+                        "opath" => {
+                            // SAFETY: the literal path is terminated; a successful
+                            // open returns a new fd owned by this fixture.
+                            let raw = unsafe {
+                                libc::open(c"/dev/null".as_ptr(), libc::O_PATH | libc::O_CLOEXEC)
+                            };
+                            assert!(raw >= 0);
+                            Some(unsafe { std::fs::File::from_raw_fd(raw) })
+                        }
+                        "directory" => Some(std::fs::File::open(".").unwrap()),
+                        "missing" => None,
+                        _ => unreachable!(),
+                    };
+                    let raw = file.as_ref().map(AsRawFd::as_raw_fd);
+                    let mut state = test_state(&std::env::current_dir().unwrap());
+                    let fd = if inherited {
+                        state.stdin = file;
+                        0
+                    } else {
+                        if let Some(file) = file {
+                            state.files.insert(3, file);
+                        }
+                        3
+                    };
+                    let entry_ids = state.fd_entry_ids.clone();
+                    let mut memory = read_zero_memory();
+                    let registry =
+                        std::sync::Arc::new(crate::terminal_read::ReadRegistry::default());
+                    for high_word in [0, READ_ZERO_HIGH_FD] {
+                        for (address, valid) in ADDRESSES {
+                            // Descriptor errors precede access_ok. Eventfd and
+                            // directory errors come from the later endpoint call.
+                            let expected = match kind {
+                                "write-only" | "opath" | "missing" => negative_errno(libc::EBADF),
+                                _ if !valid => negative_errno(libc::EFAULT),
+                                "file" => 0,
+                                "eventfd" => negative_errno(libc::EINVAL),
+                                "directory" => negative_errno(libc::EISDIR),
+                                _ => unreachable!(),
+                            };
+                            let mut context = read_zero_terminal_context(&memory, registry.clone());
+                            let request = SyscallRequest::new(
+                                libc::SYS_read as u64,
+                                [high_word | fd, address, 0, 0, 0, 0],
+                            );
+                            let action = execute_basic_syscall_with_read_context(
+                                &mut memory,
+                                &mut state,
+                                &request,
+                                None,
+                                None,
+                                with_context.then_some((&mut context, read_zero_task())),
+                            );
+                            match action {
+                                SyscallAction::Continue {
+                                    result,
+                                    segment: None,
+                                } => assert_eq!(
+                                    result,
+                                    expected,
+                                    "kind={kind} inherited={inherited} context={with_context} fd={:#x} address={address:#x}",
+                                    high_word | fd,
+                                ),
+                                SyscallAction::Continue { .. } => {
+                                    panic!("zero read changed segment")
+                                }
+                                SyscallAction::Exit(status) => {
+                                    panic!("zero read exited: {status:?}")
+                                }
+                                SyscallAction::Failure(error) => {
+                                    panic!("zero read failed: {error}")
+                                }
+                            }
+                            let retained = if inherited {
+                                state.stdin.as_ref()
+                            } else {
+                                state.files.get(&3)
+                            };
+                            assert_eq!(retained.map(AsRawFd::as_raw_fd), raw);
+                            assert_eq!(state.fd_entry_ids, entry_ids);
+                            assert_read_zero_canaries(&memory);
+                            registry.teardown_result().unwrap();
+                            registry.rearm_after_exec();
+                        }
+                    }
+                    if kind == "file" {
+                        let raw = raw.unwrap();
+                        assert_eq!(unsafe { libc::lseek(raw, 0, libc::SEEK_CUR) }, 3);
+                        let mut bytes = [0_u8; 8];
+                        // SAFETY: bytes is writable for the requested eight bytes.
+                        assert_eq!(
+                            unsafe { libc::pread(raw, bytes.as_mut_ptr().cast(), 8, 0) },
+                            8
+                        );
+                        assert_eq!(&bytes, b"ABCDEFGH");
+                        assert_eq!(unsafe { libc::lseek(raw, 0, libc::SEEK_CUR) }, 3);
+                    } else if kind == "eventfd" {
+                        let raw = raw.unwrap();
+                        let mut value = 0_u64;
+                        // SAFETY: value is writable for the requested eight bytes.
+                        assert_eq!(
+                            unsafe { libc::read(raw, (&mut value as *mut u64).cast(), 8) },
+                            8
+                        );
+                        assert_eq!(value, 9);
+                        assert_eq!(
+                            unsafe { libc::read(raw, (&mut value as *mut u64).cast(), 8) },
+                            -1
+                        );
+                        assert_eq!(
+                            std::io::Error::last_os_error().raw_os_error(),
+                            Some(libc::EAGAIN)
+                        );
+                    }
+                    assert_read_zero_canaries(&memory);
+                }
+            }
         }
     }
 
