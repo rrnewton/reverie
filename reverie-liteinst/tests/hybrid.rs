@@ -2223,3 +2223,497 @@ async fn timer_overflow_in_the_patch_helper_is_the_timers() {
         "no helper run had the timer's signal: {output:?}"
     );
 }
+
+// Host-hybrid syscall restart (hybrid_restart.c). The fixture routes every
+// syscall under test through one asm site, so after the subscribed warm-up
+// read patches it, each call reaches the tracer through the runtime's int3
+// trap, where the controller's `orig_rax` is -1 and Linux never restarts the
+// syscall by itself. The same Tool runs under plain ptrace for comparison.
+const RESTART_WARM_FD: u64 = 0x7e56;
+const RESTART_MAGIC_FD: u64 = 0x7e57;
+const RESTART_QUERY_FD: u64 = 0x7e58;
+const RESTART_RESULT: i64 = 4243;
+
+/// `RestartTool` configuration, packed into the `u64` Tool config.
+#[derive(Clone, Copy, Default)]
+struct RestartPlan {
+    /// Linux restart code returned for the first `restarts` magic reads.
+    errno: i32,
+    /// How many magic invocations return `errno` before `RESTART_RESULT`.
+    restarts: u8,
+    /// A signal the Tool sends the thread on the first magic invocation.
+    signal: i32,
+    /// Also subscribe `restart_syscall`.
+    subscribe_restart_syscall: bool,
+}
+
+impl RestartPlan {
+    fn encode(self) -> u64 {
+        (self.errno as u64 & 0xffff)
+            | ((self.signal as u64 & 0xff) << 16)
+            | ((self.restarts as u64) << 24)
+            | ((self.subscribe_restart_syscall as u64) << 32)
+    }
+
+    fn decode(config: u64) -> Self {
+        Self {
+            errno: (config & 0xffff) as i32,
+            signal: ((config >> 16) & 0xff) as i32,
+            restarts: ((config >> 24) & 0xff) as u8,
+            subscribe_restart_syscall: (config >> 32) & 1 != 0,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RestartLog {
+    events: std::sync::Mutex<Vec<String>>,
+    magic_calls: AtomicU64,
+    signals: AtomicU64,
+}
+
+impl RestartLog {
+    fn events(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RestartLog {
+    type Request = String;
+    type Response = u64;
+    type Config = u64;
+
+    /// Records one Tool-visible event. A magic call returns its 0-based
+    /// index; `query` returns the number of signals seen, without recording.
+    async fn receive_rpc(&self, _from: Tid, event: String) -> u64 {
+        if event == "query" {
+            return self.signals.load(Ordering::SeqCst);
+        }
+        let index = if event.starts_with("magic ") {
+            self.magic_calls.fetch_add(1, Ordering::SeqCst)
+        } else {
+            0
+        };
+        if event.starts_with("signal ") {
+            self.signals.fetch_add(1, Ordering::SeqCst);
+        }
+        self.events.lock().unwrap().push(event);
+        index
+    }
+}
+
+#[derive(Default)]
+struct RestartTool;
+
+#[reverie::tool]
+impl Tool for RestartTool {
+    type GlobalState = RestartLog;
+    type ThreadState = ();
+
+    fn subscriptions(config: &u64) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::read);
+        if RestartPlan::decode(*config).subscribe_restart_syscall {
+            subscription.syscall(Sysno::restart_syscall);
+        }
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (nr, args) = syscall.into_parts();
+        let plan = RestartPlan::decode(*guest.config());
+        if nr == Sysno::read && args.arg0 as u64 == RESTART_WARM_FD {
+            guest.send_rpc("read(warm)".to_owned()).await;
+            return Ok(0);
+        }
+        if nr == Sysno::read && args.arg0 as u64 == RESTART_QUERY_FD {
+            return Ok(guest.send_rpc("query".to_owned()).await as i64);
+        }
+        if args.arg0 as u64 == RESTART_MAGIC_FD
+            && (nr == Sysno::read || nr == Sysno::restart_syscall)
+        {
+            let index = guest
+                .send_rpc(format!("magic {nr}({:#x},{})", args.arg0, args.arg2))
+                .await;
+            if index == 0 && plan.signal != 0 {
+                // SAFETY: tgkill has no memory effects.
+                let sent = unsafe {
+                    libc::syscall(
+                        libc::SYS_tgkill,
+                        guest.pid().as_raw(),
+                        guest.tid().as_raw(),
+                        plan.signal,
+                    )
+                };
+                assert_eq!(sent, 0, "tgkill failed");
+            }
+            if index < plan.restarts as u64 {
+                return Err(reverie::Errno::new(plan.errno).into());
+            }
+            return Ok(RESTART_RESULT);
+        }
+        if nr == Sysno::restart_syscall {
+            guest.send_rpc("restart_syscall".to_owned()).await;
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: reverie::Signal,
+    ) -> Result<Option<reverie::Signal>, reverie::Errno> {
+        guest.send_rpc(format!("signal {}", signal.as_str())).await;
+        Ok(Some(signal))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestartBackend {
+    HostHybrid,
+    Ptrace,
+}
+
+async fn run_restart_fixture(
+    backend: RestartBackend,
+    mode: &str,
+    plan: RestartPlan,
+) -> Result<(String, Vec<String>), Error> {
+    let (_directory, guest) = compile_fixture("hybrid_restart.c");
+    let mut command = Command::new(guest);
+    command.arg(mode);
+    let (output, log) = match backend {
+        RestartBackend::HostHybrid => {
+            LiteinstBackend::run_host_with_output_and_preload::<RestartTool>(
+                command,
+                plan.encode(),
+                preload_path(),
+            )
+            .await?
+        }
+        RestartBackend::Ptrace => {
+            command
+                .stdout(reverie::process::Stdio::piped())
+                .stderr(reverie::process::Stdio::piped());
+            reverie_ptrace::TracerBuilder::<RestartTool>::new(command)
+                .config(plan.encode())
+                .spawn()
+                .await?
+                .wait_with_output()
+                .await?
+        }
+    };
+    assert!(
+        output.status.success(),
+        "{backend:?} {mode} guest failed: {output:?}"
+    );
+    Ok((String::from_utf8(output.stdout).unwrap(), log.events()))
+}
+
+fn restart_counts(backend: RestartBackend, hooks: u64) -> String {
+    match backend {
+        RestartBackend::HostHybrid => format!("traps=1 hooks={hooks}"),
+        RestartBackend::Ptrace => "traps=- hooks=-".to_owned(),
+    }
+}
+
+const RESTART_BACKENDS: [RestartBackend; 2] = [RestartBackend::HostHybrid, RestartBackend::Ptrace];
+
+/// A Tool-returned restart code re-traps and re-invokes the Tool instead of
+/// reaching the guest as a raw `-ERESTART*`, as the kernel restarts the
+/// syscall under plain ptrace. The re-trap re-executes only the runtime int3,
+/// so the site's hook count stays at the single hook entry.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_tool_restart_codes_re_invoke_the_syscall() {
+    for errno in [
+        reverie::Errno::ERESTARTSYS,
+        reverie::Errno::ERESTARTNOINTR,
+        reverie::Errno::ERESTARTNOHAND,
+    ] {
+        let plan = RestartPlan {
+            errno: errno.into_raw(),
+            restarts: 2,
+            ..Default::default()
+        };
+        for backend in RESTART_BACKENDS {
+            let (stdout, events) = run_restart_fixture(backend, "read", plan).await.unwrap();
+            assert_eq!(
+                stdout,
+                format!(
+                    "read-result={RESTART_RESULT} {}\n",
+                    restart_counts(backend, 1)
+                ),
+                "{backend:?} {errno}"
+            );
+            assert_eq!(
+                events,
+                [
+                    "read(warm)",
+                    "magic read(0x7e57,1)",
+                    "magic read(0x7e57,1)",
+                    "magic read(0x7e57,1)"
+                ],
+                "{backend:?} {errno}"
+            );
+        }
+    }
+}
+
+/// `-ERESTART_RESTARTBLOCK` re-dispatches as `restart_syscall` with the
+/// original argument registers, as Linux does.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restartblock_re_invokes_restart_syscall() {
+    let plan = RestartPlan {
+        errno: reverie::Errno::ERESTART_RESTARTBLOCK.into_raw(),
+        restarts: 2,
+        subscribe_restart_syscall: true,
+        ..Default::default()
+    };
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "read", plan).await.unwrap();
+        assert_eq!(
+            stdout,
+            format!(
+                "read-result={RESTART_RESULT} {}\n",
+                restart_counts(backend, 1)
+            ),
+            "{backend:?}"
+        );
+        assert_eq!(
+            events,
+            [
+                "read(warm)",
+                "magic read(0x7e57,1)",
+                "magic restart_syscall(0x7e57,1)",
+                "magic restart_syscall(0x7e57,1)"
+            ],
+            "{backend:?}"
+        );
+    }
+}
+
+/// A signal pending when the Tool returns `-ERESTARTSYS` is delivered, and
+/// seen by the Tool, before the syscall is re-invoked: the restart resumes the
+/// guest rather than re-dispatching inside the tracer.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_delivers_the_signal_before_re_invoking() {
+    let plan = RestartPlan {
+        errno: reverie::Errno::ERESTARTSYS.into_raw(),
+        restarts: 1,
+        signal: libc::SIGURG,
+        ..Default::default()
+    };
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "read", plan).await.unwrap();
+        assert_eq!(
+            stdout,
+            format!(
+                "read-result={RESTART_RESULT} {}\n",
+                restart_counts(backend, 1)
+            ),
+            "{backend:?}"
+        );
+        assert_eq!(
+            events,
+            [
+                "read(warm)",
+                "magic read(0x7e57,1)",
+                "signal SIGURG",
+                "magic read(0x7e57,1)"
+            ],
+            "{backend:?}"
+        );
+    }
+}
+
+/// A restart is refused when a deliverable signal has a guest handler: Linux
+/// then restarts only for an `SA_RESTART` handler, which the tracer cannot
+/// see. Plain ptrace shows what is at stake: this handler lacks `SA_RESTART`,
+/// so the guest must observe `EINTR`, not a restarted read.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_refuses_a_guest_handled_signal() {
+    let plan = RestartPlan {
+        errno: reverie::Errno::ERESTARTSYS.into_raw(),
+        restarts: 1,
+        signal: libc::SIGUSR1,
+        ..Default::default()
+    };
+    let (stdout, events) = run_restart_fixture(RestartBackend::Ptrace, "handler", plan)
+        .await
+        .unwrap();
+    assert_eq!(stdout, "read-result=-4 traps=- hooks=-\n");
+    assert_eq!(
+        events,
+        ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1"]
+    );
+
+    let error = run_restart_fixture(RestartBackend::HostHybrid, "handler", plan)
+        .await
+        .expect_err("a restart with a guest-handled signal pending must fail closed");
+    let error = error.to_string();
+    assert!(
+        error.contains("restart LiteInst host-hybrid syscall")
+            && error.contains("guest-handled signals (mask 0x200)"),
+        "restart was not refused by the handler guard: {error}"
+    );
+}
+
+/// A real kernel interruption of an unsubscribed syscall: the timer's SIGURG
+/// interrupts a 400 ms nanosleep, which returns `-ERESTART_RESTARTBLOCK`
+/// inside the private-page step. The guest must still see 0 after the full
+/// sleep, and the Tool must see the signal as under plain ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_interrupted_unsubscribed_sleep_restarts() {
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "sleep", RestartPlan::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            stdout,
+            format!(
+                "sleep-result=0 slept-enough=1 {}\n",
+                restart_counts(backend, 1)
+            ),
+            "{backend:?}"
+        );
+        assert_eq!(events, ["read(warm)", "signal SIGURG"], "{backend:?}");
+    }
+}
+
+/// A blocking pipe readv the Tool does not subscribe, interrupted by a real
+/// signal: the kernel's ERESTARTSYS restarts the readv, which returns the byte
+/// written later, never -512 or EINTR.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_interrupted_unsubscribed_readv_restarts() {
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "readv", RestartPlan::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            stdout,
+            format!("readv-result=1 byte=x {}\n", restart_counts(backend, 1)),
+            "{backend:?}"
+        );
+        assert_eq!(events, ["read(warm)", "signal SIGURG"], "{backend:?}");
+    }
+}
+
+/// The interrupted nanosleep continues through `restart_syscall`, which a
+/// subscribing Tool sees after the signal, exactly as under plain ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_interrupted_sleep_continues_through_restart_syscall() {
+    let plan = RestartPlan {
+        subscribe_restart_syscall: true,
+        ..Default::default()
+    };
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "sleep", plan).await.unwrap();
+        assert_eq!(
+            stdout,
+            format!(
+                "sleep-result=0 slept-enough=1 {}\n",
+                restart_counts(backend, 1)
+            ),
+            "{backend:?}"
+        );
+        assert_eq!(
+            events,
+            ["read(warm)", "signal SIGURG", "restart_syscall"],
+            "{backend:?}"
+        );
+    }
+}
+
+/// A syscall that completes with a signal pending is not re-executed: the
+/// thread's self-sent SIGURG reaches the Tool exactly once.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_completed_syscall_with_pending_signal_runs_once() {
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "tgkill", RestartPlan::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            stdout,
+            format!("tgkill-result=0 {}\n", restart_counts(backend, 1)),
+            "{backend:?}"
+        );
+        assert_eq!(events, ["read(warm)", "signal SIGURG"], "{backend:?}");
+    }
+}
+
+/// Signals race the site's unsubscribed getppid and nanosleep calls, landing
+/// before the private-page step, during a sleep, or at completion. A second
+/// thread sends each SIGURG only after the Tool saw the previous one, so
+/// every result must be correct and the Tool must see all 300 exactly once.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_signals_racing_unsubscribed_syscalls_are_seen_once() {
+    for backend in RESTART_BACKENDS {
+        let (stdout, events) = run_restart_fixture(backend, "stress", RestartPlan::default())
+            .await
+            .unwrap();
+        let prefix = "stress-bad=0 ran=1 tool-signals=300 ";
+        assert!(stdout.starts_with(prefix), "{backend:?}: {stdout}");
+        if backend == RestartBackend::Ptrace {
+            assert!(stdout.ends_with(" traps=- hooks=-\n"), "{stdout}");
+        }
+        assert_eq!(events[0], "read(warm)", "{backend:?}");
+        assert_eq!(events.len(), 301, "{backend:?}: {events:?}");
+        assert!(
+            events[1..].iter().all(|event| event == "signal SIGURG"),
+            "{backend:?}: {events:?}"
+        );
+    }
+}
+
+/// A kernel-generated synchronous signal during the private-page step (here
+/// the guest's own `SECCOMP_RET_TRAP` SIGSYS) is dequeued ahead of the
+/// step's single-step report, which stays queued. Resuming would surface that
+/// report at the restored controller registers as a fake syscall trap and
+/// re-execute the syscall, so the session fails closed. Plain ptrace delivers
+/// the SIGSYS, which kills this handler-less guest.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_synchronous_signal_in_private_step_fails_closed() {
+    let (_directory, guest) = compile_fixture("hybrid_restart.c");
+    let mut command = Command::new(&guest);
+    command
+        .arg("seccomp")
+        .stdout(reverie::process::Stdio::piped())
+        .stderr(reverie::process::Stdio::piped());
+    let (output, log) = reverie_ptrace::TracerBuilder::<RestartTool>::new(command)
+        .config(0)
+        .spawn()
+        .await
+        .unwrap()
+        .wait_with_output()
+        .await
+        .unwrap();
+    // Whether a core is dumped is host policy; only the signal is asserted.
+    assert!(
+        matches!(
+            output.status,
+            ExitStatus::Signaled(reverie::Signal::SIGSYS, _)
+        ),
+        "{output:?}"
+    );
+    assert_eq!(log.events(), ["read(warm)", "signal SIGSYS"]);
+
+    let error = run_restart_fixture(
+        RestartBackend::HostHybrid,
+        "seccomp",
+        RestartPlan::default(),
+    )
+    .await
+    .expect_err("a synchronous signal in the private-page step must fail closed");
+    let error = error.to_string();
+    assert!(
+        error.contains("restart LiteInst host-hybrid syscall")
+            && error.contains("stopped with SIGSYS")
+            && error.contains("single-step report may still be queued"),
+        "private-page step did not fail closed: {error}"
+    );
+}
