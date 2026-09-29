@@ -1270,8 +1270,12 @@ impl Event {
         }
     }
 
-    fn finish_sync_terminal(&self) {
+    // Keep the synchronous owner's FINISHING -> registry removal -> DONE
+    // contract together. Its existing wait-owner claim excludes worker start;
+    // caller-owned typed states may retain the identity afterward.
+    fn finish_sync_terminal(self: &Arc<Self>, pid: Pid) {
         if self.try_begin_unstarted_completion() {
+            NOTIFIER.remove(pid, self);
             self.mark_worker_done();
         } else {
             debug_assert_eq!(self.worker_state.load(Ordering::Acquire), WORKER_DONE);
@@ -1930,13 +1934,16 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             break;
         }
     }
-    event.mark_worker_done();
     // The worker owns terminal registry cleanup. A WaitFuture may be dropped
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
     #[cfg(test)]
     pause_retirement_for_test(&event.worker_identity_retirement_pause);
+    // DONE acknowledges release of notifier-owned identity references, not
+    // merely receipt of terminal status. Event itself owns no descriptors.
+    drop(identity);
+    event.mark_worker_done();
 }
 
 fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
@@ -2058,9 +2065,10 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             Err(error) => {
                                 if error == Errno::ECHILD {
                                     event.mark_echild();
-                                    event.finish_sync_terminal();
+                                    event.finish_sync_terminal(pid);
+                                } else {
+                                    NOTIFIER.remove(pid, &event);
                                 }
-                                NOTIFIER.remove(pid, &event);
                                 return Err(error.into());
                             }
                         }
@@ -2072,8 +2080,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         pause.resume.wait();
                     }
                     if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-                        event.finish_sync_terminal();
-                        NOTIFIER.remove(pid, &event);
+                        event.finish_sync_terminal(pid);
                         if cancelling {
                             drop(owner);
                             return Wait::from_raw_with_token(
@@ -2399,7 +2406,6 @@ impl Notifier {
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
             event.mark_echild();
-            event.mark_worker_done();
             #[cfg(test)]
             pause_retirement_for_test(&event.registry_retirement_pause);
             if pids
@@ -2408,6 +2414,7 @@ impl Notifier {
             {
                 pids.remove(&pid);
             }
+            event.mark_worker_done();
         }
         handle
     }
@@ -3026,8 +3033,10 @@ fn parse_bound_stat_flags(bytes: &[u8], pid: Pid) -> Result<u32, ProcStatError> 
         .ok_or(ProcStatError::Format("flags overflow u32"))
 }
 
-/// A synchronous acknowledgment that a PID's notifier worker has observed a
-/// terminal state and removed its registry entry.
+/// A synchronous acknowledgment that a PID's wait owner has observed a
+/// terminal state, removed its exact registry entry, and released the notifier
+/// worker's identity reference. Caller-owned typed states and cleanup handles
+/// may intentionally retain the same identity after this acknowledgment.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public generation-bound
 // terminal-cleanup acknowledgment contract.
@@ -3116,8 +3125,8 @@ impl TerminalCleanup {
     fn finish_unstarted_raw_cleanup(&self) {
         let event = self.event.event();
         event.mark_echild();
-        event.mark_worker_done();
         NOTIFIER.remove(self.pid, event);
+        event.mark_worker_done();
     }
 
     /// Returns true when both handles carry the same immutable Event generation.
@@ -3125,8 +3134,11 @@ impl TerminalCleanup {
         Arc::ptr_eq(self.event.event(), other.event.event())
     }
 
-    /// Waits up to `timeout` for the notifier worker to unregister this PID.
+    /// Waits up to `timeout` for notifier-owned retirement of this generation.
     ///
+    /// Acknowledgment follows removal of this generation's registry entry and
+    /// release of the worker's identity reference. It does not release caller
+    /// handles or wait for the OS worker thread itself to finish returning.
     /// This does not call `waitpid`: after notifier registration, the worker
     /// thread remains the sole owner of wait statuses for the PID.
     pub fn wait(&self, timeout: Duration) -> bool {
