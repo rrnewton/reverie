@@ -338,6 +338,7 @@ fn captured_rights_restore_stream_after_sender_close_and_fd_reuse() {
 fn captured_rights_peek_fork_thread_exec_share_description_and_status() {
     let root = TestDir::new();
     let mut e = ElfExecutor::new(test_state(&root.0), true);
+    let mut captured = e.output.as_ref().expect("capture root").clone();
     let mut m = GuestMemory::new(0, 0x4000).unwrap();
     let pair = capture_rights_pair(&mut e, &mut m);
     write_c_string(&mut m, 0xc00, "/proc/self/fd/1");
@@ -459,7 +460,13 @@ fn captured_rights_peek_fork_thread_exec_share_description_and_status() {
         ),
         5
     );
-    assert_eq!(receiver.take_output(), (b"after".to_vec(), Vec::new()));
+    assert!(Arc::ptr_eq(
+        &captured.inner,
+        &receiver.state.capture_descriptions[&fd].sink,
+    ));
+    assert!(!receiver.owns_output);
+    assert_eq!(receiver.take_output(), (Vec::new(), Vec::new()));
+    assert_eq!(captured.take(), (b"after".to_vec(), Vec::new()));
     assert_eq!(
         capture_rights_call(
             &mut receiver,
