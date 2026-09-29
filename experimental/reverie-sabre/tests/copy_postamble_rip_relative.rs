@@ -12,9 +12,13 @@ use std::process::Command;
 fn copy_postamble_relocates_rip_relative_group1_instructions() {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let sabre = source.join("vendor/sabre");
-    let out = std::env::temp_dir().join(format!("reverie-copy-postamble-{}", std::process::id()));
-    std::fs::create_dir(&out).unwrap();
-    let binary = out.join("copy-postamble");
+    // A uniquely named directory, removed on drop even when an assertion
+    // below fails.
+    let out = tempfile::Builder::new()
+        .prefix("reverie-copy-postamble-")
+        .tempdir()
+        .unwrap();
+    let binary = out.path().join("copy-postamble");
     let output = cc::Build::new()
         .cargo_metadata(false)
         .opt_level(2)
@@ -73,6 +77,5 @@ fn copy_postamble_relocates_rip_relative_group1_instructions() {
             "case={case}: {output:?}"
         );
     }
-    std::fs::remove_file(&binary).unwrap();
-    std::fs::remove_dir(&out).unwrap();
+    out.close().unwrap();
 }
