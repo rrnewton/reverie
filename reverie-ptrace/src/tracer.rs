@@ -5164,6 +5164,9 @@ mod tests {
     #[error("ordinary nonleader failure control")]
     struct NonleaderFailure;
 
+    /// `FatalTool` config for the timer-decoded fork control.
+    const FATAL_TIMER_FORK_MODE: u8 = 4;
+
     #[derive(Default)]
     struct FatalTool {
         starts: std::sync::atomic::AtomicUsize,
@@ -5211,9 +5214,18 @@ mod tests {
             guest: &mut G,
             syscall: Syscall,
         ) -> Result<i64, Error> {
+            if *guest.config() == FATAL_TIMER_FORK_MODE && guest.tid() == guest.pid() {
+                // A one-branch precise target lies inside the skid margin, so
+                // the timer signals at once and single-steps toward the next
+                // conditional branch. The guest has none before its raw fork,
+                // so a timer step decodes the fork's NewChild stop.
+                let value = guest.inject(syscall).await?;
+                guest.set_timer_precise(reverie::TimerSchedule::Rcbs(1))?;
+                return Ok(value);
+            }
             assert_ne!(guest.tid(), guest.pid(), "failure must be a live nonleader");
             assert!(std::path::Path::new(&format!("/proc/{}", guest.tid())).exists());
-            if *guest.config() == 3 {
+            if matches!(*guest.config(), 3 | FATAL_TIMER_FORK_MODE) {
                 let pause = crate::task::FATAL_FORK_PAUSE
                     .with(|slot| slot.borrow().clone())
                     .unwrap();
@@ -5222,7 +5234,12 @@ mod tests {
                     .store(1, Ordering::SeqCst);
                 loop {
                     let ready = pause.ready.notified();
-                    if pause.child.lock().unwrap().is_some() {
+                    let reached = if pause.timer {
+                        pause.timer_receive_blocked.load(Ordering::SeqCst)
+                    } else {
+                        pause.child.lock().unwrap().is_some()
+                    };
+                    if reached {
                         break;
                     }
                     ready.await;
@@ -6854,15 +6871,55 @@ mod tests {
         );
     }
 
-    async fn fatal_unhanded_tracer(opponent: bool, vfork: bool) {
+    /// How the unhanded control's leader creates the child that no
+    /// `handle_new_child` ever takes over.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum UnhandedChild {
+        /// A raw fork, parked in `handle_new_child` before any child task.
+        Fork,
+        /// A raw `CLONE_VFORK`, parked the same way.
+        Vfork,
+        /// A raw fork decoded by a precise-timer single step. The run loop's
+        /// receive of the aborted stop is held, so the sibling failure
+        /// cancels the loop before its loop-top registration.
+        #[cfg(target_arch = "x86_64")]
+        TimerFork,
+    }
+
+    impl UnhandedChild {
+        fn is_timer(self) -> bool {
+            #[cfg(target_arch = "x86_64")]
+            if self == Self::TimerFork {
+                return true;
+            }
+            false
+        }
+
+        fn op(self) -> ChildOp {
+            match self {
+                Self::Vfork => ChildOp::Vfork,
+                _ => ChildOp::Fork,
+            }
+        }
+    }
+
+    async fn fatal_unhanded_tracer(opponent: bool, child_kind: UnhandedChild) {
         use std::os::unix::net::UnixStream;
         assert_eq!(
             fatal_subreaper_state(),
             0,
             "tracer must be distinct from natural reaper"
         );
+        assert!(
+            !(opponent && child_kind.is_timer()),
+            "the live-stop opponent control has no timer-decoded variant"
+        );
+        let timer = child_kind.is_timer();
         let mut channel = unsafe { UnixStream::from_raw_fd(libc::STDIN_FILENO) };
-        let pause = Arc::new(crate::task::FatalForkPause::default());
+        let pause = Arc::new(crate::task::FatalForkPause {
+            timer,
+            ..Default::default()
+        });
         pause.live_stop_opponent.store(opponent, Ordering::SeqCst);
         let words = FatalWords::new();
         let address = words.0 as usize;
@@ -6883,7 +6940,7 @@ mod tests {
                 {
                     std::thread::yield_now();
                 }
-                if vfork {
+                if child_kind == UnhandedChild::Vfork {
                     extern "C" fn child_body(address: *mut libc::c_void) -> libc::c_int {
                         unsafe { &*((address as *const std::sync::atomic::AtomicUsize).add(2)) }
                             .store(1, Ordering::SeqCst);
@@ -6902,6 +6959,31 @@ mod tests {
                     };
                     assert!(child > 0);
                     thread.join().unwrap();
+                } else if child_kind.is_timer() {
+                    // The subscribed marker arms the precise timer. There is
+                    // no conditional branch before the raw fork, so the
+                    // timer's own single step decodes the fork. The store
+                    // after it records any user continuation of either side
+                    // of the fork, which is a failure, never a cleanup.
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        core::arch::asm!(
+                            "syscall",
+                            "mov eax, {fork_number}",
+                            "syscall",
+                            "mov qword ptr [{words} + 16], 1",
+                            "2:",
+                            "pause",
+                            "jmp 2b",
+                            fork_number = const libc::SYS_fork,
+                            words = in(reg) address,
+                            inlateout("rax") libc::SYS_getpgid => _,
+                            inlateout("rdi") 0usize => _,
+                            out("rcx") _,
+                            out("r11") _,
+                        );
+                    }
+                    drop(thread);
                 } else {
                     match unsafe { unistd::fork() }.unwrap() {
                         ForkResult::Child => panic!("unhanded newborn reached guest code"),
@@ -6911,7 +6993,7 @@ mod tests {
                     }
                 }
             },
-            3,
+            if timer { FATAL_TIMER_FORK_MODE } else { 3 },
             false,
         )
         .await
@@ -6927,26 +7009,52 @@ mod tests {
             .set_read_timeout(Some(fatal_remaining(deadline)))
             .unwrap();
         let result = tokio::time::timeout(fatal_remaining(deadline), tracer.wait()).await;
-        let child = pause
-            .child
-            .lock()
-            .unwrap()
-            .take()
-            .expect("actual fork event was reached");
-        let child_pid = child.pid();
+        let handled = pause.child.lock().unwrap().take();
+        let (child_pid, start, inode, terminal) = if timer {
+            assert!(
+                pause.timer_published.load(Ordering::SeqCst),
+                "timer step did not publish its decoded fork to the run loop"
+            );
+            assert!(
+                pause.timer_receive_blocked.load(Ordering::SeqCst),
+                "run loop did not hold the queued timer fork"
+            );
+            assert!(
+                handled.is_none(),
+                "timer child unexpectedly reached handle_new_child"
+            );
+            let observed = pause
+                .timer_child
+                .lock()
+                .unwrap()
+                .take()
+                .expect("timer decoded a real fork");
+            (
+                observed.pid,
+                observed.start_time,
+                observed.proc_inode,
+                observed.terminal,
+            )
+        } else {
+            let child = handled.as_ref().expect("actual fork event was reached");
+            let (start, inode) = pause.generation.lock().unwrap().unwrap();
+            (
+                child.pid(),
+                start,
+                inode,
+                Arc::new(child.terminal_cleanup()),
+            )
+        };
         let edges = session.observed_child_ops.lock().unwrap().clone();
         eprintln!(
             "unhanded real child edges: {edges:?}; child_body={}",
             words.read(2)
         );
-        assert!(edges.contains(&(
-            root,
-            if vfork { ChildOp::Vfork } else { ChildOp::Fork },
-            child_pid
-        )));
+        assert!(
+            edges.contains(&(root, child_kind.op(), child_pid)),
+            "the fatal session never captured the {child_kind:?} child {child_pid}"
+        );
         assert_eq!(words.read(2), 0, "unhanded child executed its guest body");
-        let (start, inode) = pause.generation.lock().unwrap().unwrap();
-        let terminal = child.terminal_cleanup();
         let acknowledged = terminal.wait(Duration::ZERO);
         let group_retention = session.retained_group_counts_for_test();
         eprintln!(
@@ -7003,7 +7111,7 @@ mod tests {
             // Only the tracer performs negative-control teardown, after the
             // separate reaper sealed the failed product predicate. This cannot
             // convert that predicate into a successful cleanup observation.
-            let rescue = FatalNewborn::new(root, &child);
+            let rescue = FatalNewborn::new(root, handled.as_ref().unwrap());
             rescue.signal().unwrap();
             tokio::time::timeout(fatal_remaining(deadline), rescue.reap())
                 .await
@@ -7025,16 +7133,14 @@ mod tests {
         let _remaining = fatal_remaining(deadline);
     }
 
-    async fn fatal_unhanded_control(test: &str, opponent: bool) {
+    async fn fatal_unhanded_control(test: &str, opponent: bool, child_kind: UnhandedChild) {
         use std::os::unix::process::CommandExt;
         if std::env::var("REVERIE_FATAL_REAP_TEST").as_deref() == Ok(test) {
             assert!(std::env::args().any(|arg| arg == test));
             assert!(std::env::args().any(|arg| arg == "--exact"));
             match std::env::var("REVERIE_FATAL_REAP_ROLE").as_deref() {
                 Ok("reaper") => fatal_natural_reaper(test, opponent),
-                Ok("tracer") => {
-                    fatal_unhanded_tracer(opponent, test.ends_with("vfork_child")).await
-                }
+                Ok("tracer") => fatal_unhanded_tracer(opponent, child_kind).await,
                 other => panic!("invalid isolated test role: {other:?}"),
             }
             return;
@@ -7061,6 +7167,7 @@ mod tests {
         fatal_unhanded_control(
             "tracer::tests::ordinary_nonleader_tool_failure_reaps_unhanded_fork_child",
             false,
+            UnhandedChild::Fork,
         )
         .await;
     }
@@ -7070,6 +7177,7 @@ mod tests {
         fatal_unhanded_control(
             "tracer::tests::ordinary_nonleader_tool_failure_reaps_unhanded_vfork_child",
             false,
+            UnhandedChild::Vfork,
         )
         .await;
     }
@@ -7079,6 +7187,27 @@ mod tests {
         fatal_unhanded_control(
             "tracer::tests::ordinary_unhanded_reaper_rejects_real_live_stop_opponent",
             true,
+            UnhandedChild::Fork,
+        )
+        .await;
+    }
+
+    /// A fork decoded by a precise-timer single step is aborted to the run
+    /// loop as a queued stop. If a sibling's Tool failure cancels the loop
+    /// before it consumes that stop, the child must already be owned by the
+    /// fatal session, so the backend kills and reaps it.
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_timer_decoded_fork_is_owned_before_loop_consumption() {
+        if !crate::perf::is_perf_supported() {
+            // The same PMU precondition as every other precise-timer test.
+            eprintln!("SKIPPED: precise timers need perf counters, which this host lacks");
+            return;
+        }
+        fatal_unhanded_control(
+            "tracer::tests::ordinary_timer_decoded_fork_is_owned_before_loop_consumption",
+            false,
+            UnhandedChild::TimerFork,
         )
         .await;
     }
@@ -8838,6 +8967,25 @@ mod tests {
             "signal" => {
                 signal::raise(Signal::SIGUSR1).expect("raise root-stop signal");
             }
+            // The subscribed marker arms a precise timer, and no conditional
+            // branch precedes the raw fork, so a timer step decodes the fork.
+            // Neither side of the fork continues: the test cancels first.
+            #[cfg(target_arch = "x86_64")]
+            "timer_fork" => unsafe {
+                core::arch::asm!(
+                    "syscall",
+                    "mov eax, {fork_number}",
+                    "syscall",
+                    "2:",
+                    "pause",
+                    "jmp 2b",
+                    fork_number = const libc::SYS_fork,
+                    inlateout("rax") libc::SYS_getpgid => _,
+                    inlateout("rdi") 0usize => _,
+                    out("rcx") _,
+                    out("r11") _,
+                );
+            },
             mode => panic!("unknown root-stop guest mode {mode}"),
         }
         loop {
@@ -8885,6 +9033,110 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn cancellation_at_signal_handler_reaps_root() {
         cancel_at_root_stop(RootStopPause::Signal(Signal::SIGUSR1), "signal").await;
+    }
+
+    /// Arms a one-branch precise timer at the `timer_fork` guest's marker.
+    #[cfg(target_arch = "x86_64")]
+    #[derive(Default)]
+    struct TimerForkTool;
+
+    #[cfg(target_arch = "x86_64")]
+    #[reverie::tool]
+    impl Tool for TimerForkTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getpgid].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            let value = guest.inject(syscall).await?;
+            guest.set_timer_precise(reverie::TimerSchedule::Rcbs(1))?;
+            Ok(value)
+        }
+    }
+
+    /// The LiteInst counterpart of
+    /// `ordinary_timer_decoded_fork_is_owned_before_loop_consumption`: a fork
+    /// decoded by a precise-timer step must be in the session cleanup guard's
+    /// newborn table while the run loop still holds it queued, and a
+    /// cancellation at that point must reap both the root and the child.
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_timer_decoded_fork_is_registered_before_loop_consumption() {
+        if !crate::perf::is_perf_supported() {
+            // The same PMU precondition as every other precise-timer test.
+            eprintln!("SKIPPED: precise timers need perf counters, which this host lacks");
+            return;
+        }
+        let pause = Arc::new(crate::task::FatalForkPause {
+            timer: true,
+            ..Default::default()
+        });
+        crate::task::FATAL_FORK_PAUSE.with(|slot| *slot.borrow_mut() = Some(pause.clone()));
+        let builder = TracerBuilder::<TimerForkTool>::new(root_stop_guest_command("timer_fork"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test();
+        let newborns = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .newborn_tracees,
+        );
+        let tracer = builder.spawn().await.expect("spawn timer-fork tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let ready = pause.ready.notified();
+                if pause.timer_receive_blocked.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::select! {
+                    result = &mut wait => panic!("timer-fork tracee completed before cancellation: {result:?}"),
+                    () = ready => {}
+                }
+            }
+        })
+        .await
+        .expect("run loop did not hold a queued timer-decoded fork");
+        assert!(pause.timer_published.load(Ordering::SeqCst));
+        let parent = Pid::from_raw(pause.timer_parent.load(Ordering::SeqCst));
+        let child = pause
+            .timer_child
+            .lock()
+            .unwrap()
+            .take()
+            .expect("timer decoded a real fork");
+        let registered = newborns
+            .lock()
+            .unwrap()
+            .get(&child.pid)
+            .map(|newborn| (newborn.link.parent_tid, newborn.link.op));
+        eprintln!(
+            "LiteInst timer fork: root={root_pid}, parent={parent}, child={}, registered={registered:?}",
+            child.pid
+        );
+        assert_eq!(
+            registered,
+            Some((parent, ChildOp::Fork)),
+            "timer-decoded fork was not in the LiteInst newborn table before loop consumption"
+        );
+
+        drop(wait);
+        crate::task::FATAL_FORK_PAUSE.with(|slot| *slot.borrow_mut() = None);
+        assert_reaped("cancelled timer-fork root", root_pid);
+        assert!(
+            child.terminal.wait(Duration::ZERO),
+            "cleanup did not retire the timer-decoded child's terminal state"
+        );
+        assert_eventually_reaped("cancelled timer-fork child", child.pid);
     }
 
     #[tokio::test(flavor = "current_thread")]
