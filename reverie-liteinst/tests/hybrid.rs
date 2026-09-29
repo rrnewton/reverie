@@ -3023,13 +3023,15 @@ impl Tool for UnsubscribedHookTimerTool {
 
 // The precise timer checks here use
 // `reverie_ptrace::testing::assert_at_target_unless_witnessed`: an event may
-// fire past its target only as a skid overshoot that Reverie witnessed. With
-// a margin of 1000 RCBs on AMD EPYC 9D85, a scratch probe of the rt_sigreturn
-// run with its trap 5000 RCBs past the request measured an overshoot in 2 of
-// 768 rounds, at 897 and 1846 RCBs past the target, both delivered by the
-// notification in the normal signal path with no LiteInst trap between the
-// request and the target. The count of witnesses is process global, so these
-// tests run with `--test-threads=1`.
+// fire past its target only as a skid overshoot that Reverie witnessed. And
+// `assert_late_within_caps` caps how many events may: with a margin of 1000
+// RCBs on AMD EPYC 9D85, a scratch probe of the rt_sigreturn run with its
+// trap 5000 RCBs past the request measured an overshoot in 2 of 768 rounds,
+// at 897 and 1846 RCBs past the target, both delivered by the notification in
+// the normal signal path with no LiteInst trap between the request and the
+// target, and `late_cap` and `LATE_OVERSHOOT_BOUND` give the rates measured
+// since. The count of witnesses is process global, so these tests run with
+// `--test-threads=1`.
 
 /// Runs `hybrid_unsubscribed_hook_timer.c` with a precise timer `rcbs` RCBs
 /// past each getpid, which the guest follows with `before + i % leads`
@@ -3123,15 +3125,17 @@ async fn a_timer_before_an_unsubscribed_hook_trap_fires() {
 // when the counter overflows a few branches before it and the processor's
 // interrupt latency lands the signal after the trap. The notification then
 // reaches the syscall that Reverie injects for the hook, before any stop has
-// decided the event. It is the event's own: the event must fire at its
-// target once the syscall returns, and not be taken for a late notification
-// of a cancelled event and discarded.
+// decided the event. It is the event's own: the event must fire once the
+// syscall returns, at its target, or past it only as a witnessed skid
+// overshoot within the caps of `assert_late_within_caps`, and not be taken
+// for a late notification of a cancelled event and discarded.
 //
 // A first run, with the Tool subscribed to getppid, measures how many
 // branches past the guest's loop the getppid traps. In the second run each
 // round's counter then overflows one of `leads` distances before the trap, as
 // in reverie-ptrace/tests/late_timer_signal.rs. Whichever side of the trap
-// the signal comes, the event must fire at its target.
+// the signal comes, the event must fire at its target, or past it only as a
+// witnessed skid overshoot within the caps.
 #[tokio::test(flavor = "current_thread")]
 async fn a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event() {
     reverie_ptrace::ret_without_perf!();
@@ -3176,9 +3180,11 @@ async fn a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event() 
     eprintln!("notifications taken at injected syscalls: {live}, discarded as late: {late}");
     // Every round's event fires, none is lost or cancelled, and each at its
     // target unless its notification came too late (see
-    // `assert_at_target_unless_witnessed`).
+    // `assert_at_target_unless_witnessed`), and no more late, or late by more
+    // than `LATE_OVERSHOOT_BOUND`, than the caps allow.
     assert_eq!(events.len(), rounds as usize + 1, "{events:?}");
     assert_at_target_unless_witnessed(&events, rcbs, witnesses);
+    assert_late_within_caps(&events, rcbs);
     assert_eq!(late, 0, "no notification here is late");
     // Otherwise no round tested the notification at the injection.
     assert!(live > 0, "no notification reached an injected syscall");
@@ -3446,12 +3452,17 @@ impl SigreturnHookTimerRun {
 /// notification late much more often fails the run: 3 overtaken of 15 kept
 /// rounds, 4 of 44, or 9 of 400.
 fn overtaken_cap(kept: u64) -> u64 {
-    let mean = kept as f64 * 4.0 / 1000.0;
+    poisson_cap(kept as f64 * 4.0 / 1000.0, 1e-4)
+}
+
+/// The least count that a Poisson count with a mean of `mean` exceeds with a
+/// probability under `probability`.
+fn poisson_cap(mean: f64, probability: f64) -> u64 {
     // The probability of each count, and of at most `cap`.
     let mut term = (-mean).exp();
     let mut at_most = term;
     let mut cap = 0;
-    while 1.0 - at_most >= 1e-4 {
+    while 1.0 - at_most >= probability {
         cap += 1;
         term *= mean / cap as f64;
         at_most += term;
@@ -3522,6 +3533,165 @@ fn assert_overtaken_within_cap(overtaken: &std::collections::BTreeMap<u64, u64>,
         "at most {cap} of {kept} kept events may be overtaken with their notification queued, \
          at four times the measured rate: {overtaken:?}"
     );
+}
+
+/// The most RCBs past its target at which a precise timer event may fire as
+/// a witnessed skid overshoot, but for the few that `late_beyond_bound_cap`
+/// allows. An overshoot is the notification's latency less the skid margin,
+/// so the bound holds at any margin for a latency up to the margin plus the
+/// bound. It is twice the margin of 1000 RCBs of devbig014, an AMD EPYC 9D85,
+/// and under half of the overshoot of an event that is re-programmed for a
+/// full notification period at a keeping stop, about 4200 RCBs past the
+/// target in `an_rt_sigreturn_hook_trap_keeps_the_timer_event` and 9771 or
+/// more in the sweeps. In 400 runs of these tests at the head of the round-6
+/// review of https://github.com/rrnewton/reverie/pull/665, on devbig014 at
+/// load averages of 25 to 130, 7 of about 21560 fired events at a margin of
+/// 1000 or 10000 were past the bound, at 3227, 3684, 5555, 11053, 12764,
+/// 30050 and 42765 RCBs past the target, and no other was more than 1138
+/// RCBs past it. Those are
+/// notifications serviced only at a later kernel entry, as for the overtaken
+/// rounds (see `overtaken_cap`), so no bound under the full-period overshoot
+/// holds for every event; hence a count of them is capped instead. At a
+/// margin of 100 RCBs, 175 of 240 events were past the target, and the
+/// largest overshoot was 1437 RCBs.
+const LATE_OVERSHOOT_BOUND: u64 = 2_000;
+
+/// The least skid margin at which `late_cap` applies.
+const LATE_CAP_LEAST_MARGIN: u64 = 1_000;
+
+/// The probability under which each of `late_cap` and `late_beyond_bound_cap`
+/// fails a check of a run that has the measured rates. A test checks at most
+/// three runs, in `the_rt_sigreturn_hook_keep_point_does_not_depend_on_the_skid_margin`,
+/// so both caps together fail a test run with a probability under 6 in
+/// 100000.
+const LATE_CAP_PROBABILITY: f64 = 1e-5;
+
+/// The most of `events` fired events that may fire past their target, as a
+/// witnessed skid overshoot, at a skid margin of `LATE_CAP_LEAST_MARGIN` or
+/// more: the least count that a Poisson count with a mean of 4 in 100 events
+/// exceeds with a probability under `LATE_CAP_PROBABILITY`. That mean is four
+/// times the largest measured rate rounded up to 1 in 100: at the head of the
+/// round-6 review of https://github.com/rrnewton/reverie/pull/665, on
+/// devbig014 at a margin of 1000, 8 of 910 events in 5 runs of
+/// `an_rt_sigreturn_hook_trap_decides_the_timer_by_the_guest_clock`, 3 of 640
+/// in 40 runs of `an_rt_sigreturn_hook_trap_keeps_the_timer_event`, 3 of 640
+/// in 20 runs of `an_rt_sigreturn_hook_trap_past_a_delivered_event_is_not_witnessed`
+/// and 1 of 220 in 5 runs of
+/// `an_rt_sigreturn_hook_trap_up_to_the_target_cancels_the_timer`, and none
+/// of 240 at a margin of 10000; and before, 22 of 3360, 45 of 6720 and 29 of
+/// 5460 in the first three, 3 of 880 in the fourth, 2 of 320 in
+/// `the_rt_sigreturn_hook_keep_point_does_not_depend_on_the_skid_margin` at a
+/// margin of 1000, and none of 2010 in
+/// `a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event`.
+/// At a smaller margin the notification's latency often exceeds the margin
+/// (175 of 240 events at a margin of 100 on devbig014), and only
+/// `late_beyond_bound_cap` applies.
+fn late_cap(events: u64) -> u64 {
+    poisson_cap(events as f64 * 4.0 / 100.0, LATE_CAP_PROBABILITY)
+}
+
+/// The most of `events` fired events that may fire more than
+/// `LATE_OVERSHOOT_BOUND` RCBs past their target, as a witnessed skid
+/// overshoot, at any skid margin: the least count that a Poisson count with a
+/// mean of 4 in 1000 events exceeds with a probability under
+/// `LATE_CAP_PROBABILITY`. That mean is four times the largest measured rate
+/// rounded up to 1 in 1000: 4 of about 6370 events in
+/// `an_rt_sigreturn_hook_trap_decides_the_timer_by_the_guest_clock`, and 18 of
+/// about 21560 in all (see `LATE_OVERSHOOT_BOUND`).
+fn late_beyond_bound_cap(events: u64) -> u64 {
+    poisson_cap(events as f64 * 4.0 / 1000.0, LATE_CAP_PROBABILITY)
+}
+
+/// Checks the RCBs from each request to its fired event, `clocks`, whose
+/// target is `rcbs`, at a skid margin of `margin`, against `late_cap` and
+/// `late_beyond_bound_cap`. Returns what it counted, or why the events fail.
+/// Whether each event past its target is witnessed is
+/// `assert_at_target_unless_witnessed`'s to check.
+fn late_events_within_caps(clocks: &[u64], rcbs: u64, margin: u64) -> Result<String, String> {
+    let events = clocks.len() as u64;
+    let late = clocks.iter().filter(|&&clock| clock > rcbs).count() as u64;
+    let beyond = clocks
+        .iter()
+        .filter(|&&clock| clock > rcbs + LATE_OVERSHOOT_BOUND)
+        .count() as u64;
+    let (late_cap, beyond_cap) = (late_cap(events), late_beyond_bound_cap(events));
+    let counted = format!(
+        "{late} of {events} events fired past the target {rcbs} at a skid margin of {margin}, \
+         {beyond} of them more than {LATE_OVERSHOOT_BOUND} RCBs past it"
+    );
+    if beyond > beyond_cap {
+        return Err(format!(
+            "{counted}: at most {beyond_cap} may overshoot by more than \
+             {LATE_OVERSHOOT_BOUND} RCBs, at four times the measured rate: {clocks:?}"
+        ));
+    }
+    if margin >= LATE_CAP_LEAST_MARGIN {
+        if late > late_cap {
+            return Err(format!(
+                "{counted}: at most {late_cap} may fire past the target at a skid margin of \
+                 {LATE_CAP_LEAST_MARGIN} or more, at four times the measured rate: {clocks:?}"
+            ));
+        }
+        Ok(format!(
+            "{counted}, within the caps of {late_cap} and {beyond_cap}"
+        ))
+    } else {
+        Ok(format!(
+            "{counted}, within the cap of {beyond_cap}; no count cap applies below a margin \
+             of {LATE_CAP_LEAST_MARGIN}"
+        ))
+    }
+}
+
+/// Asserts `late_events_within_caps` at this process's skid margin, which a
+/// re-run at another margin overrides, and prints what it counted.
+fn assert_late_within_caps(clocks: &[u64], rcbs: u64) {
+    let margin = reverie_ptrace::PmuConfig::new().skid_margin();
+    match late_events_within_caps(clocks, rcbs, margin) {
+        Ok(counted) => eprintln!("{counted}"),
+        Err(failure) => panic!("{failure}"),
+    }
+}
+
+#[test]
+fn late_event_caps_have_their_measured_values() {
+    let caps = |events| (late_cap(events), late_beyond_bound_cap(events));
+    assert_eq!(caps(1), (3, 1));
+    assert_eq!(caps(16), (6, 3));
+    assert_eq!(caps(34), (9, 4));
+    assert_eq!(caps(44), (10, 4));
+    assert_eq!(caps(182), (21, 7));
+    assert_eq!(caps(201), (23, 7));
+    let overtaken: Vec<u64> = [15, 16, 44, 400, 434].map(overtaken_cap).to_vec();
+    assert_eq!(overtaken, [2, 2, 3, 8, 8]);
+}
+
+#[test]
+fn late_event_caps_reject_a_full_period_overshoot() {
+    let rcbs = SIGRETURN_RCBS;
+    let at = |overshoots: &[u64]| -> Vec<u64> {
+        let mut clocks = vec![rcbs; 16 - overshoots.len()];
+        clocks.extend(overshoots.iter().map(|overshoot| rcbs + overshoot));
+        clocks
+    };
+    // An event re-programmed for a full notification period at the keeping
+    // trap of `an_rt_sigreturn_hook_trap_keeps_the_timer_event` fires about
+    // 4200 RCBs past its target in every round, witnessed.
+    let full_period: Vec<u64> = (0..16).map(|round| rcbs + 4203 + 4 * round).collect();
+    for margin in [100, 1000, 10_000] {
+        assert!(late_events_within_caps(&full_period, rcbs, margin).is_err());
+        assert!(late_events_within_caps(&at(&[4203, 4207, 4211, 4215]), rcbs, margin).is_err());
+        assert!(late_events_within_caps(&at(&[30_050, 858]), rcbs, margin).is_ok());
+        assert!(late_events_within_caps(&at(&[5555, 42_765, 3684, 858]), rcbs, margin).is_ok());
+        assert!(late_events_within_caps(&at(&[]), rcbs, margin).is_ok());
+    }
+    let small = [29, 133, 858, 1060, 1138, 2000, 455];
+    for margin in [1000, 10_000] {
+        assert!(late_events_within_caps(&at(&small[..6]), rcbs, margin).is_ok());
+        assert!(late_events_within_caps(&at(&small), rcbs, margin).is_err());
+    }
+    assert!(late_events_within_caps(&at(&[3; 16]), rcbs, 100).is_ok());
+    assert!(late_events_within_caps(&at(&small), rcbs, 100).is_ok());
 }
 
 /// Runs `hybrid_sigreturn_hook_timer.c` with `args`, for `rounds` signals,
@@ -3617,8 +3787,9 @@ fn sigreturn_keep_point() -> u64 {
 // without a Tool callback. Without LiteInst the rt_sigreturn would make no
 // stop, so the trap must not change the timer event that the handler
 // requested: each handler requests an event whose PMU notification comes
-// after the rt_sigreturn, and it must fire at its target after the handler
-// has returned.
+// after the rt_sigreturn, and it must fire after the handler has returned,
+// at its target, or past it only as a witnessed skid overshoot within the
+// caps of `assert_late_within_caps`.
 //
 // The one exception is the host timing that `sweep_sigreturn_hook_trap`
 // identifies by its cause: a notification serviced only at the next round's
@@ -3649,6 +3820,7 @@ async fn an_rt_sigreturn_hook_trap_keeps_the_timer_event() {
     );
     let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
     assert_at_target_unless_witnessed(&clocks, rcbs, run.witnesses - overtaken.len() as u64);
+    assert_late_within_caps(&clocks, rcbs);
 }
 
 /// A bound on the branches from the return of `hybrid_sigreturn_hook_timer.c`'s
@@ -3677,9 +3849,10 @@ const SIGRETURN_TRAP_BRANCHES: u64 = 200;
 /// So every repeat of a distance must meet one fate, and the fate must change
 /// exactly once, from firing to cancelled, where the trap reaches the keep
 /// point. Every trap is short of the target, so no cancellation is a
-/// witnessed skid overshoot, and every fired event is at its target unless
-/// witnessed (see `assert_at_target_unless_witnessed`). Returns the last
-/// distance at which the event fired.
+/// witnessed skid overshoot, and every fired event is at its target, or past
+/// it only as a witnessed skid overshoot within the caps (see
+/// `assert_at_target_unless_witnessed` and `assert_late_within_caps`).
+/// Returns the last distance at which the event fired.
 ///
 /// The one exception is host timing, and the run identifies it by its cause
 /// rather than tolerating it: the notification of a kept event can be
@@ -3785,6 +3958,7 @@ async fn sweep_sigreturn_hook_trap(before: u64, leads: u64, stride: u64, repeats
     );
     let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
     assert_at_target_unless_witnessed(&clocks, rcbs, witnesses - overtaken.len() as u64);
+    assert_late_within_caps(&clocks, rcbs);
     last_fired
 }
 
@@ -3943,10 +4117,12 @@ async fn an_rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
 // `disregard_stop_before_period` retires the event. The event was delivered,
 // so the retirement must not witness a skid overshoot for it, although the
 // delivered event's target stays stored until the next request and the
-// guest's clock is past it. Every round's event must fire, at its target
-// unless its own notification came too late, and nothing else may be
-// witnessed (`assert_at_target_unless_witnessed` requires exactly one witness
-// per late event, so a run with no late event must have none). The targets
+// guest's clock is past it. Every round's event must fire, at its target, or
+// past it only as a witnessed skid overshoot within the caps of
+// `assert_late_within_caps` when its own notification came too late, and
+// nothing else may be witnessed (`assert_at_target_unless_witnessed` requires
+// exactly one witness per late event, so a run with no late event must have
+// none). The targets
 // are 11000 RCBs, past the period on every processor in Reverie's PMU table,
 // and `SIGRETURN_RCBS`.
 //
@@ -3981,6 +4157,7 @@ async fn an_rt_sigreturn_hook_trap_past_a_delivered_event_is_not_witnessed() {
         );
         let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
         assert_at_target_unless_witnessed(&clocks, rcbs, run.witnesses - overtaken.len() as u64);
+        assert_late_within_caps(&clocks, rcbs);
     }
 }
 
@@ -4186,6 +4363,7 @@ async fn a_held_signal_past_a_delivered_or_cancelled_event_is_not_witnessed() {
     assert_eq!(fired, (0..rounds).collect::<Vec<_>>(), "{events:?}");
     let clocks: Vec<u64> = events.iter().map(|&(_, rcbs)| rcbs).collect();
     assert_at_target_unless_witnessed(&clocks, rcbs, witnesses);
+    assert_late_within_caps(&clocks, rcbs);
     let (events, witnesses) =
         run_held_signal_hook_timer(rcbs, 2 * rcbs, rounds, 1_000, 500, true).await;
     assert_eq!(events, [], "the getpid the Tool sees cancels each event");

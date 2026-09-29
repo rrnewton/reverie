@@ -1469,7 +1469,7 @@ impl TimerImpl {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 warn!(
-                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event"
+                    "PREEMPT_RT kernel; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         } else if let Err(errno) = timer.map_sample_records() {
@@ -1477,7 +1477,7 @@ impl TimerImpl {
             WARNED.call_once(|| {
                 warn!(
                     %errno,
-                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event"
+                    "Could not map timer overflow records; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         }
