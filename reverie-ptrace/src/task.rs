@@ -5930,7 +5930,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         let task = if self.ordinary_failure_enabled() {
             let (sender, receiver) = oneshot::channel();
             let handle = tokio::task::spawn_local(async move {
+                #[cfg(not(test))]
                 let result = task_body.await;
+                #[cfg(test)]
+                let result = {
+                    // Drop the whole child future before publishing a scalar
+                    // capacity receipt. Do not retain its terminal authority.
+                    let mut task_body = std::pin::pin!(task_body);
+                    task_body.as_mut().await
+                };
+                #[cfg(test)]
+                crate::tracer::record_capacity_body_dropped_for_test(id, result);
                 let _ = sender.send(result);
             });
             self.global_state

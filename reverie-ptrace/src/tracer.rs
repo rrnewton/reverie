@@ -463,7 +463,12 @@ pub(crate) fn record_capacity_finished_for_test(stop: &FatalTaskStop) {
     tests::fatal_capacity_tests::record_finished(stop);
 }
 #[cfg(test)]
+pub(crate) fn record_capacity_body_dropped_for_test(tid: Pid, status: Option<ExitStatus>) {
+    tests::fatal_capacity_tests::record_body_dropped(tid, status);
+}
+#[cfg(test)]
 pub(crate) fn record_fatal_task_for_test(task: &Arc<FatalTaskStop>) {
+    tests::fatal_capacity_tests::record_registered(task);
     FATAL_REAP_OBSERVATIONS.with(|slot| {
         if let Some(observations) = slot.borrow_mut().as_mut() {
             observations.push(Arc::clone(task));
