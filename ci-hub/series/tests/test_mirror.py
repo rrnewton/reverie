@@ -581,6 +581,14 @@ class DirectLedgerFixture(unittest.TestCase):
                 cwd=kwargs.get("cwd"), capture_output=True, text=True, timeout=30,
             )
 
+        # Since 68e56d4c002af5dbe9ed055caa186cb89a8acfd5 ("Require explicit bot
+        # GitHub routing") the finalizer restores the launch's GitHub executable
+        # from the run record and refuses without one. Publication never needs
+        # GitHub, so the record names a stub that fails loudly if called, and the
+        # caller's own FLEET_REAL_GH is removed so it cannot supply the route.
+        no_gh = self.root / "no-gh"
+        no_gh.write_text("#!/bin/sh\necho 'GitHub must not be called' >&2\nexit 97\n")
+        no_gh.chmod(0o755)
         for code, verdict in [(0, "VALIDATED"), (start_unit.EXIT_FAILED, "FAILED")]:
             with self.subTest(verdict=verdict):
                 expected_run_id = "validate-" + verdict.lower()
@@ -593,11 +601,15 @@ class DirectLedgerFixture(unittest.TestCase):
                     "target": self.target, "canonical_verdict": verdict,
                     "unit": expected_run_id + ".service",
                     "wrapper_exit_code": code, "e2e_result_root": str(self.root / "results"),
+                    "github_executable": str(no_gh),
                 }
                 run_registry.write_record(record_path, record)
-                result = start_unit.finalize_ledger_mirror(
-                    self.parent, mirror.TOOL_ROOT, record_path, record=record, run=native_run,
-                )
+                with mock.patch.dict(os.environ):
+                    os.environ.pop("FLEET_REAL_GH", None)
+                    result = start_unit.finalize_ledger_mirror(
+                        self.parent, mirror.TOOL_ROOT, record_path, record=record,
+                        run=native_run,
+                    )
                 self.assertTrue(start_unit.cell_ledger_published(result), result)
                 self.assertEqual(verdict, result["canonical_verdict"])
                 self.assertEqual(code, result["wrapper_exit_code"])
