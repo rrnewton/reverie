@@ -48,6 +48,7 @@ mod liteinst_stats;
 mod liteinst_trap_only;
 mod perf;
 pub mod regs;
+mod runtime_init;
 mod stack;
 mod stats;
 #[cfg(target_arch = "x86_64")]
@@ -82,6 +83,7 @@ pub use liteinst_trap_only::SitePatching;
 pub use liteinst_trap_only::SiteTable;
 pub use liteinst_trap_only::probe_ia32_emulation;
 pub use perf::is_perf_supported;
+pub use runtime_init::LiteinstRuntimeInit;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
 pub use timer::PmuConfig;
