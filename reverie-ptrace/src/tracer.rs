@@ -64,6 +64,7 @@ use safeptrace::Error as TraceError;
 use safeptrace::Event;
 use safeptrace::Running;
 use safeptrace::Stopped;
+use safeptrace::SupersededStopRefusal;
 use safeptrace::TerminalCleanup;
 use safeptrace::Wait;
 use tokio::sync::broadcast;
@@ -525,6 +526,29 @@ async fn pause_callback_exit_for_test(
     }
 }
 
+/// Discards the queued stops that a fatal signal carried the tracee out of on
+/// its way to the EXIT stop it is now held in.
+///
+/// `drive_ordinary` takes the EXIT stop ahead of the task's own run loop, so a
+/// stop the notifier queued before the exit (for example the SIGTRAP or
+/// seccomp stop of a syscall being injected when SIGKILL arrived) is still at
+/// the front of the FIFO. Resuming the EXIT stop would otherwise return that
+/// stale stop as the tracee's next state instead of its final status.
+fn discard_stops_superseded_by_exit(terminal: &TerminalCleanup, session: &FatalSession) {
+    while let Some(pending) = terminal.reserve_pending_for_cleanup(Duration::ZERO) {
+        if let Err((pending, refusal)) = pending.discard_superseded_by_exit() {
+            // Keep the status queued. A child named only by a lost fork, vfork
+            // or clone event message cannot be captured; report it rather than
+            // guess its PID.
+            drop(pending);
+            if matches!(refusal, SupersededStopRefusal::NewChild(_)) {
+                session.fail(anyhow::Error::new(refusal).into());
+            }
+            break;
+        }
+    }
+}
+
 async fn finish_ordinary_terminal(
     stopped: Result<Stopped, TraceError>,
     terminal: &TerminalCleanup,
@@ -538,6 +562,7 @@ async fn finish_ordinary_terminal(
     loop {
         let mut wait = match current {
             Ok(mut stopped) => {
+                discard_stops_superseded_by_exit(terminal, session);
                 loop {
                     if let Err(error) = HeldRootStop::supersede_with_exit(held, &stopped) {
                         session.retry_after(anyhow::Error::new(error).into()).await;

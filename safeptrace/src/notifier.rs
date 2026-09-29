@@ -3208,6 +3208,68 @@ impl PendingStatusReservation<'_> {
         let committed = self.state.pending.pop_front();
         debug_assert_eq!(committed, Some(self.status));
     }
+
+    /// Removes a queued stop that this generation's `PTRACE_EVENT_EXIT` stop
+    /// has superseded, without decoding it.
+    ///
+    /// The notifier queues ordinary stops in a FIFO but publishes the exit
+    /// stop separately. A fatal signal wakes a tracee out of a ptrace stop the
+    /// tracer has not yet consumed, so a stop observed before the exit stop can
+    /// still be queued when the exit stop is published. The tracee has already
+    /// left that stop: nothing can act on it, and resuming the exit stop would
+    /// otherwise return it as though it were the tracee's next state.
+    ///
+    /// No ptrace request is made. Decoding would be wrong here: an event stop's
+    /// `PTRACE_GETEVENTMSG` now reads the exit stop's message (the exit
+    /// status), not the queued event's, and fails with `ESRCH` once the exit
+    /// stop is resumed.
+    ///
+    /// Refused, returning the reservation unchanged, when no exit stop is
+    /// published for this generation (an exec after an exit stop withdraws the
+    /// publication, so a queued post-exit exec is never discarded), when the
+    /// front is the exit stop itself, and for a fork, vfork or clone stop: its
+    /// child is a live tracee whose PID is only in that stop's event message.
+    pub fn discard_superseded_by_exit(self) -> Result<(), (Self, SupersededStopRefusal)> {
+        let refusal = if self.event.event().exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            Some(SupersededStopRefusal::ExitStopNotObserved)
+        } else if !libc::WIFSTOPPED(self.status) || self.status == PTRACE_EVENT_EXIT_STOP {
+            Some(SupersededStopRefusal::NotSuperseded(self.status))
+        } else if libc::WSTOPSIG(self.status) == libc::SIGTRAP
+            && matches!(
+                self.status >> 16,
+                libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
+            )
+        {
+            Some(SupersededStopRefusal::NewChild(self.status))
+        } else {
+            None
+        };
+        match refusal {
+            Some(refusal) => Err((self, refusal)),
+            None => {
+                self.commit();
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Why [`PendingStatusReservation::discard_superseded_by_exit`] kept a queued
+/// status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SupersededStopRefusal {
+    /// This tracee generation has no published `PTRACE_EVENT_EXIT` stop.
+    #[error("no PTRACE_EVENT_EXIT stop is published for this tracee generation")]
+    ExitStopNotObserved,
+    /// The queued status is the exit stop itself or is not a stop.
+    #[error("queued wait status {0:#x} is not a stop superseded by the exit stop")]
+    NotSuperseded(i32),
+    /// A fork, vfork or clone stop names a live child only through its event
+    /// message, which the later exit stop has replaced.
+    #[error(
+        "queued wait status {0:#x} is a fork, vfork or clone stop superseded by the exit stop; its child PID is no longer readable"
+    )]
+    NewChild(i32),
 }
 
 /// A future representing a process state change.
