@@ -25,6 +25,15 @@ and a green requires ALL of:
     newest_qualifying.executed_tests > 0                       (a run that executed
                                                                 nothing is a no-result,
                                                                 not a pass)
+    verdict == "VALIDATED"                                     (the canonical judgement)
+    unresolved_failure_obligations and unverifiable_evidence are empty lists
+
+A qualifying receipt at the exact SHA is necessary but not sufficient. The
+canonical verdict can still be FAILED-ON-RECORD or NEEDS-RERUN when an earlier
+failure obligation on an ancestor is unresolved, or when a relevant ledger row
+names evidence that is readable only on the host that produced it
+(https://github.com/rrnewton/dev-hermit/issues/395). The receipt fields alone
+cannot see either, so the verdict is required as well.
 
 The `commit` equality check is the load-bearing one. `newest_qualifying` is the
 newest qualifying record in the ledger, and asking about a SHA that has no
@@ -107,7 +116,34 @@ def assess_ledger_verdict(payload: dict, sha: str) -> GreenVerdict:
             "executed is a no-result, not a pass",
             executed, failures, record_commit)
 
-    return GreenVerdict(sha, True, "qualifying receipt at the exact SHA",
+    # The receipt checks above keep their specific reasons; the canonical
+    # verdict then has the final word, because it also weighs failure
+    # obligations and rows whose evidence this host cannot read.
+    verdict = payload.get("verdict")
+    if verdict != "VALIDATED":
+        return GreenVerdict(
+            sha, False,
+            f"canonical verdict is {verdict!r}, not 'VALIDATED': a qualifying "
+            f"receipt at the exact SHA does not outweigh an unresolved failure "
+            f"obligation or relevant evidence this host cannot read",
+            executed, failures, record_commit)
+    for field in ("unresolved_failure_obligations", "unverifiable_evidence"):
+        entries = payload.get(field)
+        if not isinstance(entries, list):
+            return GreenVerdict(
+                sha, False,
+                f"validate-status payload has no list in {field!r} "
+                f"(got {type(entries).__name__}); a green needs it present and empty",
+                executed, failures, record_commit)
+        if entries:
+            return GreenVerdict(
+                sha, False,
+                f"canonical verdict is VALIDATED but {field} lists "
+                f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}; "
+                f"refusing a contradictory payload",
+                executed, failures, record_commit)
+
+    return GreenVerdict(sha, True, "canonical VALIDATED verdict with a qualifying receipt at the exact SHA",
                         executed, failures, record_commit)
 
 

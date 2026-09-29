@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 printf '%s' "jq" >> "$CALLS"; for a in "$@"; do printf ' %s' "$a" >> "$CALLS"; done; printf '\n' >> "$CALLS"
+# A scenario that needs jq's real answer sets SCEN_REAL_JQ to the host jq,
+# resolved before the stub directory was put first on PATH.
+if [ -n "${SCEN_REAL_JQ:-}" ]; then exec "$SCEN_REAL_JQ" "$@"; fi
 exit 0

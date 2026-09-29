@@ -118,6 +118,40 @@ def canonical_status(repo: str, sha: str, *, run: Run) -> tuple[str, dict]:
     return verdict, report
 
 
+CROSS_HOST_EVIDENCE_ISSUE = "https://github.com/rrnewton/dev-hermit/issues/412"
+
+
+def unavailable_evidence(report: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """Relevant rows whose retained evidence exists only on another host.
+
+    Such a row stays relevant to the target however many times the target is
+    rerun, so a validation run cannot change the verdict it forces. An absent
+    field predates the state and means none; anything but a list of objects is
+    a contract violation and is refused rather than read as none.
+    """
+    entries = report.get("unverifiable_evidence", [])
+    if not isinstance(entries, list) or not all(isinstance(entry, Mapping) for entry in entries):
+        raise RuntimeError(
+            "canonical validate-status JSON has a malformed unverifiable_evidence field"
+        )
+    return entries
+
+
+def describe_unavailable_evidence(entries: Sequence[Mapping[str, object]]) -> str:
+    runs = ", ".join(
+        f"{entry.get('run_id') or '<none>'} on {str(entry.get('commit') or '<unknown>')[:12]} "
+        f"from {entry.get('producing_host') or '<unknown host>'}"
+        for entry in entries
+    )
+    return (
+        f"{len(entries)} relevant ledger row(s) name validation evidence that exists only on "
+        f"another host ({runs}); a rerun here cannot clear them, so none was started. "
+        "Copy each ignored/validate/artifacts/<run_id>/ from its producing host into this "
+        "store, or see ci-hub validate-status for the exact remedy; the durable fix is "
+        f"tracked at {CROSS_HOST_EVIDENCE_ISSUE}"
+    )
+
+
 def require_current_approval(repo: str, pr: int, *, run: Run) -> None:
     result = run(
         [
@@ -419,7 +453,12 @@ def main(
                  detail=f"expected head {expected} moved before admission", as_json=args.json)
             return 4
 
-        verdict, _ = canonical_status(args.repo, expected, run=child_run)
+        verdict, report = canonical_status(args.repo, expected, run=child_run)
+        unavailable = unavailable_evidence(report)
+        if verdict == "VALIDATED" and unavailable:
+            raise RuntimeError(
+                "canonical validate-status reported VALIDATED with unverifiable evidence"
+            )
         if verdict == "VALIDATED":
             emit("VALIDATED", repo=args.repo, pr=args.pr, head=expected,
                  detail="canonical exact-head receipt already qualifies", as_json=args.json)
@@ -428,6 +467,16 @@ def main(
             emit("FAILED", repo=args.repo, pr=args.pr, head=expected,
                  detail="canonical exact-head receipt is red", as_json=args.json)
             return 3
+        # https://github.com/rrnewton/dev-hermit/issues/395: evidence readable
+        # only on another host holds the verdict at NEEDS-RERUN for every rerun,
+        # so launching one would spend a full validate (about 46 minutes) and
+        # end where it began. Refuse before approval or launch is considered.
+        if unavailable:
+            emit("EVIDENCE_UNAVAILABLE", repo=args.repo, pr=args.pr, head=expected,
+                 detail=f"canonical verdict is {verdict}: "
+                 + describe_unavailable_evidence(unavailable),
+                 as_json=args.json)
+            return 2
         if not args.execute:
             emit("NO_RESULT", repo=args.repo, pr=args.pr, head=expected,
                  detail=f"canonical verdict is {verdict}; pass --execute at the landing frontier", as_json=args.json)

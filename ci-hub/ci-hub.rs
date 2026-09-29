@@ -4157,15 +4157,26 @@ enum LocalLabelReconcileAction {
     Bind,
     Remove,
     LeaveAbsent,
+    /// This host cannot judge the head: its verdict rests on evidence whose
+    /// retained artifacts exist only on the host that produced it (see
+    /// `CanonicalReceiptAssessment::undecidable_on_this_host`). An existing
+    /// label, possibly bound by that host, is neither confirmed nor removed.
+    KeepUnjudged,
 }
 
-fn local_label_reconcile_action(validated: bool, has_label: bool) -> LocalLabelReconcileAction {
+fn local_label_reconcile_action(
+    validated: bool,
+    undecidable_here: bool,
+    has_label: bool,
+) -> LocalLabelReconcileAction {
     if validated {
         LocalLabelReconcileAction::Bind
-    } else if has_label {
-        LocalLabelReconcileAction::Remove
-    } else {
+    } else if !has_label {
         LocalLabelReconcileAction::LeaveAbsent
+    } else if undecidable_here {
+        LocalLabelReconcileAction::KeepUnjudged
+    } else {
+        LocalLabelReconcileAction::Remove
     }
 }
 
@@ -4232,6 +4243,30 @@ struct CanonicalReceiptAssessment {
     /// Relevant rows produced on another host whose retained artifacts are
     /// absent here. They block exactly as an unresolved obligation does.
     unverifiable_evidence: Vec<failure_obligations::UnverifiableEvidence>,
+}
+
+impl CanonicalReceiptAssessment {
+    /// Whether the only thing between this head and VALIDATED is evidence
+    /// this host cannot read, so a different host could reach a different
+    /// verdict from the same ledger.
+    ///
+    /// NEEDS-RERUN with no unresolved obligation of its own, and at least one
+    /// foreign row whose artifacts are absent here, qualifies when either
+    /// this host already holds a qualifying receipt (the foreign rows are
+    /// ancestors that can only block) or one of the foreign rows is for the
+    /// head itself (it may be the producer's receipt). A head with neither
+    /// has no receipt in the ledger on any host, so it stays decidable here.
+    /// A FAILED record anywhere makes the verdict FAILED, never this.
+    fn undecidable_on_this_host(&self) -> bool {
+        self.verdict == validate_status::Verdict::NeedsRerun
+            && self.unresolved_failure_obligations.is_empty()
+            && !self.unverifiable_evidence.is_empty()
+            && (!self.qualifying.is_empty()
+                || self
+                    .unverifiable_evidence
+                    .iter()
+                    .any(|entry| entry.commit == self.sha))
+    }
 }
 
 fn is_oid(value: &str) -> bool {
@@ -10782,19 +10817,29 @@ fn run_validate_status(
                     );
                     for entry in &assessment.unverifiable_evidence {
                         println!(
-                            "#   {} run {} on {} at {} ({}): {} is absent on {}; copy ignored/validate/artifacts/{}/ from {} into this checkout's ignored/validate/artifacts/, or query from {}",
+                            "#   {} run {} on {} at {} (produced on {}): {} is absent on {}",
                             entry.state,
                             entry.run_id.as_deref().unwrap_or("<none>"),
                             entry.commit,
                             entry.finished_at,
                             entry.producing_host,
                             entry.missing_artifact,
-                            if entry.local_host.is_empty() { "this host" } else { entry.local_host.as_str() },
-                            entry.run_id.as_deref().unwrap_or("<run_id>"),
-                            entry.producing_host,
-                            entry.producing_host,
+                            if entry.local_host.is_empty() {
+                                "this host"
+                            } else {
+                                entry.local_host.as_str()
+                            },
                         );
                     }
+                    // The rows already carry path, byte count and sha256 for
+                    // each artifact, so the gap is not integrity: it is that
+                    // nothing moves the artifact between hosts, and the row
+                    // does not carry the cell results the obligation pass
+                    // reads. A rerun here adds a row; it cannot make these
+                    // rows readable or irrelevant.
+                    println!(
+                        "# remedy: a rerun on this host cannot clear these rows. Copy each ignored/validate/artifacts/<run_id>/ named above from its producing host into this checkout's ignored/validate/artifacts/ (a copy whose bytes do not match the row is then a refusal, not a pass); querying on the producing host helps only if every other relevant row is readable there too. The durable fix, artifact transport between hosts or carrying the needed cell results in the ledger row itself, is tracked at https://github.com/rrnewton/dev-hermit/issues/412",
+                    );
                 }
             }
             validate_status::Verdict::NoResult => {
@@ -11578,6 +11623,7 @@ fn run_apply_local_label(
     let mut actions: Vec<serde_json::Value> = Vec::new();
     let mut applied = 0i32;
     let mut removed = 0i32;
+    let mut kept_unjudged = 0i32;
     let mut failed = 0i32;
     for pr in prs {
         // In sweep mode a single unreadable PR must not abort the whole run.
@@ -11608,8 +11654,29 @@ fn run_apply_local_label(
         };
         match local_label_reconcile_action(
             assessment.verdict == validate_status::Verdict::Validated,
+            assessment.undecidable_on_this_host(),
             has_label,
         ) {
+            LocalLabelReconcileAction::KeepUnjudged => {
+                // Removing here would let a host that cannot read the
+                // evidence overrule the host that can. The producing host's
+                // own sweep still judges, and removes, this label.
+                println!(
+                    "PR #{pr}: keep {LOCALLY_VALIDATED_LABEL} unjudged -- head {} is {} only because relevant evidence is readable solely on its producing host{}; this host can neither confirm nor remove the label",
+                    &head[..12.min(head.len())],
+                    assessment.verdict.as_str(),
+                    unverifiable_evidence_note(&assessment.unverifiable_evidence),
+                );
+                actions.push(serde_json::json!({
+                    "pr": pr,
+                    "head": head,
+                    "action": "keep-unjudged",
+                    "verdict": assessment.verdict.as_str(),
+                    "unverifiable_evidence": assessment.unverifiable_evidence,
+                }));
+                kept_unjudged += 1;
+                continue;
+            }
             LocalLabelReconcileAction::Remove => {
                 let action = if args.dry_run {
                     "would-remove"
@@ -11762,6 +11829,7 @@ fn run_apply_local_label(
             "schema_version": 1,
             "applied": applied,
             "removed": removed,
+            "kept_unjudged": kept_unjudged,
             "actions": actions,
         });
         println!(
@@ -15702,24 +15770,41 @@ mod tests {
 
     #[test]
     fn local_label_reconcile_preserves_or_adds_a_validated_head() {
-        assert_eq!(
-            local_label_reconcile_action(true, true),
-            LocalLabelReconcileAction::Bind
-        );
-        assert_eq!(
-            local_label_reconcile_action(true, false),
-            LocalLabelReconcileAction::Bind
-        );
+        for undecidable_here in [false, true] {
+            assert_eq!(
+                local_label_reconcile_action(true, undecidable_here, true),
+                LocalLabelReconcileAction::Bind
+            );
+            assert_eq!(
+                local_label_reconcile_action(true, undecidable_here, false),
+                LocalLabelReconcileAction::Bind
+            );
+        }
     }
 
     #[test]
     fn local_label_reconcile_removes_only_an_unbacked_label() {
         assert_eq!(
-            local_label_reconcile_action(false, true),
+            local_label_reconcile_action(false, false, true),
             LocalLabelReconcileAction::Remove
         );
         assert_eq!(
-            local_label_reconcile_action(false, false),
+            local_label_reconcile_action(false, false, false),
+            LocalLabelReconcileAction::LeaveAbsent
+        );
+    }
+
+    /// https://github.com/rrnewton/dev-hermit/issues/395: a host that cannot
+    /// read the evidence behind its own NEEDS-RERUN must not strip a label the
+    /// producing host may have bound, and never adds one either.
+    #[test]
+    fn local_label_reconcile_keeps_a_label_this_host_cannot_judge() {
+        assert_eq!(
+            local_label_reconcile_action(false, true, true),
+            LocalLabelReconcileAction::KeepUnjudged
+        );
+        assert_eq!(
+            local_label_reconcile_action(false, true, false),
             LocalLabelReconcileAction::LeaveAbsent
         );
     }
@@ -18684,7 +18769,11 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
             assert_eq!(json["verdict"], "VALIDATED");
             assert_eq!(json["exit_code"], 0);
             assert_eq!(json["unverifiable_evidence"], serde_json::json!([]));
-            assert_eq!(unverifiable_evidence_note(&assessment.unverifiable_evidence), "");
+            assert_eq!(
+                unverifiable_evidence_note(&assessment.unverifiable_evidence),
+                ""
+            );
+            assert!(!assessment.undecidable_on_this_host());
         }
 
         // RELATED: the target's parent. Named, blocking, never credited.
@@ -18693,6 +18782,13 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         assert_eq!(assessment.verdict, validate_status::Verdict::NeedsRerun);
         assert_eq!(assessment.qualifying.len(), 1);
         assert!(assessment.unresolved_failure_obligations.is_empty());
+        // This host holds a receipt and cannot read what blocks it; the
+        // producer can. apply-local-label leaves an existing label alone.
+        assert!(assessment.undecidable_on_this_host());
+        assert_eq!(
+            local_label_reconcile_action(false, assessment.undecidable_on_this_host(), true),
+            LocalLabelReconcileAction::KeepUnjudged
+        );
         let json = report(&assessment);
         assert_eq!(json["verdict"], "NEEDS-RERUN");
         assert_eq!(json["exit_code"], 4);
@@ -18717,6 +18813,29 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
             " (1 relevant row(s) foreign-host-artifact-absent: foreign-run from fixture-producer-host; see validate-status)"
         );
 
+        // A foreign row for the head itself, and no local receipt: it may be
+        // the producer's receipt, so this host cannot judge a label either.
+        let alone = |rows: &[HistoryRow]| {
+            assess_canonical_receipts_as(&root, rows, &target, CANONICAL_VALIDATE_REPO, Some(LOCAL))
+                .expect("a foreign absence is a named state, not a reader fault")
+        };
+        let assessment = alone(&[schema10_row(&target, PRODUCER)]);
+        assert_eq!(assessment.verdict, validate_status::Verdict::NeedsRerun);
+        assert!(assessment.qualifying.is_empty());
+        assert_eq!(assessment.unverifiable_evidence.len(), 1);
+        assert_eq!(assessment.unverifiable_evidence[0].commit, target);
+        assert!(assessment.undecidable_on_this_host());
+        // A foreign ancestor row and no receipt for the head on any host:
+        // nothing in the ledger backs a label, so it is removed as before.
+        let assessment = alone(&[schema10_row(&base, PRODUCER)]);
+        assert_ne!(assessment.verdict, validate_status::Verdict::Validated);
+        assert!(assessment.qualifying.is_empty());
+        assert!(!assessment.undecidable_on_this_host());
+        assert_eq!(
+            local_label_reconcile_action(false, assessment.undecidable_on_this_host(), true),
+            LocalLabelReconcileAction::Remove
+        );
+
         // The same absence on a row this host produced is a reader fault.
         let error = assess(schema10_row(&base, LOCAL)).unwrap_err();
         assert_eq!(
@@ -18727,6 +18846,181 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         );
 
         drop(producer_store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A throwaway directory for `commit_is_ancestor`, returned as
+    /// `(root, root/origin)`. The caller removes `root`.
+    fn ancestry_fixture(label: &str) -> (PathBuf, PathBuf) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "ci-hub-ancestry-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let origin = root.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        (root, origin)
+    }
+
+    fn ancestry_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Three linear commits in `dir`, oldest first. Each carries a distinct
+    /// file so the clone below has real objects to omit.
+    fn ancestry_chain(dir: &Path) -> [String; 3] {
+        ancestry_git(dir, &["init", "-q", "--initial-branch=main"]);
+        let mut commits = Vec::new();
+        for name in ["c1", "c2", "c3"] {
+            std::fs::write(dir.join(name), name).unwrap();
+            ancestry_git(dir, &["add", name]);
+            ancestry_git(dir, &["commit", "-q", "-m", name]);
+            commits.push(ancestry_git(dir, &["rev-parse", "HEAD"]));
+        }
+        commits.try_into().unwrap()
+    }
+
+    /// https://github.com/rrnewton/dev-hermit/issues/395: a missing commit is
+    /// "not an ancestor" only in a clone that provably holds the target's whole
+    /// history. A shallow clone does not, even though `rev-list` walks it
+    /// happily to its graft; without the shallow guard the first case below
+    /// would answer `Ok(false)` for a real ancestor.
+    #[test]
+    fn commit_is_ancestor_answers_absence_only_from_complete_history() {
+        let (root, origin) = ancestry_fixture("absence");
+        let [c1, c2, c3] = ancestry_chain(&origin);
+        let unknown_ancestor = "ab".repeat(20);
+        let unknown_target = "cd".repeat(20);
+
+        // Baseline: the ordinary answers in the full repository.
+        assert_eq!(commit_is_ancestor(&origin, &c1, &c3), Ok(true));
+        assert_eq!(commit_is_ancestor(&origin, &c3, &c1), Ok(false));
+
+        // (a) Shallow clone: c1 and c2 are real ancestors of c3 that lie
+        // below the graft, so this clone lacks their commit objects.
+        let shallow = root.join("shallow");
+        let url = format!("file://{}", origin.display());
+        let out = Command::new("git")
+            .args(["clone", "-q", "--depth", "1", &url])
+            .arg(&shallow)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            ancestry_git(&shallow, &["rev-parse", "--is-shallow-repository"]),
+            "true"
+        );
+        assert_eq!(
+            ancestry_git(&shallow, &["rev-parse", "HEAD"]),
+            c3,
+            "the shallow clone's tip is the target"
+        );
+        for below_graft in [&c1, &c2] {
+            let answer = commit_is_ancestor(&shallow, below_graft, &c3);
+            let error =
+                answer.expect_err("a shallow clone cannot prove a missing commit unrelated");
+            assert!(
+                error.starts_with(&format!(
+                    "cannot establish commit ancestry {below_graft} -> {c3}: "
+                )),
+                "{error}"
+            );
+        }
+        // Nor may it answer for a commit it has never heard of.
+        assert!(commit_is_ancestor(&shallow, &unknown_ancestor, &c3).is_err());
+
+        // (b) An unknown target: nothing can be proven about its history,
+        // whether or not the candidate ancestor is present.
+        for ancestor in [&c1, &unknown_ancestor] {
+            let error = commit_is_ancestor(&origin, ancestor, &unknown_target)
+                .expect_err("an unknown target has no walkable history");
+            assert!(
+                error.starts_with(&format!(
+                    "cannot establish commit ancestry {ancestor} -> {unknown_target}: "
+                )),
+                "{error}"
+            );
+        }
+
+        // (c) A present object for which merge-base fails for another
+        // reason: a blob and a tree are not commits, so `merge-base` refuses,
+        // and presence rules out the absence proof.
+        let blob = ancestry_git(&origin, &["rev-parse", &format!("{c1}:c1")]);
+        let tree = ancestry_git(&origin, &["rev-parse", &format!("{c1}^{{tree}}")]);
+        for not_a_commit in [&blob, &tree] {
+            assert_eq!(
+                ancestry_git(&origin, &["cat-file", "-e", not_a_commit]),
+                "",
+                "the object is present"
+            );
+            let error = commit_is_ancestor(&origin, not_a_commit, &c3)
+                .expect_err("merge-base failed for a present object");
+            assert!(error.contains("git exited"), "{error}");
+        }
+
+        // (d) A full, non-shallow clone and a commit it lacks: walking c3's
+        // complete history never reaches it, so it is provably not an ancestor.
+        assert_eq!(
+            commit_is_ancestor(&origin, &unknown_ancestor, &c3),
+            Ok(false)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A non-shallow clone whose target history has a hole is not complete
+    /// either: `rev-list` must walk the target's whole history before an
+    /// absent commit is declared unrelated.
+    #[test]
+    fn commit_is_ancestor_refuses_a_clone_with_a_missing_intermediate_commit() {
+        let (root, origin) = ancestry_fixture("hole");
+        let [_c1, c2, c3] = ancestry_chain(&origin);
+        let unknown_ancestor = "ab".repeat(20);
+        assert_eq!(
+            commit_is_ancestor(&origin, &unknown_ancestor, &c3),
+            Ok(false)
+        );
+
+        // The commits are loose objects in a fresh repository; remove c2's.
+        let loose = origin.join(".git/objects").join(&c2[..2]).join(&c2[2..]);
+        assert!(loose.is_file(), "c2 is a loose object: {}", loose.display());
+        std::fs::remove_file(&loose).unwrap();
+        assert_eq!(
+            ancestry_git(&origin, &["rev-parse", "--is-shallow-repository"]),
+            "false"
+        );
+
+        let error = commit_is_ancestor(&origin, &unknown_ancestor, &c3)
+            .expect_err("an incomplete history cannot prove absence");
+        assert!(
+            error.starts_with(&format!(
+                "cannot establish commit ancestry {unknown_ancestor} -> {c3}: "
+            )),
+            "{error}"
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

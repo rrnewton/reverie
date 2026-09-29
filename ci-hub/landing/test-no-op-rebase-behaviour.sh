@@ -32,6 +32,9 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 lander=$script_dir/land-pr.sh
 stubs=$script_dir/testdata
 tmp=$(mktemp -d)
+# Resolved before the stub directory goes first on PATH; only the scenarios
+# that must read a real validate-status report hand it to the jq stub.
+real_jq=$(command -v jq) || { echo "FAIL: this bracket needs jq on PATH" >&2; exit 1; }
 trap 'rm -rf -- "$tmp"' EXIT
 
 root=$tmp/root
@@ -153,9 +156,46 @@ check "authorization is evaluated at the MOVED head" 1 "$(saw concurrent 'post-p
 check "not at the head it started from" 0 "$(saw concurrent 'post-push validation landability\(head=bbbb222\)')"
 
 echo
+echo "== SCENARIO: exit 4 held only by evidence readable on another host =="
+# https://github.com/rrnewton/dev-hermit/issues/395: validate-status exits 4
+# (NEEDS-RERUN) when a relevant ledger row names evidence that exists only on
+# its producing host. That row stays relevant after any rerun, so the lander
+# must not spend a just-in-time validate (about 46 minutes) on it. The JSON is
+# read with the host jq; the default jq stub prints nothing.
+unverifiable_json='{"verdict":"NEEDS-RERUN","unresolved_failure_obligations":[],"unverifiable_evidence":[{"run_id":"devbig030-1790000000-1","commit":"4c91b9520000000000000000000000000000abcd","producing_host":"devbig030","local_host":"devbig014","state":"foreign-host-artifact-absent","missing_artifact":"ignored/validate/artifacts/devbig030-1790000000-1/constructed-plan.json"}]}'
+held='canonical exact-head status for bbbb222 is held by 1 relevant ledger row\(s\) whose validation evidence exists only on another host'
+SCEN_REAL_JQ=$real_jq SCEN_VSTATUS_JSON=$unverifiable_json \
+  run unverifiable "$root/ci-hub/landing/land-pr.sh" --no-rebase
+check "names the foreign-host evidence once" 1 "$(saw unverifiable "$held")"
+check "links the durable-fix issue" 1 "$(saw unverifiable 'dev-hermit/issues/412')"
+check "never calls pr-head-ci" 0 "$(grep -cE '^pr-head-ci ' "$tmp/calls-unverifiable.log" || true)"
+check "never reports a just-in-time run" 0 "$(saw unverifiable 'just-in-time exact-head CI\(')"
+check "abandons at the pre-check it could not clear" 1 "$(saw unverifiable 'validation landability refused PR head bbbb222')"
+check "abandons" 4 "$(rc unverifiable)"
+
+SCEN_REAL_JQ=$real_jq SCEN_VSTATUS_JSON=$unverifiable_json \
+  run unverifiable_noop "$root/ci-hub/landing/land-pr.sh"
+echo " the deferred no-op discharge goes through the same function:"
+check "discharge fires" 1 "$(saw unverifiable_noop 'no-op rebase after a deferred')"
+check "names the foreign-host evidence once" 1 "$(saw unverifiable_noop "$held")"
+check "never calls pr-head-ci" 0 "$(grep -cE '^pr-head-ci ' "$tmp/calls-unverifiable_noop.log" || true)"
+check "post-push authorization still refuses" 1 "$(saw unverifiable_noop 'pushed head bbbb222 has no accepted validation landability')"
+check "abandons" 4 "$(rc unverifiable_noop)"
+
+echo " control, an EMPTY list read by the same jq still reaches the validator:"
+SCEN_REAL_JQ=$real_jq \
+SCEN_VSTATUS_JSON='{"verdict":"NOT_VALIDATED","unresolved_failure_obligations":[],"unverifiable_evidence":[]}' \
+  run emptyunverifiable "$root/ci-hub/landing/land-pr.sh" --no-rebase
+check "does not claim foreign-host evidence" 0 "$(saw emptyunverifiable 'exists only on another host')"
+check "calls pr-head-ci once" 1 "$(grep -cE '^pr-head-ci ' "$tmp/calls-emptyunverifiable.log" || true)"
+check "just-in-time validation runs" 1 "$(saw emptyunverifiable 'just-in-time exact-head CI\(head=bbbb222\) rc=0')"
+check "reads hard green with the real jq" 1 "$(grep -cE '^ci-hub apply-local-label ' "$tmp/calls-emptyunverifiable.log" || true)"
+check "reaches the merge gate" 1 "$(saw emptyunverifiable 'merge-gate diagnostic only:')"
+
+echo
 printf 'behavioural checks: %d passed, %d failed\n' "$pass" "$fail"
 if [ "$fail" -ne 0 ]; then
   echo "FAIL: no-op rebase behavioural bracket" >&2
   exit 1
 fi
-echo "PASS: the deferred no-op discharges to just-in-time exact-head validation and clears post-push authorization; removing the discharge reproduces the abandon; the rewritten, --no-rebase, failed-validation and moved-head paths each reach their own expected milestone and termination, so none of them is merely missing the discharge message; --union no longer takes the deferral at all, because nothing on that path writes a record, and earns its verdict through the pre-check instead"
+echo "PASS: the deferred no-op discharges to just-in-time exact-head validation and clears post-push authorization; removing the discharge reproduces the abandon; the rewritten, --no-rebase, failed-validation and moved-head paths each reach their own expected milestone and termination, so none of them is merely missing the discharge message; --union no longer takes the deferral at all, because nothing on that path writes a record, and earns its verdict through the pre-check instead; an exit 4 held only by evidence on another host never reaches pr-head-ci, while an empty list still does"

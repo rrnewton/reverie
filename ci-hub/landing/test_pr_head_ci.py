@@ -116,7 +116,9 @@ class FakeRun:
         validation_rc=0,
         validation_stdout=None,
         validation_stderr="",
+        status_extra=None,
     ):
+        self.status_extra = dict(status_extra or {})
         self.heads = list(heads or [OLD])
         self.verdicts = list(verdicts or ["NOT-VALIDATED"])
         self.approval_rc = approval_rc
@@ -159,7 +161,8 @@ class FakeRun:
         if "validate-status" in command:
             verdict = self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
             rc = {"VALIDATED": 0, "FAILED": 3}.get(verdict, 4)
-            return subprocess.CompletedProcess(command, rc, json.dumps({"verdict": verdict}), "")
+            report = {"verdict": verdict, **self.status_extra}
+            return subprocess.CompletedProcess(command, rc, json.dumps(report), "")
         if "validate-run" in command:
             repo = "rrnewton/hermit"
             validate_index = command.index("validate-run")
@@ -221,6 +224,82 @@ class PrHeadCiTest(unittest.TestCase):
         run = FakeRun(verdicts=["FAILED"])
         self.assertEqual(self.main(self.args("--execute"), run=run), 3)
         self.assertFalse(any("validate-run" in command for command in run.commands))
+
+    FOREIGN_ENTRY = {
+        "state": "foreign-host-artifact-absent",
+        "commit": "4c91b9527efc" + "0" * 28,
+        "finished_at": "2026-09-28T01:02:03Z",
+        "run_id": "validate-buck-validate-4c91b9527efc",
+        "producing_host": "devbig030",
+        "local_host": "devbig014",
+        "missing_artifact": "ignored/validate/artifacts/validate-buck-validate-4c91b9527efc/constructed-plan.json",
+        "reason": "validation evidence reader fault: cannot open retained artifact",
+    }
+
+    def test_unverifiable_evidence_never_reaches_the_validator(self):
+        """https://github.com/rrnewton/dev-hermit/issues/395: a rerun cannot
+        clear evidence that exists only on another host, so the 46-minute
+        validate is never launched, and neither is approval consulted."""
+        forbidden = mock.Mock(side_effect=AssertionError("must not launch validation"))
+        for extra in ((), ("--execute",), ("--execute", "--json")):
+            with self.subTest(args=extra):
+                run = FakeRun(
+                    verdicts=["NEEDS-RERUN"],
+                    status_extra={"unverifiable_evidence": [self.FOREIGN_ENTRY]},
+                )
+                stdout = io.StringIO()
+                with mock.patch.object(P, "validate_command", forbidden), \
+                        mock.patch.object(P, "immutable_tool_launch", forbidden), \
+                        mock.patch.object(P, "require_current_approval", forbidden), \
+                        redirect_stdout(stdout):
+                    self.assertEqual(self.main(self.args(*extra), run=run), 2)
+                self.assertFalse(any("validate-run" in command for command in run.commands))
+                self.assertFalse(
+                    any("approval_binding.py" in " ".join(command) for command in run.commands)
+                )
+                self.assertEqual(sum("validate-status" in command for command in run.commands), 1)
+                output = stdout.getvalue()
+                if "--json" in extra:
+                    report = json.loads(output)
+                    self.assertEqual(report["state"], "EVIDENCE_UNAVAILABLE")
+                    self.assertIs(report["acquirable"], False)
+                    output = report["detail"]
+                else:
+                    self.assertTrue(output.startswith("PR-HEAD-CI EVIDENCE_UNAVAILABLE "), output)
+                self.assertIn("canonical verdict is NEEDS-RERUN", output)
+                self.assertIn(
+                    "validate-buck-validate-4c91b9527efc on 4c91b9527efc from devbig030", output
+                )
+                self.assertIn("a rerun here cannot clear them", output)
+                self.assertIn("https://github.com/rrnewton/dev-hermit/issues/412", output)
+        forbidden.assert_not_called()
+
+    def test_empty_unverifiable_evidence_still_admits_the_validator(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NEEDS-RERUN", "VALIDATED"],
+            status_extra={"unverifiable_evidence": []},
+        )
+        self.assertEqual(self.main(self.args("--execute"), run=run), 0)
+        self.assertEqual(sum("validate-run" in command for command in run.commands), 1)
+
+    def test_malformed_or_contradictory_unverifiable_evidence_is_refused(self):
+        cases = (
+            ("NEEDS-RERUN", "none"),
+            ("NEEDS-RERUN", ["not-an-object"]),
+            ("NOT-VALIDATED", {"run_id": "x"}),
+            ("VALIDATED", [self.FOREIGN_ENTRY]),
+        )
+        for verdict, entries in cases:
+            with self.subTest(verdict=verdict, entries=entries):
+                run = FakeRun(
+                    verdicts=[verdict], status_extra={"unverifiable_evidence": entries}
+                )
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    self.assertEqual(self.main(self.args("--execute"), run=run), 2)
+                self.assertTrue(stdout.getvalue().startswith("PR-HEAD-CI UNKNOWN "))
+                self.assertFalse(any("validate-run" in command for command in run.commands))
 
     def test_unapproved_head_does_not_consume_validator(self):
         run = FakeRun(approval_rc=1)

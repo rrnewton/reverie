@@ -579,10 +579,28 @@ fi
 # Factored so step 3 can discharge a deferred obligation through EXACTLY this
 # path, rather than through a second copy of it that can drift.
 attempt_jit_exact_head_validation() {
-  local candidate=$1
-  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --repo "$R" --sha "$candidate" --json 2>&1)
+  local candidate=$1 status_stderr_file existing_stderr unverifiable_count
+  # stdout alone is the JSON report; stderr is kept for the operator message.
+  status_stderr_file=$(mktemp) \
+    || abandon "cannot create a temporary file for validate-status stderr" 4
+  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --repo "$R" --sha "$candidate" --json 2>"$status_stderr_file")
   existing_rc=$?
-  if [ "$existing_rc" -eq 4 ] && \
+  existing_stderr=$(cat -- "$status_stderr_file" 2>/dev/null)
+  rm -f -- "$status_stderr_file"
+  # https://github.com/rrnewton/dev-hermit/issues/395: exit 4 also covers
+  # relevant rows whose evidence exists only on another host. Those rows stay
+  # relevant after any rerun, so a just-in-time validate (about 46 minutes)
+  # could not change the verdict. Only a positive count skips it; an absent,
+  # empty or unreadable field falls through to pr-head-ci, which reads the
+  # same report and refuses a malformed one.
+  unverifiable_count=
+  if [ "$existing_rc" -eq 4 ]; then
+    unverifiable_count=$(jq -r '.unverifiable_evidence | if type == "array" then length else empty end' \
+      <<<"$existing_status" 2>/dev/null) || unverifiable_count=
+  fi
+  if [ "$existing_rc" -eq 4 ] && [[ $unverifiable_count =~ ^[1-9][0-9]*$ ]]; then
+    say "just-in-time exact-head CI not admitted: canonical exact-head status for $candidate is held by $unverifiable_count relevant ledger row(s) whose validation evidence exists only on another host; a rerun cannot clear them. Run ci-hub validate-status --repo $R --sha $candidate for the runs, hosts and remedy; durable fix: https://github.com/rrnewton/dev-hermit/issues/412"
+  elif [ "$existing_rc" -eq 4 ] && \
      git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$candidate"; then
     jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
       --repo "$R" --pr "$PR" --expected-head "$candidate" \
@@ -616,7 +634,7 @@ attempt_jit_exact_head_validation() {
       say "just-in-time exact-head CI not admitted: could not compare PR head $candidate against current origin/main $eligibility_base -- one of them is not present locally. This is NOT a statement that the head needs rebasing."
     fi
   else
-    say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
+    say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status${existing_stderr:+ (stderr: $existing_stderr)}"
   fi
 }
 if [ "$VRC" -ne 0 ]; then

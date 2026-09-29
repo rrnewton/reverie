@@ -53,11 +53,16 @@ def snapshot(repo: Path) -> dict[str, bytes]:
             for p in sorted(repo.rglob("*")) if p.is_file() and ".git" not in p.parts}
 
 
-def receipt(commit: str, *, executed: int = 857, failures: int = 0) -> dict:
+def receipt(commit: str, *, executed: int = 857, failures: int = 0,
+            verdict: str = "VALIDATED", **fields) -> dict:
     """A `validate-status --json` payload shaped like the real one."""
-    return {"newest_qualifying": {"commit": commit, "executed_tests": executed,
-                                  "failures": failures, "exit_code": 0},
-            "qualifying_count": 1, "exit_code": 0}
+    payload = {"verdict": verdict,
+               "newest_qualifying": {"commit": commit, "executed_tests": executed,
+                                     "failures": failures, "exit_code": 0},
+               "qualifying_count": 1, "exit_code": 0 if verdict == "VALIDATED" else 4,
+               "unresolved_failure_obligations": [], "unverifiable_evidence": []}
+    payload.update(fields)
+    return payload
 
 
 # ---- the gate binds to the LEDGER, at an EXACT SHA -------------------------
@@ -93,6 +98,59 @@ def test_a_receipt_with_zero_executed_tests_is_not_green():
 def test_a_receipt_with_failures_is_not_green():
     v = gate.assess_ledger_verdict(receipt(CAND, failures=3), CAND)
     assert not v.green and "3 failure" in v.reason
+
+
+FOREIGN_ENTRY = {"state": "foreign-host-artifact-absent", "run_id": "devbig030-1790000000-1",
+                 "commit": "4c91b952" + "0" * 32, "producing_host": "devbig030"}
+OBLIGATION = {"run_id": "devbig014-1790000000-2", "commit": OTHER, "node": "tests"}
+
+
+def test_a_qualifying_receipt_without_the_validated_verdict_is_not_green():
+    """https://github.com/rrnewton/dev-hermit/issues/395: the receipt is
+    necessary, not sufficient. NEEDS-RERUN and FAILED-ON-RECORD can coexist
+    with a perfect exact-head receipt."""
+    for verdict, fields in (
+        ("NEEDS-RERUN", {"unverifiable_evidence": [FOREIGN_ENTRY]}),
+        ("NEEDS-RERUN", {"unresolved_failure_obligations": [OBLIGATION]}),
+        ("FAILED-ON-RECORD", {}),
+        ("LEDGER-UNREADABLE", {}),
+    ):
+        v = gate.assess_ledger_verdict(receipt(CAND, verdict=verdict, **fields), CAND)
+        assert not v.green, verdict
+        assert f"canonical verdict is '{verdict}'" in v.reason, v.reason
+
+
+def test_a_payload_without_a_verdict_is_not_green():
+    payload = receipt(CAND)
+    del payload["verdict"]
+    v = gate.assess_ledger_verdict(payload, CAND)
+    assert not v.green and "canonical verdict is None" in v.reason
+
+
+def test_a_validated_verdict_with_blocking_entries_is_refused_as_contradictory():
+    for field, entry in (("unresolved_failure_obligations", OBLIGATION),
+                         ("unverifiable_evidence", FOREIGN_ENTRY)):
+        v = gate.assess_ledger_verdict(receipt(CAND, **{field: [entry]}), CAND)
+        assert not v.green
+        assert f"{field} lists 1 entry" in v.reason, v.reason
+
+
+def test_a_missing_or_malformed_blocking_list_is_not_green():
+    for field in ("unresolved_failure_obligations", "unverifiable_evidence"):
+        payload = receipt(CAND)
+        del payload[field]
+        v = gate.assess_ledger_verdict(payload, CAND)
+        assert not v.green and f"no list in '{field}'" in v.reason, v.reason
+        v = gate.assess_ledger_verdict(receipt(CAND, **{field: {"n": 1}}), CAND)
+        assert not v.green and f"no list in '{field}'" in v.reason, v.reason
+
+
+def test_the_real_needs_rerun_payload_shape_reaches_the_gate_through_the_runner():
+    """The subprocess path parses the JSON and applies the same verdict rule."""
+    payload = receipt(CAND, verdict="NEEDS-RERUN", unverifiable_evidence=[FOREIGN_ENTRY])
+    v = gate.ledger_verdict(CAND, ci_hub=Path("ci-hub"),
+                            runner=lambda cmd: (4, json.dumps(payload)))
+    assert not v.green and "NEEDS-RERUN" in v.reason
 
 
 def test_a_non_json_answer_fails_closed():

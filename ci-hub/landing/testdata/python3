@@ -7,8 +7,13 @@ case "$*" in
     # (soft green). With neither, it refuses -- and the message names the
     # missing record, which is the secondary message emitted after hard-green
     # has already been demoted.
-    if [ -f "$SCEN_DIR/jit_ok" ] || [ -f "$SCEN_DIR/recorded" ]; then
-      echo '{"verdict":"AUTHORIZED"}'; exit 0
+    # Like the real authority, name the state: an exact-head verdict is hard
+    # green, recorded provenance alone is soft green.
+    if [ -f "$SCEN_DIR/jit_ok" ]; then
+      echo '{"verdict":"AUTHORIZED","state":"HARD_GREEN"}'; exit 0
+    fi
+    if [ -f "$SCEN_DIR/recorded" ]; then
+      echo '{"verdict":"AUTHORIZED","state":"SOFT_GREEN"}'; exit 0
     fi
     echo '{"verdict":"REFUSED","detail":"no rebase record for result '"${SCEN_ORIG:-bbbb222}"'"}'; exit 2 ;;
   *union_rebase_result.py*require-success*)

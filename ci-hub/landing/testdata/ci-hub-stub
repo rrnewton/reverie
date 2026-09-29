@@ -10,6 +10,10 @@ case "$1" in
     done
     if [ "${#inner[@]}" -gt 0 ]; then exec "${inner[@]}"; fi
     exit 0 ;;
-  validate-status) echo '{"verdict":"NOT_VALIDATED"}'; exit "${SCEN_VSTATUS_RC:-4}" ;;
+  validate-status)
+    # SCEN_VSTATUS_JSON lets a scenario supply the whole canonical report.
+    if [ -n "${SCEN_VSTATUS_JSON:-}" ]; then printf '%s\n' "$SCEN_VSTATUS_JSON"
+    else echo '{"verdict":"NOT_VALIDATED"}'; fi
+    exit "${SCEN_VSTATUS_RC:-4}" ;;
   *) exit 0 ;;
 esac

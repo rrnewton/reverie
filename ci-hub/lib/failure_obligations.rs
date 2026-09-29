@@ -855,6 +855,9 @@ where
     let mut by_cell_commit: BTreeMap<(CellKey, String, String, String), CommitObservation> =
         BTreeMap::new();
     let mut runs: BTreeMap<String, RunFingerprint> = BTreeMap::new();
+    // (row, run_id, commit) of every recording deferred below. Its run_id and
+    // commit are known without its evidence, which is all a conflict needs.
+    let mut unread_recordings: Vec<(&HistoryRow, &str, &str)> = Vec::new();
 
     for row in rows {
         let Some(at) = row.finished_at.as_deref() else {
@@ -875,6 +878,9 @@ where
             Ok(Some(evidence)) => evidence,
             Ok(None) => continue,
             Err(fault) => {
+                if let Some(run_id) = row.run_id.as_deref() {
+                    unread_recordings.push((row, run_id, commit));
+                }
                 deferred.push(DeferredFault {
                     row,
                     commits: vec![commit.to_owned()],
@@ -887,6 +893,9 @@ where
             Ok(Some(tree)) => tree,
             Ok(None) => continue,
             Err(error) => {
+                if let Some(run_id) = row.run_id.as_deref() {
+                    unread_recordings.push((row, run_id, commit));
+                }
                 deferred.push(DeferredFault {
                     row,
                     commits: vec![commit.to_owned()],
@@ -968,6 +977,30 @@ where
                     aggregate.unavailable_comparisons += 1;
                 }
             }
+        }
+    }
+
+    // An unreadable recording must not hide a run_id conflict. The commit is
+    // part of every run fingerprint, so two recordings of one run on
+    // different commits conflict whatever their evidence says. Each unreadable
+    // recording is therefore compared by commit with the readable recording
+    // of its run, or else with the first unreadable one, and the conflict is
+    // judged relevant when either commit is. A recording on the same commit
+    // as the other shares its relevance, so its own deferred fault covers it.
+    let mut first_unread: BTreeMap<&str, &str> = BTreeMap::new();
+    for (row, run_id, commit) in unread_recordings {
+        let first = match runs.get(run_id) {
+            Some(fingerprint) => fingerprint.commit.as_str(),
+            None => *first_unread.entry(run_id).or_insert(commit),
+        };
+        if first != commit {
+            deferred.push(DeferredFault {
+                row,
+                commits: vec![first.to_owned(), commit.to_owned()],
+                fault: EvidenceFault::Fatal(format!(
+                    "conflicting correction rows for run_id {run_id}"
+                )),
+            });
         }
     }
 
@@ -2405,8 +2438,22 @@ mod tests {
         let full = schema8_row(OTHER, 6, false, "full");
         let target = hosted_schema10(&local.0, "matched", "target", FIX, 50, Some(LOCAL_HOST));
         let rows = vec![
-            hosted_schema10(&producer.0, failing, "foreign-absent", OTHER, 1, Some(FOREIGN_HOST)),
-            hosted_schema10(&producer.0, failing, "local-absent", OTHER, 2, Some(LOCAL_HOST)),
+            hosted_schema10(
+                &producer.0,
+                failing,
+                "foreign-absent",
+                OTHER,
+                1,
+                Some(FOREIGN_HOST),
+            ),
+            hosted_schema10(
+                &producer.0,
+                failing,
+                "local-absent",
+                OTHER,
+                2,
+                Some(LOCAL_HOST),
+            ),
             hosted_schema10(&producer.0, failing, "hostless-absent", OTHER, 3, None),
             local_corrupt,
             malformed_tree,
@@ -2463,13 +2510,9 @@ mod tests {
         );
         let target = hosted_schema10(&local.0, "matched", "target", FIX, 50, Some(LOCAL_HOST));
         let rows = vec![foreign_failure, foreign_target.clone(), target.clone()];
-        let assessment = assess_history(
-            &rows,
-            &[foreign_target, target],
-            &local.0,
-            Some(LOCAL_HOST),
-        )
-        .expect("a foreign absence is a named state, not a reader fault");
+        let assessment =
+            assess_history(&rows, &[foreign_target, target], &local.0, Some(LOCAL_HOST))
+                .expect("a foreign absence is a named state, not a reader fault");
         assert!(assessment.obligations.is_empty());
         assert_eq!(
             assessment.unverifiable_evidence,
@@ -2536,7 +2579,10 @@ mod tests {
                 .expect_err("only a foreign producer's absence is a named state");
             assert_eq!(error, absent_message(&run), "case {index}");
         }
-        for (index, producing) in [Some(FOREIGN_HOST), Some(LOCAL_HOST)].into_iter().enumerate() {
+        for (index, producing) in [Some(FOREIGN_HOST), Some(LOCAL_HOST)]
+            .into_iter()
+            .enumerate()
+        {
             let local = local_store();
             let run = format!("corrupt-{index}");
             let corrupt = hosted_schema10(&local.0, failing, &run, BAD, 1, producing);
@@ -2615,5 +2661,100 @@ mod tests {
             error,
             format!("conflicting correction rows for run_id run-{OTHER}-7")
         );
+    }
+
+    /// A run recorded on a relevant commit and again, unreadably, on an
+    /// irrelevant one is still a run_id conflict. The unreadable recording's
+    /// own fault is dropped as irrelevant, but its commit and run_id are known
+    /// without its evidence, so the conflict with the relevant recording is
+    /// found and is fatal exactly as when both recordings are readable.
+    #[test]
+    fn an_unreadable_irrelevant_recording_cannot_mask_a_run_id_conflict() {
+        let producer = crate::validation_evidence::fixtures::Store::new();
+        let local = local_store();
+        let target = late_schema6_target();
+        let relevant = schema8_row(BAD, 7, true, "full");
+        let run_id = relevant.run_id.clone().unwrap();
+        let conflict = format!("conflicting correction rows for run_id {run_id}");
+
+        // Control: the second recording, on OTHER, is readable.
+        let mut readable = serde_json::to_value(schema8_row(OTHER, 8, true, "full")).unwrap();
+        readable["run_id"] = run_id.clone().into();
+        readable["cell_results"]["run_id"] = run_id.clone().into();
+        let readable: HistoryRow = serde_json::from_value(readable).unwrap();
+
+        // The same recording, but written by another host whose retained
+        // artifacts are absent here, and one whose tree field is malformed.
+        let absent = hosted_schema10(
+            &producer.0,
+            "matched",
+            &run_id,
+            OTHER,
+            8,
+            Some(FOREIGN_HOST),
+        );
+        let mut malformed_tree = readable.clone();
+        malformed_tree
+            .extra
+            .insert("tree".into(), serde_json::json!("unknown"));
+
+        for (label, other) in [
+            ("readable", readable),
+            ("foreign-absent", absent),
+            ("malformed-tree", malformed_tree),
+        ] {
+            // Both orders: the unreadable recording may come first.
+            for rows in [
+                vec![relevant.clone(), other.clone(), target.clone()],
+                vec![other.clone(), relevant.clone(), target.clone()],
+            ] {
+                let error = assess_history(&rows, &[target.clone()], &local.0, Some(LOCAL_HOST))
+                    .expect_err(label);
+                assert_eq!(error, conflict, "{label}");
+            }
+        }
+
+        // Two unreadable recordings of one run on different commits conflict
+        // too, and one of them being relevant makes the conflict fatal.
+        let first_absent = hosted_schema10(
+            &producer.0,
+            "matched",
+            "twice-recorded",
+            OTHER,
+            9,
+            Some(FOREIGN_HOST),
+        );
+        let second_producer = crate::validation_evidence::fixtures::Store::new();
+        let second_absent = hosted_schema10(
+            &second_producer.0,
+            "matched",
+            "twice-recorded",
+            BAD,
+            10,
+            Some(FOREIGN_HOST),
+        );
+        let rows = vec![first_absent, second_absent, target.clone()];
+        let error =
+            assess_history(&rows, &[target.clone()], &local.0, Some(LOCAL_HOST)).unwrap_err();
+        assert_eq!(
+            error,
+            "conflicting correction rows for run_id twice-recorded"
+        );
+
+        // One run recorded twice on the SAME irrelevant commit, one copy
+        // unreadable, stays irrelevant: nothing here can reach the target.
+        let readable_other = schema8_row(OTHER, 11, true, "full");
+        let unreadable_other = hosted_schema10(
+            &producer.0,
+            "matched",
+            readable_other.run_id.as_deref().unwrap(),
+            OTHER,
+            11,
+            Some(FOREIGN_HOST),
+        );
+        let rows = vec![readable_other, unreadable_other, target.clone()];
+        let assessment = assess_history(&rows, &[target], &local.0, Some(LOCAL_HOST))
+            .expect("recordings on one irrelevant commit cannot reach the target");
+        assert_eq!(assessment, ObligationAssessment::default());
     }
 }
