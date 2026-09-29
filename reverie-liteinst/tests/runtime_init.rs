@@ -220,6 +220,64 @@ struct Observations {
     markers: Mutex<Vec<(u64, u64)>>,
 }
 
+#[derive(Default)]
+struct MatrixEvidence {
+    pairs: usize,
+    ptrace_runs: usize,
+    initialized_runs: usize,
+    refusals: usize,
+    cancellations: usize,
+    native_controls: usize,
+    getpid_callbacks: usize,
+    preinit_markers: usize,
+    direct_hooks: u64,
+    timer_pairs: usize,
+    timer_callbacks: usize,
+}
+
+struct PairEvidence {
+    reference_timer_callbacks: usize,
+    initialized_timer_callbacks: usize,
+    preinit_markers: usize,
+}
+
+impl PairEvidence {
+    fn timer_callbacks(&self) -> usize {
+        self.reference_timer_callbacks + self.initialized_timer_callbacks
+    }
+}
+
+impl MatrixEvidence {
+    // Call only after both runs and their exact parity assertions complete.
+    // The runner checks the resulting totals against the required matrix, so
+    // removing an iteration or case cannot keep advertising its old coverage.
+    fn record_pair(
+        &mut self,
+        reference: &Observations,
+        initialized: &Observations,
+        stats: &LiteinstBackendStatsSource,
+    ) -> PairEvidence {
+        let pair = PairEvidence {
+            reference_timer_callbacks: reference.timers.lock().unwrap().len(),
+            initialized_timer_callbacks: initialized.timers.lock().unwrap().len(),
+            preinit_markers: reference.markers.lock().unwrap().len()
+                + initialized.markers.lock().unwrap().len(),
+        };
+        self.pairs += 1;
+        self.ptrace_runs += usize::from(reference.pid.load(Ordering::SeqCst) != 0);
+        self.initialized_runs += usize::from(initialized.pid.load(Ordering::SeqCst) != 0);
+        self.getpid_callbacks +=
+            reference.calls.lock().unwrap().len() + initialized.calls.lock().unwrap().len();
+        self.preinit_markers += pair.preinit_markers;
+        self.direct_hooks += stats
+            .dispatch_path_counts()
+            .count(&LiteinstDispatchPath::DirectHook);
+        self.timer_pairs += usize::from(pair.timer_callbacks() != 0);
+        self.timer_callbacks += pair.timer_callbacks();
+        pair
+    }
+}
+
 #[reverie::global_tool]
 impl GlobalTool for Observations {
     type Request = (u8, u32, u64, u64, u64);
@@ -690,6 +748,7 @@ async fn refuse_before_entry(
     entry: &str,
     directory: &Path,
     label: &str,
+    evidence: &mut MatrixEvidence,
 ) {
     let marker = directory.join(format!("{label}.entered"));
     let events = directory.join(format!("{label}.events"));
@@ -749,6 +808,7 @@ async fn refuse_before_entry(
         !callback.exists(),
         "{label}: private initialization invoked executable code"
     );
+    evidence.refusals += 1;
 }
 
 fn run_native_bounded(mut command: ProcessCommand) -> std::process::ExitStatus {
@@ -774,6 +834,7 @@ async fn refuse_loader_environment(
     entry: &str,
     directory: &Path,
     variable: &str,
+    evidence: &mut MatrixEvidence,
 ) {
     let callback = directory.join(format!("{variable}.callback"));
     let marker_define = format!("-DCALLBACK_MARKER=\"{}\"", callback.display());
@@ -807,6 +868,7 @@ async fn refuse_loader_environment(
         "{variable}: native loader control failed"
     );
     assert_eq!(fs::read(&callback).unwrap(), b"callback\n");
+    evidence.native_controls += 1;
     fs::remove_file(&callback).unwrap();
 
     let marker = directory.join(format!("{variable}.entered"));
@@ -857,9 +919,16 @@ async fn refuse_loader_environment(
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ECHILD)
     );
+    evidence.refusals += 1;
 }
 
-async fn cancel_initializer(loader: &Loader, fixture: &Path, entry: &str, directory: &Path) {
+async fn cancel_initializer(
+    loader: &Loader,
+    fixture: &Path,
+    entry: &str,
+    directory: &Path,
+    evidence: &mut MatrixEvidence,
+) {
     let receipt = directory.join("initializer-cancel.receipt");
     let receipt_define = format!("-DCANCELLATION_MARKER=\"{}\"", receipt.display());
     let runtime = compile(
@@ -926,15 +995,27 @@ async fn cancel_initializer(loader: &Loader, fixture: &Path, entry: &str, direct
         !marker.exists(),
         "cancelled initializer reached application entry"
     );
+    let event_count = fs::read_to_string(events).unwrap().lines().count();
     assert_eq!(
-        fs::read_to_string(events).unwrap().lines().count(),
-        1,
+        event_count, 1,
         "private initializer delivered a Tool callback before cancellation"
     );
-    println!("runtime-init cancellation: initializer-receipts=1 fully-reaped=1 tool-callbacks=0");
+    let cancellations_before = evidence.cancellations;
+    evidence.cancellations += 1;
+    println!(
+        "runtime-init cancellation: initializer-receipts={} fully-reaped={} tool-callbacks={}",
+        fs::read(receipt).unwrap().as_chunks::<16>().0.len(),
+        evidence.cancellations - cancellations_before,
+        event_count - 1,
+    );
 }
 
-async fn timer_boundary_pair(loader: &Loader, artifact: &Artifact, directory: &Path) {
+async fn timer_boundary_pair(
+    loader: &Loader,
+    artifact: &Artifact,
+    directory: &Path,
+    evidence: &mut MatrixEvidence,
+) {
     let fixture = compile(
         directory,
         "runtime_init.c",
@@ -1018,8 +1099,12 @@ async fn timer_boundary_pair(loader: &Loader, artifact: &Artifact, directory: &P
         "initialization changed timer delivery, clock, RIP, or entry-loop iteration"
     );
     artifact.assert_unchanged();
+    let pairs_before = evidence.pairs;
+    let pair = evidence.record_pair(&reference_global, &global, &stats);
     println!(
-        "runtime-init timer: pairs=1 callbacks=2 exact-rcbs={TIMER_RCBS} rip={rip:#x} remaining={remaining}"
+        "runtime-init timer: pairs={} callbacks={} exact-rcbs={TIMER_RCBS} rip={rip:#x} remaining={remaining}",
+        evidence.pairs - pairs_before,
+        pair.timer_callbacks(),
     );
 }
 
@@ -1028,7 +1113,8 @@ async fn precision_boundary_pair(
     artifact: &Artifact,
     directory: &Path,
     mapping: bool,
-) -> usize {
+    evidence: &mut MatrixEvidence,
+) -> PairEvidence {
     let label = if mapping {
         "mapping-precision"
     } else {
@@ -1147,11 +1233,12 @@ async fn precision_boundary_pair(
         "{label}: controller maintenance changed the complete precision trace"
     );
     artifact.assert_unchanged();
+    let pair = evidence.record_pair(&reference_global, &global, &stats);
     println!(
-        "runtime-init boundary: case={label} markers=2 callbacks-per-run={} trace=exact",
-        reference_timers.len()
+        "runtime-init boundary: case={label} markers={} callbacks-per-run={} trace=exact",
+        pair.preinit_markers, pair.reference_timer_callbacks,
     );
-    reference_timers.len()
+    pair
 }
 
 #[cfg(debug_assertions)]
@@ -1177,6 +1264,7 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
     require_constructor_disabled();
     let artifact = Artifact::bound();
     let loader = Loader::native();
+    let mut evidence = MatrixEvidence::default();
     let directory = tempfile::tempdir().unwrap();
     let fixture = compile(
         directory.path(),
@@ -1199,6 +1287,7 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
         "native control failed before getpid witness"
     );
     assert_eq!(fs::read(native_marker).unwrap(), b"entered\n");
+    evidence.native_controls += 1;
 
     for pair in 0..PAIRS {
         let reference_marker = directory.path().join(format!("ptrace-{pair}.entered"));
@@ -1255,18 +1344,22 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
             "pair {pair}"
         );
         artifact.assert_unchanged();
+        evidence.record_pair(&reference_global, &global, &stats);
     }
 
-    timer_boundary_pair(&loader, &artifact, directory.path()).await;
-    let entry_callbacks =
-        precision_boundary_pair(&loader, &artifact, directory.path(), false).await;
-    let mapping_callbacks =
-        precision_boundary_pair(&loader, &artifact, directory.path(), true).await;
-    assert_eq!(mapping_callbacks, 1);
+    timer_boundary_pair(&loader, &artifact, directory.path(), &mut evidence).await;
+    let entry_pair =
+        precision_boundary_pair(&loader, &artifact, directory.path(), false, &mut evidence).await;
+    let mapping_pair =
+        precision_boundary_pair(&loader, &artifact, directory.path(), true, &mut evidence).await;
+    assert_eq!(mapping_pair.reference_timer_callbacks, 1);
     println!(
-        "runtime-init precision: entry-callbacks-per-run={entry_callbacks} entry-callbacks={} mapping-callbacks=2 preinit-markers=4 timer-callbacks={}",
-        entry_callbacks * 2,
-        entry_callbacks * 2 + 4,
+        "runtime-init precision: entry-callbacks-per-run={} entry-callbacks={} mapping-callbacks={} preinit-markers={} timer-callbacks={}",
+        entry_pair.reference_timer_callbacks,
+        entry_pair.timer_callbacks(),
+        mapping_pair.timer_callbacks(),
+        entry_pair.preinit_markers + mapping_pair.preinit_markers,
+        evidence.timer_callbacks,
     );
 
     for (label, result_flag) in [
@@ -1294,10 +1387,11 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
             &entry,
             directory.path(),
             label,
+            &mut evidence,
         )
         .await;
     }
-    cancel_initializer(&loader, &fixture, &entry, directory.path()).await;
+    cancel_initializer(&loader, &fixture, &entry, directory.path(), &mut evidence).await;
     let static_fixture = compile(
         directory.path(),
         "runtime_init_static.c",
@@ -1318,6 +1412,7 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
         &entry_hex(&static_fixture),
         directory.path(),
         "static-image",
+        &mut evidence,
     )
     .await;
     let interposed = compile(
@@ -1340,6 +1435,7 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
     assert_eq!(run_native_bounded(native).code(), Some(98));
     assert_eq!(fs::read(native_main).unwrap(), b"entered\n");
     assert_eq!(fs::read(native_callback).unwrap(), b"sysconf\n");
+    evidence.native_controls += 1;
     refuse_before_entry(
         &loader,
         &artifact.path,
@@ -1347,6 +1443,7 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
         &interposed_entry,
         directory.path(),
         "executable-sysconf",
+        &mut evidence,
     )
     .await;
     for variable in ["LD_PRELOAD", "LD_AUDIT"] {
@@ -1357,11 +1454,22 @@ async fn controller_loads_runtime_before_entry_and_dispatches_one_real_hook() {
             &entry,
             directory.path(),
             variable,
+            &mut evidence,
         )
         .await;
     }
     artifact.assert_unchanged();
     println!(
-        "runtime-init evidence: pairs=13 ptrace-runs=13 initialized-runs=13 refusals=7 cancellations=1 native-controls=4 getpid-callbacks=52 preinit-markers=4 direct-hooks=13 timer-pairs=3"
+        "runtime-init evidence: pairs={} ptrace-runs={} initialized-runs={} refusals={} cancellations={} native-controls={} getpid-callbacks={} preinit-markers={} direct-hooks={} timer-pairs={}",
+        evidence.pairs,
+        evidence.ptrace_runs,
+        evidence.initialized_runs,
+        evidence.refusals,
+        evidence.cancellations,
+        evidence.native_controls,
+        evidence.getpid_callbacks,
+        evidence.preinit_markers,
+        evidence.direct_hooks,
+        evidence.timer_pairs,
     );
 }
