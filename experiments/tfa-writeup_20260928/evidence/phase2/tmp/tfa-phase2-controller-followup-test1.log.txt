@@ -1,0 +1,8 @@
+[2026-09-24T06:08:22.360-07:00] Starting new buck2 daemon...
+[2026-09-24T06:08:22.956-07:00] Connected to new buck2 daemon.
+[2026-09-24T06:08:22.995-07:00] Buck UI: https://www.internalfb.com/buck2/9566aae9-668d-456e-be2e-a1daa36173c1
+[2026-09-24T06:08:24.988-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/2814750166544157
+[2026-09-24T06:08:27.922-07:00] RE Session: reSessionID-e2936112-aad6-4a5a-aa7d-1c9ccf3521d4
+[2026-09-24T06:09:39.296-07:00] Network: up 779KiB  down 17MiB  session reSessionID-e2936112-aad6-4a5a-aa7d-1c9ccf3521d4
+[2026-09-24T06:09:39.296-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/2814750166544157
+Tests finished: [mPass 113[m. Fail 0. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0

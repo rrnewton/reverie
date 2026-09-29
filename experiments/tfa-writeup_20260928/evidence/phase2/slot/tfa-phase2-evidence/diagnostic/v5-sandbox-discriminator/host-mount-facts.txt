@@ -1,0 +1,15 @@
+# host facts for /tmp/codex-daemon-212630 (recorded 2026-09-25T06:33:07Z, this agent's mount namespace = the one TFA ran codex in)
+st_dev=49 major:minor=?d:?d
+st_dev as major:minor = 0:49
+fstype=btrfs
+mnt_id:	31979
+mountinfo lines for /, /tmp, /var/tmp:
+31730 29753 0:33 / / rw,relatime shared:1 - btrfs /dev/nvme1n1p4 rw,compress-force=zstd:3,ssd,discard,space_cache=v2,subvolid=5,subvol=/
+31979 31730 0:42 /tmpvol /tmp rw,noatime,nodiratime shared:121 - btrfs /dev/md0 rw,compress=zstd:3,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/tmpvol
+32001 31730 0:42 /tmpvol /var/tmp rw,noatime,nodiratime shared:121 - btrfs /dev/md0 rw,compress=zstd:3,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/tmpvol
+mountinfo lines whose root is on 0:42 and whose root path covers /tmpvol (alias candidates):
+31868 31730 0:42 / /data
+31979 31730 0:42 /tmpvol /tmp
+32001 31730 0:42 /tmpvol /var/tmp
+32710 32030 0:42 /tmpvol/phabricator_cats/claude_code_newton/2745045/.phabricator_cats /home/newton/.phabricator_cats
+33111 32031 0:42 /tmpvol/phabricator_cats/claude_code_newton/2745045/arcrc /home/newton/.arcrc

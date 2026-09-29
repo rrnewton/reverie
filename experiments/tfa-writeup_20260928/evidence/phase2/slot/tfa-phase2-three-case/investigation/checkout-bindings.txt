@@ -1,0 +1,15 @@
+case=thrift path=/home/newton/work/tfa/phase2-cases/investigators/thrift role=investigator-writable-own-checkout
+node=7f239d5b37dfbecf32fed144468da461f998add5
+status_lines=0
+99a6c74f02f855dd55ff2e07cd1a20ca281c55d568423ff212262eaf5c2a1795  fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp size=45063
+owner_uid=212630 eden_mount={
+case=asyncssl path=/home/newton/work/tfa/phase2-cases/investigators/asyncssl role=investigator-writable-own-checkout
+node=7f239d5b37dfbecf32fed144468da461f998add5
+status_lines=0
+92d01a50c973bf1b86e2f3e56f8bbd0af8a70007669b07df0f56d2cb1ddfde26  fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp size=145424
+owner_uid=212630 eden_mount={
+case=httpcoro path=/home/newton/work/tfa/phase2-cases/investigators/httpcoro role=investigator-writable-own-checkout
+node=7f239d5b37dfbecf32fed144468da461f998add5
+status_lines=0
+9ef3baad8982eab54c20840dbd5efd52981852e07abfa4ae4f3c55a27b7081d1  fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp size=178467
+owner_uid=212630 eden_mount={

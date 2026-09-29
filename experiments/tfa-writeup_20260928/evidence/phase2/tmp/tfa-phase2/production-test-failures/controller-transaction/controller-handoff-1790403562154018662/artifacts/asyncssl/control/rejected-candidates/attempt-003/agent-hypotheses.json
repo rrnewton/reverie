@@ -1,0 +1,1 @@
+[{"rank": 1, "claim": "controller transaction", "supporting": "candidate bytes", "contradicting": "none", "next_experiment": "controller apply"}, {"rank": 2, "claim": "no source change", "supporting": "baseline", "contradicting": "candidate patch", "next_experiment": "controller reject"}]

@@ -1,0 +1,7 @@
+diff --git a/fbcode/tfa_transaction_partial.txt b/fbcode/tfa_transaction_partial.txt
+new file mode 100644
+--- /dev/null
++++ b/fbcode/tfa_transaction_partial.txt
+@@ -0,0 +1 @@
++partial
+@@ malformed @@

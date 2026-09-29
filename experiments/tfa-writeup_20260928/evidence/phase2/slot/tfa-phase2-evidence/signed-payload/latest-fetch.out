@@ -1,0 +1,2 @@
+dotslash error: subcommand argument parsing (hint: try 'dotslash -- --help')
+caused by: Unrecognized argument: fetch

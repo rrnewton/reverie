@@ -1,0 +1,31 @@
+Independently review the exact sealed diff described below. Inspect the changed files and relevant tests in the read-only checkout. Reject any assertion, comparator, expected-value, helper, runtime-skip, test-selection, coverage, label, timeout, tolerance, retry, or gate change that weakens the evidence goalposts. Also reject correctness, safety, or test-coverage problems. Do not edit any source file. Return only the schema-conforming review object. APPROVED requires an empty findings array and must repeat the supplied diff SHA-256 and changed paths exactly. Explicitly assess deleted or removed coverage and every target in the following required rule. An APPROVED response must include `goalpost_assessment` exactly as shown below; use the schema alternatives and CHANGES_REQUESTED whenever any category fails.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+{
+  "required_approving_goalpost_assessment": {
+    "assertion_weakening": "NOT_FOUND",
+    "deleted_check_coverage": "PRESERVED",
+    "failure_relabeling": "NOT_FOUND",
+    "tolerance_exemption_skip_comparator_relaxation": "NOT_FOUND"
+  }
+}
+
+{
+  "changed_paths": [
+    "fbcode/tfa_controller_handoff_probe.txt"
+  ],
+  "checkout": "/tmp/tfa-phase2/tfa-production-controller-handoff-gl1exsv2/case-checkout",
+  "diff_path": "/tmp/tfa-phase2/tfa-production-controller-handoff-gl1exsv2/artifacts/handoff/control/candidate-attempts/attempt-001/approved-patch.diff",
+  "diff_sha256": "b77a50ef4ad64690a4bade25fe8de58009ca6063e7abd4484522eafc09dda95e"
+}

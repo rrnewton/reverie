@@ -1,0 +1,31 @@
+info: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu
+info: latest update on 2026-04-16 for version 1.95.0 (59807616e 2026-04-14)
+info: downloading 7 components
+warn: the missing active toolchain `1.95.0-x86_64-unknown-linux-gnu` has been auto-installed
+warn: this might cause rustup commands to take longer time to finish than expected
+info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+    Updating git repository `https://github.com/openai-oss-forks/crossterm`
+From https://github.com/openai-oss-forks/crossterm
+ * [new ref]         45fecb9508105988f42fe6ff0441783ed3717f92 -> refs/commit/45fecb9508105988f42fe6ff0441783ed3717f92
+    Updating git repository `https://github.com/openai-oss-forks/tokio-tungstenite`
+From https://github.com/openai-oss-forks/tokio-tungstenite
+ * [new ref]         0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186 -> refs/commit/0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186
+    Updating git repository `https://github.com/openai-oss-forks/tungstenite-rs`
+From https://github.com/openai-oss-forks/tungstenite-rs
+ * [new ref]         4fffad30fe373adbdcffab9545e9e9bf4f2fc19f -> refs/commit/4fffad30fe373adbdcffab9545e9e9bf4f2fc19f
+    Updating crates.io index
+    Updating git repository `https://github.com/dzbarsky/rules_rust`
+From https://github.com/dzbarsky/rules_rust
+ * [new ref]             b56cbaa8465e74127f1ea216f813cd377295ad81 -> refs/commit/b56cbaa8465e74127f1ea216f813cd377295ad81
+    Updating crates.io index
+    Updating git repository `https://github.com/helix-editor/nucleo.git`
+From https://github.com/helix-editor/nucleo
+ * [new ref]         4253de9faabb4e5c6d81d946a5e35a90f87347ee -> refs/commit/4253de9faabb4e5c6d81d946a5e35a90f87347ee
+    Updating git repository `https://github.com/microsoft/mxc`
+From https://github.com/microsoft/mxc
+ * [new ref]         6cd3d58f05d3447e67109cfb75e042803b843ca4 -> refs/commit/6cd3d58f05d3447e67109cfb75e042803b843ca4
+    Updating git repository `https://github.com/hyperium/h3`
+From https://github.com/hyperium/h3
+ * [new ref]         e07e69412876f7e26f026bd75a48b2704d8c8283 -> refs/commit/e07e69412876f7e26f026bd75a48b2704d8c8283
+error: cannot update the lock file /tmp/tfa-phase2/codex-source-E3DIko/codex-rs/Cargo.lock because --locked was passed to prevent this
+help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.

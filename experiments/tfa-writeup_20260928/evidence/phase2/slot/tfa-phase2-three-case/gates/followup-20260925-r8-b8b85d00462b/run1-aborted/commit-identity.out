@@ -1,0 +1,142 @@
+c1f8817a5ebba01e752d295baad1bd9a8fe9dee3 3eb9d118337a63f1bfe487d811c32caff06de1dd
+[testinfra][tfa] Bind the follow-up unfixed phase to the manifest test ELF
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+A real-evidence negative control at `3eb9d118` found a gap. When the two
+phases of the real thrift ledger were swapped, `render-followup` rendered the
+ledger instead of refusing it. The verdict came out NOT SUPPORTED, because
+the unfixed FAILs became "patched" FAILs. However, nothing tied the `unfixed`
+phase to the manifest. A ledger could therefore offer any failing ELF as the
+baseline and make an ineffective patch look discriminating.
+
+`validated_followup` now requires the unfixed phase's `guest_sha256` to equal
+the manifest `artifact_sha256`. It checks this before the existing check that
+the two phases test different ELFs. The fixture now uses the case's
+`artifact_sha256` for the unfixed ELF. A new binding subtest swaps the ledger
+phases and expects the refusal. The README states the rule.
+
+Test Plan:
+Pre-commit checks, under `tfa-phase2-three-case/gates/followup-20260925-r7-precommit/`:
+- `arc f`, `arc lint`, `arc pyre check-changed-targets`: rc 0
+- `tfa_phase2_test`: 187/187. The new check is a subtest of
+  `test_refuses_runs_not_bound_to_their_phase_or_bytes`.
+- All three real ledgers still validate, and their unfixed ELF equals the
+  manifest artifact:
+  - thrift: SUPPORTED, with the seed-1 path caveat;
+  - asyncssl: SUPPORTED, with fresh seed 15 OTHER;
+  - httpcoro: SUPPORTED.
+
+Parent `3eb9d118` exact-head gates
+(`gates/followup-20260925-r6-3eb9d118337a/`):
+- `arc lint` and pyre: rc 0
+- `tfa_phase2_test`: 187/187
+- CLI built.
+- The initial renders are byte-identical to `stage1-2-relocated`, and the
+  follow-up renders are SUPPORTED for all three cases.
+- All 8 `followup.py` mutations are caught by `FollowupTest`.
+- The phase-swap real-evidence control was not refused, which is the gap fixed
+  here.
+- Containment was not run at that head.
+
+The exact-head gates for this commit run afterwards under
+`gates/followup-20260925-r7-<head>/`.
+
+The signed Codex gate remains BLOCKED at 36/40, not green.
+---
+b8b85d00462b6f159641aee73a49321ca863609d c1f8817a5ebba01e752d295baad1bd9a8fe9dee3
+[testinfra][tfa] Render follow-up root causes as caveated hypotheses
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+A scientific-clarity review of the phase-two evidence found that the
+follow-up comments stated each investigator's root cause as a mechanism,
+although the underlying reports qualify it:
+- thrift is not instrumented;
+- asyncssl's ACK ordering is inferred, and its production-drain alternative
+  was rejected on precedent;
+- httpcoro has no DBG drain log.
+
+The comments also did not define run roles or the verdict rule, and they
+gave no rerun command.
+
+`render-followup` now:
+- labels the root cause "Root-cause hypothesis (investigator candidate,
+  rank r of n; not proven)";
+- quotes the selected hypothesis's `contradicting` field;
+- lists the other ranked hypotheses as not excluded;
+- defines the `fail-witness`, `pass-witness`, `discriminator` and `fresh`
+  roles;
+- states the verdict rule. SUPPORTED means only that patched replays did
+  not reproduce the FAIL. A same-seed patched replay is a different
+  schedule. SUPPORTED is not native, CI, landed or production-containment
+  validation.
+
+The quoted `contradicting` and `claim` fields are investigator-controlled,
+and `_validate_hypotheses` only requires non-empty strings. An adversarial
+review found two problems with an earlier version of this change:
+- It pasted those fields into the comment with only whitespace collapsed,
+  so an investigator could inject Markdown, HTML, @mentions or unbounded
+  text.
+- It re-read `report.json` after `validate_candidate_report`, which left a
+  TOCTOU window.
+
+Now `validate_candidate_report` returns the ranked hypotheses and the
+selected rank in `CandidateSummary`, built from the same parse it
+validated, and the renderer reads only that snapshot. Each rendered agent
+field goes through `_agent_text`:
+- collapse to one line;
+- drop Unicode control and format characters, including bidi overrides and
+  zero-width characters;
+- turn backticks into `'`;
+- cut fields longer than `AGENT_TEXT_LIMIT` (1000) characters, with a
+  marker. The longest real field is 751 characters.
+
+A field that is empty after filtering is refused. The fields are rendered
+inside a `text` code fence, which they cannot close. `root_cause` keeps its
+existing strict one-line validation.
+
+The comment also prints the exact receipt `cwd` and `argv` for the unfixed
+FAIL and the patched replay of the lowest seed that FAILed unfixed. A
+receipt without `cwd` is refused.
+
+Judging and verdicts are unchanged. The `judge_run`, `_verdict` and
+binding checks are untouched, and the three real `followup-runs.json` files
+are byte-identical to stage 3.
+
+The context-free phase-two summary is `tfa-phase2-three-case/RESULTS.md`,
+in the evidence tree and not in this commit. The comments do not cite
+containment, because it is environment-level. The signed Codex containment
+gate remains BLOCKED at 36/40 by the four Codex 0.156.0 preflight cases.
+That count is not a pass rate, and it validates no candidate fix.
+
+Test Plan:
+Pre-commit:
+- `arc f` and `arc lint` on the four files: no issues.
+- `FollowupTest`: 16/16. It adds seven tests:
+  - `test_root_cause_is_rendered_as_a_caveated_hypothesis`
+  - `test_comment_gives_measured_commands_for_lowest_failing_seed`, with
+    fail-witness and fresh-seed subtests
+  - `test_refuses_receipt_without_cwd_for_its_command`
+  - `test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text`
+  - `test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text`,
+    covering fence breaks, HTML, @mentions, links, CR, bidi, zero-width,
+    ANSI escapes and an all-invisible refusal
+  - `test_overlong_hypothesis_text_is_cut_at_the_limit`
+  - `test_renders_the_validated_snapshot_not_a_reread_report`
+- No existing assertion was removed or relaxed.
+- Sensitivity, in `gates/followup-r8b-sensitivity/` with a fresh pycache
+  per run:
+  - Against the previous `followup.py` (2c30cbed plus the constant), five
+    tests fail, and it renders `@swapped` text that was written after
+    validation.
+  - Each of five mutations of the plain-text policy fails its own tests:
+    `no-control-filter`, `no-backtick-escape`, `no-length-cap`,
+    `no-text-fence` and `reread-report`.
+
+The exact-head gates run after this amend under
+`gates/followup-20260925-r8-<head>/`: lint, pyre, the full
+`tfa_phase2_test`, renders, negative controls and containment.
+---

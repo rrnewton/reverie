@@ -1,0 +1,7 @@
+{
+  "artifact": "/home/newton/work/dev-hermit/.agentctl/tfa-inv-httpcoro/queue/failed/01790332711788577027-455612.json",
+  "error": "message 01790332711788577027-455612 has an ambiguous outcome after one injection: pane wV:p11 did not confirm idle/done -> working submission: wait for pane wV:p11 status working: {\"error\":{\"code\":\"timeout\",\"message\":\"timed out waiting for agent status\"},\"id\":\"cli:agent:wait\"}; it is retained under /home/newton/work/dev-hermit/.agentctl/tfa-inv-httpcoro/queue/failed",
+  "message_id": "01790332711788577027-455612",
+  "outcome": "possibly_submitted",
+  "safe_to_retry": false
+}

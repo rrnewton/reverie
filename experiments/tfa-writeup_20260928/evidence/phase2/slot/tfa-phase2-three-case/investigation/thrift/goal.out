@@ -1,0 +1,7 @@
+{
+  "artifact": "/home/newton/work/dev-hermit/.agentctl/tfa-inv-thrift/queue/failed/01790332451868470783-3663822.json",
+  "error": "message 01790332451868470783-3663822 has an ambiguous outcome after one injection: pane wV:pZ did not confirm idle/done -> working submission: wait for pane wV:pZ status working: {\"error\":{\"code\":\"timeout\",\"message\":\"timed out waiting for agent status\"},\"id\":\"cli:agent:wait\"}; it is retained under /home/newton/work/dev-hermit/.agentctl/tfa-inv-thrift/queue/failed",
+  "message_id": "01790332451868470783-3663822",
+  "outcome": "possibly_submitted",
+  "safe_to_retry": false
+}

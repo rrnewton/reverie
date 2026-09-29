@@ -1,0 +1,140 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=8.0",
+    "--chaos-epoch-length-ns=0",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/cwd,target=/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/cwd",
+    "--tmp=/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/guest-tmp/seed-011-replica-1",
+    "--epoch=2026-09-21T22:13:10Z",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "11",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--target-timeslice",
+    "5000000",
+    "--max-timeslice",
+    "200000000",
+    "--clock-multiplier=1.0",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/verify",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+    "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+    "--gtest_also_run_disabled_tests"
+  ],
+  "argv_sha256": "8f12f69c9066fd278824aa3671270276e8169a44bb97bbb7b0235a87f3494081",
+  "case_id": "asyncssl",
+  "classification": {
+    "determinism_verified": true,
+    "failure_class_id": "gtest-byte-events-three-missing-ack",
+    "gtest": {
+      "filter": "AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+      "filter_line": "Note: Google Test filter = AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+      "run_line": "[ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+      "stdout": {
+        "kind": "file",
+        "mode": 420,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/stdout.txt",
+        "sha256": "97ed421fa661c4feb461f67117dd05aa32f9bfd73edc8595eb65e2de8b41edb5",
+        "size": 2064
+      },
+      "terminal_line": "[  FAILED  ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (140 ms)"
+    },
+    "oracle": "FAIL",
+    "returncode": 1
+  },
+  "cwd": "/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/cwd",
+  "cwd_entries_after": [],
+  "duration_seconds": 4.924564361572266,
+  "environment": {
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/safehermit-log-root",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/tmpdir",
+    "removed": [
+      "HERMIT_BIN",
+      "PYTHONPATH",
+      "RUST_LOG"
+    ]
+  },
+  "finished_unix": 1790326776.550662,
+  "guest_tmp": "/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/guest-tmp/seed-011-replica-1",
+  "guest_tmp_inventory": [],
+  "inputs": {
+    "guest": {
+      "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+      "sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46",
+      "size": 17651096
+    },
+    "hermit": {
+      "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+      "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "size": 415330552
+    },
+    "safehermit": {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "sha256": "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0",
+      "size": 67422
+    }
+  },
+  "intended_role": "fail",
+  "label": "seed-011-replica-1",
+  "replica": 1,
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/safehermit.txt",
+    "sha256": "72f27e0356911352bc93fc8f65e42a4b7919136f255934994825ec7fe2458f9e",
+    "size": 1950
+  },
+  "schema": "tfa.relocated-reproducer-run.v1",
+  "seed": 11,
+  "started_unix": 1790326771.6260977,
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/stderr.txt",
+    "sha256": "a9c8c9ebe472437bb4fbb4d80e5e85858064fb7e8a202a8093cefaeb3f260d9f",
+    "size": 1777
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/asyncssl/seed-011-replica-1/stdout.txt",
+    "sha256": "97ed421fa661c4feb461f67117dd05aa32f9bfd73edc8595eb65e2de8b41edb5",
+    "size": 2064
+  },
+  "verify_inventory": [
+    {
+      "path": "run1_log_0euTF",
+      "size": 2274118
+    },
+    {
+      "path": "run2_log_uV6L0",
+      "size": 2274118
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+Usage: tfa_phase2_test.par [options] [TEST] ...
+
+Options:
+  --hide-output         Suppress data that tests print to stdout/stderr, and
+                        only show it if the test fails.
+  -f, --failfast        Stop after the first failure
+  -l, --list-tests      List tests and exit
+  -r REGEX, --regex=REGEX
+                        Regex to apply to tests, to only run those tests
+  --logger=<category>=<level>
+                        Configure log levels for specific logger categories
+  -q, --quiet           Decrease the verbosity (may be specified multiple
+                        times)
+  -v, --verbosity       Increase the verbosity (may be specified multiple
+                        times)
+  --profile=PROFILE     Profile the test with cProfile, and write output to
+                        the given path
+  -?, --help            Show this help message and exit

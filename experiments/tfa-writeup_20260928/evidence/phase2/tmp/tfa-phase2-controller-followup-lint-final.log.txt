@@ -1,0 +1,17 @@
+notice Found 1 lint issue.
+>>> Lint for fbcode/testinfra/tfa/pipeline.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             266         return sum(
+             267             1
+             268             for index, line in enumerate(stack_lines[:-1])
+        -    269             if re.fullmatch(
+        -    270                 r" +@ [0-9a-fA-F]+ " + re.escape(expected_frame), line
+        -    271             )
+        +                    if re.fullmatch(r" +@ [0-9a-fA-F]+ " + re.escape(expected_frame), line)
+             272             is not None
+             273             and stack_lines[index + 1].strip() == source_line
+             274         )
+alert Expected a 'lint clean' run but found at least one issue.

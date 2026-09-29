@@ -1,0 +1,204 @@
+{
+  "attempts": [
+    {
+      "cwd_left_nonempty": false,
+      "duration_seconds": 15.699776887893677,
+      "label": "seed-001-attempt-1",
+      "oracle": "FAIL",
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-001-attempt-1/receipt.json",
+      "returncode": 1,
+      "seed": 1
+    },
+    {
+      "cwd_left_nonempty": false,
+      "duration_seconds": 15.149322032928467,
+      "label": "seed-001-attempt-2",
+      "oracle": "FAIL",
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-001-attempt-2/receipt.json",
+      "returncode": 1,
+      "seed": 1
+    },
+    {
+      "cwd_left_nonempty": false,
+      "duration_seconds": 14.552151203155518,
+      "label": "seed-000-attempt-1",
+      "oracle": "PASS",
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-000-attempt-1/receipt.json",
+      "returncode": 0,
+      "seed": 0
+    },
+    {
+      "cwd_left_nonempty": false,
+      "duration_seconds": 14.046260833740234,
+      "label": "seed-000-attempt-2",
+      "oracle": "PASS",
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-000-attempt-2/receipt.json",
+      "returncode": 0,
+      "seed": 0
+    }
+  ],
+  "case_id": "thrift",
+  "historical_seeds": {
+    "fail": 1,
+    "pass": 0
+  },
+  "manifest_seeds": {
+    "fail": 1,
+    "pass": 0
+  },
+  "schema": "tfa.relocated-reproducer-summary.v2",
+  "search_bound": {
+    "censored_counts_as": "neither PASS nor FAIL",
+    "excluded_fresh_stress_seeds": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "historical_campaign_measured_seeds": [
+      0,
+      1
+    ],
+    "historical_campaign_seed_range": [
+      0,
+      1
+    ],
+    "max_attempts_per_seed": 4
+  },
+  "search_order": [
+    1,
+    0
+  ],
+  "witness": {
+    "fail": {
+      "argv": [
+        "/home/newton/work/dev-hermit/bin/safehermit",
+        "--sh-report",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-001-attempt-1/safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd,target=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd",
+        "--tmp=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-001-attempt-1/guest-tmp",
+        "--epoch=2026-09-21T21:44:37Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-001-attempt-1/verify",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "censored_attempts": [],
+      "cwd": "/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd",
+      "decided_attempts": [
+        "seed-001-attempt-1",
+        "seed-001-attempt-2"
+      ],
+      "seed": 1,
+      "seed_changed_from_manifest": false,
+      "state": "REPRODUCED",
+      "stdout_identical_across_decided_attempts": true
+    },
+    "pass": {
+      "argv": [
+        "/home/newton/work/dev-hermit/bin/safehermit",
+        "--sh-report",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-000-attempt-1/safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd,target=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd",
+        "--tmp=/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-000-attempt-1/guest-tmp",
+        "--epoch=2026-09-21T21:44:37Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/seed-000-attempt-1/verify",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "censored_attempts": [],
+      "cwd": "/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd",
+      "decided_attempts": [
+        "seed-000-attempt-1",
+        "seed-000-attempt-2"
+      ],
+      "seed": 0,
+      "seed_changed_from_manifest": false,
+      "state": "REPRODUCED",
+      "stdout_identical_across_decided_attempts": true
+    }
+  }
+}

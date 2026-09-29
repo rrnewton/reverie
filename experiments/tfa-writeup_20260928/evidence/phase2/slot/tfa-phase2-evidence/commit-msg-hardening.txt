@@ -1,0 +1,70 @@
+[testinfra][tfa] Hash-bind the Codex payload and unify deadlines
+
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+Harden the Codex launch identity and the managed-process deadlines after
+the exact-head review of the sealed-provenance change. Both reviewed
+compatibility keys (stable 0.156.0 and latest 0.156.1) stay blocked on the
+Btrfs daemon-socket incompatibility; nothing here makes any key eligible.
+
+- Payload binding: a compatibility entry is now (state, blocker, payload
+  sha256). An entry marked eligible without a 64-hex payload digest is
+  demoted to blocked. The payload wrapper opens the owner-managed payload
+  with O_NOFOLLOW, hashes it through that single descriptor, checks the
+  file identity, type, owner (root or the effective uid) and group/other
+  write bits, compares the digest with the bound value, and execs the
+  supervisor through /proc/self/fd/<fd> instead of the path. The sentinel
+  records "payload-sha256 <digest>" and run metadata records
+  payload_sha256 and payload_binding; the parent refuses a sentinel digest
+  that differs from the bound one. The version bootstrap runs unbound but
+  still records the observed digest.
+- /proc/<pid>/exe race: remove the post-spawn /proc/<pid>/exe check. The
+  launcher is instead covered by a root-owned, non-writable directory
+  chain from / to the entrypoint and launcher, a descriptor re-check of
+  the launcher's mode, size, inode and type immediately before Popen, and
+  the payload binding above.
+- Entrypoint: classify the entrypoint by its own lstat type and owner
+  before calling readlink, so a regular file or foreign-owned link is
+  reported as "ownership or type is unsafe" rather than "unavailable".
+- Deadlines: one origin, taken when the payload launcher is spawned and
+  recorded as deadline_origin=payload-launcher-spawned. The execution
+  deadline is origin + timeout; readiness waits until
+  min(origin + startup, origin + timeout). A readiness miss before an
+  earlier startup deadline is a readiness error; otherwise it is the
+  execution timeout. Metadata records startup_timeout_seconds.
+- Channel: META_CODEX_RELEASE unset or empty selects stable and exactly
+  "latest" selects latest; every other spelling, including "stable",
+  "LATEST", surrounding whitespace and version strings, is refused. The
+  version banner must match the selected channel's reviewed banner.
+- The blocker text names the /tmp, /var/tmp and /data/tmpvol aliases of
+  the same Btrfs subvolume; README documents /data, the payload binding,
+  its residual risks (a same-uid writer or tracer, the preflight version
+  read outside the cgroup, the unhashed codex-code-mode-host sibling) and
+  the deadline origin. Identity schema is v3.
+- Tests: blocker-text tests assert both upstream fix hashes
+  (7cec3e110ce6dc5c14704dfa06f6db9c23a530fc,
+  a708fc683934d7d7ea7560354968fedd2be28581) literally. 25 new tests cover
+  owner, link-count, mode, symlink, directory-chain, manifest, channel,
+  banner, launcher-descriptor, payload-binding, sentinel and fake-clock
+  deadline rejection. Two timeout tests move from 0.3s/0.5s to 5s because
+  the budget now includes launcher startup, so the shorter value could
+  expire before the guest creates the descendant the test must kill; the
+  guests still sleep 30s so the timeout path is exercised.
+- test_real_packaged_hermit_is_bound_to_blocked_provenance now requires
+  PROVENANCE_MISMATCH: the packaged hermit-test-bin is rebuilt with
+  fb_build_info stamps, so its digest differs from the reviewed
+  provenance digest. The test asserts that difference, the exact error
+  prefix with the case witness, that nothing is pinned, and the recorded
+  identity fields (state, witness, packaged revision and digest,
+  configured targets, blockers, receipts digest). If the resource is ever
+  re-pinned to a byte-identical build, this test must change with it.
+
+Test Plan:
+- arc f; arc lint -a (both clean)
+- arc pyre check-changed-targets (no type errors, 3 targets)
+- buck test fbcode//testinfra/tfa/tests:tfa_phase2_test (157/157, 15s)
+- mutation check: restoring readlink before the lstat type check makes
+  test_entrypoint_requires_trusted_symlink fail with "Codex entrypoint is
+  unavailable"
+- buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json (3 cases)
+- buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test (36/40 in 5m28s; all non-Codex cases pass, the real signed Codex version bootstrap passes through the descriptor-bound payload path, and the four real Codex agent cases fail closed on the sealed Btrfs socket-isolation blocker)

@@ -1,0 +1,194 @@
+#!/usr/bin/python3 -I
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+
+_CGROUP_ENV = "TFA_PAYLOAD_CGROUP"
+_SENTINEL_ENV = "TFA_PAYLOAD_SENTINEL"
+_STATUS_ENV = "TFA_PAYLOAD_STATUS"
+_SUPERVISOR_ENV = "TFA_PAYLOAD_SUPERVISOR"
+_EXEC_WRAPPER_ENV = "META_EXEC_WRAPPER"
+_PAYLOAD_SHA256_ENV = "TFA_PAYLOAD_SHA256"
+_UNBOUND_PAYLOAD = "unbound"
+_EXPECTED_SUPERVISOR_SHA256 = (
+    "47fa14d7ec2d878916af2e10a22ffe764fdee1114cc66c65ee95ae21f7888a3a"
+)
+_REQUIRED_SEALS = (
+    fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+)
+
+
+def _path_from_environment(name: str) -> Path:
+    value = os.environ.pop(name, "")
+    path = Path(value)
+    if not value or not path.is_absolute() or "\x00" in value:
+        raise SystemExit(f"{name} is missing or invalid")
+    return path
+
+
+def _payload_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _bind_payload(path: str, expected: str) -> tuple[int, str]:
+    # Hash the payload through one descriptor and exec that descriptor, so the
+    # supervisor runs exactly the inode whose digest was checked.
+    if expected != _UNBOUND_PAYLOAD and re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise SystemExit("payload binding is malformed")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        offset = 0
+        while chunk := os.pread(descriptor, 1 << 20, offset):
+            digest.update(chunk)
+            offset += len(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise SystemExit(f"payload cannot be bound: {error}") from error
+    value = digest.hexdigest()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(before.st_mode) & 0o022
+        or _payload_identity(before) != _payload_identity(after)
+        or offset != after.st_size
+        or (expected != _UNBOUND_PAYLOAD and value != expected)
+    ):
+        os.close(descriptor)
+        raise SystemExit("payload identity differs from its reviewed digest")
+    try:
+        os.set_inheritable(descriptor, True)
+    except OSError as error:
+        os.close(descriptor)
+        raise SystemExit(f"payload cannot be inherited: {error}") from error
+    return descriptor, value
+
+
+def _upstream_command(argv: list[str]) -> list[str]:
+    # Refuse a missing or empty upstream executable before any control path or
+    # payload binding is touched, rather than failing on an index later.
+    upstream = argv[1:]
+    if not upstream or not upstream[0]:
+        raise SystemExit("payload wrapper received no upstream executable")
+    return upstream
+
+
+def _write_sentinel(path: Path, cgroup_root: Path, payload_digest: str | None) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        text = f"{os.getpid()} {cgroup_root}\n"
+        if payload_digest is not None:
+            text += f"payload-sha256 {payload_digest}\n"
+        payload = text.encode()
+        if os.write(descriptor, payload) != len(payload):
+            raise SystemExit("payload-wrapper sentinel write was incomplete")
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise SystemExit("payload-wrapper sentinel is unsafe")
+    finally:
+        os.close(descriptor)
+
+
+def _open_supervisor(path: Path) -> int:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        metadata = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 65536):
+            digest.update(chunk)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        seals = fcntl.fcntl(descriptor, fcntl.F_GET_SEALS)
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise SystemExit(f"payload supervisor is unavailable: {error}") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o500
+        or seals != _REQUIRED_SEALS
+        or digest.hexdigest() != _EXPECTED_SUPERVISOR_SHA256
+    ):
+        os.close(descriptor)
+        raise SystemExit("payload supervisor identity is invalid")
+    try:
+        os.set_inheritable(descriptor, True)
+    except OSError as error:
+        os.close(descriptor)
+        raise SystemExit(f"payload supervisor cannot be inherited: {error}") from error
+    return descriptor
+
+
+def main() -> None:
+    upstream = _upstream_command(sys.argv)
+    cgroup_root = _path_from_environment(_CGROUP_ENV)
+    sentinel = _path_from_environment(_SENTINEL_ENV)
+    status_path = _path_from_environment(_STATUS_ENV)
+    supervisor_path = _path_from_environment(_SUPERVISOR_ENV)
+    payload_binding = os.environ.pop(_PAYLOAD_SHA256_ENV, None)
+    os.environ.pop(_EXEC_WRAPPER_ENV, None)
+    payload = cgroup_root / "payload"
+    if not (payload / "cgroup.procs").is_file() or status_path.exists():
+        raise SystemExit("payload-wrapper control paths are not fresh")
+    try:
+        (payload / "cgroup.procs").write_text(f"{os.getpid()}\n")
+    except OSError as error:
+        raise SystemExit(f"payload-wrapper admission failed: {error}") from error
+    payload_digest = None
+    if payload_binding is not None:
+        payload_descriptor, payload_digest = _bind_payload(upstream[0], payload_binding)
+        upstream[0] = f"/proc/self/fd/{payload_descriptor}"
+    try:
+        _write_sentinel(sentinel, cgroup_root, payload_digest)
+    except OSError as error:
+        raise SystemExit(f"payload-wrapper admission failed: {error}") from error
+    supervisor = _open_supervisor(supervisor_path)
+    command = [
+        "/usr/local/bin/fbpython",
+        f"/proc/self/fd/{supervisor}",
+        str(status_path),
+        str(cgroup_root),
+        *upstream,
+    ]
+    os.execve(command[0], command, dict(os.environ))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+/tmp/tfa-phase2/cases/httpcoro
+/tmp/tfa-phase2/cases/httpcoro/buck-out
+/tmp/tfa-phase2/cases/asyncssl
+/tmp/tfa-phase2/cases/asyncssl/buck-out
+/tmp/tfa-phase2/qualified-runs-0eb3028f-20260922/checkouts/httpcoro
+/tmp/tfa-phase2/qualified-runs-0eb3028f-20260922/checkouts/httpcoro/buck-out
+/tmp/tfa-phase2/httpcoro-b493168e.FhHVCr/checkout
+/tmp/tfa-phase2/httpcoro-b493168e.FhHVCr/checkout/buck-out

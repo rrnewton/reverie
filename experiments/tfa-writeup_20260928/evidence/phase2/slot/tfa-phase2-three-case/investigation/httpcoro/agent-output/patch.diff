@@ -1,0 +1,17 @@
+diff --git a/fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp b/fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp
+--- a/fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp
++++ b/fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp
+@@ -1665,7 +1665,12 @@
+         keepaliveReqSource.setSource(requestSource.release());
+         co_return HTTPFixedSource::makeFixedResponse(200);
+       });
+-  loopN(4);
++  // Must not block: an idle blocking loopOnce() waits for the next timer, which
++  // can be the 1s connection read timeout. The resulting GOAWAY makes the codec
++  // suppress every later stream, so the resets below would never be counted.
++  for (int i = 0; i < 4; i++) {
++    evb_.loopOnce(EVLOOP_NONBLOCK);
++  }
+ 
+   // saturate reset rate limit, ::onIngressError will be invoked
+   EXPECT_CALL(lifecycleObs_, onIngressError(_, kErrorMessage));

@@ -1,0 +1,11 @@
+Note: Google Test filter = HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from HTTPDownstreamSessionTest/H2DownstreamSessionTest
+[ RUN      ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2
+[       OK ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2 (432 ms)
+[----------] 1 test from HTTPDownstreamSessionTest/H2DownstreamSessionTest (432 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (434 ms total)
+[  PASSED  ] 1 test.

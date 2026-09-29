@@ -1,0 +1,47 @@
+[2026-09-24T15:23:41.252-07:00] Buck UI: https://www.internalfb.com/buck2/38368586-3f0a-42f5-9346-09b67bcedc0a
+[2026-09-24T15:23:42.012-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499579743
+[2026-09-24T15:23:50.800-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (5.7s)
+[2026-09-24T15:23:50.800-07:00] test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:50.800-07:00] ======================================================================
+[2026-09-24T15:23:50.800-07:00] FAIL: test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:23:50.800-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:23:50.800-07:00] Traceback (most recent call last):
+[2026-09-24T15:23:50.800-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 210, in locked
+[2026-09-24T15:23:50.800-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:23:50.800-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:23:50.800-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3855, in test_forced_run2_kill_confines_and_seals_verify_residue
+[2026-09-24T15:23:50.800-07:00]     self.assertEqual(evidence["outputs"], [])
+[2026-09-24T15:23:50.800-07:00] AssertionError: Lists differ: [{'kind': 'file', 'mode': 420, 'path': '/t[375 chars]: 4}] != []
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:50.800-07:00] First list contains 2 additional elements.
+[2026-09-24T15:23:50.800-07:00] First extra element 0:
+[2026-09-24T15:23:50.800-07:00] {'kind': 'file', 'mode': 420, 'path': '/tmp/tfa-phase2/tfa-production-hermit-run2-ra2buopj/attempt/controller-cwd/run1', 'sha256': '34e9aedefffddf04c3cf3f9e055ba714e9ebe21b828e6170eeb7b610123d9f7d', 'size': 4}
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:50.800-07:00] + []
+[2026-09-24T15:23:50.800-07:00] - [{'kind': 'file',
+[2026-09-24T15:23:50.800-07:00] -   'mode': 420,
+[2026-09-24T15:23:50.800-07:00] -   'path': '/tmp/tfa-phase2/tfa-production-hermit-run2-ra2buopj/attempt/controller-cwd/run1',
+[2026-09-24T15:23:50.800-07:00] -   'sha256': '34e9aedefffddf04c3cf3f9e055ba714e9ebe21b828e6170eeb7b610123d9f7d',
+[2026-09-24T15:23:50.800-07:00] -   'size': 4},
+[2026-09-24T15:23:50.800-07:00] -  {'kind': 'file',
+[2026-09-24T15:23:50.800-07:00] -   'mode': 420,
+[2026-09-24T15:23:50.800-07:00] -   'path': '/tmp/tfa-phase2/tfa-production-hermit-run2-ra2buopj/attempt/controller-cwd/run2',
+[2026-09-24T15:23:50.800-07:00] -   'sha256': 'b5761296cb55333e5741ae405b52a28261371d58008c13a21d2951668992adc9',
+[2026-09-24T15:23:50.800-07:00] -   'size': 4}]
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:50.800-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:23:50.800-07:00] Ran 1 test in 5.721s
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:50.800-07:00] FAILED (failures=1)
+[2026-09-24T15:23:50.800-07:00]
+[2026-09-24T15:23:57.971-07:00] Network: up 0B  down 0B
+[2026-09-24T15:23:57.971-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/30680772499579743
+Tests finished: [mPass 1[m. [mFail 1[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+      ^^^ just prefix your previous command! ($ fdb !!)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499579743&expiry=2026-09-24T22%3A28%3A57Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=30680772499579743&expiry=2026-09-24T22%3A28%3A57Z&viewer=18498&signature=REDACTED]8;;\[0m

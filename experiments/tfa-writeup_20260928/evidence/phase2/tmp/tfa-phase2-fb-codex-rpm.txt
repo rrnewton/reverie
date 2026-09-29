@@ -1,0 +1,17 @@
+Name        : fb-codex
+Epoch       : 0
+Version     : 20260924
+Release     : 061917
+Architecture: x86_64
+Install Date: Thu Sep 24 14:49:21 2026
+Group       : Unspecified
+Size        : 1950085843
+License     : Proprietary
+Signature   : RSA/SHA256, Wed Dec 31 16:00:00 1969, Key ID 11120f4714e56dc8
+Source RPM  : fb-codex-20260924-061917.src.rpm
+Build Date  : Thu Sep 24 06:37:16 2026
+Build Host  : antlir2
+Packager    : devinfra_3p_ai
+Summary     : codex CLI for internal use
+Description :
+Built using rpm.builder for fbcode//3pai_tooling/codex:fb-codex on revision ae94e61ffeb27f0423309f9efdc0e3fca2966f1a

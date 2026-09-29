@@ -1,0 +1,171 @@
+notice Found 11 lint issues.
+>>> Lint for fbcode/testinfra/tfa/BUCK:
+
+   Error  (BUCKFORMAT) format
+    File needs formatting. Run `arc lint` or `arc f` to resolve.
+    
+    See https://fburl.com/starlark-fmt for more info.
+
+               6     "hub_python_binary",
+               7     "hub_python_library",
+               8 )
+        +        load("@fbcode//hub_infra/build_defs:hub_package.bzl", "hub_toml")
+               9 load(
+              10     "@fbcode_macros//build_defs:fbcode_configured_alias.bzl",
+              11     "fbcode_configured_alias",
+              12 )
+
+   Error  (BUCKFORMAT) format
+    File needs formatting. Run `arc lint` or `arc f` to resolve.
+    
+    See https://fburl.com/starlark-fmt for more info.
+
+              10     "@fbcode_macros//build_defs:fbcode_configured_alias.bzl",
+              11     "fbcode_configured_alias",
+              12 )
+        -     13 load("@fbcode//hub_infra/build_defs:hub_package.bzl", "hub_toml")
+        -     14 
+        +        
+              15 # Set by `hub init --oncall <shortname>` or the interactive IaC prompt.
+              16 oncall("testinfra")
+
+
+>>> Lint for fbcode/testinfra/tfa/hermit.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             322         or options.count("--verify-strict") != 1
+             323         or options.count("--keep-logs") != 1
+             324         or options.count("--verify-verbose") != 0
+        -    325         or len(
+        -    326             [
+        -    327                 token
+        -    328                 for token in options
+        -    329                 if token.startswith("--verify-log-dir=")
+        -    330             ]
+        -    331         )
+        +                or len([token for token in options if token.startswith("--verify-log-dir=")])
+             332         != 1
+             333     ):
+             334         raise HermitError("historical strict verification contract is malformed")
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1486         receipts = json.loads(path.read_text())
+            1487         after = regular_file_record(path)
+            1488     except (OSError, json.JSONDecodeError, StateError) as error:
+        -   1489         raise HermitError("packaged Hermit qualification receipts are unreadable") from error
+        +                raise HermitError(
+        +                    "packaged Hermit qualification receipts are unreadable"
+        +                ) from error
+            1490     if (
+            1491         before != after
+            1492         or before.get("sha256") != expected_digest
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1556                 (json.dumps(argv, separators=(",", ":")) + "\n").encode()
+            1557             ).hexdigest()
+            1558             != probe.get("argv_sha256")
+        -   1559             or hashlib.sha256(stderr.encode()).hexdigest()
+        -   1560             != probe.get("stderr_sha256")
+        -   1561             or hashlib.sha256(stdout.encode()).hexdigest()
+        -   1562             != probe.get("stdout_sha256")
+        +                    or hashlib.sha256(stderr.encode()).hexdigest() != probe.get("stderr_sha256")
+        +                    or hashlib.sha256(stdout.encode()).hexdigest() != probe.get("stdout_sha256")
+            1563             or hashlib.sha256((result_receipt + "\n").encode()).hexdigest()
+            1564             != probe.get("result_receipt_sha256")
+            1565             or hashlib.sha256(safehermit_report.encode()).hexdigest()
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1602         for candidate in candidates
+            1603         if isinstance(candidate, dict)
+            1604     ]:
+        -   1605         raise HermitError("packaged Hermit qualification candidates differ from receipts")
+        +                raise HermitError(
+        +                    "packaged Hermit qualification candidates differ from receipts"
+        +                )
+            1606     return before
+            1607 
+            1608 
+
+
+>>> Lint for fbcode/testinfra/tfa/tests/test_production_containment.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1526                     "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
+            1527                     recovery_root,
+            1528                 ),
+        -   1529                 patch.object(
+        -   1530                     TrustedSubprocessWithList, "run", side_effect=run
+        -   1531                 ),
+        +                        patch.object(TrustedSubprocessWithList, "run", side_effect=run),
+            1532                 self.assertRaisesRegex(AssertionError, "injected remove failure"),
+            1533             ):
+            1534                 with _disposable_worktree_source():
+
+
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             482             receipts["probe_binary"],
+             483             {
+             484                 "build_mode": value["qualification_probe"]["mode"],
+        -    485                 "configured_target": value["qualification_probe"][
+        -    486                     "configured_target"
+        -    487                 ],
+        +                        "configured_target": value["qualification_probe"]["configured_target"],
+             488                 "sha256": value["qualification_probe"]["sha256"],
+             489                 "upstream_revision": value["upstream_revision"],
+             490             },
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             508         for receipt in receipts["probes"]:
+             509             self.assertEqual(
+             510                 hashlib.sha256(
+        -    511                     (
+        -    512                         json.dumps(receipt["argv"], separators=(",", ":")) + "\n"
+        -    513                     ).encode()
+        +                            (json.dumps(receipt["argv"], separators=(",", ":")) + "\n").encode()
+             514                 ).hexdigest(),
+             515                 receipt["argv_sha256"],
+             516             )
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             926         self.assertNotIn("--keep-logs", translated[:boundary])
+             927         self.assertFalse(
+             928             any(
+        -    929                 token.startswith("--verify-log-dir=")
+        -    930                 for token in translated[:boundary]
+        +                        token.startswith("--verify-log-dir=") for token in translated[:boundary]
+             931             )
+             932         )
+             933         self.assertEqual(
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             930                 for token in translated[:boundary]
+             931             )
+             932         )
+        -    933         self.assertEqual(
+        -    934             translated[boundary:], historical[historical.index("--") :]
+        -    935         )
+        -    936 
+        +                self.assertEqual(translated[boundary:], historical[historical.index("--") :])
+             937     def test_current_verify_translation_rejects_a_lowered_contract(self) -> None:
+             938         historical = list(_argv(1))
+Applied 4 lint patches

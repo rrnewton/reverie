@@ -1,0 +1,9 @@
+{
+  "schema": "tfa.controller-interruption.v1",
+  "attempt_dir": "fail-witness-seed-000-attempt-2",
+  "classification": "CENSORED",
+  "reason": "controller process killed by host memory pressure mid-replay; no receipt.json was written; run.rcs has no entry for fail attempt 2",
+  "counted_as": "neither PASS nor FAIL",
+  "action": "directory preserved unmodified; replay resumed as attempt-3 in a new directory",
+  "recorded_by": "recovered controller 2026-09-25"
+}

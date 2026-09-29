@@ -1,0 +1,20 @@
+Add the TFA experiment write-up and way-forward analysis
+
+[hermit2, unknown-agentname, claude-family-by-ancestry, devbig030, role=coordinator]
+
+A mini-paper on the Test Flakiness Analyzer campaign, written by the TFA
+lane (sub-tfa2-030) at the owner's request: can Hermit find a repeatable
+passing seed and failing seed for real Meta flaky tests?
+
+- 30 registry targets; 10 attempted in the kernel-7.1 campaign of
+  2026-09-21. 3 of 10 reproduced both outcomes with CI's own assertion
+  (AsyncSSL, Thrift InstrumentationTest, HTTPCoro).
+- 294 seed trials: 198 pass, 3 fail, 93 discarded; 76 min of Hermit time.
+- Hermit defects stopped 4 of the other 7, 3 of them through one loader
+  bug: https://github.com/rrnewton/hermit/issues/3328.
+- Recommendation: do not land the 22-diff Phabricator stack; build a
+  small script-driven loop in dev-hermit on OnDemand hosts.
+
+README.md is the paper; WAY_FORWARD.md lists the owner-only decisions.
+evidence/ holds 226 small copies of non-repository sources, and
+evidence/MANIFEST.md maps each to its original with a sha256.

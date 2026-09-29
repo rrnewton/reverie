@@ -1,0 +1,9 @@
+/home/newton/work/tfa/fbsource/buck-out/.tfa-runtime/7f669de9e9555710e6be08f3/__async_ssl_socket_test__/async_ssl_socket_test
+7
+folly/io/async/test/certs/ca-cert.pem
+folly/io/async/test/certs/client_ca_cert.pem
+folly/io/async/test/certs/client_cert.pem
+folly/io/async/test/certs/client_chain.pem
+folly/io/async/test/certs/client_key.pem
+folly/io/async/test/certs/tests-cert.pem
+folly/io/async/test/certs/tests-key.pem

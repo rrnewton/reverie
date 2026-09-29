@@ -1,0 +1,54 @@
+Run this exact command with the shell tool exactly once. Return only its exact JSON object:
+/usr/local/bin/fbpython -c 'import json, pathlib, secrets, socket
+output = pathlib.Path('"'"'/tmp/tfa-phase2/tfa-production-controller-handoff-gl1exsv2/artifacts/handoff/agent-output'"'"')
+forbidden = pathlib.Path('"'"'/tmp/tfa-phase2/tfa-production-controller-handoff-gl1exsv2/case-checkout/agent-must-not-write'"'"')
+patch_path = output / '"'"'patch.diff'"'"'
+nonce = secrets.token_hex(24)
+try:
+    forbidden.write_text(nonce)
+    checkout_write = '"'"'succeeded'"'"'
+except OSError as error:
+    checkout_write = f'"'"'errno:{error.errno}'"'"'
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    network = '"'"'succeeded'"'"'
+except OSError as error:
+    network = f'"'"'errno:{error.errno}'"'"'
+probe_path = '"'"'fbcode/tfa_controller_handoff_probe.txt'"'"'
+patch_path.write_text(
+    '"'"'diff --git a/'"'"' + probe_path + '"'"' b/'"'"' + probe_path + '"'"'\n'"'"'
+    '"'"'new file mode 100644\n--- /dev/null\n'"'"'    '"'"'+++ b/'"'"' + probe_path + '"'"'\n'"'"'
+    '"'"'@@ -0,0 +1 @@\n+'"'"' + nonce + '"'"'\n'"'"'
+)
+hypotheses = [
+    {'"'"'rank'"'"': 1, '"'"'claim'"'"': '"'"'handoff'"'"', '"'"'supporting'"'"': nonce,
+     '"'"'contradicting'"'"': '"'"'none'"'"', '"'"'next_experiment'"'"': '"'"'apply'"'"'},
+    {'"'"'rank'"'"': 2, '"'"'claim'"'"': '"'"'direct edit'"'"',
+     '"'"'supporting'"'"': checkout_write + '"'"','"'"' + network,
+     '"'"'contradicting'"'"': '"'"'sandbox'"'"',
+     '"'"'next_experiment'"'"': '"'"'controller'"'"'},
+]
+hypotheses_path = output / '"'"'hypotheses.json'"'"'
+hypotheses_path.write_text(json.dumps(hypotheses))
+proposed = [
+    {'"'"'kind'"'"': kind, '"'"'argv'"'"': ['"'"'controller-only'"'"'],
+     '"'"'status'"'"': '"'"'FAIL'"'"',
+     '"'"'passed'"'"': 0, '"'"'total'"'"': total, '"'"'duration_seconds'"'"': 0,
+     '"'"'artifacts'"'"': []}
+    for kind, total in (('"'"'ORIGINAL_FAIL'"'"', 1),
+        ('"'"'ORIGINAL_PASS'"'"', 1), ('"'"'FRESH_STRESS'"'"', 1))
+]
+(output / '"'"'validation.json'"'"').write_text(json.dumps(proposed))
+reproduction = {'"'"'pass_reproduced'"'"': True,
+                '"'"'fail_reproduced'"'"': True}
+print(json.dumps({
+    '"'"'schema_version'"'"': 1, '"'"'qualification'"'"': '"'"'candidate-only'"'"',
+    '"'"'case_id'"'"': '"'"'asyncssl'"'"',
+    '"'"'reproduction'"'"': reproduction,
+    '"'"'hypotheses'"'"': hypotheses, '"'"'selected_hypothesis_rank'"'"': 1,
+    '"'"'root_cause'"'"': '"'"'Controller-only validation handoff probe.'"'"',
+    '"'"'patch_path'"'"': str(patch_path),
+    '"'"'original_fail_now_passes'"'"': False,
+    '"'"'original_pass_still_passes'"'"': False,
+    '"'"'validations'"'"': proposed,
+}, sort_keys=True))'

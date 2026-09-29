@@ -1,0 +1,5 @@
+/home/newton/.codex/packages/meta-dotslash/releases/11dc49310e8c42fdf5dd7608e0d58772916c39b44c6171acc448a379f274c192/bin/codex
+/home/newton/.codex/packages/meta-dotslash/releases/a73d81b581654f48dcbf21eb65ae31586a071ccea527a8251e2236441d95a348/bin/codex
+/home/newton/.codex/packages/meta-dotslash/releases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389/bin/codex
+/home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex
+/home/newton/.codex/packages/meta-dotslash/releases/d6b5e2ce3c540eb505415d340b40a1c0b71adfa6002073b0e27cf2afd46b9c3a/bin/codex

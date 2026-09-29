@@ -1,0 +1,27 @@
+.....FF.
+======================================================================
+FAIL: test_refuses_receipt_whose_bytes_contradict_its_oracle (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_receipt_whose_bytes_contradict_its_oracle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1314, in test_refuses_receipt_whose_bytes_contradict_its_oracle
+    with self.assertRaisesRegex(RelocationError, "failure-class markers"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: RelocationError not raised
+
+======================================================================
+FAIL: test_refuses_relabelled_censored_attempt (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_relabelled_censored_attempt)
+----------------------------------------------------------------------
+testinfra.tfa.relocation.RelocationError: fail witness differs from its first attempt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1283, in test_refuses_relabelled_censored_attempt
+    with self.assertRaisesRegex(RelocationError, "determinism"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: "determinism" does not match "fail witness differs from its first attempt"
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.040s
+
+FAILED (failures=2)

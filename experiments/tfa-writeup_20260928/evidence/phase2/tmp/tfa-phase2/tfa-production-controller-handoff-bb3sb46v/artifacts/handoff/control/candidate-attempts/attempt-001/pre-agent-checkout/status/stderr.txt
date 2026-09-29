@@ -1,0 +1,8 @@
+error: unexpected argument '--reason' found
+
+  tip: a similar argument exists: '--version'
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.

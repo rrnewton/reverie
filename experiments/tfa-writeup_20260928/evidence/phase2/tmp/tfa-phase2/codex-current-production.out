@@ -1,0 +1,37 @@
+[2026-09-24T15:39:03.975-07:00] Buck UI: https://www.internalfb.com/buck2/8948d762-2dc9-4470-92c8-f748fc0aed70
+[2026-09-24T15:39:04.885-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25895697908380349
+[2026-09-24T15:39:12.397-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (5.2s)
+[2026-09-24T15:39:12.397-07:00] test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... ERROR
+[2026-09-24T15:39:12.397-07:00]
+[2026-09-24T15:39:12.397-07:00] ======================================================================
+[2026-09-24T15:39:12.397-07:00] ERROR: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:39:12.397-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:39:12.397-07:00] Traceback (most recent call last):
+[2026-09-24T15:39:12.397-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+[2026-09-24T15:39:12.397-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:39:12.397-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:39:12.397-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3310, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+[2026-09-24T15:39:12.397-07:00]     result = run_process(
+[2026-09-24T15:39:12.397-07:00]              ^^^^^^^^^^^^
+[2026-09-24T15:39:12.397-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 902, in run_process
+[2026-09-24T15:39:12.397-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T15:39:12.397-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:39:12.397-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 387, in _codex_environment_preflight
+[2026-09-24T15:39:12.397-07:00]     raise ProcessError(
+[2026-09-24T15:39:12.397-07:00] testinfra.tfa.process.ProcessError: Codex native workspace sandbox preflight failed (tfa.codex-environment-preflight.v1; codex-cli 0.156.0; state=unsupported): executable version has no reviewed workspace-sandbox compatibility result
+[2026-09-24T15:39:12.397-07:00]
+[2026-09-24T15:39:12.397-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:39:12.397-07:00] Ran 1 test in 5.245s
+[2026-09-24T15:39:12.397-07:00]
+[2026-09-24T15:39:12.397-07:00] FAILED (errors=1)
+[2026-09-24T15:39:12.397-07:00]
+[2026-09-24T15:39:13.460-07:00] Network: up 0B  down 0B
+[2026-09-24T15:39:13.460-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25895697908380349
+Tests finished: Pass 0. [mFail 1[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+      ^^^ just prefix your previous command! ($ fdb !!)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=25895697908380349&expiry=2026-09-24T22%3A44%3A12Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=25895697908380349&expiry=2026-09-24T22%3A44%3A12Z&viewer=18498&signature=REDACTED]8;;\[0m

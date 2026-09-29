@@ -1,0 +1,6 @@
+diff --git a/fbcode/tfa_transaction_publish_boundary.txt b/fbcode/tfa_transaction_publish_boundary.txt
+new file mode 100644
+--- /dev/null
++++ b/fbcode/tfa_transaction_publish_boundary.txt
+@@ -0,0 +1 @@
++publish

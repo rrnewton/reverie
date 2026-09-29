@@ -1,0 +1,31 @@
+[2026-09-24T15:18:34.806-07:00] Buck UI: https://www.internalfb.com/buck2/1a0e4522-cdd8-4cae-9a9b-928be18bb769
+[2026-09-24T15:18:35.796-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/6473924846875486
+[2026-09-24T15:18:41.553-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
+[2026-09-24T15:18:41.553-07:00] test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
+[2026-09-24T15:18:41.553-07:00]
+[2026-09-24T15:18:41.553-07:00] ======================================================================
+[2026-09-24T15:18:41.553-07:00] FAIL: test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest)
+[2026-09-24T15:18:41.553-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:18:41.553-07:00] Traceback (most recent call last):
+[2026-09-24T15:18:41.553-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 149, in locked
+[2026-09-24T15:18:41.553-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:18:41.553-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:18:41.553-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 2550, in test_witness_adds_controller_cwd_without_changing_guest_cwd
+[2026-09-24T15:18:41.553-07:00]     self.assertIn("--timeout=110", expected_argv)
+[2026-09-24T15:18:41.553-07:00] AssertionError: '--timeout=110' not found in ('/tmp/tmpyp65fyr9/asyncssl/pass/safehermit-runtime/bin/safehermit', '--sh-report', '/tmp/tmpyp65fyr9/asyncssl/pass/safehermit.json', '--sh-deadline', '110', '--sh-max-log-bytes', '67108864', '--sh-disk-limit', '8G', '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a', 'run', '--backend', 'ptrace', '--strict', '--chaos', '--chaos-per-thread-slowdown', '--chaos-slowdown-max-factor=8.0', '--chaos-epoch-length-ns=0', '--base-env=minimal', '--env', 'LC_ALL=C', '--env', 'TZ=UTC', '--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out', '--mount=type=bind,source=/tmp/tfa-phase2/cwd/asyncssl,target=/tmp/tfa-phase2/cwd/asyncssl', '--epoch=2026-09-21T22:13:10Z', '--seed', '0', '--rng-seed', '0', '--sched-seed', '1', '--fuzz-seed', '0', '--sched-heuristic', 'random', '--target-timeslice', '5000000', '--max-timeslice', '200000000', '--clock-multiplier=1.0', '--verify', '--verify-verbose', '--verify-allow', 'both', '--mount=type=bind,source=/tmp/tmpyp65fyr9/asyncssl/pass/controller-cwd,target=/tmp/tmpyp65fyr9/asyncssl/pass/controller-cwd', '--workdir=/tmp/tfa-phase2/cwd/asyncssl', '--', '/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test', '--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect', '--gtest_also_run_disabled_tests')
+[2026-09-24T15:18:41.553-07:00]
+[2026-09-24T15:18:41.553-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:18:41.553-07:00] Ran 1 test in 0.017s
+[2026-09-24T15:18:41.553-07:00]
+[2026-09-24T15:18:41.553-07:00] FAILED (failures=1)
+[2026-09-24T15:18:41.553-07:00]
+[2026-09-24T15:18:43.456-07:00] Network: up 0B  down 0B
+[2026-09-24T15:18:43.456-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/6473924846875486
+Tests finished: [mPass 126[m. [mFail 1[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_phase2_test - test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest)
+      ^^^ just prefix your previous command! ($ fdb !!)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=6473924846875486&expiry=2026-09-24T22%3A23%3A42Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=6473924846875486&expiry=2026-09-24T22%3A23%3A42Z&viewer=18498&signature=REDACTED]8;;\[0m

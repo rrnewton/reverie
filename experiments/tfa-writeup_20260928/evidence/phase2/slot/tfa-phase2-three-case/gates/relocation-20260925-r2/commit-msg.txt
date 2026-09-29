@@ -1,0 +1,77 @@
+[testinfra][tfa] Lead unposted initial comments with measured non-/tmp reproducers
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+The owner forbids running from `/tmp`, but every phase-one PASS/FAIL command
+advertises a `/tmp/tfa-phase2` cwd, same-path mount, safehermit report and
+verify-log dir. Changing paths and argv can change virtual scheduling, so
+relocated commands are reproducers only once measured. This change lets the
+unposted initial comment lead with measured relocated commands while keeping
+the historical record labelled and hash-bound.
+
+- New `relocation.py`: `validated_relocation(case, summary_path)` accepts a
+  `tfa.relocated-reproducer-summary.v2` summary only if all of these hold:
+  - Both witnesses are `REPRODUCED` with at least two decided attempts, at a
+    seed that is not a fresh stress seed.
+  - The attempt directories on disk at that seed are exactly the decided plus
+    censored labels, with no omissions or inventions.
+  - Every censored attempt really is `CENSORED` (outer timeout or
+    rc 124/125/126), and it is counted as neither PASS nor FAIL.
+  - Every decided attempt's receipt binds the manifest Hermit and ELF
+    SHA-256s and its own stdout/stderr bytes. The pipeline's gtest oracles
+    then re-judge it from those bytes, so a receipt's recorded label is never
+    trusted.
+  - Each argv differs from the manifest argv only in the `/tmp`-bound tokens
+    (report path, verify-log dir, and the old mount, replaced by a same-path
+    cwd mount plus an owned `--tmp=`) and `--sched-seed`, and no token names
+    `/tmp`.
+- `initial_text(..., relocation, record_sha256)` leads with the measured
+  commands, each prefixed with `mkdir -p <cwd> && cd <cwd>`. It reports a
+  changed witness seed and any censored attempts, then demotes the `/tmp`
+  commands to a "Historical phase-one record" section citing the
+  `experiment.json` SHA-256. Without a relocation the text is unchanged.
+  `comments.py` imports the relocation types under `TYPE_CHECKING` to avoid a
+  pipeline → comments → relocation import cycle.
+- `render-evidence --relocation-summary` validates the summary and hashes the
+  record's `experiment.json`. It still writes with exclusive create.
+- Eight `RelocationTest` cases cover the leading layout, changed-seed and
+  censored reporting, the missing-hash refusal, a censored attempt relabelled
+  as decided, an omitted censored attempt, receipt bytes that contradict the
+  oracle, argv drift beyond `/tmp` paths, and fresh stress seeds or
+  unreproduced state.
+
+No process, Hermit, Codex, state or pipeline code changed. Both Codex
+compatibility keys remain blocked.
+
+Test Plan:
+Every gate below was run as its own unpiped command. Each log and exit status
+is under the registered evidence tree `tfa-phase2-three-case/gates/relocation-20260925-r2/`.
+An earlier combined attempt is kept but marked invalid in
+`gates/relocation-20260925/INVALID.md`.
+- `buck2 test fbcode//testinfra/tfa/tests:tfa_phase2_test`: rc 0, 174/174
+  (166 at the parent plus 8 `RelocationTest`)
+- `buck2 test fbcode//testinfra/tfa/tests:tfa_production_containment_test`:
+  rc 32, 36 pass / 4 fail. All four `test_real_codex_*` failures are the
+  signed Codex 0.156.0 `_codex_environment_preflight` blocker (missing
+  7cec3e110ce6 and a708fc683934). This remains BLOCKED, not green.
+- `arc pyre check-changed-targets`, `arc f`, `arc lint`: rc 0, clean
+- Negative control: replacing the `_check_oracle` call with `pass` fails
+  `test_refuses_receipt_whose_bytes_contradict_its_oracle` and
+  `test_refuses_relabelled_censored_attempt` (rc 1). The file was restored
+  and SHA-verified.
+- Real three-case measurement (`relocated-v2`). Each attempt ran in a
+  newly created, uid-owned, verified-empty cwd under
+  `/home/newton/work/tfa/phase2-cases/<case>/tfa-phase2-repro/attempts/`.
+  Every witness stayed at its manifest seed, with two decided attempts, zero
+  censored, and identical stdout:
+  - thrift: FAIL seed 1, PASS seed 0
+  - asyncssl: FAIL seed 11, PASS seed 1
+  - httpcoro: FAIL seed 0 (rc 134, 114 s and 113 s against the 120 s bound),
+    PASS seed 1
+- The v1 run's httpcoro seed-0 attempt was CENSORED at the bound. Its receipt
+  and the leftover verify-summary file in the shared v1 cwd are preserved,
+  with an incident record and a live-process scan (0 hits).
+- `render-evidence --relocation-summary`: rc 0 for all three cases. The
+  output is byte-identical to `stages/<case>/stage1-2-relocated/`. Nothing was
+  posted.

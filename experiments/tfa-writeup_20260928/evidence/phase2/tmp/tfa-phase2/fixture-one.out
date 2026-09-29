@@ -1,0 +1,20 @@
+[2026-09-24T15:11:02.070-07:00] Buck UI: https://www.internalfb.com/buck2/1b4a222c-d60e-45c4-85f6-c988f788d1ae
+[2026-09-24T15:11:02.573-07:00] Network: up 0B  down 0B
+Command failed: 
+Test executor exited unexpectedly with status 1.
+Stdout:
+
+Stderr:
+Error: Failed to run service
+
+Caused by:
+    0: Error parsing test runner arguments
+    1: error: unexpected argument '--test-filter' found
+       
+         tip: a similar argument exists: '--test-ids'
+       
+       Usage: ignored --buck-test-info <BUCK_TEST_INFO> --test-ids <TEST_IDS>... [TESTNAME_FILTERS]...
+       
+       For more information, try '--help'.
+       
+

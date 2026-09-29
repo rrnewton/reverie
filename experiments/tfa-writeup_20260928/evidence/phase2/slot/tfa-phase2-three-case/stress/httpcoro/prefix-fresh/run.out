@@ -1,0 +1,4 @@
+httpcoro fresh-seed-004 sched_seed=4 rc=0 oracle=PASS 8.4s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-004/receipt.json
+httpcoro fresh-seed-005 sched_seed=5 rc=124 oracle=CENSORED 121.1s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-005/receipt.json
+httpcoro fresh-seed-006 sched_seed=6 rc=124 oracle=CENSORED 121.1s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-006/receipt.json
+httpcoro fresh-seed-007 sched_seed=7 rc=0 oracle=PASS 8.4s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-007/receipt.json

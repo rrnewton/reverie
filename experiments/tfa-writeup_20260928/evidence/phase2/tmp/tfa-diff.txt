@@ -1,0 +1,969 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -92,7 +92,15 @@
+ fresh, resume, or reviewer contracts. Writable roots have no symlinked
+ components and are owned non-writable directories. Diagnostic Codex runs from
+ a dedicated artifact workspace and can read but cannot write the isolated case
+-checkout. Its report is explicitly candidate-only; agent-observed or proposed
++checkout. The Codex preflight binds both the root-owned Meta launcher and its
++root-owned signed release manifest before and after reading the version. The
++installed stable 0.156.0 and latest 0.156.1 manifests are blocked: this host
++exposes the Btrfs `/tmpvol` subtree through both `/tmp` and `/var/tmp`, while
++those releases reject the socket directory before their native sandbox starts.
++An owner-approved build must include upstream `7cec3e110ce6` (mask safe ancestor
++aliases) and `a708fc683934` (validate Btrfs subvolume device identities) and must
++pass the unchanged real containment cases before it can become eligible.
++Its report is explicitly candidate-only; agent-observed or proposed
+ validation never qualifies a fix. The trusted final response is written outside
+ tool-writable roots; any existing response file must be a single-link regular
+ owned file before launch. After cgroup cleanup, the coordinator publishes it
+diff --git a/fbcode/testinfra/tfa/process.py b/fbcode/testinfra/tfa/process.py
+--- a/fbcode/testinfra/tfa/process.py
++++ b/fbcode/testinfra/tfa/process.py
+@@ -58,7 +58,23 @@
+     "sandbox_workspace_write.exclude_slash_tmp=true",
+ )
+ _CODEX_EXECUTABLE: str = "/usr/local/bin/codex"
+-_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v1"
++_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v2"
++_CODEX_RELEASE_MANIFESTS: dict[str, tuple[Path, str]] = {
++    "stable": (
++        Path("/usr/local/bin/codex_cli/codex.real"),
++        "66494455a90b6f45f1fb93c73847d610337a12252a8f10a8a393f20ca213ae72",
++    ),
++    "latest": (
++        Path("/usr/local/bin/codex_cli/codex_latest.real"),
++        "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5",
++    ),
++}
++_CODEX_SOCKET_ISOLATION_BLOCKER: str = (
++    "owner-managed Codex lacks daemon-socket fixes "
++    "7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and "
++    "a708fc683934d7d7ea7560354968fedd2be28581 required for this host's "
++    "Btrfs /tmp and /var/tmp mount aliases"
++)
+ _CODEX_VERSION_STDERR: tuple[str, ...] = (
+     "",
+     "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+@@ -66,12 +82,29 @@
+     "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
+     "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+     "Using AI Gateway (OpenAI upstream)\n",
++    "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
++    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Using codex release channel 'latest' from "
++    "/usr/local/bin/codex_cli/codex_latest.real\n"
++    "Using AI Gateway (OpenAI upstream)\n",
++    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Using codex release channel 'latest' from "
++    "/usr/local/bin/codex_cli/codex_latest.real\n"
++    "Using AI Gateway (Azure Codex upstream)\n",
+ )
+-_CODEX_COMPATIBILITY: dict[tuple[str, str], tuple[str, str | None]] = {
++_CODEX_COMPATIBILITY: dict[tuple[str, str, str, str], tuple[str, str | None]] = {
+     (
+         "codex-cli 0.156.0",
+-        "8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a7920432b50acc4b9",
+-    ): ("blocked", "cannot establish app-server socket mount isolation"),
++        "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
++        "66494455a90b6f45f1fb93c73847d610337a12252a8f10a8a393f20ca213ae72",
++        "stable",
++    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER),
++    (
++        "codex-cli 0.156.1",
++        "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
++        "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5",
++        "latest",
++    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER),
+ }
+ 
+ 
+@@ -254,6 +287,126 @@
+     return "trusted-executable"
+ 
+ 
++def _root_owned_regular_record(path: Path, name: str) -> dict[str, object]:
++    try:
++        metadata = path.lstat()
++        record = regular_file_record(path)
++    except (OSError, StateError) as error:
++        raise ProcessError(f"Codex {name} is unavailable") from error
++    if (
++        not stat.S_ISREG(metadata.st_mode)
++        or metadata.st_uid != 0
++        or metadata.st_nlink != 1
++        or stat.S_IMODE(metadata.st_mode) & 0o022
++    ):
++        raise ProcessError(f"Codex {name} ownership or mode is unsafe")
++    return {
++        **record,
++        "device": metadata.st_dev,
++        "inode": metadata.st_ino,
++        "link_count": metadata.st_nlink,
++        "owner_uid": metadata.st_uid,
++    }
++
++
++def _codex_entrypoint_identity() -> dict[str, object]:
++    path = Path(_CODEX_EXECUTABLE)
++    try:
++        metadata = path.lstat()
++        target = os.readlink(path)
++        resolved = path.resolve(strict=True)
++    except OSError as error:
++        raise ProcessError("Codex entrypoint is unavailable") from error
++    if not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or "\x00" in target:
++        raise ProcessError("Codex entrypoint ownership or type is unsafe")
++    return {
++        "owner_uid": metadata.st_uid,
++        "path": str(path),
++        "resolved_path": str(resolved),
++        "target": target,
++    }
++
++
++def _open_verified_codex_launcher(expected: Mapping[str, object]) -> tuple[int, str]:
++    path_value = expected.get("path")
++    if not isinstance(path_value, str):
++        raise ProcessError("Codex executable identity path is malformed")
++    descriptor = -1
++    try:
++        descriptor = os.open(
++            path_value,
++            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
++        )
++        metadata = os.fstat(descriptor)
++    except OSError as error:
++        if descriptor >= 0:
++            os.close(descriptor)
++        raise ProcessError("Codex executable cannot be pinned") from error
++    if (
++        not stat.S_ISREG(metadata.st_mode)
++        or metadata.st_uid != 0
++        or metadata.st_nlink != 1
++        or stat.S_IMODE(metadata.st_mode) & 0o022
++        or metadata.st_dev != expected.get("device")
++        or metadata.st_ino != expected.get("inode")
++        or metadata.st_size != expected.get("size")
++        or stat.S_IMODE(metadata.st_mode) != expected.get("mode")
++    ):
++        os.close(descriptor)
++        raise ProcessError("Codex executable changed before launch")
++    return descriptor, path_value
++
++
++def _verify_launched_codex(
++    process: subprocess.Popen[bytes], expected: Mapping[str, object]
++) -> None:
++    try:
++        metadata = Path(f"/proc/{process.pid}/exe").stat()
++    except OSError as error:
++        raise ProcessError(
++            "Codex executable identity could not be read after launch"
++        ) from error
++    if metadata.st_dev != expected.get("device") or metadata.st_ino != expected.get(
++        "inode"
++    ):
++        raise ProcessError("Codex launched executable differs from its sealed identity")
++
++
++def _validated_codex_launch_record(
++    expected: Mapping[str, object] | None,
++    environment: Mapping[str, str],
++) -> dict[str, object]:
++    entrypoint = _codex_entrypoint_identity()
++    release_channel, release_manifest = _codex_release_identity(environment)
++    resolved = _root_owned_regular_record(
++        Path(str(entrypoint["resolved_path"])), "executable"
++    )
++    if expected is not None and (
++        expected.get("entrypoint") != entrypoint
++        or expected.get("release_channel") != release_channel
++        or expected.get("release_manifest") != release_manifest
++        or expected.get("resolved_executable") != resolved
++    ):
++        raise ProcessError("Codex identity changed after preflight")
++    return resolved
++
++
++def _codex_release_identity(
++    environment: Mapping[str, str] | None,
++) -> tuple[str, dict[str, object]]:
++    source = os.environ if environment is None else environment
++    requested = source.get("META_CODEX_RELEASE")
++    channel = "stable" if requested in {None, ""} else requested
++    selected = _CODEX_RELEASE_MANIFESTS.get(channel)
++    if selected is None:
++        raise ProcessError("Codex release channel is not reviewed")
++    path, expected_sha256 = selected
++    record = _root_owned_regular_record(path, f"{channel} release manifest")
++    if record.get("path") != str(path) or record.get("sha256") != expected_sha256:
++        raise ProcessError(f"Codex {channel} release manifest identity differs")
++    return channel, record
++
++
+ def _codex_environment_preflight(
+     cwd: Path,
+     artifact_dir: Path,
+@@ -262,9 +415,10 @@
+     artifact_dir.mkdir(parents=True, exist_ok=True)
+     identity_path = artifact_dir / "identity.json"
+     try:
+-        resolved = Path(_CODEX_EXECUTABLE).resolve(strict=True)
+-        before = regular_file_record(resolved)
+-    except (OSError, StateError) as error:
++        entrypoint_before = _codex_entrypoint_identity()
++        resolved = Path(str(entrypoint_before["resolved_path"]))
++        before = _root_owned_regular_record(resolved, "executable")
++    except (OSError, ProcessError, StateError) as error:
+         write_metadata(
+             identity_path,
+             {
+@@ -280,9 +434,28 @@
+             f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
+             "executable cannot be resolved as a regular file"
+         ) from error
++    try:
++        release_channel, release_before = _codex_release_identity(environment)
++    except ProcessError as error:
++        write_metadata(
++            identity_path,
++            {
++                "blocker": str(error),
++                "executable": _CODEX_EXECUTABLE,
++                "release_channel": None,
++                "release_manifest": None,
++                "resolved_executable": before,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "startup-failed",
++                "version": None,
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): {error}"
++        ) from error
+     try:
+         version = TrustedSubprocessWithList.run(
+-            executable=_CODEX_EXECUTABLE,
++            executable=str(resolved),
+             cmd_args=["--version"],
+             cwd=cwd,
+             capture_output=True,
+@@ -296,6 +469,8 @@
+             {
+                 "blocker": "version command could not start",
+                 "executable": _CODEX_EXECUTABLE,
++                "release_channel": release_channel,
++                "release_manifest": release_before,
+                 "resolved_executable": before,
+                 "schema": _CODEX_PREFLIGHT_SCHEMA,
+                 "state": "startup-failed",
+@@ -317,6 +492,8 @@
+             {
+                 "blocker": "version command returned an invalid result",
+                 "executable": _CODEX_EXECUTABLE,
++                "release_channel": release_channel,
++                "release_manifest": release_before,
+                 "resolved_executable": before,
+                 "schema": _CODEX_PREFLIGHT_SCHEMA,
+                 "state": "version-failed",
+@@ -330,13 +507,20 @@
+             "version command returned an invalid result"
+         )
+     try:
+-        after = regular_file_record(resolved)
+-    except (OSError, StateError) as error:
++        entrypoint_after = _codex_entrypoint_identity()
++        after = _root_owned_regular_record(resolved, "executable")
++        release_channel_after, release_after = _codex_release_identity(environment)
++    except ProcessError as error:
+         write_metadata(
+             identity_path,
+             {
+-                "blocker": "executable became unavailable after version read",
++                "blocker": (
++                    "executable or release manifest became unavailable "
++                    "after version read"
++                ),
+                 "executable": _CODEX_EXECUTABLE,
++                "release_channel": release_channel,
++                "release_manifest": release_before,
+                 "resolved_executable": before,
+                 "schema": _CODEX_PREFLIGHT_SCHEMA,
+                 "state": "identity-changed",
+@@ -345,14 +529,27 @@
+         )
+         raise ProcessError(
+             f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
+-            "executable became unavailable after version read"
++            "executable or release manifest became unavailable after version read"
+         ) from error
+-    if before != after:
++    if (
++        before != after
++        or entrypoint_before != entrypoint_after
++        or release_channel != release_channel_after
++        or release_before != release_after
++    ):
+         write_metadata(
+             identity_path,
+             {
+-                "blocker": "executable changed while its version was read",
++                "blocker": (
++                    "executable or release manifest changed while its version was read"
++                ),
++                "entrypoint": entrypoint_before,
++                "entrypoint_after": entrypoint_after,
+                 "executable": _CODEX_EXECUTABLE,
++                "release_channel": release_channel,
++                "release_channel_after": release_channel_after,
++                "release_manifest": release_before,
++                "release_manifest_after": release_after,
+                 "resolved_executable": before,
+                 "resolved_executable_after": after,
+                 "schema": _CODEX_PREFLIGHT_SCHEMA,
+@@ -362,12 +559,17 @@
+         )
+         raise ProcessError(
+             f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
+-            "executable changed while its version was read"
++            "executable or release manifest changed while its version was read"
+         )
+     version_name = version.stdout.strip()
+     binary_sha256 = before.get("sha256")
+     state, blocker = _CODEX_COMPATIBILITY.get(
+-        (version_name, str(binary_sha256)),
++        (
++            version_name,
++            str(binary_sha256),
++            str(release_before.get("sha256")),
++            release_channel,
++        ),
+         (
+             "unsupported",
+             "executable version has no reviewed workspace-sandbox compatibility result",
+@@ -375,7 +577,10 @@
+     )
+     record: dict[str, object] = {
+         "blocker": blocker,
++        "entrypoint": entrypoint_before,
+         "executable": _CODEX_EXECUTABLE,
++        "release_channel": release_channel,
++        "release_manifest": release_before,
+         "resolved_executable": before,
+         "schema": _CODEX_PREFLIGHT_SCHEMA,
+         "state": state,
+@@ -551,7 +756,7 @@
+ class _PinnedRuntime:
+     wrapper: Path
+     supervisor: Path
+-    descriptors: tuple[int, int]
++    descriptors: tuple[int, ...]
+ 
+     def close(self) -> None:
+         for descriptor in self.descriptors:
+@@ -768,6 +973,7 @@
+     environment: Mapping[str, str] | None,
+     cgroup: _ProcessCgroup,
+     artifact_dir: Path,
++    codex_identity: Mapping[str, object] | None,
+ ) -> tuple[subprocess.Popen[bytes], Path, Path, str, _PinnedRuntime]:
+     runtime = _pinned_runtime()
+     nonce = uuid.uuid4().hex
+@@ -784,12 +990,20 @@
+     child_environment[_STATUS_ENV] = str(status_path)
+     child_environment[_SUPERVISOR_ENV] = str(runtime.supervisor)
+     if executable == "/usr/local/bin/codex":
+-        launch_executable = executable
++        try:
++            resolved = _validated_codex_launch_record(codex_identity, child_environment)
++            descriptor, launch_executable = _open_verified_codex_launcher(resolved)
++            runtime.descriptors += (descriptor,)
++        except BaseException:
++            runtime.close()
++            raise
+         launch_arguments = arguments
+         child_environment[_EXEC_WRAPPER_ENV] = str(runtime.wrapper)
+     else:
+         launch_executable = str(runtime.wrapper)
+         launch_arguments = (executable, *arguments)
++        resolved = None
++    process: subprocess.Popen[bytes] | None = None
+     try:
+         process = TrustedSubprocessWithList.Popen(
+             executable=launch_executable,
+@@ -800,9 +1014,19 @@
+             env=child_environment,
+             start_new_session=True,
+         )
++        if executable == "/usr/local/bin/codex":
++            if resolved is None:
++                raise ProcessError("Codex executable identity is missing")
++            _verify_launched_codex(process, resolved)
+     except BaseException:
++        if process is not None and process.poll() is None:
++            process.kill()
++            process.wait(timeout=5)
+         runtime.close()
+         raise
++    if process is None:
++        runtime.close()
++        raise ProcessError("managed payload did not start")
+     return process, sentinel, status_path, CONTAINMENT, runtime
+ 
+ 
+@@ -897,13 +1121,20 @@
+         else:
+             raise ProcessError("payload readiness path is not fresh")
+     artifact_dir.mkdir(parents=True, exist_ok=True)
++    environment_snapshot = (
++        dict(os.environ) if environment is None else dict(environment)
++    )
+     codex_preflight: dict[str, object] | None = None
++    codex_identity: dict[str, object] | None = None
+     if executable == _CODEX_EXECUTABLE and arguments[0] == "exec":
+         codex_preflight = _codex_environment_preflight(
+             execution_cwd,
+             artifact_dir / f"codex-preflight-{time.time_ns()}",
+-            environment,
++            environment_snapshot,
+         )
++        codex_identity_path = Path(str(codex_preflight["path"]))
++        verify_regular_file_record(codex_identity_path, codex_preflight)
++        codex_identity = json.loads(codex_identity_path.read_text())
+     stdout_path = artifact_dir / "stdout.txt"
+     stderr_path = artifact_dir / "stderr.txt"
+     metadata_path = artifact_dir / "metadata.json"
+@@ -950,9 +1181,10 @@
+                 execution_cwd,
+                 stdout_stream,
+                 stderr_stream,
+-                environment,
++                environment_snapshot,
+                 cgroup,
+                 artifact_dir,
++                codex_identity,
+             )
+             process_group = os.getpgid(process.pid)
+             write_metadata(
+@@ -976,17 +1208,18 @@
+                     "codex_preflight": codex_preflight,
+                 },
+             )
+-            payload_deadline = time.monotonic() + timeout_seconds
+             if readiness_path is not None:
+-                remaining = payload_deadline - time.monotonic()
+-                if remaining <= 0:
+-                    timed_out = True
+-                else:
+-                    readiness_record = _wait_for_readiness(
+-                        process,
+-                        readiness_path,
+-                        min(startup_timeout_seconds, remaining),
+-                    )
++                readiness_record = _wait_for_readiness(
++                    process,
++                    readiness_path,
++                    startup_timeout_seconds,
++                )
++                # Readiness is the explicit end of startup. Preserve the full
++                # execution deadline after that barrier instead of charging
++                # variable interpreter and scheduler startup against it.
++                payload_deadline = time.monotonic() + timeout_seconds
++            else:
++                payload_deadline = started + timeout_seconds
+             remaining = payload_deadline - time.monotonic()
+             if timed_out or remaining <= 0:
+                 timed_out = True
+diff --git a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+--- a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
++++ b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+@@ -4,6 +4,7 @@
+ from __future__ import annotations
+ 
+ import ctypes
++import fcntl
+ import json
+ import os
+ import shlex
+@@ -177,19 +178,19 @@
+ 
+     root.mkdir(parents=True, exist_ok=True)
+     ready = root / "ready"
+-    survived = root / "survived"
++    lifetime = root / "descendant-lifetime"
+     descendant = (
+-        "import pathlib,time; "
++        "import fcntl,pathlib,sys,time; "
++        "sys.stdin.buffer.read(1); "
+         "cgroup=pathlib.Path('/proc/self/cgroup'); "
+-        "deadline=time.monotonic()+1; "
+-        "\nwhile '/descendant' not in cgroup.read_text() "
+-        "and time.monotonic()<deadline: time.sleep(0.01)\n"
+         "current=cgroup.read_text(); "
+         "\nif '/descendant' not in current: raise SystemExit(32)\n"
++        f"lifetime=open({str(lifetime)!r},'w'); "
++        "fcntl.flock(lifetime,fcntl.LOCK_EX); "
+         f"pathlib.Path({str(ready)!r}).write_text("
+         "current); "
+-        "time.sleep(1); "
+-        f"pathlib.Path({str(survived)!r}).write_text('survived')"
++        "print('ready',flush=True); "
++        "time.sleep(30)"
+     )
+     final_action = {
+         "success": "raise SystemExit(0)",
+@@ -202,12 +203,10 @@
+         ".strip().removeprefix('0::/'); "
+         "nested=pathlib.Path('/sys/fs/cgroup')/relative/'descendant'; "
+         f"child=subprocess.Popen(['/usr/bin/python3','-c',{descendant!r}],"
+-        "start_new_session=True); "
++        "stdin=subprocess.PIPE,stdout=subprocess.PIPE,start_new_session=True); "
+         "(nested/'cgroup.procs').write_text(str(child.pid)); "
+-        f"ready=pathlib.Path({str(ready)!r}); "
+-        "deadline=time.monotonic()+1; "
+-        "\nwhile not ready.exists() and time.monotonic()<deadline: "
+-        "time.sleep(0.01)\n"
++        "child.stdin.write(b'x'); child.stdin.flush(); child.stdin.close(); "
++        "\nif child.stdout.readline() != b'ready\\n': raise SystemExit(33)\n"
+         f"{final_action}"
+     )
+     result = run_process(
+@@ -219,7 +218,13 @@
+         readiness_path=ready,
+         startup_timeout_seconds=10,
+     )
+-    time.sleep(1.2)
++    with lifetime.open("r+") as lifetime_stream:
++        try:
++            fcntl.flock(lifetime_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        except BlockingIOError:
++            survived = True
++        else:
++            survived = False
+     metadata = json.loads((root / "run" / "metadata.json").read_text())
+     raw_cgroup = metadata.get("cgroup")
+     hierarchy_removed = isinstance(raw_cgroup, str) and not Path(raw_cgroup).exists()
+@@ -241,7 +246,7 @@
+         "returncode": result.returncode,
+         "scenario": scenario,
+         "stderr": result.stderr_path.read_text(),
+-        "survived": survived.exists(),
++        "survived": survived,
+         "timed_out": result.timed_out,
+     }
+     value["valid"] = not (
+@@ -252,7 +257,7 @@
+         or value["nested_descendant"] is not True
+         or value["readiness_sealed"] is not True
+         or not ready.is_file()
+-        or survived.exists()
++        or survived
+     )
+     return value
+ 
+diff --git a/fbcode/testinfra/tfa/tests/test_production_containment.py b/fbcode/testinfra/tfa/tests/test_production_containment.py
+--- a/fbcode/testinfra/tfa/tests/test_production_containment.py
++++ b/fbcode/testinfra/tfa/tests/test_production_containment.py
+@@ -30,6 +30,7 @@
+ import testinfra.tfa.hermit as hermit_module
+ import testinfra.tfa.manifest as manifest_module
+ import testinfra.tfa.pipeline as pipeline_module
++import testinfra.tfa.process as process_module
+ from security.frameworks.python.exec.subprocess import TrustedSubprocessWithList
+ from testinfra.tfa.hermit import (
+     controller_evidence,
+@@ -3194,6 +3195,29 @@
+             prefix="tfa-production-codex-", dir="/tmp/tfa-phase2"
+         ) as temporary:
+             root = Path(temporary)
++            latest_environment = diagnostic_environment(root / "latest-logs")
++            latest_environment["META_CODEX_RELEASE"] = "latest"
++            latest_artifacts = root / "latest-preflight"
++            with self.assertRaisesRegex(
++                ProcessError, "owner-managed Codex lacks daemon-socket fixes"
++            ):
++                process_module._codex_environment_preflight(
++                    root, latest_artifacts, latest_environment
++                )
++            latest_identity = json.loads(
++                (latest_artifacts / "identity.json").read_text()
++            )
++            self.assertEqual(latest_identity["state"], "blocked")
++            self.assertEqual(latest_identity["release_channel"], "latest")
++            self.assertEqual(latest_identity["version"], "codex-cli 0.156.1")
++            self.assertEqual(
++                latest_identity["resolved_executable"]["sha256"],
++                "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
++            )
++            self.assertEqual(
++                latest_identity["release_manifest"]["sha256"],
++                "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5",
++            )
+             environment = diagnostic_environment(root / "logs")
+             environment["META_EXEC_WRAPPER"] = "/bin/false"
+             result = run_process(
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -920,6 +920,17 @@
+         pinned = patch("testinfra.tfa.process._pinned_runtime", return_value=runtime)
+         pinned.start()
+         self.addCleanup(pinned.stop)
++        entrypoint = patch(
++            "testinfra.tfa.process._codex_entrypoint_identity",
++            return_value={
++                "owner_uid": 0,
++                "path": "/usr/local/bin/codex",
++                "resolved_path": "/usr/local/bin/codex_cli/codex",
++                "target": "/usr/local/bin/codex_cli/codex",
++            },
++        )
++        entrypoint.start()
++        self.addCleanup(entrypoint.stop)
+ 
+     def test_current_verify_translation_preserves_historical_strictness(self) -> None:
+         historical = hermit_attempt_argv(
+@@ -1276,13 +1287,13 @@
+                     "testinfra.tfa.process._codex_environment_preflight",
+                     side_effect=ProcessError(
+                         "Codex native workspace sandbox preflight failed "
+-                        "(codex-cli 0.156.0): cannot establish app-server "
+-                        "socket mount isolation"
++                        "(tfa.codex-environment-preflight.v2; codex-cli 0.156.0; "
++                        "state=blocked): owner-managed Codex lacks daemon-socket fixes"
+                     ),
+                 ) as preflight,
+                 patch("testinfra.tfa.process._spawn_contained") as spawn,
+                 self.assertRaisesRegex(
+-                    ProcessError, "cannot establish app-server socket mount isolation"
++                    ProcessError, "owner-managed Codex lacks daemon-socket fixes"
+                 ),
+             ):
+                 run_process(
+@@ -1303,35 +1314,54 @@
+                 stdout="codex-cli 0.156.0\n",
+                 stderr="",
+             )
++            manifest = {
++                "kind": "file",
++                "link_count": 1,
++                "mode": 0o755,
++                "owner_uid": 0,
++                "path": "/usr/local/bin/codex_cli/codex.real",
++                "sha256": (
++                    "66494455a90b6f45f1fb93c73847d610337a12252a8f10a8a393f20ca213ae72"
++                ),
++                "size": 2245,
++            }
+             with (
+                 patch.object(TrustedSubprocessWithList, "run", return_value=version),
+                 patch(
+-                    "testinfra.tfa.process.regular_file_record",
++                    "testinfra.tfa.process._root_owned_regular_record",
+                     return_value={
+                         "kind": "file",
++                        "link_count": 1,
+                         "mode": 0o755,
++                        "owner_uid": 0,
+                         "path": "/usr/local/bin/codex_cli/codex",
+                         "sha256": (
+-                            "8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a"
+-                            "7920432b50acc4b9"
++                            "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5"
++                            "d308bda4d065ebf0"
+                         ),
+                         "size": 1,
+                     },
+                 ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    return_value=("stable", manifest),
++                ),
+                 self.assertRaisesRegex(
+-                    ProcessError, "cannot establish app-server socket mount isolation"
++                    ProcessError, "owner-managed Codex lacks daemon-socket fixes"
+                 ),
+             ):
+                 process_module._codex_environment_preflight(
+                     root, root / "preflight", {}
+                 )
+             identity = json.loads((root / "preflight/identity.json").read_text())
+-            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v1")
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v2")
+             self.assertEqual(identity["version"], "codex-cli 0.156.0")
+             self.assertEqual(identity["state"], "blocked")
++            self.assertEqual(identity["release_channel"], "stable")
++            self.assertEqual(identity["release_manifest"], manifest)
+             self.assertEqual(
+                 identity["blocker"],
+-                "cannot establish app-server socket mount isolation",
++                process_module._CODEX_SOCKET_ISOLATION_BLOCKER,
+             )
+ 
+     def test_codex_preflight_records_version_command_startup_failure(self) -> None:
+@@ -1344,18 +1374,30 @@
+                     side_effect=OSError("local process unavailable"),
+                 ),
+                 patch(
+-                    "testinfra.tfa.process.regular_file_record",
++                    "testinfra.tfa.process._root_owned_regular_record",
+                     return_value={
+                         "kind": "file",
++                        "link_count": 1,
+                         "mode": 0o755,
++                        "owner_uid": 0,
+                         "path": "/usr/local/bin/codex_cli/codex",
+                         "sha256": "0" * 64,
+                         "size": 1,
+                     },
+                 ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    return_value=(
++                        "stable",
++                        {
++                            "path": "/usr/local/bin/codex_cli/codex.real",
++                            "sha256": "1" * 64,
++                        },
++                    ),
++                ),
+                 self.assertRaisesRegex(
+                     ProcessError,
+-                    "tfa.codex-environment-preflight.v1.*"
++                    "tfa.codex-environment-preflight.v2.*"
+                     "version command could not start",
+                 ),
+             ):
+@@ -1365,7 +1407,192 @@
+             identity = json.loads((root / "preflight/identity.json").read_text())
+             self.assertEqual(identity["state"], "startup-failed")
+             self.assertIsNone(identity["version"])
+-            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v1")
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v2")
++
++    def test_codex_preflight_classifies_owner_managed_latest_as_blocked(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            version = MagicMock(
++                returncode=0,
++                stdout="codex-cli 0.156.1\n",
++                stderr=process_module._CODEX_VERSION_STDERR[-1],
++            )
++            manifest = {
++                "path": "/usr/local/bin/codex_cli/codex_latest.real",
++                "sha256": (
++                    "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5"
++                ),
++            }
++            with (
++                patch.object(TrustedSubprocessWithList, "run", return_value=version),
++                patch(
++                    "testinfra.tfa.process._root_owned_regular_record",
++                    return_value={
++                        "kind": "file",
++                        "link_count": 1,
++                        "mode": 0o755,
++                        "owner_uid": 0,
++                        "path": "/usr/local/bin/codex_cli/codex",
++                        "sha256": (
++                            "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5"
++                            "d308bda4d065ebf0"
++                        ),
++                        "size": 1,
++                    },
++                ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    return_value=("latest", manifest),
++                ),
++                self.assertRaisesRegex(
++                    ProcessError, "owner-managed Codex lacks daemon-socket fixes"
++                ),
++            ):
++                process_module._codex_environment_preflight(
++                    root,
++                    root / "preflight",
++                    {"META_CODEX_RELEASE": "latest"},
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["state"], "blocked")
++            self.assertEqual(identity["release_channel"], "latest")
++            self.assertEqual(identity["release_manifest"], manifest)
++            self.assertEqual(
++                identity["blocker"], process_module._CODEX_SOCKET_ISOLATION_BLOCKER
++            )
++
++    def test_codex_preflight_rejects_release_manifest_race(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            version = MagicMock(
++                returncode=0,
++                stdout="codex-cli 0.156.0\n",
++                stderr="",
++            )
++            before = {
++                "path": "/usr/local/bin/codex_cli/codex.real",
++                "sha256": "1" * 64,
++            }
++            after = {**before, "sha256": "2" * 64}
++            with (
++                patch.object(TrustedSubprocessWithList, "run", return_value=version),
++                patch(
++                    "testinfra.tfa.process._root_owned_regular_record",
++                    return_value={
++                        "kind": "file",
++                        "link_count": 1,
++                        "mode": 0o755,
++                        "owner_uid": 0,
++                        "path": "/usr/local/bin/codex_cli/codex",
++                        "sha256": "0" * 64,
++                        "size": 1,
++                    },
++                ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    side_effect=(("stable", before), ("stable", after)),
++                ),
++                self.assertRaisesRegex(ProcessError, "release manifest changed"),
++            ):
++                process_module._codex_environment_preflight(
++                    root, root / "preflight", {}
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["state"], "identity-changed")
++            self.assertEqual(identity["release_manifest"], before)
++            self.assertEqual(identity["release_manifest_after"], after)
++
++    def test_codex_preflight_rejects_entrypoint_retarget(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            before = {
++                "owner_uid": 0,
++                "path": "/usr/local/bin/codex",
++                "resolved_path": "/usr/local/bin/codex_cli/codex",
++                "target": "codex_cli/codex",
++            }
++            after = {**before, "target": "codex_cli/replacement"}
++            version = MagicMock(returncode=0, stdout="codex-cli 9.9.9\n", stderr="")
++            executable = {
++                "kind": "file",
++                "mode": 0o755,
++                "path": "/usr/local/bin/codex_cli/codex",
++                "sha256": "0" * 64,
++                "size": 1,
++            }
++            manifest = {
++                "path": "/usr/local/bin/codex_cli/codex.real",
++                "sha256": "1" * 64,
++            }
++            with (
++                patch.object(TrustedSubprocessWithList, "run", return_value=version),
++                patch(
++                    "testinfra.tfa.process._codex_entrypoint_identity",
++                    side_effect=(before, after),
++                ),
++                patch(
++                    "testinfra.tfa.process._root_owned_regular_record",
++                    return_value=executable,
++                ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    return_value=("stable", manifest),
++                ),
++                self.assertRaisesRegex(ProcessError, "release manifest changed"),
++            ):
++                process_module._codex_environment_preflight(
++                    root, root / "preflight", {}
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["state"], "identity-changed")
++            self.assertEqual(identity["entrypoint"], before)
++            self.assertEqual(identity["entrypoint_after"], after)
++
++    def test_codex_spawn_rejects_post_preflight_channel_drift(self) -> None:
++        entrypoint = {
++            "owner_uid": 0,
++            "path": "/usr/local/bin/codex",
++            "resolved_path": "/usr/local/bin/codex_cli/codex",
++            "target": "codex_cli/codex",
++        }
++        executable = {
++            "path": "/usr/local/bin/codex_cli/codex",
++            "sha256": "0" * 64,
++        }
++        stable_manifest = {
++            "path": "/usr/local/bin/codex_cli/codex.real",
++            "sha256": "1" * 64,
++        }
++        latest_manifest = {
++            "path": "/usr/local/bin/codex_cli/codex_latest.real",
++            "sha256": "2" * 64,
++        }
++        expected = {
++            "entrypoint": entrypoint,
++            "release_channel": "stable",
++            "release_manifest": stable_manifest,
++            "resolved_executable": executable,
++        }
++        with (
++            patch(
++                "testinfra.tfa.process._codex_entrypoint_identity",
++                return_value=entrypoint,
++            ),
++            patch(
++                "testinfra.tfa.process._codex_release_identity",
++                return_value=("latest", latest_manifest),
++            ),
++            patch(
++                "testinfra.tfa.process._root_owned_regular_record",
++                return_value=executable,
++            ),
++            self.assertRaisesRegex(ProcessError, "identity changed after preflight"),
++        ):
++            process_module._validated_codex_launch_record(expected, {})
++
++    def test_codex_preflight_rejects_unreviewed_release_channel(self) -> None:
++        with self.assertRaisesRegex(ProcessError, "release channel is not reviewed"):
++            process_module._codex_release_identity({"META_CODEX_RELEASE": "0.157.0"})
+ 
+     def test_codex_preflight_rejects_unreviewed_executable_version(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -1377,17 +1604,27 @@
+             )
+             executable = {
+                 "kind": "file",
++                "link_count": 1,
+                 "mode": 0o755,
++                "owner_uid": 0,
+                 "path": "/usr/local/bin/codex_cli/codex",
+                 "sha256": "0" * 64,
+                 "size": 1,
+             }
++            manifest = {
++                "path": "/usr/local/bin/codex_cli/codex.real",
++                "sha256": "1" * 64,
++            }
+             with (
+                 patch.object(TrustedSubprocessWithList, "run", return_value=version),
+                 patch(
+-                    "testinfra.tfa.process.regular_file_record",
++                    "testinfra.tfa.process._root_owned_regular_record",
+                     return_value=executable,
+                 ),
++                patch(
++                    "testinfra.tfa.process._codex_release_identity",
++                    return_value=("stable", manifest),
++                ),
+                 self.assertRaisesRegex(
+                     ProcessError,
+                     "state=unsupported.*no reviewed workspace-sandbox compatibility",
+@@ -1403,6 +1640,7 @@
+                 identity["version_stderr"], process_module._CODEX_VERSION_STDERR[1]
+             )
+             self.assertEqual(identity["resolved_executable"], executable)
++            self.assertEqual(identity["release_manifest"], manifest)
+ 
+     def test_cli_timeout_type_rejects_nonfinite_and_nonpositive_values(self) -> None:
+         @click.command()

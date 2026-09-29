@@ -1,0 +1,9 @@
+{
+ "label": "D2-signed-extract-same-argv",
+ "exe": "/home/newton/.cache/dotslash/obj/cas/b1/ebf433a16e27b9f2eea1f23ba9cfce6a/extract/tar.zst/linux_x86_64/bin/codex",
+ "sha256": "fdd42a7fff5bb79f597c7f241098a9f531272ba0acd5eea86d32a6232667eab6",
+ "rc": 1,
+ "path_prefix": null,
+ "stdout": "",
+ "stderr": "error building bubblewrap command: cannot establish app-server socket mount isolation\n"
+}

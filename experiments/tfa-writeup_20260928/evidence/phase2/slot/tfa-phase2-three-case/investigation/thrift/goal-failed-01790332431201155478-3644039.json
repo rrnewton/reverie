@@ -1,0 +1,12 @@
+{
+  "delivery_attempts": 1,
+  "delivery_error": "pane wV:pZ did not confirm idle/done -> working submission: wait for pane wV:pZ status working: {\"error\":{\"code\":\"timeout\",\"message\":\"timed out waiting for agent status\"},\"id\":\"cli:agent:wait\"}",
+  "delivery_failed_at": 1790332451.8644311,
+  "delivery_state": "inflight",
+  "id": "01790332431201155478-3644039",
+  "inflight_at": 1790332431.815253,
+  "possibly_submitted": true,
+  "queued_at": 1790332431.7432413,
+  "text": "Your ongoing goal: Root-cause the TFA thrift flake from its exact non-/tmp PASS and FAIL witnesses, rank hypotheses, draft and stress-test a principled local fix, preserve raw evidence, publish nothing, and persist until verified success or a concrete blocker.\nWork toward this goal and report completion or blockers.",
+  "tui_delivery_attempts": 1
+}

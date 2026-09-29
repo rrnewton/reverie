@@ -1,0 +1,68 @@
+{
+  "case_id": "httpcoro",
+  "qualification": "candidate-only",
+  "patch_path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/patch.diff",
+  "original_fail_now_passes": false,
+  "original_pass_still_passes": false,
+  "validations": [
+    {
+      "kind": "BUCK",
+      "argv": ["buck", "build", "@fbcode//mode/dev-asan", "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests", "--show-full-json-output"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: the brief forbids invoking Buck; the patched test binary was not built, so compilation of the EVLOOP_NONBLOCK change is unverified"]
+    },
+    {
+      "kind": "UNIT",
+      "argv": ["buck", "test", "@fbcode//mode/dev-asan", "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests", "--", "--exact", "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: the brief forbids invoking Buck; no patched binary exists to run"]
+    },
+    {
+      "kind": "LINT",
+      "argv": ["arc", "lint", "fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: the brief forbids invoking Arc; only a manual check was done (lines at most 80 columns, clang-format style matching the surrounding code)"]
+    },
+    {
+      "kind": "ORIGINAL_FAIL",
+      "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "httpcoro", "--template", "fail", "--seed", "0", "--out", "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-fail-seed0"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: the replay runner executes the controller-built pre-fix ELF; no patched ELF can be built without Buck, so the fixed code cannot be replayed at seed 0. The pre-fix witness agent-output/witness/fail-a1 reproduced FAIL (rc 134, 117.7s) but does not validate the fix"]
+    },
+    {
+      "kind": "ORIGINAL_PASS",
+      "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "httpcoro", "--template", "pass", "--seed", "1", "--out", "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-pass-seed1"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: no patched ELF can be built without Buck, so the fixed code cannot be replayed at seed 1. The pre-fix witness agent-output/witness/pass-a1 reproduced PASS (rc 0, 12.7s) but does not validate the fix"]
+    },
+    {
+      "kind": "FRESH_STRESS",
+      "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "httpcoro", "--template", "fail", "--seed", "{4,5,6,7}", "--out", "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-stress-seed{N}"],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": ["NOT RUN: the fresh stress seeds 4-7 are reserved for the controller and the brief forbids using them; there is also no patched ELF to run them against"]
+    }
+  ],
+  "prefix_observations_not_fix_validation": [
+    {"label": "fail-a1", "sched_seed": 0, "rc": 134, "oracle": "FAIL", "seconds": 117.7, "receipt": "agent-output/witness/fail-a1/receipt.json"},
+    {"label": "pass-a1", "sched_seed": 1, "rc": 0, "oracle": "PASS", "seconds": 12.7, "receipt": "agent-output/witness/pass-a1/receipt.json"},
+    {"label": "seed2-b1", "sched_seed": 2, "rc": 124, "oracle": "CENSORED", "seconds": 121.1, "receipt": "agent-output/witness/seed2-b1/receipt.json", "note": "the outer timeout hit during Run2, so there is no verdict; the Run1 epoll timeline has the FAIL signature. Not re-run."}
+  ]
+}

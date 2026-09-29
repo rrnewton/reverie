@@ -1,0 +1,26 @@
+notice Found 2 lint issues.
+>>> Lint for fbcode/testinfra/tfa/hermit.py:
+
+   Advice  (FLAKE8) B950
+    line too long (134 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1592         required_report_lines = {
+            1593             f"safehermit: binary_sha256={qualification.get('sha256')}",
+            1594             "safehermit: bound.wall=APPLIED:120s",
+    >>>     1595             "safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound",
+            1596             "safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)",
+            1597             "safehermit: truncated=false",
+            1598             f"safehermit: exit_code={expected[1]}",
+
+   Advice  (FLAKE8) B950
+    line too long (101 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1593             f"safehermit: binary_sha256={qualification.get('sha256')}",
+            1594             "safehermit: bound.wall=APPLIED:120s",
+            1595             "safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound",
+    >>>     1596             "safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)",
+            1597             "safehermit: truncated=false",
+            1598             f"safehermit: exit_code={expected[1]}",
+            1599         }

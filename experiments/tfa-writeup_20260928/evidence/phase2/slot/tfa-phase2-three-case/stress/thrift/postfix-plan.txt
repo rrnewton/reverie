@@ -1,0 +1,13 @@
+fail 1 fail-witness-seed-001-attempt-1 patched FAIL-witness schedule
+fail 1 fail-witness-seed-001-attempt-2 patched FAIL-witness schedule
+pass 0 pass-witness-seed-000-attempt-1 patched PASS-witness schedule
+pass 0 pass-witness-seed-000-attempt-2 patched PASS-witness schedule
+fail 3 discriminator-seed-003-attempt-1 patched path-local FAIL seed 3
+fail 3 discriminator-seed-003-attempt-2 patched path-local FAIL seed 3
+fail 3 discriminator-seed-003-attempt-3 patched path-local FAIL seed 3
+fail 8 discriminator-seed-008-attempt-1 patched path-local FAIL seed 8
+fail 8 discriminator-seed-008-attempt-2 patched path-local FAIL seed 8
+pass 2 fresh-seed-002 patched fresh stress seed
+pass 3 fresh-seed-003 patched fresh stress seed
+pass 4 fresh-seed-004 patched fresh stress seed
+pass 5 fresh-seed-005 patched fresh stress seed

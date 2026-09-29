@@ -1,0 +1,1 @@
+import ok {('codex-cli 0.156.0', '8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a7920432b50acc4b9'): ('blocked', 'cannot establish app-server socket mount isolation')}

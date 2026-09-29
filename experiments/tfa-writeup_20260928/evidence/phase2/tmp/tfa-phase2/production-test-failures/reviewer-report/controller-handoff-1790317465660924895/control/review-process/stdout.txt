@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a0d73c-685b-70f3-9cf2-0c8ac1e758c7"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"nonce\":\"\",\"report_link\":\"shell-error:bwrap-unavailable\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":25826,"cached_input_tokens":15872,"cache_write_input_tokens":0,"output_tokens":601,"reasoning_output_tokens":247}}

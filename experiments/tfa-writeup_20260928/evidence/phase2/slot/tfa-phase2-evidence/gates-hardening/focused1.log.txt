@@ -1,0 +1,41 @@
+[2026-09-25T00:40:20.428-07:00] Buck UI: https://www.internalfb.com/buck2/d05f63a3-d719-48ef-a145-cb4f692aeaca
+[2026-09-25T00:40:22.291-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/29836347569587722
+[2026-09-25T00:40:28.745-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (0.0s)
+[2026-09-25T00:40:28.745-07:00] test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) ... FAIL
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] ======================================================================
+[2026-09-25T00:40:28.745-07:00] FAIL: test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest)
+[2026-09-25T00:40:28.745-07:00] ----------------------------------------------------------------------
+[2026-09-25T00:40:28.745-07:00] Traceback (most recent call last):
+[2026-09-25T00:40:28.745-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/process.py", line 365, in _codex_entrypoint_identity
+[2026-09-25T00:40:28.745-07:00]     target = os.readlink(path)
+[2026-09-25T00:40:28.745-07:00]              ^^^^^^^^^^^^^^^^^
+[2026-09-25T00:40:28.745-07:00] OSError: [Errno 22] Invalid argument: '/tmp/tmpee6ayy9l/bin/codex'
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] The above exception was the direct cause of the following exception:
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] testinfra.tfa.process.ProcessError: Codex entrypoint is unavailable
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] During handling of the above exception, another exception occurred:
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] Traceback (most recent call last):
+[2026-09-25T00:40:28.745-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 3182, in test_entrypoint_requires_trusted_symlink
+[2026-09-25T00:40:28.745-07:00]     with self.assertRaisesRegex(ProcessError, "ownership or type is unsafe"):
+[2026-09-25T00:40:28.745-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-25T00:40:28.745-07:00] AssertionError: "ownership or type is unsafe" does not match "Codex entrypoint is unavailable"
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] ----------------------------------------------------------------------
+[2026-09-25T00:40:28.745-07:00] Ran 1 test in 0.004s
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:28.745-07:00] FAILED (failures=1)
+[2026-09-25T00:40:28.745-07:00]
+[2026-09-25T00:40:35.078-07:00] Network: up 0B  down 0B
+[2026-09-25T00:40:35.078-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/29836347569587722
+Tests finished: [38;5;10mPass 26[39m. [38;5;9mFail 1[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_phase2_test - test_entrypoint_requires_trusted_symlink (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest)
+      ^^^ just prefix your previous command! ($ fdb !!)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=29836347569587722&expiry=2026-09-25T07%3A45%3A34Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=29836347569587722&expiry=2026-09-25T07%3A45%3A34Z&viewer=18498&signature=REDACTED]8;;\[0m

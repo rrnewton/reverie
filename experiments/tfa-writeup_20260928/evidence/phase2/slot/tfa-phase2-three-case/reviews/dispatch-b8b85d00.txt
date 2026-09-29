@@ -1,0 +1,9 @@
+Review dispatch for b8b85d00462b, 2026-09-25.
+
+`agentctl start tfa-review-r8-b8b85d00 ... --file prompt-b8b85d00.md` returned exit 76 (possibly submitted).
+`agentctl read` hung. `herdr pane read wV:p1A` showed the Muse composer holding
+"[Pasted Content 11123 chars]", which is exactly the character length of prompt-b8b85d00.md,
+unsubmitted, with Muse idle. One Enter was sent (`herdr pane send-keys wV:p1A enter`), which
+submitted that single original prompt; nothing was re-sent. Muse then began reading the target files.
+An externally started `agentctl goal` (pid 3474268, not this session's) typed its goal text into the
+composer afterwards; it was left untouched.

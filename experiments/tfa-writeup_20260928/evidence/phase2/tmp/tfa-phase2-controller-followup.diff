@@ -1,0 +1,1265 @@
+diff --git a/fbcode/testinfra/tfa/pipeline.py b/fbcode/testinfra/tfa/pipeline.py
+--- a/fbcode/testinfra/tfa/pipeline.py
++++ b/fbcode/testinfra/tfa/pipeline.py
+@@ -6,6 +6,7 @@
+ import json
+ import math
+ import os
++import re
+ import shlex
+ import shutil
+ import stat
+@@ -87,6 +88,12 @@
+ 
+ _RUNTIME_STAGING_MAX_BYTES: int = 1024 * 1024 * 1024
+ _RUNTIME_STAGING_MAX_PRESERVED: int = 1
++_DECLARED_CASE_MIRRORS: dict[str, tuple[str, str]] = {
++    "thrift": (
++        "fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp",
++        "xplat/thrift/lib/cpp2/test/InstrumentationTest.cpp",
++    ),
++}
+ 
+ 
+ @dataclass(frozen=True)
+@@ -218,8 +225,48 @@
+         raise RuntimeError(
+             f"selected fatal gtest did not start exactly once: {identity}"
+         ) from error
+-    marker_positions = [stderr.find(marker) for marker in markers]
+-    signal_position = stderr.find("Signal 6 (SIGABRT)")
++    if markers != FAILURE_MARKERS["httpcoro"]:
++        raise RuntimeError("fatal gtest markers do not name the HTTPCoro witness")
++    location, expression = markers
++    fatal_pattern = re.compile(
++        r"^F[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ +[0-9]+ "
++        + re.escape(location)
++        + r"\] Check failed: "
++        + re.escape(expression)
++        + r"\(\) ?$"
++    )
++    fatal_lines = [line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)]
++    all_fatal_headers = [
++        line for line in stderr.splitlines() if re.match(r"^F[0-9]{4} ", line)
++    ]
++    normal_delimiter = "*** Check failure stack trace: ***"
++    async_delimiter = "*** Check failure async stack trace: ***"
++    signal_marker = "Signal 6 (SIGABRT)"
++    expected_frame = (
++        "proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::"
++        "co_TestBody()::$_1::operator()(proxygen::coro::HTTPSourceHolder) const "
++        "[clone .resume]"
++    )
++    source_line = "./fbcode/proxygen/lib/http/coro/test/" + location
++    fatal_position = stderr.find(fatal_lines[0]) if len(fatal_lines) == 1 else -1
++    signal_position = stderr.find(signal_marker)
++    normal_position = stderr.find(normal_delimiter)
++    async_position = stderr.find(async_delimiter)
++    normal_stack = (
++        stderr[normal_position:async_position]
++        if 0 <= normal_position < async_position
++        else ""
++    )
++    async_stack = stderr[async_position:] if async_position >= 0 else ""
++
++    def matching_frames(stack: str) -> int:
++        stack_lines = stack.splitlines()
++        return sum(
++            1
++            for index, line in enumerate(stack_lines[:-1])
++            if expected_frame in line and stack_lines[index + 1].strip() == source_line
++        )
++
+     if (
+         filter_lines != [filter_line]
+         or running_lines != [running_line]
+@@ -227,11 +274,23 @@
+         or terminal_lines
+         or not filter_index < running_index < run_index
+         or any(stdout.count(marker) != 0 for marker in markers)
+-        or any(stderr.count(marker) != 1 for marker in markers)
+-        or marker_positions + [signal_position]
+-        != sorted(marker_positions + [signal_position])
+-        or stdout.count("Signal 6 (SIGABRT)") != 0
+-        or stderr.count("Signal 6 (SIGABRT)") != 1
++        or len(fatal_lines) != 1
++        or all_fatal_headers != fatal_lines
++        or stderr.count(f"Check failed: {expression}()") != 1
++        or stderr.count(location) != 3
++        or stderr.count(normal_delimiter) != 1
++        or stderr.count(async_delimiter) != 1
++        or matching_frames(normal_stack) != 1
++        or matching_frames(async_stack) != 1
++        or stdout.count(signal_marker) != 0
++        or stderr.count(signal_marker) != 1
++        or len(re.findall(r"^\*\*\* Signal ", stderr, re.MULTILINE)) != 1
++        or not fatal_position < normal_position < signal_position < async_position
++        or stderr.count(":: Comparing captured verification logs...") != 1
++        or stderr.count(":: comparison=BitwiseInfoV1 relaxations=none") != 1
++        or stderr.count(":: Success: deterministic. Determinism verified.") != 1
++        or not stderr.find(":: Success: deterministic. Determinism verified.")
++        < fatal_position
+     ):
+         raise RuntimeError(
+             f"selected fatal gtest did not start exactly once: {identity}"
+@@ -243,7 +302,8 @@
+         "run_line": run_line,
+         "stdout": regular_file_record(stdout_path),
+         "stderr": regular_file_record(stderr_path),
+-        "failure_markers": list(markers),
++        "failure_markers": [location, f"Check failed: {expression}()"],
++        "source_location_roles": ["fatal-header", "normal-frame", "async-frame"],
+         "process_signal": 6,
+     }
+ 
+@@ -336,13 +396,18 @@
+ 
+ 
+ def _sl_diff(
+-    checkout: Path, changed: tuple[str, ...], artifact_dir: Path
++    checkout: Path,
++    changed: tuple[str, ...],
++    artifact_dir: Path,
++    base_revision: str | None = None,
+ ) -> ProcessResult:
++    revisions = () if base_revision is None else ("-r", base_revision, "-r", ".")
+     result = run_process(
+         "/usr/local/bin/sl",
+         (
+             "diff",
+             "--git",
++            *revisions,
+             "--reason",
+             "seal and review exact TFA case diff - sl help diff",
+             "--",
+@@ -362,12 +427,20 @@
+     changed: tuple[str, ...],
+     case_dir: Path,
+     review_schema_path: Path,
++    *,
++    record_name: str = "adversarial-review.json",
++    attempts_name: str = "adversarial-review-attempts",
++    base_revision: str | None = None,
+ ) -> dict[str, object]:
+     control_dir = case_dir / "control"
+-    attempts = control_dir / "adversarial-review-attempts"
++    attempts = control_dir / attempts_name
+     attempts.mkdir(parents=True, exist_ok=True)
+     attempt = attempts / f"attempt-{len(tuple(attempts.iterdir())) + 1:03d}"
+-    result = _sl_diff(checkout, changed, attempt / "diff")
++    result = (
++        _sl_diff(checkout, changed, attempt / "diff")
++        if base_revision is None
++        else _sl_diff(checkout, changed, attempt / "diff", base_revision)
++    )
+     diff_sha256 = _sha256(result.stdout_path)
+     reviewer_output = case_dir / "reviewer-output" / attempt.name
+     workspace = reviewer_output / "workspace"
+@@ -399,14 +472,18 @@
+         "review": regular_file_record(review_path),
+         "summary": summary.summary,
+     }
+-    write_metadata(control_dir / "adversarial-review.json", review)
++    write_metadata(control_dir / record_name, review)
+     return review
+ 
+ 
+ def _verify_independent_diff_review(
+-    case_dir: Path, changed: tuple[str, ...], diff_sha256: str
++    case_dir: Path,
++    changed: tuple[str, ...],
++    diff_sha256: str,
++    *,
++    record_name: str = "adversarial-review.json",
+ ) -> None:
+-    review = _json(case_dir / "control" / "adversarial-review.json")
++    review = _json(case_dir / "control" / record_name)
+     if review.get("changed_paths") != list(changed):
+         raise RuntimeError("independent review changed paths differ")
+     if review.get("diff_sha256") != diff_sha256:
+@@ -848,6 +925,151 @@
+             pass
+ 
+ 
++def _strict_resource_manifest(path: Path) -> dict[str, str]:
++    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
++        value: dict[str, object] = {}
++        for key, item in pairs:
++            if key in value:
++                raise RuntimeError("runtime resource manifest has duplicate keys")
++            value[key] = item
++        return value
++
++    try:
++        raw = json.loads(path.read_text(), object_pairs_hook=reject_duplicates)
++    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
++        raise RuntimeError("runtime resource manifest is malformed") from error
++    if not isinstance(raw, dict):
++        raise RuntimeError("runtime resource manifest is not an object")
++    result: dict[str, str] = {}
++    for logical, target in raw.items():
++        if not isinstance(logical, str) or not isinstance(target, str):
++            raise RuntimeError("runtime resource manifest entry is malformed")
++        logical_path = Path(logical)
++        target_path = Path(target)
++        if (
++            not logical
++            or not target
++            or "\\" in logical
++            or "\\" in target
++            or logical_path.is_absolute()
++            or target_path.is_absolute()
++            or logical != str(logical_path)
++            or target != str(target_path)
++            or any(part in ("", ".", "..") for part in logical_path.parts)
++            or any(part in ("", ".") for part in target_path.parts)
++        ):
++            raise RuntimeError("runtime resource manifest path is unsafe")
++        result[logical] = target
++    return result
++
++
++def _write_runtime_resource_manifest(
++    path: Path, value: dict[str, str], mode: int
++) -> dict[str, object]:
++    content = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
++    descriptor = os.open(
++        path,
++        os.O_WRONLY
++        | os.O_CREAT
++        | os.O_EXCL
++        | getattr(os, "O_CLOEXEC", 0)
++        | getattr(os, "O_NOFOLLOW", 0),
++        mode,
++    )
++    try:
++        offset = 0
++        while offset < len(content):
++            written = os.write(descriptor, content[offset:])
++            if written <= 0:
++                raise RuntimeError("runtime resource manifest write failed")
++            offset += written
++        os.fchmod(descriptor, mode)
++        os.fsync(descriptor)
++    finally:
++        os.close(descriptor)
++    return regular_file_record(path)
++
++
++def _stage_runtime_resources(
++    source_elf: Path,
++    staging_elf: Path,
++    checkout_root: Path,
++    remaining_bytes: int,
++) -> tuple[dict[str, object] | None, int]:
++    source_manifest = source_elf.with_name(source_elf.name + ".resources.json")
++    if not os.path.lexists(source_manifest):
++        return None, 0
++    metadata = source_manifest.lstat()
++    if not stat.S_ISREG(metadata.st_mode):
++        raise RuntimeError("runtime resource manifest is not a regular file")
++    manifest = _strict_resource_manifest(source_manifest)
++    logical_paths = [Path(logical) for logical in manifest]
++    for index, logical in enumerate(logical_paths):
++        for other in logical_paths[index + 1 :]:
++            if logical in other.parents or other in logical.parents:
++                raise RuntimeError("runtime resource manifest paths overlap")
++    resource_root = staging_elf.parent / f"{staging_elf.name}.resources"
++    resource_root.mkdir()
++    resolved_checkout = checkout_root.resolve(strict=True)
++    entries: list[dict[str, object]] = []
++    rewritten: dict[str, str] = {}
++    copied_bytes = 0
++    for logical, target in sorted(manifest.items()):
++        try:
++            source = (source_manifest.parent / target).resolve(strict=True)
++        except OSError as error:
++            raise RuntimeError("runtime resource target is missing") from error
++        try:
++            source.relative_to(resolved_checkout)
++        except ValueError as error:
++            raise RuntimeError("runtime resource target escaped the checkout") from error
++        if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
++            raise RuntimeError("runtime resource target is not a canonical regular file")
++        destination = resource_root / logical
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        destination.symlink_to(source)
++        source_record, runtime_record = _copy_pinned_runtime_source(
++            source, destination, remaining_bytes - copied_bytes
++        )
++        size = runtime_record.get("size")
++        if not isinstance(size, int) or isinstance(size, bool):
++            raise RuntimeError("runtime resource size is malformed")
++        copied_bytes += size
++        runtime_target = os.path.relpath(destination, staging_elf.parent)
++        if Path(runtime_target).is_absolute():
++            raise RuntimeError("staged runtime resource target is not relative")
++        rewritten[logical] = runtime_target
++        entries.append(
++            {
++                "logical": logical,
++                "original_target": target,
++                "runtime": runtime_record,
++                "runtime_target": runtime_target,
++                "source": source_record,
++            }
++        )
++    runtime_manifest = staging_elf.with_name(staging_elf.name + ".resources.json")
++    manifest_record = _write_runtime_resource_manifest(
++        runtime_manifest, rewritten, stat.S_IMODE(metadata.st_mode)
++    )
++    manifest_size = manifest_record.get("size")
++    if (
++        not isinstance(manifest_size, int)
++        or isinstance(manifest_size, bool)
++        or copied_bytes + manifest_size > remaining_bytes
++    ):
++        raise RuntimeError("runtime staging byte budget exceeded")
++    return (
++        {
++            "entries": entries,
++            "runtime_manifest": manifest_record,
++            "runtime_root": str(resource_root),
++            "source_manifest": regular_file_record(source_manifest),
++        },
++        copied_bytes + manifest_size,
++    )
++
++
+ def _runtime_symlink_record(path: Path) -> dict[str, object]:
+     metadata = path.lstat()
+     if not stat.S_ISLNK(metadata.st_mode):
+@@ -1055,6 +1277,106 @@
+     os.fsync(buck_out)
+ 
+ 
++def _verify_runtime_resources(
++    value: object,
++    source_elf: Path,
++    runtime_elf: Path,
++    checkout_root: Path,
++    runtime_root: Path,
++) -> None:
++    source_manifest = source_elf.with_name(source_elf.name + ".resources.json")
++    runtime_manifest = runtime_elf.with_name(runtime_elf.name + ".resources.json")
++    if value is None:
++        if os.path.lexists(source_manifest) or os.path.lexists(runtime_manifest):
++            raise RuntimeError("runtime resource manifest inventory is missing")
++        return
++    if not isinstance(value, dict):
++        raise RuntimeError("runtime resource inventory is malformed")
++    source_record = value.get("source_manifest")
++    runtime_record = value.get("runtime_manifest")
++    resource_root_value = value.get("runtime_root")
++    entries = value.get("entries")
++    if (
++        not isinstance(source_record, dict)
++        or source_record.get("path") != str(source_manifest)
++        or not isinstance(runtime_record, dict)
++        or runtime_record.get("path") != str(runtime_manifest)
++        or not isinstance(resource_root_value, str)
++        or not isinstance(entries, list)
++    ):
++        raise RuntimeError("runtime resource inventory is malformed")
++    resource_root = Path(resource_root_value)
++    if (
++        resource_root != runtime_elf.parent / f"{runtime_elf.name}.resources"
++        or resource_root.is_symlink()
++        or not resource_root.is_dir()
++    ):
++        raise RuntimeError("runtime resource root differs")
++    try:
++        resource_root.relative_to(runtime_root)
++    except ValueError as error:
++        raise RuntimeError("runtime resource root escaped the image") from error
++    verify_regular_file_record(source_manifest, source_record)
++    verify_regular_file_record(runtime_manifest, runtime_record)
++    if source_record.get("mode") != runtime_record.get("mode"):
++        raise RuntimeError("runtime resource manifest mode differs")
++    source_value = _strict_resource_manifest(source_manifest)
++    runtime_value = _strict_resource_manifest(runtime_manifest)
++    if tuple(source_value) != tuple(sorted(source_value)):
++        source_value = dict(sorted(source_value.items()))
++    expected_files: list[str] = []
++    expected_entries: list[dict[str, object]] = []
++    resolved_checkout = checkout_root.resolve(strict=True)
++    for logical, original_target in source_value.items():
++        source = (source_manifest.parent / original_target).resolve(strict=True)
++        try:
++            source.relative_to(resolved_checkout)
++        except ValueError as error:
++            raise RuntimeError("runtime resource target escaped the checkout") from error
++        runtime_path = resource_root / logical
++        runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
++        if runtime_value.get(logical) != runtime_target:
++            raise RuntimeError("staged runtime resource target differs")
++        resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(strict=True)
++        if resolved_runtime != runtime_path or runtime_path.is_symlink():
++            raise RuntimeError("staged runtime resource target escaped the image")
++        try:
++            runtime_path.relative_to(runtime_root)
++        except ValueError as error:
++            raise RuntimeError("staged runtime resource target escaped the image") from error
++        source_file_record = regular_file_record(source)
++        runtime_file_record = regular_file_record(runtime_path)
++        for field in ("mode", "sha256", "size"):
++            if source_file_record.get(field) != runtime_file_record.get(field):
++                raise RuntimeError("staged runtime resource differs from its source")
++        expected_files.append(logical)
++        expected_entries.append(
++            {
++                "logical": logical,
++                "original_target": original_target,
++                "runtime": runtime_file_record,
++                "runtime_target": runtime_target,
++                "source": source_file_record,
++            }
++        )
++    if runtime_value != {
++        entry["logical"]: entry["runtime_target"] for entry in expected_entries
++    } or entries != expected_entries:
++        raise RuntimeError("runtime resource inventory differs")
++    actual_files: list[str] = []
++    for directory, directory_names, file_names in os.walk(resource_root):
++        current = Path(directory)
++        if current.is_symlink() or any((current / name).is_symlink() for name in directory_names):
++            raise RuntimeError("runtime resource directory contains a symlink")
++        for name in file_names:
++            item = current / name
++            if item.is_symlink() or not item.is_file():
++                raise RuntimeError("runtime resource is not a regular file")
++            actual_files.append(str(item.relative_to(resource_root)))
++    if tuple(sorted(actual_files)) != tuple(sorted(expected_files)):
++        raise RuntimeError("runtime resource tree has extra or missing files")
++
++
+ def _verify_runtime_image(
+     inventory: dict[str, object], buck_out: Path, attempt: Path
+ ) -> Path:
+@@ -1069,6 +1391,7 @@
+     entries = inventory.get("entries")
+     materialized = inventory.get("materialized")
+     closure = inventory.get("closure")
++    resources = inventory.get("resources")
+     if (
+         not isinstance(runtime_root_value, str)
+         or not isinstance(runtime_root_record, dict)
+@@ -1204,6 +1527,13 @@
+             or closure != expected_closure
+         ):
+             raise RuntimeError("runtime image entry inventory differs")
++        _verify_runtime_resources(
++            resources,
++            source_elf,
++            runtime_elf,
++            buck_out.parent,
++            runtime_root,
++        )
+         return runtime_elf
+     finally:
+         os.close(parent_descriptor)
+@@ -1250,6 +1580,21 @@
+         if not isinstance(size, int) or isinstance(size, bool):
+             raise RuntimeError("runtime materialization byte inventory is malformed")
+         copied_sizes.append(size)
++    resources = inventory.get("resources")
++    if resources is not None:
++        if not isinstance(resources, dict) or not isinstance(
++            resources.get("runtime_manifest"), dict
++        ) or not isinstance(resources.get("entries"), list):
++            raise RuntimeError("runtime resource byte inventory is malformed")
++        resource_records = [resources["runtime_manifest"]] + [
++            value.get("runtime") if isinstance(value, dict) else None
++            for value in resources["entries"]
++        ]
++        for record in resource_records:
++            size = record.get("size") if isinstance(record, dict) else None
++            if not isinstance(size, int) or isinstance(size, bool):
++                raise RuntimeError("runtime resource byte inventory is malformed")
++            copied_sizes.append(size)
+     expected_copied_bytes = sum(copied_sizes)
+     staging = Path(staging_value)
+     expected_staging_record = dict(runtime_root_record)
+@@ -1470,6 +1815,15 @@
+         copied_staging_bytes += runtime_elf_size
+         transaction["copied_staging_bytes"] = copied_staging_bytes
+         write_metadata(transaction_path, transaction)
++        resources, resource_bytes = _stage_runtime_resources(
++            elf,
++            staging_elf,
++            buck_out.parent,
++            _RUNTIME_STAGING_MAX_BYTES - copied_staging_bytes,
++        )
++        copied_staging_bytes += resource_bytes
++        transaction["copied_staging_bytes"] = copied_staging_bytes
++        write_metadata(transaction_path, transaction)
+         entries: list[dict[str, object]] = []
+         materialized: list[dict[str, object]] = []
+         resolved_buck_out = buck_out.resolve(strict=True)
+@@ -1526,6 +1880,7 @@
+             "runtime_parent_record": parent_record,
+             "runtime_root": str(staging_access),
+             "runtime_root_record": runtime_root_record,
++            "resources": resources,
+             "source_elf": source_elf_record,
+             "source_tree": str(source_tree),
+             "tree": str(staging_tree),
+@@ -1534,6 +1889,13 @@
+         if not isinstance(result, dict):
+             raise RuntimeError("runtime image inventory is malformed")
+         _fsync_runtime_directory(staging_tree)
++        if resources is not None:
++            resource_root = staging_elf.parent / f"{staging_elf.name}.resources"
++            resource_directories = [Path(directory) for directory, _, _ in os.walk(resource_root)]
++            for directory in sorted(
++                resource_directories, key=lambda item: len(item.parts), reverse=True
++            ):
++                _fsync_runtime_directory(directory)
+         current = staging_elf.parent
+         while current != staging_access:
+             _fsync_runtime_directory(current)
+@@ -1613,7 +1975,12 @@
+             if returncode in (None, 0) or not _matches_failure_class(case, root):
+                 raise RuntimeError(f"{case.case_id} FAIL witness class differs")
+         if outcome == "fail" and case.case_id == "httpcoro":
+-            if returncode != 134:
++            if (
++                returncode != 134
++                or metadata.get("timed_out") is not False
++                or safehermit.get("exit_code") != 134
++                or safehermit.get("truncated") is not False
++            ):
+                 raise RuntimeError("httpcoro fatal witness did not SIGABRT")
+             gtest_execution = _gtest_fatal_execution_evidence(
+                 tuple(raw_argv),
+@@ -3134,7 +3501,6 @@
+     runtime_inventory = _materialize_external_runtime_links(
+         built_elf, patched_buck_out, runtime_materialization_path
+     )
+-    runtime_closure = runtime_inventory["closure"]
+     runtime_elf_record = runtime_inventory.get("runtime_elf")
+     if not isinstance(runtime_elf_record, dict) or not isinstance(
+         runtime_elf_record.get("path"), str
+@@ -3155,7 +3521,8 @@
+                 else ("ORIGINAL_PASS" if index == 1 else "FRESH_STRESS")
+             )
+             root = attempt / f"seed-{seed}"
+-            _verify_runtime_dependency_closure(elf, patched_buck_out, runtime_closure)
++            if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
++                raise RuntimeError("runtime image changed before validation")
+             result = run_hermit_attempt(
+                 _validation_base_argv(case, seed, elf, root),
+                 working_directory,
+@@ -3169,7 +3536,8 @@
+                 raise RuntimeError(
+                     f"independent {kind} validation failed at seed {seed}"
+                 )
+-            _verify_runtime_dependency_closure(elf, patched_buck_out, runtime_closure)
++            if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
++                raise RuntimeError("runtime image changed during validation")
+             gtest_execution = _gtest_execution_evidence(argv, result.stdout_path, True)
+             verify_working_directory(working_directory, working_directory_seal)
+             safehermit_report = root / "safehermit.txt"
+@@ -3322,6 +3690,162 @@
+     )
+ 
+ 
++def _declared_draft_paths(
++    case: Case, qualified_paths: tuple[str, ...]
++) -> tuple[str, ...]:
++    mirror = _DECLARED_CASE_MIRRORS.get(case.case_id)
++    if mirror is None:
++        return qualified_paths
++    canonical, mirrored = mirror
++    if qualified_paths != (canonical,):
++        raise RuntimeError("qualified case paths differ from the declared mirror contract")
++    return _repository_paths((canonical, mirrored))
++
++
++def _normalize_mirror_patch(content: bytes, path: str) -> bytes:
++    encoded = path.encode()
++    if encoded not in content:
++        raise RuntimeError("mirror patch does not name its declared path")
++    return content.replace(encoded, b"$TFA_DECLARED_MIRROR_PATH")
++
++
++def _seal_thrift_final_commit(
++    case: Case,
++    case_dir: Path,
++    checkout: Path,
++    qualified_paths: tuple[str, ...],
++    qualified_files: list[dict[str, object]],
++    commit_stdout: Path,
++    review_schema_path: Path,
++) -> tuple[tuple[str, ...], list[dict[str, object]]]:
++    final_paths = _declared_draft_paths(case, qualified_paths)
++    mirror = _DECLARED_CASE_MIRRORS.get(case.case_id)
++    if mirror is None:
++        return final_paths, qualified_files
++    canonical, mirrored = mirror
++    mirror_line = f"mirrored changes in '{canonical}' to '{mirrored}'"
++    mirror_lines = [
++        line
++        for line in commit_stdout.read_text().splitlines()
++        if line.startswith("mirrored changes in '")
++    ]
++    if mirror_lines != [mirror_line]:
++        raise RuntimeError("commit output differs from the declared mirror pair")
++    final_files = _tree_records(checkout, final_paths)
++    canonical_record, mirror_record = final_files
++    if (
++        len(qualified_files) != 1
++        or qualified_files[0].get("path") != canonical
++        or canonical_record != qualified_files[0]
++        or canonical_record.get("kind") != "file"
++        or mirror_record.get("kind") != "file"
++        or any(
++            canonical_record.get(field) != mirror_record.get(field)
++            for field in ("mode", "sha256", "size")
++        )
++    ):
++        raise RuntimeError("declared canonical and mirror files differ")
++    seal_path = case_dir / "control" / "final-commit-seal.json"
++    final_review_path = case_dir / "control" / "final-adversarial-review.json"
++    if seal_path.is_file():
++        seal = _json(seal_path)
++        if (
++            seal.get("schema_version") != 1
++            or seal.get("base_revision") != case.source_revision
++            or seal.get("changed_paths") != list(final_paths)
++            or seal.get("files") != final_files
++            or seal.get("canonical") != canonical_record
++            or seal.get("mirror") != mirror_record
++            or seal.get("mirror_commit_stdout")
++            != regular_file_record(commit_stdout)
++        ):
++            raise RuntimeError("final mirror commit seal differs")
++        normalized: list[bytes] = []
++        for field, path_name in (
++            ("canonical_patch", canonical),
++            ("mirror_patch", mirrored),
++        ):
++            record = seal.get(field)
++            if not isinstance(record, dict) or not isinstance(record.get("path"), str):
++                raise RuntimeError("final mirror patch seal is malformed")
++            patch_path = Path(record["path"])
++            verify_regular_file_record(patch_path, record)
++            normalized.append(
++                _normalize_mirror_patch(patch_path.read_bytes(), path_name)
++            )
++        if (
++            normalized[0] != normalized[1]
++            or seal.get("normalized_delta_sha256")
++            != hashlib.sha256(normalized[0]).hexdigest()
++        ):
++            raise RuntimeError("declared mirror normalized delta differs")
++        review_record = seal.get("review")
++        review_diff_sha256 = seal.get("review_diff_sha256")
++        if (
++            not isinstance(review_record, dict)
++            or review_record.get("path") != str(final_review_path)
++            or not isinstance(review_diff_sha256, str)
++        ):
++            raise RuntimeError("final mirror review seal is malformed")
++        verify_regular_file_record(final_review_path, review_record)
++        _verify_independent_diff_review(
++            case_dir,
++            final_paths,
++            review_diff_sha256,
++            record_name="final-adversarial-review.json",
++        )
++        return final_paths, final_files
++    contract_root = case_dir / "control" / "draft" / "final-contract"
++    canonical_diff = _sl_diff(
++        checkout,
++        (canonical,),
++        _next_attempt(contract_root / "canonical-diff-attempts"),
++        case.source_revision,
++    )
++    mirror_diff = _sl_diff(
++        checkout,
++        (mirrored,),
++        _next_attempt(contract_root / "mirror-diff-attempts"),
++        case.source_revision,
++    )
++    canonical_normalized = _normalize_mirror_patch(
++        canonical_diff.stdout_path.read_bytes(), canonical
++    )
++    mirror_normalized = _normalize_mirror_patch(
++        mirror_diff.stdout_path.read_bytes(), mirrored
++    )
++    if canonical_normalized != mirror_normalized:
++        raise RuntimeError("declared mirror normalized delta differs")
++    review = _independent_diff_review(
++        checkout,
++        final_paths,
++        case_dir,
++        review_schema_path,
++        record_name="final-adversarial-review.json",
++        attempts_name="final-adversarial-review-attempts",
++        base_revision=case.source_revision,
++    )
++    final_diff_sha256 = review.get("diff_sha256")
++    if not isinstance(final_diff_sha256, str):
++        raise RuntimeError("final mirror review diff hash is malformed")
++    seal: dict[str, object] = {
++        "base_revision": case.source_revision,
++        "canonical": canonical_record,
++        "canonical_patch": regular_file_record(canonical_diff.stdout_path),
++        "changed_paths": list(final_paths),
++        "files": final_files,
++        "mirror": mirror_record,
++        "mirror_commit_stdout": regular_file_record(commit_stdout),
++        "mirror_patch": regular_file_record(mirror_diff.stdout_path),
++        "normalized_delta_sha256": hashlib.sha256(canonical_normalized).hexdigest(),
++        "review": regular_file_record(final_review_path),
++        "review_diff_sha256": final_diff_sha256,
++        "schema_version": 1,
++    }
++    write_metadata(seal_path, seal)
++    return final_paths, final_files
++
++
+ def _draft_transaction(
+     case: Case,
+     case_dir: Path,
+@@ -3354,6 +3878,7 @@
+             raise RuntimeError("draft transaction differs from qualified evidence")
+     if value.get("phase") not in {
+         "preparing",
++        "commit-observed",
+         "committed",
+         "submitted",
+         "published",
+@@ -3366,7 +3891,14 @@
+     if not isinstance(candidate_path, str):
+         raise RuntimeError("draft candidate transaction path is malformed")
+     verify_regular_file_record(Path(candidate_path), candidate_transaction)
+-    for field in ("submit", "readback", "files_readback", "diff_url"):
++    for field in (
++        "commit_process",
++        "commit_stdout",
++        "submit",
++        "readback",
++        "files_readback",
++        "diff_url",
++    ):
+         record = value.get(field)
+         if record is not None:
+             if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+@@ -3387,7 +3919,13 @@
+     _write_draft_transaction(path, value, "ledger-recorded")
+ 
+ 
+-def _draft(case: Case, case_dir: Path, checkout: Path, report: ReportSummary) -> str:
++def _draft(
++    case: Case,
++    case_dir: Path,
++    checkout: Path,
++    report: ReportSummary,
++    review_schema_path: Path,
++) -> str:
+     control_dir = case_dir / "control"
+     existing = control_dir / "diff-url.json"
+     seal = _json(control_dir / "validation-seal.json")
+@@ -3410,45 +3948,105 @@
+     message = _draft_commit_message(case, control_dir)
+     if transaction.get("commit_message") != message:
+         raise RuntimeError("draft transaction commit message differs")
++    commit_arguments = (
++        "commit",
++        "-m",
++        message,
++        "--reason",
++        "commit verified TFA case fix - sl help commit",
++        "--",
++        *changed,
++    )
+     if current == case.source_revision:
+         if transaction.get("phase") != "preparing":
+             raise RuntimeError("draft transaction lost its committed checkout")
+         committed = run_process(
+             "/usr/local/bin/sl",
+-            (
+-                "commit",
+-                "-m",
+-                message,
+-                "--reason",
+-                "commit verified TFA case fix - sl help commit",
+-                "--",
+-                *changed,
+-            ),
++            commit_arguments,
+             checkout,
+             _next_attempt(control_dir / "draft" / "commit-attempts"),
+             120,
+         )
+         if committed.returncode != 0:
+             raise RuntimeError("case fix commit failed")
+-    commit_hash = verify_local_commit(
+-        checkout,
+-        _next_attempt(control_dir / "draft" / "local-commit-checks"),
+-        case.source_revision,
+-        changed,
+-        files,
+-    )
++        if case.case_id in _DECLARED_CASE_MIRRORS:
++            transaction["commit_stdout"] = regular_file_record(committed.stdout_path)
++            transaction["commit_process"] = regular_file_record(
++                committed.stdout_path.with_name("metadata.json")
++            )
++            transaction = _write_draft_transaction(
++                transaction_path, transaction, "commit-observed"
++            )
++    elif (
++        case.case_id in _DECLARED_CASE_MIRRORS
++        and transaction.get("commit_stdout") is None
++    ):
++        commit_attempts = tuple(
++            sorted((control_dir / "draft" / "commit-attempts").iterdir())
++        )
++        if len(commit_attempts) != 1:
++            raise RuntimeError("declared mirror commit outcome is ambiguous")
++        committed = recover_completed_process(
++            commit_attempts[0], ("/usr/local/bin/sl", *commit_arguments)
++        )
++        if committed.returncode != 0 or committed.timed_out:
++            raise RuntimeError("declared mirror commit did not complete")
++        transaction["commit_stdout"] = regular_file_record(committed.stdout_path)
++        transaction["commit_process"] = regular_file_record(
++            committed.stdout_path.with_name("metadata.json")
++        )
++        transaction = _write_draft_transaction(
++            transaction_path, transaction, "commit-observed"
++        )
++    final_changed = _declared_draft_paths(case, changed)
++    if case.case_id in _DECLARED_CASE_MIRRORS:
++        commit_stdout_record = transaction.get("commit_stdout")
++        if not isinstance(commit_stdout_record, dict) or not isinstance(
++            commit_stdout_record.get("path"), str
++        ):
++            raise RuntimeError("declared mirror commit output is missing")
++        commit_stdout = Path(commit_stdout_record["path"])
++        verify_regular_file_record(commit_stdout, commit_stdout_record)
++        preliminary_files = _tree_records(checkout, final_changed)
++        commit_hash = verify_local_commit(
++            checkout,
++            _next_attempt(control_dir / "draft" / "local-commit-checks"),
++            case.source_revision,
++            final_changed,
++            preliminary_files,
++        )
++        final_changed, final_files = _seal_thrift_final_commit(
++            case,
++            case_dir,
++            checkout,
++            changed,
++            files,
++            commit_stdout,
++            review_schema_path,
++        )
++    else:
++        final_files = files
++        commit_hash = verify_local_commit(
++            checkout,
++            _next_attempt(control_dir / "draft" / "local-commit-checks"),
++            case.source_revision,
++            final_changed,
++            final_files,
++        )
+     recorded_commit = transaction.get("commit_hash")
+     if recorded_commit is not None and recorded_commit != commit_hash:
+         raise RuntimeError("draft transaction commit hash differs")
+     transaction["commit_hash"] = commit_hash
+-    if transaction.get("phase") == "preparing":
++    transaction["final_changed_paths"] = list(final_changed)
++    transaction["final_files"] = final_files
++    if transaction.get("phase") in ("preparing", "commit-observed"):
+         transaction = _write_draft_transaction(
+             transaction_path, transaction, "committed"
+         )
+     parent = _current_revision(
+         checkout, _next_attempt(control_dir / "draft" / "parent-attempts"), ".^"
+     )
+-    validate_case_checkout(case, parent, changed, False)
++    validate_case_checkout(case, parent, final_changed, False)
+     if existing.is_file():
+         if transaction.get("phase") not in (
+             "submitted",
+@@ -3465,8 +4063,8 @@
+         checkout,
+         control_dir / "draft" / "phabricator",
+         case.source_revision,
+-        changed,
+-        files,
++        final_changed,
++        final_files,
+         message,
+     )
+     transaction.update(
+@@ -3516,8 +4114,10 @@
+     value = _json(control_dir / "diff-url.json")
+     number = value.get("number")
+     seal = _json(control_dir / "validation-seal.json")
+-    raw_paths = seal.get("changed_paths")
+-    raw_files = seal.get("files")
++    transaction_path = control_dir / "draft-transaction.json"
++    transaction = _json(transaction_path) if transaction_path.is_file() else {}
++    raw_paths = transaction.get("final_changed_paths", seal.get("changed_paths"))
++    raw_files = transaction.get("final_files", seal.get("files"))
+     if (
+         not isinstance(number, str)
+         or not isinstance(raw_paths, list)
+@@ -3526,6 +4126,41 @@
+         or not all(isinstance(row, dict) for row in raw_files)
+     ):
+         raise RuntimeError("draft qualification artifacts are malformed")
++    qualified_paths_value = seal.get("changed_paths")
++    qualified_files_value = seal.get("files")
++    if not isinstance(qualified_paths_value, list) or not all(
++        isinstance(path, str) for path in qualified_paths_value
++    ):
++        raise RuntimeError("qualified draft paths are malformed")
++    qualified_paths = _repository_paths(qualified_paths_value)
++    final_paths = _repository_paths(raw_paths)
++    if case.case_id in _DECLARED_CASE_MIRRORS:
++        if (
++            final_paths != _declared_draft_paths(case, qualified_paths)
++            or raw_files != _tree_records(checkout, final_paths)
++        ):
++            raise RuntimeError("draft final path contract differs")
++        commit_stdout_record = transaction.get("commit_stdout")
++        if (
++            not isinstance(qualified_paths_value, list)
++            or not all(isinstance(path, str) for path in qualified_paths_value)
++            or not isinstance(qualified_files_value, list)
++            or not all(isinstance(row, dict) for row in qualified_files_value)
++            or not isinstance(commit_stdout_record, dict)
++            or not isinstance(commit_stdout_record.get("path"), str)
++        ):
++            raise RuntimeError("declared mirror draft evidence is malformed")
++        commit_stdout = Path(commit_stdout_record["path"])
++        verify_regular_file_record(commit_stdout, commit_stdout_record)
++        _seal_thrift_final_commit(
++            case,
++            case_dir,
++            checkout,
++            qualified_paths,
++            list(qualified_files_value),
++            commit_stdout,
++            Path(),
++        )
+     readback_root = control_dir / "draft" / "resume-readback"
+     readback_root.mkdir(parents=True, exist_ok=True)
+     attempt_number = len(tuple(readback_root.iterdir())) + 1
+@@ -3537,7 +4172,7 @@
+             readback_artifacts,
+             number,
+             case.source_revision,
+-            tuple(raw_paths),
++            final_paths,
+             list(raw_files),
+         )
+     except DraftError as error:
+@@ -3848,7 +4483,9 @@
+                     )
+                 else:
+                     report = _qualified_report(case, case_dir, checkout)
+-                url = _draft(case, case_dir, checkout, report)
++                url = _draft(
++                    case, case_dir, checkout, report, review_schema_path
++                )
+                 entry = ledger.append(Stage.DIFF_DRAFTED, {"url": url})
+                 _mark_draft_ledger_recorded(case_dir, entry.sequence)
+             elif stage == Stage.DIFF_DRAFTED:
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -3330,6 +3330,77 @@
+                     runtime_elf, buck_out, closure
+                 )
+ 
++    def test_runtime_image_stages_and_seals_executable_relative_resources(
++        self,
++    ) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            checkout = root / "checkout"
++            buck_out = checkout / "buck-out"
++            output = buck_out / "v2" / "art" / "target" / "__test__"
++            output.mkdir(parents=True)
++            elf = output / "test"
++            elf.write_bytes(b"elf")
++            (output / "__test__shared_libs_symlink_tree").mkdir()
++            certificate = checkout / "fbcode" / "certs" / "test.pem"
++            certificate.parent.mkdir(parents=True)
++            certificate.write_bytes(b"certificate\n")
++            source_manifest = elf.with_name(elf.name + ".resources.json")
++            logical = "fbcode/certs/test.pem"
++            source_manifest.write_text(
++                json.dumps(
++                    {logical: os.path.relpath(certificate, source_manifest.parent)}
++                )
++            )
++            evidence = root / "attempt" / "runtime.json"
++            inventory = pipeline_module._materialize_external_runtime_links(
++                elf, buck_out, evidence
++            )
++            resources = inventory["resources"]
++            self.assertIsInstance(resources, dict)
++            runtime_elf_record = inventory["runtime_elf"]
++            self.assertIsInstance(runtime_elf_record, dict)
++            runtime_elf = Path(str(runtime_elf_record["path"]))
++            runtime_manifest = runtime_elf.with_name(
++                runtime_elf.name + ".resources.json"
++            )
++            rewritten = json.loads(runtime_manifest.read_text())
++            staged_resource = (runtime_manifest.parent / rewritten[logical]).resolve()
++            self.assertTrue(
++                staged_resource.is_relative_to(Path(str(inventory["runtime_root"])))
++            )
++            self.assertEqual(staged_resource.read_bytes(), certificate.read_bytes())
++            self.assertEqual(
++                pipeline_module._verify_runtime_image(
++                    inventory, buck_out, evidence.parent
++                ),
++                runtime_elf,
++            )
++            staged_resource.write_bytes(b"tampered\n")
++            with self.assertRaises((RuntimeError, StateError)):
++                pipeline_module._verify_runtime_image(
++                    inventory, buck_out, evidence.parent
++                )
++
++    def test_runtime_resource_manifest_rejects_malformed_and_unsafe_inputs(
++        self,
++    ) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            manifest = root / "test.resources.json"
++            rejected = {
++                "duplicate": '{"a":"one","a":"two"}',
++                "non-string": '{"a":1}',
++                "unsafe-logical": '{"../a":"file"}',
++                "absolute-target": '{"a":"/etc/passwd"}',
++                "trailing-json": '{"a":"file"} true',
++            }
++            for name, content in rejected.items():
++                with self.subTest(manifest=name):
++                    manifest.write_text(content)
++                    with self.assertRaises(RuntimeError):
++                        pipeline_module._strict_resource_manifest(manifest)
++
+     def test_runtime_image_rejects_parent_escape_and_recovery_delete_escape(
+         self,
+     ) -> None:
+@@ -3676,9 +3747,27 @@
+                         f"[ RUN      ] {identity}\n"
+                     )
+                     stderr.write_text(
+-                        "F0921 HTTPDownstreamCoroSessionTests.cpp:1685] "
+-                        "Check failed: bodyEvent.hasException()\n"
++                        ":: Comparing captured verification logs...\n"
++                        ":: comparison=BitwiseInfoV1 relaxations=none\n"
++                        ":: Success: deterministic. Determinism verified.\n"
++                        "F0921 21:01:54.726478     3 "
++                        "HTTPDownstreamCoroSessionTests.cpp:1685] "
++                        "Check failed: bodyEvent.hasException() \n"
++                        "*** Check failure stack trace: ***\n"
+                         "*** Signal 6 (SIGABRT) received by PID 3 ***\n"
++                        "    @ 0000000000eb36c2 proxygen::coro::test::"
++                        "H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()"
++                        "::$_1::operator()(proxygen::coro::HTTPSourceHolder) const "
++                        "[clone .resume]\n"
++                        "                       ./fbcode/proxygen/lib/http/coro/"
++                        "test/HTTPDownstreamCoroSessionTests.cpp:1685\n"
++                        "*** Check failure async stack trace: ***\n"
++                        "    @ 0000000000eb36c3 proxygen::coro::test::"
++                        "H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()"
++                        "::$_1::operator()(proxygen::coro::HTTPSourceHolder) const "
++                        "[clone .resume]\n"
++                        "                       ./fbcode/proxygen/lib/http/coro/"
++                        "test/HTTPDownstreamCoroSessionTests.cpp:1685\n"
+                     )
+                 metadata, argv = _write_safehermit_fixture(
+                     root, argv, returncode, case.hermit_sha256
+@@ -3732,10 +3821,12 @@
+             first_marker, second_marker = pipeline_module.FAILURE_MARKERS["httpcoro"]
+             rejected_stderr = {
+                 "duplicate": original_stderr.replace(
+-                    second_marker, f"{second_marker} {second_marker}"
++                    "Check failed: bodyEvent.hasException()",
++                    "Check failed: bodyEvent.hasException() "
++                    "Check failed: bodyEvent.hasException()",
+                 ),
+                 "reordered": (
+-                    f"{second_marker}\n{first_marker}\n"
++                    f"Check failed: {second_marker}()\n{first_marker}\n"
+                     "*** Signal 6 (SIGABRT) received by PID 3 ***\n"
+                 ),
+                 "signal-first": (
+@@ -3774,6 +3865,43 @@
+                 )
+             fail_stdout.write_text(original_stdout)
+ 
++            fatal_mutations = {
++                "missing-normal-frame": original_stderr.replace(
++                    "H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()"
++                    "::$_1::operator()(proxygen::coro::HTTPSourceHolder) const "
++                    "[clone .resume]",
++                    "DifferentTest::co_TestBody()",
++                    1,
++                ),
++                "extra-location": original_stderr
++                + "HTTPDownstreamCoroSessionTests.cpp:1685\n",
++                "missing-async-delimiter": original_stderr.replace(
++                    "*** Check failure async stack trace: ***",
++                    "*** unrelated async stack trace: ***",
++                ),
++                "weakened-compare": original_stderr.replace(
++                    ":: comparison=BitwiseInfoV1 relaxations=none",
++                    ":: comparison=BitwiseInfoV1 relaxations=addresses",
++                ),
++            }
++            for mutation, transcript in fatal_mutations.items():
++                with self.subTest(role_mutation=mutation):
++                    fail_stderr.write_text(transcript)
++                    with self.assertRaisesRegex(
++                        RuntimeError, "fatal gtest did not start"
++                    ):
++                        _gtest_fatal_execution_evidence(
++                            tuple(
++                                json.loads(
++                                    (fail_root / "wrapper/metadata.json").read_text()
++                                )["argv"]
++                            ),
++                            fail_stdout,
++                            fail_stderr,
++                            pipeline_module.FAILURE_MARKERS["httpcoro"],
++                        )
++            fail_stderr.write_text(original_stderr)
++
+             report = fail_root / "safehermit.json"
+             original_report = report.read_text()
+             report.write_text(
+@@ -4765,6 +4893,120 @@
+                 ["attempt-001", "attempt-002"],
+             )
+ 
++    def test_thrift_final_commit_seals_declared_mirror_and_two_path_review(
++        self,
++    ) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            checkout = root / "checkout"
++            case_dir = root / "case"
++            canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
++            for relative in (canonical, mirrored):
++                path = checkout / relative
++                path.parent.mkdir(parents=True, exist_ok=True)
++                path.write_text("same changed bytes\n")
++            qualified_paths = (canonical,)
++            qualified_files = [pipeline_module._path_record(checkout, canonical)]
++            commit_stdout = root / "commit.stdout"
++            commit_stdout.write_text(
++                f"mirrored changes in '{canonical}' to '{mirrored}'\n"
++            )
++            reviewed_paths: list[tuple[str, ...]] = []
++
++            def diff(
++                _checkout: Path,
++                paths: tuple[str, ...],
++                artifact_dir: Path,
++                _base: str | None = None,
++            ) -> ProcessResult:
++                artifact_dir.mkdir(parents=True)
++                stdout = artifact_dir / "stdout.txt"
++                stderr = artifact_dir / "stderr.txt"
++                path = paths[0]
++                stdout.write_text(
++                    f"diff --git a/{path} b/{path}\n"
++                    f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+same changed bytes\n"
++                )
++                stderr.write_text("")
++                return ProcessResult(("sl", "diff"), 0, 0.1, False, stdout, stderr)
++
++            def review(
++                _checkout: Path,
++                paths: tuple[str, ...],
++                directory: Path,
++                _schema: Path,
++                **_kwargs: object,
++            ) -> dict[str, object]:
++                reviewed_paths.append(paths)
++                review_path = directory / "control" / "final-adversarial-review.json"
++                review_path.parent.mkdir(parents=True, exist_ok=True)
++                review_path.write_text("{}\n")
++                return {"diff_sha256": "a" * 64}
++
++            case = replace(_loaded_case(), case_id="thrift")
++            with (
++                patch("testinfra.tfa.pipeline._sl_diff", side_effect=diff),
++                patch(
++                    "testinfra.tfa.pipeline._independent_diff_review",
++                    side_effect=review,
++                ),
++            ):
++                paths, files = pipeline_module._seal_thrift_final_commit(
++                    case,
++                    case_dir,
++                    checkout,
++                    qualified_paths,
++                    qualified_files,
++                    commit_stdout,
++                    root / "review.schema.json",
++                )
++            self.assertEqual(paths, tuple(sorted((canonical, mirrored))))
++            self.assertEqual(reviewed_paths, [paths])
++            self.assertEqual(files[0]["sha256"], files[1]["sha256"])
++            seal = json.loads(
++                (case_dir / "control" / "final-commit-seal.json").read_text()
++            )
++            self.assertEqual(seal["changed_paths"], list(paths))
++
++            commit_stdout.write_text(
++                commit_stdout.read_text()
++                + "mirrored changes in 'other' to 'unrelated'\n"
++            )
++            (case_dir / "control" / "final-commit-seal.json").unlink()
++            with self.assertRaisesRegex(RuntimeError, "declared mirror pair"):
++                pipeline_module._seal_thrift_final_commit(
++                    case,
++                    case_dir,
++                    checkout,
++                    qualified_paths,
++                    qualified_files,
++                    commit_stdout,
++                    root / "review.schema.json",
++                )
++
++    def test_thrift_final_commit_rejects_divergent_mirror(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            checkout = root / "checkout"
++            canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
++            for relative, content in ((canonical, "canonical\n"), (mirrored, "other\n")):
++                path = checkout / relative
++                path.parent.mkdir(parents=True, exist_ok=True)
++                path.write_text(content)
++            stdout = root / "commit.stdout"
++            stdout.write_text(f"mirrored changes in '{canonical}' to '{mirrored}'\n")
++            case = replace(_loaded_case(), case_id="thrift")
++            with self.assertRaisesRegex(RuntimeError, "canonical and mirror files"):
++                pipeline_module._seal_thrift_final_commit(
++                    case,
++                    root / "case",
++                    checkout,
++                    (canonical,),
++                    [pipeline_module._path_record(checkout, canonical)],
++                    stdout,
++                    root / "review.schema.json",
++                )
++
+     def test_independent_review_is_bound_to_exact_diff_hash_and_paths(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)

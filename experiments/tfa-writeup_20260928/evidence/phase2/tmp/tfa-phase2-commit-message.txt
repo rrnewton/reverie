@@ -1,0 +1,20 @@
+[testinfra][tfa] Close phase-two review findings
+
+[hermit2, unknown-agentname, gpt-5.6-sol, devbig030, role=impl]
+
+Restore the strict current-Hermit FullTrace contract without changing the
+historical witness, bind packaged and qualification artifacts to their exact
+configured identities, and fail aggregate readiness closed for unqualified
+Hermit and Codex binaries.
+
+Seal independently verifiable import receipts, render self-contained
+reproducers, make production-fixture recovery durable before cleanup, and
+replace timing-based containment checks with direct liveness evidence.
+
+Test Plan:
+- arc f
+- arc lint -a
+- arc pyre
+- buck test fbcode//testinfra/tfa/tests:tfa_phase2_test (127/127)
+- buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json (3 cases)
+- buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test (36/40; packaged Hermit minimal FullTrace blocker passes as a fail-closed assertion, and four real Codex tests fail closed on unsupported codex-cli 0.156.0)

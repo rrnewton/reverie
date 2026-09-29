@@ -1,0 +1,118 @@
+notice Found 8 lint issues.
+>>> Lint for fbcode/testinfra/tfa/hermit.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+              61     "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b"
+              62 )
+              63 _PACKAGED_HERMIT_RESOURCE: str = "hermit-test-bin"
+        -     64 _PACKAGED_HERMIT_COMPATIBILITY_RESOURCE: str = (
+        -     65     "hermit-import-compatibility.v1.json"
+        -     66 )
+        +        _PACKAGED_HERMIT_COMPATIBILITY_RESOURCE: str = "hermit-import-compatibility.v1.json"
+              67 _HERMIT_UNWIND_SECONDS: int = 10
+              68 _OUTER_CLEANUP_SECONDS: int = 10
+              69 _VERIFY_OUTPUT_MAX_BYTES: int = 512 * 1024 * 1024
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             105         canonical = root.resolve(strict=True)
+             106         fixture_root = root.parents[1]
+             107     except (IndexError, OSError) as error:
+        -    108         raise HermitError("configured verification space root is unavailable") from error
+        +                raise HermitError(
+        +                    "configured verification space root is unavailable"
+        +                ) from error
+             109     if (
+             110         canonical != root
+             111         or root.name != "safehermit"
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1433 def packaged_hermit_argv(
+            1434     argv: tuple[str, ...], expected_revision: str, expected_sha256: str
+            1435 ) -> tuple[str, ...]:
+        -   1436     compatibility_path = _packaged_resource(
+        -   1437         _PACKAGED_HERMIT_COMPATIBILITY_RESOURCE
+        -   1438     )
+        +            compatibility_path = _packaged_resource(_PACKAGED_HERMIT_COMPATIBILITY_RESOURCE)
+            1439     try:
+            1440         compatibility_before = regular_file_record(compatibility_path)
+            1441         compatibility = json.loads(compatibility_path.read_text())
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1441         compatibility = json.loads(compatibility_path.read_text())
+            1442         compatibility_after = regular_file_record(compatibility_path)
+            1443     except (OSError, json.JSONDecodeError, StateError) as error:
+        -   1444         raise HermitError("packaged Hermit compatibility record is unreadable") from error
+        +                raise HermitError(
+        +                    "packaged Hermit compatibility record is unreadable"
+        +                ) from error
+            1445     if compatibility_before != compatibility_after or not isinstance(
+            1446         compatibility, dict
+            1447     ):
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1448         raise HermitError("packaged Hermit compatibility record changed while read")
+            1449     qualification = compatibility.get("qualification_probe")
+            1450     historical = compatibility.get("historical_witness")
+        -   1451     blockers = qualification.get("blockers") if isinstance(qualification, dict) else None
+        +            blockers = (
+        +                qualification.get("blockers") if isinstance(qualification, dict) else None
+        +            )
+            1452     if (
+            1453         compatibility.get("schema_version") != 1
+            1454         or compatibility.get("target")
+
+
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1022                 return safehermit if name == "safehermit" else bounded
+            1023 
+            1024             with (
+        -   1025                 patch(
+        -   1026                     "testinfra.tfa.hermit._packaged_resource", side_effect=resource
+        -   1027                 ),
+        +                        patch("testinfra.tfa.hermit._packaged_resource", side_effect=resource),
+            1028                 patch("testinfra.tfa.hermit.SAFEHERMIT_SHA256", safe_digest),
+            1029                 patch(
+            1030                     "testinfra.tfa.hermit.BOUNDED_RUN_SPACE_SHA256", bounded_digest
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1026                     "testinfra.tfa.hermit._packaged_resource", side_effect=resource
+            1027                 ),
+            1028                 patch("testinfra.tfa.hermit.SAFEHERMIT_SHA256", safe_digest),
+        -   1029                 patch(
+        -   1030                     "testinfra.tfa.hermit.BOUNDED_RUN_SPACE_SHA256", bounded_digest
+        -   1031                 ),
+        +                        patch("testinfra.tfa.hermit.BOUNDED_RUN_SPACE_SHA256", bounded_digest),
+            1032             ):
+            1033                 records = _pin_safehermit_runtime(attempt)
+            1034             self.assertEqual(resolved, ["safehermit", "bounded-run-space"])
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1110                     root, root / "preflight", {}
+            1111                 )
+            1112             identity = json.loads((root / "preflight/identity.json").read_text())
+        -   1113             self.assertEqual(
+        -   1114                 identity["schema"], "tfa.codex-environment-preflight.v1"
+        -   1115             )
+        +                    self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v1")
+            1116             self.assertEqual(identity["version"], "codex-cli 0.156.0")
+            1117             self.assertEqual(identity["state"], "blocked")
+            1118             self.assertEqual(
+Applied 2 lint patches

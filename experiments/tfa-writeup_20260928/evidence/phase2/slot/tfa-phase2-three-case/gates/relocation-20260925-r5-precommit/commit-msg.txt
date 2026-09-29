@@ -1,0 +1,53 @@
+[testinfra][tfa] Bind relocated safehermit reports to unique keys and the manifest Hermit
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+The exact-head review of `76901578` found an evidence-binding gap in
+`_bound_receipt`. It parsed the safehermit report with `setdefault`, so a
+repeated key was silently resolved to its first value. It also never checked
+which Hermit binary safehermit reports it ran.
+
+This change:
+- rejects a report that names any key more than once;
+- requires the report's `binary_sha256` to equal the manifest `hermit_sha256`,
+  alongside the existing receipt input check.
+
+The new `test_refuses_report_with_foreign_hermit_or_repeated_key` covers three
+cases on a decided attempt:
+- a wrong `binary_sha256`;
+- a second, conflicting `binary_sha256`;
+- a second, conflicting `exit_code`.
+
+The fixture now writes the manifest Hermit hash. Two existing forged-report
+subtests gained that line, so each still reaches the property it targets. Their
+assertions are unchanged.
+
+The README now notes a limitation. The offline renderer resolves relocated
+paths only when it runs, so a symlink swapped afterwards is not detected (a
+TOCTOU gap). This validates recorded evidence; it is not runtime containment.
+
+No process, Hermit, Codex, state or pipeline code changed. Both Codex
+compatibility keys remain blocked.
+
+Test Plan:
+Pre-commit checks, under the registered evidence tree
+`tfa-phase2-three-case/gates/relocation-20260925-r5-precommit/`:
+- `arc f`, `arc lint`, `arc pyre check-changed-targets`: rc 0
+- `RelocationTest` via the link tree: 12/12
+- All 12 real `relocated-v2` safehermit reports have unique keys and the
+  manifest Hermit hash. All three real summaries still validate with unchanged
+  summary hashes and witness seeds.
+
+The exact-head gates for this commit are run afterwards, each as its own unpiped
+command, under `gates/relocation-20260925-r5-<head>/`.
+
+Parent `76901578` exact-head gates (`gates/relocation-20260925-r4-76901578/`):
+- `arc lint` and pyre: rc 0
+- `tfa_phase2_test`: 177/177
+- Containment: rc 32, 36/40. All four failures are the signed Codex 0.156.0
+  preflight blocker. The earlier `chataccd` "did not retire" failure did not
+  recur.
+- The relocation renders were not run at that head before this follow-up.
+
+The signed Codex gate remains BLOCKED, not green.

@@ -1,0 +1,1 @@
+[{"rank": 1, "claim": "handoff", "supporting": "6f8e2d4c91a7b035e6d2498af0137c5b82e49d6a10c3f751", "contradicting": "none", "next_experiment": "apply"}, {"rank": 2, "claim": "direct edit", "supporting": "errno:13,succeeded", "contradicting": "sandbox", "next_experiment": "controller"}]

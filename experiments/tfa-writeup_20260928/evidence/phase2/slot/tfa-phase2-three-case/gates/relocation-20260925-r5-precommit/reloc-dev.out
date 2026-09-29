@@ -1,0 +1,17 @@
+test_changed_seed_and_censored_attempts_are_reported (testinfra.tfa.tests.test_prototype.RelocationTest.test_changed_seed_and_censored_attempts_are_reported) ... ok
+test_initial_comment_leads_with_measured_relocation (testinfra.tfa.tests.test_prototype.RelocationTest.test_initial_comment_leads_with_measured_relocation) ... ok
+test_refuses_argv_that_changes_more_than_tmp_paths (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_argv_that_changes_more_than_tmp_paths) ... ok
+test_refuses_decided_bytes_relabelled_as_censored (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_decided_bytes_relabelled_as_censored) ... ok
+test_refuses_forged_censored_attempt (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_forged_censored_attempt) ... ok
+test_refuses_fresh_stress_seed_and_unreproduced_state (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_fresh_stress_seed_and_unreproduced_state) ... ok
+test_refuses_omitted_censored_attempt (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_omitted_censored_attempt) ... ok
+test_refuses_paths_escaping_through_dotdot_or_symlink (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_paths_escaping_through_dotdot_or_symlink) ... ok
+test_refuses_receipt_whose_bytes_contradict_its_oracle (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_receipt_whose_bytes_contradict_its_oracle) ... ok
+test_refuses_relabelled_censored_attempt (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_relabelled_censored_attempt) ... ok
+test_refuses_report_with_foreign_hermit_or_repeated_key (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_report_with_foreign_hermit_or_repeated_key) ... ok
+test_relocation_requires_historical_hash (testinfra.tfa.tests.test_prototype.RelocationTest.test_relocation_requires_historical_hash) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.127s
+
+OK

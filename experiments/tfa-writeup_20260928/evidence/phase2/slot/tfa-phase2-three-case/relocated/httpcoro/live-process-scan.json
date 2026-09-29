@@ -1,0 +1,16 @@
+{
+  "schema": "tfa.live-process-scan.v1",
+  "target": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd",
+  "started_unix": 1790327675.9836812,
+  "finished_unix": 1790327676.7636912,
+  "uid": 212630,
+  "processes_scanned": 822,
+  "processes_unreadable": 4111,
+  "checked": [
+    "cwd",
+    "root",
+    "fd/*",
+    "maps"
+  ],
+  "hits": []
+}

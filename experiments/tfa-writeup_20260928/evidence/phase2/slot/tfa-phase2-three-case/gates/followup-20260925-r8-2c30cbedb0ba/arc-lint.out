@@ -1,0 +1,2 @@
+ok No lint issues.
+notice Fast linters passed. Run 'arc lint -e extra' for comprehensive (slower) linters such as CLANGTIDY, RUSTFIX, FIXIT etc.

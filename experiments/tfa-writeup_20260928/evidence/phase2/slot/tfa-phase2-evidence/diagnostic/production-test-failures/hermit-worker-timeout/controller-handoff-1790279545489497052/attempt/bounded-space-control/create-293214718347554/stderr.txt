@@ -1,0 +1,2 @@
+bounded-run-space: bounded: /tmp/tfa-phase2/tfa-production-btrfs-crmy75la/mount/safehermit/attempt-82b82178ae28ada41b8f915a/brs-tfa-verify-v2-82b82178ae28ada41b8f915a-1172122-1790279517120920617  subvol=0/256  limit=1000000000 bytes of ON-DISK (compressed) space
+bounded-run-space: bounded: note the allowance is measured AFTER compression; expect logical files many times larger

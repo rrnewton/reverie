@@ -1,0 +1,21 @@
+notice Found 1 lint issue.
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1088             )
+            1089             value["packaged_executable"]["sha256"] = digest
+            1090             compatibility.write_text(json.dumps(value))
+        -   1091             receipts = Path(manifest_module.__file__).with_name(
+        -   1092                 "hermit-import-receipts.v1.json"
+        -   1093             ).resolve(strict=True)
+        +                    receipts = (
+        +                        Path(manifest_module.__file__)
+        +                        .with_name("hermit-import-receipts.v1.json")
+        +                        .resolve(strict=True)
+        +                    )
+            1094 
+            1095             def resource(name: str) -> Path:
+            1096                 if name == "hermit-import-compatibility.v1.json":
+Applied 1 lint patch

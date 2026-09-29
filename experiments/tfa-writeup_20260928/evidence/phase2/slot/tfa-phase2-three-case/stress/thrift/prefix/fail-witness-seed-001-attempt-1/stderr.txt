@@ -1,0 +1,22 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 38940 | 38940 messages total
+Logs contain 38926 | 38926 detcore-specific messages
+Logs contain 38940 | 38940 INFO messages
+Logs contain 30487 | 30487 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (38940 | 38940 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 82 | 82 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 800, committed virtual time 1790027077571496036ns, run 2 first at turn 800, committed virtual time 1790027077571496036ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/fail-witness-seed-001-attempt-1/verify/run1_log_0YjwG
+::   run 2: /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/fail-witness-seed-001-attempt-1/verify/run2_log_eI2qH
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+I0921 21:44:38.337945    19 ThriftServer.cpp:2053] Using randomly generated TLS ticket keys.
+I0921 21:44:38.352338    19 ThriftServer.cpp:973] Using resource pools on address/port [::1]:0: thrift flag: true, enable gflag: false, disable gflag: false, runtime actions: 
+I0921 21:44:38.365875    19 ThriftServer.cpp:1533] Resource pools configured: 2
+I0921 21:44:38.440553    19 ThriftServer.cpp:731] ThriftServer listening on address/port: [::1]:32768

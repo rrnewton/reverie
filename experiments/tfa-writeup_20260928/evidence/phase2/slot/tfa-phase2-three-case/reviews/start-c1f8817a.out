@@ -1,0 +1,7 @@
+{
+  "artifact": "/home/newton/work/dev-hermit/.agentctl/tfa-rev-c1f8817a/queue/failed/01790336519576203338-812598.json",
+  "error": "message 01790336519576203338-812598 has an ambiguous outcome after one injection: pane wV:p19 agent-prompt outcome is unknown; prompt may have been submitted: literal text insertion did not produce exact visible Muse editor evidence; Enter was not sent; it is retained under /home/newton/work/dev-hermit/.agentctl/tfa-rev-c1f8817a/queue/failed",
+  "message_id": "01790336519576203338-812598",
+  "outcome": "possibly_submitted",
+  "safe_to_retry": false
+}

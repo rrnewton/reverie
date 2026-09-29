@@ -1,0 +1,15 @@
+[herdr-run] rust cache=verified source=7f50c60a7eb8 binary=f06ad9c9f50e
+----------------------------------------------------------------------
+GitHub main health: NO CURRENT-TIP RUNS (do not claim green)
+Ground truth: gh run list --branch main --event push
+  rrnewton/dev-hermit main=84021cb28d5e state=none
+    no push workflow runs found at the current main SHA
+  rrnewton/hermit main=ad21724d5f64 state=none
+    no push workflow runs found at the current main SHA
+  rrnewton/reverie main=c1ffab7ee6e3 state=none
+    no push workflow runs found at the current main SHA
+# ci-hub/main-health tool COST ACTUAL wall=7.813s cpu=1.673s cpu_user=1.311s cpu_system=0.362s exit=2
+Pre-push warning: GitHub main health could not be verified. Do not claim green.
+----------------------------------------------------------------------
+To https://github.com/rrnewton/dev-hermit
+   84021cb28..24e90ece2  HEAD -> main

@@ -1,0 +1,45 @@
+[testinfra][tfa] Bind the follow-up unfixed phase to the manifest test ELF
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+A real-evidence negative control at `3eb9d118` found a gap. When the two
+phases of the real thrift ledger were swapped, `render-followup` rendered the
+ledger instead of refusing it. The verdict came out NOT SUPPORTED, because
+the unfixed FAILs became "patched" FAILs. However, nothing tied the `unfixed`
+phase to the manifest. A ledger could therefore offer any failing ELF as the
+baseline and make an ineffective patch look discriminating.
+
+`validated_followup` now requires the unfixed phase's `guest_sha256` to equal
+the manifest `artifact_sha256`. It checks this before the existing check that
+the two phases test different ELFs. The fixture now uses the case's
+`artifact_sha256` for the unfixed ELF. A new binding subtest swaps the ledger
+phases and expects the refusal. The README states the rule.
+
+Test Plan:
+Pre-commit checks, under `tfa-phase2-three-case/gates/followup-20260925-r7-precommit/`:
+- `arc f`, `arc lint`, `arc pyre check-changed-targets`: rc 0
+- `tfa_phase2_test`: 187/187. The new check is a subtest of
+  `test_refuses_runs_not_bound_to_their_phase_or_bytes`.
+- All three real ledgers still validate, and their unfixed ELF equals the
+  manifest artifact:
+  - thrift: SUPPORTED, with the seed-1 path caveat;
+  - asyncssl: SUPPORTED, with fresh seed 15 OTHER;
+  - httpcoro: SUPPORTED.
+
+Parent `3eb9d118` exact-head gates
+(`gates/followup-20260925-r6-3eb9d118337a/`):
+- `arc lint` and pyre: rc 0
+- `tfa_phase2_test`: 187/187
+- CLI built.
+- The initial renders are byte-identical to `stage1-2-relocated`, and the
+  follow-up renders are SUPPORTED for all three cases.
+- All 8 `followup.py` mutations are caught by `FollowupTest`.
+- The phase-swap real-evidence control was not refused, which is the gap fixed
+  here.
+- Containment was not run at that head.
+
+The exact-head gates for this commit run afterwards under
+`gates/followup-20260925-r7-<head>/`.
+
+The signed Codex gate remains BLOCKED at 36/40, not green.

@@ -1,0 +1,317 @@
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+from testinfra.tfa.comments import marker
+from testinfra.tfa.manifest import Case
+from testinfra.tfa.relocation import (
+    _bound_file,
+    _check_oracle,
+    _DETERMINISM,
+    _safehermit_fields,
+    RelocationError,
+)
+from testinfra.tfa.report import ReportError, validate_candidate_report
+
+
+LEDGER_SCHEMA: str = "tfa.followup-ledger.v1"
+RUN_SCHEMA: str = "tfa.witness-replay-run.v1"
+PHASES: tuple[str, ...] = ("unfixed", "patched")
+ROLES: tuple[str, ...] = ("fail-witness", "pass-witness", "discriminator", "fresh")
+VERDICTS: tuple[str, ...] = ("PASS", "FAIL", "CENSORED", "NONDETERMINISTIC", "OTHER")
+_NONDETERMINISM = ":: Failure: nondeterministic."
+
+
+class FollowupError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class JudgedRun:
+    phase: str
+    role: str
+    seed: int
+    verdict: str
+    run: str
+
+
+@dataclass(frozen=True)
+class Followup:
+    ledger_sha256: str
+    root_cause: str
+    patch: str
+    patch_sha256: str
+    guests: dict[str, str]
+    runs: tuple[JudgedRun, ...]
+    interrupted: int
+    verdict: str
+    reasons: tuple[str, ...]
+
+
+def _object(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise FollowupError(f"{name} must be an object")
+    return value
+
+
+def _bound_run(
+    case: Case, run: Path, guest_sha256: str
+) -> tuple[dict[str, object], tuple[str, ...], dict[str, str]]:
+    """Bind a replay receipt to the manifest Hermit, its phase's test ELF, its
+    own argv, and its own stdout, stderr and safehermit report bytes."""
+    try:
+        receipt = _object(json.loads((run / "receipt.json").read_text()), "receipt")
+    except (OSError, json.JSONDecodeError) as error:
+        raise FollowupError(f"missing or malformed receipt: {run}") from error
+    if receipt.get("schema") != RUN_SCHEMA or receipt.get("case_id") != case.case_id:
+        raise FollowupError(f"receipt is not a {case.case_id} replay: {run}")
+    recorded = receipt.get("argv")
+    if not isinstance(recorded, list) or not all(isinstance(t, str) for t in recorded):
+        raise FollowupError(f"receipt has no argv: {run}")
+    argv = tuple(recorded)
+    seed = receipt.get("sched_seed")
+    if (
+        not isinstance(seed, int)
+        or isinstance(seed, bool)
+        or "--sched-seed" not in argv
+        or argv[argv.index("--sched-seed") + 1] != str(seed)
+    ):
+        raise FollowupError(f"receipt seed is not the argv seed: {run}")
+    inputs = _object(receipt.get("inputs"), "receipt inputs")
+    hermit = _object(inputs.get("hermit"), "receipt Hermit")
+    guest = _object(inputs.get("guest"), "receipt test ELF")
+    if hermit.get("sha256") != case.hermit_sha256:
+        raise FollowupError(f"receipt Hermit differs from the manifest: {run}")
+    if guest.get("sha256") != guest_sha256:
+        raise FollowupError(f"run tested a different ELF than its phase: {run}")
+    if "--" not in argv or argv[argv.index("--") + 1 :][:1] != (guest.get("path"),):
+        raise FollowupError(f"argv does not run the receipt's test ELF: {run}")
+    classification = _object(receipt.get("classification"), "classification")
+    try:
+        _bound_file(receipt.get("stdout"), run / "stdout.txt", "stdout")
+        _bound_file(receipt.get("stderr"), run / "stderr.txt", "stderr")
+        report_path = _bound_file(
+            receipt.get("safehermit_report"),
+            run / "safehermit.txt",
+            "safehermit report",
+        )
+        report = _safehermit_fields(report_path, run)
+    except RelocationError as error:
+        raise FollowupError(f"{error}: {run}") from error
+    if report.get("binary_sha256") != case.hermit_sha256:
+        raise FollowupError(f"safehermit ran a Hermit not in the manifest: {run}")
+    if report.get("exit_code") != str(classification.get("returncode")):
+        raise FollowupError(f"safehermit exit code contradicts the receipt: {run}")
+    return receipt, argv, report
+
+
+def _decided(case: Case, argv: tuple[str, ...], returncode: object, run: Path) -> str:
+    for outcome in ("pass", "fail"):
+        try:
+            _check_oracle(case, outcome, argv, returncode, run)
+        except RuntimeError:
+            continue
+        return outcome.upper()
+    return ""
+
+
+def judge_run(case: Case, run: Path, guest_sha256: str) -> tuple[int, str]:
+    """Return a replay's seed and its verdict re-judged from its own bytes; the
+    receipt's recorded label is never trusted."""
+    receipt, argv, report = _bound_run(case, run, guest_sha256)
+    seed = receipt["sched_seed"]
+    assert isinstance(seed, int)
+    returncode = _object(receipt["classification"], "classification").get("returncode")
+    decided = _decided(case, argv, returncode, run)
+    if returncode == 124 and report.get("unit_result") == "timeout" and not decided:
+        return seed, "CENSORED"
+    if decided:
+        return seed, decided
+    stderr = (run / "stderr.txt").read_text(errors="replace").splitlines()
+    if _NONDETERMINISM in stderr and _DETERMINISM not in stderr:
+        return seed, "NONDETERMINISTIC"
+    return seed, "OTHER"
+
+
+def _phase_runs(
+    case: Case, phase: str, value: dict[str, object], seen: set[str]
+) -> tuple[list[JudgedRun], int]:
+    guest = value.get("guest_sha256")
+    if not isinstance(guest, str) or not re.fullmatch("[0-9a-f]{64}", guest):
+        raise FollowupError(f"{phase} phase has no test ELF sha256")
+    entries = value.get("runs")
+    interrupted = value.get("interrupted", [])
+    if not isinstance(entries, list) or not isinstance(interrupted, list):
+        raise FollowupError(f"{phase} phase must list runs and interrupted attempts")
+    runs = []
+    for entry in entries:
+        entry = _object(entry, f"{phase} run")
+        role, path = entry.get("role"), entry.get("run")
+        if role not in ROLES or not isinstance(path, str) or path in seen:
+            raise FollowupError(f"{phase} run has a bad role or repeats a run: {path}")
+        seen.add(path)
+        seed, verdict = judge_run(case, Path(path), guest)
+        runs.append(JudgedRun(phase, str(role), seed, verdict, path))
+    for path in interrupted:
+        if not isinstance(path, str) or path in seen or not Path(path).is_dir():
+            raise FollowupError(
+                f"interrupted attempt is not a unique directory: {path}"
+            )
+        if (Path(path) / "receipt.json").exists():
+            raise FollowupError(f"interrupted attempt has a receipt: {path}")
+        seen.add(path)
+    return runs, len(interrupted)
+
+
+def _verdict(runs: tuple[JudgedRun, ...]) -> tuple[str, tuple[str, ...]]:
+    patched = [run for run in runs if run.phase == "patched"]
+    if any(run.verdict == "FAIL" for run in patched):
+        return "NOT SUPPORTED", ("a patched replay still FAILs",)
+    reasons = []
+    failing = sorted(
+        {r.seed for r in runs if r.phase == "unfixed" and r.verdict == "FAIL"}
+    )
+    if not failing:
+        reasons.append(
+            "no unfixed replay FAILed at this checkout path, so patched PASSes "
+            "do not discriminate"
+        )
+    for seed in failing:
+        replays = [run.verdict for run in patched if run.seed == seed]
+        if not replays or set(replays) != {"PASS"}:
+            reasons.append(
+                f"seed {seed} FAILed unfixed but not every patched replay PASSed"
+            )
+    witnesses = [run.verdict for run in patched if run.role == "pass-witness"]
+    if not witnesses or set(witnesses) != {"PASS"}:
+        reasons.append("the patched PASS witness did not PASS on every replay")
+    if reasons:
+        return "INCONCLUSIVE", tuple(reasons)
+    witnesses = sorted({r.seed for r in runs if r.role == "fail-witness"})
+    return "SUPPORTED", (
+        *(
+            f"fail-witness seed {seed} did not FAIL unfixed at this checkout path"
+            for seed in witnesses
+            if seed not in failing
+        ),
+        *(
+            f"patched {run.role} seed {run.seed} was {run.verdict}"
+            for run in patched
+            if run.verdict != "PASS"
+        ),
+    )
+
+
+def validated_followup(case: Case, ledger_path: Path) -> Followup:
+    try:
+        data = ledger_path.read_bytes()
+        ledger = _object(json.loads(data), "ledger")
+    except (OSError, json.JSONDecodeError) as error:
+        raise FollowupError(f"missing or malformed ledger: {ledger_path}") from error
+    if ledger.get("schema") != LEDGER_SCHEMA or ledger.get("case_id") != case.case_id:
+        raise FollowupError(f"ledger is not a {case.case_id} follow-up ledger")
+    report = ledger.get("candidate_report")
+    try:
+        candidate = validate_candidate_report(Path(str(report)), case.case_id)
+        patch = Path(candidate.patch_path).read_bytes()
+    except (ReportError, OSError) as error:
+        raise FollowupError(f"candidate report refused: {error}") from error
+    if not patch.strip():
+        raise FollowupError("candidate patch is empty")
+    phases = _object(ledger.get("phases"), "phases")
+    if sorted(phases) != sorted(PHASES):
+        raise FollowupError("ledger must have exactly the unfixed and patched phases")
+    guests = {
+        phase: _object(phases[phase], phase).get("guest_sha256") for phase in PHASES
+    }
+    if guests["unfixed"] != case.artifact_sha256:
+        raise FollowupError("unfixed phase is not the manifest's test ELF")
+    if guests["unfixed"] == guests["patched"]:
+        raise FollowupError("patched phase reran the unfixed test ELF")
+    seen: set[str] = set()
+    judged = {
+        phase: _phase_runs(case, phase, _object(phases[phase], phase), seen)
+        for phase in PHASES
+    }
+    runs = tuple(run for phase in PHASES for run in judged[phase][0])
+    verdict, reasons = _verdict(runs)
+    return Followup(
+        ledger_sha256=hashlib.sha256(data).hexdigest(),
+        root_cause=candidate.root_cause,
+        patch=patch.decode(errors="replace"),
+        patch_sha256=hashlib.sha256(patch).hexdigest(),
+        guests={phase: str(guests[phase]) for phase in PHASES},
+        runs=runs,
+        interrupted=judged["unfixed"][1] + judged["patched"][1],
+        verdict=verdict,
+        reasons=reasons,
+    )
+
+
+def _counts(runs: list[JudgedRun]) -> str:
+    counts = Counter(run.verdict for run in runs)
+    return ", ".join(f"{v}x{counts[v]}" for v in VERDICTS if counts[v]) or "not run"
+
+
+def _result_lines(followup: Followup) -> list[str]:
+    keys = sorted(
+        {(run.role, run.seed) for run in followup.runs},
+        key=lambda key: (ROLES.index(key[0]), key[1]),
+    )
+    lines = []
+    for role, seed in keys:
+        cells = [
+            f"{phase} "
+            + _counts(
+                [
+                    r
+                    for r in followup.runs
+                    if (r.phase, r.role, r.seed) == (phase, role, seed)
+                ]
+            )
+            for phase in PHASES
+        ]
+        lines.append(f"- {role} seed {seed}: {'; '.join(cells)}")
+    if followup.interrupted:
+        lines.append(
+            f"- {followup.interrupted} attempt(s) were interrupted without a "
+            "receipt; they count as neither PASS nor FAIL."
+        )
+    return lines
+
+
+def followup_text(case: Case, followup: Followup) -> str:
+    longest = max((len(r) for r in re.findall("`+", followup.patch)), default=0)
+    fence = "`" * max(3, longest + 1)
+    reasons = [f"  - {reason}" for reason in followup.reasons]
+    return "\n".join(
+        (
+            marker(case, "followup"),
+            "TFA phase-two candidate fix follow-up (artifact-only preview; not "
+            "posted; no Diff created)",
+            f"- Selector: `{case.selector}`",
+            f"- Root cause (investigator candidate): {followup.root_cause}",
+            f"- Local candidate patch sha256 `{followup.patch_sha256}`, applied "
+            "only in an isolated controller checkout",
+            f"- Unfixed test ELF sha256 `{followup.guests['unfixed']}`; patched "
+            f"test ELF sha256 `{followup.guests['patched']}`",
+            f"- Evidence ledger sha256 `{followup.ledger_sha256}`",
+            "Hermit replays, each re-judged from its own bytes (CENSORED, "
+            "NONDETERMINISTIC and OTHER count as neither PASS nor FAIL):",
+            *_result_lines(followup),
+            f"Verdict: {followup.verdict}",
+            *reasons,
+            "Local diff:",
+            f"{fence}diff",
+            followup.patch.rstrip("\n"),
+            fence,
+            "Not posted; no Diff created; no reviewers assigned.",
+        )
+    )

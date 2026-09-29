@@ -1,0 +1,121 @@
+[
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-1",
+    "seed": 0,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3",
+    "seed": 0,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/pass-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/pass-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-004",
+    "seed": 4,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-005",
+    "seed": 5,
+    "verdict": "CENSORED"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-006",
+    "seed": 6,
+    "verdict": "CENSORED"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix-fresh/fresh-seed-007",
+    "seed": 7,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/revert-control-seed-000",
+    "seed": 0,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fail-witness-seed-000-attempt-1",
+    "seed": 0,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fail-witness-seed-000-attempt-2",
+    "seed": 0,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fresh-seed-004",
+    "seed": 4,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fresh-seed-005",
+    "seed": 5,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fresh-seed-006",
+    "seed": 6,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/fresh-seed-007",
+    "seed": 7,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  }
+]

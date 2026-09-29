@@ -1,0 +1,61 @@
+[testinfra][tfa] Bind censored relocation attempts and resolve relocated paths
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+The exact-head review of the relocation change found three gaps.
+
+- A receipt labelled `CENSORED` was trusted as-is. Now every attempt, decided
+  or censored, goes through the same binding:
+  - `_bound_receipt` checks the receipt's schema, case, seed and argv.
+  - It checks the SHA-256 of its stdout and stderr, and of its safehermit report.
+  - It requires the report's `exit_code` to match the receipt.
+- `_check_censored` also requires wall-bound evidence:
+  - rc 124 and `unit_result=timeout`;
+  - `bound.wall=APPLIED:<deadline>s` for the argv's `--sh-deadline`;
+  - `elapsed_secs` and `duration_seconds` both at least that deadline.
+  It then refuses the attempt if its bytes satisfy either the PASS or the FAIL
+  gtest oracle.
+- `_check_argv` rejected literal `/tmp` strings but accepted `..` and symlinks
+  into `/tmp`. The cwd mount, safehermit report, verify-log dir and guest
+  `--tmp` paths must now be absolute and `normpath`-canonical. Neither the path
+  nor its `realpath` may be under `/tmp` or its `realpath`.
+- `initial_text` requires the historical `experiment.json` digest to be exactly
+  64 lowercase hex characters.
+
+Three new `RelocationTest` cases cover:
+- decided bytes relabelled as censored;
+- forged censored receipts (wrong schema, wrong seed, short duration, exit code
+  contradicting the report, bare report without timeout evidence);
+- `..` and symlink escapes for each path role, against a patched forbidden root.
+The historical-hash test gains uppercase, short, newline-terminated and non-hex
+digests. No existing assertion changed. The fixture now writes a bound safehermit
+report for every attempt.
+
+No process, Hermit, Codex, state or pipeline code changed. Both Codex
+compatibility keys remain blocked.
+
+Test Plan:
+The pre-commit checks are under the registered evidence tree
+`tfa-phase2-three-case/gates/relocation-20260925-r4-precommit/`:
+- `arc f` and `arc lint` on the four files: rc 0.
+- `arc pyre check-changed-targets`: rc 0 (`pyre-after-fix`). The first commit of
+  this change, `335ed55b`, failed the exact-head pyre gate on a test lambda type.
+  That red run is preserved in `gates/relocation-20260925-r4-335ed55b/`.
+- `RelocationTest` via the link tree: 11/11.
+- All three real `relocated-v2` summaries still validate with unchanged summary
+  hashes and witness seeds.
+
+The exact-head gates for this commit are run afterwards, each as its own unpiped
+command, under `gates/relocation-20260925-r4-<head>/`.
+
+Earlier evidence is preserved as recorded:
+- r2 (`bb4ff9f3`'s pre-commit tree): 174/174. Containment 36/40, where the four
+  failures are the signed Codex 0.156.0 preflight blocker.
+- r3 (exact head `bb4ff9f3`): 174/174. Containment rc 32 with 35/40. Four
+  failures are the same signed-Codex blocker. The fifth,
+  `test_real_codex_bootstraps_with_bound_agent_identity`, failed with "checkout
+  services did not retire": a host `chataccd` (not started by this work) was
+  watching the disposable `/tmp/tfa-phase2/tfa-production-source-*` checkout.
+  It is recorded in `chataccd-ps.out` and has not been relabelled.
+The signed Codex gate remains BLOCKED, not green.

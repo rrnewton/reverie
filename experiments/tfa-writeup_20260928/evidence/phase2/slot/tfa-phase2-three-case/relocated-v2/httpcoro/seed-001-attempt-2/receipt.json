@@ -1,0 +1,141 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/cwd,target=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/cwd",
+    "--tmp=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/guest-tmp",
+    "--epoch=2026-09-21T21:01:52Z",
+    "--clock-multiplier=0.5",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "1",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/verify",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+  ],
+  "argv_sha256": "cf982be6200a3ac088b6f9514bdeb4b2e02de2b8b2e21370a35f2275a76a3011",
+  "attempt": 2,
+  "case_id": "httpcoro",
+  "classification": {
+    "determinism_verified": true,
+    "gtest": {
+      "filter": "HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "filter_line": "Note: Google Test filter = HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "run_line": "[ RUN      ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "stdout": {
+        "kind": "file",
+        "mode": 420,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/stdout.txt",
+        "sha256": "d131112692539101a093fcc57f1fa713c6db4acf2095ae72b823952b2929a20f",
+        "size": 650
+      },
+      "terminal_line": "[       OK ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2 (901 ms)"
+    },
+    "oracle": "PASS",
+    "returncode": 0
+  },
+  "cwd": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/cwd",
+  "cwd_identity_before": {
+    "path": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/cwd",
+    "st_dev": 11534342,
+    "st_ino": 185
+  },
+  "cwd_inventory_after": [],
+  "duration_seconds": 10.391969203948975,
+  "environment": {
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/safehermit-log-root",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/tmpdir",
+    "removed": [
+      "HERMIT_BIN",
+      "PYTHONPATH",
+      "RUST_LOG"
+    ]
+  },
+  "finished_unix": 1790327586.8887742,
+  "guest_tmp": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-2/guest-tmp",
+  "guest_tmp_inventory": [],
+  "inputs": {
+    "guest": {
+      "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+      "size": 48908168
+    },
+    "hermit": {
+      "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+      "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "size": 415330552
+    },
+    "safehermit": {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "sha256": "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0",
+      "size": 67422
+    }
+  },
+  "intended_role": "pass",
+  "label": "seed-001-attempt-2",
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/safehermit.txt",
+    "sha256": "e187d0cfbdfe58cb6a35816cf28a7f9b9516481723eff4bfa4ad2e3e031c3ed8",
+    "size": 1800
+  },
+  "schema": "tfa.relocated-reproducer-run.v2",
+  "seed": 1,
+  "started_unix": 1790327576.496805,
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/stderr.txt",
+    "sha256": "3e475ddae9e2a2d84d753949b3721f4da1c023d783a995284b95131a243d4f66",
+    "size": 1321
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-2/stdout.txt",
+    "sha256": "d131112692539101a093fcc57f1fa713c6db4acf2095ae72b823952b2929a20f",
+    "size": 650
+  },
+  "verify_inventory": [
+    {
+      "path": "run1_log_u9mzm",
+      "size": 3770690
+    },
+    {
+      "path": "run2_log_Aaw5s",
+      "size": 3770690
+    }
+  ]
+}

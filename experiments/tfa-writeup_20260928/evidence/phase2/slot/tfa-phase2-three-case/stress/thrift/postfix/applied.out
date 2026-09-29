@@ -1,0 +1,18 @@
+M fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp
+diff --git a/fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp b/fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp
+--- a/fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp
++++ b/fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp
+@@ -803,6 +803,13 @@
+   handler()->setCallback([&](TestInterface*) { baton1.post(); });
+   auto req1 = client->semifuture_runCallback();
+   baton1.wait();
++  // req1 stays counted as active until its request object is destroyed (after
++  // it moves to the finished list), which can lag the handler returning.
++  // Without this, the wait for 2 active requests below could be satisfied by
++  // req1 and req2 before req3 reaches the server.
++  while (thriftServer()->getActiveRequests() > 0) {
++    std::this_thread::yield();
++  }
+ 
+   // "started processing" request
+   handler()->setCallback([&](TestInterface*) {

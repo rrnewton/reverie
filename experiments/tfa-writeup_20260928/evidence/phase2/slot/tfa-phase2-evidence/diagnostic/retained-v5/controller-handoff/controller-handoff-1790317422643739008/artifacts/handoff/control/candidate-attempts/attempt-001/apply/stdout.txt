@@ -1,0 +1,1 @@
+applying /tmp/tfa-phase2/tfa-production-controller-handoff-e_v9zbn0/artifacts/handoff/control/candidate-attempts/attempt-001/approved-patch.diff

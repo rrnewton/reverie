@@ -1,0 +1,16 @@
+.F.......
+======================================================================
+FAIL: test_censored_replay_of_failing_seed_is_inconclusive (testinfra.tfa.tests.test_prototype.FollowupTest.test_censored_replay_of_failing_seed_is_inconclusive)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1720, in test_censored_replay_of_failing_seed_is_inconclusive
+    self.assertEqual(followup.verdict, "INCONCLUSIVE")
+AssertionError: 'SUPPORTED' != 'INCONCLUSIVE'
+- SUPPORTED
++ INCONCLUSIVE
+
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.148s
+
+FAILED (failures=1)

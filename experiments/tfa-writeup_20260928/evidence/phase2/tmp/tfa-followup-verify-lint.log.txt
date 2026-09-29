@@ -1,0 +1,383 @@
+notice Found 32 lint issues.
+>>> Lint for fbcode/testinfra/tfa/resources/safehermit:
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             736 }
+             737 
+             738 reap_detached_helper() {
+    >>>      739     local helper_pid=$1
+             740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             737 
+             738 reap_detached_helper() {
+             739     local helper_pid=$1
+    >>>      740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             737 
+             738 reap_detached_helper() {
+             739     local helper_pid=$1
+    >>>      740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             738 reap_detached_helper() {
+             739     local helper_pid=$1
+             740     [ -n "$helper_pid" ] || return 0
+    >>>      741     local attempt
+             742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             739     local helper_pid=$1
+             740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+    >>>      742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             739     local helper_pid=$1
+             740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+    >>>      742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+    >>>      743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             740     [ -n "$helper_pid" ] || return 0
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+    >>>      743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             741     local attempt
+             742     for attempt in $(seq 1 100); do
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+    >>>      744         sleep 0.02
+             745     done
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+             747         kill -KILL "$helper_pid" 2>/dev/null || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+    >>>      746     if kill -0 "$helper_pid" 2>/dev/null; then
+             747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+             749     wait "$helper_pid" 2>/dev/null || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             743         kill -0 "$helper_pid" 2>/dev/null || break
+             744         sleep 0.02
+             745     done
+    >>>      746     if kill -0 "$helper_pid" 2>/dev/null; then
+             747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+             749     wait "$helper_pid" 2>/dev/null || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             744         sleep 0.02
+             745     done
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+    >>>      747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+             749     wait "$helper_pid" 2>/dev/null || true
+             750 }
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             744         sleep 0.02
+             745     done
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+    >>>      747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+             749     wait "$helper_pid" 2>/dev/null || true
+             750 }
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+             747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+    >>>      749     wait "$helper_pid" 2>/dev/null || true
+             750 }
+             751 
+             752 cleanup_detached_on_exit() {
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             746     if kill -0 "$helper_pid" 2>/dev/null; then
+             747         kill -KILL "$helper_pid" 2>/dev/null || true
+             748     fi
+    >>>      749     wait "$helper_pid" 2>/dev/null || true
+             750 }
+             751 
+             752 cleanup_detached_on_exit() {
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             750 }
+             751 
+             752 cleanup_detached_on_exit() {
+    >>>      753     local original_rc=$?
+             754     trap - EXIT INT TERM HUP
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             751 
+             752 cleanup_detached_on_exit() {
+             753     local original_rc=$?
+    >>>      754     trap - EXIT INT TERM HUP
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             752 cleanup_detached_on_exit() {
+             753     local original_rc=$?
+             754     trap - EXIT INT TERM HUP
+    >>>      755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             752 cleanup_detached_on_exit() {
+             753     local original_rc=$?
+             754     trap - EXIT INT TERM HUP
+    >>>      755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             753     local original_rc=$?
+             754     trap - EXIT INT TERM HUP
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+    >>>      756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             753     local original_rc=$?
+             754     trap - EXIT INT TERM HUP
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+    >>>      756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             754     trap - EXIT INT TERM HUP
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+    >>>      757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+             760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             755     if [ "$detached_cleanup_armed" -eq 1 ]; then
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+    >>>      758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+             760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+    >>>      759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+             760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+             762     exit "$original_rc"
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             756         terminate_detached_unit >/dev/null 2>&1 || true
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+    >>>      759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+             760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+             762     exit "$original_rc"
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    >>>      760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+             762     exit "$original_rc"
+             763 }
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             757         reap_detached_helper "${runner_pid:-}"
+             758         reap_detached_helper "${capper_pid:-}"
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    >>>      760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+             762     exit "$original_rc"
+             763 }
+
+   Advice  (SHELLCHECK) SC2317
+    (info) Command appears to be unreachable. Check usage (or ignore if invoked indirectly).
+    See https://github.com/koalaman/shellcheck/wiki/SC2317
+
+             759         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+             760         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+             761     fi
+    >>>      762     exit "$original_rc"
+             763 }
+             764 
+             765 signal_detached_fifo() {
+
+   Advice  (SHELLCHECK) SC2086
+    (info) Double quote to prevent globbing and word splitting.
+    See https://github.com/koalaman/shellcheck/wiki/SC2086
+
+            1424     say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
+            1425     rc=124
+            1426 elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
+    >>>     1427      && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
+            1428     say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
+            1429     rc=124
+            1430 fi
+
+   Advice  (SHELLCHECK) SC2086
+    (info) Double quote to prevent globbing and word splitting.
+    See https://github.com/koalaman/shellcheck/wiki/SC2086
+
+            1424     say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
+            1425     rc=124
+            1426 elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
+    >>>     1427      && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
+            1428     say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
+            1429     rc=124
+            1430 fi
+
+   Advice  (SHELLCHECK) SC2086
+    (info) Double quote to prevent globbing and word splitting.
+    See https://github.com/koalaman/shellcheck/wiki/SC2086
+
+            1424     say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
+            1425     rc=124
+            1426 elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
+    >>>     1427      && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
+            1428     say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
+            1429     rc=124
+            1430 fi
+
+   Advice  (SHELLCHECK) SC2086
+    (info) Double quote to prevent globbing and word splitting.
+    See https://github.com/koalaman/shellcheck/wiki/SC2086
+
+            1449 json.dump(d, open(p, "w"))
+            1450 PY
+            1451 fi
+    >>>     1452 exit $rc

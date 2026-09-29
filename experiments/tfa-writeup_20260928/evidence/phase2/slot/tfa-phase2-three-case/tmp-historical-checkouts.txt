@@ -1,0 +1,5 @@
+/tmp/tfa-phase2/cases/asyncssl 7f239d5b37dfbecf32fed144468da461f998add5 dirty=0
+/tmp/tfa-phase2/cases/httpcoro 7f239d5b37dfbecf32fed144468da461f998add5 dirty=1
+/tmp/tfa-phase2/httpcoro-b493168e.FhHVCr/checkout 7f239d5b37dfbecf32fed144468da461f998add5 dirty=0
+/home/newton/temp/tfa-phase2/cases/asyncssl 7f239d5b37dfbecf32fed144468da461f998add5 dirty=1
+/home/newton/temp/tfa-phase2-thrift-case 0a2daa13e4e44c67216df6f4f4559591ceb26d33 dirty=0

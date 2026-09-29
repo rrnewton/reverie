@@ -1,0 +1,2 @@
+sl diff: option --check not recognized
+(use 'sl diff -h' to get help)

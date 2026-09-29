@@ -1,0 +1,9 @@
+{
+  "transcript": "/home/newton/.claude/projects/-home-newton-work-tfa-phase2-cases-investigators-thrift/ef422e8a-b2c8-4cdb-8813-0469e2749071.jsonl",
+  "transcript_sha256": "5e58f5f0097f283a12cf2eb4209c067a6cfe0f7b444b28e62892b5c876c6b7f7",
+  "line": 514,
+  "message_uuid": "b236ceae-5acd-4978-b24c-b60ac76e07fb",
+  "extracted": "first {..} span of the last assistant text containing \"candidate-only\"",
+  "prefix_text_outside_json": "I found the root cause and drafted a one-hunk, test-only fix. It is unverified: I'm not allowed to build, so the patched test hasn't run, and the controller's post-fix replays and stress seeds will decide.\n\n**Reproduction.** Both witnesses reproduced through the replay runner. Seed 0 passed and seed 1 failed with `gtest-snapshot-size-2`. Both runs were determinism-verified, and the FAIL output is byte-identical to the historical run. There were no CENSORED runs, and I did not touch seeds 2\u20135.\n\n*",
+  "suffix_text_outside_json": "```"
+}

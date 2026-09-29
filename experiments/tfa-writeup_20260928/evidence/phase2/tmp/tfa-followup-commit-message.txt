@@ -1,0 +1,17 @@
+[testinfra][tfa] Make controller dependencies self-contained
+
+[hermit2, unknown-agentname, codex-family-by-ancestry, devbig030, role=impl]
+
+Context:
+The phase-two controller still depended on mutable machine-local SafeHermit paths and a historical Hermit executable outside fbsource. The current imported Hermit and Codex binaries also have known host compatibility failures that must not be mistaken for qualified execution.
+
+Summary:
+Package and lazily pin the SafeHermit helpers, consume the current fbsource Hermit resource, and preserve the historical 4630ee2a witness while recording the a919cce qualification blockers. Scope verification allocation state to each attempt and use disposable quota-backed production fixtures. Record versioned Codex executable identity and reject known-blocked, unknown, malformed, or unstartable local versions before agent launch.
+
+Test Plan:
+- `arc f` (clean)
+- `arc lint -a` (passed; 32 advisory ShellCheck findings in the byte-identical packaged safehermit script)
+- `arc pyre check-changed-targets` (4 targets, no type errors)
+- `buck2 test --no-remote-cache -j 1 fbcode//testinfra/tfa/tests:tfa_phase2_test` (124 passed)
+- `buck2 run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json` (3 cases)
+- production containment run 25051272978218003 (28/35 passed; retained seven explicit environmental failures)

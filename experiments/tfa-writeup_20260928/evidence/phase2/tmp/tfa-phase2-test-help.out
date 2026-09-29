@@ -1,0 +1,495 @@
+[2026-09-24T15:52:56.126-07:00] Buck UI: https://www.internalfb.com/buck2/6fd07265-2057-4295-8e5e-8ab6cdf6b358
+[2026-09-24T15:52:56.631-07:00] Network: up 0B  down 0B
+Command failed: 
+Test executor exited unexpectedly with status 1.
+Stdout:
+
+Stderr:
+Error: Failed to run service
+
+Caused by:
+    Usage: ignored [OPTIONS] --buck-test-info <BUCK_TEST_INFO> [TESTNAME_FILTERS]...
+    
+    Arguments:
+      [TESTNAME_FILTERS]...
+              Testname filter based on one or several substrings. A filter 'Test' hence matches a test
+              called 'MyTest2' (use --exact to only match 'Test' or use --regex). Example: 'Test 1'
+              'Test 2'
+    
+    Options:
+      -j, --jobs <JOBS>
+              Maximum number of concurrent jobs. (default is setup automatically by buck or defaults to
+              10 if running tpx outside `buck test`)
+    
+          --process-stop-timeout <PROCESS_STOP_TIMEOUT>
+              Time processes get for a graceful shutdown
+              
+              [default: 5]
+    
+          --process-stop-timeout-signal <PROCESS_STOP_TIMEOUT_SIGNAL>
+              Time processes get for a graceful shutdown; default is SIGTERM
+              
+              [default: 15]
+    
+      -b, --buck-test-info <BUCK_TEST_INFO>
+              Path to buck external runner spec
+    
+      -v, --verbose
+              Verbose logging to the terminal
+    
+          --disallow-network
+              Do not call any services that require network
+    
+          --filter-chunk-max-size <FILTER_CHUNK_MAX_SIZE>
+              Max Unit Test Finder Chunk Size
+              
+              [default: 100]
+    
+          --filter-chunk-millis <FILTER_CHUNK_MILLIS>
+              Unit Test Finder Chunk Duration in milliseconds
+              
+              [default: 100]
+    
+          --collection <COLLECTION>
+              Test collection testpilot is going to run, defaults to running all enabled tests if not
+              specified
+              
+              [default: default]
+    
+          --no-create-new-tests
+              If specified, no new tests will be created
+    
+          --test-ids <TEST_IDS>...
+              List of test-ids which should run, or a file to read the test-ids from. This accepts
+              either a string with the filename starting with @ or a list of test-ids (in numbers)
+    
+          --exclude-test-ids <EXCLUDE_TEST_IDS>...
+              
+    
+          --run-unsafe
+              Use this flag to run tests marked as "unsafe" in TestX
+    
+          --report-omit-for-test-ids
+              
+    
+          --collection-canary-id <COLLECTION_CANARY_ID>
+              Collection canary revision id
+    
+          --check-main-test-when-filtering
+              Allow sub-tests to run when main test id is passed in allowlist
+    
+          --use-sqm2
+              Force UnitTestFinder to use SQM2 test diff eligiblity state for filtering
+    
+          --interngraph-target <INTERNGRAPH_TARGET>
+              Force the interngraph endpoints to use a specific target. It supports the following
+              format: intern: The standard intern tier. vpnless: Pointer to local host proxy for
+              vpn-less connection to intern tier. {num}.od: The ondemand hostname. {unix_name}.sb: The
+              sandbox to target
+              
+              [env: TPX_INTERNGRAPH_TARGET=]
+              [default: default]
+    
+          --username <USERNAME>
+              The username recorded to test console
+              
+              [default: newton]
+    
+          --interngraph-oauth-token <INTERNGRAPH_OAUTH_TOKEN>
+              OAuth User Identification. Use when You need to perform InternGraph requests on behalf of
+              a user
+    
+          --tag-new-tests
+              If specified, tpx will tag new tests with tag tag-new-test, or replace an existing tag
+              tag-new-test-local with tag test-new-test; otherwise will tag new tests with tag
+              tag-new-test-local
+    
+          --return-nonzero-on-failures
+              Exit code != 0 if there were test failures
+    
+          --return-nonzero-on-timeouts
+              Exit with a !=0 code if any tests timed out
+    
+          --return-zero-on-skips
+              
+    
+          --timeouts-are-not-failures
+              
+    
+          --associated-id <TYPE> <ID>
+              Add an ID from an external system to TestConsole. Takes two arguments, the first being the
+              type of ID, and the second being the ID itself
+    
+          --contacts <CONTACTS>...
+              Extra contacts for unittests
+    
+          --link <TYPE> <LINK>
+              Add an http:// URL to TestConsole. Takes two arguments, the first being the type of link,
+              and the second being the link
+    
+          --no-end-testconsole-run
+              Do not close the test console run.  Useful if you want to add more results to the test run
+              later on. WARNING: cannot be combined with command line arguments for Base Revision Retry
+              support, i.e. --base-rev-retry-target-run and --base-rev-retry-base-rerun-for
+    
+          --purpose <PURPOSE>
+              Purpose of the test run (useless in --no-record-results mode)
+              
+              [default: other]
+    
+          --unique-run-name <UNIQUE_RUN_NAME>
+              Unique name of this test run, e.g. www_continuous
+    
+          --record-retry-results
+              Upload test results to test console before retrying
+    
+          --project-name <PROJECT_NAME>
+              Name of the app/project currently under test
+    
+          --run-id <RUN_ID>
+              Use an existing run to record results
+    
+          --tags <TAGS>...
+              Tags for test run
+    
+          --code-coverage-session <CODE_COVERAGE_SESSION>
+              The code coverage session for the run
+    
+          --record-results
+              Whether results should be recorded (deprecated, unused)
+    
+          --repository <REPOSITORY>
+              Which repository does this run belong to You should provide the full qualified name of the
+              repository here For example for fbsource, the repository looks like:
+              ssh://hg.vip.facebook.com//data/scm/fbsource
+    
+          --base-rev-retry-target-run
+              Enable this if you plan to do Base Revision Retry later. This automatically creates a
+              verdict run and populates it with non-failed results. This run will be designated as
+              Target
+    
+          --base-rev-retry-base-rerun-for <TARGET_RUN_ID>
+              Use if this is a Base Revision Retry run. This automatically resolves a previously created
+              verdict run (when --base-rev-retry-target-run was used with the Target run) and populates
+              it with results
+    
+          --additional-verification-for-target-run <ADDITIONAL_VERIFICATION_TARGET_RUN_ID>
+              
+    
+          --run-policy <RUN_POLICY>
+              [possible values: SINGLE_RUN_POLICY, BRR_POLICY, RELENG_BRR_POLICY, BRR_SHADOW_POLICY,
+              ADDITIONAL_VERIFICATION_AFTER_BRR_POLICY, SINGLE_RUN_POLICY_ALLOW_SKIP,
+              SINGLE_RUN_POLICY_ALLOW_SKIP_AND_TIMEOUT, SINGLE_RUN_POLICY_ALLOW_TIMEOUT,
+              EAGER_BRR_POLICY, ADDITIONAL_VERIFICATION_BEFORE_BRR_POLICY, BRR_FIX_VERIFICATION_POLICY,
+              LOCAL_VALIDATION_POLICY]
+    
+          --save-failures-for-retry-in-file <FAILURES_FOR_RETRY_OUTPUT_FILE_PATH>
+              Use this for the Base Revision Retry flow on a Target run to create a file with the list
+              of failed tests that can be used to setup the BRR run
+    
+          --save-successes-for-retry-in-file <SUCCESSES_FOR_RETRY_OUTPUT_FILE_PATH>
+              Use this to create a file with the list of successful tests that can be used for
+              stress-running to force a passing transition
+    
+          --base-rev-retry-with-input-file <BRR_INPUT_FILE>
+              Use this for the Base Revision Retry flow on a base revision to create a BRR run with BRR
+              Outcome Policy and set test filters to retry only the tests that failed on the Target
+              revision
+    
+          --skip-tests-from-file <SKIP_TESTS_INPUT_FILE>
+              Skip tests whose names appear in the given file. Used by the Citadel retry flow to avoid
+              re-running tests that already passed in the same SLP validation session
+    
+          --sqlite-shim
+              Enable SQLite shim on the result recorder side. This allows using a Result Recorder on a
+              sandbox without it failing on XDB write ACLs. The SQLite file is written to
+              /tmp/testinfra.sql3
+              
+              [env: TPX_SQLITE_SHIM=]
+    
+          --report-detailed-status
+              
+    
+          --result-reporter-parallelism <RESULT_REPORTER_PARALLELISM>
+              [default: 30]
+    
+          --result-reporter-chunk-millis <RESULT_REPORTER_CHUNK_MILLIS>
+              How long to accumulate test results before flushing a result-recorder request, in
+              milliseconds. Raising this trades reporting latency for fewer, larger requests
+              
+              [default: 100]
+    
+          --everstore-parallelism <EVERSTORE_PARALLELISM>
+              [default: 200]
+    
+          --everstore-concurrent-memory-limit-bytes <EVERSTORE_CONCURRENT_MEMORY_LIMIT_BYTES>
+              Memory that tpx will try to use at max while doing file uploads to everstore. Default max
+              memory usage: 10GB
+              
+              [default: 10737418240]
+    
+          --force-target-relevance-for-all-tests <FORCE_TARGET_RELEVANCE_FOR_ALL_TESTS>
+              [possible values: IS_RDEPS_ZERO, SAME_ONCALL_AS_AN_RDEPS_ZERO_SIGNAL,
+              SAME_ONCALL_AS_DIFF_AUTHOR, SAME_TOP_LEVEL_DIRECTORY_AS_AN_RDEPS_ZERO_SIGNAL,
+              MODIFIED_IN_DIFF]
+    
+          --retry-suppressed-failures
+              By default tpx will not retry suppressed failures when running on diffs on CI to save
+              capacity. This option enables retries
+    
+          --force-no-retry-suppressed-failures
+              Force not retrying suppressed failures in any environment. Overrides
+              --retry-suppressed-failures
+    
+          --target-relevance-input-file <TARGET_RELEVANCE_INPUT_FILE>
+              
+    
+          --aggregate-stress-runs <MODE>
+              
+    
+          --content-hash <CONTENT_HASH>
+              Content hash of the code state when tests were executed. This is distinct from
+              DIFF_CONTENT_HASH (phabricator diff content hash computed by CI). Used as evidence for
+              shift-left test validation at authoring time
+    
+          --retry <RETRY>
+              Number of immediate retries for failed tests
+              
+              [default: 0]
+    
+          --retry-after-run <RETRY_AFTER_RUN>
+              Number of delayed retries for failed tests
+              
+              [default: 0]
+    
+          --max-retry-count <MAX_RETRY_COUNT>
+              
+    
+          --retry-on-timeout
+              
+    
+          --max-timeout-retries <MAX_TIMEOUT_RETRIES>
+              Maximum number of retries specifically for timeout failures. When set, timeouts get at
+              most this many retries regardless of --retry N. Failures still get the full N retries
+    
+          --no-retry-on-skip
+              This disables retry if a test was skipping
+    
+          --run-mode <RUN_MODE>
+              [possible values: Isolated, Bundled, BundledWithMax]
+    
+          --max-tests-per-bundle <MAX_TESTS_PER_BUNDLE>
+              [default: 100]
+    
+          --use-remote-execution
+              No effect under buck. Use the target's `remote_execution` attribute instead
+    
+          --force-remote-execution
+              No effect under buck. Use the target's `remote_execution` attribute instead
+    
+          --force-local-execution
+              Useful when testing OSS builds. No effect under buck. Use `--local-only` or `-c
+              fbcode.disable_re_tests=True` instead
+    
+          --remote-execution-with-local-fallback
+              No effect under buck. Use the target's `remote_execution` attribute instead
+    
+          --remote-execution-engine <ENGINE_ADDRESS>
+              No effect under buck; buck manages RE configuration internally
+    
+          --remote-execution-testing-capability <TESTING_CAPABILITY>
+              No effect under buck. Use the target's `remote_execution` attribute instead
+    
+          --remote-execution-use-case <USE_CASE>
+              No effect under buck. Use the target's `remote_execution` attribute instead
+    
+          --manifold-bucket <MANIFOLD_BUCKET>
+              No effect under buck; buck manages RE configuration internally
+    
+          --use-re-cache
+              Whether to load the result from the Action Cache or skip the lookup. No effect under buck;
+              buck manages RE configuration internally
+    
+          --disable-panic-on-re-failures
+              This will override the exit policy, so that we don't exit early on RE failures
+    
+          --sc-schedule-type <SC_SCHEDULE_TYPE>
+              The Sandcastle Instance schedule type. No effect under buck; buck manages RE configuration
+              internally
+              
+              [env: SANDCASTLE_SCHEDULE_TYPE=]
+    
+          --run-slow-tests
+              Run tests tagged with "slow"
+    
+          --extended-tests
+              
+    
+          --skip-serial-tests
+              
+    
+          --skip-local-tests
+              Do not run tests tagged with "local_only". Defaults to false in non-CI environments
+    
+          --force-local-tests
+              Force running tests tagged with "local_only" on CI. They are skipped by default on a
+              Sandcastle instance.
+              
+              The flag has no effect unless the SANDCASTLE_INSTANCE_ID environment variable is set.
+    
+          --stress-runs <STRESS_RUNS>
+              How many times do we need to run the test
+    
+          --exit-on-fail
+              Exit the run (equivalent to Ctrl+C) after any test fails
+    
+          --timeout <TEST_TIMEOUT>
+              How much time should be allowed for a test-run
+              
+              [default: 600]
+    
+          --timeout-to-list-tests-from-binary <LISTING_TIMEOUT>
+              How much time should be allowed for a test-run
+              
+              [default: 600]
+    
+          --long-running-timeout-multiplier <LONG_RUNNING_TIMEOUT_MULTIPLIER>
+              Controls the timeout multiplier for 'longrunning' tests
+    
+          --default-timeout-multiplier <DEFAULT_TIMEOUT_MULTIPLIER>
+              Controls the timeout multiplier for default (isolated) tests
+    
+      -r, --regex
+              Testname filtering based on one or several regex filters. A filter 'Test' matches a test
+              called 'MyTest2' - please specify '^Test$' to uniquely match 'Test' (or use the --exact
+              option). Example: 'Test[1-3]' '^testinfra/playground'
+    
+          --exact
+              Testname filtering based on one or several exact strings. Example:
+              'testinfra/playground/cpp/tests:test_cpp_bundled - simple_test.str_eq'
+    
+          --enable-test-binary-executors <COLLECT_RESOURCE_USAGE>
+              [default: ""]
+    
+          --run-disabled
+              Use this flag to run disabled tests
+    
+          --collect-coverage
+              
+    
+          --coverage-output <COVERAGE_OUTPUT>
+              Write coverage output to a local file; prefer absolute paths (relative paths may resolve
+              to buck-out/v2/)
+    
+          --skip-sending-coverage-to-testify
+              
+    
+          --ignore-missing-coverage
+              
+    
+          --env <ENV>...
+              add a list of environment variables using format: --env VAR1=Value1 VAR2='Value 2'
+    
+          --ios-sim-address <IOS_SIM_ADDRESS>
+              
+    
+          --android-emulator-address <ANDROID_EMULATOR_ADDRESS>
+              
+    
+          --event-log-file <EVENT_LOG_FILE>
+              Append structured events to the specified file
+    
+          --flush-events-to-stdout
+              Append structured events to stdout
+    
+          --print-passing-details
+              This flag flushes the output from your test to your console, even if the test was passing
+    
+          --no-print-details
+              Disable any details on the terminal coming from the tests
+    
+          --no-print-passing
+              This flag does not print the passing test names to the console
+    
+          --color <COLOR>
+              Specify colored terminal output
+              
+              [default: auto]
+              [possible values: auto, on, off]
+    
+          --override-git-revision <OVERRIDE_GIT_REVISION>
+              If Tpx is run from a revision which uses GIT as version control, we want the ability to
+              record this to our DBs.
+              
+              Specifying this flag allows you to se the git revision and tell Tpx to upload this.
+    
+          --no-upload-source-revision
+              Disable automatic source revision detection and upload. By default, Tpx will auto-detect
+              the current hg/sapling revision
+    
+          --disable-ios-static-listing
+              Disable static listing for ios test and use idb bundle list instead
+    
+          --extra-test-configs-ios <EXTRA_TEST_CONFIGS_IOS>...
+              Allows passing extra test config for ios tests
+              
+              Ios tests dont get the santizer value or the xcode version they are using from buck in the
+              labels, instead they are passed via flag. Until we figur out how to pass them via buck,
+              lets unblock work here by providing a flag which allows for extending the test configs for
+              iOS tests. The input must look like key=value
+    
+          --extra-test-configs-instrumentation-test <EXTRA_TEST_CONFIGS_INSTRUMENTATION_TEST>...
+              Allows passing extra test config for instrumentation tests
+    
+          --remote-execution-apple-capability <REMOTE_EXECUTION_APPLE_CAPABILITY>...
+              Add this capabilities to all apple tests' Remote Execution actions Format:
+              --remote-execution-apple-capability name1=val1 --remote-execution-apple-capability
+              name2=val2
+    
+          --no-record-results
+              Disable reporting to TestX
+    
+          --upload-passing-details
+              Upload passing details to Everstore, store the handle in the test result and report
+              passing test link to Testx
+    
+          --disable-reporting-for-omitted-tests
+              Disable reporting of omits to TestX
+    
+          --experiment <EXPERIMENTS>
+              
+    
+          --adb-executable-path <ADB_EXECUTABLE_PATH>
+              
+    
+          --apple-simulator-set <APPLE_SIMULATOR_SET>
+              
+    
+          --apple-simulator-udid <APPLE_SIMULATOR_UDID>
+              
+    
+          --apple-test-execution <APPLE_TEST_EXECUTION>
+              Controls the execution of apple tests: default (decided by tpx), local (execute on the
+              local machine), remote (execute with remote execution), or delegated (test execution will
+              be delegated to an external simulator)
+              
+              [possible values: Local, Remote, Delegated]
+    
+          --trace-file-path <TRACE_FILE_PATH>
+              Override the default trace path location to the given path
+              
+              [env: TPX_TRACE_FILE_PATH=]
+    
+          --disable-test-execution-caching
+              Disable test execution caching
+    
+          --list-only
+              Only list tests without running them. Exits after test discovery/listing completes
+    
+      -h, --help
+              Print help (see a summary with '-h')
+    
+      -V, --version
+              Print version
+    
+

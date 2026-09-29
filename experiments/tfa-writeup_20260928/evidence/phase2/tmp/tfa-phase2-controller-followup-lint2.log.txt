@@ -1,0 +1,17 @@
+notice Found 1 lint issue.
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            4998                 path.parent.mkdir(parents=True, exist_ok=True)
+            4999                 path.write_text(content)
+            5000             stdout = root / "commit.stdout"
+        -   5001             stdout.write_text(
+        -   5002                 f"mirrored changes in {canonical!r} to {mirrored!r}\n"
+        -   5003             )
+        +                    stdout.write_text(f"mirrored changes in {canonical!r} to {mirrored!r}\n")
+            5004             case = replace(_loaded_case(), case_id="thrift")
+            5005             with self.assertRaisesRegex(RuntimeError, "canonical and mirror files"):
+            5006                 pipeline_module._seal_thrift_final_commit(
+alert Expected a 'lint clean' run but found at least one issue.

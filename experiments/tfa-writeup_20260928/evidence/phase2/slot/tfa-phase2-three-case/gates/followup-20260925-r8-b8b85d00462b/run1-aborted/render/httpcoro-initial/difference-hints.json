@@ -1,0 +1,156 @@
+{
+  "case_id": "httpcoro",
+  "fail": {
+    "determinism_verified": true,
+    "exit_code": 134,
+    "failure_class_id": "reset-rate-limit-line1685-body-event-fatal",
+    "failures": [
+      "F HTTPDownstreamCoroSessionTests.cpp:1685] Check failed: bodyEvent.hasException() "
+    ],
+    "gtest_verdict": "NO_VERDICT_AFTER_RUN",
+    "seed": 0,
+    "signal": "SIGABRT",
+    "top_frames": [
+      "proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()::$_1::operator()(proxygen::coro::HTTPSourceHolder) const [clone .resume]",
+      "std::__n4861::coroutine_handle<void>::resume() const",
+      "folly::resumeCoroutineWithNewAsyncStackRoot(std::__n4861::coroutine_handle<void>, folly::AsyncStackFrame&)",
+      "void folly::resumeCoroutineWithNewAsyncStackRoot<folly::coro::detail::TaskPromise<void> >(std::__n4861::coroutine_handle<folly::coro::detail::TaskPromise<void> >)",
+      "folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)::{lambda()#1}::operator()()",
+      "void folly::detail::function::call_<folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)...",
+      "folly::detail::function::FunctionTraits<void ()>::operator()()",
+      "folly::EventBase::FuncRunner::operator()(folly::Function<void ()>&&)"
+    ],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 33400,
+      "INFO messages": 42909,
+      "detcore-specific messages": 42909,
+      "messages total": 42910,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 258, committed virtual time 1790024512159897058ns, run 2 first at turn 258, committed virtual time 1790024512159897058ns)": 42,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "failure_class": "reset-rate-limit-line1685-body-event-fatal",
+  "guest_stderr_diff": [
+    "--- pass",
+    "+++ fail",
+    "@@ -1 +1,161 @@",
+    " E HTTP2Codec.cpp:1480] ignore unknown settingsId=4294967926 value=0",
+    "+F HTTPDownstreamCoroSessionTests.cpp:1685] Check failed: bodyEvent.hasException() ",
+    "+*** Check failure stack trace: ***",
+    "+*** Aborted at 1790024514 (Unix time, try 'date -d @1790024514') ***",
+    "+*** Signal 6 (SIGABRT) (0x?) received by PID 3 (pthread TID 0x?) (linux TID 3) (maybe from PID 3, UID 0) (code: sent by tkill or tgkill), stack trace: ***",
+    "+==3==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!",
+    "+    @ 000000000002cf2b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)",
+    "+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598",
+    "+    @ 000000000002cbc2 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)",
+    "+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615",
+    "+    @ 000000000004455f (unknown)",
+    "+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8",
+    "+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c",
+    "+    @ 000000000009ca13 pthread_kill",
+    "+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46",
+    "+    @ 00000000000444ac raise",
+    "+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26",
+    "+    @ 000000000002c432 abort",
+    "+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79",
+    "+    @ 0000000000008cad folly::(anonymous namespace)::wrapped_abort()",
+    "+                       ./xplat/folly/init/Init.cpp:53",
+    "+    @ 000000000000c28c google::LogMessage::Fail()",
+    "+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1519",
+    "+    @ 00000000000103b2 google::LogMessage::SendToLog()",
+    "+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1473",
+    "+    @ 000000000000bece google::LogMessage::Flush()",
+    "+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1346",
+    "+    @ 000000000000cbb8 google::LogMessageFatal::~LogMessageFatal()",
+    "+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:2013",
+    "+    @ 0000000000eb36c2 proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()::$_1::operator()(proxygen::coro::HTTPSourceHolder) const [clone .resume]",
+    "+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1685",
+    "+    @ 000000000000b2d3 std::__n4861::coroutine_handle<void>::resume() const",
+    "+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/coroutine:127",
+    "+    @ 000000000000b1bd folly::resumeCoroutineWithNewAsyncStackRoot(std::__n4861::coroutine_handle<void>, folly::AsyncStackFrame&)",
+    "+                       ./xplat/folly/tracing/AsyncStack.cpp:218",
+    "+    @ 0000000000c2c642 void folly::resumeCoroutineWithNewAsyncStackRoot<folly::coro::detail::TaskPromise<void> >(std::__n4861::coroutine_handle<folly::coro::detail::TaskPromise<void> >)",
+    "+                       fbsource/folly/tracing/AsyncStack-inl.h:75",
+    "+    @ 0000000000c2c4f9 folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)::{lambda()#...",
+    "+                       fbsource/folly/coro/Task.h:517",
+    "+    @ 0000000000c2c37c void folly::detail::function::call_<folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTask...",
+    "+                       fbsource/folly/Function.h:341",
+    "+    @ 000000000009c252 folly::detail::function::FunctionTraits<void ()>::operator()()",
+    "+                       fbsource/folly/Function.h:370",
+    "+    @ 000000000009bed4 folly::EventBase::FuncRunner::operator()(folly::Function<void ()>&&)",
+    "+                       ./xplat/folly/io/async/EventBase.cpp:233",
+    "+    @ 000000000009aecb folly::AtomicNotificationQueueTaskStatus folly::detail::invokeConsumerWithTask<folly::Function<void ()>, folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&, folly::Function<void ()>&&, std::shared_ptr<fo...",
+    "+                       fbsource/folly/io/async/AtomicNotificationQueue-inl.h:258",
+    "+    @ 000000000009aab5 bool folly::AtomicNotificationQueue<folly::Function<void ()> >::drive<folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&)",
+    "+                       fbsource/folly/io/async/AtomicNotificationQueue-inl.h:328",
+    "+    @ 000000000009a047 bool folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::drive<folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&)",
+    "+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:275",
+    "+    @ 00000000000c0e99 folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::execute()",
+    "+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:294",
+    "+    @ 00000000000da08b folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::handlerReady(unsigned short)",
+    "+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:286",
+    "+    @ 00000000001062b9 folly::EventHandler::libeventCallback(int, short, void*)",
+    "+                       ./xplat/folly/io/async/EventHandler.cpp:165"
+  ],
+  "guest_stderr_diff_truncated": true,
+  "guest_stderr_same_lines_reordered": false,
+  "inputs": {
+    "fail.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-00000000000000000000-replica-1.result.json",
+      "sha256": "e4fadc3b8d88a19a32c101d09b4476d63041f411a5c039dd534ae99c876158f9",
+      "size": 2180
+    },
+    "fail.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stderr.txt",
+      "sha256": "d2d9d0c2a1bd9132b6b8084e931de8afdcff06bc1a61a81bbc61bcb430e8b4cb",
+      "size": 17546
+    },
+    "fail.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stdout.txt",
+      "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+      "size": 343
+    },
+    "pass.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-00000000000000000003-replica-1.result.json",
+      "sha256": "5724d454fe834b6925ec51b0b9a8cb9355970ab0ad39c389e0be1e6f36e49b17",
+      "size": 2129
+    },
+    "pass.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stderr.txt",
+      "sha256": "b7e6265efac07bad5cb46cedcf013c0bb8a0355a6bcb658f04a75481467b2246",
+      "size": 1335
+    },
+    "pass.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-00000000000000000003-replica-1.stdout.txt",
+      "sha256": "2c7a2dc130ff736194e6f6e3074c809a7a1920a5da9af3f7aef74d6081847576",
+      "size": 650
+    }
+  },
+  "pass": {
+    "determinism_verified": true,
+    "exit_code": 0,
+    "failure_class_id": null,
+    "failures": [],
+    "gtest_verdict": "OK",
+    "seed": 3,
+    "signal": null,
+    "top_frames": [],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 13612,
+      "INFO messages": 14798,
+      "detcore-specific messages": 14797,
+      "messages total": 14798,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 258, committed virtual time 1790024512094600840ns, run 2 first at turn 258, committed virtual time 1790024512094600840ns)": 42,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "qualification": "deterministic-text-difference; not a root cause",
+  "schema_version": 1,
+  "verifier_count_delta": {
+    "DETLOG & scheduler COMMIT messages": 19788,
+    "INFO messages": 28111,
+    "detcore-specific messages": 28112,
+    "messages total": 28112,
+    "scheduler empty-run-queue kick messages": 0
+  }
+}

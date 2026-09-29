@@ -1,0 +1,1 @@
+[hermit2, unknown-agentname, gpt-5.6-sol, devbig030, role=impl]

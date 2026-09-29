@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "case_id": "thrift",
+  "qualification": "candidate-only",
+  "note": "All validations of the patch are proposals only (NOT RUN). Pre-fix witness observations are recorded separately and do not qualify the patch.",
+  "patch_sha256": "61dd5a10a6e93cec124ada9d203d9d53f66bd546da55f77b09c86593a4975cb7",
+  "validations": [
+    {
+      "kind": "BUCK",
+      "argv": [
+        "buck",
+        "build",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+        "--show-full-json-output"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout"
+      ]
+    },
+    {
+      "kind": "LINT",
+      "argv": [
+        "arc",
+        "lint",
+        "fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_FAIL",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "thrift",
+        "--template",
+        "fail",
+        "--out",
+        "<controller-artifact-dir>/postfix-fail"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout (post-fix replay of sched-seed 1 against the patched ELF)"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_PASS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "thrift",
+        "--template",
+        "pass",
+        "--out",
+        "<controller-artifact-dir>/postfix-pass"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout (post-fix replay of sched-seed 0 against the patched ELF)"
+      ]
+    },
+    {
+      "kind": "FRESH_STRESS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "thrift",
+        "--template",
+        "fail",
+        "--seed",
+        "<2|3|4|5>",
+        "--out",
+        "<controller-artifact-dir>/postfix-stress-seed-N"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout; fresh seeds 2-5 are reserved for the controller"
+      ]
+    },
+    {
+      "kind": "UNIT",
+      "argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+        "--",
+        "--exact",
+        "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; the controller runs this after applying patch.diff in its own checkout"
+      ]
+    }
+  ],
+  "prefix_witness_observations": [
+    {
+      "label": "pass-a1",
+      "what": "pre-fix PASS replay, sched-seed 0, original (unpatched) ELF",
+      "oracle": "PASS",
+      "determinism_verified": true,
+      "duration_seconds": 16.6,
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/witness/pass-a1/receipt.json"
+    },
+    {
+      "label": "fail-a1",
+      "what": "pre-fix FAIL replay, sched-seed 1, original (unpatched) ELF",
+      "oracle": "FAIL",
+      "failure_class_id": "gtest-snapshot-size-2",
+      "determinism_verified": true,
+      "duration_seconds": 17.9,
+      "stdout_sha256": "c8a68dbd3d417f0259f338d71bac761d7fe54682fbb8103e0180b0b22fdb7d8d",
+      "stdout_matches_historical": true,
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/witness/fail-a1/receipt.json"
+    }
+  ],
+  "censored_runs": 0
+}

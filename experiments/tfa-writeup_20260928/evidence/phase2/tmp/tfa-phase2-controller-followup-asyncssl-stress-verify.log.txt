@@ -1,0 +1,8 @@
+12 PASS [       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (176 ms) 0 False
+13 PASS [       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (219 ms) 0 False
+14 PASS [       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (99 ms) 0 False
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/pipeline.py", line 187, in _gtest_execution_evidence
+    raise RuntimeError(f"selected gtest did not execute exactly once: {identity}")
+RuntimeError: selected gtest did not execute exactly once: AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect

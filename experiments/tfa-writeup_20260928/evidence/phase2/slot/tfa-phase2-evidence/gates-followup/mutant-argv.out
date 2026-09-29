@@ -1,0 +1,40 @@
+[2026-09-25T01:10:14.717-07:00] Buck UI: https://www.internalfb.com/buck2/1a4aded8-9408-470a-92fa-a76781669687
+[2026-09-25T01:10:15.366-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/3659175093963736
+[2026-09-25T01:10:19.404-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (0.0s)
+[2026-09-25T01:10:19.404-07:00] test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) ... 
+[2026-09-25T01:10:19.404-07:00]   test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (argv=['payload_wrapper.py']) ... FAIL
+[2026-09-25T01:10:19.404-07:00] test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) ... ERROR
+[2026-09-25T01:10:19.404-07:00]
+[2026-09-25T01:10:19.404-07:00] ======================================================================
+[2026-09-25T01:10:19.404-07:00] ERROR: test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest)
+[2026-09-25T01:10:19.404-07:00] ----------------------------------------------------------------------
+[2026-09-25T01:10:19.404-07:00] Traceback (most recent call last):
+[2026-09-25T01:10:19.404-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 3528, in test_wrapper_refuses_empty_upstream_argv
+[2026-09-25T01:10:19.404-07:00]     self.assertEqual(raised.exception.code, diagnostic)
+[2026-09-25T01:10:19.404-07:00]                      ^^^^^^^^^^^^^^^^
+[2026-09-25T01:10:19.404-07:00] AttributeError: '_AssertRaisesContext' object has no attribute 'exception'
+[2026-09-25T01:10:19.404-07:00]
+[2026-09-25T01:10:19.404-07:00] ======================================================================
+[2026-09-25T01:10:19.404-07:00] FAIL: test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (argv=['payload_wrapper.py'])
+[2026-09-25T01:10:19.404-07:00] ----------------------------------------------------------------------
+[2026-09-25T01:10:19.404-07:00] Traceback (most recent call last):
+[2026-09-25T01:10:19.404-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 3526, in test_wrapper_refuses_empty_upstream_argv
+[2026-09-25T01:10:19.404-07:00]     with self.subTest(argv=argv), self.assertRaises(SystemExit) as raised:
+[2026-09-25T01:10:19.404-07:00]                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-25T01:10:19.404-07:00] AssertionError: SystemExit not raised
+[2026-09-25T01:10:19.404-07:00]
+[2026-09-25T01:10:19.404-07:00] ----------------------------------------------------------------------
+[2026-09-25T01:10:19.404-07:00] Ran 1 test in 0.007s
+[2026-09-25T01:10:19.404-07:00]
+[2026-09-25T01:10:19.404-07:00] FAILED (failures=1, errors=1)
+[2026-09-25T01:10:19.404-07:00]
+[2026-09-25T01:10:20.048-07:00] Network: up 0B  down 0B
+[2026-09-25T01:10:20.048-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/3659175093963736
+Tests finished: Pass 0. [38;5;9mFail 1[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug fbcode//testinfra/tfa/tests:tfa_phase2_test - test_wrapper_refuses_empty_upstream_argv (testinfra.tfa.tests.test_prototype.CodexIdentityHardeningTest)
+      ^^^ just prefix your previous command! ($ fdb !!)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=3659175093963736&expiry=2026-09-25T08%3A15%3A19Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=3659175093963736&expiry=2026-09-25T08%3A15%3A19Z&viewer=18498&signature=REDACTED]8;;\[0m

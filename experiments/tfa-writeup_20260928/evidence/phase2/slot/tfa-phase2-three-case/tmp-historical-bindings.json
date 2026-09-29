@@ -1,0 +1,107 @@
+{
+  "items": {
+    "asyncssl-invalid": {
+      "files": {
+        "INVALID-EVIDENCE.json": {
+          "sha256": "779f2312a3b3241138a8da6154192ef6518818a89b46b29b73bd223658a26315",
+          "size": 586
+        },
+        "hypotheses.json": {
+          "sha256": "f7619559af0b3c5158f772f52c024f06b141affbcf38ca30bee4d86693ac16b2",
+          "size": 2225
+        },
+        "ledger.jsonl": {
+          "sha256": "19072746755ef48ab362bd51d73bd9303093ceac6d73750f05f9b02e8585e9d2",
+          "size": 1493
+        },
+        "prompt.txt": {
+          "sha256": "36470b2e20e48b13692c4e90a9788c104995374971f751433b1257beab964177",
+          "size": 9661
+        }
+      },
+      "path": "/tmp/tfa-phase2/actual-runs-20260922/asyncssl"
+    },
+    "asyncssl-pre-hardening": {
+      "files": {
+        "hypotheses.json": {
+          "sha256": "0245ff202244f4f874bc2406b76ea2441c70a0c1187615fa268ee832267b2b95",
+          "size": 3409
+        },
+        "ledger.jsonl": {
+          "sha256": "eb58f70dcf2a3ee0a9fe5039d42071f17f2e37bb332c3bf65459a9e620863d61",
+          "size": 1491
+        },
+        "patch.diff": {
+          "sha256": "a16d3a3ae41057cd1835503cb4075f4838ee894f8978d559921f18095ab0676e",
+          "size": 1739
+        },
+        "prompt.txt": {
+          "sha256": "2e840d2f2b6232f60f3ed239c19f74e4dc8d1a38a0e6dacd649502ac8035d69b",
+          "size": 9674
+        },
+        "report.json": {
+          "sha256": "4a83ed840342d2a11136bdb589ce73ba373f2edccfd945b8658cf7360eee23f8",
+          "size": 17563
+        },
+        "validation.json": {
+          "sha256": "82d5d87bcf583978b98720f57ae8746bf0e5d552a2b1ebe4b03cdaf50785e90b",
+          "size": 31727
+        }
+      },
+      "path": "/tmp/tfa-phase2/actual-runs-20260922/asyncssl-pre-hardening"
+    },
+    "httpcoro-approved-3a2d4531": {
+      "files": {
+        "agent-output/report.json": {
+          "sha256": "989927c4c2511aee7c875b879f50749aa6d3d9c30aa6782f1c6584c44b3897c1",
+          "size": 1593
+        },
+        "control/ledger.jsonl": {
+          "sha256": "114308181ffd5c87ee5049eb3d74d229dc8b7916f9e6f26f33a257f1b8ee0c87",
+          "size": 3620
+        },
+        "control/prompt.txt": {
+          "sha256": "5277e25048115eb083cb0c2c6c68c8f5d87e67b23bdb5daaf4db6bcf68526317",
+          "size": 10624
+        }
+      },
+      "path": "/tmp/tfa-phase2/approved-runs-3a2d4531.9YwzGW/artifacts/httpcoro"
+    },
+    "thrift-pre-hardening-unqualified-D121188234": {
+      "files": {
+        "diff-url.json": {
+          "sha256": "e6b03623e68052e6e99bc6d34d46bc2d3dc0eb67bb3a9234093e734e4ed70b61",
+          "size": 216
+        },
+        "hypotheses.json": {
+          "sha256": "4e31f2b4e3064c758c27bfefc39e2413768696b5532aa14decca0888c4504158",
+          "size": 2402
+        },
+        "ledger.jsonl": {
+          "sha256": "4b6ad057f7c70d7486cc6382d9d5bed946ac8f9228b4f9b5b49f08700dc7aebf",
+          "size": 2047
+        },
+        "patch.diff": {
+          "sha256": "598ca277a16af51227ce2b11b18b3c320d0b13077fef2070bc9b9d90186ee263",
+          "size": 744
+        },
+        "prompt.txt": {
+          "sha256": "257bf7f40f2f52ef8318d45bbea563af57811e4654181b580e46cf902a4a03e6",
+          "size": 9563
+        },
+        "report.json": {
+          "sha256": "f80529e7e8ffd32937cc5c3d79b24fb49d0693c6905c1a0b2fc3d57c0865dbcc",
+          "size": 14305
+        },
+        "validation.json": {
+          "sha256": "065db3c095b7db708efdf8f589033defe8d5f2398c2a29acdb0cceb82452f7d4",
+          "size": 11607
+        }
+      },
+      "path": "/tmp/tfa-phase2/actual-runs-20260922/thrift-pre-hardening-unqualified-D121188234"
+    }
+  },
+  "policy": "read-only hash inventory; historical, pre-hardening or invalid; never relied on as current-head evidence",
+  "root": "/tmp/tfa-phase2",
+  "schema": "tfa.tmp-historical-bindings.v1"
+}

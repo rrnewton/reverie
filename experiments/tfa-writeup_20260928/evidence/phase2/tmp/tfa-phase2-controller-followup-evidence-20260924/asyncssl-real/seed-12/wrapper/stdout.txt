@@ -1,0 +1,11 @@
+Note: Google Test filter = AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AsyncSSLSocketByteEventTest
+[ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+[       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (176 ms)
+[----------] 1 test from AsyncSSLSocketByteEventTest (177 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (180 ms total)
+[  PASSED  ] 1 test.

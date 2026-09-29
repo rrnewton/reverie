@@ -1,0 +1,19 @@
+[testinfra][tfa] Close controller follow-up contracts
+
+[hermit2, unknown-agentname, codex-family-by-ancestry, devbig030, role=impl]
+
+# Context
+The phase-two controller still had three fail-closed gaps at the boundary between a qualified repair and a draft: Buck executable-relative resources were not copied into the sealed runtime image, the HTTPCoro fatal witness accepted an under-specified transcript, and the generated Thrift xplat mirror was outside the final commit and review seal.
+
+# Mitigation
+Pin and copy declared runtime resources under the attempt-specific image and revalidate their manifest, bytes, modes, paths, and byte budget around every validation run. Require the exact HTTPCoro fatal header, normal and async frames, SIGABRT metadata, and unrelaxed deterministic comparison transcript. For Thrift, require the declared canonical/mirror pair to be byte-identical and delta-identical, bind both paths to a fresh independent review, and persist the final commit evidence across interruption and draft readback.
+
+# This Diff
+Adds the three controller contracts above and negative tests for malformed resources, transcript mutations, ambiguous mirror output, and divergent mirror bytes. No validation assertion, tolerance, comparator, skip, label, or gate is weakened.
+
+Test Plan:
+- `arc f` (no lint issues; no code-byte changes)
+- `buck test fbcode//testinfra/tfa/tests:tfa_phase2_test` (113 passed, 0 failed; 8.08 seconds; session 4785075000562781)
+- `arc pyre check-changed-targets` (4 of 4 affected targets; no type errors)
+- `buck2 run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json` (3 cases)
+- The bounded uncached five-target matrix completed in 630.63 seconds with 147 passes and four unchanged real-Codex production-containment failures. Each failure was caused by the current nested CLI substrate rejecting even `/bin/pwd` with `cannot establish app-server socket mount isolation`; test session 16325548854042281.

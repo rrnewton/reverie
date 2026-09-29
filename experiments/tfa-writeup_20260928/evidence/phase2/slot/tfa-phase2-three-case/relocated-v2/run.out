@@ -1,0 +1,15 @@
+thrift seed-001-attempt-1 rc=1 oracle=FAIL 15.7s
+thrift seed-000-attempt-1 rc=0 oracle=PASS 14.6s
+thrift seed-001-attempt-2 rc=1 oracle=FAIL 15.1s
+thrift seed-000-attempt-2 rc=0 oracle=PASS 14.0s
+{"fail": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd", "decided_attempts": ["seed-001-attempt-1", "seed-001-attempt-2"], "seed": 1, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}, "pass": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/thrift/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd", "decided_attempts": ["seed-000-attempt-1", "seed-000-attempt-2"], "seed": 0, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}}
+asyncssl seed-011-attempt-1 rc=1 oracle=FAIL 4.4s
+asyncssl seed-001-attempt-1 rc=0 oracle=PASS 4.2s
+asyncssl seed-011-attempt-2 rc=1 oracle=FAIL 4.1s
+asyncssl seed-001-attempt-2 rc=0 oracle=PASS 4.2s
+{"fail": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/attempts/seed-011-attempt-1/cwd", "decided_attempts": ["seed-011-attempt-1", "seed-011-attempt-2"], "seed": 11, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}, "pass": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/asyncssl/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd", "decided_attempts": ["seed-001-attempt-1", "seed-001-attempt-2"], "seed": 1, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}}
+httpcoro seed-000-attempt-1 rc=134 oracle=FAIL 114.4s
+httpcoro seed-001-attempt-1 rc=0 oracle=PASS 10.4s
+httpcoro seed-000-attempt-2 rc=134 oracle=FAIL 112.7s
+httpcoro seed-001-attempt-2 rc=0 oracle=PASS 10.4s
+{"fail": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd", "decided_attempts": ["seed-000-attempt-1", "seed-000-attempt-2"], "seed": 0, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}, "pass": {"censored_attempts": [], "cwd": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd", "decided_attempts": ["seed-001-attempt-1", "seed-001-attempt-2"], "seed": 1, "seed_changed_from_manifest": false, "state": "REPRODUCED", "stdout_identical_across_decided_attempts": true}}

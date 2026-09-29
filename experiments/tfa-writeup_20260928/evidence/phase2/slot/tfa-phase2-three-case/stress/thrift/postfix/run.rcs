@@ -1,0 +1,14 @@
+fail-witness-seed-001-attempt-1 rc=0
+fail-witness-seed-001-attempt-2 rc=0
+pass-witness-seed-000-attempt-1 rc=0
+pass-witness-seed-000-attempt-2 rc=0
+discriminator-seed-003-attempt-1 rc=0
+discriminator-seed-003-attempt-2 rc=0
+discriminator-seed-003-attempt-3 rc=0
+discriminator-seed-008-attempt-1 rc=0
+discriminator-seed-008-attempt-2 rc=0
+fresh-seed-002 rc=0
+fresh-seed-003 rc=0
+fresh-seed-004 rc=0
+fresh-seed-005 rc=0
+revert-control-seed-003 rc=0

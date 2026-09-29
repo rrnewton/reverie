@@ -1,0 +1,4 @@
+[2026-09-25T04:19:43.131-07:00] Buck UI: https://www.internalfb.com/buck2/b20b9122-9679-4982-8600-91286308482c
+[2026-09-25T04:19:43.215-07:00] RE Session: reSessionID-1420ac08-5630-47dd-8b74-86084c13a824
+[2026-09-25T04:19:43.801-07:00] Network: up 0B  down 0B  session reSessionID-1420ac08-5630-47dd-8b74-86084c13a824
+fbcode//testinfra/tfa:tfa_phase2 /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/f131b89c4a309a34/testinfra/tfa/__tfa_phase2__/tfa_phase2.par

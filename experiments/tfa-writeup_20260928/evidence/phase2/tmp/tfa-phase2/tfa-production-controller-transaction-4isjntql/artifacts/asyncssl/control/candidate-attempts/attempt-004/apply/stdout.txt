@@ -1,0 +1,1 @@
+applying /tmp/tfa-phase2/tfa-production-controller-transaction-4isjntql/artifacts/asyncssl/control/candidate-attempts/attempt-004/approved-patch.diff

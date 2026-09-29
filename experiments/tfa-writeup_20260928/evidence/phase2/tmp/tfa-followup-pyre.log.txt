@@ -1,0 +1,14 @@
+2026-09-24T14:19:15.822-07:00  INFO arc_pyre_lib: Querying affected files from source control...
+2026-09-24T14:19:16.219-07:00  INFO arc_pyre_lib: Found 7 existing changed Python files
+2026-09-24T14:19:16.220-07:00  INFO arc_pyre_lib: Checking owning targets of existing changed Python files...
+[2026-09-24T14:19:16.327-07:00] Buck UI: https://www.internalfb.com/buck2/f249f77a-eef3-4489-8b90-d8d8f04ea999
+[2026-09-24T14:19:18.058-07:00] RE Session: reSessionID-9d956a78-ee9a-4f9d-ae5d-3bcaf5438bc8
+[2026-09-24T14:19:18.978-07:00] Network: up 30KiB  down 471B  session reSessionID-9d956a78-ee9a-4f9d-ae5d-3bcaf5438bc8
+2026-09-24T14:19:19.076-07:00  INFO arc_pyre_lib: Found 4 targets and type checking ran on 4 of them
+[1;4mType errors in target [0m[3;4;35mfbcode//testinfra/tfa/tests:tfa_phase2_test-library[0m
+[31mfbcode/testinfra/tfa/tests/test_prototype.py[0m:[33m1051[0m:[33m30[0m Cannot index into `object`
+  Object of class `object` has no attribute `__getitem__`
+[31mfbcode/testinfra/tfa/tests/test_prototype.py[0m:[33m1052[0m:[33m30[0m Cannot index into `object`
+  Object of class `object` has no attribute `__getitem__`
+
+Pyrefly feedback: if these diagnostics were not useful, run `pyrefly feedback --reason <REASON> [--details <TEXT>]` (see `pyrefly feedback --help`).

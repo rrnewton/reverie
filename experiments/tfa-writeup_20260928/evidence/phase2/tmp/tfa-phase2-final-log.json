@@ -1,0 +1,24 @@
+[
+ {
+  "rev": 281474976713135,
+  "node": "435d79639fc043c472d31a87e5a4a4b6f658ed32",
+  "branch": "default",
+  "phase": "draft",
+  "user": "Ryan Newton <newton@meta.com>",
+  "date": [1790292369, 25200],
+  "desc": "[testinfra][tfa] Close phase-two review findings\n\n[hermit2, unknown-agentname, gpt-5.6-sol, devbig030, role=impl]\n\nRestore the strict current-Hermit FullTrace contract without changing the\nhistorical witness, bind packaged and qualification artifacts to their exact\nconfigured identities, and fail aggregate readiness closed for unqualified\nHermit and Codex binaries.\n\nSeal independently verifiable import receipts, render self-contained\nreproducers, make production-fixture recovery durable before cleanup, and\nreplace timing-based containment checks with direct liveness evidence.\n\nTest Plan:\n- arc f\n- arc lint -a\n- arc pyre\n- buck test fbcode//testinfra/tfa/tests:tfa_phase2_test (127/127)\n- buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json (3 cases)\n- buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test (36/40; packaged Hermit minimal FullTrace blocker passes as a fail-closed assertion, and four real Codex tests fail closed on unsupported codex-cli 0.156.0)",
+  "bookmarks": [],
+  "parents": ["5a0a0971d80a47646d11322099b7881abac6041f"]
+ },
+ {
+  "rev": 281474976713133,
+  "node": "5a0a0971d80a47646d11322099b7881abac6041f",
+  "branch": "default",
+  "phase": "draft",
+  "user": "Ryan Newton <newton@meta.com>",
+  "date": [1790285402, 25200],
+  "desc": "[testinfra][tfa] Make controller dependencies self-contained\n\n[hermit2, unknown-agentname, codex-family-by-ancestry, devbig030, role=impl]\n\nContext:\nThe phase-two controller still depended on mutable machine-local SafeHermit paths and a historical Hermit executable outside fbsource. The current imported Hermit and Codex binaries also have known host compatibility failures that must not be mistaken for qualified execution.\n\nSummary:\nPackage and lazily pin the SafeHermit helpers, consume the current fbsource Hermit resource, and preserve the historical 4630ee2a witness while recording the a919cce qualification blockers. Scope verification allocation state to each attempt and use disposable quota-backed production fixtures. Record versioned Codex executable identity and reject known-blocked, unknown, malformed, or unstartable local versions before agent launch.\n\nTest Plan:\n- `arc f` (clean)\n- `arc lint -a` (passed; 32 advisory ShellCheck findings in the byte-identical packaged safehermit script)\n- `arc pyre check-changed-targets` (4 targets, no type errors)\n- `buck2 test --no-remote-cache -j 1 fbcode//testinfra/tfa/tests:tfa_phase2_test` (124 passed)\n- `buck2 run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json` (3 cases)\n- production containment run 25051272978218003 (28/35 passed; retained seven explicit environmental failures)",
+  "bookmarks": [],
+  "parents": ["4c494c2232644a926c72842f7eb2ab284e9d9ca7"]
+ }
+]

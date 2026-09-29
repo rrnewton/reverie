@@ -1,0 +1,3 @@
+bootstrap_rc: 0 stdout: codex-cli 0.156.0
+
+payload_isolation: codex-native-bootstrap-only containment_empty: True cgroup_exists_after: False descendants_zero: True

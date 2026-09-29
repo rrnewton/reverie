@@ -1,0 +1,691 @@
+notice Found 36 lint issues.
+>>> Lint for fbcode/testinfra/tfa/pipeline.py:
+
+   Advice  (FLAKE8) B950
+    line too long (89 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+             235         + re.escape(expression)
+             236         + r"\(\) ?$"
+             237     )
+    >>>      238     fatal_lines = [line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)]
+             239     all_fatal_headers = [
+             240         line for line in stderr.splitlines() if re.match(r"^F[0-9]{4} ", line)
+             241     ]
+
+   Advice  (FLAKE8) B950
+    line too long (89 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1022         try:
+            1023             source.relative_to(resolved_checkout)
+            1024         except ValueError as error:
+    >>>     1025             raise RuntimeError("runtime resource target escaped the checkout") from error
+            1026         if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
+            1027             raise RuntimeError("runtime resource target is not a canonical regular file")
+            1028         destination = resource_root / logical
+
+   Advice  (FLAKE8) B950
+    line too long (93 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1023             source.relative_to(resolved_checkout)
+            1024         except ValueError as error:
+            1025             raise RuntimeError("runtime resource target escaped the checkout") from error
+    >>>     1026         if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
+            1027             raise RuntimeError("runtime resource target is not a canonical regular file")
+            1028         destination = resource_root / logical
+            1029         destination.parent.mkdir(parents=True, exist_ok=True)
+
+   Advice  (FLAKE8) B950
+    line too long (89 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1024         except ValueError as error:
+            1025             raise RuntimeError("runtime resource target escaped the checkout") from error
+            1026         if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
+    >>>     1027             raise RuntimeError("runtime resource target is not a canonical regular file")
+            1028         destination = resource_root / logical
+            1029         destination.parent.mkdir(parents=True, exist_ok=True)
+            1030         destination.symlink_to(source)
+
+   Advice  (FLAKE8) B950
+    line too long (89 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1332         try:
+            1333             source.relative_to(resolved_checkout)
+            1334         except ValueError as error:
+    >>>     1335             raise RuntimeError("runtime resource target escaped the checkout") from error
+            1336         runtime_path = resource_root / logical
+            1337         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
+            1338         if runtime_value.get(logical) != runtime_target:
+
+   Advice  (FLAKE8) B950
+    line too long (90 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1337         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
+            1338         if runtime_value.get(logical) != runtime_target:
+            1339             raise RuntimeError("staged runtime resource target differs")
+    >>>     1340         resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(strict=True)
+            1341         if resolved_runtime != runtime_path or runtime_path.is_symlink():
+            1342             raise RuntimeError("staged runtime resource target escaped the image")
+            1343         try:
+
+   Advice  (FLAKE8) B950
+    line too long (93 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1343         try:
+            1344             runtime_path.relative_to(runtime_root)
+            1345         except ValueError as error:
+    >>>     1346             raise RuntimeError("staged runtime resource target escaped the image") from error
+            1347         source_file_record = regular_file_record(source)
+            1348         runtime_file_record = regular_file_record(runtime_path)
+            1349         for field in ("mode", "sha256", "size"):
+
+   Advice  (FLAKE8) B950
+    line too long (98 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1366     actual_files: list[str] = []
+            1367     for directory, directory_names, file_names in os.walk(resource_root):
+            1368         current = Path(directory)
+    >>>     1369         if current.is_symlink() or any((current / name).is_symlink() for name in directory_names):
+            1370             raise RuntimeError("runtime resource directory contains a symlink")
+            1371         for name in file_names:
+            1372             item = current / name
+
+   Advice  (FLAKE8) B950
+    line too long (98 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            1891         _fsync_runtime_directory(staging_tree)
+            1892         if resources is not None:
+            1893             resource_root = staging_elf.parent / f"{staging_elf.name}.resources"
+    >>>     1894             resource_directories = [Path(directory) for directory, _, _ in os.walk(resource_root)]
+            1895             for directory in sorted(
+            1896                 resource_directories, key=lambda item: len(item.parts), reverse=True
+            1897             ):
+
+   Advice  (FLAKE8) B950
+    line too long (90 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            3521                 else ("ORIGINAL_PASS" if index == 1 else "FRESH_STRESS")
+            3522             )
+            3523             root = attempt / f"seed-{seed}"
+    >>>     3524             if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
+            3525                 raise RuntimeError("runtime image changed before validation")
+            3526             result = run_hermit_attempt(
+            3527                 _validation_base_argv(case, seed, elf, root),
+
+   Advice  (FLAKE8) B950
+    line too long (90 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            3536                 raise RuntimeError(
+            3537                     f"independent {kind} validation failed at seed {seed}"
+            3538                 )
+    >>>     3539             if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
+            3540                 raise RuntimeError("runtime image changed during validation")
+            3541             gtest_execution = _gtest_execution_evidence(argv, result.stdout_path, True)
+            3542             verify_working_directory(working_directory, working_directory_seal)
+
+   Advice  (FLAKE8) B950
+    line too long (91 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            3698         return qualified_paths
+            3699     canonical, mirrored = mirror
+            3700     if qualified_paths != (canonical,):
+    >>>     3701         raise RuntimeError("qualified case paths differ from the declared mirror contract")
+            3702     return _repository_paths((canonical, mirrored))
+            3703 
+            3704 
+
+   Advice  (FLAKE8) B907
+    'canonical' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            3723     if mirror is None:
+            3724         return final_paths, qualified_files
+            3725     canonical, mirrored = mirror
+    >>>     3726     mirror_line = f"mirrored changes in '{canonical}' to '{mirrored}'"
+            3727     mirror_lines = [
+            3728         line
+            3729         for line in commit_stdout.read_text().splitlines()
+
+   Advice  (FLAKE8) B907
+    'mirrored' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            3723     if mirror is None:
+            3724         return final_paths, qualified_files
+            3725     canonical, mirrored = mirror
+    >>>     3726     mirror_line = f"mirrored changes in '{canonical}' to '{mirrored}'"
+            3727     mirror_lines = [
+            3728         line
+            3729         for line in commit_stdout.read_text().splitlines()
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             235         + re.escape(expression)
+             236         + r"\(\) ?$"
+             237     )
+        -    238     fatal_lines = [line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)]
+        +            fatal_lines = [
+        +                line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)
+        +            ]
+             239     all_fatal_headers = [
+             240         line for line in stderr.splitlines() if re.match(r"^F[0-9]{4} ", line)
+             241     ]
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1022         try:
+            1023             source.relative_to(resolved_checkout)
+            1024         except ValueError as error:
+        -   1025             raise RuntimeError("runtime resource target escaped the checkout") from error
+        -   1026         if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
+        -   1027             raise RuntimeError("runtime resource target is not a canonical regular file")
+        +                    raise RuntimeError(
+        +                        "runtime resource target escaped the checkout"
+        +                    ) from error
+        +                if source != source.resolve(strict=True) or not stat.S_ISREG(
+        +                    source.lstat().st_mode
+        +                ):
+        +                    raise RuntimeError(
+        +                        "runtime resource target is not a canonical regular file"
+        +                    )
+            1028         destination = resource_root / logical
+            1029         destination.parent.mkdir(parents=True, exist_ok=True)
+            1030         destination.symlink_to(source)
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1332         try:
+            1333             source.relative_to(resolved_checkout)
+            1334         except ValueError as error:
+        -   1335             raise RuntimeError("runtime resource target escaped the checkout") from error
+        +                    raise RuntimeError(
+        +                        "runtime resource target escaped the checkout"
+        +                    ) from error
+            1336         runtime_path = resource_root / logical
+            1337         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
+            1338         if runtime_value.get(logical) != runtime_target:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1337         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
+            1338         if runtime_value.get(logical) != runtime_target:
+            1339             raise RuntimeError("staged runtime resource target differs")
+        -   1340         resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(strict=True)
+        +                resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(
+        +                    strict=True
+        +                )
+            1341         if resolved_runtime != runtime_path or runtime_path.is_symlink():
+            1342             raise RuntimeError("staged runtime resource target escaped the image")
+            1343         try:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1343         try:
+            1344             runtime_path.relative_to(runtime_root)
+            1345         except ValueError as error:
+        -   1346             raise RuntimeError("staged runtime resource target escaped the image") from error
+        +                    raise RuntimeError(
+        +                        "staged runtime resource target escaped the image"
+        +                    ) from error
+            1347         source_file_record = regular_file_record(source)
+            1348         runtime_file_record = regular_file_record(runtime_path)
+            1349         for field in ("mode", "sha256", "size"):
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1359                 "source": source_file_record,
+            1360             }
+            1361         )
+        -   1362     if runtime_value != {
+        -   1363         entry["logical"]: entry["runtime_target"] for entry in expected_entries
+        -   1364     } or entries != expected_entries:
+        +            if (
+        +                runtime_value
+        +                != {entry["logical"]: entry["runtime_target"] for entry in expected_entries}
+        +                or entries != expected_entries
+        +            ):
+            1365         raise RuntimeError("runtime resource inventory differs")
+            1366     actual_files: list[str] = []
+            1367     for directory, directory_names, file_names in os.walk(resource_root):
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1366     actual_files: list[str] = []
+            1367     for directory, directory_names, file_names in os.walk(resource_root):
+            1368         current = Path(directory)
+        -   1369         if current.is_symlink() or any((current / name).is_symlink() for name in directory_names):
+        +                if current.is_symlink() or any(
+        +                    (current / name).is_symlink() for name in directory_names
+        +                ):
+            1370             raise RuntimeError("runtime resource directory contains a symlink")
+            1371         for name in file_names:
+            1372             item = current / name
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1582         copied_sizes.append(size)
+            1583     resources = inventory.get("resources")
+            1584     if resources is not None:
+        -   1585         if not isinstance(resources, dict) or not isinstance(
+        -   1586             resources.get("runtime_manifest"), dict
+        -   1587         ) or not isinstance(resources.get("entries"), list):
+        +                if (
+        +                    not isinstance(resources, dict)
+        +                    or not isinstance(resources.get("runtime_manifest"), dict)
+        +                    or not isinstance(resources.get("entries"), list)
+        +                ):
+            1588             raise RuntimeError("runtime resource byte inventory is malformed")
+            1589         resource_records = [resources["runtime_manifest"]] + [
+            1590             value.get("runtime") if isinstance(value, dict) else None
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1891         _fsync_runtime_directory(staging_tree)
+            1892         if resources is not None:
+            1893             resource_root = staging_elf.parent / f"{staging_elf.name}.resources"
+        -   1894             resource_directories = [Path(directory) for directory, _, _ in os.walk(resource_root)]
+        +                    resource_directories = [
+        +                        Path(directory) for directory, _, _ in os.walk(resource_root)
+        +                    ]
+            1895             for directory in sorted(
+            1896                 resource_directories, key=lambda item: len(item.parts), reverse=True
+            1897             ):
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            3521                 else ("ORIGINAL_PASS" if index == 1 else "FRESH_STRESS")
+            3522             )
+            3523             root = attempt / f"seed-{seed}"
+        -   3524             if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
+        +                    if (
+        +                        _verify_runtime_image(runtime_inventory, patched_buck_out, attempt)
+        +                        != elf
+        +                    ):
+            3525                 raise RuntimeError("runtime image changed before validation")
+            3526             result = run_hermit_attempt(
+            3527                 _validation_base_argv(case, seed, elf, root),
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            3536                 raise RuntimeError(
+            3537                     f"independent {kind} validation failed at seed {seed}"
+            3538                 )
+        -   3539             if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
+        +                    if (
+        +                        _verify_runtime_image(runtime_inventory, patched_buck_out, attempt)
+        +                        != elf
+        +                    ):
+            3540                 raise RuntimeError("runtime image changed during validation")
+            3541             gtest_execution = _gtest_execution_evidence(argv, result.stdout_path, True)
+            3542             verify_working_directory(working_directory, working_directory_seal)
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            3698         return qualified_paths
+            3699     canonical, mirrored = mirror
+            3700     if qualified_paths != (canonical,):
+        -   3701         raise RuntimeError("qualified case paths differ from the declared mirror contract")
+        +                raise RuntimeError(
+        +                    "qualified case paths differ from the declared mirror contract"
+        +                )
+            3702     return _repository_paths((canonical, mirrored))
+            3703 
+            3704 
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            3756             or seal.get("files") != final_files
+            3757             or seal.get("canonical") != canonical_record
+            3758             or seal.get("mirror") != mirror_record
+        -   3759             or seal.get("mirror_commit_stdout")
+        -   3760             != regular_file_record(commit_stdout)
+        +                    or seal.get("mirror_commit_stdout") != regular_file_record(commit_stdout)
+            3761         ):
+            3762             raise RuntimeError("final mirror commit seal differs")
+            3763         normalized: list[bytes] = []
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            4144     qualified_paths = _repository_paths(qualified_paths_value)
+            4145     final_paths = _repository_paths(raw_paths)
+            4146     if case.case_id in _DECLARED_CASE_MIRRORS:
+        -   4147         if (
+        -   4148             final_paths != _declared_draft_paths(case, qualified_paths)
+        -   4149             or raw_files != _tree_records(checkout, final_paths)
+        -   4150         ):
+        +                if final_paths != _declared_draft_paths(
+        +                    case, qualified_paths
+        +                ) or raw_files != _tree_records(checkout, final_paths):
+            4151             raise RuntimeError("draft final path contract differs")
+            4152         commit_stdout_record = transaction.get("commit_stdout")
+            4153         if (
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            4492                     )
+            4493                 else:
+            4494                     report = _qualified_report(case, case_dir, checkout)
+        -   4495                 url = _draft(
+        -   4496                     case, case_dir, checkout, report, review_schema_path
+        -   4497                 )
+        +                        url = _draft(case, case_dir, checkout, report, review_schema_path)
+            4498                 entry = ledger.append(Stage.DIFF_DRAFTED, {"url": url})
+            4499                 _mark_draft_ledger_recorded(case_dir, entry.sequence)
+            4500             elif stage == Stage.DIFF_DRAFTED:
+
+>>> Patch for fbcode/testinfra/tfa/pipeline.py:
+
+@@ -235,7 +235,9 @@
+         + re.escape(expression)
+         + r"\(\) ?$"
+     )
+-    fatal_lines = [line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)]
++    fatal_lines = [
++        line for line in stderr.splitlines() if fatal_pattern.fullmatch(line)
++    ]
+     all_fatal_headers = [
+         line for line in stderr.splitlines() if re.match(r"^F[0-9]{4} ", line)
+     ]
+@@ -1022,9 +1024,15 @@
+         try:
+             source.relative_to(resolved_checkout)
+         except ValueError as error:
+-            raise RuntimeError("runtime resource target escaped the checkout") from error
+-        if source != source.resolve(strict=True) or not stat.S_ISREG(source.lstat().st_mode):
+-            raise RuntimeError("runtime resource target is not a canonical regular file")
++            raise RuntimeError(
++                "runtime resource target escaped the checkout"
++            ) from error
++        if source != source.resolve(strict=True) or not stat.S_ISREG(
++            source.lstat().st_mode
++        ):
++            raise RuntimeError(
++                "runtime resource target is not a canonical regular file"
++            )
+         destination = resource_root / logical
+         destination.parent.mkdir(parents=True, exist_ok=True)
+         destination.symlink_to(source)
+@@ -1332,18 +1340,24 @@
+         try:
+             source.relative_to(resolved_checkout)
+         except ValueError as error:
+-            raise RuntimeError("runtime resource target escaped the checkout") from error
++            raise RuntimeError(
++                "runtime resource target escaped the checkout"
++            ) from error
+         runtime_path = resource_root / logical
+         runtime_target = os.path.relpath(runtime_path, runtime_manifest.parent)
+         if runtime_value.get(logical) != runtime_target:
+             raise RuntimeError("staged runtime resource target differs")
+-        resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(strict=True)
++        resolved_runtime = (runtime_manifest.parent / runtime_target).resolve(
++            strict=True
++        )
+         if resolved_runtime != runtime_path or runtime_path.is_symlink():
+             raise RuntimeError("staged runtime resource target escaped the image")
+         try:
+             runtime_path.relative_to(runtime_root)
+         except ValueError as error:
+-            raise RuntimeError("staged runtime resource target escaped the image") from error
++            raise RuntimeError(
++                "staged runtime resource target escaped the image"
++            ) from error
+         source_file_record = regular_file_record(source)
+         runtime_file_record = regular_file_record(runtime_path)
+         for field in ("mode", "sha256", "size"):
+@@ -1359,14 +1373,18 @@
+                 "source": source_file_record,
+             }
+         )
+-    if runtime_value != {
+-        entry["logical"]: entry["runtime_target"] for entry in expected_entries
+-    } or entries != expected_entries:
++    if (
++        runtime_value
++        != {entry["logical"]: entry["runtime_target"] for entry in expected_entries}
++        or entries != expected_entries
++    ):
+         raise RuntimeError("runtime resource inventory differs")
+     actual_files: list[str] = []
+     for directory, directory_names, file_names in os.walk(resource_root):
+         current = Path(directory)
+-        if current.is_symlink() or any((current / name).is_symlink() for name in directory_names):
++        if current.is_symlink() or any(
++            (current / name).is_symlink() for name in directory_names
++        ):
+             raise RuntimeError("runtime resource directory contains a symlink")
+         for name in file_names:
+             item = current / name
+@@ -1582,9 +1600,11 @@
+         copied_sizes.append(size)
+     resources = inventory.get("resources")
+     if resources is not None:
+-        if not isinstance(resources, dict) or not isinstance(
+-            resources.get("runtime_manifest"), dict
+-        ) or not isinstance(resources.get("entries"), list):
++        if (
++            not isinstance(resources, dict)
++            or not isinstance(resources.get("runtime_manifest"), dict)
++            or not isinstance(resources.get("entries"), list)
++        ):
+             raise RuntimeError("runtime resource byte inventory is malformed")
+         resource_records = [resources["runtime_manifest"]] + [
+             value.get("runtime") if isinstance(value, dict) else None
+@@ -1891,7 +1911,9 @@
+         _fsync_runtime_directory(staging_tree)
+         if resources is not None:
+             resource_root = staging_elf.parent / f"{staging_elf.name}.resources"
+-            resource_directories = [Path(directory) for directory, _, _ in os.walk(resource_root)]
++            resource_directories = [
++                Path(directory) for directory, _, _ in os.walk(resource_root)
++            ]
+             for directory in sorted(
+                 resource_directories, key=lambda item: len(item.parts), reverse=True
+             ):
+@@ -3521,7 +3543,10 @@
+                 else ("ORIGINAL_PASS" if index == 1 else "FRESH_STRESS")
+             )
+             root = attempt / f"seed-{seed}"
+-            if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
++            if (
++                _verify_runtime_image(runtime_inventory, patched_buck_out, attempt)
++                != elf
++            ):
+                 raise RuntimeError("runtime image changed before validation")
+             result = run_hermit_attempt(
+                 _validation_base_argv(case, seed, elf, root),
+@@ -3536,7 +3561,10 @@
+                 raise RuntimeError(
+                     f"independent {kind} validation failed at seed {seed}"
+                 )
+-            if _verify_runtime_image(runtime_inventory, patched_buck_out, attempt) != elf:
++            if (
++                _verify_runtime_image(runtime_inventory, patched_buck_out, attempt)
++                != elf
++            ):
+                 raise RuntimeError("runtime image changed during validation")
+             gtest_execution = _gtest_execution_evidence(argv, result.stdout_path, True)
+             verify_working_directory(working_directory, working_directory_seal)
+@@ -3698,7 +3726,9 @@
+         return qualified_paths
+     canonical, mirrored = mirror
+     if qualified_paths != (canonical,):
+-        raise RuntimeError("qualified case paths differ from the declared mirror contract")
++        raise RuntimeError(
++            "qualified case paths differ from the declared mirror contract"
++        )
+     return _repository_paths((canonical, mirrored))
+ 
+ 
+@@ -3756,8 +3786,7 @@
+             or seal.get("files") != final_files
+             or seal.get("canonical") != canonical_record
+             or seal.get("mirror") != mirror_record
+-            or seal.get("mirror_commit_stdout")
+-            != regular_file_record(commit_stdout)
++            or seal.get("mirror_commit_stdout") != regular_file_record(commit_stdout)
+         ):
+             raise RuntimeError("final mirror commit seal differs")
+         normalized: list[bytes] = []
+@@ -4144,10 +4173,9 @@
+     qualified_paths = _repository_paths(qualified_paths_value)
+     final_paths = _repository_paths(raw_paths)
+     if case.case_id in _DECLARED_CASE_MIRRORS:
+-        if (
+-            final_paths != _declared_draft_paths(case, qualified_paths)
+-            or raw_files != _tree_records(checkout, final_paths)
+-        ):
++        if final_paths != _declared_draft_paths(
++            case, qualified_paths
++        ) or raw_files != _tree_records(checkout, final_paths):
+             raise RuntimeError("draft final path contract differs")
+         commit_stdout_record = transaction.get("commit_stdout")
+         if (
+@@ -4492,9 +4520,7 @@
+                     )
+                 else:
+                     report = _qualified_report(case, case_dir, checkout)
+-                url = _draft(
+-                    case, case_dir, checkout, report, review_schema_path
+-                )
++                url = _draft(case, case_dir, checkout, report, review_schema_path)
+                 entry = ledger.append(Stage.DIFF_DRAFTED, {"url": url})
+                 _mark_draft_ledger_recorded(case_dir, entry.sequence)
+             elif stage == Stage.DIFF_DRAFTED:
+
+
+    Apply this patch to fbcode/testinfra/tfa/pipeline.py? [y/N] 
+
+
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Advice  (FLAKE8) B907
+    'canonical' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            4909             qualified_files = [pipeline_module._path_record(checkout, canonical)]
+            4910             commit_stdout = root / "commit.stdout"
+            4911             commit_stdout.write_text(
+    >>>     4912                 f"mirrored changes in '{canonical}' to '{mirrored}'\n"
+            4913             )
+            4914             reviewed_paths: list[tuple[str, ...]] = []
+            4915 
+
+   Advice  (FLAKE8) B907
+    'mirrored' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            4909             qualified_files = [pipeline_module._path_record(checkout, canonical)]
+            4910             commit_stdout = root / "commit.stdout"
+            4911             commit_stdout.write_text(
+    >>>     4912                 f"mirrored changes in '{canonical}' to '{mirrored}'\n"
+            4913             )
+            4914             reviewed_paths: list[tuple[str, ...]] = []
+            4915 
+
+   Advice  (FLAKE8) B950
+    line too long (91 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            4925                 path = paths[0]
+            4926                 stdout.write_text(
+            4927                     f"diff --git a/{path} b/{path}\n"
+    >>>     4928                     f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+same changed bytes\n"
+            4929                 )
+            4930                 stderr.write_text("")
+            4931                 return ProcessResult(("sl", "diff"), 0, 0.1, False, stdout, stderr)
+
+   Advice  (FLAKE8) B950
+    line too long (89 > 80 characters)
+    See https://docs.astral.sh/ruff/rules/B950
+
+            4989             root = Path(temporary)
+            4990             checkout = root / "checkout"
+            4991             canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
+    >>>     4992             for relative, content in ((canonical, "canonical\n"), (mirrored, "other\n")):
+            4993                 path = checkout / relative
+            4994                 path.parent.mkdir(parents=True, exist_ok=True)
+            4995                 path.write_text(content)
+
+   Advice  (FLAKE8) B907
+    'canonical' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            4994                 path.parent.mkdir(parents=True, exist_ok=True)
+            4995                 path.write_text(content)
+            4996             stdout = root / "commit.stdout"
+    >>>     4997             stdout.write_text(f"mirrored changes in '{canonical}' to '{mirrored}'\n")
+            4998             case = replace(_loaded_case(), case_id="thrift")
+            4999             with self.assertRaisesRegex(RuntimeError, "canonical and mirror files"):
+            5000                 pipeline_module._seal_thrift_final_commit(
+
+   Advice  (FLAKE8) B907
+    'mirrored' is manually surrounded by quotes, consider using the `!r` conversion flag.
+    See https://docs.astral.sh/ruff/rules/B907
+
+            4994                 path.parent.mkdir(parents=True, exist_ok=True)
+            4995                 path.write_text(content)
+            4996             stdout = root / "commit.stdout"
+    >>>     4997             stdout.write_text(f"mirrored changes in '{canonical}' to '{mirrored}'\n")
+            4998             case = replace(_loaded_case(), case_id="thrift")
+            4999             with self.assertRaisesRegex(RuntimeError, "canonical and mirror files"):
+            5000                 pipeline_module._seal_thrift_final_commit(
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            4989             root = Path(temporary)
+            4990             checkout = root / "checkout"
+            4991             canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
+        -   4992             for relative, content in ((canonical, "canonical\n"), (mirrored, "other\n")):
+        +                    for relative, content in (
+        +                        (canonical, "canonical\n"),
+        +                        (mirrored, "other\n"),
+        +                    ):
+            4993                 path = checkout / relative
+            4994                 path.parent.mkdir(parents=True, exist_ok=True)
+            4995                 path.write_text(content)
+
+>>> Patch for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+@@ -4989,7 +4989,10 @@
+             root = Path(temporary)
+             checkout = root / "checkout"
+             canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
+-            for relative, content in ((canonical, "canonical\n"), (mirrored, "other\n")):
++            for relative, content in (
++                (canonical, "canonical\n"),
++                (mirrored, "other\n"),
++            ):
+                 path = checkout / relative
+                 path.parent.mkdir(parents=True, exist_ok=True)
+                 path.write_text(content)
+
+
+    Apply this patch to fbcode/testinfra/tfa/tests/test_prototype.py? [y/N] 

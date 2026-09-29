@@ -1,0 +1,27 @@
+[2026-09-24T06:09:51.294-07:00] Buck UI: https://www.internalfb.com/buck2/47d3aa18-a911-4c40-9475-8ea371453c8b
+[2026-09-24T06:09:51.495-07:00] RE Session: reSessionID-8ada3acd-2d3a-4e98-a97f-54a61001924e
+[2026-09-24T06:09:52.198-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23925373071244523
+[2026-09-24T06:10:29.067-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test-library-type-checking - unmanaged (0.2s)
+[2026-09-24T06:10:29.067-07:00] Test returned with non-zero exit code
+[2026-09-24T06:10:29.067-07:00] stdout:
+[2026-09-24T06:10:29.067-07:00]
+[2026-09-24T06:10:29.067-07:00] stderr:
+[2026-09-24T06:10:29.067-07:00] Found type errors!
+[2026-09-24T06:10:29.067-07:00] fbcode/testinfra/tfa/tests/test_prototype.py:3361:36 Cannot index into `object`
+[2026-09-24T06:10:29.067-07:00]   Object of class `object` has no attribute `__getitem__`
+[2026-09-24T06:10:29.067-07:00]
+[2026-09-24T06:10:29.193-07:00] ✗ Fail: fbcode//testinfra/tfa:tfa_phase2_lib-type-checking - unmanaged (0.1s)
+[2026-09-24T06:10:29.193-07:00] Test returned with non-zero exit code
+[2026-09-24T06:10:29.193-07:00] stdout:
+[2026-09-24T06:10:29.193-07:00]
+[2026-09-24T06:10:29.193-07:00] stderr:
+[2026-09-24T06:10:29.193-07:00] Found type errors!
+[2026-09-24T06:10:29.193-07:00] fbcode/testinfra/tfa/pipeline.py:3845:31 Argument `dict[str, dict[str, object] | int | list[dict[str, object]] | list[str] | str]` is not assignable to parameter `value` with type `dict[str, object]` in function `testinfra.tfa.state.write_metadata`
+[2026-09-24T06:10:29.193-07:00]
+[2026-09-24T06:22:18.747-07:00] Network: up 259KiB  down 2.8MiB  session reSessionID-8ada3acd-2d3a-4e98-a97f-54a61001924e
+[2026-09-24T06:22:18.748-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23925373071244523
+Tests finished: [mPass 149[m. [mFail 2[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+2 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test-library-type-checking - unmanaged (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa:tfa_phase2_lib-type-checking - unmanaged (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23925373071244523&expiry=2026-09-24T13%3A27%3A18Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23925373071244523&expiry=2026-09-24T13%3A27%3A18Z&viewer=18498&signature=REDACTED]8;;\[0m

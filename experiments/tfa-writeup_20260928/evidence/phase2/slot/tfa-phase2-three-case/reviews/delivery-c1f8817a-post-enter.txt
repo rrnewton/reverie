@@ -1,0 +1,15 @@
+◆ Ran command · Read log tail and r7 delta · ✓ · 0.1s · ctrl+o
+└ - a validated candidate report;
+  - an `unfixed` and a `patched` phase, each with its test ELF SHA-256;
+  … 205 more lines
+               ),
+               (
+
+  Read /home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/followup.py
+
+◆ Thinking (14s · esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  kiki_gb300_mxfp8_6p2_840_nwr · xhigh · ~/work/dev-hermit · Auto-review                     Hook · PostToolUse · Discovered 1 rule and 2 skills: SKILL.md, python_tests.md and SKILL.md

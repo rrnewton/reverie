@@ -1,0 +1,246 @@
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from testinfra.tfa.manifest import Case
+from testinfra.tfa.pipeline import (
+    _gtest_execution_evidence,
+    _gtest_fatal_execution_evidence,
+    FAILURE_MARKERS,
+)
+
+
+SUMMARY_SCHEMA: str = "tfa.relocated-reproducer-summary.v2"
+RECEIPT_SCHEMA: str = "tfa.relocated-reproducer-run.v2"
+_DETERMINISM = ":: Success: deterministic. Determinism verified."
+
+
+class RelocationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class RelocatedWitness:
+    outcome: str
+    seed: int
+    argv: tuple[str, ...]
+    cwd: str
+    decided_attempts: tuple[str, ...]
+    censored_attempts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Relocation:
+    summary_sha256: str
+    passing: RelocatedWitness
+    failing: RelocatedWitness
+
+
+def _names_tmp(value: str) -> bool:
+    return value == "/tmp" or "/tmp/" in value or value.endswith("=/tmp")
+
+
+def _check_argv(case: Case, outcome: str, seed: int, argv: tuple[str, ...]) -> str:
+    """Return the relocated cwd after proving `argv` differs from the manifest
+    argv only in its /tmp-bound tokens and scheduler seed."""
+    source = case.pass_argv if outcome == "pass" else case.fail_argv
+    old_mount = (
+        f"--mount=type=bind,source={case.working_directory},"
+        f"target={case.working_directory}"
+    )
+    boundary = source.index("--")
+    if len(argv) != len(source) + 1 or argv[boundary + 1 :] != source[boundary:]:
+        raise RelocationError(f"{outcome} argv changes more than its /tmp paths")
+    cwd = None
+    offset = 0
+    for index, token in enumerate(source[:boundary]):
+        actual = argv[index + offset]
+        previous = source[index - 1] if index else ""
+        if previous == "--sched-seed":
+            if actual != str(seed):
+                raise RelocationError(f"{outcome} argv is not bound to seed {seed}")
+        elif previous == "--sh-report":
+            if not actual.startswith("/"):
+                raise RelocationError(f"{outcome} safehermit report is not absolute")
+        elif token.startswith("--verify-log-dir="):
+            if not actual.startswith("--verify-log-dir=/"):
+                raise RelocationError(f"{outcome} verify-log dir is not absolute")
+        elif token == old_mount:
+            prefix = "--mount=type=bind,source="
+            mounted = actual.removeprefix(prefix).split(",target=")
+            if not actual.startswith(prefix) or len(mounted) != 2:
+                raise RelocationError(f"{outcome} argv has no same-path cwd mount")
+            if mounted[0] != mounted[1] or not mounted[0].startswith("/"):
+                raise RelocationError(f"{outcome} cwd mount is not same-path")
+            cwd = mounted[0]
+            offset = 1
+            if not argv[index + offset].startswith("--tmp=/"):
+                raise RelocationError(f"{outcome} argv does not own the guest /tmp")
+        elif actual != token:
+            raise RelocationError(f"{outcome} argv changes more than its /tmp paths")
+    if cwd is None:
+        raise RelocationError(f"{outcome} argv has no relocated cwd")
+    if any(_names_tmp(token) for token in argv):
+        raise RelocationError(f"{outcome} argv still names /tmp")
+    return cwd
+
+
+def _bound_file(value: object, expected: Path, role: str) -> Path:
+    if not isinstance(value, dict) or value.get("path") != str(expected):
+        raise RelocationError(f"{role} is not the attempt's own file")
+    try:
+        data = expected.read_bytes()
+    except OSError as error:
+        raise RelocationError(f"cannot read {role}: {expected}") from error
+    if value.get("sha256") != hashlib.sha256(data).hexdigest():
+        raise RelocationError(f"{role} bytes differ from the receipt")
+    return expected
+
+
+def _check_oracle(
+    case: Case, outcome: str, argv: tuple[str, ...], returncode: object, run: Path
+) -> None:
+    stdout, stderr = run / "stdout.txt", run / "stderr.txt"
+    error_text = stderr.read_text(errors="replace")
+    if _DETERMINISM not in error_text.splitlines():
+        raise RelocationError(f"attempt did not verify determinism: {run}")
+    if outcome == "pass":
+        if returncode != 0:
+            raise RelocationError(f"PASS attempt exited {returncode}")
+        _gtest_execution_evidence(argv, stdout, True)
+        return
+    markers = FAILURE_MARKERS[case.case_id]
+    output = stdout.read_text(errors="replace") + "\n" + error_text
+    if not isinstance(returncode, int) or returncode in (0, 124, 125, 126):
+        raise RelocationError(f"FAIL attempt exited {returncode}")
+    if not all(marker in output for marker in markers):
+        raise RelocationError("FAIL attempt lacks the failure-class markers")
+    if case.case_id != "httpcoro":
+        _gtest_execution_evidence(argv, stdout, False)
+    elif returncode != 134:
+        raise RelocationError("httpcoro FAIL attempt did not abort")
+    else:
+        _gtest_fatal_execution_evidence(argv, stdout, stderr, markers)
+
+
+def _check_attempt(
+    case: Case, outcome: str, seed: int, run: Path
+) -> tuple[tuple[str, ...], str]:
+    try:
+        receipt = json.loads((run / "receipt.json").read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RelocationError(f"missing or malformed receipt: {run}") from error
+    if not isinstance(receipt, dict) or receipt.get("schema") != RECEIPT_SCHEMA:
+        raise RelocationError(f"receipt has the wrong schema: {run}")
+    if receipt.get("case_id") != case.case_id or receipt.get("seed") != seed:
+        raise RelocationError(f"receipt is not bound to {case.case_id} seed {seed}")
+    recorded = receipt.get("argv")
+    if not isinstance(recorded, list) or not all(
+        isinstance(token, str) for token in recorded
+    ):
+        raise RelocationError(f"receipt has no argv: {run}")
+    argv = tuple(recorded)
+    cwd = _check_argv(case, outcome, seed, argv)
+    inputs = receipt.get("inputs")
+    if not isinstance(inputs, dict) or not all(
+        isinstance(inputs.get(name), dict) for name in ("hermit", "guest")
+    ):
+        raise RelocationError("receipt has no input identities")
+    if inputs["hermit"].get("sha256") != case.hermit_sha256:
+        raise RelocationError("receipt Hermit differs from the manifest")
+    if inputs["guest"].get("sha256") != case.artifact_sha256:
+        raise RelocationError("receipt test ELF differs from the manifest")
+    classification = receipt.get("classification")
+    if not isinstance(classification, dict):
+        raise RelocationError("receipt has no classification")
+    _bound_file(receipt.get("stdout"), run / "stdout.txt", "stdout")
+    _bound_file(receipt.get("stderr"), run / "stderr.txt", "stderr")
+    try:
+        _check_oracle(case, outcome, argv, classification.get("returncode"), run)
+    except RelocationError:
+        raise
+    except RuntimeError as error:
+        raise RelocationError(f"{outcome} oracle refused {run}") from error
+    return argv, cwd
+
+
+def _check_censored(run: Path) -> None:
+    try:
+        receipt = json.loads((run / "receipt.json").read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RelocationError(f"missing or malformed receipt: {run}") from error
+    classification = receipt.get("classification") if isinstance(receipt, dict) else None
+    if not isinstance(classification, dict) or (
+        classification.get("oracle") != "CENSORED"
+        or classification.get("returncode") not in (None, 124, 125, 126)
+    ):
+        raise RelocationError(f"attempt listed as CENSORED is not censored: {run}")
+
+
+def _witness(
+    case: Case, outcome: str, value: object, summary_dir: Path
+) -> RelocatedWitness:
+    if not isinstance(value, dict) or value.get("state") != "REPRODUCED":
+        raise RelocationError(f"{outcome} relocation is not REPRODUCED")
+    seed = value.get("seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+        raise RelocationError(f"{outcome} relocation has no seed")
+    if seed in case.fresh_stress_seeds:
+        raise RelocationError(f"{outcome} relocation spent a fresh stress seed")
+    decided = value.get("decided_attempts")
+    censored = value.get("censored_attempts")
+    if (
+        not isinstance(decided, list)
+        or len(decided) < 2
+        or len(set(decided)) != len(decided)
+        or not isinstance(censored, list)
+        or not all(isinstance(label, str) for label in decided + censored)
+        or any(Path(label).name != label for label in decided)
+    ):
+        raise RelocationError(f"{outcome} relocation lacks two decided attempts")
+    on_disk = {
+        path.name
+        for path in summary_dir.glob(f"seed-{seed:03d}-attempt-*")
+        if path.is_dir()
+    }
+    if set(decided) & set(censored) or on_disk != set(decided) | set(censored):
+        raise RelocationError(f"{outcome} relocation omits or invents attempts")
+    for label in censored:
+        _check_censored(summary_dir / label)
+    runs = [
+        _check_attempt(case, outcome, seed, summary_dir / label) for label in decided
+    ]
+    argv, cwd = runs[0]
+    if value.get("argv") != list(argv) or value.get("cwd") != cwd:
+        raise RelocationError(f"{outcome} witness differs from its first attempt")
+    return RelocatedWitness(outcome, seed, argv, cwd, tuple(decided), tuple(censored))
+
+
+def validated_relocation(case: Case, summary_path: Path) -> Relocation:
+    """Validate a measured non-/tmp PASS/FAIL relocation for `case`.
+
+    Every decided attempt is re-judged from its own stdout/stderr bytes with the
+    pipeline's gtest oracles, so a receipt's recorded label is never trusted.
+    """
+    try:
+        data = summary_path.read_bytes()
+        summary = json.loads(data)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RelocationError(f"missing or malformed summary: {summary_path}") from error
+    if not isinstance(summary, dict) or summary.get("schema") != SUMMARY_SCHEMA:
+        raise RelocationError("relocation summary has the wrong schema")
+    if summary.get("case_id") != case.case_id:
+        raise RelocationError("relocation summary names a different case")
+    witness = summary.get("witness")
+    if not isinstance(witness, dict):
+        raise RelocationError("relocation summary has no witnesses")
+    return Relocation(
+        hashlib.sha256(data).hexdigest(),
+        _witness(case, "pass", witness.get("pass"), summary_path.parent),
+        _witness(case, "fail", witness.get("fail"), summary_path.parent),
+    )

@@ -1,0 +1,114 @@
+    def _hypothesis_block(self, contradicting: str, claim: str) -> tuple[str, list[str]]:
+        case = _loaded_case()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = _followup_ledger(root, case)
+
+            def change(report: Any) -> None:
+                report["hypotheses"][0]["contradicting"] = contradicting
+                report["hypotheses"][1]["claim"] = claim
+
+            self._edit(root / "agent-output" / "controller-extracted-report.json", change)
+            text = followup_text(case, validated_followup(case, ledger))
+        block = text.split("\n```text\n", 1)[1].split("\n```\n", 1)[0]
+        return text, block.split("\n")
+
+    def test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text(self) -> None:
+        _, lines = self._hypothesis_block(
+            "no DBG log; drain() -> close() order is inferred, not traced",
+            "`AsyncSSLSocket::closeNow()` runs before the <ACK> write, café ≥ 2",
+        )
+        self.assertEqual(
+            lines,
+            [
+                "Contradicting or unverified evidence the investigator reported: "
+                "no DBG log; drain() -> close() order is inferred, not traced",
+                "Other ranked hypotheses, which these replays do not exclude:",
+                "rank 2: 'AsyncSSLSocket::closeNow()' runs before the <ACK> write, "
+                "café ≥ 2",
+            ],
+        )
+
+    def test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text(
+        self,
+    ) -> None:
+        text, lines = self._hypothesis_block(
+            "gap\r\n```\n\n@victim ````",
+            "```\n</code>@oncall <img src=x onerror=alert(1)> "
+            "[click](https://evil.example) **x**\n# Heading\u202e\u200b\x1b[31m",
+        )
+        self.assertEqual(
+            lines,
+            [
+                "Contradicting or unverified evidence the investigator reported: "
+                "gap ''' @victim ''''",
+                "Other ranked hypotheses, which these replays do not exclude:",
+                "rank 2: ''' </code>@oncall <img src=x onerror=alert(1)> "
+                "[click](https://evil.example) **x** # Heading[31m",
+            ],
+        )
+        for injected in ("@victim", "@oncall", "<img", "evil.example"):
+            self.assertEqual(text.count(injected), 1, injected)
+        for hidden in ("\u202e", "\u200b", "\x1b", "\r"):
+            self.assertNotIn(hidden, text)
+        case = _loaded_case()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = _followup_ledger(root, case)
+            report = root / "agent-output" / "controller-extracted-report.json"
+
+            def invisible(value: Any) -> None:
+                value["hypotheses"][1]["claim"] = "\u200b\u2060"
+
+            self._edit(report, invisible)
+            validate_candidate_report(report, case.case_id)
+            with self.assertRaisesRegex(FollowupError, "empty after plain-text"):
+                validated_followup(case, ledger)
+
+    def test_overlong_hypothesis_text_is_cut_at_the_limit(self) -> None:
+        text, lines = self._hypothesis_block(
+            "a" * AGENT_TEXT_LIMIT, "c" * (5 * AGENT_TEXT_LIMIT)
+        )
+        self.assertEqual(AGENT_TEXT_LIMIT, 1000)
+        self.assertEqual(
+            lines,
+            [
+                "Contradicting or unverified evidence the investigator reported: "
+                + "a" * AGENT_TEXT_LIMIT,
+                "Other ranked hypotheses, which these replays do not exclude:",
+                "rank 2: "
+                + "c" * AGENT_TEXT_LIMIT
+                + " [truncated; the full text is in the candidate report]",
+            ],
+        )
+        self.assertNotIn("c" * (AGENT_TEXT_LIMIT + 1), text)
+
+    def test_renders_the_validated_snapshot_not_a_reread_report(self) -> None:
+        case = _loaded_case()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = _followup_ledger(root, case)
+
+            def validate_then_swap(path: Path, case_id: str) -> CandidateSummary:
+                summary = validate_candidate_report(path, case_id)
+
+                def swap(report: Any) -> None:
+                    report["hypotheses"][0]["contradicting"] = "@swapped gap"
+                    report["hypotheses"][1]["claim"] = "@swapped claim"
+
+                self._edit(path, swap)
+                return summary
+
+            with patch(
+                "testinfra.tfa.followup.validate_candidate_report",
+                side_effect=validate_then_swap,
+            ):
+                text = followup_text(case, validated_followup(case, ledger))
+        self.assertIn(
+            "Contradicting or unverified evidence the investigator reported: none\n"
+            "Other ranked hypotheses, which these replays do not exclude:\n"
+            "rank 2: lifetime\n```\n",
+            text,
+        )
+        self.assertNotIn("@swapped", text)
+

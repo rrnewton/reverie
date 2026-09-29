@@ -1,0 +1,9 @@
+# measured 2026-09-25T06:4xZ with grep -c -a -F on each bin/codex
+# mask = 'app-server socket mask path must be valid UTF-8' (introduced by 7cec3e110ce6)
+# iso  = 'cannot establish app-server socket mount isolation' (daemon-socket isolation check)
+releases/a73d81b5 codex-cli 0.155.1 mask=0 iso=0
+releases/abcaf363 codex-cli 0.156.0 mask=0 iso=1
+releases/ac6903f7 codex-cli 0.154.0 mask=0 iso=0
+releases/d6b5e2ce codex-cli 0.156.0 mask=0 iso=1
+dotslash extract ebf433a1 (signed latest, sha fdd42a7f) codex-cli 0.156.1 mask=0 iso=1
+candidate meta-build/target/release/codex (f9228bec, unsigned) mask=1 iso=1

@@ -1,0 +1,96 @@
+{
+  "case_id": "asyncssl",
+  "fail": {
+    "determinism_verified": true,
+    "exit_code": 1,
+    "failure_class_id": "gtest-byte-events-three-missing-ack",
+    "failures": [
+      "fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3797: Failure\nValue of: observer->byteEvents\nExpected: has a size that is >= 4\n  Actual: { 96-byte object <00-00 00-00 00-00 00-00 F5-01 00-00 00-00 00-00 CB-70 88-7B B3-75 D7-18 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 17-00 00-00 00-00 00-00 01-BE BE-BE BE-BE...",
+      "fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3812: Failure\nExpected equality of these values:\n  offsetExpected\n    Which is: 501\n  observer->maxOffsetForByteEventReceived(ByteEventType::ACK)\n    Which is: 16-byte object <00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00>"
+    ],
+    "gtest_verdict": "FAILED",
+    "seed": 11,
+    "signal": null,
+    "top_frames": [],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 8667,
+      "INFO messages": 9123,
+      "detcore-specific messages": 9121,
+      "messages total": 9123,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 221, committed virtual time 1790028790214849200ns, run 2 first at turn 221, committed virtual time 1790028790214849200ns)": 42,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "failure_class": "gtest-byte-events-three-missing-ack",
+  "guest_stderr_diff": [
+    "--- pass",
+    "+++ fail",
+    "@@ -3,4 +3,4 @@",
+    " SSLServerAcceptCallback::connAccepted",
+    "+HandshakeCallback::connectionAccepted",
+    " writeSuccess",
+    "-HandshakeCallback::connectionAccepted",
+    " readDataAvailable, len 1"
+  ],
+  "guest_stderr_diff_truncated": false,
+  "guest_stderr_same_lines_reordered": true,
+  "inputs": {
+    "fail.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-011-sched-seed-00000000000000000011-replica-1.result.json",
+      "sha256": "c04e71b80ea09b14b5858c766bd0c40199e426fba801705d3f3cf01896a3d1ca",
+      "size": 2263
+    },
+    "fail.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-011-sched-seed-00000000000000000011-replica-1.stderr.txt",
+      "sha256": "10b4598e6e3458238767e592e2e1d98e1880d3b67d272b589b74298c4fbe932b",
+      "size": 1765
+    },
+    "fail.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-011-sched-seed-00000000000000000011-replica-1.stdout.txt",
+      "sha256": "25a6177327a3766309b2caa7ce33ddab0b6a709f5217ff1a7e07508f6bd3eab9",
+      "size": 2064
+    },
+    "pass.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-001-sched-seed-00000000000000000001-replica-1.result.json",
+      "sha256": "9d7de447d1dcfa5d5a393ab4b065eab298391e3d55be7d76338acd95f01c7a21",
+      "size": 2226
+    },
+    "pass.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt",
+      "sha256": "71fa37b9487c5719b906d7855b0f7c442b9698b975d36cd4116dae3b3c139e65",
+      "size": 1765
+    },
+    "pass.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/asyncssl/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stdout.txt",
+      "sha256": "ee0966d97628864f983a2a4773f00b4de6d1dc6f38e2a4518bed56b86a24877f",
+      "size": 576
+    }
+  },
+  "pass": {
+    "determinism_verified": true,
+    "exit_code": 0,
+    "failure_class_id": null,
+    "failures": [],
+    "gtest_verdict": "OK",
+    "seed": 1,
+    "signal": null,
+    "top_frames": [],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 8704,
+      "INFO messages": 9167,
+      "detcore-specific messages": 9165,
+      "messages total": 9167,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 229, committed virtual time 1790028790207421713ns, run 2 first at turn 229, committed virtual time 1790028790207421713ns)": 42,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "qualification": "deterministic-text-difference; not a root cause",
+  "schema_version": 1,
+  "verifier_count_delta": {
+    "DETLOG & scheduler COMMIT messages": -37,
+    "INFO messages": -44,
+    "detcore-specific messages": -44,
+    "messages total": -44,
+    "scheduler empty-run-queue kick messages": 0
+  }
+}

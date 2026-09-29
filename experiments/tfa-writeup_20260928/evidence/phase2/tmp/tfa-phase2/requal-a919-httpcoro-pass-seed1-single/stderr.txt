@@ -1,0 +1,30 @@
+
+thread 'main' (1) panicked at fbcode/hermetic_infra/reverie/reverie-ptrace/src/timer.rs:763:9:
+Clock perf counter exceeds target value at start of attempted single-step: 6144229 > 6143484. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (1) panicked at third-party/rust-toolchain/1.98.1/rust/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:           0x768e30 - <unknown>
+   1:           0x72729a - <unknown>
+   2:           0x78f40e - <unknown>
+   3:           0x765d7d - <unknown>
+   4:           0x741bc8 - <unknown>
+   5:           0x743c4a - <unknown>
+   6:           0x74408c - <unknown>
+   7:           0x765afe - <unknown>
+   8:           0x765a29 - <unknown>
+   9:           0x741dfe - <unknown>
+  10:           0x72a4dc - <unknown>
+  11:           0x72a458 - <unknown>
+  12:           0x72a5cd - <unknown>
+  13:           0x9a89d8 - <unknown>
+  14:     0x7ff874d2c1d0 - __clone
+                               at /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone.S:100:0
+  15:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+*** Aborted at 1790282785 (Unix time, try 'date -d @1790282785') ***
+*** Signal 6 (SIGABRT) (0x1) received by PID 1 (pthread TID 0x7ff874ea1240) (linux TID 1) (maybe from PID 1, UID 0) (code: sent by tkill or tgkill), stack trace: ***
+Error: Sandbox container exited unexpectedly
+     > Process exited with code: Signaled(SIGSEGV, true)

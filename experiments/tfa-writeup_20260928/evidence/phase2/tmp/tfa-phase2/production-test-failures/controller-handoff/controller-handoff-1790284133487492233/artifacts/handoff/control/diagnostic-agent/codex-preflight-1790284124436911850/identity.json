@@ -1,0 +1,1 @@
+{"blocker": "cannot establish app-server socket mount isolation", "executable": "/usr/local/bin/codex", "resolved_executable": {"kind": "file", "mode": 493, "path": "/usr/local/bin/codex_cli/codex", "sha256": "8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a7920432b50acc4b9", "size": 488566920}, "state": "blocked", "version": "codex-cli 0.156.0"}

@@ -1,0 +1,98 @@
+test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+
+======================================================================
+FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 643, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3430, in test_real_codex_candidate_handoff_uses_controller_buck
+    candidate = _diagnose_candidate_locked(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 3279, in _diagnose_candidate_locked
+    raise RuntimeError("diagnostic agent did not complete")
+RuntimeError: diagnostic agent did not complete
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3370, in test_real_codex_candidate_handoff_uses_controller_buck
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 649, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790294083834499335; retained root: /tmp/tfa-phase2/tfa-production-controller-handoff-0od3snhk
+
+======================================================================
+FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 643, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3552, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    self.assertRegex(fresh_value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3511, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 649, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790294103162161827; retained root: /tmp/tfa-phase2/tfa-production-codex-report-jb_c1aax
+
+======================================================================
+FAIL: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3327, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+    self.assertRegex(value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+======================================================================
+FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 643, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3638, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    self.assertRegex(review_value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3598, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 649, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790294147487070984; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-o3cotjoe
+
+----------------------------------------------------------------------
+Ran 4 tests in 206.706s
+
+FAILED (failures=4)

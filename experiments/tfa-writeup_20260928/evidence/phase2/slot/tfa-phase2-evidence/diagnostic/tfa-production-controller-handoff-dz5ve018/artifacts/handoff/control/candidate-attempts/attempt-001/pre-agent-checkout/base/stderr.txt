@@ -1,0 +1,8 @@
+error: unexpected argument '-r' found
+
+  tip: to pass '-r' as a value, use '-- -r'
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.

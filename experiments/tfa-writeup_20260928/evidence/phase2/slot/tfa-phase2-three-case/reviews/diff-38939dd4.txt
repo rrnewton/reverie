@@ -1,0 +1,101 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -39,12 +39,15 @@
+ non-`/tmp` PASS and FAIL commands and demotes the `/tmp` record to labelled
+ history bound by its `experiment.json` SHA-256. The summary must list every
+ attempt directory at each witness seed. Every attempt's receipt must bind its
+-stdout, stderr and safehermit report bytes. Each decided attempt is re-judged
++stdout, stderr and safehermit report bytes, and the report must name each key
++once and record the manifest Hermit SHA-256. Each decided attempt is re-judged
+ from those bytes with the gtest oracles. A censored attempt needs safehermit
+ evidence that it hit the wall bound, must satisfy neither oracle, and is counted
+ as neither PASS nor FAIL. Relocated argv may differ from the manifest argv only
+ in its `/tmp`-bound paths and scheduler seed, and those paths must be canonical
+-and must not resolve into `/tmp`.
++and must not resolve into `/tmp`. They are resolved only when the renderer runs,
++so a symlink changed afterwards is not detected. This validates recorded
++evidence; it does not contain the commands at run time.
+ 
+ The fixed Hermit quick-start and investigation contract are rendered into each
+ case's `prompt.txt`. The authoritative PASS and FAIL commands invoke the exact
+diff --git a/fbcode/testinfra/tfa/relocation.py b/fbcode/testinfra/tfa/relocation.py
+--- a/fbcode/testinfra/tfa/relocation.py
++++ b/fbcode/testinfra/tfa/relocation.py
+@@ -188,7 +188,11 @@
+     for line in report_path.read_text(errors="replace").splitlines():
+         key, equals, value = line.removeprefix("safehermit: ").partition("=")
+         if line.startswith("safehermit: ") and equals:
+-            report.setdefault(key, value)
++            if key in report:
++                raise RelocationError(f"safehermit report repeats {key}: {run}")
++            report[key] = value
++    if report.get("binary_sha256") != case.hermit_sha256:
++        raise RelocationError(f"safehermit ran a Hermit not in the manifest: {run}")
+     if report.get("exit_code") != str(classification.get("returncode")):
+         raise RelocationError(f"safehermit exit code contradicts the receipt: {run}")
+     return receipt, argv, cwd, report
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -1156,7 +1156,10 @@
+     stderr = ":: Success: deterministic. Determinism verified.\n"
+     returncode = {"PASS": 0, "FAIL": 1, "CENSORED": 124}[oracle]
+     deadline = int(argv[argv.index("--sh-deadline") + 1])
+-    report = f"safehermit: bound.wall=APPLIED:{deadline}s\n"
++    report = (
++        f"safehermit: binary_sha256={case.hermit_sha256}\n"
++        f"safehermit: bound.wall=APPLIED:{deadline}s\n"
++    )
+     if oracle == "CENSORED":
+         stdout, stderr = "", ":: Run1...\n"
+         report += (
+@@ -1357,6 +1360,7 @@
+                 run / "receipt.json", lambda value: value.update(duration_seconds=3.0)
+             ),
+             "exit code contradicts": lambda run: (run / "safehermit.txt").write_text(
++                f"safehermit: binary_sha256={case.hermit_sha256}\n"
+                 "safehermit: unit_result=timeout\nsafehermit: exit_code=134\n"
+             ),
+         }
+@@ -1377,11 +1381,39 @@
+             root = Path(temporary)
+             summary = _relocation_summary(root, case, censored=1)
+             run = root / "seed-001-attempt-1"
+-            (run / "safehermit.txt").write_text("safehermit: exit_code=124\n")
++            (run / "safehermit.txt").write_text(
++                f"safehermit: binary_sha256={case.hermit_sha256}\n"
++                "safehermit: exit_code=124\n"
++            )
+             self._rebind(run)
+             with self.assertRaisesRegex(RelocationError, "lacks wall-bound evidence"):
+                 validated_relocation(case, summary)
+ 
++    def test_refuses_report_with_foreign_hermit_or_repeated_key(self) -> None:
++        case = _loaded_case()
++        manifest = f"safehermit: binary_sha256={case.hermit_sha256}\n"
++        foreign = f"safehermit: binary_sha256={'0' * 64}\n"
++        for message, change in (
++            (
++                "Hermit not in the manifest",
++                lambda text: text.replace(manifest, foreign),
++            ),
++            ("repeats binary_sha256", lambda text: text + foreign),
++            ("repeats exit_code", lambda text: text + "safehermit: exit_code=0\n"),
++        ):
++            with (
++                self.subTest(message=message),
++                tempfile.TemporaryDirectory() as temporary,
++            ):
++                root = Path(temporary)
++                summary = _relocation_summary(root, case)
++                run = root / "seed-011-attempt-2"
++                report = run / "safehermit.txt"
++                report.write_text(change(report.read_text()))
++                self._rebind(run)
++                with self.assertRaisesRegex(RelocationError, message):
++                    validated_relocation(case, summary)
++
+     def test_refuses_paths_escaping_through_dotdot_or_symlink(self) -> None:
+         case = _loaded_case()
+         for flag, escape, message in (

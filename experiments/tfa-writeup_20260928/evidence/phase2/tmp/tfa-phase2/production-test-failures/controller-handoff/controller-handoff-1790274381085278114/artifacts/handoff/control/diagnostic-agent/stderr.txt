@@ -1,0 +1,10 @@
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+2026-09-24T18:25:45.711617Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0 seconds
+Output:
+Failed to write file /tmp/tfa-phase2/tfa-production-controller-handoff-dqb741ag/artifacts/handoff/agent-output/patch.diff
+

@@ -1,0 +1,18 @@
+notice Found 1 lint issue.
+>>> Lint for fbcode/testinfra/tfa/hermit.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1516     destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            1517     if os.path.lexists(destination):
+            1518         pinned = regular_file_record(destination)
+        -   1519         if (
+        -   1520             pinned.get("sha256") != packaged_sha256
+        -   1521             or pinned.get("mode") != 0o500
+        -   1522         ):
+        +                if pinned.get("sha256") != packaged_sha256 or pinned.get("mode") != 0o500:
+            1523             raise HermitError("pinned packaged Hermit executable differs")
+            1524     else:
+            1525         _pin_safehermit(binary, destination, packaged_sha256)
+Applied 1 lint patch

@@ -1,0 +1,1 @@
+Superseded by ../stage4-followup-hypothesis-r2 (verdict-rule caveat added before commit); kept as an intermediate render.

@@ -1,0 +1,179 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out,target=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out",
+    "--mount=type=bind,source=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd,target=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd",
+    "--tmp=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/guest-tmp",
+    "--epoch=2026-09-21T21:01:52Z",
+    "--clock-multiplier=0.5",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "1",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/verify",
+    "--",
+    "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+  ],
+  "argv_sha256": "b09f26a50756c749e2512c8944b58218d82660fa0a19edcb36ee1fe03fb9bf9e",
+  "case_id": "httpcoro",
+  "classification": {
+    "determinism_verified": true,
+    "gtest": {
+      "filter": "HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "filter_line": "Note: Google Test filter = HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "run_line": "[ RUN      ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "stdout": {
+        "kind": "file",
+        "mode": 420,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/stdout.txt",
+        "sha256": "cfe08dc57b956503cdf8b59933b5577e6f3365190d4b7c3f1308134c67fcc60e",
+        "size": 650
+      },
+      "terminal_line": "[       OK ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2 (793 ms)"
+    },
+    "oracle": "PASS",
+    "returncode": 0
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd",
+  "cwd_identity_before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd",
+    "st_dev": 48,
+    "st_ino": 1303141240
+  },
+  "cwd_inventory_after": [],
+  "duration_seconds": 10.888944864273071,
+  "environment": {
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/safehermit-log-root",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/tmpdir",
+    "removed": [
+      "HERMIT_BIN",
+      "PYTHONPATH",
+      "RUST_LOG"
+    ]
+  },
+  "finished_unix": 1790334659.5045977,
+  "guest_tmp_inventory": [],
+  "inputs": {
+    "guest": {
+      "path": "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "sha256": "30ecdc395c8e96f1aa1cc272eab277277cc1bf1166c8447d59887d17f564e0b3",
+      "size": 48908776
+    },
+    "hermit": {
+      "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+      "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "size": 415330552
+    },
+    "safehermit": {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "sha256": "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0",
+      "size": 67422
+    }
+  },
+  "note": "patched PASS-witness schedule",
+  "rewrites_from_template": [
+    {
+      "index": 2,
+      "replay": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/safehermit.txt",
+      "template": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-1/safehermit.txt"
+    },
+    {
+      "index": 20,
+      "replay": "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out,target=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out",
+      "template": "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+    },
+    {
+      "index": 21,
+      "replay": "--mount=type=bind,source=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd,target=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/controller-cwd",
+      "template": "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd,target=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-1/cwd"
+    },
+    {
+      "index": 22,
+      "replay": "--tmp=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/guest-tmp",
+      "template": "--tmp=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-001-attempt-1/guest-tmp"
+    },
+    {
+      "index": 45,
+      "replay": "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/verify",
+      "template": "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-001-attempt-1/verify"
+    },
+    {
+      "index": 47,
+      "replay": "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "template": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests"
+    }
+  ],
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/safehermit.txt",
+    "sha256": "482885f7fbcf1ef08ffd7a713539fd54a9ab78354fb808c371f569ce274dae16",
+    "size": 1937
+  },
+  "sched_seed": 1,
+  "schema": "tfa.witness-replay-run.v1",
+  "started_unix": 1790334648.6156528,
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/stderr.txt",
+    "sha256": "07d33d403806b0ad2189e0276f8d2e8ca80bf00ae20c7f67b1b792169b75350d",
+    "size": 1351
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/postfix/pass-witness-seed-001-attempt-1/stdout.txt",
+    "sha256": "cfe08dc57b956503cdf8b59933b5577e6f3365190d4b7c3f1308134c67fcc60e",
+    "size": 650
+  },
+  "template": {
+    "role": "pass",
+    "seed": 1,
+    "summary": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/summary.json",
+      "sha256": "fca9f308f0dec565fe48cfb9d8148ded7ae58fa90f310493b7ecd829850efa79",
+      "size": 7196
+    }
+  },
+  "verify_inventory": [
+    {
+      "path": "run1_log_y0qcA",
+      "size": 3406842
+    },
+    {
+      "path": "run2_log_bz3xS",
+      "size": 3406842
+    }
+  ]
+}

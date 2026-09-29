@@ -1,0 +1,7 @@
+  85824   85094  1-14:39:16 (buck2-forkserver) forkserver --isolation-dir v2 --fd 66 --state-dir /home/newton/work/tfa/fbsource/buck-out/v2/forkserver
+ 115988   43018  1-15:47:26 /usr/local/bin/chataccd --mount-point /home/newton/work/tfa/fbsource --subscribe
+2831217 2830038  2-19:15:46 (buck2-forkserver) forkserver --isolation-dir .autodeps2 --fd 59 --state-dir /home/newton/work/tfa/fbsource/buck-out/.autodeps2/forkserver
+3473467 3472146  2-19:12:54 (buck2-forkserver) forkserver --isolation-dir cli_target_thrift_postprocess --fd 66 --state-dir /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/forkserver
+3742031  675156       00:19 agentctl send tfa-phase2-opus Use /home/newton/work/tfa/fbsource as the test checkout. I verified it is clean, has the same mandatory filteredfs profile set, and has no live coding agent; only repo-local Buck forkservers and hg_moni
+3742338 3742031       00:19 agentctl send tfa-phase2-opus Use /home/newton/work/tfa/fbsource as the test checkout. I verified it is clean, has the same mandatory filteredfs profile set, and has no live coding agent; only repo-local Buck forkservers and hg_moni
+4124589       1  2-05:54:19 /tmp/par_unpack.hg_monitor.runtime.212630.7fa1b38ea3fe7f205b35284a510a5e1d/runtime/bin/hg_monitor#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/hg_monitor --hgmonitortask-user newton --hgmonitortask-path /ho

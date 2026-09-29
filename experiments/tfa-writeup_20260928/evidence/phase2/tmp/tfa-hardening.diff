@@ -1,0 +1,1589 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -93,13 +93,25 @@
+ components and are owned non-writable directories. Diagnostic Codex runs from
+ a dedicated artifact workspace and can read but cannot write the isolated case
+ checkout. The Codex preflight binds both the root-owned Meta launcher and its
+-root-owned signed release manifest before and after reading the version. The
+-installed stable 0.156.0 and latest 0.156.1 manifests are blocked: this host
+-exposes the Btrfs `/tmpvol` subtree through both `/tmp` and `/var/tmp`, while
+-those releases reject the socket directory before their native sandbox starts.
+-An owner-approved build must include upstream `7cec3e110ce6` (mask safe ancestor
+-aliases) and `a708fc683934` (validate Btrfs subvolume device identities) and must
+-pass the unchanged real containment cases before it can become eligible.
++root-owned signed release manifest before and after reading the version. Each
++is a single-link regular file without group or world write permission, and
++every directory from `/` down to it must be a real directory owned by root and
++not group- or world-writable, so no other user can replace a checked path
++before exec. `META_CODEX_RELEASE` must be unset or empty (stable) or exactly
++`latest`; the launcher treats any other value, including `stable`, as a
++version override that silently falls back to its default, so TFA refuses it.
++The version banner must be one reviewed for the requested channel. A
++compatibility key is (version, launcher digest, manifest digest, channel), and
++an eligible entry must also name the SHA-256 of the signed payload that the
++launcher selects from the owner-writable package cache; an entry without one is
++recorded as blocked. The installed stable 0.156.0 and latest 0.156.1 manifests
++are blocked: this host mounts the Btrfs `/tmpvol` subvolume at `/tmp` and
++`/var/tmp`, and mounts the whole filesystem at `/data`, so the same subvolume is
++also reachable as `/data/tmpvol`; those releases reject the socket directory
++before their native sandbox starts. An owner-approved build must include
++upstream `7cec3e110ce6` (mask safe ancestor aliases) and `a708fc683934`
++(validate Btrfs subvolume device identities) and must pass the unchanged real
++containment cases before it can become eligible.
+ Its report is explicitly candidate-only; agent-observed or proposed
+ validation never qualifies a fix. The trusted final response is written outside
+ tool-writable roots; any existing response file must be a single-link regular
+@@ -197,9 +209,31 @@
+ cgroup, removes `META_EXEC_WRAPPER`, and starts the host-identity supervisor.
+ The supervisor verifies cgroup admission, acts as a subreaper, kills and reaps
+ remaining payload descendants, seals their count, the payload return code, and
+-the exact exec child PID, and exits. Tests that need a short execution timeout use a separate bounded
+-readiness phase, so their timeout starts only after the asserted payload state
+-is observable.
++the exact exec child PID, and exits. For Codex, the launcher cannot be run
++through a descriptor because it dispatches on its argv[0] name; the coordinator
++re-checks the preflight inode through an open descriptor immediately before
++exec and relies on the root-owned directory chain for the remaining window. The
++wrapper then opens the payload the launcher selected without following
++symlinks, hashes it through that descriptor, and executes
++`/proc/self/fd/<descriptor>`, so the supervisor runs exactly the hashed inode.
++An agent launch passes the eligible payload digest and the wrapper refuses a
++mismatch before exec; the `--version` bootstrap is unbound but still records the
++digest. The wrapper writes the digest to its sentinel and the coordinator
++checks and records it as `payload_sha256`. Residual risks: a process running as
++the invoking user can still modify the payload between hash and exec or trace
++the run; the preflight version read executes the payload outside the cgroup;
++and the payload resolves its sibling `codex-code-mode-host` from the same
++owner-writable package directory without a digest.
++
++Every payload deadline has one origin, recorded as `deadline_origin`
++(`payload-launcher-spawned`): the moment the launcher process has been spawned,
++after all launch-identity checks. Execution, including any readiness phase,
++ends at that origin plus `timeout_seconds`. When a readiness path is supplied,
++readiness must also arrive by the same origin plus `startup_timeout_seconds`;
++missing that earlier bound is a readiness error, while an execution deadline
++that is no later than the startup bound records a timeout.
++`duration_seconds` is measured from before launch and so includes launch
++checks.
+ Coordinator cleanup invokes `cgroup.kill` first, kills the launch process group
+ as a backstop, records best-effort PID diagnostics, kills again, and requires
+ hierarchical `cgroup.events` `populated` to reach zero after success, failure,
+diff --git a/fbcode/testinfra/tfa/payload_wrapper.py b/fbcode/testinfra/tfa/payload_wrapper.py
+--- a/fbcode/testinfra/tfa/payload_wrapper.py
++++ b/fbcode/testinfra/tfa/payload_wrapper.py
+@@ -6,6 +6,7 @@
+ import fcntl
+ import hashlib
+ import os
++import re
+ import stat
+ import sys
+ from pathlib import Path
+@@ -16,6 +17,8 @@
+ _STATUS_ENV = "TFA_PAYLOAD_STATUS"
+ _SUPERVISOR_ENV = "TFA_PAYLOAD_SUPERVISOR"
+ _EXEC_WRAPPER_ENV = "META_EXEC_WRAPPER"
++_PAYLOAD_SHA256_ENV = "TFA_PAYLOAD_SHA256"
++_UNBOUND_PAYLOAD = "unbound"
+ _EXPECTED_SUPERVISOR_SHA256 = (
+     "47fa14d7ec2d878916af2e10a22ffe764fdee1114cc66c65ee95ae21f7888a3a"
+ )
+@@ -32,7 +35,59 @@
+     return path
+ 
+ 
+-def _write_sentinel(path: Path, cgroup_root: Path) -> None:
++def _payload_identity(metadata: os.stat_result) -> tuple[int, ...]:
++    return (
++        metadata.st_dev,
++        metadata.st_ino,
++        metadata.st_mode,
++        metadata.st_size,
++        metadata.st_mtime_ns,
++        metadata.st_ctime_ns,
++    )
++
++
++def _bind_payload(path: str, expected: str) -> tuple[int, str]:
++    # Hash the payload through one descriptor and exec that descriptor, so the
++    # supervisor runs exactly the inode whose digest was checked.
++    if expected != _UNBOUND_PAYLOAD and re.fullmatch(r"[0-9a-f]{64}", expected) is None:
++        raise SystemExit("payload binding is malformed")
++    descriptor = -1
++    try:
++        descriptor = os.open(
++            path,
++            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
++        )
++        before = os.fstat(descriptor)
++        digest = hashlib.sha256()
++        offset = 0
++        while chunk := os.pread(descriptor, 1 << 20, offset):
++            digest.update(chunk)
++            offset += len(chunk)
++        after = os.fstat(descriptor)
++    except OSError as error:
++        if descriptor >= 0:
++            os.close(descriptor)
++        raise SystemExit(f"payload cannot be bound: {error}") from error
++    value = digest.hexdigest()
++    if (
++        not stat.S_ISREG(before.st_mode)
++        or before.st_uid not in {0, os.geteuid()}
++        or stat.S_IMODE(before.st_mode) & 0o022
++        or _payload_identity(before) != _payload_identity(after)
++        or offset != after.st_size
++        or (expected != _UNBOUND_PAYLOAD and value != expected)
++    ):
++        os.close(descriptor)
++        raise SystemExit("payload identity differs from its reviewed digest")
++    try:
++        os.set_inheritable(descriptor, True)
++    except OSError as error:
++        os.close(descriptor)
++        raise SystemExit(f"payload cannot be inherited: {error}") from error
++    return descriptor, value
++
++
++def _write_sentinel(path: Path, cgroup_root: Path, payload_digest: str | None) -> None:
+     flags = (
+         os.O_WRONLY
+         | os.O_CREAT
+@@ -43,7 +98,10 @@
+     descriptor = os.open(path, flags, 0o600)
+     try:
+         os.fchmod(descriptor, 0o600)
+-        payload = f"{os.getpid()} {cgroup_root}\n".encode()
++        text = f"{os.getpid()} {cgroup_root}\n"
++        if payload_digest is not None:
++            text += f"payload-sha256 {payload_digest}\n"
++        payload = text.encode()
+         if os.write(descriptor, payload) != len(payload):
+             raise SystemExit("payload-wrapper sentinel write was incomplete")
+         os.fsync(descriptor)
+@@ -96,13 +154,22 @@
+     sentinel = _path_from_environment(_SENTINEL_ENV)
+     status_path = _path_from_environment(_STATUS_ENV)
+     supervisor_path = _path_from_environment(_SUPERVISOR_ENV)
++    payload_binding = os.environ.pop(_PAYLOAD_SHA256_ENV, None)
+     os.environ.pop(_EXEC_WRAPPER_ENV, None)
+     payload = cgroup_root / "payload"
+     if not (payload / "cgroup.procs").is_file() or status_path.exists():
+         raise SystemExit("payload-wrapper control paths are not fresh")
+     try:
+         (payload / "cgroup.procs").write_text(f"{os.getpid()}\n")
+-        _write_sentinel(sentinel, cgroup_root)
++    except OSError as error:
++        raise SystemExit(f"payload-wrapper admission failed: {error}") from error
++    upstream = sys.argv[1:]
++    payload_digest = None
++    if payload_binding is not None:
++        payload_descriptor, payload_digest = _bind_payload(upstream[0], payload_binding)
++        upstream[0] = f"/proc/self/fd/{payload_descriptor}"
++    try:
++        _write_sentinel(sentinel, cgroup_root, payload_digest)
+     except OSError as error:
+         raise SystemExit(f"payload-wrapper admission failed: {error}") from error
+     supervisor = _open_supervisor(supervisor_path)
+@@ -111,7 +178,7 @@
+         f"/proc/self/fd/{supervisor}",
+         str(status_path),
+         str(cgroup_root),
+-        *sys.argv[1:],
++        *upstream,
+     ]
+     os.execve(command[0], command, dict(os.environ))
+ 
+diff --git a/fbcode/testinfra/tfa/process.py b/fbcode/testinfra/tfa/process.py
+--- a/fbcode/testinfra/tfa/process.py
++++ b/fbcode/testinfra/tfa/process.py
+@@ -58,7 +58,7 @@
+     "sandbox_workspace_write.exclude_slash_tmp=true",
+ )
+ _CODEX_EXECUTABLE: str = "/usr/local/bin/codex"
+-_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v2"
++_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v3"
+ _CODEX_RELEASE_MANIFESTS: dict[str, tuple[Path, str]] = {
+     "stable": (
+         Path("/usr/local/bin/codex_cli/codex.real"),
+@@ -73,41 +73,61 @@
+     "owner-managed Codex lacks daemon-socket fixes "
+     "7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and "
+     "a708fc683934d7d7ea7560354968fedd2be28581 required for this host's "
+-    "Btrfs /tmp and /var/tmp mount aliases"
++    "Btrfs /tmp, /var/tmp and /data/tmpvol mount aliases"
+ )
+-_CODEX_VERSION_STDERR: tuple[str, ...] = (
+-    "",
+-    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+-    "Using AI Gateway (Azure Codex upstream)\n",
+-    "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
+-    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+-    "Using AI Gateway (OpenAI upstream)\n",
+-    "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
+-    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+-    "Using codex release channel 'latest' from "
+-    "/usr/local/bin/codex_cli/codex_latest.real\n"
+-    "Using AI Gateway (OpenAI upstream)\n",
+-    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
+-    "Using codex release channel 'latest' from "
+-    "/usr/local/bin/codex_cli/codex_latest.real\n"
+-    "Using AI Gateway (Azure Codex upstream)\n",
+-)
+-_CODEX_COMPATIBILITY: dict[tuple[str, str, str, str], tuple[str, str | None]] = {
++# The launcher announces a non-default channel on stderr, so the version banner
++# must match the channel that was requested and not merely some reviewed channel.
++_CODEX_VERSION_STDERR: dict[str, tuple[str, ...]] = {
++    "stable": (
++        "",
++        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++        "Using AI Gateway (Azure Codex upstream)\n",
++        "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
++        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++        "Using AI Gateway (OpenAI upstream)\n",
++    ),
++    "latest": (
++        "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
++        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++        "Using codex release channel 'latest' from "
++        "/usr/local/bin/codex_cli/codex_latest.real\n"
++        "Using AI Gateway (OpenAI upstream)\n",
++        "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++        "Using codex release channel 'latest' from "
++        "/usr/local/bin/codex_cli/codex_latest.real\n"
++        "Using AI Gateway (Azure Codex upstream)\n",
++    ),
++}
++# Keys are (version, launcher sha256, release manifest sha256, channel). Values
++# are (state, blocker, payload sha256). The launcher resolves a separate payload
++# from a user-writable package cache, so an eligible entry must also name the
++# reviewed payload digest that the sealed wrapper verifies before exec.
++_CODEX_COMPATIBILITY: dict[
++    tuple[str, str, str, str], tuple[str, str | None, str | None]
++] = {
+     (
+         "codex-cli 0.156.0",
+         "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
+         "66494455a90b6f45f1fb93c73847d610337a12252a8f10a8a393f20ca213ae72",
+         "stable",
+-    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER),
++    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER, None),
+     (
+         "codex-cli 0.156.1",
+         "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
+         "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5",
+         "latest",
+-    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER),
++    ): ("blocked", _CODEX_SOCKET_ISOLATION_BLOCKER, None),
+ }
+ 
+ 
++_CODEX_UNBOUND_PAYLOAD: str = "unbound"
++_SHA256_PATTERN: re.Pattern[str] = re.compile(r"[0-9a-f]{64}")
++# Owner and root of the trusted Codex installation. Both are module constants so
++# unit tests can exercise every rejection with files they own.
++_TRUSTED_OWNER_UID: int = 0
++_TRUSTED_ROOT: Path = Path("/")
++
++
+ class ProcessError(RuntimeError):
+     pass
+ 
+@@ -287,6 +307,34 @@
+     return "trusted-executable"
+ 
+ 
++def _require_trusted_directory_chain(directory: Path, name: str) -> None:
++    # Every directory from the trusted root down must be a real directory that
++    # only the trusted owner can modify. No other user can then rename or replace
++    # an entry between its verification and the exec that follows it.
++    if not directory.is_absolute() or ".." in directory.parts:
++        raise ProcessError(f"Codex {name} directory chain is unsafe")
++    try:
++        relative = directory.relative_to(_TRUSTED_ROOT)
++    except ValueError as error:
++        raise ProcessError(f"Codex {name} directory chain is unsafe") from error
++    chain = [_TRUSTED_ROOT]
++    for component in relative.parts:
++        chain.append(chain[-1] / component)
++    for current in chain:
++        try:
++            metadata = current.lstat()
++        except OSError as error:
++            raise ProcessError(
++                f"Codex {name} directory chain is unavailable"
++            ) from error
++        if (
++            not stat.S_ISDIR(metadata.st_mode)
++            or metadata.st_uid != _TRUSTED_OWNER_UID
++            or stat.S_IMODE(metadata.st_mode) & 0o022
++        ):
++            raise ProcessError(f"Codex {name} directory chain is unsafe")
++
++
+ def _root_owned_regular_record(path: Path, name: str) -> dict[str, object]:
+     try:
+         metadata = path.lstat()
+@@ -295,11 +343,12 @@
+         raise ProcessError(f"Codex {name} is unavailable") from error
+     if (
+         not stat.S_ISREG(metadata.st_mode)
+-        or metadata.st_uid != 0
++        or metadata.st_uid != _TRUSTED_OWNER_UID
+         or metadata.st_nlink != 1
+         or stat.S_IMODE(metadata.st_mode) & 0o022
+     ):
+         raise ProcessError(f"Codex {name} ownership or mode is unsafe")
++    _require_trusted_directory_chain(path.parent, name)
+     return {
+         **record,
+         "device": metadata.st_dev,
+@@ -313,12 +362,20 @@
+     path = Path(_CODEX_EXECUTABLE)
+     try:
+         metadata = path.lstat()
++    except OSError as error:
++        raise ProcessError("Codex entrypoint is unavailable") from error
++    # Classify the entry by its own lstat before following it, so a regular
++    # file or foreign-owned link is reported as unsafe rather than unavailable.
++    if not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != _TRUSTED_OWNER_UID:
++        raise ProcessError("Codex entrypoint ownership or type is unsafe")
++    try:
+         target = os.readlink(path)
+         resolved = path.resolve(strict=True)
+     except OSError as error:
+         raise ProcessError("Codex entrypoint is unavailable") from error
+-    if not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or "\x00" in target:
++    if "\x00" in target:
+         raise ProcessError("Codex entrypoint ownership or type is unsafe")
++    _require_trusted_directory_chain(path.parent, "entrypoint")
+     return {
+         "owner_uid": metadata.st_uid,
+         "path": str(path),
+@@ -344,7 +401,7 @@
+         raise ProcessError("Codex executable cannot be pinned") from error
+     if (
+         not stat.S_ISREG(metadata.st_mode)
+-        or metadata.st_uid != 0
++        or metadata.st_uid != _TRUSTED_OWNER_UID
+         or metadata.st_nlink != 1
+         or stat.S_IMODE(metadata.st_mode) & 0o022
+         or metadata.st_dev != expected.get("device")
+@@ -357,21 +414,6 @@
+     return descriptor, path_value
+ 
+ 
+-def _verify_launched_codex(
+-    process: subprocess.Popen[bytes], expected: Mapping[str, object]
+-) -> None:
+-    try:
+-        metadata = Path(f"/proc/{process.pid}/exe").stat()
+-    except OSError as error:
+-        raise ProcessError(
+-            "Codex executable identity could not be read after launch"
+-        ) from error
+-    if metadata.st_dev != expected.get("device") or metadata.st_ino != expected.get(
+-        "inode"
+-    ):
+-        raise ProcessError("Codex launched executable differs from its sealed identity")
+-
+-
+ def _validated_codex_launch_record(
+     expected: Mapping[str, object] | None,
+     environment: Mapping[str, str],
+@@ -396,7 +438,15 @@
+ ) -> tuple[str, dict[str, object]]:
+     source = os.environ if environment is None else environment
+     requested = source.get("META_CODEX_RELEASE")
+-    channel = "stable" if requested in {None, ""} else requested
++    # The launcher treats an unset or empty override as its default binary and
++    # accepts "latest" as a channel. It rejects "stable" as a version string
++    # and silently falls back, so that spelling is refused rather than mapped.
++    if requested is None or requested == "":
++        channel = "stable"
++    elif requested == "latest":
++        channel = "latest"
++    else:
++        raise ProcessError("Codex release channel is not reviewed")
+     selected = _CODEX_RELEASE_MANIFESTS.get(channel)
+     if selected is None:
+         raise ProcessError("Codex release channel is not reviewed")
+@@ -485,7 +535,7 @@
+         version.returncode != 0
+         or re.fullmatch(r"codex-cli [0-9]+\.[0-9]+\.[0-9]+\n?", version.stdout) is None
+         or len(version.stdout) > 8192
+-        or version.stderr not in _CODEX_VERSION_STDERR
++        or version.stderr not in _CODEX_VERSION_STDERR.get(release_channel, ())
+     ):
+         write_metadata(
+             identity_path,
+@@ -563,7 +613,7 @@
+         )
+     version_name = version.stdout.strip()
+     binary_sha256 = before.get("sha256")
+-    state, blocker = _CODEX_COMPATIBILITY.get(
++    state, blocker, payload_sha256 = _CODEX_COMPATIBILITY.get(
+         (
+             version_name,
+             str(binary_sha256),
+@@ -573,12 +623,21 @@
+         (
+             "unsupported",
+             "executable version has no reviewed workspace-sandbox compatibility result",
++            None,
+         ),
+     )
++    if state == "eligible" and (
++        not isinstance(payload_sha256, str)
++        or _SHA256_PATTERN.fullmatch(payload_sha256) is None
++    ):
++        state = "blocked"
++        blocker = "eligible Codex compatibility entry lacks a hash-bound payload"
++        payload_sha256 = None
+     record: dict[str, object] = {
+         "blocker": blocker,
+         "entrypoint": entrypoint_before,
+         "executable": _CODEX_EXECUTABLE,
++        "payload_sha256": payload_sha256,
+         "release_channel": release_channel,
+         "release_manifest": release_before,
+         "resolved_executable": before,
+@@ -738,10 +797,12 @@
+ _STATUS_ENV: str = "TFA_PAYLOAD_STATUS"
+ _SUPERVISOR_ENV: str = "TFA_PAYLOAD_SUPERVISOR"
+ _EXEC_WRAPPER_ENV: str = "META_EXEC_WRAPPER"
++_PAYLOAD_SHA256_ENV: str = "TFA_PAYLOAD_SHA256"
++_DEADLINE_ORIGIN: str = "payload-launcher-spawned"
+ _WRAPPER_SHA256: str = (
+-    "c84479b16683919a293e1f2e082cadc2ac60a3e1501cf11515e9b796d6dec6ef"
++    "219667fc018a939ad854465d3dbe0787dd630dcc5758a96c5a354fc6345d67c0"
+ )
+-_WRAPPER_SIZE: int = 4003
++_WRAPPER_SIZE: int = 6539
+ _SUPERVISOR_SHA256: str = (
+     "47fa14d7ec2d878916af2e10a22ffe764fdee1114cc66c65ee95ae21f7888a3a"
+ )
+@@ -964,6 +1025,41 @@
+         return pids
+ 
+ 
++def _codex_payload_binding(
++    identity: Mapping[str, object] | None, arguments: tuple[str, ...]
++) -> str:
++    # Only the version bootstrap runs without a compatibility decision; the
++    # wrapper still records its payload digest. Every agent launch must carry an
++    # eligible preflight identity whose payload digest the wrapper enforces.
++    if identity is None:
++        if arguments != ("--version",):
++            raise ProcessError("Codex launch lacks a preflight identity")
++        return _CODEX_UNBOUND_PAYLOAD
++    payload_sha256 = identity.get("payload_sha256")
++    if (
++        identity.get("state") != "eligible"
++        or identity.get("blocker") is not None
++        or not isinstance(payload_sha256, str)
++        or _SHA256_PATTERN.fullmatch(payload_sha256) is None
++    ):
++        raise ProcessError("Codex launch lacks an eligible hash-bound payload identity")
++    return payload_sha256
++
++
++def _payload_sentinel_digest(path: Path) -> str:
++    try:
++        lines = path.read_text().splitlines()
++    except OSError as error:
++        raise ProcessError("payload-wrapper sentinel is unreadable") from error
++    prefix = "payload-sha256 "
++    if len(lines) != 2 or not lines[1].startswith(prefix):
++        raise ProcessError("payload-wrapper sentinel lacks a payload digest")
++    digest = lines[1].removeprefix(prefix)
++    if _SHA256_PATTERN.fullmatch(digest) is None:
++        raise ProcessError("payload-wrapper sentinel payload digest is malformed")
++    return digest
++
++
+ def _spawn_contained(
+     executable: str,
+     arguments: tuple[str, ...],
+@@ -980,7 +1076,13 @@
+     sentinel = artifact_dir / f"payload-{nonce}.sentinel"
+     status_path = artifact_dir / f"payload-{nonce}.status"
+     child_environment = dict(os.environ) if environment is None else dict(environment)
+-    reserved = {_CGROUP_ENV, _SENTINEL_ENV, _STATUS_ENV, _SUPERVISOR_ENV}
++    reserved = {
++        _CGROUP_ENV,
++        _PAYLOAD_SHA256_ENV,
++        _SENTINEL_ENV,
++        _STATUS_ENV,
++        _SUPERVISOR_ENV,
++    }
+     if reserved.intersection(child_environment):
+         runtime.close()
+         raise ProcessError("payload-wrapper environment is already populated")
+@@ -989,9 +1091,15 @@
+     child_environment[_SENTINEL_ENV] = str(sentinel)
+     child_environment[_STATUS_ENV] = str(status_path)
+     child_environment[_SUPERVISOR_ENV] = str(runtime.supervisor)
+-    if executable == "/usr/local/bin/codex":
++    if executable == _CODEX_EXECUTABLE:
+         try:
++            payload_binding = _codex_payload_binding(codex_identity, arguments)
+             resolved = _validated_codex_launch_record(codex_identity, child_environment)
++            # The launcher dispatches on its argv[0] basename, so it cannot be
++            # executed through this descriptor. The descriptor re-checks the
++            # verified inode immediately before exec, and the root-owned
++            # directory chain prevents any other user from replacing the path
++            # in between. The payload it selects is bound by the wrapper.
+             descriptor, launch_executable = _open_verified_codex_launcher(resolved)
+             runtime.descriptors += (descriptor,)
+         except BaseException:
+@@ -999,10 +1107,10 @@
+             raise
+         launch_arguments = arguments
+         child_environment[_EXEC_WRAPPER_ENV] = str(runtime.wrapper)
++        child_environment[_PAYLOAD_SHA256_ENV] = payload_binding
+     else:
+         launch_executable = str(runtime.wrapper)
+         launch_arguments = (executable, *arguments)
+-        resolved = None
+     process: subprocess.Popen[bytes] | None = None
+     try:
+         process = TrustedSubprocessWithList.Popen(
+@@ -1014,10 +1122,6 @@
+             env=child_environment,
+             start_new_session=True,
+         )
+-        if executable == "/usr/local/bin/codex":
+-            if resolved is None:
+-                raise ProcessError("Codex executable identity is missing")
+-            _verify_launched_codex(process, resolved)
+     except BaseException:
+         if process is not None and process.poll() is None:
+             process.kill()
+@@ -1065,9 +1169,8 @@
+ 
+ 
+ def _wait_for_readiness(
+-    process: subprocess.Popen[bytes], path: Path, timeout_seconds: float
+-) -> dict[str, object]:
+-    deadline = time.monotonic() + timeout_seconds
++    process: subprocess.Popen[bytes], path: Path, deadline: float
++) -> dict[str, object] | None:
+     while True:
+         try:
+             metadata = path.lstat()
+@@ -1082,7 +1185,7 @@
+         if process.poll() is not None:
+             raise ProcessError("managed payload exited before readiness")
+         if time.monotonic() >= deadline:
+-            raise ProcessError("managed payload readiness timed out")
++            return None
+         time.sleep(0.02)
+ 
+ 
+@@ -1120,6 +1223,7 @@
+             raise ProcessError("cannot inspect payload readiness") from error
+         else:
+             raise ProcessError("payload readiness path is not fresh")
++    startup_timeout = startup_timeout_seconds if readiness_path is not None else None
+     artifact_dir.mkdir(parents=True, exist_ok=True)
+     environment_snapshot = (
+         dict(os.environ) if environment is None else dict(environment)
+@@ -1135,6 +1239,11 @@
+         codex_identity_path = Path(str(codex_preflight["path"]))
+         verify_regular_file_record(codex_identity_path, codex_preflight)
+         codex_identity = json.loads(codex_identity_path.read_text())
++    payload_binding = (
++        _codex_payload_binding(codex_identity, arguments)
++        if executable == _CODEX_EXECUTABLE
++        else None
++    )
+     stdout_path = artifact_dir / "stdout.txt"
+     stderr_path = artifact_dir / "stderr.txt"
+     metadata_path = artifact_dir / "metadata.json"
+@@ -1148,6 +1257,8 @@
+             "cwd": str(cwd),
+             "state": "running",
+             "started_wall_time_ns": started_wall_time_ns,
++            "deadline_origin": _DEADLINE_ORIGIN,
++            "startup_timeout_seconds": startup_timeout,
+             "timeout_seconds": timeout_seconds,
+             "codex_preflight": codex_preflight,
+         },
+@@ -1161,6 +1272,7 @@
+     payload_pid: int | None = None
+     payload_runtime: _PinnedRuntime | None = None
+     readiness_record: dict[str, object] | None = None
++    payload_digest: str | None = None
+     descendants_terminated = 0
+     containment = "uninitialized"
+     with (
+@@ -1186,6 +1298,13 @@
+                 artifact_dir,
+                 codex_identity,
+             )
++            # The single origin of every payload deadline: the launcher has been
++            # spawned, after all launch-identity checks. Execution, including any
++            # readiness phase, ends at origin + timeout_seconds; readiness must
++            # also arrive by origin + startup_timeout_seconds, and the execution
++            # deadline wins a tie.
++            payload_started = time.monotonic()
++            payload_deadline = payload_started + timeout_seconds
+             process_group = os.getpgid(process.pid)
+             write_metadata(
+                 metadata_path,
+@@ -1204,22 +1323,23 @@
+                     "process_group": process_group,
+                     "state": "running",
+                     "started_wall_time_ns": started_wall_time_ns,
++                    "deadline_origin": _DEADLINE_ORIGIN,
++                    "startup_timeout_seconds": startup_timeout,
+                     "timeout_seconds": timeout_seconds,
+                     "codex_preflight": codex_preflight,
+                 },
+             )
+             if readiness_path is not None:
++                startup_deadline = payload_started + startup_timeout_seconds
+                 readiness_record = _wait_for_readiness(
+                     process,
+                     readiness_path,
+-                    startup_timeout_seconds,
++                    min(startup_deadline, payload_deadline),
+                 )
+-                # Readiness is the explicit end of startup. Preserve the full
+-                # execution deadline after that barrier instead of charging
+-                # variable interpreter and scheduler startup against it.
+-                payload_deadline = time.monotonic() + timeout_seconds
+-            else:
+-                payload_deadline = started + timeout_seconds
++                if readiness_record is None:
++                    if startup_deadline < payload_deadline:
++                        raise ProcessError("managed payload readiness timed out")
++                    timed_out = True
+             remaining = payload_deadline - time.monotonic()
+             if timed_out or remaining <= 0:
+                 timed_out = True
+@@ -1259,6 +1379,13 @@
+             )
+             if returncode != reported_returncode:
+                 raise ProcessError("managed launcher changed the payload return code")
++            if payload_binding is not None:
++                payload_digest = _payload_sentinel_digest(payload_sentinel)
++                if (
++                    payload_binding != _CODEX_UNBOUND_PAYLOAD
++                    and payload_digest != payload_binding
++                ):
++                    raise ProcessError("Codex payload differs from its reviewed digest")
+             returncode = reported_returncode
+             descendants_terminated += reported_descendants
+     duration = time.monotonic() - started
+@@ -1283,6 +1410,8 @@
+             "descendants_terminated": descendants_terminated,
+             "process_group": process_group,
+             "timed_out": timed_out,
++            "deadline_origin": _DEADLINE_ORIGIN,
++            "startup_timeout_seconds": startup_timeout,
+             "timeout_seconds": timeout_seconds,
+             "started_wall_time_ns": started_wall_time_ns,
+             "codex_preflight": codex_preflight,
+@@ -1300,6 +1429,8 @@
+             ),
+             "payload_runtime": payload_runtime_identity(),
+             "payload_pid": payload_pid,
++            "payload_sha256": payload_digest,
++            "payload_binding": payload_binding,
+             "readiness": readiness_record,
+         },
+     )
+diff --git a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+--- a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
++++ b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+@@ -214,7 +214,7 @@
+         ("-c", script),
+         root,
+         root / "run",
+-        0.3 if scenario == "timeout" else 10,
++        5 if scenario == "timeout" else 10,
+         readiness_path=ready,
+         startup_timeout_seconds=10,
+     )
+diff --git a/fbcode/testinfra/tfa/tests/test_production_containment.py b/fbcode/testinfra/tfa/tests/test_production_containment.py
+--- a/fbcode/testinfra/tfa/tests/test_production_containment.py
++++ b/fbcode/testinfra/tfa/tests/test_production_containment.py
+@@ -3218,6 +3218,15 @@
+                 latest_identity["release_manifest"]["sha256"],
+                 "4b776a3e1d72706ab648db6fb24f5baa1a1ceaec2d4e3f07bd408db4dc0ecab5",
+             )
++            self.assertIsNone(latest_identity["payload_sha256"])
++            for required in (
++                "7cec3e110ce6dc5c14704dfa06f6db9c23a530fc",
++                "a708fc683934d7d7ea7560354968fedd2be28581",
++                "/tmp",
++                "/var/tmp",
++                "/data/tmpvol",
++            ):
++                self.assertIn(required, latest_identity["blocker"])
+             environment = diagnostic_environment(root / "logs")
+             environment["META_EXEC_WRAPPER"] = "/bin/false"
+             result = run_process(
+@@ -3237,9 +3246,22 @@
+             self.assertTrue(metadata["containment_empty"])
+             sentinel = Path(metadata["payload_sentinel"]["path"])
+             status = Path(metadata["payload_status"]["path"])
+-            sentinel_pid, sentinel_cgroup = sentinel.read_text().split()
++            admission, payload_line = sentinel.read_text().splitlines()
++            sentinel_pid, sentinel_cgroup = admission.split()
+             self.assertTrue(sentinel_pid.isdigit())
+             self.assertEqual(sentinel_cgroup, metadata["cgroup"])
++            # The bootstrap is unbound, but the wrapper still hashes the signed
++            # payload it executes; that digest is not the launcher's.
++            self.assertRegex(payload_line, r"\Apayload-sha256 [0-9a-f]{64}\Z")
++            self.assertEqual(metadata["payload_binding"], "unbound")
++            self.assertEqual(
++                metadata["payload_sha256"], payload_line.removeprefix("payload-sha256 ")
++            )
++            self.assertNotEqual(
++                metadata["payload_sha256"],
++                "71b8f5bde99ce8b4cff6ce7c7cbe79a0fe8d6bd36a4427e5d308bda4d065ebf0",
++            )
++            self.assertEqual(metadata["deadline_origin"], "payload-launcher-spawned")
+             returncode, descendants, payload_pid = status.read_text().split()
+             self.assertEqual((returncode, descendants), ("0", "0"))
+             self.assertEqual(int(payload_pid), metadata["payload_pid"])
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -5,12 +5,16 @@
+ import fcntl
+ import functools
+ import hashlib
++import importlib.util
+ import json
+ import os
+ import stat
++import subprocess
+ import tempfile
+ import time
++import types
+ import unittest
++import uuid
+ from collections.abc import Callable
+ from contextlib import ExitStack
+ from dataclasses import replace
+@@ -433,6 +437,23 @@
+         return load_manifest(path).case("asyncssl")
+ 
+ 
++def _assert_socket_isolation_blocker_text(
++    test: unittest.TestCase, blocker: object
++) -> None:
++    # Independent of the production constant: the recorded blocker must name
++    # both upstream fixes and every mount alias that needs them.
++    if not isinstance(blocker, str):
++        raise AssertionError("socket-isolation blocker is not text")
++    for required in (
++        "7cec3e110ce6dc5c14704dfa06f6db9c23a530fc",
++        "a708fc683934d7d7ea7560354968fedd2be28581",
++        "/tmp",
++        "/var/tmp",
++        "/data/tmpvol",
++    ):
++        test.assertIn(required, blocker)
++
++
+ def _approving_goalpost_assessment() -> dict[str, str]:
+     return {
+         "assertion_weakening": "NOT_FOUND",
+@@ -1196,10 +1217,21 @@
+             .with_name("hermit-import-compatibility.v1.json")
+             .read_text()
+         )
++        # The packaged resource is rebuilt with fb_build_info stamps (revision,
++        # path, build time), so its digest differs from the reviewed provenance
++        # digest and the gate must refuse it before any compatibility decision.
++        resource = hermit_module._packaged_resource(
++            hermit_module._PACKAGED_HERMIT_RESOURCE
++        )
++        resource_sha256 = hashlib.sha256(resource.read_bytes()).hexdigest()
++        self.assertNotEqual(resource_sha256, PACKAGED_HERMIT_RESOURCE_SHA256)
+         with tempfile.TemporaryDirectory() as temporary:
+             destination = Path(temporary) / "runtime" / "hermit"
+             with self.assertRaisesRegex(
+-                HermitError, "packaged Hermit compatibility is BLOCKED"
++                HermitError,
++                "packaged Hermit compatibility is PROVENANCE_MISMATCH: "
++                f"expected revision={case.hermit_revision} "
++                f"sha256={case.hermit_sha256}; ",
+             ):
+                 packaged_hermit_argv(
+                     case.pass_argv,
+@@ -1207,11 +1239,18 @@
+                     case.hermit_sha256,
+                     destination,
+                 )
++            self.assertFalse(os.path.lexists(destination))
+             identity = json.loads((destination.parent / "identity.json").read_text())
+-            self.assertEqual(identity["state"], "BLOCKED")
++            self.assertEqual(identity["state"], "PROVENANCE_MISMATCH")
+             self.assertEqual(
+-                identity["packaged_executable"]["sha256"],
+-                PACKAGED_HERMIT_RESOURCE_SHA256,
++                identity["expected_witness"],
++                {"revision": case.hermit_revision, "sha256": case.hermit_sha256},
++            )
++            self.assertEqual(identity["packaged_revision"], PACKAGED_HERMIT_REVISION)
++            self.assertEqual(identity["packaged_executable"]["sha256"], resource_sha256)
++            self.assertEqual(
++                identity["packaged_executable"]["state"],
++                value["packaged_executable"]["state"],
+             )
+             self.assertEqual(
+                 identity["packaged_executable"]["configured_target"],
+@@ -1287,7 +1326,7 @@
+                     "testinfra.tfa.process._codex_environment_preflight",
+                     side_effect=ProcessError(
+                         "Codex native workspace sandbox preflight failed "
+-                        "(tfa.codex-environment-preflight.v2; codex-cli 0.156.0; "
++                        "(tfa.codex-environment-preflight.v3; codex-cli 0.156.0; "
+                         "state=blocked): owner-managed Codex lacks daemon-socket fixes"
+                     ),
+                 ) as preflight,
+@@ -1354,7 +1393,7 @@
+                     root, root / "preflight", {}
+                 )
+             identity = json.loads((root / "preflight/identity.json").read_text())
+-            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v2")
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v3")
+             self.assertEqual(identity["version"], "codex-cli 0.156.0")
+             self.assertEqual(identity["state"], "blocked")
+             self.assertEqual(identity["release_channel"], "stable")
+@@ -1363,6 +1402,8 @@
+                 identity["blocker"],
+                 process_module._CODEX_SOCKET_ISOLATION_BLOCKER,
+             )
++            _assert_socket_isolation_blocker_text(self, identity["blocker"])
++            self.assertIsNone(identity["payload_sha256"])
+ 
+     def test_codex_preflight_records_version_command_startup_failure(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -1397,7 +1438,7 @@
+                 ),
+                 self.assertRaisesRegex(
+                     ProcessError,
+-                    "tfa.codex-environment-preflight.v2.*"
++                    "tfa.codex-environment-preflight.v3.*"
+                     "version command could not start",
+                 ),
+             ):
+@@ -1407,7 +1448,7 @@
+             identity = json.loads((root / "preflight/identity.json").read_text())
+             self.assertEqual(identity["state"], "startup-failed")
+             self.assertIsNone(identity["version"])
+-            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v2")
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v3")
+ 
+     def test_codex_preflight_classifies_owner_managed_latest_as_blocked(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -1415,7 +1456,7 @@
+             version = MagicMock(
+                 returncode=0,
+                 stdout="codex-cli 0.156.1\n",
+-                stderr=process_module._CODEX_VERSION_STDERR[-1],
++                stderr=process_module._CODEX_VERSION_STDERR["latest"][-1],
+             )
+             manifest = {
+                 "path": "/usr/local/bin/codex_cli/codex_latest.real",
+@@ -1460,6 +1501,8 @@
+             self.assertEqual(
+                 identity["blocker"], process_module._CODEX_SOCKET_ISOLATION_BLOCKER
+             )
++            _assert_socket_isolation_blocker_text(self, identity["blocker"])
++            self.assertIsNone(identity["payload_sha256"])
+ 
+     def test_codex_preflight_rejects_release_manifest_race(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -1600,7 +1643,7 @@
+             version = MagicMock(
+                 returncode=0,
+                 stdout="codex-cli 9.9.9\n",
+-                stderr=process_module._CODEX_VERSION_STDERR[1],
++                stderr=process_module._CODEX_VERSION_STDERR["stable"][1],
+             )
+             executable = {
+                 "kind": "file",
+@@ -1637,7 +1680,8 @@
+             self.assertEqual(identity["state"], "unsupported")
+             self.assertEqual(identity["version"], "codex-cli 9.9.9")
+             self.assertEqual(
+-                identity["version_stderr"], process_module._CODEX_VERSION_STDERR[1]
++                identity["version_stderr"],
++                process_module._CODEX_VERSION_STDERR["stable"][1],
+             )
+             self.assertEqual(identity["resolved_executable"], executable)
+             self.assertEqual(identity["release_manifest"], manifest)
+@@ -2580,9 +2624,11 @@
+                 ("-c", script),
+                 root,
+                 root / "run",
+-                0.5,
++                # One deadline origin covers readiness and execution, so the
++                # grandchild must become ready well inside the execution bound.
++                5,
+                 readiness_path=ready,
+-                startup_timeout_seconds=0.5,
++                startup_timeout_seconds=5,
+             )
+             self.assertTrue(result.timed_out)
+             self.assertTrue(ready.exists())
+@@ -2923,6 +2969,650 @@
+             )
+ 
+ 
++def _load_payload_wrapper() -> types.ModuleType:
++    path = Path(process_module.__file__).with_name("payload_wrapper.py")
++    spec = importlib.util.spec_from_file_location("tfa_payload_wrapper_test", path)
++    if spec is None or spec.loader is None:
++        raise AssertionError("payload wrapper source cannot be loaded")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _open_descriptor_count() -> int:
++    return len(os.listdir("/proc/self/fd"))
++
++
++class _FakeClock:
++    def __init__(self, now: float) -> None:
++        self.now = now
++
++    def monotonic(self) -> float:
++        return self.now
++
++    def time_ns(self) -> int:
++        return time.time_ns()
++
++    def sleep(self, seconds: float) -> None:
++        self.now += seconds
++
++
++class CodexIdentityHardeningTest(unittest.TestCase):
++    def setUp(self) -> None:
++        temporary = tempfile.TemporaryDirectory()
++        self.addCleanup(temporary.cleanup)
++        self.root = Path(temporary.name).resolve()
++        os.chmod(self.root, 0o755)
++        for name, value in (
++            ("_TRUSTED_OWNER_UID", os.getuid()),
++            ("_TRUSTED_ROOT", self.root),
++        ):
++            patcher = patch.object(process_module, name, value)
++            patcher.start()
++            self.addCleanup(patcher.stop)
++
++    def _trusted_file(
++        self, relative: str, content: bytes = b"codex\n", mode: int = 0o755
++    ) -> Path:
++        path = self.root / relative
++        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
++        path.write_bytes(content)
++        os.chmod(path, mode)
++        return path
++
++    def test_trusted_record_accepts_owner_only_file_as_control(self) -> None:
++        path = self._trusted_file("bin/codex")
++        record = process_module._root_owned_regular_record(path, "executable")
++        self.assertEqual(record["path"], str(path))
++        self.assertEqual(record["sha256"], hashlib.sha256(b"codex\n").hexdigest())
++        self.assertEqual(record["owner_uid"], os.getuid())
++        self.assertEqual(record["link_count"], 1)
++
++    def test_trusted_record_rejects_foreign_owner(self) -> None:
++        path = self._trusted_file("bin/codex")
++        with (
++            patch.object(process_module, "_TRUSTED_OWNER_UID", os.getuid() + 1),
++            self.assertRaisesRegex(ProcessError, "ownership or mode is unsafe"),
++        ):
++            process_module._root_owned_regular_record(path, "executable")
++
++    def test_trusted_record_rejects_additional_hard_link(self) -> None:
++        path = self._trusted_file("bin/codex")
++        alias = path.with_name("alias")
++        os.link(path, alias)
++        for candidate in (path, alias):
++            with self.assertRaisesRegex(ProcessError, "ownership or mode is unsafe"):
++                process_module._root_owned_regular_record(candidate, "executable")
++
++    def test_trusted_record_rejects_group_or_world_writable_mode(self) -> None:
++        for mode in (0o775, 0o757, 0o664, 0o646):
++            with self.subTest(mode=oct(mode)):
++                path = self._trusted_file(f"bin/codex-{mode:o}", mode=mode)
++                with self.assertRaisesRegex(
++                    ProcessError, "ownership or mode is unsafe"
++                ):
++                    process_module._root_owned_regular_record(path, "executable")
++
++    def test_trusted_record_rejects_symlink(self) -> None:
++        target = self._trusted_file("bin/codex")
++        link = target.with_name("link")
++        link.symlink_to(target)
++        with self.assertRaisesRegex(
++            ProcessError, "Codex executable (is unavailable|ownership or mode)"
++        ):
++            process_module._root_owned_regular_record(link, "executable")
++
++    def test_trusted_record_rejects_writable_parent_directory(self) -> None:
++        path = self._trusted_file("shared/bin/codex")
++        process_module._root_owned_regular_record(path, "executable")
++        for mode in (0o777, 0o775, 0o757):
++            with self.subTest(mode=oct(mode)):
++                os.chmod(self.root / "shared", mode)
++                with self.assertRaisesRegex(
++                    ProcessError, "executable directory chain is unsafe"
++                ):
++                    process_module._root_owned_regular_record(path, "executable")
++        os.chmod(self.root / "shared", 0o755)
++
++    def test_trusted_record_rejects_symlinked_parent_directory(self) -> None:
++        self._trusted_file("real/codex")
++        (self.root / "alias").symlink_to(self.root / "real")
++        with self.assertRaisesRegex(
++            ProcessError, "executable directory chain is unsafe"
++        ):
++            process_module._root_owned_regular_record(
++                self.root / "alias" / "codex", "executable"
++            )
++
++    def test_directory_chain_rejects_foreign_owner_and_escapes(self) -> None:
++        directory = self.root / "bin"
++        directory.mkdir(mode=0o755)
++        process_module._require_trusted_directory_chain(directory, "executable")
++        with (
++            patch.object(process_module, "_TRUSTED_OWNER_UID", os.getuid() + 1),
++            self.assertRaisesRegex(ProcessError, "directory chain is unsafe"),
++        ):
++            process_module._require_trusted_directory_chain(directory, "executable")
++        for candidate in (
++            Path("bin"),
++            self.root / "bin" / ".." / "bin",
++            self.root.parent,
++        ):
++            with (
++                self.subTest(candidate=str(candidate)),
++                self.assertRaisesRegex(ProcessError, "directory chain is unsafe"),
++            ):
++                process_module._require_trusted_directory_chain(candidate, "executable")
++        with self.assertRaisesRegex(ProcessError, "directory chain is unavailable"):
++            process_module._require_trusted_directory_chain(
++                self.root / "missing", "executable"
++            )
++
++    def test_release_manifest_requires_exact_channel_and_identity(self) -> None:
++        stable = self._trusted_file("cli/codex.real", b"stable\n")
++        latest = self._trusted_file("cli/codex_latest.real", b"latest\n")
++        manifests = {
++            "stable": (stable, hashlib.sha256(b"stable\n").hexdigest()),
++            "latest": (latest, hashlib.sha256(b"latest\n").hexdigest()),
++        }
++        with patch.object(process_module, "_CODEX_RELEASE_MANIFESTS", manifests):
++            for environment, channel, path in (
++                ({}, "stable", stable),
++                ({"META_CODEX_RELEASE": ""}, "stable", stable),
++                ({"META_CODEX_RELEASE": "latest"}, "latest", latest),
++            ):
++                with self.subTest(environment=environment):
++                    selected, record = process_module._codex_release_identity(
++                        environment
++                    )
++                    self.assertEqual(selected, channel)
++                    self.assertEqual(record["path"], str(path))
++            for requested in (
++                "stable",
++                "LATEST",
++                " latest",
++                "latest\n",
++                "0.157.0",
++            ):
++                with (
++                    self.subTest(requested=requested),
++                    self.assertRaisesRegex(
++                        ProcessError, "release channel is not reviewed"
++                    ),
++                ):
++                    process_module._codex_release_identity(
++                        {"META_CODEX_RELEASE": requested}
++                    )
++
++    def test_release_manifest_rejects_digest_path_mode_and_link_drift(self) -> None:
++        stable = self._trusted_file("cli/codex.real", b"stable\n")
++        digest = hashlib.sha256(b"stable\n").hexdigest()
++        with patch.object(
++            process_module, "_CODEX_RELEASE_MANIFESTS", {"stable": (stable, "0" * 64)}
++        ):
++            with self.assertRaisesRegex(ProcessError, "manifest identity differs"):
++                process_module._codex_release_identity({})
++        with patch.object(
++            process_module, "_CODEX_RELEASE_MANIFESTS", {"stable": (stable, digest)}
++        ):
++            process_module._codex_release_identity({})
++            with patch.object(
++                process_module,
++                "regular_file_record",
++                return_value={
++                    "kind": "file",
++                    "mode": 0o755,
++                    "path": str(stable.with_name("other")),
++                    "sha256": digest,
++                    "size": 7,
++                },
++            ):
++                with self.assertRaisesRegex(ProcessError, "manifest identity differs"):
++                    process_module._codex_release_identity({})
++            os.chmod(stable, 0o664)
++            with self.assertRaisesRegex(ProcessError, "ownership or mode is unsafe"):
++                process_module._codex_release_identity({})
++            os.chmod(stable, 0o755)
++            os.link(stable, stable.with_name("codex.real.alias"))
++            with self.assertRaisesRegex(ProcessError, "ownership or mode is unsafe"):
++                process_module._codex_release_identity({})
++
++    def test_entrypoint_requires_trusted_symlink(self) -> None:
++        target = self._trusted_file("cli/codex")
++        entrypoint = self.root / "bin" / "codex"
++        entrypoint.parent.mkdir(mode=0o755)
++        entrypoint.symlink_to(target)
++        with patch.object(process_module, "_CODEX_EXECUTABLE", str(entrypoint)):
++            identity = process_module._codex_entrypoint_identity()
++            self.assertEqual(identity["resolved_path"], str(target))
++            with (
++                patch.object(process_module, "_TRUSTED_OWNER_UID", os.getuid() + 1),
++                self.assertRaisesRegex(ProcessError, "ownership or type is unsafe"),
++            ):
++                process_module._codex_entrypoint_identity()
++            os.chmod(entrypoint.parent, 0o777)
++            with self.assertRaisesRegex(
++                ProcessError, "entrypoint directory chain is unsafe"
++            ):
++                process_module._codex_entrypoint_identity()
++            os.chmod(entrypoint.parent, 0o755)
++            entrypoint.unlink()
++            entrypoint.write_bytes(b"not a symlink\n")
++            with self.assertRaisesRegex(ProcessError, "ownership or type is unsafe"):
++                process_module._codex_entrypoint_identity()
++
++    def test_launcher_descriptor_rejects_changed_identity(self) -> None:
++        path = self._trusted_file("cli/codex")
++        record = process_module._root_owned_regular_record(path, "executable")
++        descriptor, launch_path = process_module._open_verified_codex_launcher(record)
++        os.close(descriptor)
++        self.assertEqual(launch_path, str(path))
++        before = _open_descriptor_count()
++        os.chmod(path, 0o700)
++        with self.assertRaisesRegex(ProcessError, "changed before launch"):
++            process_module._open_verified_codex_launcher(record)
++        os.chmod(path, 0o755)
++        with path.open("ab") as stream:
++            stream.write(b"grown\n")
++        with self.assertRaisesRegex(ProcessError, "changed before launch"):
++            process_module._open_verified_codex_launcher(record)
++        replacement = path.with_name("replacement")
++        replacement.write_bytes(b"codex\n")
++        os.chmod(replacement, 0o755)
++        os.replace(replacement, path)
++        with self.assertRaisesRegex(ProcessError, "changed before launch"):
++            process_module._open_verified_codex_launcher(record)
++        link = path.with_name("link")
++        link.symlink_to(path)
++        with self.assertRaisesRegex(ProcessError, "cannot be pinned"):
++            process_module._open_verified_codex_launcher({**record, "path": str(link)})
++        self.assertEqual(_open_descriptor_count(), before)
++
++    def _preflight_with_entry(
++        self, value: tuple[str, str | None, str | None]
++    ) -> tuple[dict[str, object], ProcessError | None]:
++        executable = {
++            "kind": "file",
++            "path": "/usr/local/bin/codex_cli/codex",
++            "sha256": "0" * 64,
++        }
++        manifest = {"path": "/usr/local/bin/codex_cli/codex.real", "sha256": "1" * 64}
++        key = ("codex-cli 9.9.9", "0" * 64, "1" * 64, "stable")
++        version = MagicMock(returncode=0, stdout="codex-cli 9.9.9\n", stderr="")
++        output = self.root / f"preflight-{uuid.uuid4().hex}"
++        error: ProcessError | None = None
++        with (
++            patch.dict(process_module._CODEX_COMPATIBILITY, {key: value}),
++            patch.object(TrustedSubprocessWithList, "run", return_value=version),
++            patch(
++                "testinfra.tfa.process._codex_entrypoint_identity",
++                return_value={"resolved_path": executable["path"]},
++            ),
++            patch(
++                "testinfra.tfa.process._root_owned_regular_record",
++                return_value=executable,
++            ),
++            patch(
++                "testinfra.tfa.process._codex_release_identity",
++                return_value=("stable", manifest),
++            ),
++        ):
++            try:
++                process_module._codex_environment_preflight(self.root, output, {})
++            except ProcessError as raised:
++                error = raised
++        self.assertNotIn(key, process_module._CODEX_COMPATIBILITY)
++        return json.loads((output / "identity.json").read_text()), error
++
++    def test_eligible_entry_requires_hash_bound_payload(self) -> None:
++        for payload in (None, "", "A" * 64, "0" * 63, "g" * 64):
++            with self.subTest(payload=payload):
++                identity, error = self._preflight_with_entry(
++                    ("eligible", None, payload)
++                )
++                self.assertIsNotNone(error)
++                self.assertEqual(identity["state"], "blocked")
++                self.assertEqual(
++                    identity["blocker"],
++                    "eligible Codex compatibility entry lacks a hash-bound payload",
++                )
++                self.assertIsNone(identity["payload_sha256"])
++        identity, error = self._preflight_with_entry(("eligible", None, "a" * 64))
++        self.assertIsNone(error)
++        self.assertEqual(identity["state"], "eligible")
++        self.assertEqual(identity["payload_sha256"], "a" * 64)
++
++    def test_production_compatibility_entries_stay_blocked_and_unbound(self) -> None:
++        self.assertEqual(len(process_module._CODEX_COMPATIBILITY), 2)
++        for key, value in process_module._CODEX_COMPATIBILITY.items():
++            with self.subTest(key=key):
++                self.assertEqual(
++                    value,
++                    ("blocked", process_module._CODEX_SOCKET_ISOLATION_BLOCKER, None),
++                )
++                _assert_socket_isolation_blocker_text(self, value[1])
++
++    def test_preflight_requires_banner_of_requested_channel(self) -> None:
++        executable = {"path": "/usr/local/bin/codex_cli/codex", "sha256": "0" * 64}
++        for channel, stderr in (
++            ("latest", ""),
++            ("latest", process_module._CODEX_VERSION_STDERR["stable"][1]),
++            ("stable", process_module._CODEX_VERSION_STDERR["latest"][0]),
++        ):
++            with self.subTest(channel=channel, stderr=stderr):
++                output = self.root / f"preflight-{uuid.uuid4().hex}"
++                version = MagicMock(
++                    returncode=0, stdout="codex-cli 0.156.1\n", stderr=stderr
++                )
++                with (
++                    patch.object(
++                        TrustedSubprocessWithList, "run", return_value=version
++                    ),
++                    patch(
++                        "testinfra.tfa.process._codex_entrypoint_identity",
++                        return_value={"resolved_path": executable["path"]},
++                    ),
++                    patch(
++                        "testinfra.tfa.process._root_owned_regular_record",
++                        return_value=executable,
++                    ),
++                    patch(
++                        "testinfra.tfa.process._codex_release_identity",
++                        return_value=(channel, {"sha256": "1" * 64}),
++                    ),
++                    self.assertRaisesRegex(ProcessError, "invalid result"),
++                ):
++                    process_module._codex_environment_preflight(self.root, output, {})
++                identity = json.loads((output / "identity.json").read_text())
++                self.assertEqual(identity["state"], "version-failed")
++                self.assertEqual(identity["release_channel"], channel)
++
++    def test_payload_binding_requires_eligible_hash_bound_identity(self) -> None:
++        binding = process_module._codex_payload_binding
++        self.assertEqual(binding(None, ("--version",)), "unbound")
++        eligible = {"blocker": None, "payload_sha256": "a" * 64, "state": "eligible"}
++        self.assertEqual(binding(eligible, ("exec",)), "a" * 64)
++        with self.assertRaisesRegex(ProcessError, "lacks a preflight identity"):
++            binding(None, ("exec", "prompt"))
++        for identity in (
++            {**eligible, "state": "blocked"},
++            {**eligible, "blocker": "blocked"},
++            {**eligible, "payload_sha256": None},
++            {**eligible, "payload_sha256": "A" * 64},
++            {**eligible, "payload_sha256": "unbound"},
++        ):
++            with (
++                self.subTest(identity=identity),
++                self.assertRaisesRegex(ProcessError, "eligible hash-bound payload"),
++            ):
++                binding(identity, ("exec",))
++
++    def test_spawn_refuses_unbound_codex_identity_before_popen(self) -> None:
++        runtime = MagicMock(wrapper=Path("/wrapper"), supervisor=Path("/supervisor"))
++        blocked = {
++            "blocker": process_module._CODEX_SOCKET_ISOLATION_BLOCKER,
++            "payload_sha256": None,
++            "state": "blocked",
++        }
++        for identity, environment, message in (
++            (blocked, {}, "eligible hash-bound payload"),
++            (None, {}, "lacks a preflight identity"),
++            (
++                {**blocked, "blocker": None, "state": "eligible"},
++                {"TFA_PAYLOAD_SHA256": "a" * 64},
++                "already populated",
++            ),
++        ):
++            with (
++                self.subTest(message=message),
++                patch.object(process_module, "_pinned_runtime", return_value=runtime),
++                patch.object(TrustedSubprocessWithList, "Popen") as popen,
++                patch.object(process_module, "_open_verified_codex_launcher") as opened,
++                self.assertRaisesRegex(ProcessError, message),
++            ):
++                process_module._spawn_contained(
++                    "/usr/local/bin/codex",
++                    ("exec", "prompt"),
++                    self.root,
++                    MagicMock(),
++                    MagicMock(),
++                    environment,
++                    MagicMock(),
++                    self.root,
++                    identity,
++                )
++            popen.assert_not_called()
++            opened.assert_not_called()
++            runtime.close.assert_called()
++            runtime.close.reset_mock()
++
++    def test_payload_sentinel_digest_requires_one_exact_digest_line(self) -> None:
++        sentinel = self.root / "sentinel"
++        digest = "b" * 64
++        sentinel.write_text(f"1 /cgroup\npayload-sha256 {digest}\n")
++        self.assertEqual(process_module._payload_sentinel_digest(sentinel), digest)
++        for content, message in (
++            ("1 /cgroup\n", "lacks a payload digest"),
++            (f"1 /cgroup\npayload-sha256 {digest}\nextra\n", "lacks a payload digest"),
++            (f"1 /cgroup\npayload-sha512 {digest}\n", "lacks a payload digest"),
++            (f"1 /cgroup\npayload-sha256 {digest.upper()}\n", "malformed"),
++            ("1 /cgroup\npayload-sha256 unbound\n", "malformed"),
++        ):
++            with self.subTest(content=content):
++                sentinel.write_text(content)
++                with self.assertRaisesRegex(ProcessError, message):
++                    process_module._payload_sentinel_digest(sentinel)
++        with self.assertRaisesRegex(ProcessError, "unreadable"):
++            process_module._payload_sentinel_digest(self.root / "missing")
++
++    def test_wrapper_binds_payload_descriptor_to_digest(self) -> None:
++        wrapper = _load_payload_wrapper()
++        content = b"payload\n" * 300000
++        payload = self._trusted_file("payload/codex", content)
++        digest = hashlib.sha256(content).hexdigest()
++        for expected in (digest, "unbound"):
++            with self.subTest(expected=expected):
++                descriptor, value = wrapper._bind_payload(str(payload), expected)
++                try:
++                    self.assertEqual(value, digest)
++                    self.assertTrue(os.get_inheritable(descriptor))
++                    self.assertEqual(os.fstat(descriptor).st_ino, payload.stat().st_ino)
++                finally:
++                    os.close(descriptor)
++        before = _open_descriptor_count()
++        link = payload.with_name("link")
++        link.symlink_to(payload)
++        writable = self._trusted_file("payload/writable", content, mode=0o775)
++        for path, expected, message in (
++            (payload, "0" * 64, "differs from its reviewed digest"),
++            (payload, "A" * 64, "malformed"),
++            (payload, "", "malformed"),
++            (link, digest, "cannot be bound"),
++            (writable, digest, "differs from its reviewed digest"),
++            (payload.with_name("missing"), digest, "cannot be bound"),
++        ):
++            with (
++                self.subTest(path=path.name, expected=expected),
++                self.assertRaisesRegex(SystemExit, message),
++            ):
++                wrapper._bind_payload(str(path), expected)
++        self.assertEqual(_open_descriptor_count(), before)
++
++    def test_wrapper_sentinel_round_trips_payload_digest(self) -> None:
++        wrapper = _load_payload_wrapper()
++        digest = "c" * 64
++        sentinel = self.root / "bound.sentinel"
++        wrapper._write_sentinel(sentinel, self.root / "cgroup", digest)
++        self.assertEqual(process_module._payload_sentinel_digest(sentinel), digest)
++        unbound = self.root / "plain.sentinel"
++        wrapper._write_sentinel(unbound, self.root / "cgroup", None)
++        self.assertEqual(len(unbound.read_text().splitlines()), 1)
++        with self.assertRaisesRegex(ProcessError, "lacks a payload digest"):
++            process_module._payload_sentinel_digest(unbound)
++
++    def _run_with_fake_clock(
++        self,
++        timeout_seconds: float,
++        startup_timeout_seconds: float | None,
++        readiness: Callable[[_FakeClock], dict[str, object] | None] | None,
++    ) -> tuple[dict[str, object], list[object], list[float], ProcessError | None]:
++        clock = _FakeClock(1000.0)
++        waits: list[object] = []
++        readiness_deadlines: list[float] = []
++        process = MagicMock(pid=os.getpid())
++        process.poll.return_value = None
++
++        def wait(timeout: float) -> int:
++            waits.append(timeout)
++            if len(waits) == 1 and timeout != 5:
++                raise subprocess.TimeoutExpired("payload", timeout)
++            return -9
++
++        process.wait.side_effect = wait
++        artifact_dir = self.root / f"run-{uuid.uuid4().hex}"
++
++        def spawn(*_args: object) -> tuple[object, ...]:
++            # Launch-time identity checks and wrapper hashing take time; none of
++            # it may be charged before the documented deadline origin.
++            clock.now += 100
++            return (
++                process,
++                artifact_dir / "missing.sentinel",
++                artifact_dir / "missing.status",
++                CONTAINMENT,
++                MagicMock(),
++            )
++
++        def wait_for_readiness(
++            _process: object, _path: Path, deadline: float
++        ) -> dict[str, object] | None:
++            readiness_deadlines.append(deadline)
++            return None if readiness is None else readiness(clock)
++
++        cgroup = MagicMock(path=self.root / "cgroup")
++        cgroup.terminate_and_remove.return_value = ()
++        readiness_path = (
++            None
++            if startup_timeout_seconds is None
++            else self.root / f"ready-{uuid.uuid4().hex}"
++        )
++        error: ProcessError | None = None
++        with (
++            patch.object(process_module, "time", clock),
++            patch.object(process_module, "_ProcessCgroup", return_value=cgroup),
++            patch.object(process_module, "_spawn_contained", side_effect=spawn),
++            patch.object(
++                process_module,
++                "_wait_for_readiness",
++                side_effect=wait_for_readiness,
++            ),
++        ):
++            try:
++                run_process(
++                    "/usr/local/bin/fbpython",
++                    ("-c", "pass"),
++                    self.root,
++                    artifact_dir,
++                    timeout_seconds,
++                    readiness_path=readiness_path,
++                    startup_timeout_seconds=(
++                        10
++                        if startup_timeout_seconds is None
++                        else startup_timeout_seconds
++                    ),
++                )
++            except ProcessError as raised:
++                error = raised
++        metadata = json.loads((artifact_dir / "metadata.json").read_text())
++        return metadata, waits, readiness_deadlines, error
++
++    def test_execution_deadline_starts_when_launcher_is_spawned(self) -> None:
++        metadata, waits, deadlines, error = self._run_with_fake_clock(7, None, None)
++        self.assertIsNone(error)
++        self.assertEqual(waits, [7, 5])
++        self.assertEqual(deadlines, [])
++        self.assertTrue(metadata["timed_out"])
++        self.assertEqual(metadata["deadline_origin"], "payload-launcher-spawned")
++        self.assertIsNone(metadata["startup_timeout_seconds"])
++        self.assertEqual(metadata["timeout_seconds"], 7)
++
++    def test_readiness_is_charged_against_one_execution_deadline(self) -> None:
++        def ready_after_startup_work(clock: _FakeClock) -> dict[str, object]:
++            clock.now += 2.5
++            return {"kind": "file"}
++
++        metadata, waits, deadlines, error = self._run_with_fake_clock(
++            7, 3, ready_after_startup_work
++        )
++        self.assertIsNone(error)
++        self.assertEqual(deadlines, [1103])
++        self.assertEqual(waits, [4.5, 5])
++        self.assertEqual(metadata["startup_timeout_seconds"], 3)
++        self.assertEqual(metadata["deadline_origin"], "payload-launcher-spawned")
++
++    def test_startup_deadline_shorter_than_execution_is_a_readiness_error(
++        self,
++    ) -> None:
++        metadata, waits, deadlines, error = self._run_with_fake_clock(7, 3, None)
++        self.assertIsNotNone(error)
++        self.assertRegex(str(error), "readiness timed out")
++        self.assertEqual(deadlines, [1103])
++        self.assertEqual(waits, [5])
++        self.assertEqual(metadata["state"], "running")
++
++    def test_execution_deadline_wins_when_startup_is_not_shorter(self) -> None:
++        for startup in (7, 9):
++            with self.subTest(startup=startup):
++                metadata, waits, deadlines, error = self._run_with_fake_clock(
++                    7, startup, None
++                )
++                self.assertIsNone(error)
++                self.assertEqual(deadlines, [1107])
++                self.assertEqual(waits, [5])
++                self.assertTrue(metadata["timed_out"])
++                self.assertEqual(metadata["startup_timeout_seconds"], startup)
++
++    def _run_bound_codex_version(self, binding: str, recorded: str) -> Path:
++        artifact_dir = self.root / f"codex-{uuid.uuid4().hex}"
++        process = MagicMock(pid=os.getpid())
++        process.poll.return_value = 0
++        process.wait.return_value = 0
++
++        def spawn(*_args: object) -> tuple[object, ...]:
++            sentinel = artifact_dir / "payload.sentinel"
++            status = artifact_dir / "payload.status"
++            sentinel.write_text(f"1 /cgroup\npayload-sha256 {recorded}\n")
++            status.write_text("0 0 123\n")
++            os.chmod(sentinel, 0o600)
++            os.chmod(status, 0o600)
++            return (process, sentinel, status, CONTAINMENT, MagicMock())
++
++        cgroup = MagicMock(path=self.root / "cgroup")
++        cgroup.terminate_and_remove.return_value = ()
++        with (
++            patch.object(process_module, "_ProcessCgroup", return_value=cgroup),
++            patch.object(process_module, "_spawn_contained", side_effect=spawn),
++            patch.object(
++                process_module, "_codex_payload_binding", return_value=binding
++            ),
++        ):
++            run_process(
++                "/usr/local/bin/codex", ("--version",), self.root, artifact_dir, 10
++            )
++        return artifact_dir
++
++    def test_run_process_enforces_wrapper_reported_payload_digest(self) -> None:
++        artifact_dir = self._run_bound_codex_version("unbound", "d" * 64)
++        metadata = json.loads((artifact_dir / "metadata.json").read_text())
++        self.assertEqual(metadata["payload_binding"], "unbound")
++        self.assertEqual(metadata["payload_sha256"], "d" * 64)
++        artifact_dir = self._run_bound_codex_version("d" * 64, "d" * 64)
++        metadata = json.loads((artifact_dir / "metadata.json").read_text())
++        self.assertEqual(metadata["payload_binding"], "d" * 64)
++        with self.assertRaisesRegex(ProcessError, "differs from its reviewed digest"):
++            self._run_bound_codex_version("e" * 64, "d" * 64)
++
++
+ def _valid_report(case_id: str, artifact_dir: Path) -> dict[str, object]:
+     return {
+         "schema_version": 1,

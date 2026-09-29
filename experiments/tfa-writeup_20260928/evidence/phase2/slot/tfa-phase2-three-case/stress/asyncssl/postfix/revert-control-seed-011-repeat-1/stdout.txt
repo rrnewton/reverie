@@ -1,0 +1,27 @@
+Note: Google Test filter = AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AsyncSSLSocketByteEventTest
+[ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3797: Failure
+Value of: observer->byteEvents
+Expected: has a size that is >= 4
+  Actual: { 96-byte object <00-00 00-00 00-00 00-00 F5-01 00-00 00-00 00-00 68-9A A4-7B B3-75 D7-18 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 17-00 00-00 00-00 00-00 01-BE BE-BE BE-BE BE-BE 17-00 00-00 00-00 00-00 01-BE BE-BE BE-BE BE-BE F0-00 00-00 01-BE BE-BE>, 96-byte object <01-00 00-00 00-00 00-00 F5-01 00-00 00-00 00-00 64-B6 08-7C B3-75 D7-18 EC-40 08-7C B3-75 D7-18 01-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE BE-BE BE-BE 00-BE BE-BE 00-BE BE-BE>, 96-byte object <02-00 00-00 00-00 00-00 F5-01 00-00 00-00 00-00 8D-C0 0B-7C B3-75 D7-18 4F-6A 0B-7C B3-75 D7-18 01-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00> }, whose size 3 doesn't match
+
+fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3812: Failure
+Expected equality of these values:
+  offsetExpected
+    Which is: 501
+  observer->maxOffsetForByteEventReceived(ByteEventType::ACK)
+    Which is: 16-byte object <00-00 00-00 00-00 00-00 00-00 00-00 00-00 00-00>
+
+[  FAILED  ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect (140 ms)
+[----------] 1 test from AsyncSSLSocketByteEventTest (141 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (144 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+
+ 1 FAILED TEST

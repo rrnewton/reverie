@@ -1,0 +1,2 @@
+bounded-run-space: bounded: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-verify-v2-ccc48c864a0eec30ec5a0202-606717-1790165622980193669  subvol=0/800  limit=1000000000 bytes of ON-DISK (compressed) space
+bounded-run-space: bounded: note the allowance is measured AFTER compression; expect logical files many times larger

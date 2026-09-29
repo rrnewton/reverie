@@ -1,0 +1,112 @@
+test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup) ... FAIL
+test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck) ... FAIL
+test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool) ... FAIL
+test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected) ... FAIL
+
+======================================================================
+FAIL: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3351, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+    self.assertRegex(value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+======================================================================
+FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/pipeline.py", line 3283, in _diagnose_candidate_locked
+    candidate = seal_candidate_report(
+                ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/report.py", line 307, in seal_candidate_report
+    summary = validate_candidate_report(path, expected_case_id)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/report.py", line 218, in validate_candidate_report
+    raise ReportError(
+testinfra.tfa.report.ReportError: required candidate artifacts are missing: hypotheses.json, patch.diff, validation.json
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3454, in test_real_codex_candidate_handoff_uses_controller_buck
+    candidate = _diagnose_candidate_locked(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/pipeline.py", line 3376, in _diagnose_candidate_locked
+    raise RuntimeError(
+RuntimeError: diagnostic remediation failed; evidence preserved at /tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u/artifacts/handoff/control/incomplete-candidate-attempts/attempt-002/incomplete.json
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3394, in test_real_codex_candidate_handoff_uses_controller_buck
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790316172686452830; retained root: /tmp/tfa-phase2/tfa-production-controller-handoff-pwwcds3u
+
+======================================================================
+FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3576, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    self.assertRegex(fresh_value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3535, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790316222693345521; retained root: /tmp/tfa-phase2/tfa-production-codex-report-nwqszvyg
+fixture cleanup also failed; recovery=/tmp/tfa-phase2/fixture-recovery/tfa-production-source-zopirkfz.json: checkout services did not retire: ((3284444, '/usr/local/bin/chataccd'),)
+
+======================================================================
+FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3662, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    self.assertRegex(review_value["nonce"], re.compile(r"^[0-9a-f]{48}$"))
+AssertionError: Regex didn't match: '^[0-9a-f]{48}$' not found in ''
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3622, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790316245088465262; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-mtinyikf
+
+----------------------------------------------------------------------
+Ran 4 tests in 238.988s
+
+FAILED (failures=4)

@@ -1,0 +1,6 @@
+{
+  "artifact": "01790332431201155478-3644039.json",
+  "error": "pane wV:pZ did not confirm idle/done -> working submission: wait for pane wV:pZ status working: {\"error\":{\"code\":\"timeout\",\"message\":\"timed out waiting for agent status\"},\"id\":\"cli:agent:wait\"}",
+  "failed_at": 1790332451.8659406,
+  "outcome": "possibly_submitted"
+}

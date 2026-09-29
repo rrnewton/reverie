@@ -1,0 +1,163 @@
+[
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/fail-witness-seed-011-attempt-1",
+    "seed": 11,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/fail-witness-seed-011-attempt-2",
+    "seed": 11,
+    "verdict": "NONDETERMINISTIC"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/pass-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/pass-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-012",
+    "seed": 12,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-013",
+    "seed": 13,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-014",
+    "seed": 14,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-015",
+    "seed": 15,
+    "verdict": "OTHER"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-3",
+    "seed": 11,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-4",
+    "seed": 11,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fresh-seed-015-repeat-1",
+    "seed": 15,
+    "verdict": "OTHER"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011",
+    "seed": 11,
+    "verdict": "NONDETERMINISTIC"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011-repeat-1",
+    "seed": 11,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011-repeat-2",
+    "seed": 11,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-1",
+    "seed": 11,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-2",
+    "seed": 11,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-3",
+    "seed": 11,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-012",
+    "seed": 12,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-013",
+    "seed": 13,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-014",
+    "seed": 14,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-015",
+    "seed": 15,
+    "verdict": "OTHER"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/pass-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/pass-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  }
+]

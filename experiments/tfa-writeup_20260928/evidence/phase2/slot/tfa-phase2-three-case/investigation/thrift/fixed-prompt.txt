@@ -1,0 +1,117 @@
+Hermit quick-start
+- Build with Buck outside Hermit.
+- Run witnesses only through the controller command shown below. It resolves,
+  verifies, and pins the packaged safehermit, bounded-run-space, and Hermit
+  resources; no machine-local dev-hermit checkout is required.
+- Preserve argv tokens exactly; never invoke through a shell.
+- For every Hermit invocation, create a fresh `controller-cwd` under that
+  attempt's artifact directory. Add a same-path bind for it, add
+  `--workdir=<fixed case working_directory>`, add Hermit's `--timeout=110`
+  inside safehermit's 120-second deadline, and invoke safehermit with the tool
+  working directory set to `controller-cwd`. Keep the outer timeout at least
+  130 seconds. Never run Hermit from the fixed guest working directory.
+- Preserve and hash any `.hermit-verify-summary-*` timeout residue in the
+  controller directory; never delete or allowlist it. The fixed guest working
+  directory must remain sealed and unchanged.
+- Keep the same-path buck-out bind mount because the ELF resolves runtime
+  dependencies there.
+- For post-fix replay, use the ELF built in the isolated case checkout and
+  rewrite both the guest ELF path and same-path buck-out bind mount to that
+  checkout.
+- Never copy, replace, or link an ELF or dependency into
+  /home/newton/work/tfa/fbsource/buck-out.
+- Treat `/tmp/tfa-phase2/repro` and the sealed historical manifest as immutable
+  supplied evidence. Use only the controller commands below; the controller maps
+  the historical contract to the current packaged CLI only after its
+  compatibility gate passes.
+- The current strict comparison contract is `--verify --verify-verbose
+  --verify-allow both`: verbose selects FullTrace and disables line stripping.
+  Inspect its evidence instead of relaxing comparison.
+
+Investigation contract
+1. Reproduce both the supplied PASS and FAIL before editing. Inspect the
+   selected test and production code.
+2. Separate the trigger/fatal symptom from the originating invariant
+   violation.
+3. Emit 2-5 ranked falsifiable hypotheses. Each needs supporting evidence,
+   contradicting evidence, and the next discriminating experiment. Select
+   exactly one top hypothesis.
+4. Propose the smallest principled fix in the exact patch artifact. The source
+   checkout is read-only to your tools: do not edit it, invoke source-control
+   mutations, or attempt to apply the patch yourself. Do not quarantine or
+   disable tests, weaken assertions/comparators/tolerances/timeouts, add
+   sleeps/retries, reduce stress counts, or change the expected verdict.
+5. Do not invoke Buck, Arc, or the post-fix stress grid. Native network access
+   is disabled, and only the trusted controller may apply the returned patch
+   and run those commands after your process and cgroup are gone. You may run
+   the supplied pre-fix safehermit witnesses with outputs redirected to the
+   dedicated artifact directory.
+6. Record proposed validation argv and any observations honestly, including
+   failures or checks you could not run. They are candidate-only and never
+   qualify the patch. The controller will run Buck, lint, exact PASS/FAIL and
+   fresh stress seeds, then a separate hash-bound exact-diff review.
+7. You must not post comments, submit/create/publish/land diffs, assign
+   reviewers, commit/amend/rebase source control, or invoke identity-sensitive
+   actions. The supplied isolated checkout may only be read and inspected.
+   Write candidate artifacts only to the dedicated agent-output paths; the
+   deterministic controller owns every source mutation and build action.
+8. Do not create, replace, link, or write the report path. Return the compact
+   machine-readable JSON report as the final response with
+   `qualification="candidate-only"`; the trusted controller publishes and
+   seals it after the tool process is gone. The report must satisfy
+   report.schema.v1.json. Write hypotheses, patch, and proposed validation only
+   to their dedicated artifact paths.
+
+Fixed case facts (JSON; do not reinterpret):
+{
+  "authoritative_record": "https://github.com/rrnewton/dev-hermit/blob/edd968317a0986ccfff0bb29ef924d7c5435ce8c/experiments/tfa-kernel71-thrift-slowdown-continuation_20260921/services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json",
+  "build_argv": [
+    "buck",
+    "build",
+    "@fbcode//mode/dev-tsan",
+    "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "--show-full-json-output"
+  ],
+  "case_id": "thrift",
+  "checkout": "/home/newton/work/tfa/phase2-cases/investigators/thrift",
+  "controller_fail_command": "buck run fbcode//testinfra/tfa:tfa_phase2 -- run-witness --manifest fbcode/testinfra/tfa/cases.v1.json --case-id thrift --outcome fail --artifact-root /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output",
+  "controller_pass_command": "buck run fbcode//testinfra/tfa:tfa_phase2 -- run-witness --manifest fbcode/testinfra/tfa/cases.v1.json --case-id thrift --outcome pass --artifact-root /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output",
+  "controller_working_directory": "create a fresh <attempt-artifact-dir>/controller-cwd per invocation",
+  "evidence_paths": {
+    "hypotheses": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/hypotheses.json",
+    "patch": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/patch.diff",
+    "report": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/report.json",
+    "validation": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/validation.json"
+  },
+  "fail_seed": 1,
+  "failure_class": "gtest-snapshot-size-2",
+  "fresh_stress_seeds": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "hermit_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+  "historical_fail_seed": 1,
+  "historical_pass_seed": 0,
+  "issue_id": null,
+  "pass_seed": 0,
+  "selector": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest",
+  "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+  "test_argv": [
+    "buck",
+    "test",
+    "@fbcode//mode/dev-tsan",
+    "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "--",
+    "--exact",
+    "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+  ],
+  "test_id": "281475235299286",
+  "timeout_layers_seconds": {
+    "hermit": 110,
+    "outer_minimum": 130,
+    "safehermit": 120
+  },
+  "working_directory": "/tmp/tfa-phase2/cwd/thrift"
+}

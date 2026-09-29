@@ -1,0 +1,5 @@
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+2026-09-25T06:22:45.534247Z ERROR codex_core::tools::router: error=unable to process image: invalid or unsupported image data
+2026-09-25T06:23:03.892757Z ERROR codex_core::tools::router: error=unable to process image: invalid or unsupported image data

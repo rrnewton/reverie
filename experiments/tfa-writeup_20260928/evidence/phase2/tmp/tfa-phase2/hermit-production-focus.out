@@ -1,0 +1,97 @@
+[2026-09-24T15:11:26.268-07:00] Buck UI: https://www.internalfb.com/buck2/5cf19592-4730-4461-b786-5fc72602b4bc
+[2026-09-24T15:11:27.224-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27021597815213725
+[2026-09-24T15:15:01.065-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (31.4s)
+[2026-09-24T15:15:01.065-07:00] test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... 
+[2026-09-24T15:15:01.065-07:00]   test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (boundary='create') ... FAIL
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:15:01.065-07:00] ======================================================================
+[2026-09-24T15:15:01.065-07:00] FAIL: test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (boundary='create')
+[2026-09-24T15:15:01.065-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:15:01.065-07:00] Traceback (most recent call last):
+[2026-09-24T15:15:01.065-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 614, in _preserving_production_directory
+[2026-09-24T15:15:01.065-07:00]     yield root
+[2026-09-24T15:15:01.065-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3949, in test_killed_controller_recovers_every_verify_allocation_boundary
+[2026-09-24T15:15:01.065-07:00]     self.assertIn("was recovered", recovered["error"])
+[2026-09-24T15:15:01.065-07:00] AssertionError: 'was recovered' not found in 'HermitError: bounded verification space command timed out'
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:15:01.065-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:15:01.065-07:00] Traceback (most recent call last):
+[2026-09-24T15:15:01.065-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3871, in test_killed_controller_recovers_every_verify_allocation_boundary
+[2026-09-24T15:15:01.065-07:00]     _preserving_production_directory(
+[2026-09-24T15:15:01.065-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T15:15:01.065-07:00]     self.gen.throw(value)
+[2026-09-24T15:15:01.065-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 620, in _preserving_production_directory
+[2026-09-24T15:15:01.065-07:00]     raise AssertionError(
+[2026-09-24T15:15:01.065-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/hermit-crash-create/controller-handoff-1790287918984000865; retained root: /tmp/tfa-phase2/tfa-production-hermit-crash-create-17rmckd8
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:15:01.065-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:15:01.065-07:00] Ran 1 test in 213.454s
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:15:01.065-07:00] FAILED (failures=1)
+[2026-09-24T15:15:01.065-07:00]
+[2026-09-24T15:16:06.719-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_normal_verify_keeps_guest_and_controller_workdirs_clean (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (32.2s)
+[2026-09-24T15:16:06.719-07:00] test_normal_verify_keeps_guest_and_controller_workdirs_clean (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00] ======================================================================
+[2026-09-24T15:16:06.719-07:00] FAIL: test_normal_verify_keeps_guest_and_controller_workdirs_clean (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:16:06.719-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:16:06.719-07:00] Traceback (most recent call last):
+[2026-09-24T15:16:06.719-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 210, in locked
+[2026-09-24T15:16:06.719-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:16:06.719-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:16:06.719-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3716, in test_normal_verify_keeps_guest_and_controller_workdirs_clean
+[2026-09-24T15:16:06.719-07:00]     self.assertEqual(
+[2026-09-24T15:16:06.719-07:00] AssertionError: 2 != 0 : error: unexpected argument '--timeout' found
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00]   tip: to pass '--timeout' as a value, use '-- --timeout'
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00] Usage: hermit run --backend <BACKEND> --strict --base-env <str> --mount <path> --verify --verify-verbose --verify-allow <success|failure|both> --workdir <path> <PROGRAM> [ARGS]...
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00] For more information, try '--help'.
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:16:06.719-07:00] Ran 1 test in 32.151s
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:06.719-07:00] FAILED (failures=1)
+[2026-09-24T15:16:06.719-07:00]
+[2026-09-24T15:16:38.473-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (31.5s)
+[2026-09-24T15:16:38.473-07:00] test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00] ======================================================================
+[2026-09-24T15:16:38.473-07:00] FAIL: test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:16:38.473-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:16:38.473-07:00] Traceback (most recent call last):
+[2026-09-24T15:16:38.473-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 210, in locked
+[2026-09-24T15:16:38.473-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:16:38.473-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:16:38.473-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3832, in test_forced_run2_kill_confines_and_seals_verify_residue
+[2026-09-24T15:16:38.473-07:00]     self.assertEqual(
+[2026-09-24T15:16:38.473-07:00] AssertionError: 2 != 124 : error: unexpected argument '--timeout' found
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00]   tip: to pass '--timeout' as a value, use '-- --timeout'
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00] Usage: hermit run --backend <BACKEND> --strict --base-env <str> --mount <path> --verify --verify-verbose --verify-allow <success|failure|both> --workdir <path> <PROGRAM> [ARGS]...
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00] For more information, try '--help'.
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:16:38.473-07:00] Ran 1 test in 31.481s
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:38.473-07:00] FAILED (failures=1)
+[2026-09-24T15:16:38.473-07:00]
+[2026-09-24T15:16:39.683-07:00] Network: up 0B  down 0B
+[2026-09-24T15:16:39.683-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27021597815213725
+Tests finished: [mPass 2[m. [mFail 3[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+3 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_normal_verify_keeps_guest_and_controller_workdirs_clean (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug one of 3 failing tests
+      ^^^ just prefix your previous command! ($ fdb !!)
+For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27021597815213725&expiry=2026-09-24T22%3A21%3A38Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27021597815213725&expiry=2026-09-24T22%3A21%3A38Z&viewer=18498&signature=REDACTED]8;;\[0m

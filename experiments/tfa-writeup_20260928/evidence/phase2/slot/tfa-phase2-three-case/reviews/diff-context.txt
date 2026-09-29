@@ -1,0 +1,401 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -38,10 +38,13 @@
+ With `--relocation-summary`, the comment instead leads with measured
+ non-`/tmp` PASS and FAIL commands and demotes the `/tmp` record to labelled
+ history bound by its `experiment.json` SHA-256. The summary must list every
+-attempt directory at each witness seed. Each decided attempt is re-judged from
+-its own stdout/stderr bytes with the gtest oracles, and each censored
+-(wall-bound) attempt is counted as neither PASS nor FAIL. Relocated argv may
+-differ from the manifest argv only in its `/tmp`-bound paths and scheduler seed.
++attempt directory at each witness seed. Every attempt's receipt must bind its
++stdout, stderr and safehermit report bytes. Each decided attempt is re-judged
++from those bytes with the gtest oracles. A censored attempt needs safehermit
++evidence that it hit the wall bound, must satisfy neither oracle, and is counted
++as neither PASS nor FAIL. Relocated argv may differ from the manifest argv only
++in its `/tmp`-bound paths and scheduler seed, and those paths must be canonical
++and must not resolve into `/tmp`.
+ 
+ The fixed Hermit quick-start and investigation contract are rendered into each
+ case's `prompt.txt`. The authoritative PASS and FAIL commands invoke the exact
+diff --git a/fbcode/testinfra/tfa/comments.py b/fbcode/testinfra/tfa/comments.py
+--- a/fbcode/testinfra/tfa/comments.py
++++ b/fbcode/testinfra/tfa/comments.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++import re
+ import shlex
+ from dataclasses import dataclass
+ from pathlib import Path
+@@ -105,6 +106,8 @@
+         raise CommentError("initial comment requires an exact IssueID")
+     if (relocation is None) != (record_sha256 is None):
+         raise CommentError("a relocation must cite the historical record hash")
++    if record_sha256 is not None and not re.fullmatch("[0-9a-f]{64}", record_sha256):
++        raise CommentError("historical record hash is not a SHA-256 hex digest")
+     issue = "none (no exact FLAKY issue)" if case.issue_id is None else case.issue_id
+     title = "TFA phase-two reproducibility update"
+     header = [
+diff --git a/fbcode/testinfra/tfa/relocation.py b/fbcode/testinfra/tfa/relocation.py
+--- a/fbcode/testinfra/tfa/relocation.py
++++ b/fbcode/testinfra/tfa/relocation.py
+@@ -4,6 +4,7 @@
+ 
+ import hashlib
+ import json
++import os
+ from dataclasses import dataclass
+ from pathlib import Path
+ 
+@@ -18,6 +19,7 @@
+ SUMMARY_SCHEMA: str = "tfa.relocated-reproducer-summary.v2"
+ RECEIPT_SCHEMA: str = "tfa.relocated-reproducer-run.v2"
+ _DETERMINISM = ":: Success: deterministic. Determinism verified."
++_FORBIDDEN_ROOT = "/tmp"
+ 
+ 
+ class RelocationError(RuntimeError):
+@@ -42,7 +44,20 @@
+ 
+ 
+ def _names_tmp(value: str) -> bool:
+-    return value == "/tmp" or "/tmp/" in value or value.endswith("=/tmp")
++    root = _FORBIDDEN_ROOT
++    return value == root or f"{root}/" in value or value.endswith(f"={root}")
++
++
++def _check_path(outcome: str, role: str, path: str) -> str:
++    if not path.startswith("/") or os.path.normpath(path) != path:
++        raise RelocationError(f"{outcome} argv {role} path is not canonical: {path}")
++    roots = (_FORBIDDEN_ROOT, os.path.realpath(_FORBIDDEN_ROOT))
++    for candidate in (path, os.path.realpath(path)):
++        if any(candidate == root or candidate.startswith(f"{root}/") for root in roots):
++            raise RelocationError(
++                f"{outcome} argv {role} resolves into {_FORBIDDEN_ROOT}"
++            )
++    return path
+ 
+ 
+ def _check_argv(case: Case, outcome: str, seed: int, argv: tuple[str, ...]) -> str:
+@@ -65,22 +80,26 @@
+             if actual != str(seed):
+                 raise RelocationError(f"{outcome} argv is not bound to seed {seed}")
+         elif previous == "--sh-report":
+-            if not actual.startswith("/"):
+-                raise RelocationError(f"{outcome} safehermit report is not absolute")
++            _check_path(outcome, "safehermit report", actual)
+         elif token.startswith("--verify-log-dir="):
+-            if not actual.startswith("--verify-log-dir=/"):
+-                raise RelocationError(f"{outcome} verify-log dir is not absolute")
++            prefix = "--verify-log-dir="
++            if not actual.startswith(prefix):
++                raise RelocationError(f"{outcome} argv has no verify-log dir")
++            _check_path(outcome, "verify-log dir", actual.removeprefix(prefix))
+         elif token == old_mount:
+             prefix = "--mount=type=bind,source="
+             mounted = actual.removeprefix(prefix).split(",target=")
+             if not actual.startswith(prefix) or len(mounted) != 2:
+                 raise RelocationError(f"{outcome} argv has no same-path cwd mount")
+-            if mounted[0] != mounted[1] or not mounted[0].startswith("/"):
++            if mounted[0] != mounted[1]:
+                 raise RelocationError(f"{outcome} cwd mount is not same-path")
+-            cwd = mounted[0]
++            cwd = _check_path(outcome, "cwd", mounted[0])
+             offset = 1
+-            if not argv[index + offset].startswith("--tmp=/"):
++            if not argv[index + offset].startswith("--tmp="):
+                 raise RelocationError(f"{outcome} argv does not own the guest /tmp")
++            _check_path(
++                outcome, "guest /tmp", argv[index + offset].removeprefix("--tmp=")
++            )
+         elif actual != token:
+             raise RelocationError(f"{outcome} argv changes more than its /tmp paths")
+     if cwd is None:
+@@ -128,9 +147,11 @@
+         _gtest_fatal_execution_evidence(argv, stdout, stderr, markers)
+ 
+ 
+-def _check_attempt(
++def _bound_receipt(
+     case: Case, outcome: str, seed: int, run: Path
+-) -> tuple[tuple[str, ...], str]:
++) -> tuple[dict[str, object], tuple[str, ...], str, dict[str, str]]:
++    """Bind an attempt's receipt to the manifest inputs, its own argv, and its
++    own stdout, stderr and safehermit report bytes, whatever its label."""
+     try:
+         receipt = json.loads((run / "receipt.json").read_text())
+     except (OSError, json.JSONDecodeError) as error:
+@@ -160,6 +181,25 @@
+         raise RelocationError("receipt has no classification")
+     _bound_file(receipt.get("stdout"), run / "stdout.txt", "stdout")
+     _bound_file(receipt.get("stderr"), run / "stderr.txt", "stderr")
++    report_path = _bound_file(
++        receipt.get("safehermit_report"), run / "safehermit.txt", "safehermit report"
++    )
++    report = {}
++    for line in report_path.read_text(errors="replace").splitlines():
++        key, equals, value = line.removeprefix("safehermit: ").partition("=")
++        if line.startswith("safehermit: ") and equals:
++            report.setdefault(key, value)
++    if report.get("exit_code") != str(classification.get("returncode")):
++        raise RelocationError(f"safehermit exit code contradicts the receipt: {run}")
++    return receipt, argv, cwd, report
++
++
++def _check_attempt(
++    case: Case, outcome: str, seed: int, run: Path
++) -> tuple[tuple[str, ...], str]:
++    receipt, argv, cwd, _ = _bound_receipt(case, outcome, seed, run)
++    classification = receipt["classification"]
++    assert isinstance(classification, dict)
+     try:
+         _check_oracle(case, outcome, argv, classification.get("returncode"), run)
+     except RelocationError:
+@@ -169,19 +209,33 @@
+     return argv, cwd
+ 
+ 
+-def _check_censored(run: Path) -> None:
+-    try:
+-        receipt = json.loads((run / "receipt.json").read_text())
+-    except (OSError, json.JSONDecodeError) as error:
+-        raise RelocationError(f"missing or malformed receipt: {run}") from error
+-    classification = (
+-        receipt.get("classification") if isinstance(receipt, dict) else None
+-    )
+-    if not isinstance(classification, dict) or (
++def _check_censored(case: Case, outcome: str, seed: int, run: Path) -> None:
++    """Accept a CENSORED attempt only with safehermit's own wall-deadline
++    evidence and bytes that neither decided oracle accepts."""
++    receipt, argv, _, report = _bound_receipt(case, outcome, seed, run)
++    classification = receipt["classification"]
++    assert isinstance(classification, dict)
++    deadline = argv[argv.index("--sh-deadline") + 1]
++    elapsed = report.get("elapsed_secs", "")
++    duration = receipt.get("duration_seconds")
++    if (
+         classification.get("oracle") != "CENSORED"
+-        or classification.get("returncode") not in (None, 124, 125, 126)
++        or classification.get("returncode") != 124
++        or report.get("unit_result") != "timeout"
++        or report.get("bound.wall") != f"APPLIED:{deadline}s"
++        or not elapsed.isdigit()
++        or int(elapsed) < int(deadline)
++        or not isinstance(duration, (int, float))
++        or duration < int(deadline)
+     ):
+-        raise RelocationError(f"attempt listed as CENSORED is not censored: {run}")
++        raise RelocationError(f"CENSORED attempt lacks wall-bound evidence: {run}")
++    fatal = 134 if case.case_id == "httpcoro" else 1
++    for decided, returncode in (("pass", 0), ("fail", fatal)):
++        try:
++            _check_oracle(case, decided, argv, returncode, run)
++        except RuntimeError:
++            continue
++        raise RelocationError(f"CENSORED attempt satisfies the {decided} oracle: {run}")
+ 
+ 
+ def _witness(
+@@ -213,7 +267,7 @@
+     if set(decided) & set(censored) or on_disk != set(decided) | set(censored):
+         raise RelocationError(f"{outcome} relocation omits or invents attempts")
+     for label in censored:
+-        _check_censored(summary_dir / label)
++        _check_censored(case, outcome, seed, summary_dir / label)
+     runs = [
+         _check_attempt(case, outcome, seed, summary_dir / label) for label in decided
+     ]
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -29,6 +29,7 @@
+ import testinfra.tfa.manifest as manifest_module
+ import testinfra.tfa.pipeline as pipeline_module
+ import testinfra.tfa.process as process_module
++import testinfra.tfa.relocation as relocation_module
+ from click.testing import CliRunner
+ from security.frameworks.python.exec.subprocess import TrustedSubprocessWithList
+ from testinfra.tfa.case_checkout import CaseCheckoutError, validate_case_checkout
+@@ -1154,14 +1155,25 @@
+         )
+     stderr = ":: Success: deterministic. Determinism verified.\n"
+     returncode = {"PASS": 0, "FAIL": 1, "CENSORED": 124}[oracle]
++    deadline = int(argv[argv.index("--sh-deadline") + 1])
++    report = f"safehermit: bound.wall=APPLIED:{deadline}s\n"
+     if oracle == "CENSORED":
+         stdout, stderr = "", ":: Run1...\n"
++        report += (
++            f"safehermit: elapsed_secs={deadline}\nsafehermit: unit_result=timeout\n"
++        )
++    else:
++        report += "safehermit: elapsed_secs=5\nsafehermit: unit_result=success\n"
+     (run / "stdout.txt").write_text(stdout)
+     (run / "stderr.txt").write_text(stderr)
++    (run / "safehermit.txt").write_text(
++        report + f"safehermit: exit_code={returncode}\n"
++    )
+     receipt = {
+         "argv": argv,
+         "case_id": case.case_id,
+         "classification": {"oracle": oracle, "returncode": returncode},
++        "duration_seconds": deadline + 1.0 if oracle == "CENSORED" else 5.0,
+         "inputs": {
+             "hermit": {"sha256": case.hermit_sha256},
+             "guest": {"sha256": case.artifact_sha256},
+@@ -1169,8 +1181,12 @@
+         "schema": "tfa.relocated-reproducer-run.v2",
+         "seed": seed,
+     }
+-    for name in ("stdout", "stderr"):
+-        path = run / f"{name}.txt"
++    for name, filename in (
++        ("stdout", "stdout.txt"),
++        ("stderr", "stderr.txt"),
++        ("safehermit_report", "safehermit.txt"),
++    ):
++        path = run / filename
+         receipt[name] = {
+             "path": str(path),
+             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+@@ -1222,6 +1238,18 @@
+         change(value)
+         path.write_text(json.dumps(value))
+ 
++    def _rebind(self, run: Path) -> None:
++        def change(value: Any) -> None:
++            for name, filename in (
++                ("stdout", "stdout.txt"),
++                ("stderr", "stderr.txt"),
++                ("safehermit_report", "safehermit.txt"),
++            ):
++                data = (run / filename).read_bytes()
++                value[name]["sha256"] = hashlib.sha256(data).hexdigest()
++
++        self._edit(run / "receipt.json", change)
++
+     def test_initial_comment_leads_with_measured_relocation(self) -> None:
+         case = _loaded_case()
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -1268,6 +1296,12 @@
+             )
+         with self.assertRaisesRegex(CommentError, "historical record hash"):
+             initial_text(case, True, relocation)
++        for digest in ("AB" * 32, "ab" * 31, "ab" * 32 + "\n", "zz" * 32):
++            with (
++                self.subTest(digest=digest),
++                self.assertRaisesRegex(CommentError, "not a SHA-256 hex digest"),
++            ):
++                initial_text(case, True, relocation, digest)
+ 
+     def test_refuses_relabelled_censored_attempt(self) -> None:
+         case = _loaded_case()
+@@ -1295,6 +1329,106 @@
+             with self.assertRaisesRegex(RelocationError, "omits or invents"):
+                 validated_relocation(case, summary)
+ 
++    def test_refuses_decided_bytes_relabelled_as_censored(self) -> None:
++        case = _loaded_case()
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            summary = _relocation_summary(root, case, censored=1)
++            censored = root / "seed-011-attempt-1"
++            for name in ("stdout.txt", "stderr.txt"):
++                decided = (root / "seed-011-attempt-2" / name).read_bytes()
++                (censored / name).write_bytes(decided)
++            self._rebind(censored)
++            with self.assertRaisesRegex(RelocationError, "satisfies the fail oracle"):
++                validated_relocation(case, summary)
++
++    def test_refuses_forged_censored_attempt(self) -> None:
++        case = _loaded_case()
++        forgeries: dict[str, Callable[[Path], object]] = {
++            "wrong schema": lambda run: (run / "receipt.json").write_text(
++                json.dumps(
++                    {"classification": {"oracle": "CENSORED", "returncode": 124}}
++                )
++            ),
++            "not bound to": lambda run: self._edit(
++                run / "receipt.json", lambda value: value.update(seed=2)
++            ),
++            "lacks wall-bound evidence": lambda run: self._edit(
++                run / "receipt.json", lambda value: value.update(duration_seconds=3.0)
++            ),
++            "exit code contradicts": lambda run: (run / "safehermit.txt").write_text(
++                "safehermit: unit_result=timeout\nsafehermit: exit_code=134\n"
++            ),
++        }
++        for message, forge in forgeries.items():
++            with (
++                self.subTest(message=message),
++                tempfile.TemporaryDirectory() as temporary,
++            ):
++                root = Path(temporary)
++                summary = _relocation_summary(root, case, censored=1)
++                run = root / "seed-001-attempt-1"
++                forge(run)
++                if message == "exit code contradicts":
++                    self._rebind(run)
++                with self.assertRaisesRegex(RelocationError, message):
++                    validated_relocation(case, summary)
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            summary = _relocation_summary(root, case, censored=1)
++            run = root / "seed-001-attempt-1"
++            (run / "safehermit.txt").write_text("safehermit: exit_code=124\n")
++            self._rebind(run)
++            with self.assertRaisesRegex(RelocationError, "lacks wall-bound evidence"):
++                validated_relocation(case, summary)
++
++    def test_refuses_paths_escaping_through_dotdot_or_symlink(self) -> None:
++        case = _loaded_case()
++        for flag, escape, message in (
++            ("--mount=", "dotdot", "cwd path is not canonical"),
++            ("--tmp=", "dotdot", "guest /tmp path is not canonical"),
++            ("--mount=", "symlink", "cwd resolves into"),
++            ("--sh-report", "symlink", "safehermit report resolves into"),
++            ("--verify-log-dir=", "symlink", "verify-log dir resolves into"),
++        ):
++            with (
++                self.subTest(flag=flag, escape=escape),
++                tempfile.TemporaryDirectory() as temporary,
++            ):
++                root = Path(temporary)
++                forbidden = root / "forbidden"
++                forbidden.mkdir()
++                (root / "link").symlink_to(forbidden)
++                summary = _relocation_summary(root / "runs", case)
++                if escape == "dotdot":
++                    path = "/home/tfa-relocation-fixture/a/../b/cwd"
++                else:
++                    path = str(root / "link" / "cwd")
++
++                def edit(value: Any, flag: str = flag, path: str = path) -> None:
++                    argv = value["argv"]
++                    if flag == "--sh-report":
++                        argv[argv.index(flag) + 1] = path
++                        return
++                    index = next(
++                        i
++                        for i, token in enumerate(argv)
++                        if token.startswith(flag)
++                        and (flag != "--mount=" or "/cwd," in token)
++                    )
++                    argv[index] = (
++                        f"--mount=type=bind,source={path},target={path}"
++                        if flag == "--mount="
++                        else f"{flag}{path}"
++                    )
++
++                self._edit(root / "runs" / "seed-001-attempt-1" / "receipt.json", edit)
++                with (
++                    patch.object(relocation_module, "_FORBIDDEN_ROOT", str(forbidden)),
++                    self.assertRaisesRegex(RelocationError, message),
++                ):
++                    validated_relocation(case, summary)
++
+     def test_refuses_receipt_whose_bytes_contradict_its_oracle(self) -> None:
+         case = _loaded_case()
+         with tempfile.TemporaryDirectory() as temporary:

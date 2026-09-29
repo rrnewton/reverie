@@ -1,0 +1,31 @@
+test_censored_and_nondeterministic_count_as_neither (testinfra.tfa.tests.test_prototype.FollowupTest.test_censored_and_nondeterministic_count_as_neither) ... ok
+test_censored_replay_of_failing_seed_is_inconclusive (testinfra.tfa.tests.test_prototype.FollowupTest.test_censored_replay_of_failing_seed_is_inconclusive) ... ok
+test_comment_gives_measured_commands_for_lowest_failing_seed (testinfra.tfa.tests.test_prototype.FollowupTest.test_comment_gives_measured_commands_for_lowest_failing_seed) ... ok
+test_counts_interrupted_attempts_without_receipts (testinfra.tfa.tests.test_prototype.FollowupTest.test_counts_interrupted_attempts_without_receipts) ... ok
+test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text (testinfra.tfa.tests.test_prototype.FollowupTest.test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text) ... ok
+test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text (testinfra.tfa.tests.test_prototype.FollowupTest.test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text) ... ok
+test_no_unfixed_fail_at_this_path_is_inconclusive (testinfra.tfa.tests.test_prototype.FollowupTest.test_no_unfixed_fail_at_this_path_is_inconclusive) ... ok
+test_overlong_hypothesis_text_is_cut_at_the_limit (testinfra.tfa.tests.test_prototype.FollowupTest.test_overlong_hypothesis_text_is_cut_at_the_limit) ... ok
+test_patched_fail_is_not_supported_even_when_relabelled (testinfra.tfa.tests.test_prototype.FollowupTest.test_patched_fail_is_not_supported_even_when_relabelled) ... ok
+test_refuses_receipt_without_cwd_for_its_command (testinfra.tfa.tests.test_prototype.FollowupTest.test_refuses_receipt_without_cwd_for_its_command) ... ok
+test_refuses_runs_not_bound_to_their_phase_or_bytes (testinfra.tfa.tests.test_prototype.FollowupTest.test_refuses_runs_not_bound_to_their_phase_or_bytes) ... 
+  test_refuses_runs_not_bound_to_their_phase_or_bytes (testinfra.tfa.tests.test_prototype.FollowupTest.test_refuses_runs_not_bound_to_their_phase_or_bytes) (message='stdout bytes differ') ... FAIL
+test_renders_the_validated_snapshot_not_a_reread_report (testinfra.tfa.tests.test_prototype.FollowupTest.test_renders_the_validated_snapshot_not_a_reread_report) ... ok
+test_root_cause_is_rendered_as_a_caveated_hypothesis (testinfra.tfa.tests.test_prototype.FollowupTest.test_root_cause_is_rendered_as_a_caveated_hypothesis) ... ok
+test_supported_fix_renders_unposted_comment_with_local_diff (testinfra.tfa.tests.test_prototype.FollowupTest.test_supported_fix_renders_unposted_comment_with_local_diff) ... ok
+test_timeout_exit_without_wall_evidence_is_other (testinfra.tfa.tests.test_prototype.FollowupTest.test_timeout_exit_without_wall_evidence_is_other) ... ok
+test_witness_seed_passing_unfixed_is_a_caveat_when_another_seed_fails (testinfra.tfa.tests.test_prototype.FollowupTest.test_witness_seed_passing_unfixed_is_a_caveat_when_another_seed_fails) ... ok
+
+======================================================================
+FAIL: test_refuses_runs_not_bound_to_their_phase_or_bytes (testinfra.tfa.tests.test_prototype.FollowupTest.test_refuses_runs_not_bound_to_their_phase_or_bytes) (message='stdout bytes differ')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 2020, in test_refuses_runs_not_bound_to_their_phase_or_bytes
+    with self.assertRaisesRegex(FollowupError, message):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: FollowupError not raised
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.223s
+
+FAILED (failures=1)

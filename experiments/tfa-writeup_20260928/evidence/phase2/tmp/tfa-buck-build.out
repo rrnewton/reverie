@@ -1,0 +1,2 @@
+*** Aborted at 1790362845 (Unix time, try 'date -d @1790362845') ***
+*** Signal 15 (SIGTERM) (0x33e96003d8814) received by PID 4032670 (pthread TID 0x7f912da696c0) (linux TID 4032670) (maybe from PID 4032532, UID 212630) (code: sent by kill, sigsend or raise), stack trace: ***

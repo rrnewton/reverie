@@ -1,0 +1,116 @@
+{
+  "cases": {
+    "asyncssl": {
+      "agent_name": "tfa-inv-asyncssl",
+      "agent_output": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output",
+      "brief": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/brief.md",
+        "sha256": "b9a92c36c30d1e193e262fe8742b2d5ba8e16b3ec929a81f7a244b64e325eb3a"
+      },
+      "checkout": "/home/newton/work/tfa/phase2-cases/investigators/asyncssl",
+      "fixed_prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/fixed-prompt.txt",
+        "sha256": "979d02291ca6e3dfd2b494cb3460d0ba040f8e3829d049b716afaf2962d63b5e"
+      },
+      "fixed_prompt_is_prefix_of_brief": true,
+      "harness": "claude",
+      "hints": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/asyncssl/stage1-2-relocated/difference-hints.json",
+        "sha256": "8936689c859bb0a18100b7b7ea7730ab0e1f99dc0874bc1110e865bac7ae7ac5"
+      },
+      "initial_comment": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/asyncssl/stage1-2-relocated/initial-comment.md",
+        "sha256": "ce8cf33db4a20a70a5971f181aad43bdc6c44d058a3bdafb468fcfcdaa9f99d5"
+      },
+      "model": "claude-opus-5-5",
+      "relocation_summary": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/asyncssl/summary.json",
+        "sha256": "e4f43e4534eeb764774ce1be5b29719c5c622c80a06a326f7a4cba9278936404"
+      },
+      "tmpdir": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/tmpdir",
+      "witness_runner": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/run_witness.py",
+        "sha256": "24307b7452c71ea575447e44f120f143caff6b54dd6def332176b7bac58df318"
+      },
+      "witness_wrapper": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "sha256": "f55131e4c6a797532d2437a74dae19fe8049360b2fd15dad127ab36b01a34dc8"
+      }
+    },
+    "httpcoro": {
+      "agent_name": "tfa-inv-httpcoro",
+      "agent_output": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output",
+      "brief": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/brief.md",
+        "sha256": "0415e9194fd9d250f0ed39956cd26c5419ab7bf3551e716535e471846826f98f"
+      },
+      "checkout": "/home/newton/work/tfa/phase2-cases/investigators/httpcoro",
+      "fixed_prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/fixed-prompt.txt",
+        "sha256": "851ffcb63d477df49b8c3bc2692c42956bf02a87c20d00d52f11f1c48d96a9c7"
+      },
+      "fixed_prompt_is_prefix_of_brief": true,
+      "harness": "claude",
+      "hints": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/httpcoro/stage1-2-relocated/difference-hints.json",
+        "sha256": "bc1fd9e66e5482d790c6f39be1aa9190ff575d4e71718c731f74f2861a39b5d7"
+      },
+      "initial_comment": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/httpcoro/stage1-2-relocated/initial-comment.md",
+        "sha256": "c91059c477362f91af0bc6c67cdea9697d5a23bb25be1ff3a34f0df3e40aa593"
+      },
+      "model": "claude-opus-5-5",
+      "relocation_summary": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/summary.json",
+        "sha256": "fca9f308f0dec565fe48cfb9d8148ded7ae58fa90f310493b7ecd829850efa79"
+      },
+      "tmpdir": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/tmpdir",
+      "witness_runner": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/run_witness.py",
+        "sha256": "24307b7452c71ea575447e44f120f143caff6b54dd6def332176b7bac58df318"
+      },
+      "witness_wrapper": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "sha256": "f55131e4c6a797532d2437a74dae19fe8049360b2fd15dad127ab36b01a34dc8"
+      }
+    },
+    "thrift": {
+      "agent_name": "tfa-inv-thrift",
+      "agent_output": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output",
+      "brief": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/brief.md",
+        "sha256": "8338a6f833b8e585b7a19d7409dc5a85bd06cdddb454c09c2933f350d30f714b"
+      },
+      "checkout": "/home/newton/work/tfa/phase2-cases/investigators/thrift",
+      "fixed_prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/fixed-prompt.txt",
+        "sha256": "9e03d524c9999bd1b535e6a0ae4fb1e624b42ade894eb8ac793dbf27223413e3"
+      },
+      "fixed_prompt_is_prefix_of_brief": true,
+      "harness": "claude",
+      "hints": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/thrift/stage1-2-relocated/difference-hints.json",
+        "sha256": "76f1e5f0c6c77af4d80d3ca43ff857f4422499ebd30ef961dcd92f1819b0c4dc"
+      },
+      "initial_comment": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stages/thrift/stage1-2-relocated/initial-comment.md",
+        "sha256": "72c5ee9c133e025cfb8fd55452d632e3b37b08f521136e94660053420186a858"
+      },
+      "model": "claude-opus-5-5",
+      "relocation_summary": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/thrift/summary.json",
+        "sha256": "00e9a2045a44246579ddaa322408f42c8e105c3a73c132e58b69a73d45663aa2"
+      },
+      "tmpdir": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/tmpdir",
+      "witness_runner": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/run_witness.py",
+        "sha256": "24307b7452c71ea575447e44f120f143caff6b54dd6def332176b7bac58df318"
+      },
+      "witness_wrapper": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "sha256": "f55131e4c6a797532d2437a74dae19fe8049360b2fd15dad127ab36b01a34dc8"
+      }
+    }
+  },
+  "schema": "tfa.investigation-registry.v1"
+}

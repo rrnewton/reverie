@@ -1,0 +1,1 @@
+httpcoro fail-a1 sched_seed=0 rc=134 oracle=FAIL 117.7s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/fail-a1/receipt.json

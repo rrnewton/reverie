@@ -1,0 +1,183 @@
+
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Opus 5.5 with high effort · Google Vertex AI
+  ▝▝ ▝▝    ~/work/tfa/phase2-cases/investigators/httpcoro
+
+
+▎ Introducing Agent Home v2 - a fast and reliable way to work with Claude Code on web and mobile.
+▎ Open https://www.internalfb.com/ah
+  ⎿  SessionStart:startup hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: /home/newton/.claude/scout-hooks/session-start.sh: No such file or directory
+  ⎿  SessionStart:startup says: Discovered 13 skills (/llm-rules-info for more)
+
+
+❯ Hermit quick-start
+  - Build with Buck outside Hermit.
+  - Run witnesses only through the controller command shown below. It resolves,
+    verifies, and pins the packaged safehermit, bounded-run-space, and Hermit
+    resources; no machine-local dev-hermit checkout is required.
+  - Preserve argv tokens exactly; never invoke through a shell.
+  - For every Hermit invocation, create a fresh `controller-cwd` under that
+    attempt's artifact directory. Add a same-path bind for it, add
+    `--workdir=<fixed case working_directory>`, add Hermit's `--timeout=110`
+    inside safehermit's 120-second deadline, and invoke safehermit with the tool
+    working directory set to `controller-cwd`. Keep the outer timeout at least
+    130 seconds. Never run Hermit from the fixed guest working directory.
+  - Preserve and hash any `.hermit-verify-summary-*` timeout residue in the
+    controller directory; never delete or allowlist it. The fixed guest working
+    directory must remain sealed and unchanged.
+  - Keep the same-path buck-out bind mount because the ELF resolves runtime
+    dependencies there.
+  - For post-fix replay, use the ELF built in the isolated case checkout and
+    rewrite both the guest ELF path and same-path buck-out bind mount to that
+    checkout.
+  - Never copy, replace, or link an ELF or dependency into
+    /home/newton/work/tfa/fbsource/buck-out.
+  - Treat `/tmp/tfa-phase2/repro` and the sealed historical manifest as immutable
+    supplied evidence. Use only the controller commands below; the controller maps
+    the historical contract to the current packaged CLI only after its
+    compatibility gate passes.
+  - The current strict comparison contract is `--verify --verify-verbose
+    --verify-allow both`: verbose selects FullTrace and disables line stripping.
+    Inspect its evidence instead of relaxing comparison.
+
+  Investigation contract
+  1. Reproduce both the supplied PASS and FAIL before editing. Inspect the
+     selected test and production code.
+  2. Separate the trigger/fatal symptom from the originating invariant
+     violation.
+  3. Emit 2-5 ranked falsifiable hypotheses. Each needs supporting evidence,
+     contradicting evidence, and the next discriminating experiment. Select
+     exactly one top hypothesis.
+  4. Propose the smallest principled fix in the exact patch artifact. The source
+     checkout is read-only to your tools: do not edit it, invoke source-control
+     mutations, or attempt to apply the patch yourself. Do not quarantine or
+     disable tests, weaken assertions/comparators/tolerances/timeouts, add
+
+
+  ──── (328 lines hidden) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  00000000000000-replica-1.stderr.txt",
+        "sha256": "d2d9d0c2a1bd9132b6b8084e931de8afdcff06bc1a61a81bbc61bcb430e8b4cb",
+        "size": 17546
+      },
+      "fail.stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-000-sched-seed-000000000000
+  00000000-replica-1.stdout.txt",
+        "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+        "size": 343
+      },
+      "pass.result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-000000000000
+  00000003-replica-1.result.json",
+        "sha256": "5724d454fe834b6925ec51b0b9a8cb9355970ab0ad39c389e0be1e6f36e49b17",
+        "size": 2129
+      },
+      "pass.stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-000000000000
+  00000003-replica-1.stderr.txt",
+        "sha256": "b7e6265efac07bad5cb46cedcf013c0bb8a0355a6bcb658f04a75481467b2246",
+        "size": 1335
+      },
+      "pass.stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/httpcoro/evidence/selection-003-sched-seed-000000000000
+  00000003-replica-1.stdout.txt",
+        "sha256": "2c7a2dc130ff736194e6f6e3074c809a7a1920a5da9af3f7aef74d6081847576",
+        "size": 650
+      }
+    },
+    "pass": {
+      "determinism_verified": true,
+      "exit_code": 0,
+      "failure_class_id": null,
+      "failures": [],
+      "gtest_verdict": "OK",
+      "seed": 3,
+      "signal": null,
+      "top_frames": [],
+      "verifier_counts": {
+        "DETLOG & scheduler COMMIT messages": 13612,
+        "INFO messages": 14798,
+        "detcore-specific messages": 14797,
+        "messages total": 14798,
+        "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 258, committed virtual time 1790024512094600840ns, run 2 first at turn 258, committed virtual time
+  1790024512094600840ns)": 42,
+        "scheduler empty-run-queue kick messages": 1
+      }
+    },
+    "qualification": "deterministic-text-difference; not a root cause",
+    "schema_version": 1,
+    "verifier_count_delta": {
+      "DETLOG & scheduler COMMIT messages": 19788,
+      "INFO messages": 28111,
+      "detcore-specific messages": 28112,
+      "messages total": 28112,
+      "scheduler empty-run-queue kick messages": 0
+    }
+  }
+  ```
+
+  ⎿  Read fbcode/mode/dev-asan (11 lines)
+  ⎿  Loaded fbcode/.claude/CLAUDE.md
+  ⎿  UserPromptSubmit says: Discovered 4 skills: rim.md, lionhead_fuzzing_harness, td-explainer, ... (/llm-rules-info for more)
+
+  Read 1 file, ran 2 shell commands
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+❯ Hermit quick-start - Build with Buck outside Hermit. - Run witnesses only through the controller command shown below. It resolves, verifies, and pins the packaged safehermit, bound…
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+
+
+● __none__(placeholder)
+  ⎿  Initializing…
+  ⎿  Error: Agent type '__none__' not found. Available agents: autoscaling-2-onboarding:report-auditor, claude, claude-code-guide, domain-knowledge-manager:domain-verifier,
+     domain-knowledge-manager:domain-writer, dsmate:data-discovery, Explore, feature-dev:code-architect, feature-dev:code-explorer, feature-dev:code-reviewer, genaimvp:dev-ads-manager,
+     general-purpose, meta_codesearch:code-search, meta_knowledge:knowledge-search, pixelcloud:px-downloader, pixelcloud:px-editor, pixelcloud:px-uploader, Plan, rust-expert,
+     statusline-setup
+
+● Background command "Replay FAIL then PASS witnesses sequentially" completed (exit code 0)
+
+  Searched for 1 pattern, ran 7 shell commands
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+
+❯ Your ongoing goal: Complete the TFA phase-two diagnostic investigation for your case exactly as your initial brief specifies (fixed prompt plus controller supplement). Reproduce
+  both witnesses through the controller replay runner, separate trigger from originating invariant, write 2-5 ranked falsifiable hypotheses with exactly one top, draft the smallest
+  principled fix only in your own checkout, export it to agent-output/patch.diff, write hypotheses.json, validation.json and notes.md, and return the candidate-only JSON report as
+  your final message. Publish nothing, assign no reviewers, spawn no other agents or models, never use /tmp, and record failures and CENSORED runs honestly.
+  Work toward this goal and report completion or blockers.
+
+  Reading HTTPSourceHolder readBodyEvent; check replay status
+  ⎿  $ cd /home/newton/work/tfa/phase2-cases/investigators/httpcoro/fbcode/proxygen/lib/http/coro; grep -n "readBodyEvent" -A14 HTTPSourceHolder.h | head -50; cat
+     /tmp/claude-newton/claude-212630/-home-newton-work-tfa-phase2-cases-investigators-httpcoro/a4419c77-5e0e-4e1a-8e45-7e9e48b35df6/tasks/bbfj86k…
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+
+✢ Sock-hopping… (1m 39s · ↓ 7.0k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage

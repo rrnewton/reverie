@@ -1,0 +1,319 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -64,7 +64,14 @@
+ patched replay, and the patched PASS witness always PASSed, and otherwise
+ SUPPORTED, listing each FAIL witness seed that did not FAIL unfixed at this
+ path and each patched run that did not PASS. Interrupted attempts must lack a
+-receipt and are counted as neither.
++receipt and are counted as neither. The comment calls the report's root cause
++the selected investigator hypothesis, not a proven cause. It quotes the
++contradicting or unverified evidence reported for that hypothesis and the other
++ranked claims, and says that SUPPORTED is Hermit replay evidence only, not
++validation of the fix, and that a patched replay at the same seed does not
++repeat the unfixed schedule. It also prints the exact receipt command, run from the
++receipt's `cwd`, for an unfixed FAIL and a patched replay of the lowest seed
++that FAILed unfixed.
+ 
+ The fixed Hermit quick-start and investigation contract are rendered into each
+ case's `prompt.txt`. The authoritative PASS and FAIL commands invoke the exact
+diff --git a/fbcode/testinfra/tfa/followup.py b/fbcode/testinfra/tfa/followup.py
+--- a/fbcode/testinfra/tfa/followup.py
++++ b/fbcode/testinfra/tfa/followup.py
+@@ -5,6 +5,7 @@
+ import hashlib
+ import json
+ import re
++import shlex
+ from collections import Counter
+ from dataclasses import dataclass
+ from pathlib import Path
+@@ -46,6 +47,9 @@
+ class Followup:
+     ledger_sha256: str
+     root_cause: str
++    hypothesis_rank: int
++    evidence_gap: str
++    alternatives: tuple[tuple[int, str], ...]
+     patch: str
+     patch_sha256: str
+     guests: dict[str, str]
+@@ -53,6 +57,7 @@
+     interrupted: int
+     verdict: str
+     reasons: tuple[str, ...]
++    commands: tuple[tuple[str, str], ...]
+ 
+ 
+ def _object(value: object, name: str) -> dict[str, object]:
+@@ -209,6 +214,55 @@
+     )
+ 
+ 
++def _one_line(text: str) -> str:
++    return " ".join(text.split())
++
++
++def _hypotheses(
++    report: Path, root_cause: str
++) -> tuple[int, str, tuple[tuple[int, str], ...]]:
++    """Return the selected hypothesis rank, the evidence gap its investigator
++    reported, and the other ranked claims; the report was already validated."""
++    try:
++        value = json.loads(report.read_text())
++    except (OSError, json.JSONDecodeError) as error:
++        raise FollowupError(f"candidate report refused: {error}") from error
++    if value.get("root_cause") != root_cause:
++        raise FollowupError("candidate report changed while it was read")
++    rank = value["selected_hypothesis_rank"]
++    ranked = {h["rank"]: h for h in value["hypotheses"]}
++    return (
++        rank,
++        _one_line(ranked[rank]["contradicting"]),
++        tuple((r, _one_line(h["claim"])) for r, h in ranked.items() if r != rank),
++    )
++
++
++def _measured_command(run: Path) -> str:
++    receipt = json.loads((run / "receipt.json").read_text())
++    cwd = receipt.get("cwd")
++    if not isinstance(cwd, str):
++        raise FollowupError(f"receipt has no cwd: {run}")
++    return f"cd {shlex.quote(cwd)} && {shlex.join(receipt['argv'])}"
++
++
++def _commands(runs: tuple[JudgedRun, ...]) -> tuple[tuple[str, str], ...]:
++    failing = [r for r in runs if r.phase == "unfixed" and r.verdict == "FAIL"]
++    if not failing:
++        return ()
++    seed = min(r.seed for r in failing)
++    unfixed = next(r for r in failing if r.seed == seed)
++    patched = next((r for r in runs if r.phase == "patched" and r.seed == seed), None)
++    return tuple(
++        (
++            f"{r.phase} {r.role} seed {r.seed}, judged {r.verdict}",
++            _measured_command(Path(r.run)),
++        )
++        for r in (unfixed, patched)
++        if r is not None
++    )
++
++
+ def validated_followup(case: Case, ledger_path: Path) -> Followup:
+     try:
+         data = ledger_path.read_bytes()
+@@ -225,6 +279,9 @@
+         raise FollowupError(f"candidate report refused: {error}") from error
+     if not patch.strip():
+         raise FollowupError("candidate patch is empty")
++    rank, evidence_gap, alternatives = _hypotheses(
++        Path(str(report)), candidate.root_cause
++    )
+     phases = _object(ledger.get("phases"), "phases")
+     if sorted(phases) != sorted(PHASES):
+         raise FollowupError("ledger must have exactly the unfixed and patched phases")
+@@ -245,6 +302,9 @@
+     return Followup(
+         ledger_sha256=hashlib.sha256(data).hexdigest(),
+         root_cause=candidate.root_cause,
++        hypothesis_rank=rank,
++        evidence_gap=evidence_gap,
++        alternatives=alternatives,
+         patch=patch.decode(errors="replace"),
+         patch_sha256=hashlib.sha256(patch).hexdigest(),
+         guests={phase: str(guests[phase]) for phase in PHASES},
+@@ -252,6 +312,7 @@
+         interrupted=judged["unfixed"][1] + judged["patched"][1],
+         verdict=verdict,
+         reasons=reasons,
++        commands=_commands(runs),
+     )
+ 
+ 
+@@ -287,27 +348,71 @@
+     return lines
+ 
+ 
++def _fence(text: str) -> str:
++    longest = max((len(r) for r in re.findall("`+", text)), default=0)
++    return "`" * max(3, longest + 1)
++
++
++def _command_lines(followup: Followup) -> list[str]:
++    if not followup.commands:
++        return []
++    fence = _fence("".join(command for _, command in followup.commands))
++    return [
++        "Measured replay commands, exactly as recorded in each receipt. Each "
++        "writes under its own recorded run directory, so point its paths at a "
++        "fresh directory before rerunning, and first check that the test ELF at "
++        "its path still has that phase's sha256:",
++        f"{fence}sh",
++        *(
++            line
++            for label, command in followup.commands
++            for line in (f"# {label}", command)
++        ),
++        fence,
++    ]
++
++
+ def followup_text(case: Case, followup: Followup) -> str:
+-    longest = max((len(r) for r in re.findall("`+", followup.patch)), default=0)
+-    fence = "`" * max(3, longest + 1)
++    fence = _fence(followup.patch)
+     reasons = [f"  - {reason}" for reason in followup.reasons]
++    alternatives = [
++        f"  - rank {rank}: {claim}" for rank, claim in followup.alternatives
++    ]
+     return "\n".join(
+         (
+             marker(case, "followup"),
+             "TFA phase-two candidate fix follow-up (artifact-only preview; not "
+             "posted; no Diff created)",
+             f"- Selector: `{case.selector}`",
+-            f"- Root cause (investigator candidate): {followup.root_cause}",
++            "- Root-cause hypothesis (investigator candidate, rank "
++            f"{followup.hypothesis_rank} of {len(alternatives) + 1}; not proven): "
++            f"{followup.root_cause}",
++            "- Contradicting or unverified evidence the investigator reported: "
++            f"{followup.evidence_gap}",
++            "- Other ranked hypotheses, which these replays do not exclude:",
++            *alternatives,
+             f"- Local candidate patch sha256 `{followup.patch_sha256}`, applied "
+             "only in an isolated controller checkout",
+             f"- Unfixed test ELF sha256 `{followup.guests['unfixed']}`; patched "
+             f"test ELF sha256 `{followup.guests['patched']}`",
+             f"- Evidence ledger sha256 `{followup.ledger_sha256}`",
+             "Hermit replays, each re-judged from its own bytes (CENSORED, "
+-            "NONDETERMINISTIC and OTHER count as neither PASS nor FAIL):",
++            "NONDETERMINISTIC and OTHER count as neither PASS nor FAIL). "
++            "fail-witness and pass-witness are the manifest FAIL and PASS seeds; "
++            "discriminator and fresh runs replay further seeds:",
+             *_result_lines(followup),
+             f"Verdict: {followup.verdict}",
+             *reasons,
++            "Verdict rule: SUPPORTED needs at least one seed that FAILed unfixed; "
++            "each such seed and the PASS witness must have patched replays, all "
++            "PASS; and no patched replay may FAIL. Any patched FAIL is NOT "
++            "SUPPORTED, and anything else is INCONCLUSIVE. SUPPORTED means only "
++            "that the patched replays did not reproduce the FAIL seen unfixed. A "
++            "patched replay at the same seed does not repeat the unfixed "
++            "schedule, because the patched code runs differently. SUPPORTED does "
++            "not prove the hypothesised root cause, and it is not native, CI, "
++            "landed or production-containment validation of the fix.",
++            *_command_lines(followup),
+             "Local diff:",
+             f"{fence}diff",
+             followup.patch.rstrip("\n"),
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -51,7 +51,12 @@
+     validate_draft_plan,
+     validate_draft_readback,
+ )
+-from testinfra.tfa.followup import followup_text, FollowupError, validated_followup
++from testinfra.tfa.followup import (
++    followup_text,
++    FollowupError,
++    PHASES,
++    validated_followup,
++)
+ from testinfra.tfa.hermit import (
+     _pin_safehermit,
+     _pin_safehermit_runtime,
+@@ -1556,6 +1561,7 @@
+     def change(receipt: Any) -> None:
+         receipt["schema"] = "tfa.witness-replay-run.v1"
+         receipt["sched_seed"] = receipt.pop("seed")
++        receipt["cwd"] = f"/home/tfa-relocation-fixture/{label}/cwd"
+         receipt["inputs"]["guest"] = {
+             "path": argv[argv.index("--") + 1],
+             "sha256": guest,
+@@ -1648,6 +1654,85 @@
+         self.assertIn(f"````diff\n{patch.decode().rstrip()}\n````", text)
+         self.assertNotIn("Differential Revision", text)
+ 
++    def test_root_cause_is_rendered_as_a_caveated_hypothesis(self) -> None:
++        case = _loaded_case()
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            ledger = _followup_ledger(root, case)
++
++            def select_second(report: Any) -> None:
++                report["selected_hypothesis_rank"] = 2
++                report["hypotheses"][1]["contradicting"] = "not\n  instrumented"
++
++            self._edit(
++                root / "agent-output" / "controller-extracted-report.json",
++                select_second,
++            )
++            text = followup_text(case, validated_followup(case, ledger))
++        self.assertIn(
++            "- Root-cause hypothesis (investigator candidate, rank 2 of 2; not "
++            "proven): An invariant was violated before the fatal symptom.\n"
++            "- Contradicting or unverified evidence the investigator reported: "
++            "not instrumented\n"
++            "- Other ranked hypotheses, which these replays do not exclude:\n"
++            "  - rank 1: race\n",
++            text,
++        )
++        self.assertIn(
++            "SUPPORTED means only that the patched replays did not reproduce the "
++            "FAIL seen unfixed. A patched replay at the same seed does not repeat "
++            "the unfixed schedule, because the patched code runs differently. "
++            "SUPPORTED does not prove the hypothesised root cause, and it is not "
++            "native, CI, landed or production-containment validation of the fix.",
++            text,
++        )
++        self.assertNotIn("Root cause (investigator candidate)", text)
++
++    def test_comment_gives_measured_commands_for_lowest_failing_seed(self) -> None:
++        case = _loaded_case()
++        fresh = case.fresh_stress_seeds[0]
++        for unfixed_fail, unfixed_fresh, run, seed, role in (
++            ("FAIL", "PASS", 0, case.fail_seed, "fail-witness"),
++            ("PASS", "FAIL", 3, fresh, "fresh"),
++        ):
++            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as temporary:
++                root = Path(temporary)
++                ledger = _followup_ledger(
++                    root,
++                    case,
++                    unfixed_fail=unfixed_fail,
++                    unfixed_fresh=unfixed_fresh,
++                )
++                text = followup_text(case, validated_followup(case, ledger))
++                commands = [
++                    "cd /home/tfa-relocation-fixture/"
++                    f"{phase}-{run}/cwd && "
++                    + shlex.join(
++                        json.loads(
++                            (root / f"{phase}-{run}" / "receipt.json").read_text()
++                        )["argv"]
++                    )
++                    for phase in PHASES
++                ]
++            self.assertIn(
++                f"```sh\n# unfixed {role} seed {seed}, judged FAIL\n{commands[0]}\n"
++                f"# patched {role} seed {seed}, judged PASS\n{commands[1]}\n```\n",
++                text,
++            )
++        with tempfile.TemporaryDirectory() as temporary:
++            ledger = _followup_ledger(Path(temporary), case, unfixed_fail="PASS")
++            text = followup_text(case, validated_followup(case, ledger))
++        self.assertNotIn("Measured replay commands", text)
++
++    def test_refuses_receipt_without_cwd_for_its_command(self) -> None:
++        case = _loaded_case()
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            ledger = _followup_ledger(root, case)
++            _rebind_run(root / "unfixed-0", lambda value: value.pop("cwd"))
++            with self.assertRaisesRegex(FollowupError, "receipt has no cwd"):
++                validated_followup(case, ledger)
++
+     def test_patched_fail_is_not_supported_even_when_relabelled(self) -> None:
+         case = _loaded_case()
+         with tempfile.TemporaryDirectory() as temporary:

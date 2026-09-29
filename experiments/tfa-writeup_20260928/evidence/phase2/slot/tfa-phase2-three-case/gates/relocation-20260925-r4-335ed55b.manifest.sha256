@@ -1,0 +1,11 @@
+a4df1eb8be4077e76e17ba79910729d838c5896a3ede5e8c5594812f2322ff89  ./arc-lint-INVALID-nonexistent-path.out
+4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./arc-lint-INVALID-nonexistent-path.rc
+a1aecee1dc759414a59b7f2a4cd66dad24a8c3a50d5f3d0ab649f1ecafdd07eb  ./arc-lint.out
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./arc-lint.rc
+2627ad1a0e310760081b2a2f219d3c76741e6ba564790f5a7fa8a4b096038238  ./commit-identity.out
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./commit-identity.rc
+7e07552b7048536534477ad1ad846f1ad44ba79e21dda9b601c3b9f1277965e1  ./pyre.out
+1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2  ./pyre.rc
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./sl-status-pre.out
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./sl-status-pre.rc
+eb2e94ed08bc96fff9f0d2da42507ba51db191cd0a8b87606545dddb6085725b  ./SUPERSEDED.md

@@ -1,0 +1,212 @@
+[
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/fail-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/fail-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/pass-witness-seed-000-attempt-1",
+    "seed": 0,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix/pass-witness-seed-000-attempt-2",
+    "seed": 0,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-002",
+    "seed": 2,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-003",
+    "seed": 3,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-004",
+    "seed": 4,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-005",
+    "seed": 5,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/discriminator-seed-003-repeat-1",
+    "seed": 3,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/discriminator-seed-003-repeat-2",
+    "seed": 3,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-006",
+    "seed": 6,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-007",
+    "seed": 7,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-008",
+    "seed": 8,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-009",
+    "seed": 9,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-010",
+    "seed": 10,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-extra/search-seed-011",
+    "seed": 11,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "unfixed",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/revert-control-seed-003",
+    "seed": 3,
+    "verdict": "FAIL"
+  },
+  {
+    "phase": "patched",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/discriminator-seed-003-attempt-1",
+    "seed": 3,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/discriminator-seed-003-attempt-2",
+    "seed": 3,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/discriminator-seed-003-attempt-3",
+    "seed": 3,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/discriminator-seed-008-attempt-1",
+    "seed": 8,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "discriminator",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/discriminator-seed-008-attempt-2",
+    "seed": 8,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fail-witness-seed-001-attempt-1",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fail-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fail-witness-seed-001-attempt-2",
+    "seed": 1,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fresh-seed-002",
+    "seed": 2,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fresh-seed-003",
+    "seed": 3,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fresh-seed-004",
+    "seed": 4,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "fresh",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/fresh-seed-005",
+    "seed": 5,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/pass-witness-seed-000-attempt-1",
+    "seed": 0,
+    "verdict": "PASS"
+  },
+  {
+    "phase": "patched",
+    "role": "pass-witness",
+    "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/postfix/pass-witness-seed-000-attempt-2",
+    "seed": 0,
+    "verdict": "PASS"
+  }
+]

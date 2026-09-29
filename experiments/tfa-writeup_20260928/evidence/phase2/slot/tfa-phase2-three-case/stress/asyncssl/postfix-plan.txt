@@ -1,0 +1,9 @@
+fail 11 fail-witness-seed-011-attempt-1 patched FAIL-witness schedule
+fail 11 fail-witness-seed-011-attempt-2 patched FAIL-witness schedule
+fail 11 fail-witness-seed-011-attempt-3 patched FAIL-witness schedule
+pass 1 pass-witness-seed-001-attempt-1 patched PASS-witness schedule
+pass 1 pass-witness-seed-001-attempt-2 patched PASS-witness schedule
+pass 12 fresh-seed-012 patched fresh stress seed
+pass 13 fresh-seed-013 patched fresh stress seed
+pass 14 fresh-seed-014 patched fresh stress seed
+pass 15 fresh-seed-015 patched fresh stress seed

@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "qualification": "candidate-only",
+  "case_id": "httpcoro",
+  "reproduction": {
+    "pass_reproduced": true,
+    "fail_reproduced": true
+  },
+  "hypotheses": [
+    {
+      "rank": 1,
+      "claim": "loopN(4) uses blocking EventBase::loopOnce(). The POST dispatch finishes within the first two iterations, so the last two iterations sit idle and block until the next HHWheelTimer deadline. Under the FAIL schedule the fourth iteration blocks about 900ms until the fixture's 1s connection read timeout fires. The TestCoroTransport read returns TIMED_OUT, readLoop calls initiateDrain(), and HTTP2Codec::generateGoaway (sessionClosing_ OPEN, isWaitingToDrain true) sends GOAWAY with lastStream=1. deliverCallbackIfAllowed then suppresses onMessageBegin and onAbort for every burst stream (id > egressGoawayAck_=1), so the RSTS RateLimitFilter never counts them. Nothing breaches, the keepalive stream is never aborted, and readBodyEvent returns SUSPEND.",
+      "supporting": "Detcore syscall logs (agent-output/*-epoll-timeline.txt). FAIL seed 0 loopN(4) epoll_wait timeouts are -1, 0, 105ms, 900ms (both blocking waits expired with rc=0), so the loop reached about 1.1s after the readLoop armed its 1s read timer. PASS seed 1 loopN(4) timeouts are -1, 0, 8ms, 100ms (about 110ms total), which never reaches the 1s timers. The gap from loopN(2) iteration 1 to evb_.loop() is 97.7ms in PASS (1001 handler coroutines dispatched) and 0.2ms in FAIL (no streams created), consistent with the codec suppressing the burst streams. The F line (21:01:54.726606) matches the evb_.loop() epoll_wait at 514.726. Code: readLoop TIMED_OUT -> initiateDrain (HTTPCoroSession.cpp:2601-2604); HTTP2Codec.cpp:1357-1377 sets lastStream=getLastIncomingStreamID() when OPEN; HTTPParallelCodec.h:89-127 deliverCallbackIfAllowed suppresses callbacks above egressGoawayAck_; parseRstStream delivers onAbort only through deliverCallbackIfAllowed; coro never enables double-GOAWAY drain. Seed 2 (CENSORED outer timeout, no oracle verdict) run-1 log shows the same FAIL signature: 103ms then 900ms blocking waits, and the same syscall numbers as seed 0.",
+      "contradicting": "No DBG log directly shows 'Initiating drain due to read timeout' or 'Suppressing onAbort'; that the +900ms deadline was the connection read timer comes from timing arithmetic (armed at about .672s, 1s timeout, reached at about 1.677s). The 1s writeLoop writeEvent_ timer and TestCoroTransport ack timers expire in the same window, but handleWriteEventTimeout is inert unless flow-control blocked. Seed 2 has no oracle verdict (CENSORED), so it does not count as an independent FAIL.",
+      "next_experiment": "Controller builds the patched ELF and replays seed 0 (FAIL template) and seed 1 (PASS template). Prediction: both PASS, and the loopN(4) epoll_wait calls all have timeout 0 (no 105/900ms waits). Pre-fix alternative: replay seed 0 with --vmodule=HTTPCoroSession=4,HTTP2Codec=3 and expect 'Initiating drain due to read timeout' before the burst plus 'Suppressing onAbort ... egressGoawayAck_=1' lines."
+    },
+    {
+      "rank": 2,
+      "claim": "The RSTS fixed 100ms window resets during the burst (timeoutExpired zeroes the counter), splitting the 1001 resets across two windows so neither exceeds 1000.",
+      "supporting": "1001 is exactly one over the limit, so there is no slack. Burst processing in loopN(2) iteration 0 takes about 440ms of virtual time, far more than 100ms.",
+      "contradicting": "HTTPUniplexTransportSession::readLoop drains all 2002 queued events in one resumption: TestCoroTransport::read never suspends while events are queued, and readLoop only reschedules when a read returns >= 64000 bytes. HHWheelTimer callbacks cannot run in the middle of that synchronous callback. The same 440ms of processing happens in PASS and still breaches. In FAIL, no handler dispatch iteration follows, meaning streams were never created, which this hypothesis cannot explain.",
+      "next_experiment": "Pre-fix, pin session_->setRateLimitParams(RateLimiter::Type::RSTS, 1000, 1h) in a scratch build and replay seed 0. H2 predicts PASS; H1 predicts FAIL is unchanged."
+    },
+    {
+      "rank": 3,
+      "claim": "Ordering race: the verification coroutine (posted through evb_.add / notification queue, which runs in the libevent phase ahead of loop callbacks) runs before the readLoop has processed the burst, because loopN(2) is not enough iterations.",
+      "supporting": "Notification-queue work runs before runInLoop callbacks within an iteration, and the check starts in the first evb_.loop() iteration.",
+      "contradicting": "Loop-iteration counts do not depend on the schedule, and PASS uses the same loopN(2). In both runs loopN(2) iteration 0 is non-blocking and carries about 440ms of burst-processing work, so the readLoop resumed and consumed the burst before the check was even posted.",
+      "next_experiment": "Replay seed 0 with --vmodule=HTTPCoroSession=6 and confirm the 'Read N bytes' lines for the burst appear before the check coroutine's readBodyEvent."
+    },
+    {
+      "rank": 4,
+      "claim": "The keepalive stream's 1s stream read timeout (setStreamReadTimeout) fires during the slowed run and puts the stream into a state where readBodyEvent returns SUSPEND.",
+      "supporting": "The fixture sets setStreamReadTimeout(1s), and more than 1s of virtual time elapses before the check.",
+      "contradicting": "HTTPStreamSource arms its TimedBaton timer only inside waitForEvent()/wait() while a reader is suspended, and nobody reads the keepalive body before the check. A READ_TIMEOUT would also surface as an HTTPError exception (CHECK passes, EXPECT on CANCEL fails), not as SUSPEND.",
+      "next_experiment": "Replay seed 0 with --vmodule=HTTPStreamSource=6 and confirm no 'Read timeout after' error is set on stream 1."
+    }
+  ],
+  "selected_hypothesis_rank": 1,
+  "root_cause": "Test-side timing bug. In ResetRateLimit, loopN(4) uses blocking loopOnce; its idle iterations let Hermit virtual time reach the 1s connection read timeout, so readLoop gets TIMED_OUT and initiateDrain sends GOAWAY with last stream 1. HTTP2Codec then suppresses onMessageBegin and onAbort for all 1001 burst streams, the RSTS limiter never trips, the keepalive stream is never cancelled, and readBodyEvent returns SUSPEND, failing the CHECK at line 1685.",
+  "patch_path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/patch.diff",
+  "original_fail_now_passes": false,
+  "original_pass_still_passes": false,
+  "validations": [
+    {
+      "kind": "BUCK",
+      "argv": [
+        "buck",
+        "build",
+        "@fbcode//mode/dev-asan",
+        "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+        "--show-full-json-output"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: the brief forbids invoking Buck; the patched test binary was not built, so compilation of the EVLOOP_NONBLOCK change is unverified"
+      ]
+    },
+    {
+      "kind": "UNIT",
+      "argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-asan",
+        "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+        "--",
+        "--exact",
+        "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: the brief forbids invoking Buck; no patched binary exists to run"
+      ]
+    },
+    {
+      "kind": "LINT",
+      "argv": [
+        "arc",
+        "lint",
+        "fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: the brief forbids invoking Arc; only a manual check was done (lines at most 80 columns, clang-format style matching the surrounding code)"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_FAIL",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "httpcoro",
+        "--template",
+        "fail",
+        "--seed",
+        "0",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-fail-seed0"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: the replay runner executes the controller-built pre-fix ELF; no patched ELF can be built without Buck, so the fixed code cannot be replayed at seed 0. The pre-fix witness agent-output/witness/fail-a1 reproduced FAIL (rc 134, 117.7s) but does not validate the fix"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_PASS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "httpcoro",
+        "--template",
+        "pass",
+        "--seed",
+        "1",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-pass-seed1"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: no patched ELF can be built without Buck, so the fixed code cannot be replayed at seed 1. The pre-fix witness agent-output/witness/pass-a1 reproduced PASS (rc 0, 12.7s) but does not validate the fix"
+      ]
+    },
+    {
+      "kind": "FRESH_STRESS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "httpcoro",
+        "--template",
+        "fail",
+        "--seed",
+        "{4,5,6,7}",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/postfix-stress-seed{N}"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: the fresh stress seeds 4-7 are reserved for the controller and the brief forbids using them; there is also no patched ELF to run them against"
+      ]
+    }
+  ]
+}

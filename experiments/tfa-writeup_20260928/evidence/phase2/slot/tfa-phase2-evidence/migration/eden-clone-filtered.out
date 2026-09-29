@@ -1,0 +1,5 @@
+Skipping configured checkout with missing client state: /home/newton/work/dev-hermit/ignored/fbsource-assigntask (/data/users/newton/.eden/clients/fbsource-assigntask)
+Skipping configured checkout with missing client state: /home/newton/work/dev-hermit/ignored/fbsource-assigntask-full (/data/users/newton/.eden/clients/fbsource-assigntask-full)
+Cloning new repository at /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/fbsource...
+updated config in /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/fbsource/.hg/hgrc
+Success.  Checked out commit ef4885b6

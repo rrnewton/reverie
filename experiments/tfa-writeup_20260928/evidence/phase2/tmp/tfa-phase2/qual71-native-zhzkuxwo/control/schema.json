@@ -1,0 +1,1 @@
+{"type": "object", "additionalProperties": false, "required": ["nonce", "forbidden", "network", "cgroup"], "properties": {"nonce": {"type": "string"}, "forbidden": {"type": "string"}, "network": {"type": "string"}, "cgroup": {"type": "string"}}}

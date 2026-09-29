@@ -1,0 +1,197 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out,target=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out",
+    "--mount=type=bind,source=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd,target=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd",
+    "--tmp=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/guest-tmp",
+    "--epoch=2026-09-21T21:01:52Z",
+    "--clock-multiplier=0.5",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "0",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/verify",
+    "--",
+    "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+  ],
+  "argv_sha256": "95c0b3dd4ff6064624064ad7187722a8aa690bd9621eb85616178477644b50c9",
+  "case_id": "httpcoro",
+  "classification": {
+    "determinism_verified": true,
+    "failure_class_id": "reset-rate-limit-line1685-body-event-fatal",
+    "gtest": {
+      "failure_markers": [
+        "HTTPDownstreamCoroSessionTests.cpp:1685",
+        "Check failed: bodyEvent.hasException()"
+      ],
+      "filter": "HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "filter_line": "Note: Google Test filter = HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "mode": "fatal-sigabrt",
+      "process_signal": 6,
+      "run_line": "[ RUN      ] HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
+      "source_location_roles": [
+        "fatal-header",
+        "normal-frame",
+        "async-frame"
+      ],
+      "stderr": {
+        "kind": "file",
+        "mode": 420,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/stderr.txt",
+        "sha256": "c1de9e3549eabe54515a9c1d4e68cdce11eec1b1ccbe50d8bb5e7bd62e772125",
+        "size": 17560
+      },
+      "stdout": {
+        "kind": "file",
+        "mode": 420,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/stdout.txt",
+        "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+        "size": 343
+      }
+    },
+    "oracle": "FAIL",
+    "returncode": 134
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd",
+  "cwd_identity_before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd",
+    "st_dev": 48,
+    "st_ino": 1302171023
+  },
+  "cwd_inventory_after": [],
+  "duration_seconds": 117.45361733436584,
+  "environment": {
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/safehermit-log-root",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/tmpdir",
+    "removed": [
+      "HERMIT_BIN",
+      "PYTHONPATH",
+      "RUST_LOG"
+    ]
+  },
+  "finished_unix": 1790333547.4566295,
+  "guest_tmp_inventory": [],
+  "inputs": {
+    "guest": {
+      "path": "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+      "size": 48908168
+    },
+    "hermit": {
+      "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+      "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "size": 415330552
+    },
+    "safehermit": {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "sha256": "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0",
+      "size": 67422
+    }
+  },
+  "note": "prefix FAIL-witness schedule (resumed after interrupted attempt-2)",
+  "rewrites_from_template": [
+    {
+      "index": 2,
+      "replay": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/safehermit.txt",
+      "template": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-000-attempt-1/safehermit.txt"
+    },
+    {
+      "index": 20,
+      "replay": "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out,target=/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out",
+      "template": "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+    },
+    {
+      "index": 21,
+      "replay": "--mount=type=bind,source=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd,target=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/controller-cwd",
+      "template": "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd,target=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-000-attempt-1/cwd"
+    },
+    {
+      "index": 22,
+      "replay": "--tmp=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/guest-tmp",
+      "template": "--tmp=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/attempts/seed-000-attempt-1/guest-tmp"
+    },
+    {
+      "index": 45,
+      "replay": "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/verify",
+      "template": "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/seed-000-attempt-1/verify"
+    },
+    {
+      "index": 47,
+      "replay": "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "template": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests"
+    }
+  ],
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/safehermit.txt",
+    "sha256": "2eb1602db1b9d6a1089af7af8dc477b25931e2b9b101bef25396e10760aa67b6",
+    "size": 2119
+  },
+  "sched_seed": 0,
+  "schema": "tfa.witness-replay-run.v1",
+  "started_unix": 1790333430.0030122,
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/stderr.txt",
+    "sha256": "c1de9e3549eabe54515a9c1d4e68cdce11eec1b1ccbe50d8bb5e7bd62e772125",
+    "size": 17560
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/httpcoro/prefix/fail-witness-seed-000-attempt-3/stdout.txt",
+    "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+    "size": 343
+  },
+  "template": {
+    "role": "fail",
+    "seed": 0,
+    "summary": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/httpcoro/summary.json",
+      "sha256": "fca9f308f0dec565fe48cfb9d8148ded7ae58fa90f310493b7ecd829850efa79",
+      "size": 7196
+    }
+  },
+  "verify_inventory": [
+    {
+      "path": "run1_log_CHrbA",
+      "size": 10117740
+    },
+    {
+      "path": "run2_log_qOawj",
+      "size": 10117740
+    }
+  ]
+}

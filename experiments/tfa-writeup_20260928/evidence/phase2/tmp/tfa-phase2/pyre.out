@@ -1,0 +1,13 @@
+2026-09-24T15:10:42.141-07:00  INFO arc_pyre_lib: Querying affected files from source control...
+2026-09-24T15:10:42.730-07:00  INFO arc_pyre_lib: Found 7 existing changed Python files
+2026-09-24T15:10:42.730-07:00  INFO arc_pyre_lib: Checking owning targets of existing changed Python files...
+[2026-09-24T15:10:42.834-07:00] Buck UI: https://www.internalfb.com/buck2/226ce9d4-6d0a-4292-960e-ecf15dbfb0f0
+[2026-09-24T15:10:44.359-07:00] RE Session: reSessionID-188aaf38-ae10-4664-9155-7af7241fcb55
+[2026-09-24T15:10:45.296-07:00] Network: up 111KiB  down 0B  session reSessionID-188aaf38-ae10-4664-9155-7af7241fcb55
+2026-09-24T15:10:45.375-07:00  INFO arc_pyre_lib: Found 4 targets and type checking ran on 4 of them
+[1;4mType errors in target [0m[3;4;35mfbcode//testinfra/tfa:tfa_phase2_lib[0m
+[31mfbcode/testinfra/tfa/hermit.py[0m:[33m1527[0m:[33m41[0m Argument `Unknown | None` is not assignable to parameter `key` with type `str` in function `dict.get`
+  The declared type does not allow `None`. Consider narrowing the value with an `is not None` check.
+[31mfbcode/testinfra/tfa/hermit.py[0m:[33m1592[0m:[33m25[0m Argument `tuple[Unknown | None, int, int]` is not assignable to parameter `object` with type `tuple[str, int, int]` in function `list.append`
+
+Pyrefly feedback: if these diagnostics were not useful, run `pyrefly feedback --reason <REASON> [--details <TEXT>]` (see `pyrefly feedback --help`).

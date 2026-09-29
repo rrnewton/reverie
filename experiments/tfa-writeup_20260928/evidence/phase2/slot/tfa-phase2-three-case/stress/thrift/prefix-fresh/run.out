@@ -1,0 +1,4 @@
+thrift fresh-seed-002 sched_seed=2 rc=0 oracle=PASS 15.5s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-002/receipt.json
+thrift fresh-seed-003 sched_seed=3 rc=1 oracle=FAIL 16.1s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-003/receipt.json
+thrift fresh-seed-004 sched_seed=4 rc=0 oracle=PASS 17.4s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-004/receipt.json
+thrift fresh-seed-005 sched_seed=5 rc=0 oracle=PASS 17.9s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/thrift/prefix-fresh/fresh-seed-005/receipt.json

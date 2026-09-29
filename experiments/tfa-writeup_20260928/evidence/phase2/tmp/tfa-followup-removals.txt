@@ -1,0 +1,112 @@
+34:-turn precedes coordinator containment cleanup. Controller contents are sealed
+76:-BOUNDED_RUN_SPACE: str = "/home/newton/work/dev-hermit/scripts/bounded-run-space"
+78:-_SAFEHERMIT_LOG_ROOT: str = (
+79:-    "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+93:-_VERIFY_ALLOCATION_LOCK: Path = (
+94:-    Path(_SAFEHERMIT_LOG_ROOT).parent / ".tfa-verify-v2.lock"
+95:-)
+96:-_VERIFY_COMMAND_LOCK: Path = (
+97:-    Path(_SAFEHERMIT_LOG_ROOT).parent / ".tfa-verify-v2-command.lock"
+98:-)
+168:-        path.parent == Path(_SAFEHERMIT_LOG_ROOT)
+177:-def _verified_lock_guard(path: Path, timeout_seconds: int, label: str) -> Iterator[int]:
+192:-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+204:-def _verify_allocation_guard() -> Iterator[None]:
+207:-        _VERIFY_ALLOCATION_LOCK,
+217:-def _verify_command_guard() -> Iterator[int]:
+220:-        _VERIFY_COMMAND_LOCK,
+232:-    with _verify_command_guard():
+249:-            _SAFEHERMIT_LOG_ROOT,
+258:-            _SAFEHERMIT_LOG_ROOT,
+267:-        entries = sorted(os.scandir(_SAFEHERMIT_LOG_ROOT), key=lambda item: item.name)
+278:-    with _verify_command_guard():
+287:-        "safehermit": _pin_safehermit(Path(SAFEHERMIT), wrapper, SAFEHERMIT_SHA256),
+292:-            Path(BOUNDED_RUN_SPACE),
+430:-        _SAFEHERMIT_LOG_ROOT,
+439:-        or bounded_path.parent != Path(_SAFEHERMIT_LOG_ROOT)
+448:-    expected_run_record = Path(_SAFEHERMIT_LOG_ROOT) / "registry" / f"{run_id}.json"
+453:-        or log_dir.parent != Path(_SAFEHERMIT_LOG_ROOT)
+462:-    with _verify_allocation_guard():
+472:-    attempt_root.mkdir(parents=True, exist_ok=True)
+482:-        execution_environment["SAFEHERMIT_LOG_ROOT"] = _SAFEHERMIT_LOG_ROOT
+493:-                with _verify_command_guard():
+511:-from testinfra.tfa.manifest import load_manifest
+554:-        load_manifest(manifest),
+563:-        load_manifest(manifest), case_id, seed, artifact_root, timeout_seconds
+576:-        load_manifest(manifest),
+596:-        "/home/newton/work/dev-hermit/bin/safehermit",
+619:-    if executable == "/usr/local/bin/codex":
+624:-    if (
+625:-        executable == "/home/newton/work/dev-hermit/bin/safehermit"
+626:-        or Path(executable) == cwd.parent / "safehermit-runtime" / "bin" / "safehermit"
+627:-    ):
+829:-        "--verify-strict",
+837:-        "--verify-strict",
+845:-            for path in Path(hermit_module._SAFEHERMIT_LOG_ROOT).iterdir()
+862:-                    {"operation": boundary, "worker_pid": os.getpid()},
+875:-    with _verify_command_guard():
+895:-_HERMIT_BINARY = (
+896:-    "/home/newton/work/dev-hermit/ignored/"
+897:-    "tfa-rlimit-core-rerun-20260920-4630ee2a/"
+898:-    "stable-5c422b85/hermit-4630ee2a"
+899:-)
+908:-_HANDOFF_TEST_LOCK = _HERMIT_TEST_SCHEDULER_LOCK
+910:-_WORKTREE_JOURNAL_ROOT = Path("/tmp/tfa-phase2/production-worktree-journal")
+911:-_WORKTREE_SOURCE_ROOT = Path("/home/newton/work/tfa/fbsource")
+921:-        with Lease(_HERMIT_TEST_SCHEDULER_LOCK, wait=True):
+987:-        with Lease(_HANDOFF_TEST_LOCK, wait=True):
+988:-            _reconcile_worktree_journals()
+989:-            return function(*args, **kwargs)
+1092:-    _WORKTREE_JOURNAL_ROOT.mkdir(parents=True, mode=0o700, exist_ok=True)
+1093:-    metadata = _WORKTREE_JOURNAL_ROOT.lstat()
+1103:-    return _WORKTREE_JOURNAL_ROOT
+1112:-    if source != _WORKTREE_SOURCE_ROOT or target.parent != evidence:
+1121:-        or source != _WORKTREE_SOURCE_ROOT
+1130:-    with _registered_worktree(_WORKTREE_SOURCE_ROOT, root, checkout, label):
+1149:-                "testinfra.tfa.tests.test_production_containment._WORKTREE_JOURNAL_ROOT",
+1150:-                journal_root,
+1155:-                    _WORKTREE_SOURCE_ROOT,
+1164:-                self.assertIn(canonical, _registered_worktrees(_WORKTREE_SOURCE_ROOT))
+1173:-                    canonical, _registered_worktrees(_WORKTREE_SOURCE_ROOT)
+1182:-                    "PYTHONPATH=/home/newton/work/tfa/fbsource/fbcode",
+1191:-        source_root = Path("/home/newton/work/tfa/fbsource")
+1216:-        source_root = Path("/home/newton/work/tfa/fbsource")
+1234:-                    _HERMIT_BINARY,
+1243:-            self.assertEqual(receipt["returncode"], 0)
+1254:-                Path(_HERMIT_BINARY).read_bytes()
+1272:-                    _HERMIT_BINARY,
+1281:-            self.assertEqual(receipt["returncode"], 124)
+1303:-                        _HERMIT_BINARY,
+1321:-                        _HERMIT_BINARY,
+1330:-        bounded_root = Path(
+1331:-            "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+1332:-        )
+1340:-                        _HERMIT_BINARY,
+1355:-                    os.kill(controller.pid, signal.SIGKILL)
+1364:-                            _HERMIT_BINARY,
+1381:-                    _HERMIT_BINARY,
+1410:-    bounded_path = Path(
+1411:-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/"
+1412:-        f"brs-{allocation_tag}-123-456"
+1413:-    )
+1423:-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
+1432:-    log_root = Path(
+1433:-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+1434:-    )
+1823:-            refused = (
+1824:-                Path(
+1825:-                    "/home/newton/work/dev-hermit/ignored/"
+1826:-                    "safehermit-loopback/mnt/safehermit"
+1827:-                )
+1828:-                / f"brs-{hermit_module._verify_allocation_tag(attempt)}-123-456"
+1871:-            bounded_root = root / "bounded"
+1872:-            bounded_root.mkdir()
+1881:-                patch("testinfra.tfa.hermit._SAFEHERMIT_LOG_ROOT", str(bounded_root)),
+1889:-            descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+1890:-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+1908:-                    patch("testinfra.tfa.hermit._VERIFY_ALLOCATION_LOCK", lock),
+1920:-                    with hermit_module._verify_allocation_guard():
+1924:-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+1925:-                os.close(descriptor)
+1937:-                "/home/newton/work/dev-hermit/ignored/"
+1938:-                "safehermit-loopback/mnt/safehermit",

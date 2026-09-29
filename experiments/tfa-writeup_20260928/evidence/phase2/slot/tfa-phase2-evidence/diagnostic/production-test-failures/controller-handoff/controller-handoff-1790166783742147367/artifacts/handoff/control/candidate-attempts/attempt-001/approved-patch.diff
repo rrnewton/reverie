@@ -1,0 +1,6 @@
+diff --git a/fbcode/tfa_controller_handoff_probe.txt b/fbcode/tfa_controller_handoff_probe.txt
+new file mode 100644
+--- /dev/null
++++ b/fbcode/tfa_controller_handoff_probe.txt
+@@ -0,0 +1 @@
++b7f115bed7e1cb2ca166e5236495a6c0f440b2866d8f4a8e

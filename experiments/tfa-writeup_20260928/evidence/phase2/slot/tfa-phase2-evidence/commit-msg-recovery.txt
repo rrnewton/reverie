@@ -1,0 +1,59 @@
+[testinfra][tfa] Refuse empty wrapper argv; byte-bind Hermit test
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+Address the two minors from the review of 795572d12246.
+
+- test_real_packaged_hermit_is_bound_to_blocked_provenance no longer
+  assumes the ambient hermit-test-bin digest differs from the reviewed
+  digest. It hashes the observed resource bytes and requires exactly one
+  state: BLOCKED when they equal the reviewed provenance digest (the
+  reviewed packaged state is BLOCKED, which the test also pins), and
+  PROVENANCE_MISMATCH otherwise. Either way it asserts the exact error
+  prefix including the observed digest, that nothing is pinned, and every
+  recorded identity field (schema, state, witness, target, import commit,
+  packaged revision, digest, state and configured target, packaged and
+  qualification blockers, the qualification record, receipts digest).
+- New test_packaged_hermit_mutated_bytes_are_provenance_mismatch
+  substitutes only the packaged executable with synthetic bytes, keeping
+  the real compatibility record, receipts and pinned digests, and
+  requires PROVENANCE_MISMATCH with the same identity assertions, so the
+  mismatch path is proven independently of how the resource was built.
+- payload_wrapper.py: _upstream_command() refuses a missing or empty
+  upstream executable with SystemExit("payload wrapper received no
+  upstream executable") as the first step of main(), before cgroup
+  admission, the sentinel and payload binding, so no later index can
+  raise IndexError. The existing len(argv) guard is folded into it and
+  also refuses an empty-string executable. The wrapper pin in process.py
+  moves to 160c7455e2a44d3ffa26bb8a78265e6f66a52023bcb7dc011a4fdbc411b8c824
+  (6819 bytes). New test_wrapper_refuses_empty_upstream_argv covers
+  [], [wrapper] and [wrapper, ""] and runs main() with live control
+  paths, asserting the diagnostic and that cgroup.procs and the sentinel
+  are untouched.
+
+Both production Codex compatibility keys remain blocked with no payload
+digest; nothing here changes eligibility or containment.
+
+Test Plan:
+All on the exact committed bytes, exit status captured before filtering:
+- `buck test fbcode//testinfra/tfa/tests:tfa_phase2_test -- -r 'packaged_hermit|wrapper_refuses_empty|test_wrapper_|entrypoint_requires'`: 9/9 (5.8s)
+- `buck test fbcode//testinfra/tfa/tests:tfa_phase2_test`: 159/159 (13.1s; 157 at the parent plus the 2 new tests)
+- `buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json`: 3 cases
+- `arc pyre check-changed-targets`: no type errors
+- `arc f`; `arc lint -a`: clean, no bytes changed
+- Negative controls, each restored and sha-verified: deleting the
+  empty-argv refusal fails test_wrapper_refuses_empty_upstream_argv
+  ("SystemExit not raised"); evaluating the reviewed packaged state before
+  the provenance digest in hermit.py fails both packaged-Hermit tests
+  (BLOCKED instead of PROVENANCE_MISMATCH)
+- In this checkout the observed resource digest differs from the reviewed
+  one, so the real test exercised its PROVENANCE_MISMATCH arm; its BLOCKED
+  arm on real bytes needs a byte-identical build and was not exercised
+  (the synthetic exact-match BLOCKED path is covered by
+  test_packaged_hermit_records_exact_blocked_compatibility)
+- `buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test`:
+  36 pass / 4 fail (rc=32, 406s). This is a blocked result, not a pass:
+  the four real-Codex agent cases fail closed in preflight because signed
+  codex-cli 0.156.0 lacks 7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and
+  a708fc683934d7d7ea7560354968fedd2be28581; every non-Codex case passes.

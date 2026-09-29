@@ -1,0 +1,16 @@
+....F....
+======================================================================
+FAIL: test_patched_fail_is_not_supported_even_when_relabelled (testinfra.tfa.tests.test_prototype.FollowupTest.test_patched_fail_is_not_supported_even_when_relabelled)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1660, in test_patched_fail_is_not_supported_even_when_relabelled
+    self.assertEqual(followup.verdict, "NOT SUPPORTED")
+AssertionError: 'INCONCLUSIVE' != 'NOT SUPPORTED'
+- INCONCLUSIVE
++ NOT SUPPORTED
+
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.126s
+
+FAILED (failures=1)

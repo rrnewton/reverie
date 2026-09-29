@@ -1,0 +1,32 @@
+[2026-09-24T14:39:02.965-07:00] Buck UI: https://www.internalfb.com/buck2/9155a724-0eff-40a1-90f2-f3bc752f2d0d
+[2026-09-24T14:39:02.996-07:00] Network: up 0B  down 0B
+BUILD FAILED
+Error evaluating build file: `fbcode//testinfra/tfa/tests:BUCK`
+
+Caused by:
+    0: error: Error coercing attribute `platform` of `fbcode//testinfra/tfa/tests:hermetic_infra_hermit_hermit-cli_hermit__cfg__fbcode_mode_opt_transition`
+          --> tools/build_defs/fbcode_macros/build_defs/fbcode_configured_alias.bzl:129:5
+           |
+       129 | /     _fbcode_configured_alias_transition(
+       130 | |         name = name + "_transition",
+       131 | |         additional_constraints = additional_constraints,
+       132 | |         platform = platform,
+       133 | |         to_preserve = additional_constraints_to_preserve if only_specified_constraints else CONSTRAINT_SETTINGS_TO_PRESERVE + add...
+       134 | |         force_skip_sanitizer = only_specified_constraints,
+       135 | |         sanitizer_setting = "ovr_config//build_mode:sanitizer_type",
+       136 | |         skip_sanitizer_constraints = SKIP_SANITIZER_CONSTRAINTS,
+       137 | |         labels = [ci.skip_target()],
+       138 | |     )
+           | |_____^
+       Traceback (most recent call last):
+         * fbcode/testinfra/tfa/tests/BUCK:31, in <module>
+             fbcode_configured_dep(
+         * tools/build_defs/fbcode_macros/build_defs/fbcode_configured_alias.bzl:168, in fbcode_configured_dep
+             fbcode_configured_alias(name = name, actual = actual, platform = platform)
+         * tools/build_defs/fbcode_macros/build_defs/fbcode_configured_alias.bzl:129, in fbcode_configured_alias
+             _fbcode_configured_alias_transition(
+       
+    1: Error coercing attribute `platform` of type `attrs.dep()`
+    2: Error coercing "@fbcode//mode/opt"
+    3: Error parsing target pattern `@fbcode//mode/opt`
+    4: Expected pattern to contain `:`, trailing `/...` or literal `...`.

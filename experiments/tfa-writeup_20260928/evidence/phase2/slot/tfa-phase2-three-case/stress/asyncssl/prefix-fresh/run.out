@@ -1,0 +1,4 @@
+asyncssl fresh-seed-012 sched_seed=12 rc=0 oracle=PASS 5.0s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-012/receipt.json
+asyncssl fresh-seed-013 sched_seed=13 rc=0 oracle=PASS 5.6s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-013/receipt.json
+asyncssl fresh-seed-014 sched_seed=14 rc=0 oracle=PASS 4.9s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-014/receipt.json
+asyncssl fresh-seed-015 sched_seed=15 rc=1 oracle=OTHER_FAILURE 10.0s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-015/receipt.json

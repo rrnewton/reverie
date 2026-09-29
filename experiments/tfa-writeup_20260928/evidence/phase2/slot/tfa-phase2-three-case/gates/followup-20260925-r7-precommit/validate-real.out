@@ -1,0 +1,3 @@
+thrift SUPPORTED ('fail-witness seed 1 did not FAIL unfixed at this checkout path',) True
+asyncssl SUPPORTED ('patched fresh seed 15 was OTHER',) True
+httpcoro SUPPORTED () True

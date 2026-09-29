@@ -1,0 +1,88 @@
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -57,7 +57,8 @@
+ test ELF SHA-256, the ELF its argv runs, its scheduler seed, and its stdout,
+ stderr and safehermit report bytes. Its verdict is re-judged from those bytes as
+ PASS, FAIL, CENSORED (safehermit wall timeout), NONDETERMINISTIC or OTHER; only
+-PASS and FAIL are decided. The two phases must test different ELFs. The verdict
++PASS and FAIL are decided. The unfixed phase must test the manifest's
++`artifact_sha256` ELF and the patched phase a different one. The verdict
+ is NOT SUPPORTED if any patched replay FAILs, INCONCLUSIVE unless some unfixed
+ replay FAILed at this path, every seed that FAILed unfixed PASSed on every
+ patched replay, and the patched PASS witness always PASSed, and otherwise
+diff --git a/fbcode/testinfra/tfa/followup.py b/fbcode/testinfra/tfa/followup.py
+--- a/fbcode/testinfra/tfa/followup.py
++++ b/fbcode/testinfra/tfa/followup.py
+@@ -231,6 +231,8 @@
+     guests = {
+         phase: _object(phases[phase], phase).get("guest_sha256") for phase in PHASES
+     }
++    if guests["unfixed"] != case.artifact_sha256:
++        raise FollowupError("unfixed phase is not the manifest's test ELF")
+     if guests["unfixed"] == guests["patched"]:
+         raise FollowupError("patched phase reran the unfixed test ELF")
+     seen: set[str] = set()
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -1531,7 +1531,6 @@
+                 validated_relocation(case, summary)
+ 
+ 
+-_UNFIXED_ELF = "aa" * 32
+ _PATCHED_ELF = "bb" * 32
+ 
+ 
+@@ -1552,7 +1551,7 @@
+ def _replay(root: Path, case: Case, label: str, seed: int, oracle: str) -> str:
+     outcome = "pass" if oracle == "PASS" else "fail"
+     argv = _relocated_attempt(root, case, outcome, seed, label, oracle)
+-    guest = _UNFIXED_ELF if label.startswith("unfixed") else _PATCHED_ELF
++    guest = case.artifact_sha256 if label.startswith("unfixed") else _PATCHED_ELF
+ 
+     def change(receipt: Any) -> None:
+         receipt["schema"] = "tfa.witness-replay-run.v1"
+@@ -1598,7 +1597,9 @@
+     }
+     phases = {
+         phase: {
+-            "guest_sha256": _UNFIXED_ELF if phase == "unfixed" else _PATCHED_ELF,
++            "guest_sha256": (
++                case.artifact_sha256 if phase == "unfixed" else _PATCHED_ELF
++            ),
+             "runs": [
+                 {"role": role, "run": _replay(root, case, f"{phase}-{n}", seed, oracle)}
+                 for n, (role, seed, oracle) in enumerate(runs)
+@@ -1742,18 +1743,29 @@
+     def test_refuses_runs_not_bound_to_their_phase_or_bytes(self) -> None:
+         case = _loaded_case()
+         mutations: tuple[tuple[str, Callable[[Path], object]], ...] = (
++            (
++                "unfixed phase is not the manifest's test ELF",
++                lambda root: self._edit(
++                    root / "ledger.json",
++                    lambda v: v["phases"].update(
++                        unfixed=v["phases"]["patched"], patched=v["phases"]["unfixed"]
++                    ),
++                ),
++            ),
+             (
+                 "reran the unfixed test ELF",
+                 lambda root: self._edit(
+                     root / "ledger.json",
+-                    lambda v: v["phases"]["patched"].update(guest_sha256=_UNFIXED_ELF),
++                    lambda v: v["phases"]["patched"].update(
++                        guest_sha256=case.artifact_sha256
++                    ),
+                 ),
+             ),
+             (
+                 "different ELF than its phase",
+                 lambda root: _rebind_run(
+                     root / "patched-1",
+-                    lambda v: v["inputs"]["guest"].update(sha256=_UNFIXED_ELF),
++                    lambda v: v["inputs"]["guest"].update(sha256=case.artifact_sha256),
+                 ),
+             ),
+             (

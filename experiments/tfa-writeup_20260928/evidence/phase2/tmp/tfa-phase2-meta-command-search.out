@@ -1,0 +1,56 @@
+Results grouped by platform → object → action (scores indicate match relevance; top args show commonly used flags)
+
+mft-sandbox
+  └── mft-sandbox.payout
+      ├── create-iap-product   Create a new IAP product  (score: 0.0139423)
+      └── create-app           Create a new app  (score: 0.0133357)
+          top args: --output, --user-id (required)
+
+df
+  └── df.session
+      └── codex-inject         Wake an idle Codex thread by injecting a turn over the app-server control socket  (score: 0.00819672)
+          top args: --print-thread, --output, --cwd, --sock, --thread
+
+facebook
+  └── facebook.app-setup
+      └── start-app            Create a new app session  (score: 0.00819672)
+
+android
+  ├── android.frida
+  │   └── bridge-stop          Terminate the Frida bridge daemon attached to <app> and remove its socket.  (score: 0.00806452)
+  └── android.device-control
+      └── configure-sandbox-routing Configure sandbox routing on an Android device without generating a test user or
+setting up headless login.
+
+Use this tool when:
+- You've already logged in (manually, via deeplink, or another method)
+- You want to route the app's traffic to a custom sandbox (e.g., an OnDemand server)
+
+Prerequisites:
+- A debug build of the app must be installed on the device. Release builds are not
+  debuggable and cannot be configured.
+- Call this AFTER login (e.g., ConfigureTestingEnvironment), not before.
+
+After calling this tool, force-stop and relaunch the app for the routing to take effect.
+
+Android only. For FBLite/IG Lite, a user_id is required for signed properties.
+
+Example: To route Facebook to your OD:
+  configure_sandbox_routing(device_id="emulator-5554", app_identifier="facebook",
+    sandbox_hosts={"www_host": {"addr": "od123.od.facebook.com"}})  (score: 0.00793651)
+
+tupperware
+  └── tupperware.sandbox
+      ├── ssh                  SSH into a sandbox task  (score: 0.00806452)
+      └── restart              Restart a sandbox job or task  (score: 0.0078125)
+
+sbc
+  └── sbc.cache — Sandbox caches  (score: 0.00793651)
+
+mobile-releases
+  └── mobile-releases.app
+      └── describe             Get detailed metadata for a mobile app  (score: 0.0078125)
+          top args: --output, --app, --no-truncate, --show-links, --id
+
+Tip: Use `meta metacli.command describe -c '<command>'` to see required options, types, and examples before running a command.
+Showing 10+ results. Use -l <number> for more.

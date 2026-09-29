@@ -1,0 +1,184 @@
+[2026-09-24T15:26:18.965-07:00] Buck UI: https://www.internalfb.com/buck2/52065ca3-bfc9-44c4-b392-aef8c9a630ed
+[2026-09-24T15:26:20.960-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/10133099363898019
+[2026-09-24T15:26:37.143-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.7s)
+[2026-09-24T15:26:37.143-07:00] test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... ERROR
+[2026-09-24T15:26:37.143-07:00]
+[2026-09-24T15:26:37.143-07:00] ======================================================================
+[2026-09-24T15:26:37.143-07:00] ERROR: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:26:37.143-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:26:37.143-07:00] Traceback (most recent call last):
+[2026-09-24T15:26:37.143-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+[2026-09-24T15:26:37.143-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:26:37.143-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:26:37.143-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3310, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+[2026-09-24T15:26:37.143-07:00]     result = run_process(
+[2026-09-24T15:26:37.143-07:00]              ^^^^^^^^^^^^
+[2026-09-24T15:26:37.143-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 892, in run_process
+[2026-09-24T15:26:37.143-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T15:26:37.143-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:26:37.143-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 319, in _codex_environment_preflight
+[2026-09-24T15:26:37.143-07:00]     raise ProcessError(
+[2026-09-24T15:26:37.143-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v1): version command returned an invalid result
+[2026-09-24T15:26:37.143-07:00]
+[2026-09-24T15:26:37.143-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:26:37.143-07:00] Ran 1 test in 4.673s
+[2026-09-24T15:26:37.143-07:00]
+[2026-09-24T15:26:37.143-07:00] FAILED (errors=1)
+[2026-09-24T15:26:37.143-07:00]
+[2026-09-24T15:27:24.054-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.7s)
+[2026-09-24T15:27:24.054-07:00] test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:24.054-07:00] ======================================================================
+[2026-09-24T15:27:24.054-07:00] FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:27:24.054-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:27:24.054-07:00] Traceback (most recent call last):
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 641, in _preserving_production_directory
+[2026-09-24T15:27:24.054-07:00]     yield root
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3619, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-24T15:27:24.054-07:00]     review = run_process(
+[2026-09-24T15:27:24.054-07:00]              ^^^^^^^^^^^^
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 892, in run_process
+[2026-09-24T15:27:24.054-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T15:27:24.054-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 319, in _codex_environment_preflight
+[2026-09-24T15:27:24.054-07:00]     raise ProcessError(
+[2026-09-24T15:27:24.054-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v1): version command returned an invalid result
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:24.054-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:24.054-07:00] Traceback (most recent call last):
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+[2026-09-24T15:27:24.054-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:27:24.054-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3591, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-24T15:27:24.054-07:00]     with _preserving_production_directory(
+[2026-09-24T15:27:24.054-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:24.054-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T15:27:24.054-07:00]     self.gen.throw(value)
+[2026-09-24T15:27:24.054-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 647, in _preserving_production_directory
+[2026-09-24T15:27:24.054-07:00]     raise AssertionError(
+[2026-09-24T15:27:24.054-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790288842675099709; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-qh6tg301
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:24.054-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:27:24.054-07:00] Ran 1 test in 4.701s
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:24.054-07:00] FAILED (failures=1)
+[2026-09-24T15:27:24.054-07:00]
+[2026-09-24T15:27:38.898-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (4.8s)
+[2026-09-24T15:27:38.898-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:27:38.898-07:00] ======================================================================
+[2026-09-24T15:27:38.898-07:00] FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:27:38.898-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:27:38.898-07:00] Traceback (most recent call last):
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 641, in _preserving_production_directory
+[2026-09-24T15:27:38.898-07:00]     yield root
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3535, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-24T15:27:38.898-07:00]     fresh = run_process(
+[2026-09-24T15:27:38.898-07:00]             ^^^^^^^^^^^^
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 892, in run_process
+[2026-09-24T15:27:38.898-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T15:27:38.898-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 319, in _codex_environment_preflight
+[2026-09-24T15:27:38.898-07:00]     raise ProcessError(
+[2026-09-24T15:27:38.898-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v1): version command returned an invalid result
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:27:38.898-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:27:38.898-07:00] Traceback (most recent call last):
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+[2026-09-24T15:27:38.898-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:27:38.898-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3504, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-24T15:27:38.898-07:00]     with _preserving_production_directory(
+[2026-09-24T15:27:38.898-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:27:38.898-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T15:27:38.898-07:00]     self.gen.throw(value)
+[2026-09-24T15:27:38.898-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 647, in _preserving_production_directory
+[2026-09-24T15:27:38.898-07:00]     raise AssertionError(
+[2026-09-24T15:27:38.898-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790288857450408343; retained root: /tmp/tfa-phase2/tfa-production-codex-report-_1547cec
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:27:38.898-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:27:38.898-07:00] Ran 1 test in 4.773s
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:27:38.898-07:00] FAILED (failures=1)
+[2026-09-24T15:27:38.898-07:00]
+[2026-09-24T15:30:23.974-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (16.2s)
+[2026-09-24T15:30:23.974-07:00] test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:23.974-07:00] ======================================================================
+[2026-09-24T15:30:23.974-07:00] FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:30:23.974-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:30:23.974-07:00] Traceback (most recent call last):
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 641, in _preserving_production_directory
+[2026-09-24T15:30:23.974-07:00]     yield root
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3423, in test_real_codex_candidate_handoff_uses_controller_buck
+[2026-09-24T15:30:23.974-07:00]     candidate = _diagnose_candidate_locked(
+[2026-09-24T15:30:23.974-07:00]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 3267, in _diagnose_candidate_locked
+[2026-09-24T15:30:23.974-07:00]     result = _run_diagnostic_phase(
+[2026-09-24T15:30:23.974-07:00]              ^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 3200, in _run_diagnostic_phase
+[2026-09-24T15:30:23.974-07:00]     return run_process(
+[2026-09-24T15:30:23.974-07:00]            ^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 892, in run_process
+[2026-09-24T15:30:23.974-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T15:30:23.974-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 319, in _codex_environment_preflight
+[2026-09-24T15:30:23.974-07:00]     raise ProcessError(
+[2026-09-24T15:30:23.974-07:00] testinfra.tfa.process.ProcessError: Codex executable preflight failed (tfa.codex-environment-preflight.v1): version command returned an invalid result
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:23.974-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:23.974-07:00] Traceback (most recent call last):
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 464, in locked
+[2026-09-24T15:30:23.974-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:30:23.974-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3363, in test_real_codex_candidate_handoff_uses_controller_buck
+[2026-09-24T15:30:23.974-07:00]     with _preserving_production_directory(
+[2026-09-24T15:30:23.974-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:23.974-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T15:30:23.974-07:00]     self.gen.throw(value)
+[2026-09-24T15:30:23.974-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 647, in _preserving_production_directory
+[2026-09-24T15:30:23.974-07:00]     raise AssertionError(
+[2026-09-24T15:30:23.974-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790289022563541164; retained root: /tmp/tfa-phase2/tfa-production-controller-handoff-ev3p79va
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:23.974-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:30:23.974-07:00] Ran 1 test in 16.231s
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:23.974-07:00] FAILED (failures=1)
+[2026-09-24T15:30:23.974-07:00]
+[2026-09-24T15:30:34.122-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (6.9s)
+[2026-09-24T15:30:34.122-07:00] test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T15:30:34.122-07:00]
+[2026-09-24T15:30:34.122-07:00] ======================================================================
+[2026-09-24T15:30:34.122-07:00] FAIL: test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T15:30:34.122-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:30:34.122-07:00] Traceback (most recent call last):
+[2026-09-24T15:30:34.122-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 210, in locked
+[2026-09-24T15:30:34.122-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:30:34.122-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:30:34.122-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3876, in test_forced_run2_kill_confines_and_seals_verify_residue
+[2026-09-24T15:30:34.122-07:00]     self.assertTrue(ready.is_file())
+[2026-09-24T15:30:34.122-07:00] AssertionError: False is not true
+[2026-09-24T15:30:34.122-07:00]
+[2026-09-24T15:30:34.122-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:30:34.122-07:00] Ran 1 test in 6.921s
+[2026-09-24T15:30:34.122-07:00]
+[2026-09-24T15:30:34.122-07:00] FAILED (failures=1)
+[2026-09-24T15:30:34.122-07:00]
+[2026-09-24T15:31:15.066-07:00] Network: up 0B  down 0B
+[2026-09-24T15:31:15.066-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/10133099363898019
+Tests finished: [mPass 34[m. [mFail 5[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+5 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug one of 5 failing tests
+      ^^^ just prefix your previous command! ($ fdb !!)
+For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=10133099363898019&expiry=2026-09-24T22%3A36%3A13Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=10133099363898019&expiry=2026-09-24T22%3A36%3A13Z&viewer=18498&signature=REDACTED]8;;\[0m

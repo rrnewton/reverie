@@ -1,0 +1,60 @@
+[testinfra][tfa] Render deterministic difference hints and unposted initial comments
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+Phase-two acceptance stages 1 and 2 need, for each of the three cases, the
+PASS/FAIL Hermit reproducer pair with deterministic difference hints and the
+initial flaky-test comment text, without posting. Before this change
+the only renderer was `initial_text`, which refuses thrift (no IssueID),
+and nothing derived hints from the authoritative records.
+
+- New `hints.py`: `difference_hints(case, record_dir)` reads the replica-1
+  `result.json`, stdout and stderr for the manifest's
+  `historical_pass_seed` and `historical_fail_seed` from an authoritative
+  dev-hermit record. It fails closed with `HintError` unless each record
+  names exactly that `--sched-seed`, the expected `target_oracle`, the
+  expected failure class (none for PASS, the manifest `failure_class` for
+  FAIL) and a `status=VALID;` diagnostic, and unless exactly one
+  replica-1 selection matches. The output is a JSON-serialisable dict
+  containing:
+  - every input's path, SHA-256 and size
+  - per-run exit, signal, gtest verdict, gtest `Failure` blocks and glog
+    fatal lines, the top non-abort stack frames, and the verifier message
+    counts
+  - a bounded unified diff of guest stderr after the verifier block, with
+    glog timestamps/pids and hex addresses normalised
+  - a same-lines-reordered flag
+  - `qualification: "deterministic-text-difference; not a root cause"`
+- `initial_text(case, artifact_only=False)`: the existing behaviour is
+  unchanged (it still refuses a missing IssueID). `artifact_only=True`
+  labels the text "(artifact-only preview; not posted)" and renders a
+  missing IssueID as "none (no exact FLAKY issue)"; both reproducers and
+  the OSS Hermit link are unchanged.
+- New CLI `render-evidence --manifest --case-id --record-dir --output-dir`
+  writes `difference-hints.json` and the artifact-only
+  `initial-comment.md` with exclusive create (never overwrites). It
+  launches no process and calls no external service; the README says so.
+
+No change to the process, Hermit, Codex, state or pipeline code; both Codex
+compatibility keys remain blocked and the packaged Hermit gate is
+untouched.
+
+Test Plan:
+- `buck test fbcode//testinfra/tfa/tests:tfa_phase2_test`: 166/166 (159 at
+  the parent, plus 6 `HintTest` and 1 comment test)
+- `buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json`: 3 cases
+- `arc pyre check-changed-targets`: no type errors; `arc f`; `arc lint -a`: clean
+- Negative controls, each restored and sha-verified: disabling the seed
+  binding fails `test_refuses_record_not_bound_to_manifest_seed`; disabling
+  the failure-class check fails `test_refuses_record_with_wrong_failure_class`
+- Real run on the three authoritative records extracted from dev-hermit
+  edd968317a09 (git archive; outputs outside /tmp, never posted): all three
+  render. asyncssl flags the server `HandshakeCallback::connectionAccepted`
+  reordered after `writeSuccess`; thrift isolates
+  `InstrumentationTest.cpp:836` `reqSnapshots.size()` 2 vs 3; httpcoro isolates
+  the `HTTPDownstreamCoroSessionTests.cpp:1685` fatal in the `ResetRateLimit`
+  coroutine lambda.
+- The production containment suite was not rerun: no containment code
+  changed; its last result (36/40, the four signed-Codex preflight
+  blockers) remains a blocked result.

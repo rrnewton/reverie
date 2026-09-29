@@ -1,0 +1,15 @@
+cmp 0 thrift initial difference-hints.json
+cmp 0 thrift initial initial-comment.md
+cmp 0 thrift followup followup-comment.md vs stage4-r2
+cmp 0 thrift followup followup-runs.json vs stage4-r2
+cmp 0 thrift followup-runs.json vs stage3
+cmp 0 asyncssl initial difference-hints.json
+cmp 0 asyncssl initial initial-comment.md
+cmp 0 asyncssl followup followup-comment.md vs stage4-r2
+cmp 0 asyncssl followup followup-runs.json vs stage4-r2
+cmp 0 asyncssl followup-runs.json vs stage3
+cmp 0 httpcoro initial difference-hints.json
+cmp 0 httpcoro initial initial-comment.md
+cmp 0 httpcoro followup followup-comment.md vs stage4-r2
+cmp 0 httpcoro followup followup-runs.json vs stage4-r2
+cmp 0 httpcoro followup-runs.json vs stage3

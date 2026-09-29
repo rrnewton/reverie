@@ -1,0 +1,7 @@
+#3609 dtid=3 timeout=-1 rc=Ok(1) clk=1790024512.664211 gap=0.0ms
+#3624 dtid=3 timeout=0 rc=Ok(0) clk=1790024512.671472 gap=7.3ms
+#3631 dtid=3 timeout=105 rc=Ok(0) clk=1790024512.671942 gap=0.5ms
+#3639 dtid=3 timeout=900 rc=Ok(0) clk=1790024512.777098 gap=105.2ms
+#4682 dtid=3 timeout=0 rc=Ok(0) clk=1790024514.284956 gap=1507.9ms
+#5731 dtid=3 timeout=0 rc=Ok(0) clk=1790024514.725895 gap=440.9ms
+#5741 dtid=3 timeout=500 rc=Ok(1) clk=1790024514.726127 gap=0.2ms

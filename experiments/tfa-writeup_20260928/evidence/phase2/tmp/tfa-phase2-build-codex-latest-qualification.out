@@ -1,0 +1,3 @@
+[2026-09-24T17:00:28.811-07:00] Buck UI: https://www.internalfb.com/buck2/501aff60-759e-43fe-a29b-bbf71ddead9a
+[2026-09-24T17:00:28.826-07:00] Network: up 0B  down 0B
+fbcode//testinfra/tfa/tests:tfa_production_containment_test /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test.par

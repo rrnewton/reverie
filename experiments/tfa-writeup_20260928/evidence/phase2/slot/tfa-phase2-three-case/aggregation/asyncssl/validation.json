@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "case_id": "asyncssl",
+  "qualification": "candidate-only",
+  "patch": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/patch.diff",
+  "patch_sha256": "dc77e59116234fc5610b5006e2d57423016c6eb39cbb38a326572111bb49e92d",
+  "original_fail_now_passes": false,
+  "original_pass_still_passes": false,
+  "note": "Both booleans mean 'not demonstrated by the investigator'. Only pre-fix witnesses were run (1 PASS, 1 FAIL, 0 CENSORED, 2 Hermit replays total). The controller's post-fix results are authoritative.",
+  "proposed_validations": [
+    {
+      "kind": "BUCK",
+      "argv": [
+        "buck",
+        "build",
+        "@fbcode//mode/libcxx",
+        "fbcode//folly/io/async/test:async_ssl_socket_test",
+        "--show-full-json-output"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits"
+      ]
+    },
+    {
+      "kind": "LINT",
+      "argv": [
+        "arc",
+        "lint",
+        "fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_FAIL",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "asyncssl",
+        "--template",
+        "fail",
+        "--out",
+        "<controller-post-fix-dir>"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits (post-fix ELF with guest path and buck-out bind rewritten to the case checkout)"
+      ]
+    },
+    {
+      "kind": "ORIGINAL_PASS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "asyncssl",
+        "--template",
+        "pass",
+        "--out",
+        "<controller-post-fix-dir>"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits (post-fix ELF)"
+      ]
+    },
+    {
+      "kind": "FRESH_STRESS",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh",
+        "--case",
+        "asyncssl",
+        "--template",
+        "fail",
+        "--seed",
+        "<12|13|14|15>",
+        "--out",
+        "<controller-post-fix-dir>"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits; seeds 12-15 are reserved for the controller and were not used by the investigator"
+      ]
+    },
+    {
+      "kind": "UNIT",
+      "argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/libcxx",
+        "fbcode//folly/io/async/test:async_ssl_socket_test",
+        "--",
+        "--exact",
+        "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+        "--run-disabled"
+      ],
+      "status": "FAIL",
+      "passed": 0,
+      "total": 0,
+      "duration_seconds": 0,
+      "artifacts": [
+        "NOT RUN: investigator is forbidden to invoke Buck/Arc and cannot build the patched ELF; controller runs this after the investigator exits"
+      ]
+    }
+  ],
+  "pre_fix_observations": [
+    {
+      "label": "prefix-pass-1",
+      "what": "pre-fix PASS witness replay, sched-seed 1, unpatched ELF",
+      "oracle": "PASS",
+      "determinism_verified": true,
+      "duration_seconds": 5.03,
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/witness/prefix-pass-1/receipt.json",
+      "receipt_sha256": "5d68cfeb4e606c40744b9af0902381e0dab6d03c38ffa57a2ff256db1ccea5c6",
+      "censored": false
+    },
+    {
+      "label": "prefix-fail-1",
+      "what": "pre-fix FAIL witness replay, sched-seed 11, unpatched ELF",
+      "oracle": "FAIL",
+      "failure_class_id": "gtest-byte-events-three-missing-ack",
+      "determinism_verified": true,
+      "duration_seconds": 5.43,
+      "receipt": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/witness/prefix-fail-1/receipt.json",
+      "receipt_sha256": "d19734c021e94f601ab333ac75e59d8224f642f071be287e17b0bfe76493341d",
+      "censored": false
+    },
+    {
+      "label": "syscall-trace-excerpts",
+      "what": "client fd16 / server fd17 syscalls extracted from run1 verify logs of the two replays",
+      "files": {
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/witness/syscalls-fd16-fd17-prefix-fail-1.txt": "af05399761859db065866117a5ef962b2dbdc96578983a4547bbf1c2b27a2814",
+        "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/witness/syscalls-fd16-fd17-prefix-pass-1.txt": "27bf8827dffa8e8358fbab48c4aa181cd2022790108e7e0a87f236b2057694f2"
+      }
+    }
+  ]
+}

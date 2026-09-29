@@ -1,0 +1,17 @@
+notice Found 1 lint issue.
+>>> Lint for fbcode/testinfra/tfa/hermit.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+             318     boundary = argv.index("--")
+             319     options = list(argv[:boundary])
+             320     timeouts = [
+        -    321         token.partition("=")[2]
+        -    322         for token in options
+        -    323         if token.startswith("--timeout=")
+        +                token.partition("=")[2] for token in options if token.startswith("--timeout=")
+             324     ]
+             325     if (
+             326         options.count("--verify") != 1
+Applied 1 lint patch

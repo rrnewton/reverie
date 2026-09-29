@@ -1,0 +1,4 @@
+[2026-09-24T15:25:13.774-07:00] Buck UI: https://www.internalfb.com/buck2/05a8b00e-cfcd-4042-8a97-37ec946501a9
+[2026-09-24T15:25:13.777-07:00] Network: up 0B  down 0B
+Command failed: 
+Bound configuration id must contain a hash, got: `512fd0a9ea51f545`

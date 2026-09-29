@@ -1,0 +1,39 @@
+test_killed_worktree_body_is_reconciled_by_independent_owner (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_killed_worktree_body_is_reconciled_by_independent_owner) ... /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/__par__/__startup_function_loader__.py:23: UserWarning: Startup function '_initialize' (static_extension_finder:_initialize) not executed: No module named '_static_extension_utils'
+  warnings.warn(
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 23.309s
+
+OK
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1426, in _worktree_crash_body
+    with _registered_worktree(_worktree_source_root(), root, checkout, label):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1417, in _registered_worktree
+    raise cleanup_error
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1408, in _registered_worktree
+    _retire_registered_worktree(source_root, checkout)
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1323, in _retire_registered_worktree
+    registered = canonical in _registered_worktrees(source_root)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1142, in _registered_worktrees
+    result = TrustedSubprocessWithList.run(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/security/frameworks/python/exec/subprocess.py", line 85, in run
+    return subprocess.run(
+           ^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/sitecustomize.py", line 409, in _patched_run
+    return std_run(args, env=env, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/subprocess.py", line 550, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/subprocess.py", line 1028, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/usr/local/fbcode/platform010/lib/python3.12/subprocess.py", line 1957, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: PosixPath('/tmp/tfa-phase2/tfa-production-source-mpu07_u8/source')

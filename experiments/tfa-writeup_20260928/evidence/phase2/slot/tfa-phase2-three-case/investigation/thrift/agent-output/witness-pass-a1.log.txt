@@ -1,0 +1,1 @@
+thrift pass-a1 sched_seed=0 rc=0 oracle=PASS 16.6s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/witness/pass-a1/receipt.json

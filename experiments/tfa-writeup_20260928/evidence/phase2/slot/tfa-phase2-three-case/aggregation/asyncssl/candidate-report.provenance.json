@@ -1,0 +1,9 @@
+{
+  "transcript": "/home/newton/.claude/projects/-home-newton-work-tfa-phase2-cases-investigators-asyncssl/c684f830-ae73-44fe-b89c-28191235981e.jsonl",
+  "transcript_sha256": "ce8e70645f69cfc0e1958b9f0efafcbd44dee8f54f9eb74a0e2451f35257976a",
+  "line": 596,
+  "message_uuid": "af486925-44d2-4205-9896-60ba27212002",
+  "extracted": "first {..} span of the last assistant text containing \"candidate-only\"",
+  "prefix_text_outside_json": "",
+  "suffix_text_outside_json": ""
+}

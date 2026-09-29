@@ -1,0 +1,11 @@
+Note: Google Test filter = RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RequestInstrumentationTestWithFinishedDebugPayload
+[ RUN      ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest
+[       OK ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest (748 ms)
+[----------] 1 test from RequestInstrumentationTestWithFinishedDebugPayload (749 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (752 ms total)
+[  PASSED  ] 1 test.

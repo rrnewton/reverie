@@ -1,0 +1,10 @@
+[2026-09-23T05:32:46.009-07:00] Starting new buck2 daemon...
+[2026-09-23T05:32:46.570-07:00] Connected to new buck2 daemon.
+[2026-09-23T05:32:46.583-07:00] Buck UI: https://www.internalfb.com/buck2/004dc79a-edb5-4e1d-90ed-c75549210e1c
+[2026-09-23T05:32:47.588-07:00] File changed (since mergebase): fbcode//testinfra/tfa/BUCK
+[2026-09-23T05:32:47.588-07:00] File changed (since mergebase): fbcode//testinfra/tfa/PACKAGE
+[2026-09-23T05:32:47.588-07:00] File changed (since mergebase): fbcode//testinfra/tfa/README.md
+[2026-09-23T05:32:47.588-07:00] 24 additional file change events (since mergebase)
+[2026-09-23T05:32:47.588-07:00] File Watcher fresh instance: new mergebase, cleared graph state, cleared dep files
+[2026-09-23T05:32:51.095-07:00] Target fbcode//testinfra/tfa:tfa_phase2_lib (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e) does not have any outputs. This means the rule did not define any outputs. See https://www.internalfb.com/intern/staticdocs/buck2/docs/users/faq/common_issues/#why-does-my-target-not-have-any-outputs for more information
+BUILD SUCCEEDED

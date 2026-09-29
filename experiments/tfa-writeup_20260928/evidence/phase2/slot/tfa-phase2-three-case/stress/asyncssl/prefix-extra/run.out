@@ -1,0 +1,3 @@
+asyncssl fail-witness-seed-011-attempt-3 sched_seed=11 rc=1 oracle=FAIL 4.3s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-3/receipt.json
+asyncssl fail-witness-seed-011-attempt-4 sched_seed=11 rc=1 oracle=FAIL 4.3s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-4/receipt.json
+asyncssl fresh-seed-015-repeat-1 sched_seed=15 rc=1 oracle=OTHER_FAILURE 8.8s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fresh-seed-015-repeat-1/receipt.json

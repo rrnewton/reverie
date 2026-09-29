@@ -1,0 +1,701 @@
+[2026-09-24T14:12:49.983-07:00] Buck UI: https://www.internalfb.com/buck2/c9421357-a662-4cdf-9e32-302131126914
+[2026-09-24T14:12:49.991-07:00] Network: up 0B  down 0B
+Traceback (most recent call last)
+/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/prelude/f131b89c4a309a34/python/tools/make_par/____run_lpar_main__.py__/__run_lpar_main__.py:46 in <module>
+  45 
+❱ 46 __invoke_main()
+  47 
+/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/prelude/f131b89c4a309a34/python/tools/make_par/____run_lpar_main__.py__/__run_lpar_main__.py:43 in __invoke_main
+  42 │   run_as_main = getattr(mod, main_runner_function)                       
+❱ 43 │   run_as_main(module, main_function)                                     
+  44                                                                            
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│        main_function = 'cli'                                                 │
+│ main_runner_function = 'run_as_main'                                         │
+│   main_runner_module = '__par__.meta_only.bootstrap'                         │
+│                  mod = <module '__par__.meta_only.bootstrap' from            │
+│                        '/tmp/tfa-phase2-controller-followup-20260924/buck-o… │
+│               module = 'testinfra.tfa.main'                                  │
+│                   os = <module 'os' (frozen)>                                │
+│                  sys = <module 'sys' (built-in)>                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/buck2/prelude/python/runtime/__par__/meta_only/bootstrap.py:110 in run_as_main
+  109 │   │                                                                     
+❱ 110 │   │   oss_run_as_main(                                                  
+  111 │   │   │   main_module,                                                  
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│                  cm = <contextlib._GeneratorContextManager object at         │
+│                       0x7fae65899c70>                                        │
+│    context_managers = [                                                      │
+│                       │   <contextlib._GeneratorContextManager object at     │
+│                       0x7fae65899a00>,                                       │
+│                       │   <contextlib._GeneratorContextManager object at     │
+│                       0x7fae65899c70>                                        │
+│                       ]                                                      │
+│                hook = RuntimeHook(                                           │
+│                       │   name='PEX_INIT_HOOK',                              │
+│                       │   module='__par__.meta_only.pexutil',                │
+│                       │   main_function='init_import_hook_cm',               │
+│                       │   default_enabled=True                               │
+│                       )                                                      │
+│            is_debug = False                                                  │
+│       main_function = 'cli'                                                  │
+│ main_function_hooks = [                                                      │
+│                       │   <function mark_main_timestamp at 0x7fae65a222a0>,  │
+│                       │   <function _noop at 0x7fae658d8cc0>                 │
+│                       ]                                                      │
+│         main_module = 'testinfra.tfa.main'                                   │
+│               stack = <contextlib.ExitStack object at 0x7fae658999a0>        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/buck2/prelude/python/runtime/__par__/bootstrap.py:95 in run_as_main
+  94 │   else:                                                                  
+❱ 95 │   │   main()                                                             
+  96                                                                            
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ decorate_main_function = None                                                │
+│   decorate_main_module = None                                                │
+│    is_decorated_module = False                                               │
+│                   main = <Group cli>                                         │
+│          main_function = 'cli'                                               │
+│    main_function_hooks = [                                                   │
+│                          │   <function mark_main_timestamp at                │
+│                          0x7fae65a222a0>,                                    │
+│                          │   <function _noop at 0x7fae658d8cc0>              │
+│                          ]                                                   │
+│            main_module = 'testinfra.tfa.main'                                │
+│                    mod = <module 'testinfra.tfa.main' from                   │
+│                          '/tmp/tfa-phase2-controller-followup-20260924/buck… │
+│                    sys = <module 'sys' (built-in)>                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/third-party/pypi/click/8.1.7/sources/src/click/core.py:1389 in __call__
+  1388 │   │   """Alias for :meth:`main`."""                                    
+❱ 1389 │   │   return self.main(*args, **kwargs)                                
+  1390                                                                          
+                                                                                
+╭─────── locals ───────╮                                                        
+│   args = ()          │                                                        
+│ kwargs = {}          │                                                        
+│   self = <Group cli> │                                                        
+╰──────────────────────╯                                                        
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/cli/py/click/mixins.py:149 in main
+  148 │   │   │   │   # pyre-fixme[16]: `object` has no attribute `main`.       
+❱ 149 │   │   │   │   return super().main(*args, **kwargs, logging_context=conte
+  150 │   │   self.warn_multiple_versions(**kwargs)                             
+                                                                                
+╭───────────────────────────────── locals ──────────────────────────────────╮   
+│    args = ()                                                              │   
+│ context = LoggingContext(                                                 │   
+│           │   setup=SetupContext(                                         │   
+│           │   │   user=<Handler (WARNING)>,                               │   
+│           │   │   logview=None                                            │   
+│           │   ),                                                          │   
+│           │   duplicator=None                                             │   
+│           )                                                               │   
+│  kwargs = {}                                                              │   
+│    self = <Group cli>                                                     │   
+╰───────────────────────────────────────────────────────────────────────────╯   
+/tmp/tfa-phase2-controller-followup-20260924/third-party/pypi/click/8.1.7/sources/src/click/core.py:1310 in main
+  1309 │   │   │   │   with self.make_context(prog_name, args, **extra) as ctx: 
+❱ 1310 │   │   │   │   │   rv = self.invoke(ctx)                                
+  1311 │   │   │   │   │   if not standalone_mode:                              
+                                                                                
+╭────────────────────────────── locals ───────────────────────────────╮         
+│                args = [                                             │         
+│                       │   'run-witness',                            │         
+│                       │   '--manifest',                             │         
+│                       │   'fbcode/testinfra/tfa/cases.v1.json',     │         
+│                       │   '--case-id',                              │         
+│                       │   'asyncssl',                               │         
+│                       │   '--outcome',                              │         
+│                       │   'pass',                                   │         
+│                       │   '--artifact-root',                        │         
+│                       │   '/tmp/tfa-phase2/followup-blocked-probe', │         
+│                       │   '--timeout-seconds',                      │         
+│                       │   ... +1                                    │         
+│                       ]                                             │         
+│        complete_var = None                                          │         
+│                 ctx = <click.core.Context object at 0x7fae647cf530> │         
+│               extra = {                                             │         
+│                       │   'logging_context': LoggingContext(        │         
+│                       │   │   setup=SetupContext(                   │         
+│                       │   │   │   user=<Handler (WARNING)>,         │         
+│                       │   │   │   logview=None                      │         
+│                       │   │   ),                                    │         
+│                       │   │   duplicator=None                       │         
+│                       │   )                                         │         
+│                       }                                             │         
+│           prog_name = 'tfa_phase2.par'                              │         
+│                self = <Group cli>                                   │         
+│     standalone_mode = True                                          │         
+│ windows_expand_args = True                                          │         
+╰─────────────────────────────────────────────────────────────────────╯         
+/tmp/tfa-phase2-controller-followup-20260924/third-party/pypi/click/8.1.7/sources/src/click/core.py:1782 in invoke
+  1781 │   │   │   │   with sub_ctx:                                            
+❱ 1782 │   │   │   │   │   return _process_result(sub_ctx.command.invoke(sub_ctx
+  1783                                                                          
+                                                                                
+╭───────────────────────── locals ─────────────────────────╮                    
+│     args = []                                            │                    
+│      cmd = <Command run-witness>                         │                    
+│ cmd_name = 'run-witness'                                 │                    
+│      ctx = <click.core.Context object at 0x7fae647cf530> │                    
+│     self = <Group cli>                                   │                    
+│  sub_ctx = <click.core.Context object at 0x7fae650de780> │                    
+╰──────────────────────────────────────────────────────────╯                    
+/tmp/tfa-phase2-controller-followup-20260924/third-party/pypi/click/8.1.7/sources/src/click/core.py:1171 in invoke
+  1170 │   │   if self.callback is not None:                                    
+❱ 1171 │   │   │   return ctx.invoke(self.callback, **ctx.params)               
+  1172                                                                          
+                                                                                
+╭─────────────────────── locals ───────────────────────╮                        
+│  ctx = <click.core.Context object at 0x7fae650de780> │                        
+│ self = <Command run-witness>                         │                        
+╰──────────────────────────────────────────────────────╯                        
+/tmp/tfa-phase2-controller-followup-20260924/third-party/pypi/click/8.1.7/sources/src/click/core.py:779 in invoke
+   778 │   │   │   with ctx:                                                    
+❱  779 │   │   │   │   return __callback(*args, **kwargs)                       
+   780                                                                          
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ _Context__self = <click.core.Context object at 0x7fae650de780>               │
+│           args = ()                                                          │
+│            ctx = <click.core.Context object at 0x7fae650de780>               │
+│         kwargs = {                                                           │
+│                  │   'manifest':                                             │
+│                  PosixPath('fbcode/testinfra/tfa/cases.v1.json'),            │
+│                  │   'case_id': 'asyncssl',                                  │
+│                  │   'outcome': 'pass',                                      │
+│                  │   'artifact_root':                                        │
+│                  PosixPath('/tmp/tfa-phase2/followup-blocked-probe'),        │
+│                  │   'timeout_seconds': 180.0                                │
+│                  }                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/cli/py/click/asyncio.py:54 in wrapper
+  53 │   def wrapper(*args: P.args, **kwargs: P.kwargs) -> R | Awaitable[R]:    
+❱ 54 │   │   res = fn(*args, **kwargs)                                          
+  55 │   │   if isinstance(res, Coroutine):                                     
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│   args = ()                                                                  │
+│ kwargs = {                                                                   │
+│          │   'manifest': PosixPath('fbcode/testinfra/tfa/cases.v1.json'),    │
+│          │   'case_id': 'asyncssl',                                          │
+│          │   'outcome': 'pass',                                              │
+│          │   'artifact_root':                                                │
+│          PosixPath('/tmp/tfa-phase2/followup-blocked-probe'),                │
+│          │   'timeout_seconds': 180.0                                        │
+│          }                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/main.py:110 in run_witness_command
+  109 │   result = run_witness(                                                 
+❱ 110 │   │   _execution_manifest(manifest),                                    
+  111 │   │   case_id,                                                          
+                                                                                
+╭─────────────────────────────── locals ────────────────────────────────╮       
+│   artifact_root = PosixPath('/tmp/tfa-phase2/followup-blocked-probe') │       
+│         case_id = 'asyncssl'                                          │       
+│        manifest = PosixPath('fbcode/testinfra/tfa/cases.v1.json')     │       
+│         outcome = 'pass'                                              │       
+│ timeout_seconds = 180.0                                               │       
+╰───────────────────────────────────────────────────────────────────────╯       
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/main.py:35 in _execution_manifest
+   34 │   │   manifest,                                                         
+❱  35 │   │   cases=tuple(                                                      
+   36 │   │   │   replace(                                                      
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ manifest = Manifest(                                                         │
+│            │   version=1,                                                    │
+│            │   cases=(                                                       │
+│            │   │   Case(                                                     │
+│            │   │   │   case_id='httpcoro',                                   │
+│            │   │   │                                                         │
+│            selector='fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTes… │
+│            - HTTPDownstreamSession'+46,                                      │
+│            │   │   │   test_id='562950215319283',                            │
+│            │   │   │   issue_id='224798678',                                 │
+│            │   │   │   task_id='T278900793',                                 │
+│            │   │   │   live_task=False,                                      │
+│            │   │   │                                                         │
+│            source_revision='7f239d5b37dfbecf32fed144468da461f998add5',       │
+│            │   │   │                                                         │
+│            hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61',       │
+│            │   │   │                                                         │
+│            hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7… │
+│            │   │   │                                                         │
+│            artifact_sha256='00066235bcc942498d22862701809d0b04e4ec8d99a587f… │
+│            │   │   │                                                         │
+│            authoritative_record='https://github.com/rrnewton/dev-hermit/blo… │
+│            │   │   │   working_directory='/tmp/tfa-phase2/cwd/httpcoro',     │
+│            │   │   │                                                         │
+│            evidence_url='https://github.com/rrnewton/dev-hermit/blob/edd968… │
+│            │   │   │   build_argv=(                                          │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'build',                                          │
+│            │   │   │   │   '@fbcode//mode/dev-asan',                         │
+│            │   │   │   │                                                     │
+│            'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests',       │
+│            │   │   │   │   '--show-full-json-output'                         │
+│            │   │   │   ),                                                    │
+│            │   │   │   test_argv=(                                           │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'test',                                           │
+│            │   │   │   │   '@fbcode//mode/dev-asan',                         │
+│            │   │   │   │                                                     │
+│            'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests',       │
+│            │   │   │   │   '--',                                             │
+│            │   │   │   │   '--exact',                                        │
+│            │   │   │   │                                                     │
+│            'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests -       │
+│            HTTPDownstreamSession'+46                                         │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/httpcoro/pass/safehermit.json',            │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +38                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   fail_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/httpcoro/fail/safehermit.json',            │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +38                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_seed=1,                                          │
+│            │   │   │   fail_seed=0,                                          │
+│            │   │   │   historical_pass_seed=3,                               │
+│            │   │   │   historical_fail_seed=0,                               │
+│            │   │   │   fresh_stress_seeds=(4, 5, 6, 7),                      │
+│            │   │   │                                                         │
+│            failure_class='reset-rate-limit-line1685-body-event-fatal'        │
+│            │   │   ),                                                        │
+│            │   │   Case(                                                     │
+│            │   │   │   case_id='thrift',                                     │
+│            │   │   │                                                         │
+│            selector='fbcode//thrift/lib/cpp2/test:InstrumentationTest -      │
+│            RequestInstrumentationTestWit'+51,                                │
+│            │   │   │   test_id='281475235299286',                            │
+│            │   │   │   issue_id=None,                                        │
+│            │   │   │   task_id=None,                                         │
+│            │   │   │   live_task=False,                                      │
+│            │   │   │                                                         │
+│            source_revision='7f239d5b37dfbecf32fed144468da461f998add5',       │
+│            │   │   │                                                         │
+│            hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61',       │
+│            │   │   │                                                         │
+│            hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7… │
+│            │   │   │                                                         │
+│            artifact_sha256='2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89… │
+│            │   │   │                                                         │
+│            authoritative_record='https://github.com/rrnewton/dev-hermit/blo… │
+│            │   │   │   working_directory='/tmp/tfa-phase2/cwd/thrift',       │
+│            │   │   │                                                         │
+│            evidence_url='https://github.com/rrnewton/dev-hermit/blob/edd968… │
+│            │   │   │   build_argv=(                                          │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'build',                                          │
+│            │   │   │   │   '@fbcode//mode/dev-tsan',                         │
+│            │   │   │   │                                                     │
+│            'fbcode//thrift/lib/cpp2/test:InstrumentationTest',               │
+│            │   │   │   │   '--show-full-json-output'                         │
+│            │   │   │   ),                                                    │
+│            │   │   │   test_argv=(                                           │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'test',                                           │
+│            │   │   │   │   '@fbcode//mode/dev-tsan',                         │
+│            │   │   │   │                                                     │
+│            'fbcode//thrift/lib/cpp2/test:InstrumentationTest',               │
+│            │   │   │   │   '--',                                             │
+│            │   │   │   │   '--exact',                                        │
+│            │   │   │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest │
+│            - RequestInstrumentationTestWit'+51                               │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/thrift/pass/safehermit.json',              │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +40                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   fail_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/thrift/fail/safehermit.json',              │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +40                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_seed=0,                                          │
+│            │   │   │   fail_seed=1,                                          │
+│            │   │   │   historical_pass_seed=0,                               │
+│            │   │   │   historical_fail_seed=1,                               │
+│            │   │   │   fresh_stress_seeds=(2, 3, 4, 5),                      │
+│            │   │   │   failure_class='gtest-snapshot-size-2'                 │
+│            │   │   ),                                                        │
+│            │   │   Case(                                                     │
+│            │   │   │   case_id='asyncssl',                                   │
+│            │   │   │                                                         │
+│            selector='fbcode//folly/io/async/test:async_ssl_socket_test -     │
+│            AsyncSSLSocketByteEventTest.'+29,                                 │
+│            │   │   │   test_id='562950211052906',                            │
+│            │   │   │   issue_id='224226669',                                 │
+│            │   │   │   task_id='T255721720',                                 │
+│            │   │   │   live_task=True,                                       │
+│            │   │   │                                                         │
+│            source_revision='7f239d5b37dfbecf32fed144468da461f998add5',       │
+│            │   │   │                                                         │
+│            hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61',       │
+│            │   │   │                                                         │
+│            hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7… │
+│            │   │   │                                                         │
+│            artifact_sha256='47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41… │
+│            │   │   │                                                         │
+│            authoritative_record='https://github.com/rrnewton/dev-hermit/blo… │
+│            │   │   │   working_directory='/tmp/tfa-phase2/cwd/asyncssl',     │
+│            │   │   │                                                         │
+│            evidence_url='https://github.com/rrnewton/dev-hermit/blob/edd968… │
+│            │   │   │   build_argv=(                                          │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'build',                                          │
+│            │   │   │   │   '@fbcode//mode/libcxx',                           │
+│            │   │   │   │                                                     │
+│            'fbcode//folly/io/async/test:async_ssl_socket_test',              │
+│            │   │   │   │   '--show-full-json-output'                         │
+│            │   │   │   ),                                                    │
+│            │   │   │   test_argv=(                                           │
+│            │   │   │   │   'buck',                                           │
+│            │   │   │   │   'test',                                           │
+│            │   │   │   │   '@fbcode//mode/libcxx',                           │
+│            │   │   │   │                                                     │
+│            'fbcode//folly/io/async/test:async_ssl_socket_test',              │
+│            │   │   │   │   '--',                                             │
+│            │   │   │   │   '--exact',                                        │
+│            │   │   │   │                                                     │
+│            'fbcode//folly/io/async/test:async_ssl_socket_test -              │
+│            AsyncSSLSocketByteEventTest.'+29,                                 │
+│            │   │   │   │   '--run-disabled'                                  │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/asyncssl/pass/safehermit.json',            │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +41                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   fail_argv=(                                           │
+│            │   │   │   │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│            │   │   │   │   '--sh-report',                                    │
+│            │   │   │   │                                                     │
+│            '/tmp/tfa-phase2/repro/asyncssl/fail/safehermit.json',            │
+│            │   │   │   │   '--sh-deadline',                                  │
+│            │   │   │   │   '120',                                            │
+│            │   │   │   │   '--sh-max-log-bytes',                             │
+│            │   │   │   │   '67108864',                                       │
+│            │   │   │   │   '--sh-disk-limit',                                │
+│            │   │   │   │   '8G',                                             │
+│            │   │   │   │                                                     │
+│            '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-2026… │
+│            │   │   │   │   ... +41                                           │
+│            │   │   │   ),                                                    │
+│            │   │   │   pass_seed=1,                                          │
+│            │   │   │   fail_seed=11,                                         │
+│            │   │   │   historical_pass_seed=1,                               │
+│            │   │   │   historical_fail_seed=11,                              │
+│            │   │   │   fresh_stress_seeds=(12, 13, 14, 15),                  │
+│            │   │   │   failure_class='gtest-byte-events-three-missing-ack'   │
+│            │   │   )                                                         │
+│            │   )                                                             │
+│            )                                                                 │
+│     path = PosixPath('fbcode/testinfra/tfa/cases.v1.json')                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/main.py:38 in <genexpr>
+   37 │   │   │   │   case,                                                     
+❱  38 │   │   │   │   pass_argv=packaged_hermit_argv(                           
+   39 │   │   │   │   │   case.pass_argv, case.hermit_revision, case.hermit_sha2
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│   .0 = <tuple_iterator object at 0x7fae647cf940>                             │
+│ case = Case(                                                                 │
+│        │   case_id='httpcoro',                                               │
+│        │                                                                     │
+│        selector='fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests -  │
+│        HTTPDownstreamSession'+46,                                            │
+│        │   test_id='562950215319283',                                        │
+│        │   issue_id='224798678',                                             │
+│        │   task_id='T278900793',                                             │
+│        │   live_task=False,                                                  │
+│        │   source_revision='7f239d5b37dfbecf32fed144468da461f998add5',       │
+│        │   hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61',       │
+│        │                                                                     │
+│        hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b631… │
+│        │                                                                     │
+│        artifact_sha256='00066235bcc942498d22862701809d0b04e4ec8d99a587ff220… │
+│        │                                                                     │
+│        authoritative_record='https://github.com/rrnewton/dev-hermit/blob/ed… │
+│        │   working_directory='/tmp/tfa-phase2/cwd/httpcoro',                 │
+│        │                                                                     │
+│        evidence_url='https://github.com/rrnewton/dev-hermit/blob/edd968317a… │
+│        │   build_argv=(                                                      │
+│        │   │   'buck',                                                       │
+│        │   │   'build',                                                      │
+│        │   │   '@fbcode//mode/dev-asan',                                     │
+│        │   │   'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests',   │
+│        │   │   '--show-full-json-output'                                     │
+│        │   ),                                                                │
+│        │   test_argv=(                                                       │
+│        │   │   'buck',                                                       │
+│        │   │   'test',                                                       │
+│        │   │   '@fbcode//mode/dev-asan',                                     │
+│        │   │   'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests',   │
+│        │   │   '--',                                                         │
+│        │   │   '--exact',                                                    │
+│        │   │   'fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests -   │
+│        HTTPDownstreamSession'+46                                             │
+│        │   ),                                                                │
+│        │   pass_argv=(                                                       │
+│        │   │   '/home/newton/work/dev-hermit/bin/safehermit',                │
+│        │   │   '--sh-report',                                                │
+│        │   │   '/tmp/tfa-phase2/repro/httpcoro/pass/safehermit.json',        │
+│        │   │   '--sh-deadline',                                              │
+│        │   │   '120',                                                        │
+│        │   │   '--sh-max-log-bytes',                                         │
+│        │   │   '67108864',                                                   │
+│        │   │   '--sh-disk-limit',                                            │
+│        │   │   '8G',                                                         │
+│        │   │                                                                 │
+│        '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920… │
+│        │   │   ... +38                                                       │
+│        │   ),                                                                │
+│        │   fail_argv=(                                                       │
+│        │   │   '/home/newton/work/dev-hermit/bin/safehermit',                │
+│        │   │   '--sh-report',                                                │
+│        │   │   '/tmp/tfa-phase2/repro/httpcoro/fail/safehermit.json',        │
+│        │   │   '--sh-deadline',                                              │
+│        │   │   '120',                                                        │
+│        │   │   '--sh-max-log-bytes',                                         │
+│        │   │   '67108864',                                                   │
+│        │   │   '--sh-disk-limit',                                            │
+│        │   │   '8G',                                                         │
+│        │   │                                                                 │
+│        '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920… │
+│        │   │   ... +38                                                       │
+│        │   ),                                                                │
+│        │   pass_seed=1,                                                      │
+│        │   fail_seed=0,                                                      │
+│        │   historical_pass_seed=3,                                           │
+│        │   historical_fail_seed=0,                                           │
+│        │   fresh_stress_seeds=(4, 5, 6, 7),                                  │
+│        │   failure_class='reset-rate-limit-line1685-body-event-fatal'        │
+│        )                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/hermit.py:1489 in packaged_hermit_argv
+  1488 │   ):                                                                   
+❱ 1489 │   │   raise HermitError("packaged Hermit executable differs from its pr
+  1490 │   if qualification["state"] != "QUALIFIED":                            
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│                 argv = (                                                     │
+│                        │   '/home/newton/work/dev-hermit/bin/safehermit',    │
+│                        │   '--sh-report',                                    │
+│                        │                                                     │
+│                        '/tmp/tfa-phase2/repro/httpcoro/pass/safehermit.json… │
+│                        │   '--sh-deadline',                                  │
+│                        │   '120',                                            │
+│                        │   '--sh-max-log-bytes',                             │
+│                        │   '67108864',                                       │
+│                        │   '--sh-disk-limit',                                │
+│                        │   '8G',                                             │
+│                        │                                                     │
+│                        '/home/newton/work/dev-hermit/ignored/tfa-rlimit-cor… │
+│                        │   ... +38                                           │
+│                        )                                                     │
+│               binary = PosixPath('/tmp/tfa-phase2-controller-followup-20260… │
+│             blockers = [                                                     │
+│                        │   'sanitizer guests cannot initialize RLIMIT_CORE', │
+│                        │   'the ptrace PMU timer can exceed its single-step  │
+│                        target on this host',                                 │
+│                        │   'the imported CLI has no retained successful      │
+│                        verify-log option'                                    │
+│                        ]                                                     │
+│        compatibility = {                                                     │
+│                        │   'schema_version': 1,                              │
+│                        │   'target':                                         │
+│                        'fbcode//hermetic_infra/hermit/hermit-cli:hermit',    │
+│                        │   'resource': 'hermit-test-bin',                    │
+│                        │   'fbsource_import_commit':                         │
+│                        '5a90c83fbd90782fdb55ed8af860e9c13920ec6b',           │
+│                        │   'upstream_revision':                              │
+│                        'a919cce442305c1812c84d37666d4a0bdf36533f',           │
+│                        │   'historical_witness': {                           │
+│                        │   │   'manifest': 'cases.v1.json',                  │
+│                        │   │   'revision':                                   │
+│                        '4630ee2a61f93221a43e2baec0a15f34102a2c61',           │
+│                        │   │   'sha256':                                     │
+│                        '5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b6… │
+│                        │   │   'state': 'PRESERVED'                          │
+│                        │   },                                                │
+│                        │   'qualification_probe': {                          │
+│                        │   │   'mode': '@fbcode//mode/opt',                  │
+│                        │   │   'sha256':                                     │
+│                        'd24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdd… │
+│                        │   │   'state': 'BLOCKED',                           │
+│                        │   │   'short_candidates': [                         │
+│                        │   │   │   {                                         │
+│                        │   │   │   │   'case_id': 'asyncssl',                │
+│                        │   │   │   │   'seed': 1,                            │
+│                        │   │   │   │   'returncode': 1,                      │
+│                        │   │   │   │   'blocker': 'AddressSanitizer startup  │
+│                        CHECK failed in setrlimit(RLIMIT_CORE) before gtest'  │
+│                        │   │   │   },                                        │
+│                        │   │   │   {                                         │
+│                        │   │   │   │   'case_id': 'thrift',                  │
+│                        │   │   │   │   'seed': 0,                            │
+│                        │   │   │   │   'returncode': 132,                    │
+│                        │   │   │   │   'blocker': 'ThreadSanitizer startup   │
+│                        CHECK failed in setrlimit(RLIMIT_CORE), followed by   │
+│                        allo'+35                                              │
+│                        │   │   │   },                                        │
+│                        │   │   │   {                                         │
+│                        │   │   │   │   'case_id': 'httpcoro',                │
+│                        │   │   │   │   'seed': 1,                            │
+│                        │   │   │   │   'returncode': 1,                      │
+│                        │   │   │   │   'blocker': 'Hermit PMU single-step    │
+│                        skid panic occurred before gtest'                     │
+│                        │   │   │   }                                         │
+│                        │   │   ],                                            │
+│                        │   │   'blockers': [                                 │
+│                        │   │   │   'sanitizer guests cannot initialize       │
+│                        RLIMIT_CORE',                                         │
+│                        │   │   │   'the ptrace PMU timer can exceed its      │
+│                        single-step target on this host',                     │
+│                        │   │   │   'the imported CLI has no retained         │
+│                        successful verify-log option'                         │
+│                        │   │   ]                                             │
+│                        │   }                                                 │
+│                        }                                                     │
+│  compatibility_after = {                                                     │
+│                        │   'kind': 'file',                                   │
+│                        │   'mode': 420,                                      │
+│                        │   'path':                                           │
+│                        '/tmp/tfa-phase2-controller-followup-20260924/fbcode… │
+│                        │   'sha256':                                         │
+│                        '60d1fcbff58381c98e3165bb01942826846459aacc52fc5169d… │
+│                        │   'size': 1510                                      │
+│                        }                                                     │
+│ compatibility_before = {                                                     │
+│                        │   'kind': 'file',                                   │
+│                        │   'mode': 420,                                      │
+│                        │   'path':                                           │
+│                        '/tmp/tfa-phase2-controller-followup-20260924/fbcode… │
+│                        │   'sha256':                                         │
+│                        '60d1fcbff58381c98e3165bb01942826846459aacc52fc5169d… │
+│                        │   'size': 1510                                      │
+│                        }                                                     │
+│   compatibility_path = PosixPath('/tmp/tfa-phase2-controller-followup-20260… │
+│    expected_revision = '4630ee2a61f93221a43e2baec0a15f34102a2c61'            │
+│      expected_sha256 = '5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b6… │
+│           historical = {                                                     │
+│                        │   'manifest': 'cases.v1.json',                      │
+│                        │   'revision':                                       │
+│                        '4630ee2a61f93221a43e2baec0a15f34102a2c61',           │
+│                        │   'sha256':                                         │
+│                        '5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b6… │
+│                        │   'state': 'PRESERVED'                              │
+│                        }                                                     │
+│             metadata = os.stat_result(st_mode=33261, st_ino=1235174380,      │
+│                        st_dev=48, st_nlink=1, st_uid=212630, st_gid=100,     │
+│                        st_size=128169376, st_atime=1790283387,               │
+│                        st_mtime=1790283387, st_ctime=1790283387)             │
+│        qualification = {                                                     │
+│                        │   'mode': '@fbcode//mode/opt',                      │
+│                        │   'sha256':                                         │
+│                        'd24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdd… │
+│                        │   'state': 'BLOCKED',                               │
+│                        │   'short_candidates': [                             │
+│                        │   │   {                                             │
+│                        │   │   │   'case_id': 'asyncssl',                    │
+│                        │   │   │   'seed': 1,                                │
+│                        │   │   │   'returncode': 1,                          │
+│                        │   │   │   'blocker': 'AddressSanitizer startup      │
+│                        CHECK failed in setrlimit(RLIMIT_CORE) before gtest'  │
+│                        │   │   },                                            │
+│                        │   │   {                                             │
+│                        │   │   │   'case_id': 'thrift',                      │
+│                        │   │   │   'seed': 0,                                │
+│                        │   │   │   'returncode': 132,                        │
+│                        │   │   │   'blocker': 'ThreadSanitizer startup CHECK │
+│                        failed in setrlimit(RLIMIT_CORE), followed by         │
+│                        allo'+35                                              │
+│                        │   │   },                                            │
+│                        │   │   {                                             │
+│                        │   │   │   'case_id': 'httpcoro',                    │
+│                        │   │   │   'seed': 1,                                │
+│                        │   │   │   'returncode': 1,                          │
+│                        │   │   │   'blocker': 'Hermit PMU single-step skid   │
+│                        panic occurred before gtest'                          │
+│                        │   │   }                                             │
+│                        │   ],                                                │
+│                        │   'blockers': [                                     │
+│                        │   │   'sanitizer guests cannot initialize           │
+│                        RLIMIT_CORE',                                         │
+│                        │   │   'the ptrace PMU timer can exceed its          │
+│                        single-step target on this host',                     │
+│                        │   │   'the imported CLI has no retained successful  │
+│                        verify-log option'                                    │
+│                        │   ]                                                 │
+│                        }                                                     │
+│               record = {                                                     │
+│                        │   'kind': 'file',                                   │
+│                        │   'mode': 493,                                      │
+│                        │   'path':                                           │
+│                        '/tmp/tfa-phase2-controller-followup-20260924/buck-o… │
+│                        │   'sha256':                                         │
+│                        '42eb8d0305cd7edb156cf02b66e7bb54da89eb2dceb705e651b… │
+│                        │   'size': 128169376                                 │
+│                        }                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+HermitError: packaged Hermit executable differs from its provenance

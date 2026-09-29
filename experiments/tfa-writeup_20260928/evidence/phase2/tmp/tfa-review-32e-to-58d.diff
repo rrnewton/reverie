@@ -1,0 +1,186 @@
+diff --git a/fbcode/testinfra/tfa/pipeline.py b/fbcode/testinfra/tfa/pipeline.py
+--- a/fbcode/testinfra/tfa/pipeline.py
++++ b/fbcode/testinfra/tfa/pipeline.py
+@@ -3752,7 +3752,7 @@
+     qualified_paths: tuple[str, ...],
+     qualified_files: list[dict[str, object]],
+     commit_stdout: Path,
+-    review_schema_path: Path,
++    review_schema_path: Path | None,
+ ) -> tuple[tuple[str, ...], list[dict[str, object]]]:
+     final_paths = _declared_draft_paths(case, qualified_paths)
+     mirror = _DECLARED_CASE_MIRRORS.get(case.case_id)
+@@ -3830,6 +3830,8 @@
+             record_name="final-adversarial-review.json",
+         )
+         return final_paths, final_files
++    if review_schema_path is None:
++        raise RuntimeError("final mirror commit seal is missing during draft resume")
+     contract_root = case_dir / "control" / "draft" / "final-contract"
+     canonical_diff = _sl_diff(
+         checkout,
+@@ -4196,6 +4198,10 @@
+             raise RuntimeError("declared mirror draft evidence is malformed")
+         commit_stdout = Path(commit_stdout_record["path"])
+         verify_regular_file_record(commit_stdout, commit_stdout_record)
++        if not (control_dir / "final-commit-seal.json").is_file():
++            raise RuntimeError(
++                "final mirror commit seal is missing during draft resume"
++            )
+         _seal_thrift_final_commit(
+             case,
+             case_dir,
+@@ -4203,7 +4209,7 @@
+             qualified_paths,
+             list(qualified_files_value),
+             commit_stdout,
+-            Path(),
++            None,
+         )
+     readback_root = control_dir / "draft" / "resume-readback"
+     readback_root.mkdir(parents=True, exist_ok=True)
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -4893,6 +4893,84 @@
+                 ["attempt-001", "attempt-002"],
+             )
+ 
++    def test_thrift_draft_resume_requires_final_commit_seal(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            checkout = root / "checkout"
++            case_dir = root / "case"
++            control_dir = case_dir / "control"
++            control_dir.mkdir(parents=True)
++            case = replace(_loaded_case(), case_id="thrift")
++            canonical, mirrored = pipeline_module._DECLARED_CASE_MIRRORS["thrift"]
++            for relative in (canonical, mirrored):
++                path = checkout / relative
++                path.parent.mkdir(parents=True, exist_ok=True)
++                path.write_text("same changed bytes\n")
++            qualified_paths = (canonical,)
++            qualified_files = [pipeline_module._path_record(checkout, canonical)]
++            final_paths = pipeline_module._declared_draft_paths(case, qualified_paths)
++            final_files = pipeline_module._tree_records(checkout, final_paths)
++            commit_stdout = root / "commit.stdout"
++            commit_stdout.write_text(
++                f"mirrored changes in {canonical!r} to {mirrored!r}\n"
++            )
++            write_metadata(control_dir / "diff-url.json", {"number": "D123"})
++            write_metadata(
++                control_dir / "validation-seal.json",
++                {
++                    "changed_paths": list(qualified_paths),
++                    "files": qualified_files,
++                },
++            )
++            write_metadata(
++                control_dir / "draft-transaction.json",
++                {
++                    "commit_stdout": regular_file_record(commit_stdout),
++                    "final_changed_paths": list(final_paths),
++                    "final_files": final_files,
++                },
++            )
++            stdout = root / "stdout.txt"
++            stderr = root / "stderr.txt"
++            stdout.write_text("")
++            stderr.write_text("")
++            readback_result = DraftReadback(
++                "https://www.internalfb.com/diff/123",
++                "D123",
++                "commit",
++                ProcessResult(("meta",), 0, 0, False, stdout, stderr),
++                ProcessResult(("meta",), 0, 0, False, stdout, stderr),
++            )
++            with (
++                patch("testinfra.tfa.pipeline._seal_thrift_final_commit") as seal,
++                patch("testinfra.tfa.pipeline.readback_draft") as readback,
++                self.assertRaisesRegex(
++                    RuntimeError, "final mirror commit seal is missing"
++                ),
++            ):
++                _revalidate_draft(case, case_dir, checkout)
++            seal.assert_not_called()
++            readback.assert_not_called()
++
++            (control_dir / "final-commit-seal.json").write_text("{}\n")
++            with (
++                patch(
++                    "testinfra.tfa.pipeline._seal_thrift_final_commit",
++                    return_value=(final_paths, final_files),
++                ) as seal,
++                patch(
++                    "testinfra.tfa.pipeline.readback_draft",
++                    return_value=readback_result,
++                ) as readback,
++            ):
++                self.assertEqual(
++                    _revalidate_draft(case, case_dir, checkout),
++                    "https://www.internalfb.com/diff/123",
++                )
++            seal.assert_called_once()
++            self.assertIsNone(seal.call_args.args[6])
++            readback.assert_called_once()
++
+     def test_thrift_final_commit_seals_declared_mirror_and_two_path_review(
+         self,
+     ) -> None:
+@@ -4968,6 +5046,56 @@
+             )
+             self.assertEqual(seal["changed_paths"], list(paths))
+ 
++            with (
++                patch(
++                    "testinfra.tfa.pipeline._verify_independent_diff_review"
++                ) as verify_review,
++                patch(
++                    "testinfra.tfa.pipeline._independent_diff_review"
++                ) as create_review,
++            ):
++                resumed_paths, resumed_files = (
++                    pipeline_module._seal_thrift_final_commit(
++                        case,
++                        case_dir,
++                        checkout,
++                        qualified_paths,
++                        qualified_files,
++                        commit_stdout,
++                        None,
++                    )
++                )
++            self.assertEqual((resumed_paths, resumed_files), (paths, files))
++            verify_review.assert_called_once()
++            create_review.assert_not_called()
++
++            seal_path = case_dir / "control" / "final-commit-seal.json"
++            held_seal = seal_path.with_name("held-final-commit-seal.json")
++            seal_path.replace(held_seal)
++            try:
++                with (
++                    patch("testinfra.tfa.pipeline._sl_diff") as diff,
++                    patch(
++                        "testinfra.tfa.pipeline._independent_diff_review"
++                    ) as create_review,
++                    self.assertRaisesRegex(
++                        RuntimeError, "final mirror commit seal is missing"
++                    ),
++                ):
++                    pipeline_module._seal_thrift_final_commit(
++                        case,
++                        case_dir,
++                        checkout,
++                        qualified_paths,
++                        qualified_files,
++                        commit_stdout,
++                        None,
++                    )
++                diff.assert_not_called()
++                create_review.assert_not_called()
++            finally:
++                held_seal.replace(seal_path)
++
+             commit_stdout.write_text(
+                 commit_stdout.read_text()
+                 + "mirrored changes in 'other' to 'unrelated'\n"

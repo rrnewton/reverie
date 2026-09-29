@@ -1,0 +1,17 @@
+M fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp
+diff --git a/fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp b/fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp
+--- a/fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp
++++ b/fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp
+@@ -3788,6 +3788,12 @@
+   EXPECT_FALSE(observer->byteEventsUnavailableCalledEx.has_value());
+   clientConn.netOpsVerifyAndClearExpectations();
+ 
++  // Drain the server's post-handshake data with an untimestamped write before
++  // the first timestamped write; otherwise the ACK timestamp can be left on the
++  // error queue. See ObserverAttachedAfterConnect for the full sequence.
++  serverHandshakeCb_->waitForHandshake();
++  clientConn.writeAndReflect(wbuf, WriteFlags::NONE);
++
+   {
+     clientConn.netOpsExpectWriteWithFlags(dropWriteFromFlags(flags));
+     clientConn.writeAndReflect(wbuf, flags);

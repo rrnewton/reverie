@@ -1,0 +1,9 @@
+{
+ "label": "C4-unsigned-fixed-same-argv",
+ "exe": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/target/release/codex",
+ "sha256": "f9228becc28fe4414ba4026db00818d7af48be83590cb6c9e857e64371abb88d",
+ "rc": 0,
+ "path_prefix": "/home/newton/.cache/dotslash/obj/cas/b1/ebf433a16e27b9f2eea1f23ba9cfce6a/extract/tar.zst/linux_x86_64/codex-path",
+ "stdout": "inside-sandbox\n",
+ "stderr": ""
+}

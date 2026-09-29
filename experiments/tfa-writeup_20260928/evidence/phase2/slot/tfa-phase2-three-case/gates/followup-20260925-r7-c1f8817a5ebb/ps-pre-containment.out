@@ -1,0 +1,269 @@
+1333483   58782 1935516 /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/ignored/buck2-phase2/builds/build-90b4c86050856db1dffc215efb904137413b2891-1172913-1790276838465208576-0
+2647379   42790 1491900 du -sh /tmp/hermit-network-only-replay-astra-results /home/newton/work/dev-hermit/ignored /home/newton/work/dev-hermit/worktrees /home/newton/temp
+1641128     243 917424 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992/ci-hub/series/mirror.py --parent /home/newton/work/dev-hermit --s
+2382422       7 904996 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+2386931       5 909476 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+ 488816    1668 964328 /usr/local/bin/meta-events-stream -tt /mnt/xarfuse/uid-212630/be6a3121-seed-nspid4026531836_cgpid54096767-ns-4026535779/__run_xar_main__.py await --timeout 0 --from-seq-id 20061
+ 675156  337924 830528 /home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex -c prompt_cache_key_scope="thread" -c model_routes
+2389147       4 820736 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+3340654   63525 912184 /home/newton/.codex/packages/meta-dotslash/releases/a73d81b581654f48dcbf21eb65ae31586a071ccea527a8251e2236441d95a348/bin/codex -c prompt_cache_key_scope="thread" -c model_routes
+2392378       3 791384 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+ 897933    1567 761188 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+3518348    2017 727368 /home/newton/.cache/dotslash/obj/cas/a8/cdd2d438df5b12f20d60dff1cb34c233/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+2687588    2266 731164 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+2076830   11310 756076 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+2324973    2380 703792 /home/newton/.cache/dotslash/obj/cas/a8/cdd2d438df5b12f20d60dff1cb34c233/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+3120356    2133 696676 /home/newton/.cache/dotslash/obj/cas/a8/cdd2d438df5b12f20d60dff1cb34c233/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+ 245917    3001 631572 /home/newton/.cache/dotslash/obj/cas/18/a5245194d1e33f0a7efae4d7acf62f4e/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+4010577    3123 626728 /home/newton/.cache/dotslash/obj/cas/18/a5245194d1e33f0a7efae4d7acf62f4e/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+2397302       1 543784 /home/newton/.cache/dotslash/obj/cas/c2/bf1b2c43b7f4243939c48d979094da42/extract/tar.zst/mux-outplace#link-tree/runtime/bin/mux#native-main#platform-runtime#python#py_version_3_
+ 852109     488 662400 /tmp/par_unpack.hg_monitor.runtime.212630.7fa1b38ea3fe7f205b35284a510a5e1d/runtime/bin/hg_monitor#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/hg_monit
+2397451       1 508520 /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992/hermit/ci/compat-envelope/scorecard.rs project-and-observe-results --snapshot /tmp/vzcca1hml/ledger-finalized-
+1006818     438 648872 /tmp/par_unpack.hg_monitor.runtime.212630.7fa1b38ea3fe7f205b35284a510a5e1d/runtime/bin/hg_monitor#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/hg_monit
+1034958   64358 654648 /usr/local/bin/orc --db scx-sim --resume --claude-args=--dangerously-skip-permissions --dangerously-enable-internet-mode --codex-args=--dangerously-enable-internet-mode --minima
+2063828   11314 504944 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+4017218    3121 453780 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+ 254650    2999 446660 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+ 901987    1566 442904 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+2333111    2378 443664 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+4018191    3121 442084 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+3128836    2131 437176 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+2690060    2266 436448 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+2317976    2381 519912 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+3529791    2014 434896 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+ 900017    1566 436900 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_mcp_server__/kernel_mcp_server#link-tree/runtime/bin/kernel_mc
+2334556    2378 429408 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+4171577     735 489768 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+ 898090    1567 509396 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+3129626    2131 426420 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+ 248039    3001 564536 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+2692402    2265 428456 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+2336101   25429 575792 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+ 255852    2998 423908 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+ 898076    1567 499704 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2719317    1131 488772 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+ 894922    1567 498976 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+4016059    3121 509020 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+ 899927    1566 499032 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+4013494    3122 502124 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+ 896544    1567 500084 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+3127292    2132 495208 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+ 896528    1567 497236 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+2685784    2267 495684 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+ 892073    1568 489848 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+ 254029    2999 505964 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2327910    2380 502640 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2327787    2380 497436 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+2329320    2379 498576 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+1695624  321566 708284 /usr/local/bin/orc --db hatch --resume --claude-args=--dangerously-skip-permissions --dangerously-enable-internet-mode --codex-args=--dangerously-enable-internet-mode --minimal 
+3126638    2132 501340 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+ 894514    1567 505384 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2326645    2380 493640 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+3122275    2133 493624 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+ 254626    2999 503468 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+3128000    2132 495292 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+2330063    2379 496532 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+ 251084    3000 498440 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+3523328    2016 493368 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2688600    2266 499120 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+2328514    2379 504604 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+3530875    2014 392112 /home/newton/fbsource/buck-out/v2/art/fbcode/326a0c8db8e636a8/claude-templates/components/mcps/kernel-mcp/__kernel_session_server__/kernel_session_server#link-tree/runtime/bin/k
+4015179    3121 502340 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+3524929    2015 498028 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+2401023       0 442168 /usr/local/bin/claude_code/claude --print --output-format stream-json --input-format stream-json --resume a981ae24-f2bf-49b1-b2c2-554757de9624
+2680568    2268 497320 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+2682727    2267 493800 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+3523348    2016 493288 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+4016731    3121 510260 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+ 248816    3000 497372 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+3124795    2132 492924 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+ 892871    1568 501256 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+3524915    2016 494012 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+4012463    3122 499984 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+3128349    2132 499344 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+3125737    2132 490908 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+3124010    2133 490984 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2689915    2266 494700 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+3520870    2016 496408 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+2458256    6616 508696 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+3525980    2015 496928 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2329332    2379 499348 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2330056    2379 494588 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+4014543    3122 504272 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+ 252055    3000 503836 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+ 254041    2999 500832 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+ 249350    3000 497248 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+3123262    2133 499468 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+2666324    2269 494040 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+2688457    2266 495412 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2685745    2267 491024 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+3527328    2015 470748 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+2328525    2379 498352 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+3520619    2016 487640 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+2678837    2268 474692 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+4013219    3122 499712 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2683551    2267 497428 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+2076842   11310 508892 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+4014363    3122 501888 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+3526722    2015 470300 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+3638039    1979 456004 meta phabricator.diff await --number D121205913 --event-types diff.accept --timeout 43200 --from-seq-id 200736 --include-iris-seq-id --caller hermit-conveyor-opus -o json
+ 239187    3002 417304 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+1688520    2554 438292 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+3119373    2133 409488 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+ 889952    1568 458296 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+1547157   23044 420096 /tmp/par_unpack.hg_monitor.runtime.212630.7fa1b38ea3fe7f205b35284a510a5e1d/runtime/bin/hg_monitor#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/hg_monit
+2077404   11309 507504 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+3517266    2017 433872 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+2076887   11310 508224 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+ 247856    3001 441772 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+2075947   11310 510652 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+2075113   11310 504140 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+2072786   11311 507320 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+2073679   11311 510160 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+2324299    2380 410716 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+2072910   11311 510452 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/meta/mcp/config.md
+4012215    3122 439712 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+4009697    3123 402804 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+2073309   11311 512308 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+ 883172    1570 431872 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+2676434    2268 396060 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+ 244466    3001 404316 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+3119356    2133 359676 /home/newton/work/fbsource-hermit/xplat/hermetic_infra/fdb/fdb dapper mcp
+ 488828    1668 449236 meta phabricator.diff await --number D121205910 --event-types diff.accept --timeout 0 --from-seq-id 200611 --include-iris-seq-id --caller hermit-fbsource-import-recovered -o jso
+2066141   11313 455688 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+3113822    2135 391948 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+3405074   42563 346380 (buck2-forkserver) forkserver --isolation-dir v2 --fd 58 --state-dir /home/newton/work/fbsource-hermit/buck-out/v2/forkserver
+2261883   42913 401568 /tmp/par_unpack.hg_monitor.runtime.212630.7fa1b38ea3fe7f205b35284a510a5e1d/runtime/bin/hg_monitor#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/hg_monit
+4004312    3124 380816 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+1686758    2555 534232 /home/newton/.codex/packages/meta-dotslash/releases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389/bin/codex -c prompt_cache_key_scope="thread" -c model_routes
+2852398  230837 328768 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/infra/mcp/config_conveyor.md
+3512141    2018 396572 /usr/local/bin/claude_code/native/claude --settings {"cleanupPeriodDays":15,"companyAnnouncements":["Introducing Agent Home v2 - a fast and reliable way to work with Claude Code
+2210923      58 237924 qemu-system-x86_64 -machine q35 -cpu max,phys-bits=40 -smp 2 -m 1024M -accel kvm -serial stdio -display none -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -append te
+1426135    2630 560824 /usr/local/bin/ai_security/claude_code/guardrails_srv
+ 879923    1570 406820 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+2852271  230837 337040 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/configerator-mutation-tools.md
+2852083  230837 317880 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/capacity-change-safety-tools.md
+2852119  230837 331984 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-experiment-tools.md
+2852183  230837 322204 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/as2-onboarding-tracker-tools.md
+2852338  230837 332948 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/xstack-efficiency-tools.md
+2852063  230837 315852 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-api-tools.md
+2852142  230837 314988 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/helpers/autoscaling-agent-tools.md
+2381182       7 214464 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+3507422    2019 409348 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+2399222       1 208664 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2373049       9 214804 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+ 889929    1568 220068 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+4093438   50048 354500 /tmp/par_unpack.cli.runtime.0.6c4cbc49e2b9befc8b668284eb59a76d/runtime/bin/gclaude#native-main#platform-runtime#python#py_version_3_12 -tt /usr/local/bin/gclaude
+2676373    2268 215356 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+3109670    2136 408684 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+2394294       2 161224 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2386674       5 161836 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2390332       4 161232 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2066127   11313 227828 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2313417    2382 409840 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+2663943    2270 408904 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+ 233976    3003 418796 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+2324260    2380 165512 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+2401353       0 158152 /usr/local/claude-templates-cli/node-linux-x64 --enable-source-maps --no-deprecation /usr/local/claude-templates-cli/cli.mjs plugin ads-aplusc-feature-preview,ads-manager,dapper
+1684570    2555 412652 codex --no-alt-screen --model gpt-6-astra --config model_reasoning_effort=ultra --dangerously-enable-internet-mode --dangerously-bypass-approvals-and-sandbox
+2061717   11315 379668 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+3119327    2133 157584 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+4001792    3125 410484 /usr/local/bin/claude_code/claude --model claude-opus-5-5
+3289556  313655 116420 /usr/local/fbpkg/vscodefb/vscode-server/437/node /home/newton/.vscode-fb-stable/extensions/nuclide.code-compose-1.0.1996/dm-core/dvsc-core-cli.js --server --port 0 --verbose --l
+ 681054  337922 215604 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+ 244432    3001 159472 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+3517243    2017 159468 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+4009676    3123 162328 srconveyor devmate-mux /usr/local/claude-templates-cli/components/helpers/figma-tools.md
+1683440  246216 198032 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/browser/mcp/config_browser.md
+1682722  246216 195968 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/scribe-tools.md
+1682238  246216 197076 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/wiki-tools.md
+1682563  246216 195928 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/analytics-agent-tools.md
+1683494  246216 189064 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/presto-discovery-tools.md
+1683287  246216 192452 /usr/local/bin/claude_code/bin/fast_mux /usr/local/claude-templates-cli/components/helpers/calendar-tools.md
+ 836525   43363 56988 /usr/local/bin/chataccd --mount-point /home/newton/work/fbsource-hermit --subscribe
+1682858  246216 190680 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/bento-vscode/mcp/bento-vscode-tools.md
+1683128  246216 192112 /usr/local/bin/claude_code/bin/fast_mux /home/newton/.claude/agent-market/plugins/dsmate/mcp/config_dsmate.md
+1774314   22989 64432 /usr/local/bin/chataccd --mount-point /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/fbsource --subscribe
+3634474     882 77460 python3 /proc/3432132/fd/5/ci-hub/validate/start_unit.py --checkout /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56 --target f7dfc7a70dca6b346fdf9e9e2e4d6
+3432017     939 77448 python3 /dev/fd/3 12 11 94b004e2bb245b9ec25e3d5230f83d719f32d0aa  /home/newton/.local/state/hermit-health-tool/trees/94b004e2bb245b9ec25e3d5230f83d719f32d0aa /home/newton/.local/
+ 892591    1568 72144 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+2255579      44 87220 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/agent-utils2/scripts/run_pytest_shard.py --shard 1/2 --_worker-basetemp /tmp/agent-utils-pytest-2255261-1-w0h0jdk7 
+2072888   11311 73568 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+ 485346    1669 70856 python3 /home/newton/work/dev-hermit/ignored/hermit-import-resume-20260922/ci/meta_checked.py --label migration-910-accept-await-20260925-0004 --command phabricator.diff await --
+2255360      44 88624 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/agent-utils2/scripts/run_pytest_shard.py --shard 0/2 --_worker-basetemp /tmp/agent-utils-pytest-2254898-0-h3y9w4tt 
+3635765    1980 66596 python3 ./watch.py --label w913-accept-20260925-0002 --meta-command phabricator.diff await -- --number D121205913 --event-types diff.accept --timeout 43200 --from-seq-id 200736 -
+ 485340    1669 67608 python3 /home/newton/work/dev-hermit/ignored/hermit-import-resume-20260922/ci/meta_checked.py --label prereq-land-await-20260925-0003 --command phabricator.diff await -- --number
+1640140     244 64496 python3 /proc/3728591/fd/5/ci-hub/series/mirror.py --parent /home/newton/work/dev-hermit --source-checkout /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-f7dfc7a7
+2326784    2380 59028 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3520690    2016 59040 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3728575     853 58884 python3 /dev/fd/3 12 11 94b004e2bb245b9ec25e3d5230f83d719f32d0aa 48:1301760856 /home/newton/.local/state/hermit-health-tool/trees/94b004e2bb245b9ec25e3d5230f83d719f32d0aa /home/n
+ 190177     684 58892 python3 /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992/ci-hub/lib/tool_cost.py --tool ci-hub/validate-lock --estimate-unknown --basis not measured: queue wait
+2679870    2268 57160 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3122286    2133 60852 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3313220  313648 55904 /home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex -c prompt_cache_key_scope="thread" -c model_routes_
+1640672     243 58456 python3 -c  import os import pathlib import signal import subprocess import sys  status_file = pathlib.Path(sys.argv[1]) release_file = pathlib.Path(sys.argv[2]) completed = subp
+1826782   57263 152836 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+3302730  313652 199256 codex -c model_reasoning_summary=detailed app-server --listen stdio://
+ 753144  337837 18712 /home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex-code-mode-host
+3345995   63524 142448 /usr/local/bin/codex_cli/bin/fast_mux /usr/local/bin/codex_cli/mcp/config.md
+3634574     882 51760 /usr/local/fbcode/platform010/bin/python3.12 /proc/3432132/fd/5/ci-hub/validate/start_unit.py --checkout /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56 -
+1619660  283772 59600 /home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex -c prompt_cache_key_scope="thread" -c model_routes_
+ 674810  337925 176976 codex app-server --listen unix:///tmp/agcld-212630/cdx-3e4329fa.sock
+1619194  283772 183912 /usr/local/bin/codex app-server --listen stdio://
+4012281    3122 34508 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3338168   63526 154168 codex app-server --listen unix:///tmp/agcld-212630/cdx-efd330da.sock
+ 247950    3001 32364 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+2255261      44 30432 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/agent-utils2/scripts/run_pytest_shard.py --shard 1/2 -- -c pyproject.toml --rootdir=. -q tests/test_absent_is_not_z
+3272541  313659 27264 /usr/local/bin/eden notify changes-since --subscribe --json --formatted-position --use-case vscode --position 7694517272543756294:1:8c510f63907463e1e8e7206ce762265f2c20baa3 --rel
+2254898      44 30472 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/agent-utils2/scripts/run_pytest_shard.py --shard 0/2 -- -c pyproject.toml --rootdir=. -q tests/test_absent_is_not_z
+ 190325     684 24056 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992/ci-hub/lib/tool_cost.py --tool ci-hub/validate-lock --estimate-unk
+3728532     854 22832 /usr/bin/python3 /proc/3432132/fd/5/ci-hub/validate/pane_watch.py --unit validate-buck-validate-f7dfc7a70dca-1790334767068359340-3634574-717576ce.service --target f7dfc7a70dca6b3
+1725252    2544 24388 /home/newton/.codex/packages/meta-dotslash/releases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389/bin/codex-code-mode-host
+3372852   63515 21420 /home/newton/.codex/packages/meta-dotslash/releases/a73d81b581654f48dcbf21eb65ae31586a071ccea527a8251e2236441d95a348/bin/codex-code-mode-host
+1683655  246216 13752 python3 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3432132     939 17364 /usr/local/fbcode/platform010/bin/python3.12 /dev/fd/3 12 11 94b004e2bb245b9ec25e3d5230f83d719f32d0aa  /home/newton/.local/state/hermit-health-tool/trees/94b004e2bb245b9ec25e3d52
+ 901946    1566 19016 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+2332346    2378 18628 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+2332551    2378 18652 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+ 485403    1669 16180 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/dev-hermit/ignored/hermit-import-resume-20260922/ci/meta_checked.py --label migration-910-accept-await-20260925-000
+ 485402    1669 16176 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/work/dev-hermit/ignored/hermit-import-resume-20260922/ci/meta_checked.py --label prereq-land-await-20260925-0003 --comma
+3635792    1980 16128 /usr/local/fbcode/platform010/bin/python3.12 ./watch.py --label w913-accept-20260925-0002 --meta-command phabricator.diff await -- --number D121205913 --event-types diff.accept -
+3728591     853 20648 /usr/local/fbcode/platform010/bin/python3.12 /dev/fd/3 12 11 94b004e2bb245b9ec25e3d5230f83d719f32d0aa 48:1301760856 /home/newton/.local/state/hermit-health-tool/trees/94b004e2bb2
+1640669     243 13036 /usr/bin/python3 - /sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/dagrun.slice/dagrun-804637.scope/supervisor/hermit-box-run-1640294-1790335404241045115.scope 35
+4017178    3121 13500 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+3122303    2133 14564 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3529657    2014 13460 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+ 899949    1566 19056 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+3520714    2016 14572 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+ 892645    1568 14564 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+1641101     243 13308 /usr/local/fbcode/platform010/bin/python3.12 -c  import os import pathlib import signal import subprocess import sys  status_file = pathlib.Path(sys.argv[1]) release_file = pathl
+1684556  246216  7400 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+2326802    2380 14556 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+ 255812    2998 13436 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+2680170    2268 14548 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3128800    2131 13496 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+4018166    3121 13436 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+2072902   11311 14536 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3129547    2131 13492 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+3530750    2014 13488 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+ 254628    2999 13484 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+2689987    2266 13484 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_mcp_server
+2692356    2265 13480 buck2 run fbcode//claude-templates/components/mcps/kernel-mcp:kernel_session_server
+4012357    3122  8432 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+ 247966    3001 10548 /usr/local/fbcode/platform010/bin/python3.12 /home/newton/.claude/agent-market/plugins/experimentation/mcp/qe2_validation_server.py
+3765485     843  3076 /proc/3728591/fd/5/ci-hub/ci-hub.rs validate-lock run --agent buck-validate --kind validate --target f7dfc7a70dca6b346fdf9e9e2e4d6f123b5432b5 --run-record /home/newton/work/dev-h
+ 191193     684  5276 /tmp/vzcca1hml/cache/rust-script/binaries/release/ci-hub_248497a28ef889d2f6acede2 validate-lock run --agent buck-validate --kind validate --target f7dfc7a70dca6b346fdf9e9e2e4d6f1
+3465217     930  5436 /proc/3432132/fd/5/ci-hub/ci-hub.rs validate-run --checkout /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56 --target f7dfc7a70dca6b346fdf9e9e2e4d6f123b543
+2154849      79  3996 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790334091250-rfet10.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=ff8a6195-580e-4030-b6c
+1942040     142  3712 /bin/bash /home/newton/work/dev-hermit/worktrees/slots/narf-opus-progress/ignored/narf-evidence/fixes-r5/side-arms.sh /home/newton/work/dev-hermit/worktrees/slots/narf-opus-progr
+ 674807  337925  3160 /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions/artifacts/service-host-codex-app-server/74d718cf89a5799f5c6a1c69fffbc237104ffb44e7679f4a50a182d24ce11db9/co
+2647275   42790  3056 /bin/bash -c du -sh /tmp/hermit-network-only-replay-astra-results /home/newton/work/dev-hermit/ignored /home/newton/work/dev-hermit/worktrees /home/newton/temp 2>/dev/null ps -eo
+3338137   63526  3252 /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions/artifacts/service-host-codex-app-server/5205115a80e66661b5b9094fe72899e76b6a5a27d5b258b5477030a547d5fc0e/co
+3427432     940  3980 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790333392850-lc1ix3.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=603a38c5-6eae-41cd-ab4
+3875658    1899  4028 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790333525920-xbo2vj.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=fadf677f-d575-4ff1-846
+1942012     142  4080 /bin/bash -c source /home/newton/.claude/shell-snapshots/snapshot-bash-1790334091250-rfet10.sh 2>/dev/null || true && export CLAUDE_CODE_CURRENT_SESSION_ID=ff8a6195-580e-4030-b6c
+3725990     854  4980 /bin/bash /proc/self/fd/3 --run-current-tool --state-root /home/newton/work/dev-hermit --state-identity 48:52743811 --target-identity 48:1301760856 --cache-root /home/newton/.loc
+3465187     930  3672 /bin/bash /proc/3432132/fd/5/ci-hub/ci-hub validate-run --checkout /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56 --target f7dfc7a70dca6b346fdf9e9e2e4d6f
+1640294     244  4904 bash /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992/scripts/hermit-box-run --passthrough --inherited-deadline-ns 350901976165945 --diag-fd 2 -- /usr/local/fbc
+3427536     940  5108 bash /home/newton/.local/libexec/dev-hermit/operational-tool --run-current-tool --tool-parent-sha 94b004e2bb245b9ec25e3d5230f83d719f32d0aa --tool-relative ci-hub/ci-hub -- valida
+1799746   21919  3396 du -sh /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus

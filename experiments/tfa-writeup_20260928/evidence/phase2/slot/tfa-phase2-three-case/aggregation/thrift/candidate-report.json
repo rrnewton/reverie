@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "qualification": "candidate-only",
+  "case_id": "thrift",
+  "reproduction": {"pass_reproduced": true, "fail_reproduced": true},
+  "hypotheses": [
+    {
+      "rank": 1,
+      "claim": "req1 is still counted by ThriftServer::getActiveRequests() after its handler posts baton1, so `while (getActiveRequests() < 2)` is satisfied by req1+req2 before req3 reaches the server; the snapshot then holds only req1 (finished) and req2 (started).",
+      "supporting": "Rocket decActiveRequests runs only from ~RocketServerFrameContext inside the request destructor, after RequestsRegistry::Deleter's moveToFinishedList, and may be deferred until write flush (writeBatcher_/inflightWritesQueue_). baton1 is posted in the handler, before serialization, the IO hop and destruction. getServerSnapshot runs via the worker EventBase, the same IO thread that increments activeRequests and registers each request synchronously, so every counted request is visible; req1 and req2 are always present, so size 2 means req3 was absent and the loop exited on req1+req2. The FAIL replay fail-a1 was deterministic and its stdout matched history.",
+      "contradicting": "Not directly instrumented. No build is allowed, so which snapshot entry is missing and the activeRequests value at loop exit are inferred from reading the code.",
+      "next_experiment": "Controller builds the patch (waits for getActiveRequests()==0 after baton1) and replays seeds 1 and 0 plus fresh seeds 2-5; H1 predicts all pass. On an unpatched build, log activeRequests at loop exit and each snapshot's method and finished timestamp; H1 predicts req3 is the missing entry."
+    },
+    {
+      "rank": 2,
+      "claim": "req3 was counted but its DebugStub was not yet registered when the snapshot task ran.",
+      "supporting": "Increment and registration are separate statements.",
+      "contradicting": "Both run back to back in one IO-thread callback (ThriftRocketServerHandler.cpp:597-600; RocketRequestOrchestrator.h:383-386), and the snapshot is a separate task on the same EventBase, so it cannot interleave.",
+      "next_experiment": "Trace the order of inc, registerStub and the snapshot task on the worker EventBase in the seed-1 run."
+    },
+    {
+      "rank": 3,
+      "claim": "req1 was dropped from the registry because the finished-list limit was not applied or it was evicted.",
+      "supporting": "Losing req1 would also yield size 2.",
+      "contradicting": "The PASS witness passes EXPECT_NE(finished timestamp, 0), so req1 is retained in the finished list. Only one request finishes before the snapshot, with limit 1.",
+      "next_experiment": "Dump snapshot entries in the seed-1 run; H3 predicts the finished entry is absent."
+    },
+    {
+      "rank": 4,
+      "claim": "Requests span multiple IO workers and one worker's registry is missing from the aggregate.",
+      "supporting": "getServerSnapshot aggregates per-worker futures.",
+      "contradicting": "One RocketClientChannel connection means one Cpp2Worker and one registry, and forEachWorker visits all workers.",
+      "next_experiment": "Log worker and registry identity per request in the seed-1 run."
+    }
+  ],
+  "selected_hypothesis_rank": 1,
+  "root_cause": "Test race, not a server bug. For rocket, getActiveRequests only drops when the request object is destroyed (after it moves to the finished list, possibly after the write flush), which lags the req1 handler posting baton1. The loop waiting for 2 active requests can exit on req1 and req2 before req3 reaches the server, so the snapshot has 2 entries. Fix waits for active requests to reach 0 after baton1.",
+  "patch_path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/thrift/agent-output/patch.diff",
+  "original_fail_now_passes": false,
+  "original_pass_still_passes": false,
+  "validations": [
+    {"kind": "BUCK", "argv": ["buck", "build", "@fbcode//mode/dev-tsan", "fbcode//thrift/lib/cpp2/test:InstrumentationTest", "--show-full-json-output"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: investigator is forbidden to invoke Buck; the controller builds after applying patch.diff"]},
+    {"kind": "LINT", "argv": ["arc", "lint", "fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: investigator is forbidden to invoke Arc"]},
+    {"kind": "ORIGINAL_FAIL", "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "thrift", "--template", "fail", "--out", "<controller-artifact-dir>/postfix-fail"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: requires the patched ELF, which the investigator cannot build; pre-fix replay witness/fail-a1 reproduced FAIL"]},
+    {"kind": "ORIGINAL_PASS", "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "thrift", "--template", "pass", "--out", "<controller-artifact-dir>/postfix-pass"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: requires the patched ELF, which the investigator cannot build; pre-fix replay witness/pass-a1 reproduced PASS"]},
+    {"kind": "FRESH_STRESS", "argv": ["/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/witness/witness.sh", "--case", "thrift", "--template", "fail", "--seed", "<2|3|4|5>", "--out", "<controller-artifact-dir>/postfix-stress-seed-N"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: fresh seeds 2-5 are reserved for the controller's post-fix stress"]},
+    {"kind": "UNIT", "argv": ["buck", "test", "@fbcode//mode/dev-tsan", "fbcode//thrift/lib/cpp2/test:InstrumentationTest", "--", "--exact", "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"], "status": "FAIL", "passed": 0, "total": 0, "duration_seconds": 0, "artifacts": ["NOT RUN: investigator is forbidden to invoke Buck"]}
+  ]
+}

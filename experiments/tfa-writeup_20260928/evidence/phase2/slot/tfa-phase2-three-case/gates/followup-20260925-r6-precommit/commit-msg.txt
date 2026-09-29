@@ -1,0 +1,83 @@
+[testinfra][tfa] Render unposted candidate-fix follow-ups from re-judged witness replays
+
+Summary:
+[hermit2, tfa-phase2-cyber-opus, claude-opus-5-5, devbig030, role=impl]
+
+Phase two needs a follow-up comment for each investigator candidate patch. It
+must show what the patch did to the FAIL and PASS witnesses and to bounded
+stress seeds, and it must never trust a recorded label. This adds
+`followup.py` and a `render-followup` command.
+
+The command reads a `tfa.followup-ledger.v1` ledger that names:
+- a validated candidate report;
+- an `unfixed` and a `patched` phase, each with its test ELF SHA-256;
+- the `tfa.witness-replay-run.v1` receipts from one controller stress checkout.
+
+Every receipt must bind:
+- the manifest Hermit, both in its inputs and in the safehermit report;
+- its phase's ELF;
+- the ELF that its argv actually runs;
+- its scheduler seed;
+- its own stdout, stderr and safehermit report bytes.
+
+Each run is then re-judged from those bytes with the manifest oracles:
+- CENSORED requires rc 124 plus the safehermit `unit_result=timeout` wall
+  evidence;
+- NONDETERMINISTIC and OTHER count as neither PASS nor FAIL;
+- interrupted attempts must lack a receipt.
+
+The two phases must test different ELFs.
+
+The verdict is:
+- NOT SUPPORTED if any patched replay FAILs;
+- INCONCLUSIVE unless some unfixed replay FAILed at this checkout path, every
+  such seed PASSed on every patched replay, and the patched PASS witness always
+  PASSed;
+- otherwise SUPPORTED, with caveats for any FAIL witness seed that did not FAIL
+  unfixed at this path and for any patched run that did not PASS.
+
+The comment embeds the local patch in a fence that is longer than any backtick
+run in the patch. It states that it is not posted, that no Diff was created and
+that no reviewers were assigned. Output files are opened exclusively.
+
+`relocation.py` only extracts `_safehermit_fields` for reuse; its behaviour is
+unchanged. No process, Hermit, Codex, state or pipeline code changed. Both
+Codex compatibility keys remain blocked.
+
+Test Plan:
+Pre-commit checks, under `tfa-phase2-three-case/gates/followup-20260925-r6-precommit/`:
+- `arc f`, `arc lint`, `arc pyre check-changed-targets`: rc 0
+- `tfa_phase2_test`: 187/187 (178 existing plus 9 new `FollowupTest` cases)
+
+The new tests cover:
+- a SUPPORTED render;
+- a relabelled patched FAIL;
+- no unfixed FAIL at the path;
+- CENSORED and NONDETERMINISTIC counted as neither;
+- a CENSORED replay of a failing seed;
+- rc 124 without wall evidence;
+- the witness-seed caveat;
+- seven binding refusals;
+- interrupted attempts.
+
+The real ledgers under `followup/<case>/ledger.json` preview as follows.
+
+thrift: SUPPORTED.
+- Seeds 3 and 8 FAILed unfixed 5 times, and PASSed on all 6 patched replays.
+- The manifest FAIL seed 1 PASSes unfixed at the stress path; this is carried
+  as a caveat.
+
+asyncssl: SUPPORTED.
+- FAIL seed 11 was FAIL×5 and NONDETERMINISTIC×2 unfixed, and PASS×3 patched.
+- Fresh seed 15 is OTHER in both phases. It is the unrelated
+  `AsyncSSLSocketTest.cpp:3592` connect failure.
+
+httpcoro: SUPPORTED.
+- FAIL seed 0 was FAIL×3 unfixed and PASS×2 patched.
+- Unfixed fresh seeds 5 and 6 were CENSORED.
+- One unfixed attempt was interrupted.
+
+The exact-head gates run afterwards under
+`gates/followup-20260925-r6-<head>/`.
+
+The signed Codex gate remains BLOCKED at 36/40, not green.

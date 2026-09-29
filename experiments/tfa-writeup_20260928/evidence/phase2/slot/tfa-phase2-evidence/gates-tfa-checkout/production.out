@@ -1,0 +1,167 @@
+[2026-09-24T22:48:05.340-07:00] Could not connect to buck2 daemon (buck2 daemon is not running), killing daemon..
+[2026-09-24T22:48:15.598-07:00] Connected to new buck2 daemon.
+[2026-09-24T22:48:15.613-07:00] Buck UI: https://www.internalfb.com/buck2/c44ef563-75e6-43cc-a6e2-e02423bc0f76
+[2026-09-24T22:48:17.968-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27866022745471435
+[2026-09-24T22:48:24.860-07:00] RE Session: reSessionID-a91b2903-4e79-4024-a063-c39c890de3e8
+[2026-09-24T22:52:04.520-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.4s)
+[2026-09-24T22:52:04.520-07:00] test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:04.520-07:00] ======================================================================
+[2026-09-24T22:52:04.520-07:00] FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T22:52:04.520-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:52:04.520-07:00] Traceback (most recent call last):
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+[2026-09-24T22:52:04.520-07:00]     yield root
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3566, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-24T22:52:04.520-07:00]     fresh = run_process(
+[2026-09-24T22:52:04.520-07:00]             ^^^^^^^^^^^^
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 1130, in run_process
+[2026-09-24T22:52:04.520-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T22:52:04.520-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 592, in _codex_environment_preflight
+[2026-09-24T22:52:04.520-07:00]     raise ProcessError(
+[2026-09-24T22:52:04.520-07:00] testinfra.tfa.process.ProcessError: Codex native workspace sandbox preflight failed (tfa.codex-environment-preflight.v2; codex-cli 0.156.0; state=blocked): owner-managed Codex lacks daemon-socket fixes 7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and a708fc683934d7d7ea7560354968fedd2be28581 required for this host's Btrfs /tmp and /var/tmp mount aliases
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:04.520-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:04.520-07:00] Traceback (most recent call last):
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-24T22:52:04.520-07:00]     return function(*args, **kwargs)
+[2026-09-24T22:52:04.520-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3535, in test_real_codex_final_message_cannot_be_redirected_by_tool
+[2026-09-24T22:52:04.520-07:00]     with _preserving_production_directory(
+[2026-09-24T22:52:04.520-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:04.520-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T22:52:04.520-07:00]     self.gen.throw(value)
+[2026-09-24T22:52:04.520-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+[2026-09-24T22:52:04.520-07:00]     raise AssertionError(
+[2026-09-24T22:52:04.520-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790315519170681655; retained root: /tmp/tfa-phase2/tfa-production-codex-report-wz5c9m06
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:04.520-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:52:04.520-07:00] Ran 1 test in 9.411s
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:04.520-07:00] FAILED (failures=1)
+[2026-09-24T22:52:04.520-07:00]
+[2026-09-24T22:52:41.098-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (32.1s)
+[2026-09-24T22:52:41.098-07:00] test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:52:41.098-07:00] ======================================================================
+[2026-09-24T22:52:41.098-07:00] FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T22:52:41.098-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:52:41.098-07:00] Traceback (most recent call last):
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+[2026-09-24T22:52:41.098-07:00]     yield root
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3454, in test_real_codex_candidate_handoff_uses_controller_buck
+[2026-09-24T22:52:41.098-07:00]     candidate = _diagnose_candidate_locked(
+[2026-09-24T22:52:41.098-07:00]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 3267, in _diagnose_candidate_locked
+[2026-09-24T22:52:41.098-07:00]     result = _run_diagnostic_phase(
+[2026-09-24T22:52:41.098-07:00]              ^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 3200, in _run_diagnostic_phase
+[2026-09-24T22:52:41.098-07:00]     return run_process(
+[2026-09-24T22:52:41.098-07:00]            ^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 1130, in run_process
+[2026-09-24T22:52:41.098-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T22:52:41.098-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 592, in _codex_environment_preflight
+[2026-09-24T22:52:41.098-07:00]     raise ProcessError(
+[2026-09-24T22:52:41.098-07:00] testinfra.tfa.process.ProcessError: Codex native workspace sandbox preflight failed (tfa.codex-environment-preflight.v2; codex-cli 0.156.0; state=blocked): owner-managed Codex lacks daemon-socket fixes 7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and a708fc683934d7d7ea7560354968fedd2be28581 required for this host's Btrfs /tmp and /var/tmp mount aliases
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:52:41.098-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:52:41.098-07:00] Traceback (most recent call last):
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-24T22:52:41.098-07:00]     return function(*args, **kwargs)
+[2026-09-24T22:52:41.098-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3394, in test_real_codex_candidate_handoff_uses_controller_buck
+[2026-09-24T22:52:41.098-07:00]     with _preserving_production_directory(
+[2026-09-24T22:52:41.098-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:52:41.098-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T22:52:41.098-07:00]     self.gen.throw(value)
+[2026-09-24T22:52:41.098-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+[2026-09-24T22:52:41.098-07:00]     raise AssertionError(
+[2026-09-24T22:52:41.098-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790315554939939934; retained root: /tmp/tfa-phase2/tfa-production-controller-handoff-nk50pe4f
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:52:41.098-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:52:41.098-07:00] Ran 1 test in 32.084s
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:52:41.098-07:00] FAILED (failures=1)
+[2026-09-24T22:52:41.098-07:00]
+[2026-09-24T22:54:04.763-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.5s)
+[2026-09-24T22:54:04.763-07:00] test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... ERROR
+[2026-09-24T22:54:04.763-07:00]
+[2026-09-24T22:54:04.763-07:00] ======================================================================
+[2026-09-24T22:54:04.763-07:00] ERROR: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T22:54:04.763-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:54:04.763-07:00] Traceback (most recent call last):
+[2026-09-24T22:54:04.763-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-24T22:54:04.763-07:00]     return function(*args, **kwargs)
+[2026-09-24T22:54:04.763-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:54:04.763-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3341, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+[2026-09-24T22:54:04.763-07:00]     result = run_process(
+[2026-09-24T22:54:04.763-07:00]              ^^^^^^^^^^^^
+[2026-09-24T22:54:04.763-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 1130, in run_process
+[2026-09-24T22:54:04.763-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T22:54:04.763-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:54:04.763-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 592, in _codex_environment_preflight
+[2026-09-24T22:54:04.763-07:00]     raise ProcessError(
+[2026-09-24T22:54:04.763-07:00] testinfra.tfa.process.ProcessError: Codex native workspace sandbox preflight failed (tfa.codex-environment-preflight.v2; codex-cli 0.156.0; state=blocked): owner-managed Codex lacks daemon-socket fixes 7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and a708fc683934d7d7ea7560354968fedd2be28581 required for this host's Btrfs /tmp and /var/tmp mount aliases
+[2026-09-24T22:54:04.763-07:00]
+[2026-09-24T22:54:04.763-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:54:04.763-07:00] Ran 1 test in 9.531s
+[2026-09-24T22:54:04.763-07:00]
+[2026-09-24T22:54:04.763-07:00] FAILED (errors=1)
+[2026-09-24T22:54:04.763-07:00]
+[2026-09-24T22:54:15.053-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (9.5s)
+[2026-09-24T22:54:15.053-07:00] test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) ... FAIL
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:54:15.053-07:00] ======================================================================
+[2026-09-24T22:54:15.053-07:00] FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+[2026-09-24T22:54:15.053-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:54:15.053-07:00] Traceback (most recent call last):
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+[2026-09-24T22:54:15.053-07:00]     yield root
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3650, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-24T22:54:15.053-07:00]     review = run_process(
+[2026-09-24T22:54:15.053-07:00]              ^^^^^^^^^^^^
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 1130, in run_process
+[2026-09-24T22:54:15.053-07:00]     codex_preflight = _codex_environment_preflight(
+[2026-09-24T22:54:15.053-07:00]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/process.py", line 592, in _codex_environment_preflight
+[2026-09-24T22:54:15.053-07:00]     raise ProcessError(
+[2026-09-24T22:54:15.053-07:00] testinfra.tfa.process.ProcessError: Codex native workspace sandbox preflight failed (tfa.codex-environment-preflight.v2; codex-cli 0.156.0; state=blocked): owner-managed Codex lacks daemon-socket fixes 7cec3e110ce6dc5c14704dfa06f6db9c23a530fc and a708fc683934d7d7ea7560354968fedd2be28581 required for this host's Btrfs /tmp and /var/tmp mount aliases
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:54:15.053-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:54:15.053-07:00] Traceback (most recent call last):
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+[2026-09-24T22:54:15.053-07:00]     return function(*args, **kwargs)
+[2026-09-24T22:54:15.053-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 3622, in test_real_codex_reviewer_final_message_cannot_be_redirected
+[2026-09-24T22:54:15.053-07:00]     with _preserving_production_directory(
+[2026-09-24T22:54:15.053-07:00]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T22:54:15.053-07:00]   File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+[2026-09-24T22:54:15.053-07:00]     self.gen.throw(value)
+[2026-09-24T22:54:15.053-07:00]   File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+[2026-09-24T22:54:15.053-07:00]     raise AssertionError(
+[2026-09-24T22:54:15.053-07:00] AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790315649387997165; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-hgcpzan4
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:54:15.053-07:00] ----------------------------------------------------------------------
+[2026-09-24T22:54:15.053-07:00] Ran 1 test in 9.512s
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:54:15.053-07:00] FAILED (failures=1)
+[2026-09-24T22:54:15.053-07:00]
+[2026-09-24T22:55:06.364-07:00] Network: up 1.0MiB  down 553MiB  session reSessionID-a91b2903-4e79-4024-a063-c39c890de3e8
+[2026-09-24T22:55:06.365-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/27866022745471435
+Tests finished: [38;5;10mPass 36[39m. [38;5;9mFail 4[39m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+4 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug one of 4 failing tests
+      ^^^ just prefix your previous command! ($ fdb !!)
+For example: fbcode//testinfra/tfa/tests:tfa_production_containment_test - test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27866022745471435&expiry=2026-09-25T06%3A00%3A05Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=27866022745471435&expiry=2026-09-25T06%3A00%3A05Z&viewer=18498&signature=REDACTED]8;;\[0m

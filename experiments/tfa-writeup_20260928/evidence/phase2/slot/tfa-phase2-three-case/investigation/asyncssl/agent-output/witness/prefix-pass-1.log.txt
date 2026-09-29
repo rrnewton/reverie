@@ -1,0 +1,1 @@
+asyncssl prefix-pass-1 sched_seed=1 rc=0 oracle=PASS 5.0s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/witness/prefix-pass-1/receipt.json

@@ -1,0 +1,12 @@
+{"type":"thread.started","thread_id":"01a0d6d7-787c-7ef1-a334-b4ce59490d56"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 4 unrecognized configuration settings. Check for typos or deprecated settings.\n  legacy managed_config.toml (/etc/codex/managed_config.toml): `project_skill_configurable_directories` is ignored.\n  session-flags: `model_providers.responses.tls` is ignored.\n  session-flags: `model_routes_json` is ignored.\n  ... and 1 more ignored settings."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Codex is ignoring 4 unrecognized configuration settings. Check for typos or deprecated settings.\n  legacy managed_config.toml (/etc/codex/managed_config.toml): `project_skill_configurable_directories` is ignored.\n  session-flags: `model_providers.responses.tls` is ignored.\n  session-flags: `model_routes_json` is ignored.\n  ... and 1 more ignored settings."}}
+{"type":"item.completed","item":{"id":"item_2","type":"error","message":"Code Mode is unavailable because failed to spawn code-mode host /tmp/tfa-phase2/codex-target-a708fc68/release/codex-code-mode-host: host executable was not found. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`."}}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 3/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 4/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 5/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"stream disconnected before completion: error sending request"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion: error sending request"}}

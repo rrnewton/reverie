@@ -1,0 +1,41 @@
+....FF..........
+======================================================================
+FAIL: test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text (testinfra.tfa.tests.test_prototype.FollowupTest.test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1739, in test_hypothesis_text_cannot_inject_markup_mentions_or_hidden_text
+    self.assertEqual(
+AssertionError: Lists differ: ['Contradicting or unverified evidence the[214 chars]31m'] != ["Contradicting or unverified evidence the[214 chars]31m"]
+
+First differing element 0:
+'Contradicting or unverified evidence the[40 chars]````'
+"Contradicting or unverified evidence the[40 chars]''''"
+
+Diff is 724 characters long. Set self.maxDiff to None to see it.
+
+======================================================================
+FAIL: test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text (testinfra.tfa.tests.test_prototype.FollowupTest.test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1720, in test_hypothesis_text_keeps_ordinary_punctuation_as_plain_text
+    self.assertEqual(
+AssertionError: Lists differ: ['Con[183 chars]e:', 'rank 2: `AsyncSSLSocket::closeNow()` run[31 chars]≥ 2'] != ['Con[183 chars]e:', "rank 2: 'AsyncSSLSocket::closeNow()' run[31 chars]≥ 2"]
+
+First differing element 2:
+'rank 2: `AsyncSSLSocket::closeNow()` runs before the <ACK> write, café ≥ 2'
+"rank 2: 'AsyncSSLSocket::closeNow()' runs before the <ACK> write, café ≥ 2"
+
+  ['Contradicting or unverified evidence the investigator reported: no DBG log; '
+   'drain() -> close() order is inferred, not traced',
+   'Other ranked hypotheses, which these replays do not exclude:',
+-  'rank 2: `AsyncSSLSocket::closeNow()` runs before the <ACK> write, café ≥ 2']
+?  ^        ^                          ^                                      ^
+
++  "rank 2: 'AsyncSSLSocket::closeNow()' runs before the <ACK> write, café ≥ 2"]
+?  ^        ^                          ^                                      ^
+
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.168s
+
+FAILED (failures=2)

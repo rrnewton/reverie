@@ -1,0 +1,2 @@
+A fbcode/testinfra/example/PACKAGE.transaction-probe
+R fbcode/testinfra/example/PACKAGE

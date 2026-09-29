@@ -1,0 +1,22 @@
+[testinfra][tfa] Seal Codex incompatibility provenance
+
+[hermit2, unknown-agentname, gpt-5.6-sol, devbig030, role=impl]
+
+Bind the owner-managed Codex entrypoint, opened launcher inode, selected signed
+release manifest, channel, and version into one before/after preflight identity.
+Snapshot launch environment state and reject any post-preflight drift. Record stable
+0.156.0 and latest 0.156.1 as blocked by the exact Btrfs daemon-socket
+incompatibility and name the two upstream commits required for remediation.
+
+Replace the production cgroup probe's polling and delayed absence check with
+pipe barriers and a lifetime lock. Start its unchanged execution timeout at
+the explicit readiness barrier so variable process startup cannot consume the
+execution budget.
+
+Test Plan:
+- arc f
+- arc lint -a
+- arc pyre
+- buck test fbcode//testinfra/tfa/tests:tfa_phase2_test (132/132)
+- buck run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json (3 cases)
+- buck test fbcode//testinfra/tfa/tests:tfa_production_containment_test (36/40; all non-Codex cases pass, a real signed-latest preflight is blocked with exact provenance, and four real Codex readiness cases fail closed on the sealed external runtime blocker)

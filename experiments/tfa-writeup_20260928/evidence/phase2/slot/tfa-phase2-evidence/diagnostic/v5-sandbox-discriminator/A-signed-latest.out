@@ -1,0 +1,4 @@
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using codex release channel 'latest' from /usr/local/bin/codex_cli/codex_latest.real
+Using AI Gateway (Azure Codex upstream)
+error building bubblewrap command: cannot establish app-server socket mount isolation

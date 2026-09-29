@@ -1,0 +1,30 @@
+[testinfra][tfa] Close controller follow-up contracts
+
+[hermit2, unknown-agentname, codex-family-by-ancestry, devbig030, role=impl]
+
+Summary:
+# Context
+The phase-two controller still had three fail-closed gaps at the boundary between a qualified repair and a draft: Buck executable-relative resources were not copied into the sealed runtime image, the HTTPCoro fatal witness accepted an under-specified transcript, and the generated Thrift xplat mirror was outside the final commit and review seal. Draft resume also treated a missing final mirror seal as an invitation to create one with an empty review-schema path.
+
+# Mitigation
+Pin and copy declared runtime resources under the attempt-specific image and revalidate their manifest, bytes, modes, paths, and byte budget around every validation run. Require the exact HTTPCoro fatal header, normal and async frames, SIGABRT metadata, and unrelaxed deterministic comparison transcript. For Thrift, require the declared canonical/mirror pair to be byte-identical and delta-identical, bind both paths to a fresh independent review, and persist the final commit evidence across interruption and draft readback. Resume now requires that final seal at both the caller and helper boundary, so neither diff generation nor review can run without it.
+
+# This Diff
+Adds these controller contracts and negative tests for malformed resources, transcript mutations, ambiguous mirror output, divergent mirror bytes, and a missing final seal during draft resume. No validation assertion, tolerance, comparator, skip, label, or gate is weakened.
+
+Test Plan:
+- `arc f` (format clean)
+- `buck2 test --no-remote-cache -j 1 fbcode//testinfra/tfa/tests:tfa_phase2_test` (114 passed, 0 failed; 45.19 seconds; session 2533275190228708)
+- `arc lint -a` (no lint issues; 25.41 seconds)
+- `arc pyre check-changed-targets` (2 of 2 affected targets; no type errors; 3.65 seconds)
+- `buck2 run fbcode//testinfra/tfa:tfa_phase2 -- validate-manifest --manifest fbcode/testinfra/tfa/cases.v1.json` (3 cases; 0.57 seconds)
+
+Reviewers:
+
+Subscribers:
+
+Tasks:
+
+Tags:
+
+Differential Revision: https://phabricator.intern.facebook.com/D121649569

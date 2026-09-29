@@ -1,0 +1,36 @@
+F...F..F.
+======================================================================
+FAIL: test_censored_and_nondeterministic_count_as_neither (testinfra.tfa.tests.test_prototype.FollowupTest.test_censored_and_nondeterministic_count_as_neither)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1708, in test_censored_and_nondeterministic_count_as_neither
+    self.assertIn(
+AssertionError: '- fresh seed 12: unfixed NONDETERMINISTICx1; patched CENSOREDx1' not found in '<!-- tfa-phase2:02e283e14aff4e440db1adfba5feda6e7a1969b76cc75dc79981bc1577038673:followup -->\nTFA phase-two candidate fix follow-up (artifact-only preview; not posted; no Diff created)\n- Selector: `fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect`\n- Root cause (investigator candidate): An invariant was violated before the fatal symptom.\n- Local candidate patch sha256 `6d7d5d0d98d7e193d2e39853944a7400fff2a70e583b8c9252452c505a6d7dad`, applied only in an isolated controller checkout\n- Unfixed test ELF sha256 `47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46`; patched test ELF sha256 `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`\n- Evidence ledger sha256 `cef3b1715bad31ab062267cd28a52142d38594280916bd7481d1d1fba375fe7e`\nHermit replays, each re-judged from its own bytes (CENSORED, NONDETERMINISTIC and OTHER count as neither PASS nor FAIL):\n- fail-witness seed 11: unfixed FAILx2; patched PASSx2\n- pass-witness seed 1: unfixed PASSx1; patched PASSx1\n- fresh seed 12: unfixed PASSx1; patched CENSOREDx1\nVerdict: SUPPORTED\n  - patched fresh seed 12 was CENSORED\nLocal diff:\n````diff\ndiff --git a/a b/a\n+```\n````\nNot posted; no Diff created; no reviewers assigned.'
+
+======================================================================
+FAIL: test_patched_fail_is_not_supported_even_when_relabelled (testinfra.tfa.tests.test_prototype.FollowupTest.test_patched_fail_is_not_supported_even_when_relabelled)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1661, in test_patched_fail_is_not_supported_even_when_relabelled
+    self.assertEqual(followup.verdict, "NOT SUPPORTED")
+AssertionError: 'SUPPORTED' != 'NOT SUPPORTED'
+- SUPPORTED
++ NOT SUPPORTED
+? ++++
+
+
+======================================================================
+FAIL: test_timeout_exit_without_wall_evidence_is_other (testinfra.tfa.tests.test_prototype.FollowupTest.test_timeout_exit_without_wall_evidence_is_other)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1741, in test_timeout_exit_without_wall_evidence_is_other
+    self.assertEqual(followup.runs[4].verdict, "OTHER")
+AssertionError: 'CENSORED' != 'OTHER'
+- CENSORED
++ OTHER
+
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.126s
+
+FAILED (failures=3)

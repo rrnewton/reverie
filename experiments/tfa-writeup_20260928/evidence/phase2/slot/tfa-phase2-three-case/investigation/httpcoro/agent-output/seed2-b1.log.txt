@@ -1,0 +1,2 @@
+httpcoro seed2-b1 sched_seed=2 rc=124 oracle=CENSORED 121.1s receipt=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/httpcoro/agent-output/witness/seed2-b1/receipt.json
+rc=0

@@ -1,0 +1,76 @@
+notice Found 5 lint issues.
+>>> Lint for fbcode/testinfra/tfa/relocation.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+              54     roots = (_FORBIDDEN_ROOT, os.path.realpath(_FORBIDDEN_ROOT))
+              55     for candidate in (path, os.path.realpath(path)):
+              56         if any(candidate == root or candidate.startswith(f"{root}/") for root in roots):
+        -     57             raise RelocationError(f"{outcome} argv {role} resolves into {_FORBIDDEN_ROOT}")
+        +                    raise RelocationError(
+        +                        f"{outcome} argv {role} resolves into {_FORBIDDEN_ROOT}"
+        +                    )
+              58     return path
+              59 
+              60 
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+              95             offset = 1
+              96             if not argv[index + offset].startswith("--tmp="):
+              97                 raise RelocationError(f"{outcome} argv does not own the guest /tmp")
+        -     98             _check_path(outcome, "guest /tmp", argv[index + offset].removeprefix("--tmp="))
+        +                    _check_path(
+        +                        outcome, "guest /tmp", argv[index + offset].removeprefix("--tmp=")
+        +                    )
+              99         elif actual != token:
+             100             raise RelocationError(f"{outcome} argv changes more than its /tmp paths")
+             101     if cwd is None:
+
+
+>>> Lint for fbcode/testinfra/tfa/tests/test_prototype.py:
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1159     report = f"safehermit: bound.wall=APPLIED:{deadline}s\n"
+            1160     if oracle == "CENSORED":
+            1161         stdout, stderr = "", ":: Run1...\n"
+        -   1162         report += f"safehermit: elapsed_secs={deadline}\nsafehermit: unit_result=timeout\n"
+        +                report += (
+        +                    f"safehermit: elapsed_secs={deadline}\nsafehermit: unit_result=timeout\n"
+        +                )
+            1163     else:
+            1164         report += "safehermit: elapsed_secs=5\nsafehermit: unit_result=success\n"
+            1165     (run / "stdout.txt").write_text(stdout)
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1164         report += "safehermit: elapsed_secs=5\nsafehermit: unit_result=success\n"
+            1165     (run / "stdout.txt").write_text(stdout)
+            1166     (run / "stderr.txt").write_text(stderr)
+        -   1167     (run / "safehermit.txt").write_text(report + f"safehermit: exit_code={returncode}\n")
+        +            (run / "safehermit.txt").write_text(
+        +                report + f"safehermit: exit_code={returncode}\n"
+        +            )
+            1168     receipt = {
+            1169         "argv": argv,
+            1170         "case_id": case.case_id,
+
+   Error  (BLACK) format
+    This code is not well-formatted. See https://fburl.com/fbsource-linters#black
+
+            1342         case = _loaded_case()
+            1343         forgeries: dict[str, Callable[[Path], None]] = {
+            1344             "wrong schema": lambda run: (run / "receipt.json").write_text(
+        -   1345                 json.dumps({"classification": {"oracle": "CENSORED", "returncode": 124}})
+        +                        json.dumps(
+        +                            {"classification": {"oracle": "CENSORED", "returncode": 124}}
+        +                        )
+            1346             ),
+            1347             "not bound to": lambda run: self._edit(
+            1348                 run / "receipt.json", lambda value: value.update(seed=2)
+Applied 2 lint patches

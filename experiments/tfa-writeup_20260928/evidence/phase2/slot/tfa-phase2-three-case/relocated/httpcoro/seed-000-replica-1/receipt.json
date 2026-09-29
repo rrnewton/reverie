@@ -1,0 +1,126 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--mount=type=bind,source=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd,target=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd",
+    "--tmp=/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/guest-tmp/seed-000-replica-1",
+    "--epoch=2026-09-21T21:01:52Z",
+    "--clock-multiplier=0.5",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "0",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/verify",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+  ],
+  "argv_sha256": "42f14e02477d7eb5c8708af545fa72e60093fee9668052e43d486c1bdbfe9d34",
+  "case_id": "httpcoro",
+  "classification": {
+    "determinism_verified": false,
+    "oracle": "CENSORED",
+    "reason": "safehermit bound fired (rc=124)",
+    "returncode": 124
+  },
+  "cwd": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd",
+  "cwd_entries_after": [
+    "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd/.hermit-verify-summary-VWeiWK"
+  ],
+  "duration_seconds": 121.12347888946533,
+  "environment": {
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/safehermit-log-root",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/tmpdir",
+    "removed": [
+      "HERMIT_BIN",
+      "PYTHONPATH",
+      "RUST_LOG"
+    ]
+  },
+  "finished_unix": 1790326911.2248461,
+  "guest_tmp": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/guest-tmp/seed-000-replica-1",
+  "guest_tmp_inventory": [],
+  "inputs": {
+    "guest": {
+      "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+      "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+      "size": 48908168
+    },
+    "hermit": {
+      "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+      "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "size": 415330552
+    },
+    "safehermit": {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "sha256": "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0",
+      "size": 67422
+    }
+  },
+  "intended_role": "fail",
+  "label": "seed-000-replica-1",
+  "replica": 1,
+  "safehermit_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/safehermit.txt",
+    "sha256": "7509b1aeffe7ec344a2382d6caab5dc23d8ebcf969a19713ee5b97de114244c0",
+    "size": 1911
+  },
+  "schema": "tfa.relocated-reproducer-run.v1",
+  "seed": 0,
+  "started_unix": 1790326790.1013672,
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/stderr.txt",
+    "sha256": "ccbd02b4ac3bb77972c9ec6278edce68697586881041b2d0158bf797e8e33c12",
+    "size": 22
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/stdout.txt",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "verify_inventory": [
+    {
+      "path": "run1_log_UuuQZ",
+      "size": 10077331
+    },
+    {
+      "path": "run2_log_uYqJA",
+      "size": 7495433
+    }
+  ]
+}

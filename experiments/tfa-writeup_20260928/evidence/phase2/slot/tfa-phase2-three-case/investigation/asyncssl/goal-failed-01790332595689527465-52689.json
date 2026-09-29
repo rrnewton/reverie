@@ -1,0 +1,12 @@
+{
+  "delivery_attempts": 1,
+  "delivery_error": "pane wV:p0 did not confirm idle/done -> working submission: wait for pane wV:p0 status working: {\"error\":{\"code\":\"timeout\",\"message\":\"timed out waiting for agent status\"},\"id\":\"cli:agent:wait\"}",
+  "delivery_failed_at": 1790332625.7958894,
+  "delivery_state": "inflight",
+  "id": "01790332595689527465-52689",
+  "inflight_at": 1790332595.7637818,
+  "possibly_submitted": true,
+  "queued_at": 1790332595.6903098,
+  "text": "Your ongoing goal: Complete the TFA phase-two diagnostic investigation for your case exactly as your initial brief specifies (fixed prompt plus controller supplement). Reproduce both witnesses through the controller replay runner, separate trigger from originating invariant, write 2-5 ranked falsifiable hypotheses with exactly one top, draft the smallest principled fix only in your own checkout, export it to agent-output/patch.diff, write hypotheses.json, validation.json and notes.md, and return the candidate-only JSON report as your final message. Publish nothing, assign no reviewers, spawn no other agents or models, never use /tmp, and record failures and CENSORED runs honestly.\nWork toward this goal and report completion or blockers.",
+  "tui_delivery_attempts": 1
+}

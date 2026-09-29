@@ -1,0 +1,9 @@
+test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup) ... ok
+test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck) ... ok
+test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool) ... ok
+test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 207.758s
+
+OK

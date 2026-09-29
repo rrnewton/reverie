@@ -1,0 +1,289 @@
+ARGV /home/newton/.codex/packages/meta-dotslash/releases/11dc49310e8c42fdf5dd7608e0d58772916c39b44c6171acc448a379f274c192/bin/codex -c prompt_cache_key_scope=\"thread\" -c model_routes_json=\"/home/newton/.codex/meta/model_routes.resolved.df890087d8430b30f02d06abe576570ef32de8bc6f82f5e100017846dc0b86d4.json\" -c model_providers.responses.name=\"Azure\" -c model_providers.responses.env_key=\"OPENAI_API_KEY\" -c model_providers.responses.wire_api=\"responses\" -c model_providers.responses.base_url=\"https://azure-codex.ai-gateway.fbinfra.net/openai/v1\" -c model_providers.responses.tls.ca-certificate=\"/var/facebook/rootcanal/ca.pem\" -c model_providers.responses.tls.client-certificate-env=\"CODEX_CLIENT_CERT\" -c model_providers.responses.tls.client-private-key-env=\"CODEX_CLIENT_KEY\" -c web_search=\"disabled\" -c features.fast_mode=false -c model_providers.responses.query_params.api-version=\"v1\" -c model_providers.responses.http_headers.X-Meta-AI-Gateway-Trace-Id=\"codex_invocation_d64693be-7bb0-4f3a-9b7d-8e4587a52543\" -c model_providers.responses.http_headers.X-Meta-AI-Gateway-App-Instance-Id=\"codex_invocation_d64693be-7bb0-4f3a-9b7d-8e4587a52543\" -c model_providers.responses.http_headers.X-Meta-AI-Gateway-Calling-Product=\"codex:cli\" -c model_providers.responses.http_headers.x-meta-ai-gateway-sensitive=\"false\" -c model_providers.responses.http_headers.X-Meta-Codex-Invocation-Id=\"codex_invocation_d64693be-7bb0-4f3a-9b7d-8e4587a52543\" -c model_providers.responses.http_headers.x-meta-user-fbid=\"18498\" -c model_providers.responses.http_headers.x-meta-commit-id=\"ae94e61ffeb27f0423309f9efdc0e3fca2966f1a\" -c model_providers.responses.http_headers.x-meta-3pai-internet-mode=\"disabled\" -c otel.trace_exporter.otlp-http.tls.client-certificate=\"/var/facebook/credentials/newton/agent_x509/codex_newton.pem\" -c otel.trace_exporter.otlp-http.tls.client-private-key=\"/var/facebook/credentials/newton/agent_x509/codex_newton.pem\" -c plan_mode_reasoning_effort=\"high\" -c model_providers.responses.http_headers.x-meta-ai-gateway-client-invocation-mode=\"command\" sandbox -- /bin/sh -c echo\ inside-sandbox
+ENV ADMIN_SCRIPTS=<redacted>
+ENV AGENT=<redacted>
+ENV AI_AGENT=<redacted>
+ENV ANTHROPIC_CUSTOM_HEADERS=<redacted>
+ENV X-Meta-AI-Gateway-App-Instance-Id: claude_code_invocation_4364a39d-1907-4891-84a5-2017383ff658
+=<redacted>
+ENV X-Meta-AI-Gateway-Calling-Product: claude_code:cli
+=<redacted>
+ENV x-meta-ai-gateway-sensitive: false
+=<redacted>
+ENV x-meta-ai-gateway-client-type: claude_code:cli
+=<redacted>
+ENV x-meta-ai-gateway-client-invocation-mode: tui
+=<redacted>
+ENV x-token-slayer-session: af3f86bd-90fb-4b02-93e8-8708133a3c55
+=<redacted>
+ENV ANTHROPIC_DEFAULT_OPUS_MODEL=<redacted>
+ENV ANTHROPIC_DEFAULT_SONNET_MODEL=<redacted>
+ENV BASH_FUNC_ml%%=<redacted>
+ENV }
+=<redacted>
+ENV BASH_FUNC_module%%=<redacted>
+ENV  if [ -n "${MODULES_REDIRECT_OUTPUT+x}" ]; then
+=<redacted>
+ENV  if [ "$MODULES_REDIRECT_OUTPUT" =<redacted>
+ENV  _mlredir=<redacted>
+ENV  else
+=<redacted>
+ENV  if [ "$MODULES_REDIRECT_OUTPUT" =<redacted>
+ENV  _mlredir=<redacted>
+ENV  fi;
+=<redacted>
+ENV  fi;
+=<redacted>
+ENV  fi;
+=<redacted>
+ENV  case " $@ " in 
+=<redacted>
+ENV  *' --no-redirect '*)
+=<redacted>
+ENV  _mlredir=<redacted>
+ENV  ;;
+=<redacted>
+ENV  *' --redirect '*)
+=<redacted>
+ENV  _mlredir=<redacted>
+ENV  ;;
+=<redacted>
+ENV  esac;
+=<redacted>
+ENV  if [ $_mlredir -eq 0 ]; then
+=<redacted>
+ENV  _module_raw "$@";
+=<redacted>
+ENV  else
+=<redacted>
+ENV  _module_raw "$@" 2>&1;
+=<redacted>
+ENV  fi
+=<redacted>
+ENV }
+=<redacted>
+ENV BASH_FUNC__module_raw%%=<redacted>
+ENV  _mlstatus=<redacted>
+ENV  return $_mlstatus
+=<redacted>
+ENV }
+=<redacted>
+ENV BASH_FUNC_scl%%=<redacted>
+ENV  eval "module $@";
+=<redacted>
+ENV  else
+=<redacted>
+ENV  /usr/bin/scl "$@";
+=<redacted>
+ENV  fi
+=<redacted>
+ENV }
+=<redacted>
+ENV BASH_FUNC_which%%=<redacted>
+ENV  eval ${which_declare} ) | /usr/bin/which --tty-only --read-alias --read-functions --show-tilde --show-dot $@
+=<redacted>
+ENV }
+=<redacted>
+ENV BUCK2_CLIENT_METADATA=<redacted>
+ENV BUCK_CONSOLE=<redacted>
+ENV BUCK_VERBOSE=<redacted>
+ENV BUN_INSTALL=<redacted>
+ENV CC_ARTILLERY_OBS_FLAGS=<redacted>
+ENV CC_SESSION_ID=<redacted>
+ENV CC_TRACE_DIR=<redacted>
+ENV CLAUDECODE=<redacted>
+ENV CLAUDE_CODE_API_KEY_HELPER_TTL_MS=<redacted>
+ENV CLAUDE_CODE_CHILD_SESSION=<redacted>
+ENV CLAUDE_CODE_CLIENT_CERT=<redacted>
+ENV CLAUDE_CODE_CLIENT_KEY=<redacted>
+ENV CLAUDE_CODE_CURRENT_SESSION_ID=<redacted>
+ENV CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=<redacted>
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=<redacted>
+ENV CLAUDE_CODE_ENABLE_TELEMETRY=<redacted>
+ENV CLAUDE_CODE_ENTRYPOINT=<redacted>
+ENV CLAUDE_CODE_EXECPATH=<redacted>
+ENV CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL=<redacted>
+ENV CLAUDE_CODE_MESSAGING_SOCKET=<redacted>
+ENV CLAUDE_CODE_MESSAGING_TOKEN=<redacted>
+ENV CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH=<redacted>
+ENV CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS=<redacted>
+ENV CLAUDE_CODE_PROCESS_WRAPPER=<redacted>
+ENV CLAUDE_CODE_PROPAGATE_TRACEPARENT=<redacted>
+ENV CLAUDE_CODE_SESSION_ATTENDED=<redacted>
+ENV CLAUDE_CODE_SESSION_ID=<redacted>
+ENV CLAUDE_CODE_SIMPLE=<redacted>
+ENV CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=<redacted>
+ENV CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=<redacted>
+ENV CLAUDE_CODE_TEAMMATE_COMMAND=<redacted>
+ENV CLAUDE_CODE_TMPDIR=<redacted>
+ENV CLAUDE_CODE_TOOL_USE_ID=<redacted>
+ENV CLAUDE_EFFORT=<redacted>
+ENV CLAUDE_LAUNCHER_SESSION_FILE=<redacted>
+ENV CLAUDE_PID=<redacted>
+ENV CLIENT_LOG_SESSION_ID=<redacted>
+ENV CLOUD_ML_REGION=<redacted>
+ENV CODEX_BASE_URL=<redacted>
+ENV CODEX_CLIENT_CERT=<redacted>
+ENV CODEX_CLIENT_KEY=<redacted>
+ENV CODEX_INTERNAL_ORIGINATOR_OVERRIDE=<redacted>
+ENV CODEX_OTEL_CLIENT_CERT=<redacted>
+ENV CODEX_OTEL_CLIENT_KEY=<redacted>
+ENV CODEX_ROLLOUT_TRACE_ROOT=<redacted>
+ENV CODING_AGENT_METADATA=<redacted>
+ENV COLORTERM=<redacted>
+ENV CONDA_SHLVL=<redacted>
+ENV CONTEXTPROP_BAGGAGE=<redacted>
+ENV CONTEXT_SEARCH_LAUNCH_MANIFEST=<redacted>
+ENV COREPACK_ENABLE_AUTO_PIN=<redacted>
+ENV CURL_CA_BUNDLE=<redacted>
+ENV DBUS_SESSION_BUS_ADDRESS=<redacted>
+ENV DEBUGINFOD_IMA_CERT_PATH=<redacted>
+ENV DEBUGINFOD_URLS=<redacted>
+ENV DENO_INSTALL=<redacted>
+ENV DEVBIG=<redacted>
+ENV DEVMATE_VSCODE_TERMINAL_NO_DEFAULT_TLS_INIT=<redacted>
+ENV DEVVM=<redacted>
+ENV DISABLE_AUTOUPDATER=<redacted>
+ENV DISABLE_COST_WARNINGS=<redacted>
+ENV DISABLE_INSTALLATION_CHECKS=<redacted>
+ENV EDITOR=<redacted>
+ENV ENABLE_AGENTS_CLI_TRACING_THRIFT=<redacted>
+ENV ENABLE_ENHANCED_TELEMETRY_BETA=<redacted>
+ENV ENABLE_PROMPT_CACHING_1H=<redacted>
+ENV ENABLE_TOOL_SEARCH=<redacted>
+ENV ET_VERSION=<redacted>
+ENV FAST_MUX_DISABLE_OTEL=<redacted>
+ENV FAST_MUX_FALLBACK_GK=<redacted>
+ENV GIT_ALLOW_PROTOCOL=<redacted>
+ENV GIT_CEILING_DIRECTORIES=<redacted>
+ENV GIT_CONFIG_COUNT=<redacted>
+ENV GIT_CONFIG_KEY_0=<redacted>
+ENV GIT_CONFIG_KEY_1=<redacted>
+ENV GIT_CONFIG_KEY_2=<redacted>
+ENV GIT_CONFIG_VALUE_0=<redacted>
+ENV GIT_CONFIG_VALUE_1=<redacted>
+ENV GIT_CONFIG_VALUE_2=<redacted>
+ENV GIT_EDITOR=<redacted>
+ENV GLOG_minloglevel=<redacted>
+ENV GLOG_stderrthreshold=<redacted>
+ENV HERDR_ENV=<redacted>
+ENV HERDR_PANE_ID=<redacted>
+ENV HERDR_SOCKET_PATH=<redacted>
+ENV HERDR_TAB_ID=<redacted>
+ENV HERDR_WORKSPACE_ID=<redacted>
+ENV HISTCONTROL=<redacted>
+ENV HISTFILE=<redacted>
+ENV HISTSIZE=<redacted>
+ENV HISTTIMEFORMAT=<redacted>
+ENV HOME=/home/newton
+ENV HOSTNAME=<redacted>
+ENV INVOCATION_ID=<redacted>
+ENV KMP_AFFINITY=<redacted>
+ENV KMP_LIBRARY=<redacted>
+ENV LANG=<redacted>
+ENV LESS=<redacted>
+ENV LESSOPEN=<redacted>
+ENV LIBOMP_NUM_HIDDEN_HELPER_THREADS=<redacted>
+ENV LIBOMP_USE_HIDDEN_HELPER_TASK=<redacted>
+ENV LINTTOOL_CALLER=<redacted>
+ENV LOADEDMODULES=<redacted>
+ENV LOCAL_ADMIN_SCRIPTS=<redacted>
+ENV LOGNAME=<redacted>
+ENV LOG_SESSION_ID=<redacted>
+ENV LOG_SHELL_SESSION_ID=<redacted>
+ENV LS_COLORS=<redacted>
+ENV MAIL=<redacted>
+ENV MANPATH=<redacted>
+ENV MARSH_DISABLE_AUTHZ=<redacted>
+ENV MAVEN_OPTS=<redacted>
+ENV MCP_TIMEOUT=<redacted>
+ENV META_3PAI_AGENT_PLATFORM=<redacted>
+ENV META_3PAI_INVOCATION_CONTEXT=<redacted>
+ENV META_3PAI_INVOCATION_ID=<redacted>
+ENV META_3PAI_ORIGINATING_AGENT_PLATFORM=<redacted>
+ENV META_3PAI_SESSION_TRACKING_FILE=<redacted>
+ENV META_AGENT_HOME_STATUS_FOOTER=<redacted>
+ENV META_CLAUDE_AGENT_HOME_SESSION_LINK=<redacted>
+ENV META_CLAUDE_API_KEY_HELPER_TARGET=<redacted>
+ENV META_CLAUDE_PROMPT_CACHE_1H_ORIGIN=<redacted>
+ENV META_CLAUDE_PROMPT_CACHE_SUBAGENT_ORIGIN=<redacted>
+ENV META_CLAUDE_TOOL_GOVERNANCE=<redacted>
+ENV META_CODEX_AGENT_HOME_ANNOUNCEMENT=<redacted>
+ENV META_CODEX_CODE_PROVENANCE=<redacted>
+ENV META_CODEX_LLM_RULES=<redacted>
+ENV META_CODEX_RELEASE=latest
+ENV META_CODEX_USE_AZURE_DIRECT=<redacted>
+ENV META_EXEC_WRAPPER=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/diagnostic/v5-sandbox-discriminator/record-wrapper.sh
+ENV MODULEPATH=<redacted>
+ENV MODULES_CMD=<redacted>
+ENV MODULESHOME=<redacted>
+ENV __MODULES_LMINIT=<redacted>
+ENV MODULES_RUN_QUARANTINE=<redacted>
+ENV __MODULES_SHARE_MANPATH=<redacted>
+ENV NODE_EXTRA_CA_CERTS=<redacted>
+ENV NoDefaultCurrentDirectoryInExePath=<redacted>
+ENV no_proxy=<redacted>
+ENV NO_PROXY=<redacted>
+ENV NVM_BIN=<redacted>
+ENV NVM_CD_FLAGS=<redacted>
+ENV NVM_DIR=<redacted>
+ENV NVM_INC=<redacted>
+ENV OPENAI_API_KEY=<redacted>
+ENV OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE=<redacted>
+ENV OTEL_EXPORTER_OTLP_CLIENT_KEY=<redacted>
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=<redacted>
+ENV OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE=<redacted>
+ENV OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY=<redacted>
+ENV OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE=<redacted>
+ENV OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY=<redacted>
+ENV OTEL_EXPORTER_OTLP_PROTOCOL=<redacted>
+ENV OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE=<redacted>
+ENV OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY=<redacted>
+ENV OTEL_LOG_MODEL_RESPONSE=<redacted>
+ENV OTEL_LOGS_EXPORTER=<redacted>
+ENV OTEL_LOGS_EXPORT_INTERVAL=<redacted>
+ENV OTEL_LOG_TOOL_CONTENT=<redacted>
+ENV OTEL_LOG_TOOL_DETAILS=<redacted>
+ENV OTEL_LOG_USER_PROMPTS=<redacted>
+ENV OTEL_METRIC_EXPORT_INTERVAL=<redacted>
+ENV OTEL_METRIC_EXPORT_TIMEOUT=<redacted>
+ENV OTEL_METRICS_EXPORTER=<redacted>
+ENV OTEL_RESOURCE_ATTRIBUTES=<redacted>
+ENV OTEL_TRACES_EXPORTER=<redacted>
+ENV OTEL_TRACES_EXPORT_INTERVAL=<redacted>
+ENV PAGER=<redacted>
+ENV PATH=/home/newton/bin:/home/newton/.claude/skills/ci-autopilot/scripts:/home/newton/.claude/skills/ci-signals/scripts:/home/newton/orc-bin:/home/newton/orc-bin:/home/newton/.cargo/bin:/home/newton/fbsource/fbcode/third-party-buck/platform010/build/rust/bin/:/home/newton/.claude/skills/ci-autopilot/scripts:/home/newton/.claude/skills/ci-signals/scripts:/home/newton/orc-bin:/home/newton/orc-bin:/home/newton/.cargo/bin:/home/newton/fbsource/fbcode/third-party-buck/platform010/build/rust/bin/:/home/newton/.deno/bin:/home/newton/.bun/bin:/home/newton/.elan/bin:/home/newton/.nvm/versions/node/v22.23.2/bin:/home/newton/.claude/skills/ci-autopilot/scripts:/home/newton/.claude/skills/ci-signals/scripts:/home/newton/.npm-global/bin:/home/newton/orc-bin:/home/newton/orc-bin:/home/newton/.cargo/bin:/home/newton/.cargo/bin:/home/newton/fbsource/fbcode/third-party-buck/platform010/build/rust/bin/:/usr/share/Modules/bin:/usr/condabin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/home/newton/orc-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/facebook/scripts:/usr/facebook/scripts/db:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/facebook/scripts:/usr/facebook/scripts/db:/usr/local/sbin:/usr/sbin:/sbin:/var/www/scripts/bin:/home/newton/.yarn/bin:/var/www/scripts/bin/:/home/newton/.local/bin:/home/newton/bin:/home/newton/.local/bin:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/facebook/scripts:/usr/facebook/scripts/db:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/local/sbin:/usr/sbin:/sbin:/var/www/scripts/bin:/home/newton/.yarn/bin:/var/www/scripts/bin/:/home/newton/.local/bin:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/facebook/scripts:/usr/facebook/scripts/db:/usr/facebook/ops/scripts:/usr/facebook/scripts:/usr/local/sbin:/usr/sbin:/sbin:/var/www/scripts/bin:/home/newton/.yarn/bin:/var/www/scripts/bin/:/home/newton/.local/bin:/home/newton/.claude/agent-market/plugins/ads-aplusc-feature-preview/bin:/home/newton/.claude/agent-market/plugins/ads-manager/bin:/home/newton/.claude/agent-market/plugins/agent-security-guardrails/bin:/home/newton/.claude/agent-market/plugins/code_provenance/bin:/home/newton/.claude/agent-market/plugins/dapper-debug/bin:/home/newton/.claude/agent-market/plugins/diff-autopilot/bin:/home/newton/.claude/agent-market/plugins/domain-knowledge-manager/bin:/home/newton/.claude/agent-market/plugins/dsmate/bin:/home/newton/.claude/agent-market/plugins/experimentation/bin:/home/newton/.claude/agent-market/plugins/feature-dev/bin:/home/newton/.claude/agent-market/plugins/fireworks/bin:/home/newton/.claude/agent-market/plugins/genaimvp/bin:/home/newton/.claude/agent-market/plugins/gojira-session/bin:/home/newton/.claude/agent-market/plugins/llm-rules/bin:/home/newton/.claude/agent-market/plugins/meta-cli-core/bin:/home/newton/.claude/agent-market/plugins/meta-trajectory/bin:/home/newton/.claude/agent-market/plugins/meta/bin:/home/newton/.claude/agent-market/plugins/meta_codesearch/bin:/home/newton/.claude/agent-market/plugins/meta_knowledge/bin:/home/newton/.claude/agent-market/plugins/pixelcloud/bin:/home/newton/.claude/agent-market/plugins/plan-gdoc-review/bin:/home/newton/.claude/agent-market/plugins/privacylib/bin:/home/newton/.claude/agent-market/plugins/sl/bin:/home/newton/.claude/agent-market/plugins/source-control-at-meta/bin:/home/newton/.claude/agent-market/plugins/tracing-hooks/bin:/home/newton/.claude/agent-market/plugins/wink/bin:/home/newton/.claude/agent-market/plugins/autoscaling-2-onboarding/bin:/home/newton/.claude/agent-market/plugins/iac-core/bin:/home/newton/.claude/agent-market/plugins/thrift/bin:/home/newton/.claude/agent-market/plugins/infra/bin:/home/newton/.claude/agent-market/plugins/third-party-rust/bin:/home/newton/.claude/agent-market/plugins/validated-jf-submit/bin:/home/newton/.claude/agent-market/plugins/rust-foundation-ci/bin:/home/newton/.claude/agent-market/plugins/meta-lsp-hack/bin:/home/newton/.claude/agent-market/plugins/ralph-wiggum/bin
+ENV PHPSH_CEILING_DIRECTORIES=<redacted>
+ENV PIVV_MODE=<redacted>
+ENV PWD=/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence
+ENV PYTHONPATH=<redacted>
+ENV PYTHONUNBUFFERED=<redacted>
+ENV RECORD_OUT=<redacted>
+ENV RN_BUCK_MODE=<redacted>
+ENV RNOSTYPE=<redacted>
+ENV RR=<redacted>
+ENV RR_RECORD=<redacted>
+ENV RUSTPLATFORM=<redacted>
+ENV S_COLORS=<redacted>
+ENV SHELL=<redacted>
+ENV _SHELL_LOGIN_D_SOURCED=<redacted>
+ENV SHLVL=<redacted>
+ENV SKS_PLATFORM=<redacted>
+ENV SMALLTOK_CLI=<redacted>
+ENV SSH_CLIENT=<redacted>
+ENV SSH_CONNECTION=<redacted>
+ENV SUDO_USER=<redacted>
+ENV TERM_PROGRAM=<redacted>
+ENV TERM_PROGRAM_VERSION=<redacted>
+ENV TERM=<redacted>
+ENV TFB_SANDBOX_SCRIPTS=<redacted>
+ENV THRIFT_TLS_CL_CERT_PATH=<redacted>
+ENV THRIFT_TLS_CL_KEY_PATH=<redacted>
+ENV TMUX_PANE=<redacted>
+ENV TMUX=<redacted>
+ENV USER=newton
+ENV _=<redacted>
+ENV which_declare=<redacted>
+ENV XDG_RUNTIME_DIR=/run/user/212630
+ENV XDG_SESSION_CLASS=<redacted>
+ENV XDG_SESSION_ID=<redacted>
+ENV XDG_SESSION_TYPE=<redacted>

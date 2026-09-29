@@ -1,0 +1,38 @@
+== sparse diff vs /tmp (byte cmp)
+SPARSE-BYTE-IDENTICAL
+b340f1b460ceb5603a3209c73fa98c5b9cf83cf347ceb4377fbb840e42352f7a  /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/fbsource/.hg/sparse
+b340f1b460ceb5603a3209c73fa98c5b9cf83cf347ceb4377fbb840e42352f7a  /tmp/tfa-phase2-controller-followup-20260924/.hg/sparse
+== commit
+ef4885b60dc26a1a73321b83d834c97179e0ec64
+== status
+status_rc=0
+== filteredfs show
+Enabled Profiles:
+
+    ~ tools/scm/filter/alpha_research_tent_filter_DO_NOT_EDIT_OR_DISABLE        alpha kernel research filter for protected directories
+    ~ tools/scm/filter/alpha_tent_filter_DO_NOT_EDIT_OR_DISABLE                 alpha kernel filter for protected directories
+    ~ tools/scm/filter/chiron_tent_filter_DO_NOT_EDIT_OR_DISABLE                chiron filter for protected directories
+    ~ tools/scm/filter/gem_next_tent_filter_DO_NOT_EDIT_OR_DISABLE              gem_next filter for protected directories
+    ~ tools/scm/filter/gr2_tent_filter_DO_NOT_EDIT_OR_DISABLE                   gr2 filter for protected directories
+    ~ tools/scm/filter/gradient_tent_filter_DO_NOT_EDIT_OR_DISABLE              gradient filter for protected directories
+    ~ tools/scm/filter/infosec_tent_filter_DO_NOT_EDIT_OR_DISABLE               infosec filter for protected directories
+    ~ tools/scm/filter/mononoke_mock_restricted_path                            restricted path filter
+    ~ tools/scm/filter/mrs_research_cloaked_tent_filter_DO_NOT_EDIT_OR_DISABLE  mrs_research_cloaked filter for protected directories
+    ~ tools/scm/filter/mrs_research_horizon_tent_filter_DO_NOT_EDIT_OR_DISABLE  mrs_research_horizon filter for protected directories
+    ~ tools/scm/filter/mrs_tent_filter_DO_NOT_EDIT_OR_DISABLE                   MRS filter for protected directories
+    ! tools/scm/filter/muse_code_tent_filter_DO_NOT_EDIT_OR_DISABLE           
+    ~ tools/scm/filter/sdr_tent_filter_DO_NOT_EDIT_OR_DISABLE                   SDR filter for protected directories
+    ~ tools/scm/filter/ufc_tent_filter_DO_NOT_EDIT_OR_DISABLE                   ufc filter for protected directories
+== eden info
+{
+  "mount": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/fbsource",
+  "scm_type": "filteredhg",
+  "state_dir": "/data/users/newton/.eden/clients/fbsource-5",
+  "mount_protocol": "fuse",
+  "case_sensitive": true,
+  "backing_repo": "/data/users/newton/.eden-backing-repos/fbsource",
+  "home_dir": "/home/newton",
+  "inode_catalog_type": "legacy",
+  "checked_out_revision": "ef4885b60dc26a1a73321b83d834c97179e0ec64",
+  "working_copy_parent": "ef4885b60dc26a1a73321b83d834c97179e0ec64"
+}

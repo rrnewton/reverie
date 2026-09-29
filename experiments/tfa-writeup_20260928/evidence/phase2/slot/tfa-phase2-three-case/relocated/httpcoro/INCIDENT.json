@@ -1,0 +1,30 @@
+{
+  "case_id": "httpcoro",
+  "censored_receipt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/seed-000-replica-1/receipt.json",
+    "sha256": "85c0d6f6f3a2b1bac19bf90ef958fe484f2bf630de69b3945181e0961a19c5f5"
+  },
+  "disposition": "preserved in place; not deleted, not moved; the v1 shared cwd is not reused",
+  "leftover": {
+    "explanation": "Hermit verify mode's .hermit-verify-summary-XXXXXX temp file, created in the cwd at run start (mtime matches the censored attempt's start) and left empty because the process was killed at the wall bound.",
+    "inode": 120,
+    "mtime_ns": 1790326873615296384,
+    "path": "/home/newton/work/tfa/phase2-cases/httpcoro/tfa-phase2-repro/cwd/.hermit-verify-summary-VWeiWK",
+    "size": 0,
+    "uid": 212630
+  },
+  "live_process_scan": {
+    "hits": 0,
+    "limitation": "only this uid's processes are readable; other-uid processes were counted as unreadable",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated/httpcoro/live-process-scan.json",
+    "sha256": "dbda001897367ba13f22e51f6354433ab3fc916fe56c5ca9fd6fe1fa0d873be8"
+  },
+  "run": "relocated (v1)",
+  "schema": "tfa.relocation-incident.v1",
+  "summary": "v1 seed-0 FAIL attempt was CENSORED at the 120 s safehermit wall bound (rc 124, 121.1 s). Hermit had created its verify-summary temp file in the shared v1 cwd and was killed before removing it; the v1 runner then refused every later httpcoro attempt because the shared cwd was no longer empty. No httpcoro v1 summary exists. The CENSORED attempt is neither PASS nor FAIL.",
+  "superseded_by": {
+    "policy": "one newly created, owned, verified-empty cwd per attempt",
+    "runner": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/relocated-v2/run_relocated_v2.py"
+  },
+  "v1_run_rc": 1
+}

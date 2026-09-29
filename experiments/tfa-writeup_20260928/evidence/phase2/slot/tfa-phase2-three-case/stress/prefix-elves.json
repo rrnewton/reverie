@@ -1,0 +1,20 @@
+{
+  "asyncssl": {
+    "elf": "/home/newton/work/tfa/phase2-cases/stress/asyncssl/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+    "identical_to_manifest": true,
+    "manifest_artifact_sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46",
+    "sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46"
+  },
+  "httpcoro": {
+    "elf": "/home/newton/work/tfa/phase2-cases/stress/httpcoro/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "identical_to_manifest": true,
+    "manifest_artifact_sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+    "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc"
+  },
+  "thrift": {
+    "elf": "/home/newton/work/tfa/phase2-cases/stress/thrift/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+    "identical_to_manifest": true,
+    "manifest_artifact_sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+    "sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc"
+  }
+}

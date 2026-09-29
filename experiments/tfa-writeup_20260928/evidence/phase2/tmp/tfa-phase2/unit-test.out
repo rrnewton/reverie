@@ -1,0 +1,70 @@
+[2026-09-24T15:09:39.946-07:00] Buck UI: https://www.internalfb.com/buck2/814fca77-4d1e-4687-a4a9-b1f2e15e84e9
+[2026-09-24T15:09:40.325-07:00] RE Session: reSessionID-86a980db-a5fe-4547-985f-8911b634c911
+[2026-09-24T15:09:40.839-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23643898094690328
+[2026-09-24T15:09:47.581-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
+[2026-09-24T15:09:47.581-07:00] test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] ======================================================================
+[2026-09-24T15:09:47.581-07:00] FAIL: test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest)
+[2026-09-24T15:09:47.581-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:09:47.581-07:00] Traceback (most recent call last):
+[2026-09-24T15:09:47.581-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/hermit.py", line 1479, in _qualification_receipt_record
+[2026-09-24T15:09:47.581-07:00]     before = regular_file_record(path)
+[2026-09-24T15:09:47.581-07:00]              ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:09:47.581-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/state.py", line 387, in regular_file_record
+[2026-09-24T15:09:47.581-07:00]     raise StateError(f"evidence is not a regular file: {path}")
+[2026-09-24T15:09:47.581-07:00] testinfra.tfa.state.StateError: evidence is not a regular file: /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/hermit-import-receipts.v1.json
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] The above exception was the direct cause of the following exception:
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] testinfra.tfa.hermit.HermitError: packaged Hermit qualification receipts are unreadable
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] During handling of the above exception, another exception occurred:
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] Traceback (most recent call last):
+[2026-09-24T15:09:47.581-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1111, in test_packaged_hermit_records_current_blocked_compatibility
+[2026-09-24T15:09:47.581-07:00]     self.assertRaisesRegex(
+[2026-09-24T15:09:47.581-07:00] AssertionError: "packaged Hermit compatibility is BLOCKED.*sanitizer guests cannot initialize RLIMIT_CORE" does not match "packaged Hermit qualification receipts are unreadable"
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:09:47.581-07:00] Ran 1 test in 0.006s
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.581-07:00] FAILED (failures=1)
+[2026-09-24T15:09:47.581-07:00]
+[2026-09-24T15:09:47.583-07:00] ✗ Fail: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) (0.0s)
+[2026-09-24T15:09:47.583-07:00] test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) ... FAIL
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:47.583-07:00] ======================================================================
+[2026-09-24T15:09:47.583-07:00] FAIL: test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest)
+[2026-09-24T15:09:47.583-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:09:47.583-07:00] Traceback (most recent call last):
+[2026-09-24T15:09:47.583-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 149, in locked
+[2026-09-24T15:09:47.583-07:00]     return function(*args, **kwargs)
+[2026-09-24T15:09:47.583-07:00]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-09-24T15:09:47.583-07:00]   File "/tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 2503, in test_witness_adds_controller_cwd_without_changing_guest_cwd
+[2026-09-24T15:09:47.583-07:00]     self.assertEqual(
+[2026-09-24T15:09:47.583-07:00] AssertionError: Tuples differ: ('/tm[989 chars]rify-verbose', '--verify-allow', 'both', '--mo[553 chars] 180) != ('/tm[989 chars]rify-strict', '--verify-allow', 'both', '--kee[645 chars] 180)
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:47.583-07:00] First differing element 1:
+[2026-09-24T15:09:47.583-07:00] ('--s[920 chars]rify-verbose', '--verify-allow', 'both', '--mo[434 chars]sts')
+[2026-09-24T15:09:47.583-07:00] ('--s[920 chars]rify-strict', '--verify-allow', 'both', '--kee[526 chars]sts')
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:47.583-07:00] Diff is 1937 characters long. Set self.maxDiff to None to see it.
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:47.583-07:00] ----------------------------------------------------------------------
+[2026-09-24T15:09:47.583-07:00] Ran 1 test in 0.017s
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:47.583-07:00] FAILED (failures=1)
+[2026-09-24T15:09:47.583-07:00]
+[2026-09-24T15:09:50.349-07:00] Network: up 8.9KiB  down 0B  session reSessionID-86a980db-a5fe-4547-985f-8911b634c911
+[2026-09-24T15:09:50.349-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/23643898094690328
+Tests finished: [mPass 125[m. [mFail 2[m. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+2 TESTS FAILED
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+  ✗ fbcode//testinfra/tfa/tests:tfa_phase2_test - test_witness_adds_controller_cwd_without_changing_guest_cwd (testinfra.tfa.tests.test_prototype.ProcessTest) (cfg:dev-linux-x86_64-fbcode-platform010-clang21-asan-ubsan-dev#a1a2a72df8842e2e)
+
+Run [1m$ fdb buck test <args>[0m to debug one of 2 failing tests
+      ^^^ just prefix your previous command! ($ fdb !!)
+For example: fbcode//testinfra/tfa/tests:tfa_phase2_test - test_packaged_hermit_records_current_blocked_compatibility (testinfra.tfa.tests.test_prototype.ProcessTest)
+Learn more at https://fburl.com/fdb
+[32mUse Devmate to fix your errors. Just click the following link: ]8;;fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23643898094690328&expiry=2026-09-24T22%3A14%3A48Z&viewer=18498&signature=REDACTED\fb-vscode://nuclide.code-compose/devmate/fixtests?run_id=23643898094690328&expiry=2026-09-24T22%3A14%3A48Z&viewer=18498&signature=REDACTED]8;;\[0m

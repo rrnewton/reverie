@@ -1,0 +1,5 @@
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)

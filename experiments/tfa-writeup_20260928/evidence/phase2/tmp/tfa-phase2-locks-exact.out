@@ -1,0 +1,494 @@
+3872376 POSIX READ  /home/newton/.codex/thread_history_1.sqlite
+3872376 POSIX READ  /home/newton/.codex/thread_history_1.sqlite-shm
+3538415 FLOCK WRITE /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions
+3538415 FLOCK WRITE /home/newton/.agentcloud/node/deployments/mm.internalmeta.com/sessions/.agentcloud-node.lock
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/materializer_state/db.sqlite
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/materializer_state/db.sqlite-shm
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/incremental_state/db.sqlite
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/incremental_state/db.sqlite-shm
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/dep_file_state/db.sqlite
+3891884 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/.autodeps2/cache/dep_file_state/db.sqlite-shm
+4106410 FLOCK WRITE /home/newton/.local/share/muse/local-tracing/bootstrap/cli-3b30a1bd-1363-4781-b01e-3d3e00fc518d.log
+3716743 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+3334588 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-lzma-declared-probe/cache/materializer_state/db.sqlite
+3334588 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-lzma-declared-probe/cache/materializer_state/db.sqlite-shm
+3334588 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-lzma-declared-probe/cache/incremental_state/db.sqlite
+3334588 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-lzma-declared-probe/cache/incremental_state/db.sqlite-shm
+ 684216 POSIX READ  /home/newton/.codex/thread_history_1.sqlite
+ 684216 POSIX READ  /home/newton/.codex/thread_history_1.sqlite-shm
+3802063 FLOCK WRITE /run/user/212630/chataccd/b6ebdc40b6f8e5ac/startup.lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-schedtest-import/local/info
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/lfs/pointers/rlock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource4/local/info
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/indexedloghistorystore/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore_aux/31/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore_aux/30/rlock
+3034947 FLOCK WRITE /run/user/212630/chataccd/84cabf75e77ee76b/startup.lock
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/agents_v17.db
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/agents_v17.db-shm
+1606661 POSIX READ  /home/newton/.local/state/mcdaemon/state.db
+1606661 POSIX READ  /home/newton/.local/state/mcdaemon/state.db-shm
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/materializer_state/db.sqlite
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/materializer_state/db.sqlite-shm
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/incremental_state/db.sqlite
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/incremental_state/db.sqlite-shm
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/dep_file_state/db.sqlite
+2961705 POSIX READ  /home/newton/temp/tfa-phase2-thrift-case/buck-out/.autodeps2/cache/dep_file_state/db.sqlite-shm
+4074817 FLOCK WRITE /var/facebook/watchman/newton-state/pid
+2952086 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d578-8833-74d0-9f86-fd8b5c9ccd99.lock
+1493204 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/24/01a0d494-b649-7d20-9318-8e1de79655ef/.session.lock (deleted)
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3/package/.claude-plugin/plugin.json
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b/package/.claude-plugin/plugin.json
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535/package/.claude-plugin/plugin.json
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb
+1493204 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb/package/.claude-plugin/plugin.json
+3872376 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d5a6-6646-7411-bdc9-28560a63c240.lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/tfa-phase2-controller-followup-20260924/local/metadata.table
+3313220 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0uyFqhv/.lock
+1619660 POSIX READ  /home/newton/.codex/queue_1.sqlite
+1619660 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/a46772ae47c08b67402bc663a52ddf9a5d85c17aa82bd661b2b4aea5199cbbee
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/a46772ae47c08b67402bc663a52ddf9a5d85c17aa82bd661b2b4aea5199cbbee/package/.claude-plugin/plugin.json
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/2ef75e534f6bb7586301912c692c21051fa2cab662657de602626b400387f985
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/2ef75e534f6bb7586301912c692c21051fa2cab662657de602626b400387f985/package/.claude-plugin/plugin.json
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/5bd3be17d8826809981a6f70003d75ff891e390e7e53b3f7578419de4a622380
+1626552 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/5bd3be17d8826809981a6f70003d75ff891e390e7e53b3f7578419de4a622380/package/.claude-plugin/plugin.json
+2613272 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+3500744 FLOCK READ  /data/hgcache/configerator/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/indexedlogdatastore/28/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/manifests/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/manifests/indexedlogdatastore/1/rlock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-2/local/metadata.table
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource3/local/metadata.table
+3015623 POSIX READ  /home/newton/.codex/logs_2.sqlite
+3015623 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3872376 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d5a6-913b-7fc1-94d2-5cb91ce9dfc2.lock
+2402296 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg04Famj1/.lock
+ 675156 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0bd2c-c572-7893-95bd-558b1786bc2f.lock (deleted)
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/httpcoro-4/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/httpcoro-4/local/metadata.table
+2401559 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/d6b5e2ce3c540eb505415d340b40a1c0b71adfa6002073b0e27cf2afd46b9c3a
+2952086 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0DuHwmU/.lock
+ 277429 FLOCK WRITE /run/user/212630/chataccd/78070a57c95580bc/startup.lock
+1350658 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/22/01a0ca4e-f958-7701-a4d6-22b78e23ca65/cli-96cf096b-9147-4293-b62b-a0cd1421b496.log
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-1/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-1/local/metadata.table
+ 684216 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d56d-efab-74e0-8308-84d2eaed4ce5.lock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/pointers/34/rlock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource3/local/info
+3035031 FLOCK WRITE /run/user/212630/chataccd/819331188c4a2efa/startup.lock
+ 675156 POSIX READ  /home/newton/.codex/logs_2.sqlite
+ 675156 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+  59393 POSIX WRITE /home/newton/.arcrc...
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore/188/rlock
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/materializer_state/db.sqlite
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/materializer_state/db.sqlite-shm
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/incremental_state/db.sqlite
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/incremental_state/db.sqlite-shm
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/dep_file_state/db.sqlite
+3472146 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/cli_target_thrift_postprocess/cache/dep_file_state/db.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource/local/metadata.table
+1626552 FLOCK WRITE /home/newton/.local/share/muse/local-tracing/bootstrap/cli-59235a3c-f94f-4acb-afb8-ba3cdd9574cd.log
+2616931 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2616931 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3718025 POSIX READ  /home/newton/.codex/logs_2.sqlite
+3718025 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-3/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-3/local/metadata.table
+ 684216 POSIX READ  /home/newton/.codex/logs_2.sqlite
+ 684216 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+1910841 FLOCK WRITE /run/user/212630/chataccd/ae145ce718cfb634/startup.lock
+2785517 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0HA6iar/.lock
+2785517 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0c54d-d8b3-7372-a326-de7a672830dd.lock (deleted)
+3907920 FLOCK WRITE /run...
+3801688 FLOCK WRITE /run/user/212630/chataccd/e3b7d7c4f52ef3b0/startup.lock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/hgcommits/v1/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/segments/v1/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/segments/v1/multimetalog/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/segments/v1/idmap2/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/segments/v1/iddag/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedlogdatastore/124/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedlogdatastore/123/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedlogdatastore/122/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/treeaux/24/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/treeaux/23/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/treeaux/22/rlock
+3015623 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0mrLrkY/.lock
+2402296 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d4ae-63f1-73d2-ad5d-8c28217999b9.lock (deleted)
+3872376 POSIX READ  /home/newton/.codex/goals_1.sqlite
+3872376 POSIX READ  /home/newton/.codex/goals_1.sqlite-shm
+ 675156 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d380-7033-7640-b83d-e7d51632106b.lock
+  31772 POSIX WRITE /etc/servicerouter/config_injection.overrides...
+3191983 FLOCK WRITE /run/user/212630/chataccd/4c9b501468646d4d/startup.lock
+3798252 FLOCK WRITE /home/newton/.arcrc...
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/checkout/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/checkout/local/metadata.table
+3313220 POSIX READ  /home/newton/.codex/logs_2.sqlite
+3313220 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/blobs/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/blobs/94/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedloghistorystore/rlock
+3015623 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d49c-5b91-7341-b4d8-1756cdf8365a.lock (deleted)
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore_aux/32/rlock
+ 675156 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d588-d539-7201-af44-70ab9bd85b5b.lock
+3872376 POSIX READ  /home/newton/.codex/logs_2.sqlite
+3872376 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3302730 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/hgcommits/v1/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/segments/v1/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/segments/v1/multimetalog/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/segments/v1/idmap2/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/segments/v1/iddag/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/manifests/indexedlogdatastore/0/rlock
+3340654 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0fx7tnK/.lock
+2982363 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0zcAkme/.lock
+2785517 POSIX READ  /home/newton/.codex/logs_2.sqlite
+2785517 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+ 675156 POSIX READ  /home/newton/.codex/thread_history_1.sqlite
+ 675156 POSIX READ  /home/newton/.codex/thread_history_1.sqlite-shm
+3567611 POSIX READ  /tmp/hermit-fbexp-reconcile-20260921/buck-out/v2/cache/materializer_state/db.sqlite
+3567611 POSIX READ  /tmp/hermit-fbexp-reconcile-20260921/buck-out/v2/cache/materializer_state/db.sqlite-shm
+3567611 POSIX READ  /tmp/hermit-fbexp-reconcile-20260921/buck-out/v2/cache/incremental_state/db.sqlite
+3567611 POSIX READ  /tmp/hermit-fbexp-reconcile-20260921/buck-out/v2/cache/incremental_state/db.sqlite-shm
+2785517 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0c54e-6b53-7821-abab-b43efaebc77e.lock (deleted)
+  65492 FLOCK WRITE /run/user/212630/chataccd/396ad3dbe1e5b638/startup.lock
+3718025 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0c904-c5dd-7bc3-b1c0-06747ababe6b.lock (deleted)
+  14688 POSIX WRITE /run...
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/asyncssl/local/metadata.table
+ 684216 POSIX READ  /home/newton/.codex/state_5.sqlite
+ 684216 POSIX READ  /home/newton/.codex/state_5.sqlite-shm
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/blobs/93/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/blobs/92/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/blobs/91/rlock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-orc-assignment-906/local/metadata.table
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-4/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-orc-assignment-906/local/metadata.table
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-4/local/info
+3872376 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0iPoi9x/.lock
+3340654 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0b537-b02f-7aa0-b491-9b323cecb746.lock (deleted)
+2586966 FLOCK WRITE /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/session.db.lock
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/agents_v17.db
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/agents_v17.db-shm
+1974858 FLOCK WRITE /run/user/212630/agent_security_guardrails_rs/claude_code/daemon.lock
+2981116 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389
+2402296 POSIX READ  /home/newton/.codex/goals_1.sqlite
+2402296 POSIX READ  /home/newton/.codex/goals_1.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/configerator/local/info
+1619660 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0Bvt2A9/.lock
+1350658 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/ms-9cce24eb6622.sock.lease
+1350658 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/sessions/01a0ca4e-f958-7701-a4d6-22b78e23ca65.json
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/configerator/local/metadata.table
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/materializer_state/db.sqlite
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/materializer_state/db.sqlite
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/materializer_state/db.sqlite-shm
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/incremental_state/db.sqlite
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/incremental_state/db.sqlite-shm
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/dep_file_state/db.sqlite
+1204142 POSIX READ  /home/newton/fbsource/buck-out/ci_verifiable_node_builder/cache/dep_file_state/db.sqlite-shm
+2402296 POSIX READ  /home/newton/.codex/thread_history_1.sqlite
+2402296 POSIX READ  /home/newton/.codex/thread_history_1.sqlite-shm
+2262451 FLOCK WRITE /run/user/212630/chataccd/372c25b6a56d5c9d/startup.lock
+3497114 FLOCK WRITE /tmp/rankpilot-agent-service.lock (deleted)
+3690507 POSIX READ  /run/user/212630/dm-core/state.db
+3690507 POSIX READ  /run/user/212630/dm-core/state.db-shm
+1619194 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+1350658 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/22/01a0ca4e-f958-7701-a4d6-22b78e23ca65/.session.lock (deleted)
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore_aux/29/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore/187/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore/186/rlock
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/materializer_state/db.sqlite
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/materializer_state/db.sqlite-shm
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/materializer_state/db.sqlite
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/materializer_state/db.sqlite-shm
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/incremental_state/db.sqlite
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/incremental_state/db.sqlite-shm
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/dep_file_state/db.sqlite
+3427893 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/cli_target_thrift_postprocess/cache/dep_file_state/db.sqlite-shm
+1910732 FLOCK WRITE /run/user/212630/chataccd/03a89aca4a9f8fbd/startup.lock
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/workflows.db
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/workflows.db-shm
+3872376 POSIX READ  /home/newton/.codex/state_5.sqlite
+3872376 POSIX READ  /home/newton/.codex/state_5.sqlite-shm
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb/package/.claude-plugin/plugin.json
+  29591 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+  29591 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+ 675156 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0SxE5iC/.lock
+1724646 FLOCK WRITE /run/user/212630/chataccd/2b7c8c7797376021/startup.lock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/manifests/treeaux/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/manifests/treeaux/0/rlock
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/materializer_state/db.sqlite
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/materializer_state/db.sqlite-shm
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/incremental_state/db.sqlite
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/incremental_state/db.sqlite-shm
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/dep_file_state/db.sqlite
+3015623 POSIX READ  /home/newton/.codex/queue_1.sqlite
+3015623 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/pointers/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/pointers/35/rlock
+3340654 POSIX READ  /home/newton/.codex/logs_2.sqlite
+3340654 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/indexedlogdatastore_aux/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/indexedlogdatastore_aux/1/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore_aux/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/indexedlogdatastore/rlock
+3007938 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/d6b5e2ce3c540eb505415d340b40a1c0b71adfa6002073b0e27cf2afd46b9c3a
+ 675156 POSIX READ  /home/newton/.codex/goals_1.sqlite
+ 675156 POSIX READ  /home/newton/.codex/goals_1.sqlite-shm
+3718025 POSIX READ  /home/newton/.codex/queue_1.sqlite
+3718025 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/events.db
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/events.db-shm
+3872376 POSIX READ  /home/newton/.codex/queue_1.sqlite
+3872376 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+1222728 POSIX READ  /tmp/tfa-phase2-controller-followup-20260924/buck-out/v2/cache/dep_file_state/db.sqlite-shm
+2952086 POSIX READ  /home/newton/.codex/goals_1.sqlite
+2952086 POSIX READ  /home/newton/.codex/goals_1.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-orc-assignment-baseline-906/local/metadata.table
+3015623 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d49c-5b24-7b60-b0ad-fe47f76aa3f6.lock (deleted)
+ 250450 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-validate-phase2-study/cache/materializer_state/db.sqlite
+ 250450 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-validate-phase2-study/cache/materializer_state/db.sqlite-shm
+ 250450 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-validate-phase2-study/cache/incremental_state/db.sqlite
+ 250450 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/buck-validate-phase2-study/cache/incremental_state/db.sqlite-shm
+3340654 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d48a-5e61-7e60-97ef-f3e735e12fac.lock (deleted)
+ 541530 FLOCK WRITE /run...
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/tfa-phase2-controller-followup-20260924/local/info
+2613647 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2613647 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+2785517 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2785517 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3520684 FLOCK WRITE /run/user/212630/chataccd/a1eda92ee3745fcb/startup.lock
+  11641 POSIX WRITE /run...
+3869859 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/d6b5e2ce3c540eb505415d340b40a1c0b71adfa6002073b0e27cf2afd46b9c3a
+  14611 POSIX WRITE /run...
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-schedtest-import/local/metadata.table
+1186230 FLOCK WRITE /tmp/pytest-of-newton/pytest-592/test_direct_frozen_recovery_pr1/project
+1186230 FLOCK WRITE /tmp/pytest-of-newton/pytest-592/test_direct_frozen_recovery_pr1/project/worktrees/ACTIVE.global.lock
+1186230 FLOCK WRITE /tmp/pytest-of-newton/pytest-592/test_direct_frozen_recovery_pr1/project/worktrees/ACTIVE.testhost.json.lock
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/workflows.db
+1695624 POSIX READ  /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/workflows.db-shm
+2982363 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d577-c71d-77d1-a9a2-32c03488bef3.lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-2/local/info
+1623841 FLOCK WRITE /run/user/212630/chataccd/15481215a828a74f/startup.lock
+3313220 POSIX READ  /home/newton/.codex/queue_1.sqlite
+3313220 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/asyncssl-1/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/asyncssl-1/local/metadata.table
+ 887945 POSIX WRITE /etc/servicerouter/config_injection.overrides...
+2952086 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d578-6e08-70a1-9074-a9793472e1ce.lock
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/events.db
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/events.db-shm
+1493204 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/ms-874c0a476d41.sock.lease
+1493204 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/sessions/01a0d494-b649-7d20-9318-8e1de79655ef.json
+1131676 FLOCK READ  /home/newton/.cargo/.package-cache-mutate
+1131676 FLOCK WRITE /tmp/cratesio-rc2/msrv/1.88.0/target/debug/.cargo-lock
+4106410 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/ms-42b868c9f167.sock.lease
+4106410 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/sessions/01a0d4a1-7c62-7a73-bbc5-926f9b5b97ed.json
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-orc-assignment-baseline-906/local/info
+ 674810 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+4106410 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/24/01a0d4a1-7c62-7a73-bbc5-926f9b5b97ed/.session.lock
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535/package/.claude-plugin/plugin.json
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb
+4106410 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb/package/.claude-plugin/plugin.json
+3500744 FLOCK WRITE /data/users/newton/.eden/lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource2/local/metadata.table
+2616931 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0ca4f-ba5a-7791-bfaf-009bfdb9a96d.lock (deleted)
+2982363 POSIX READ  /home/newton/.codex/logs_2.sqlite
+2982363 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fix-assigntask-selector/local/metadata.table
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/workflows.db
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/workflows.db-shm
+1468189 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/ms-0c7d3de8ba69.sock.lease
+1468189 FLOCK WRITE /home/newton/.local/share/muse/runtime/muse/sessions/01a0d494-9052-75b0-aa54-9caf5dc8bbeb.json
+1493204 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/24/01a0d494-b649-7d20-9318-8e1de79655ef/cli-b65da730-a814-4d95-9f30-48cc28c651d1.log (deleted)
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-4/local/metadata.table
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/pointers/33/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/lfs/pointers/32/rlock
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/materializer_state/db.sqlite
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/materializer_state/db.sqlite-shm
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/incremental_state/db.sqlite
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/incremental_state/db.sqlite-shm
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/dep_file_state/db.sqlite
+ 427546 POSIX READ  /home/newton/fbsource/buck-out/.autodeps2/cache/dep_file_state/db.sqlite-shm
+2402296 POSIX READ  /home/newton/.codex/logs_2.sqlite
+2402296 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+2952086 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d577-add5-7ce3-a36f-5e1b2ae6d58d.lock
+2948381 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389
+3274530 FLOCK WRITE /run/user/212630/chataccd/214067ccba1fb5cf/startup.lock
+2952086 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2952086 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource2/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-clean-import-20260724/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fix-assigntask-selector/local/info
+4106410 POSIX READ  /home/newton/.local/share/muse/sessions/2026/09/24/01a0d4a1-7c62-7a73-bbc5-926f9b5b97ed/goals.db
+4106410 POSIX READ  /home/newton/.local/share/muse/sessions/2026/09/24/01a0d4a1-7c62-7a73-bbc5-926f9b5b97ed/goals.db-shm
+2952086 POSIX READ  /home/newton/.codex/logs_2.sqlite
+2952086 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+ 961588 FLOCK READ  /home/newton/.local/state/hermit-health-tool/trees/4b4250928d52a5e1f9f7a0b258fb734f06196d8e
+ 961588 FLOCK WRITE /home/newton/.local/state/hermit-health-tool/.run.01c4069025c0b992
+1203647 FLOCK READ  /home/newton/.cargo/.package-cache-mutate
+1203647 FLOCK WRITE /home/newton/.cache/rust-script/binaries/release/.cargo-build-lock
+1203647 FLOCK READ  /home/newton/.cache/rust-script/binaries/release/.cargo-lock
+1203647 FLOCK WRITE /home/newton/.cache/rust-script/binaries/release/.cargo-artifact-lock
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/events.db
+2586966 POSIX READ  /home/newton/.orc/sessions/orcclaw-facc6d30-fb78-4793-a320-3e080b57d4c1/events.db-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-clean-import-20260724/local/metadata.table
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/httpcoro/local/info
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/httpcoro/local/metadata.table
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/agents_v17.db
+1034958 POSIX READ  /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/agents_v17.db-shm
+3340654 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d48a-6f08-7db2-a210-fbfaeaa9d4a9.lock (deleted)
+  59393 FLOCK WRITE /run...
+  59393 POSIX WRITE /home/newton/.arcrc...
+3340654 POSIX READ  /home/newton/.codex/queue_1.sqlite
+3340654 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+ 620409 POSIX WRITE /etc/servicerouter/config_injection.overrides...
+ 620409 POSIX WRITE /var/facebook/tupperware/agent/credentials...
+2616931 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0yiDvOh/.lock
+2785517 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0c549-6faf-7c92-9c68-88515b949ab4.lock (deleted)
+2428893 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+  29974 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+2402296 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d4ad-5571-7852-a23e-48972f66c415.lock (deleted)
+ 675156 POSIX READ  /home/newton/.codex/state_5.sqlite
+ 675156 POSIX READ  /home/newton/.codex/state_5.sqlite-shm
+1619660 POSIX READ  /home/newton/.codex/logs_2.sqlite
+1619660 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+4001845 FLOCK WRITE /run/user/212630/chataccd/e59d464d64e5390b/startup.lock
+  16657 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+  16657 FLOCK WRITE /etc/servicerouter/config_injection.overrides...
+1123376 FLOCK WRITE /run/user/212630/chataccd/65e5ba86d5d4784c/startup.lock
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/incremental_state/db.sqlite
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/incremental_state/db.sqlite-shm
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/dep_file_state/db.sqlite
+  85094 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/v2/cache/dep_file_state/db.sqlite-shm
+1034958 FLOCK WRITE /home/newton/.orc/sessions/e7cabcde-a7df-4098-95dc-3703ec547bf0/session.db.lock
+3574947 FLOCK WRITE /tmp/meta-cli-workers-212630/ce0157fd6b1b7589.sock.lock
+ 986013 FLOCK WRITE /home/newton/.local/state/hermit-owner-validate
+ 986013 FLOCK WRITE /home/newton/.local/state/hermit-owner-validate/watch.lock
+1333483 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/v2/cache/materializer_state/db.sqlite
+1333483 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/v2/cache/materializer_state/db.sqlite-shm
+1333483 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/v2/cache/incremental_state/db.sqlite
+1333483 POSIX READ  /home/newton/work/dev-hermit/worktrees/slots/buck-validate-phase2-gpt56/buck-out/v2/cache/incremental_state/db.sqlite-shm
+2952086 POSIX READ  /home/newton/.codex/thread_history_1.sqlite
+2952086 POSIX READ  /home/newton/.codex/thread_history_1.sqlite-shm
+1468189 FLOCK WRITE /home/newton/.local/share/muse/local-tracing/bootstrap/cli-4f08a4e5-d4a2-464b-a8d8-a3864f2ccb26.log
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore/189/rlock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/asyncssl/local/info
+3421066 FLOCK WRITE /run/user/212630/chataccd/ed9897ab57c5ba3a/startup.lock
+ 922758 FLOCK WRITE /run...
+ 684216 POSIX READ  /home/newton/.codex/queue_1.sqlite
+ 684216 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+2952086 POSIX READ  /home/newton/.codex/state_5.sqlite
+2952086 POSIX READ  /home/newton/.codex/state_5.sqlite-shm
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/hgcache/fbsource/manifests/indexedlogdatastore/125/rlock
+ 675156 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d539-c707-7a52-b7c9-99d27139b53b.lock
+2402296 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d4ae-6e9e-7660-b49f-7cb2894419ee.lock (deleted)
+1626552 POSIX READ  /home/newton/.local/share/muse/session-index.db
+1626552 POSIX READ  /home/newton/.local/share/muse/session-index.db-shm
+ 339727 FLOCK WRITE /tmp/meta-cli-workers-212630/54b65625f570afc0.sock.lock
+2613647 POSIX READ  /home/newton/.codex/logs_2.sqlite
+2613647 POSIX READ  /home/newton/.codex/logs_2.sqlite-shm
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/materializer_state/db.sqlite
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/materializer_state/db.sqlite-shm
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/incremental_state/db.sqlite
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/incremental_state/db.sqlite-shm
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/dep_file_state/db.sqlite
+ 881887 POSIX READ  /home/newton/fbsource/buck-out/v2/cache/dep_file_state/db.sqlite-shm
+  16003 POSIX WRITE /etc/servicerouter/config_injection.overrides...
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/manifests/indexedloghistorystore/rlock
+3500744 FLOCK READ  /tmp/tfa-eden-fixture.64ztuz/backing/.hg/store/hgcommits/v1/rlock (deleted)
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/configerator/.hg/store/manifests/indexedlogdatastore/rlock
+3872376 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d51a-ef3d-74f2-a6e5-4d74b0c71cf2.lock
+2616149 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/a73d81b581654f48dcbf21eb65ae31586a071ccea527a8251e2236441d95a348 (deleted)
+ 669242 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/abcaf363a51888df7708ffbc2501902edbd8c512d99926a50df057971c133389
+2982363 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2982363 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource-orc-assignment-906/local/info
+2402296 POSIX READ  /home/newton/.codex/queue_1.sqlite
+2402296 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+ 684216 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0xtMO8K/.lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource/local/info
+3340654 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0b5a8-3869-7383-bff2-a56413305070.lock (deleted)
+1468189 FLOCK WRITE /home/newton/.local/share/muse/sessions/2026/09/24/01a0d494-9052-75b0-aa54-9caf5dc8bbeb/.session.lock (deleted)
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3/package/.claude-plugin/plugin.json
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/f5a0083ee6b8a4702bcfb2336565ebdd292d9a619642ed9034c6ca112544149b/package/.claude-plugin/plugin.json
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/b534e54ef14dbaa147fff39de6718a2535ded63c6dcea987843f96d2c0eb5535/package/.claude-plugin/plugin.json
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb
+1468189 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/f892519ecb1f936d119e5b4b80f4cf2ce5d39b40e40d5b5c2650610dee96dacb/package/.claude-plugin/plugin.json
+2402296 POSIX READ  /home/newton/.codex/state_5.sqlite
+2402296 POSIX READ  /home/newton/.codex/state_5.sqlite-shm
+3872376 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d5a6-a6a5-7e30-9efc-357b540e7ca7.lock
+2613647 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg06wXw0I/.lock
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/fbsource4/local/metadata.table
+1623865 FLOCK WRITE /run/user/212630/chataccd/fb29bca9c65010a1/startup.lock
+2785059 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/tfa-phase2-thrift-case/local/metadata.table
+2613647 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0c548-e44c-7a60-9925-277c2f6f2f97.lock (deleted)
+3500744 FLOCK WRITE /data/users/newton/.eden/clients/tfa-phase2-thrift-case/local/info
+2402296 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d4c5-143b-70e1-9d4b-b915581d7f63.lock
+3338168 FLOCK READ  /home/newton/.codex/packages/meta-dotslash/leases/a73d81b581654f48dcbf21eb65ae31586a071ccea527a8251e2236441d95a348 (deleted)
+ 675156 POSIX READ  /home/newton/.codex/queue_1.sqlite
+ 675156 POSIX READ  /home/newton/.codex/queue_1.sqlite-shm
+2982363 POSIX READ  /home/newton/.codex/goals_1.sqlite
+2982363 POSIX READ  /home/newton/.codex/goals_1.sqlite-shm
+2952086 FLOCK WRITE /home/newton/.codex/thread-writer-locks/01a0d578-546e-7473-b2ff-066d3796120a.lock
+1005362 FLOCK READ  /home/newton/.cargo/.package-cache-mutate
+1005362 FLOCK WRITE /home/newton/work/dev-hermit/worktrees/slots/hermit-network-only-replay-astra/target/debug/.cargo-build-lock
+1005362 FLOCK READ  /home/newton/work/dev-hermit/worktrees/slots/hermit-network-only-replay-astra/target/debug/.cargo-lock
+1005362 FLOCK WRITE /home/newton/work/dev-hermit/worktrees/slots/hermit-network-only-replay-astra/target/debug/.cargo-artifact-lock
+3500744 FLOCK READ  /data/hgcache/fbsource/indexedlogdatastore/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/treeaux/rlock
+3500744 FLOCK READ  /data/users/newton/.eden-backing-repos/fbsource/.hg/store/manifests/treeaux/25/rlock
+3421159 FLOCK WRITE /run/user/212630/chataccd/5d1388f8109bbc4d/startup.lock
+3718025 FLOCK WRITE /home/newton/.codex/tmp/arg0/codex-arg0IJna9F/.lock
+2262968 FLOCK WRITE /run/user/212630/chataccd/cea4e62b4526dcb3/startup.lock
+1695624 FLOCK WRITE /home/newton/.orc/sessions/b4fe26af-7e34-4615-90fd-c7586322dc15/session.db.lock
+3500744 FLOCK READ  /data/hgcache/configerator/manifests/indexedloghistorystore/rlock
+3500744 FLOCK READ  /data/hgcache/configerator/manifests/indexedloghistorystore/0/rlock
+ 115988 FLOCK WRITE /run/user/212630/chataccd/2651662584358487/startup.lock
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/materializer_state/db.sqlite
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/materializer_state/db.sqlite-shm
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/incremental_state/db.sqlite
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/incremental_state/db.sqlite-shm
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/dep_file_state/db.sqlite
+2830038 POSIX READ  /home/newton/work/tfa/fbsource/buck-out/.autodeps2/cache/dep_file_state/db.sqlite-shm
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/code_provenance/2f6ab378555443700151aeafd618df0c0d195ea373882e14f3d7d4ed39cf0af3/package/.claude-plugin/plugin.json
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/a46772ae47c08b67402bc663a52ddf9a5d85c17aa82bd661b2b4aea5199cbbee
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta-cli-core/a46772ae47c08b67402bc663a52ddf9a5d85c17aa82bd661b2b4aea5199cbbee/package/.claude-plugin/plugin.json
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_codesearch-muse/7fd32e60cce655441f26898744c247336c8ca35bdc88fc39d9bf3abc1cb32c79/package/.claude-plugin/plugin.json
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/2ef75e534f6bb7586301912c692c21051fa2cab662657de602626b400387f985
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/meta_knowledge-muse/2ef75e534f6bb7586301912c692c21051fa2cab662657de602626b400387f985/package/.claude-plugin/plugin.json
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/5bd3be17d8826809981a6f70003d75ff891e390e7e53b3f7578419de4a622380
+1350658 FLOCK READ  /home/newton/.local/share/muse/plugins/cache/local/sl/5bd3be17d8826809981a6f70003d75ff891e390e7e53b3f7578419de4a622380/package/.claude-plugin/plugin.json

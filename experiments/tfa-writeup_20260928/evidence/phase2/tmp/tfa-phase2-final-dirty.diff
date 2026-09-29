@@ -1,0 +1,1965 @@
+diff --git a/fbcode/testinfra/tfa/BUCK b/fbcode/testinfra/tfa/BUCK
+--- a/fbcode/testinfra/tfa/BUCK
++++ b/fbcode/testinfra/tfa/BUCK
+@@ -7,10 +7,43 @@
+     "hub_python_library",
+ )
+ load("@fbcode//hub_infra/build_defs:hub_package.bzl", "hub_toml")
++load(
++    "@fbcode_macros//build_defs:fbcode_configured_alias.bzl",
++    "fbcode_configured_alias",
++)
+ 
+ # Set by `hub init --oncall <shortname>` or the interactive IaC prompt.
+ oncall("testinfra")
+ 
++# The imported compatibility evidence was collected against @fbcode//mode/opt.
++# Carry its mode constraints on an explicit transition so a dev/test consumer
++# cannot silently substitute a differently configured Hermit binary.
++fbcode_configured_alias(
++    name = "hermit-test-bin-opt",
++    actual = "//hermetic_infra/hermit/hermit-cli:hermit",
++    additional_constraints = [
++        "//compilers/constraints:reloc-fixup[on]",
++        "fbsource//arvr/libraries/logging/config/constraints:logging_flag[enabled]",
++        "fbsource//arvr/libraries/logging/config/constraints:logging_internal_flag[internal_disabled]",
++        "ovr_config//build_mode:sanitizer_type[no-san]",
++        "ovr_config//build_mode/constraints:core_build_mode[opt]",
++        "ovr_config//build_mode/constraints:debug_style[split-dwarf-separate]",
++        "ovr_config//build_mode/constraints:default_link_style[static]",
++        "ovr_config//build_mode/constraints:fbcode-build-info-mode[full]",
++        "ovr_config//build_mode/constraints:lto[none]",
++        "ovr_config//build_mode/constraints:python-default-package-style[standalone]",
++        "ovr_config//build_mode/constraints:rust-compiler[buckified]",
++        "ovr_config//build_mode/default_opt_cxx:default_opt_cxx_setting[disabled]",
++        "ovr_config//project/folly:folly[xplat]",
++        "ovr_config//third-party/mlir-fb/constraints:21",
++        "ovr_config//toolchain/cxx/constraints:split-dwarf-rollout[enabled-separate]",
++        "ovr_config//toolchain/nvcc/compile:cuda_compile_style[dist]",
++        "ovr_config//toolchain/nvcc/compile:nvcc-dev-mode-native-build[enabled]",
++    ],
++    platform = "ovr_config//platform/linux:x86_64-fbcode",
++    visibility = ["PUBLIC"],
++)
++
+ # Expose this project's hub.toml as a Buck target so gateway-mode rules in
+ # child packages can depend on it. Pairs with `set_hub_toml("hub.toml")`
+ # in the project-root PACKAGE. Add your project's hub-mode rules
+@@ -21,8 +54,10 @@
+     name = "tfa_phase2_lib",
+     srcs = glob(["*.py"], exclude = ["main.py"]),
+     resources = {
++        ":hermit-test-bin-opt": "hermit-test-bin",
+         "cases.v1.json": "cases.v1.json",
+         "hermit-import-compatibility.v1.json": "hermit-import-compatibility.v1.json",
++        "hermit-import-receipts.v1.json": "hermit-import-receipts.v1.json",
+         "resources/bounded-run-space": "bounded-run-space",
+         "resources/safehermit": "safehermit",
+         "review.schema.v1.json": "review.schema.v1.json",
+@@ -40,7 +75,6 @@
+     hub_mode = "none",
+     main_function = "testinfra.tfa.main.cli",
+     resources = {
+-        "//hermetic_infra/hermit/hermit-cli:hermit": "hermit-test-bin",
+         "cases.v1.json": "cases.v1.json",
+         "hermit-import-compatibility.v1.json": "hermit-import-compatibility.v1.json",
+         "report.schema.v1.json": "report.schema.v1.json",
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -23,7 +23,7 @@
+ buck run fbcode//testinfra/tfa:tfa_phase2 -- dry-run \
+   --manifest fbcode/testinfra/tfa/cases.v1.json \
+   --artifact-root /tmp/tfa-phase2/dry-run \
+-  --checkout /home/newton/work/tfa/fbsource
++  --checkout "$(pwd)"
+ ```
+ 
+ The fixed Hermit quick-start and investigation contract are rendered into each
+@@ -39,23 +39,35 @@
+ The binary bundles `hermit-test-bin` from the current fbsource Hermit target and
+ resolves packaged resources only when an execution is requested. It records that
+ binary's path, bytes, imported upstream revision, and comparison with the
+-versioned qualification probe in `hermit-import-compatibility.v1.json`. A
+-qualified binary is copied to a mode-0500 artifact-local runtime before use. The
+-current `a919cce` import is not compatible with the preserved `4630ee2a`
+-witness, so execution fails before launch with the explicit compatibility state
+-and blockers instead of silently substituting it.
++versioned qualification probe in `hermit-import-compatibility.v1.json`. The
++packaged opt-equivalent configured target is SHA `9bf7064a...`; the direct
++`@fbcode//mode/opt` qualification target is the configuration-distinct SHA
++`d24fe3a...`. Their full configured-target identities are sealed separately, so
++the packaged binary is `UNASSESSED_VARIANT`, not relabelled as the blocked
++qualification binary. A qualified exact binary would be copied to a mode-0500
++artifact-local runtime before use. The current `a919cce` import cannot replace
++the preserved `4630ee2a` witness, so execution fails before launch with the
++explicit compatibility state and blockers instead of silently substituting it.
+ 
+ Controller contents are sealed
+ after every outcome, including `.hermit-verify-summary-*` residue if an outer
+ kill interrupts verify cleanup; such residue is evidence and is never deleted
+-or allowlisted. SafeHermit's own logs and each attempt's explicit
+-`--verify-log-dir` use separate qgroup-limited subvolumes on the existing
+-quota-enabled loopback runspace. `NOT_APPLIED` or `UNBOUNDED` disk evidence is
+-a refusal. After cgroup cleanup, the controller requires a live under-limit
++or allowlisted. SafeHermit's own logs and a919's host-side temporary
++verification files use separate qgroup-limited subvolumes on the disposable
++production-test loopback runspace. The controller translates the preserved
++historical `--verify-strict --keep-logs --verify-log-dir=...` witness contract
++to a919's `--verify-verbose` only at the final execution boundary;
++`--verify-verbose` selects FullTrace comparison without line stripping. The
++removed historical `--timeout` is enforced by lowering safehermit's deadline to
++the same numeric inner deadline, preserving rather than widening the bound. The
++import remains blocked because a919 cannot retain successful verification logs.
++`NOT_APPLIED` or `UNBOUNDED` disk evidence is a refusal. After cgroup cleanup,
++the controller requires a live under-limit
+ readback, inventories verification output without following symlinks or crossing
+ mounts, enforces fixed entry and logical-byte caps, copies the sealed output into
+-the attempt, and requires bounded-subvolume destruction. A versioned global
+-allocation lock serializes these subvolumes. Each deterministic attempt tag has
++the attempt, and requires bounded-subvolume destruction. An attempt-local
++allocation lock serializes each attempt's subvolume lifecycle. Each
++deterministic attempt tag has
+ an atomic lifecycle transaction; ordinary exceptions destroy the exact validated
+ allocation while preserving the primary error, and the next controller
+ reconciles a SIGKILL orphan by a single-level marker and mount-identity scan.
+diff --git a/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json b/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json
+--- a/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json
++++ b/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json
+@@ -4,6 +4,10 @@
+   "resource": "hermit-test-bin",
+   "fbsource_import_commit": "5a90c83fbd90782fdb55ed8af860e9c13920ec6b",
+   "upstream_revision": "a919cce442305c1812c84d37666d4a0bdf36533f",
++  "packaged_executable": {
++    "configured_target": "fbcode//hermetic_infra/hermit/hermit-cli:hermit (ovr_config//platform/linux:x86_64-fbcode-platform010-clang#512fd0a9ea51f545)",
++    "sha256": "9bf7064a98556c08b9b31db67f9d5dfa4a8f394f6e034acd491d42165decfe88"
++  },
+   "historical_witness": {
+     "manifest": "cases.v1.json",
+     "revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+@@ -12,7 +16,10 @@
+   },
+   "qualification_probe": {
+     "mode": "@fbcode//mode/opt",
++    "configured_target": "fbcode//hermetic_infra/hermit/hermit-cli:hermit (cfg:opt-linux-x86_64-fbcode-platform010-clang21-no-san#ac368791f452debc)",
+     "sha256": "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b",
++    "receipts_resource": "hermit-import-receipts.v1.json",
++    "receipts_sha256": "11c697eaaba853154a686e143fefd4adc582269fae0ee67137aa0c8bb2e23c3c",
+     "state": "BLOCKED",
+     "short_candidates": [
+       {
+diff --git a/fbcode/testinfra/tfa/hermit.py b/fbcode/testinfra/tfa/hermit.py
+--- a/fbcode/testinfra/tfa/hermit.py
++++ b/fbcode/testinfra/tfa/hermit.py
+@@ -39,6 +39,7 @@
+     if name not in {
+         "bounded-run-space",
+         "hermit-import-compatibility.v1.json",
++        "hermit-import-receipts.v1.json",
+         "hermit-test-bin",
+         "safehermit",
+     }:
+@@ -60,8 +61,15 @@
+ PACKAGED_HERMIT_QUALIFICATION_SHA256: str = (
+     "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b"
+ )
++PACKAGED_HERMIT_RESOURCE_SHA256: str = (
++    "9bf7064a98556c08b9b31db67f9d5dfa4a8f394f6e034acd491d42165decfe88"
++)
++PACKAGED_HERMIT_RECEIPTS_SHA256: str = (
++    "11c697eaaba853154a686e143fefd4adc582269fae0ee67137aa0c8bb2e23c3c"
++)
+ _PACKAGED_HERMIT_RESOURCE: str = "hermit-test-bin"
+ _PACKAGED_HERMIT_COMPATIBILITY_RESOURCE: str = "hermit-import-compatibility.v1.json"
++_PACKAGED_HERMIT_RECEIPTS_RESOURCE: str = "hermit-import-receipts.v1.json"
+ _HERMIT_UNWIND_SECONDS: int = 10
+ _OUTER_CLEANUP_SECONDS: int = 10
+ _VERIFY_OUTPUT_MAX_BYTES: int = 512 * 1024 * 1024
+@@ -305,6 +313,53 @@
+     return tuple(value)
+ 
+ 
++def _current_verify_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
++    """Translate the sealed historical contract to a919's equally strict CLI."""
++    boundary = argv.index("--")
++    options = list(argv[:boundary])
++    timeouts = [
++        token.partition("=")[2] for token in options if token.startswith("--timeout=")
++    ]
++    if (
++        options.count("--verify") != 1
++        or options.count("--verify-strict") != 1
++        or options.count("--keep-logs") != 1
++        or options.count("--verify-verbose") != 0
++        or len([token for token in options if token.startswith("--verify-log-dir=")])
++        != 1
++        or len(timeouts) != 1
++        or not timeouts[0].isascii()
++        or not timeouts[0].isdecimal()
++    ):
++        raise HermitError("historical strict verification contract is malformed")
++    inner_deadline = int(timeouts[0])
++    if inner_deadline != _safehermit_deadline(argv) - _HERMIT_UNWIND_SECONDS:
++        raise HermitError("historical Hermit timeout contract is malformed")
++    translated: list[str] = []
++    index = 0
++    while index < len(options):
++        token = options[index]
++        if token == "--verify-strict":
++            translated.append("--verify-verbose")
++        elif token == "--sh-deadline":
++            translated.extend((token, str(inner_deadline)))
++            index += 1
++        elif token.startswith("--sh-deadline="):
++            translated.append(f"--sh-deadline={inner_deadline}")
++        elif (
++            token == "--keep-logs"
++            or token.startswith("--verify-log-dir=")
++            or token.startswith("--timeout=")
++        ):
++            pass
++        else:
++            translated.append(token)
++        index += 1
++    if translated.count("--verify-verbose") != 1:
++        raise HermitError("current strict verification contract is ambiguous")
++    return (*translated, *argv[boundary:])
++
++
+ def _fd_mount_id(descriptor: int) -> int:
+     try:
+         lines = Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines()
+@@ -1430,6 +1485,146 @@
+     return binary
+ 
+ 
++def _qualification_receipt_record(
++    qualification: Mapping[str, object],
++) -> dict[str, object]:
++    resource_name = qualification.get("receipts_resource")
++    expected_digest = qualification.get("receipts_sha256")
++    if (
++        resource_name != _PACKAGED_HERMIT_RECEIPTS_RESOURCE
++        or expected_digest != PACKAGED_HERMIT_RECEIPTS_SHA256
++    ):
++        raise HermitError("packaged Hermit qualification receipt binding is malformed")
++    path = _packaged_resource(_PACKAGED_HERMIT_RECEIPTS_RESOURCE)
++    try:
++        before = regular_file_record(path)
++        receipts = json.loads(path.read_text())
++        after = regular_file_record(path)
++    except (OSError, json.JSONDecodeError, StateError) as error:
++        raise HermitError(
++            "packaged Hermit qualification receipts are unreadable"
++        ) from error
++    if (
++        before != after
++        or before.get("sha256") != expected_digest
++        or not isinstance(receipts, dict)
++        or receipts.get("schema_version") != 1
++        or receipts.get("probe_binary")
++        != {
++            "build_mode": qualification.get("mode"),
++            "configured_target": qualification.get("configured_target"),
++            "sha256": qualification.get("sha256"),
++            "upstream_revision": PACKAGED_HERMIT_REVISION,
++        }
++        or receipts.get("bounds")
++        != {
++            "deadline_seconds": 120,
++            "disk_limit": "8G",
++            "max_log_bytes": 67108864,
++        }
++        or not isinstance(receipts.get("probes"), list)
++    ):
++        raise HermitError("packaged Hermit qualification receipts are malformed")
++    expected_markers = {
++        "asyncssl": (
++            1,
++            1,
++            "AddressSanitizer: CHECK failed",
++            "setrlimit(RLIMIT_CORE",
++        ),
++        "thrift": (0, 132, "ThreadSanitizer: CHECK failed", "signal=SIGILL"),
++        "httpcoro": (
++            1,
++            1,
++            "Clock perf counter exceeds target value",
++            "Sandbox container exited unexpectedly",
++        ),
++    }
++    observed: list[tuple[str, int, int]] = []
++    for probe in receipts["probes"]:
++        if not isinstance(probe, dict):
++            raise HermitError("packaged Hermit qualification probe is malformed")
++        case_id = probe.get("case_id")
++        if not isinstance(case_id, str):
++            raise HermitError("packaged Hermit qualification probe is malformed")
++        expected = expected_markers.get(case_id)
++        argv = probe.get("argv")
++        stderr = probe.get("stderr")
++        stdout = probe.get("stdout")
++        result_receipt = probe.get("result_receipt")
++        safehermit_report = probe.get("safehermit_report")
++        if (
++            expected is None
++            or not isinstance(argv, list)
++            or not all(isinstance(token, str) for token in argv)
++            or not isinstance(stderr, str)
++            or not isinstance(stdout, str)
++            or not isinstance(result_receipt, str)
++            or not isinstance(safehermit_report, str)
++            or probe.get("seed") != expected[0]
++            or probe.get("returncode") != expected[1]
++            or expected[2] not in stderr
++            or expected[3] not in stderr
++            or "--sh-deadline" not in argv
++            or argv[argv.index("--sh-deadline") + 1] != "120"
++            or "--sh-max-log-bytes" not in argv
++            or argv[argv.index("--sh-max-log-bytes") + 1] != "67108864"
++            or "--sh-disk-limit" not in argv
++            or argv[argv.index("--sh-disk-limit") + 1] != "8G"
++            or hashlib.sha256(
++                (json.dumps(argv, separators=(",", ":")) + "\n").encode()
++            ).hexdigest()
++            != probe.get("argv_sha256")
++            or hashlib.sha256(stderr.encode()).hexdigest() != probe.get("stderr_sha256")
++            or hashlib.sha256(stdout.encode()).hexdigest() != probe.get("stdout_sha256")
++            or hashlib.sha256((result_receipt + "\n").encode()).hexdigest()
++            != probe.get("result_receipt_sha256")
++            or hashlib.sha256(safehermit_report.encode()).hexdigest()
++            != probe.get("safehermit_report_sha256")
++        ):
++            raise HermitError("packaged Hermit qualification probe is malformed")
++        try:
++            result = json.loads(result_receipt)
++        except json.JSONDecodeError as error:
++            raise HermitError(
++                "packaged Hermit qualification result receipt is malformed"
++            ) from error
++        required_report_lines = {
++            f"safehermit: binary_sha256={qualification.get('sha256')}",
++            "safehermit: bound.wall=APPLIED:120s",
++            "safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound",
++            "safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)",
++            "safehermit: truncated=false",
++            f"safehermit: exit_code={expected[1]}",
++        }
++        if (
++            not isinstance(result, dict)
++            or result.get("argv") != argv
++            or result.get("case_id") != case_id
++            or result.get("outcome_label") != "pass"
++            or result.get("returncode") != expected[1]
++            or not isinstance(result.get("duration_seconds"), (int, float))
++            or not math.isfinite(result["duration_seconds"])
++            or result["duration_seconds"] <= 0
++            or not safehermit_report.endswith("\n")
++            or not required_report_lines.issubset(safehermit_report.splitlines())
++        ):
++            raise HermitError(
++                "packaged Hermit qualification result provenance is malformed"
++            )
++        observed.append((case_id, expected[0], expected[1]))
++    candidates = qualification.get("short_candidates")
++    if not isinstance(candidates, list) or observed != [
++        (candidate.get("case_id"), candidate.get("seed"), candidate.get("returncode"))
++        for candidate in candidates
++        if isinstance(candidate, dict)
++    ]:
++        raise HermitError(
++            "packaged Hermit qualification candidates differ from receipts"
++        )
++    return before
++
++
+ def packaged_hermit_argv(
+     argv: tuple[str, ...],
+     expected_revision: str,
+@@ -1450,6 +1645,7 @@
+     ):
+         raise HermitError("packaged Hermit compatibility record changed while read")
+     qualification = compatibility.get("qualification_probe")
++    packaged = compatibility.get("packaged_executable")
+     historical = compatibility.get("historical_witness")
+     blockers = (
+         qualification.get("blockers") if isinstance(qualification, dict) else None
+@@ -1470,13 +1666,28 @@
+         or re.fullmatch(r"[0-9a-f]{64}", str(historical.get("sha256"))) is None
+         or historical.get("state") != "PRESERVED"
+         or not isinstance(qualification, dict)
++        or not isinstance(packaged, dict)
++        or packaged.get("sha256") != PACKAGED_HERMIT_RESOURCE_SHA256
++        or packaged.get("configured_target")
++        != (
++            "fbcode//hermetic_infra/hermit/hermit-cli:hermit "
++            "(ovr_config//platform/linux:x86_64-fbcode-platform010-clang"
++            "#512fd0a9ea51f545)"
++        )
+         or qualification.get("sha256") != PACKAGED_HERMIT_QUALIFICATION_SHA256
++        or qualification.get("configured_target")
++        != (
++            "fbcode//hermetic_infra/hermit/hermit-cli:hermit "
++            "(cfg:opt-linux-x86_64-fbcode-platform010-clang21-no-san"
++            "#ac368791f452debc)"
++        )
+         or qualification.get("state") not in ("BLOCKED", "QUALIFIED")
+         or not isinstance(blockers, list)
+         or not all(isinstance(blocker, str) and blocker for blocker in blockers)
+         or (qualification.get("state") == "BLOCKED") != bool(blockers)
+     ):
+         raise HermitError("packaged Hermit compatibility record is malformed")
++    receipt_record = _qualification_receipt_record(qualification)
+     binary = _packaged_resource(_PACKAGED_HERMIT_RESOURCE)
+     try:
+         record = regular_file_record(binary)
+@@ -1491,7 +1702,9 @@
+     ):
+         raise HermitError("packaged Hermit executable differs from its provenance")
+     qualification_sha256 = str(qualification["sha256"])
+-    if packaged_sha256 != qualification_sha256:
++    if packaged_sha256 != packaged["sha256"]:
++        compatibility_state = "PROVENANCE_MISMATCH"
++    elif packaged_sha256 != qualification_sha256:
+         compatibility_state = "UNASSESSED_VARIANT"
+     elif qualification["state"] != "QUALIFIED":
+         compatibility_state = "BLOCKED"
+@@ -1512,9 +1725,15 @@
+                 "sha256": expected_sha256,
+             },
+             "fbsource_import_commit": compatibility["fbsource_import_commit"],
+-            "packaged_executable": record,
++            "packaged_executable": {
++                **record,
++                "configured_target": packaged["configured_target"],
++            },
++            "qualification_receipts": receipt_record,
+             "packaged_revision": PACKAGED_HERMIT_REVISION,
+             "qualification": {
++                "configured_target": qualification["configured_target"],
++                "mode": qualification["mode"],
+                 "sha256": qualification_sha256,
+                 "state": qualification["state"],
+             },
+@@ -1523,7 +1742,11 @@
+             "target": compatibility["target"],
+         },
+     )
+-    if compatibility_state in ("BLOCKED", "UNASSESSED_VARIANT"):
++    if compatibility_state in (
++        "BLOCKED",
++        "PROVENANCE_MISMATCH",
++        "UNASSESSED_VARIANT",
++    ):
+         raise HermitError(
+             f"packaged Hermit compatibility is {compatibility_state}: "
+             f"expected revision={expected_revision} sha256={expected_sha256}; "
+@@ -1531,7 +1754,7 @@
+             f"import_commit={compatibility['fbsource_import_commit']} "
+             f"packaged revision={PACKAGED_HERMIT_REVISION} "
+             f"sha256={packaged_sha256}; "
+-            f"qualification sha256={qualification_sha256} "
++            f"qualification probe sha256={qualification_sha256} "
+             f"state={qualification['state']}; "
+             f"blockers={'; '.join(blockers)}"
+         )
+@@ -1652,7 +1875,28 @@
+     create = value.get("create")
+     report = value.get("report")
+     destroy = value.get("destroy")
+-    verify_log_dir = _verify_log_dir(argv)
++    verify_log_dir_value = value.get("verify_log_dir")
++    if not isinstance(verify_log_dir_value, str):
++        raise HermitError("verification output evidence is incomplete")
++    verify_log_dir = Path(verify_log_dir_value)
++    boundary = argv.index("--")
++    current_options = argv[:boundary]
++    if any(
++        token == "--verify-strict"
++        or token == "--keep-logs"
++        or token.startswith("--verify-log-dir=")
++        or token.startswith("--timeout=")
++        for token in current_options
++    ):
++        historical_verify_log_dir = _verify_log_dir(argv)
++        if historical_verify_log_dir != verify_log_dir:
++            raise HermitError("verification output escaped its invocation")
++    elif (
++        current_options.count("--verify") != 1
++        or current_options.count("--verify-verbose") != 1
++        or not verify_log_dir.is_absolute()
++    ):
++        raise HermitError("current strict verification contract is malformed")
+     bounded_path = verify_log_dir.parent
+     bounded_run_space = (
+         attempt_root / "safehermit-runtime" / "scripts" / "bounded-run-space"
+@@ -2102,17 +2346,20 @@
+         bounded_argv = _replace_verify_log_dir(
+             argv, attempt_root / "verify", space.verify_dir
+         )
+-        prepared = hermit_attempt_argv(
+-            bounded_argv,
+-            guest_cwd,
+-            controller_cwd,
+-            outer_timeout_seconds,
+-            pinned_wrapper,
++        prepared = _current_verify_argv(
++            hermit_attempt_argv(
++                bounded_argv,
++                guest_cwd,
++                controller_cwd,
++                outer_timeout_seconds,
++                pinned_wrapper,
++            )
+         )
+         execution_environment = dict(os.environ if environment is None else environment)
+         execution_environment["SAFEHERMIT_LOG_ROOT"] = str(
+             _safehermit_log_root(attempt_root)
+         )
++        execution_environment["TMPDIR"] = str(space.verify_dir)
+         result = run_process(
+             prepared[0],
+             prepared[1:],
+diff --git a/fbcode/testinfra/tfa/process.py b/fbcode/testinfra/tfa/process.py
+--- a/fbcode/testinfra/tfa/process.py
++++ b/fbcode/testinfra/tfa/process.py
+@@ -43,7 +43,7 @@
+     "a8a2965efa096001f919759884e18b1f1cffed223b3bfaed561be357bdc0b1d0"
+ )
+ PINNED_BOUNDED_RUN_SPACE_SHA256: str = (
+-    "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
++    "3d3e5926db781fdc48875fc2cb0aaffd186ac9b1385af390d9bf1dc607cf823d"
+ )
+ 
+ CONTAINMENT: str = "tfa-cgroup-v2-hierarchy+host-uid-subreaper+process-group"
+@@ -59,6 +59,14 @@
+ )
+ _CODEX_EXECUTABLE: str = "/usr/local/bin/codex"
+ _CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v1"
++_CODEX_VERSION_STDERR: tuple[str, ...] = (
++    "",
++    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Using AI Gateway (Azure Codex upstream)\n",
++    "META_CODEX_AI_GATEWAY: routing to gateway azure-codex-cyber\n"
++    "Codex CLI at Meta (https://fburl.com/codex.cli.users)\n"
++    "Using AI Gateway (OpenAI upstream)\n",
++)
+ _CODEX_COMPATIBILITY: dict[tuple[str, str], tuple[str, str | None]] = {
+     (
+         "codex-cli 0.156.0",
+@@ -302,7 +310,7 @@
+         version.returncode != 0
+         or re.fullmatch(r"codex-cli [0-9]+\.[0-9]+\.[0-9]+\n?", version.stdout) is None
+         or len(version.stdout) > 8192
+-        or version.stderr != ""
++        or version.stderr not in _CODEX_VERSION_STDERR
+     ):
+         write_metadata(
+             identity_path,
+@@ -314,6 +322,7 @@
+                 "state": "version-failed",
+                 "version": None,
+                 "version_returncode": version.returncode,
++                "version_stderr": version.stderr,
+             },
+         )
+         raise ProcessError(
+@@ -371,6 +380,7 @@
+         "schema": _CODEX_PREFLIGHT_SCHEMA,
+         "state": state,
+         "version": version_name,
++        "version_stderr": version.stderr,
+     }
+     write_metadata(identity_path, record)
+     if state != "eligible" or blocker is not None:
+diff --git a/fbcode/testinfra/tfa/prompts.py b/fbcode/testinfra/tfa/prompts.py
+--- a/fbcode/testinfra/tfa/prompts.py
++++ b/fbcode/testinfra/tfa/prompts.py
+@@ -11,7 +11,9 @@
+ 
+ HERMIT_QUICK_START: str = """Hermit quick-start
+ - Build with Buck outside Hermit.
+-- Run only the exact target ELF through /home/newton/work/dev-hermit/bin/safehermit.
++- Run witnesses only through the controller command shown below. It resolves,
++  verifies, and pins the packaged safehermit, bounded-run-space, and Hermit
++  resources; no machine-local dev-hermit checkout is required.
+ - Preserve argv tokens exactly; never invoke through a shell.
+ - For every Hermit invocation, create a fresh `controller-cwd` under that
+   attempt's artifact directory. Add a same-path bind for it, add
+@@ -29,12 +31,13 @@
+   checkout.
+ - Never copy, replace, or link an ELF or dependency into
+   /home/newton/work/tfa/fbsource/buck-out.
+-- Treat `/tmp/tfa-phase2/repro` as immutable supplied evidence. To reproduce,
+-  copy the supplied argv and redirect only `--sh-report` and
+-  `--verify-log-dir` into this case's artifact directory; never rename, mix,
+-  or overwrite the supplied witness directories.
+-- `--verify --verify-strict --verify-allow both` compares the two same-seed
+-  executions; inspect its evidence instead of relaxing comparison.
++- Treat `/tmp/tfa-phase2/repro` and the sealed historical manifest as immutable
++  supplied evidence. Use only the controller commands below; the controller maps
++  the historical contract to the current packaged CLI only after its
++  compatibility gate passes.
++- The current strict comparison contract is `--verify --verify-verbose
++  --verify-allow both`: verbose selects FullTrace and disables line stripping.
++  Inspect its evidence instead of relaxing comparison.
+ """
+ 
+ 
+@@ -99,10 +102,40 @@
+         },
+         "build_argv": list(case.build_argv),
+         "test_argv": list(case.test_argv),
+-        "pass_argv": list(case.pass_argv),
+-        "fail_argv": list(case.fail_argv),
+-        "pass_command": shlex.join(case.pass_argv),
+-        "fail_command": shlex.join(case.fail_argv),
++        "controller_pass_command": shlex.join(
++            (
++                "buck",
++                "run",
++                "fbcode//testinfra/tfa:tfa_phase2",
++                "--",
++                "run-witness",
++                "--manifest",
++                "fbcode/testinfra/tfa/cases.v1.json",
++                "--case-id",
++                case.case_id,
++                "--outcome",
++                "pass",
++                "--artifact-root",
++                str(artifact_dir),
++            )
++        ),
++        "controller_fail_command": shlex.join(
++            (
++                "buck",
++                "run",
++                "fbcode//testinfra/tfa:tfa_phase2",
++                "--",
++                "run-witness",
++                "--manifest",
++                "fbcode/testinfra/tfa/cases.v1.json",
++                "--case-id",
++                case.case_id,
++                "--outcome",
++                "fail",
++                "--artifact-root",
++                str(artifact_dir),
++            )
++        ),
+         "pass_seed": case.pass_seed,
+         "fail_seed": case.fail_seed,
+         "historical_pass_seed": case.historical_pass_seed,
+diff --git a/fbcode/testinfra/tfa/resources/bounded-run-space b/fbcode/testinfra/tfa/resources/bounded-run-space
+--- a/fbcode/testinfra/tfa/resources/bounded-run-space
++++ b/fbcode/testinfra/tfa/resources/bounded-run-space
+@@ -294,15 +294,11 @@
+         say "destroy: subvolume delete failed for $dir"
+         return 12
+     fi
+-    # SYNC BEFORE MEASURING. Subvolume deletion is ASYNCHRONOUS: measured, reading df
+-    # immediately after delete reported 0 bytes reclaimed on a filesystem that then
+-    # gave back 10.7 MB. An unsynced reading under-reports how much space is still
+-    # held, which is the dangerous direction.
+-    sudo -n btrfs subvolume sync "$base" >/dev/null 2>&1 || true
+     if [ -n "$exc" ]; then
+-        # Exclusive over-predicts slightly (measured: predicted 10,915,840, df returned
+-        # 10,768,384 -- 1.4% optimistic), so it is an upper bound on reclaim, not exact.
+-        say "destroyed: $dir  reclaimed about $exc bytes (qgroup exclusive; ~1.5% optimistic)"
++        # Deletion is asynchronous. Do not wait in the cleanup path: btrfs subvolume
++        # sync has blocked beyond the controller's hard 30-second command deadline.
++        # Exclusive is the pre-deletion upper bound, not an immediate df measurement.
++        say "destroyed: $dir  scheduled reclaim of at most $exc bytes (pre-deletion qgroup exclusive)"
+     else
+         say "destroyed: $dir"
+     fi
+diff --git a/fbcode/testinfra/tfa/tests/BUCK b/fbcode/testinfra/tfa/tests/BUCK
+--- a/fbcode/testinfra/tfa/tests/BUCK
++++ b/fbcode/testinfra/tfa/tests/BUCK
+@@ -2,7 +2,6 @@
+ 
+ load("@fbcode//hub_infra/build_defs:defs.bzl", "hub_python_test")
+ load("@fbsource//tools/build_defs:testpilot_defs.bzl", "tpx_labels")
+-
+ oncall("testinfra")
+ 
+ hub_python_test(
+@@ -24,7 +23,7 @@
+     hub_mode = "none",
+     labels = [tpx_labels.serialize_test_cases],
+     resources = {
+-        "//hermetic_infra/hermit/hermit-cli:hermit": "hermit-test-bin",
++        "//testinfra/tfa:hermit-test-bin-opt": "hermit-test-bin",
+     },
+     typing = True,
+     deps = [
+diff --git a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+--- a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
++++ b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+@@ -6,6 +6,7 @@
+ import ctypes
+ import json
+ import os
++import shlex
+ import signal
+ import sys
+ import time
+@@ -324,18 +325,18 @@
+     controller = attempt / "controller-cwd"
+     if scenario == "normal":
+         deadline = 30
+-        script = "print('normal')"
++        guest_argv = ("/usr/bin/python3", "-c", "print('normal')")
+     elif scenario == "forced-run2":
+         deadline = 12
+         marker = controller / "run1"
+         ready = controller / "run2"
+-        script = (
+-            "import pathlib; "
+-            f"marker=pathlib.Path({str(marker)!r}); "
+-            f"ready=pathlib.Path({str(ready)!r}); "
+-            "first=not marker.exists(); "
+-            "marker.write_text('run1') if first else ready.write_text('run2'); "
+-            'exec("pass" if first else "while True: pass")'
++        marker_text = shlex.quote(str(marker))
++        ready_text = shlex.quote(str(ready))
++        guest_argv = (
++            "/bin/sh",
++            "-c",
++            f"if [ ! -e {marker_text} ]; then printf run1 > {marker_text}; "
++            f"else printf run2 > {ready_text}; while :; do :; done; fi",
+         )
+     else:
+         raise ValueError("unknown Hermit quota probe scenario")
+@@ -357,14 +358,13 @@
+         "--base-env=minimal",
+         f"--mount=type=bind,source={guest_cwd},target={guest_cwd}",
+         "--verify",
++        "--verify-strict",
+         "--verify-allow",
+         "both",
+         "--keep-logs",
+         f"--verify-log-dir={attempt / 'verify'}",
+         "--",
+-        "/usr/bin/python3",
+-        "-c",
+-        script,
++        *guest_argv,
+     )
+     result = run_hermit_attempt(argv, guest_cwd, attempt, deadline + 15)
+     (root / "hermit-quota-probe.json").write_text(
+@@ -403,6 +403,7 @@
+         "--base-env=minimal",
+         f"--mount=type=bind,source={guest_cwd},target={guest_cwd}",
+         "--verify",
++        "--verify-strict",
+         "--verify-allow",
+         "both",
+         "--keep-logs",
+diff --git a/fbcode/testinfra/tfa/tests/test_production_containment.py b/fbcode/testinfra/tfa/tests/test_production_containment.py
+--- a/fbcode/testinfra/tfa/tests/test_production_containment.py
++++ b/fbcode/testinfra/tfa/tests/test_production_containment.py
+@@ -10,6 +10,7 @@
+ import os
+ import pwd
+ import re
++import secrets
+ import select
+ import shlex
+ import shutil
+@@ -23,7 +24,7 @@
+ from contextlib import contextmanager
+ from dataclasses import dataclass, replace
+ from pathlib import Path
+-from typing import ParamSpec, TypeVar
++from typing import cast, ParamSpec, TypeVar
+ from unittest.mock import Mock, patch
+ 
+ import testinfra.tfa.hermit as hermit_module
+@@ -85,6 +86,7 @@
+     "/tmp/tfa-phase2/production-hermit-test-scheduler.json"
+ )
+ _HANDOFF_FAILURE_ROOT = Path("/tmp/tfa-phase2/production-test-failures")
++_FIXTURE_RECOVERY_ROOT = Path("/tmp/tfa-phase2/fixture-recovery")
+ _WORKTREE_SOURCE_ENV = "TFA_TEST_WORKTREE_SOURCE_ROOT"
+ _VERIFY_SPACE_ROOT_ENV = "TFA_TEST_VERIFY_SPACE_ROOT"
+ _PROC_ROOT = Path("/proc")
+@@ -225,6 +227,125 @@
+         )
+ 
+ 
++def _write_fixture_recovery(
++    token: str,
++    recovery_token: str,
++    kind: str,
++    root: Path,
++    root_identity: tuple[int, int],
++    phase: str,
++    **details: object,
++) -> Path:
++    _FIXTURE_RECOVERY_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
++    recovery_root_metadata = _FIXTURE_RECOVERY_ROOT.lstat()
++    if (
++        not stat.S_ISDIR(recovery_root_metadata.st_mode)
++        or recovery_root_metadata.st_uid != os.getuid()
++        or stat.S_IMODE(recovery_root_metadata.st_mode) != 0o700
++    ):
++        raise AssertionError("fixture recovery root is unsafe")
++    path = _FIXTURE_RECOVERY_ROOT / f"{token}.json"
++    temporary = _FIXTURE_RECOVERY_ROOT / f".{token}.{os.getpid()}.tmp"
++    if os.path.lexists(path):
++        path_metadata = path.lstat()
++        if (
++            not stat.S_ISREG(path_metadata.st_mode)
++            or path_metadata.st_uid != os.getuid()
++            or stat.S_IMODE(path_metadata.st_mode) != 0o600
++            or path_metadata.st_nlink != 1
++        ):
++            raise AssertionError("fixture recovery receipt is unsafe")
++        try:
++            existing = json.loads(path.read_text())
++        except (OSError, json.JSONDecodeError) as error:
++            raise AssertionError("fixture recovery ownership is unreadable") from error
++        if (
++            not isinstance(existing, dict)
++            or existing.get("owner_pid") != os.getpid()
++            or existing.get("recovery_token") != recovery_token
++            or existing.get("root") != str(root)
++            or existing.get("root_identity")
++            != {"device": root_identity[0], "inode": root_identity[1]}
++        ):
++            raise AssertionError("fixture recovery ownership changed")
++    elif phase != "allocated":
++        raise AssertionError("fixture recovery receipt disappeared")
++    payload = {
++        "schema": "tfa.production-fixture-recovery.v1",
++        "kind": kind,
++        "owner_pid": os.getpid(),
++        "phase": phase,
++        "recovery_token": recovery_token,
++        "root": str(root),
++        "root_identity": {"device": root_identity[0], "inode": root_identity[1]},
++        **details,
++    }
++    descriptor = os.open(
++        temporary,
++        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
++        0o600,
++    )
++    try:
++        with os.fdopen(descriptor, "w") as output:
++            json.dump(payload, output, sort_keys=True)
++            output.write("\n")
++            output.flush()
++            os.fsync(output.fileno())
++    except BaseException:
++        temporary.unlink(missing_ok=True)
++        raise
++    os.replace(temporary, path)
++    directory = os.open(_FIXTURE_RECOVERY_ROOT, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory)
++    finally:
++        os.close(directory)
++    return path
++
++
++def _clear_fixture_recovery(path: Path, recovery_token: str) -> None:
++    metadata = path.lstat()
++    if (
++        not stat.S_ISREG(metadata.st_mode)
++        or metadata.st_uid != os.getuid()
++        or stat.S_IMODE(metadata.st_mode) != 0o600
++        or metadata.st_nlink != 1
++    ):
++        raise AssertionError("fixture recovery receipt is unsafe")
++    try:
++        value = json.loads(path.read_text())
++    except (OSError, json.JSONDecodeError) as error:
++        raise AssertionError("fixture recovery receipt cannot be verified") from error
++    if (
++        not isinstance(value, dict)
++        or value.get("owner_pid") != os.getpid()
++        or value.get("recovery_token") != recovery_token
++    ):
++        raise AssertionError("fixture recovery receipt is not owned by this fixture")
++    path.unlink()
++    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory)
++    finally:
++        os.close(directory)
++
++
++def _fixture_root_identity(root: Path) -> tuple[int, int]:
++    metadata = root.lstat()
++    if (
++        not stat.S_ISDIR(metadata.st_mode)
++        or metadata.st_uid != os.getuid()
++        or stat.S_IMODE(metadata.st_mode) & 0o022
++    ):
++        raise AssertionError("fixture root is not a private owned directory")
++    return metadata.st_dev, metadata.st_ino
++
++
++def _require_fixture_root(root: Path, identity: tuple[int, int]) -> None:
++    if _fixture_root_identity(root) != identity:
++        raise AssertionError("fixture root identity changed before cleanup")
++
++
+ @contextmanager
+ def _disposable_btrfs_verify_root() -> Iterator[Path]:
+     Path("/tmp/tfa-phase2").mkdir(parents=True, exist_ok=True)
+@@ -232,16 +353,52 @@
+     image = root / "verify.btrfs"
+     mount = root / "mount"
+     mount.mkdir()
+-    with image.open("wb") as output:
+-        output.truncate(128 * 1024 * 1024)
++    token = root.name
++    recovery_token = secrets.token_hex(16)
++    root_identity = _fixture_root_identity(root)
++    recovery = _write_fixture_recovery(
++        token,
++        recovery_token,
++        "btrfs-loop-mount",
++        root,
++        root_identity,
++        "allocated",
++        image=str(image),
++        mount=str(mount),
++    )
+     mounted = False
+     prior = os.environ.get(_VERIFY_SPACE_ROOT_ENV)
++    body_error: BaseException | None = None
+     try:
++        with image.open("wb") as output:
++            output.truncate(128 * 1024 * 1024)
++            output.flush()
++            os.fsync(output.fileno())
++        _write_fixture_recovery(
++            token,
++            recovery_token,
++            "btrfs-loop-mount",
++            root,
++            root_identity,
++            "image-created",
++            image=str(image),
++            mount=str(mount),
++        )
+         _fixture_command("/usr/sbin/mkfs.btrfs", ["-q", "-f", str(image)])
+         _fixture_command(
+             "/usr/bin/sudo", ["-n", "mount", "-o", "loop", str(image), str(mount)]
+         )
+         mounted = True
++        _write_fixture_recovery(
++            token,
++            recovery_token,
++            "btrfs-loop-mount",
++            root,
++            root_identity,
++            "mounted",
++            image=str(image),
++            mount=str(mount),
++        )
+         _fixture_command(
+             "/usr/bin/sudo", ["-n", "btrfs", "quota", "enable", str(mount)]
+         )
+@@ -253,14 +410,49 @@
+         verify_root.mkdir(mode=0o700)
+         os.environ[_VERIFY_SPACE_ROOT_ENV] = str(verify_root)
+         yield verify_root
++    except BaseException as error:
++        body_error = error
++        raise
+     finally:
+         if prior is None:
+             os.environ.pop(_VERIFY_SPACE_ROOT_ENV, None)
+         else:
+             os.environ[_VERIFY_SPACE_ROOT_ENV] = prior
+-        if mounted:
+-            _fixture_command("/usr/bin/sudo", ["-n", "umount", str(mount)])
+-        shutil.rmtree(root)
++        try:
++            _write_fixture_recovery(
++                token,
++                recovery_token,
++                "btrfs-loop-mount",
++                root,
++                root_identity,
++                "cleanup",
++                image=str(image),
++                mount=str(mount),
++                mounted=mounted,
++            )
++            if mounted:
++                _fixture_command("/usr/bin/sudo", ["-n", "umount", str(mount)])
++                mounted = False
++                _write_fixture_recovery(
++                    token,
++                    recovery_token,
++                    "btrfs-loop-mount",
++                    root,
++                    root_identity,
++                    "unmounted",
++                    image=str(image),
++                    mount=str(mount),
++                    mounted=False,
++                )
++            _require_fixture_root(root, root_identity)
++            shutil.rmtree(root)
++            _clear_fixture_recovery(recovery, recovery_token)
++        except Exception as cleanup_error:
++            if body_error is None:
++                raise
++            body_error.add_note(
++                f"fixture cleanup also failed; recovery={recovery}: {cleanup_error}"
++            )
+ 
+ 
+ def _serialized_controller_handoff(function: Callable[_P, _R]) -> Callable[_P, _R]:
+@@ -292,73 +484,142 @@
+     )
+     source = root / "source"
+     repository = Path.cwd().resolve()
+-    revision = TrustedSubprocessWithList.run(
+-        executable="/usr/local/bin/sl",
+-        cmd_args=[
+-            "log",
+-            "-r",
+-            ".",
+-            "-T",
+-            "{node}\\n",
+-            "--reason",
+-            "resolve disposable TFA fixture revision - sl help log",
+-        ],
+-        cwd=repository,
+-        capture_output=True,
+-        text=True,
+-        timeout=60,
+-    )
+-    if revision.returncode != 0 or not re.fullmatch(
+-        r"[0-9a-f]{40}\n?", revision.stdout
+-    ):
+-        shutil.rmtree(root)
+-        raise AssertionError(
+-            "TFA worktree integration requires a local Sapling source checkout: "
+-            f"cwd={repository}; returncode={revision.returncode}; "
+-            f"stdout={revision.stdout!r}; stderr={revision.stderr!r}"
+-        )
+-    cloned = TrustedSubprocessWithList.run(
+-        executable="/usr/local/bin/eden",
+-        cmd_args=[
+-            "clone",
+-            "--rev",
+-            revision.stdout.strip(),
+-            str(repository),
+-            str(source),
+-        ],
+-        capture_output=True,
+-        text=True,
+-        timeout=120,
++    token = root.name
++    recovery_token = secrets.token_hex(16)
++    root_identity = _fixture_root_identity(root)
++    recovery = _write_fixture_recovery(
++        token,
++        recovery_token,
++        "eden-checkout",
++        root,
++        root_identity,
++        "allocated",
++        repository=str(repository),
++        source=str(source),
+     )
+-    if cloned.returncode != 0:
+-        shutil.rmtree(root)
+-        raise AssertionError(
+-            "TFA worktree integration requires a disposable Eden checkout: "
+-            + cloned.stderr
+-        )
++    cloned = False
+     prior = os.environ.get(_WORKTREE_SOURCE_ENV)
+-    os.environ[_WORKTREE_SOURCE_ENV] = str(source)
++    body_error: BaseException | None = None
+     try:
+-        yield source
+-    finally:
+-        if prior is None:
+-            os.environ.pop(_WORKTREE_SOURCE_ENV, None)
+-        else:
+-            os.environ[_WORKTREE_SOURCE_ENV] = prior
+-        removed = TrustedSubprocessWithList.run(
++        revision = TrustedSubprocessWithList.run(
++            executable="/usr/local/bin/sl",
++            cmd_args=[
++                "log",
++                "-r",
++                ".",
++                "-T",
++                "{node}\\n",
++                "--reason",
++                "resolve disposable TFA fixture revision - sl help log",
++            ],
++            cwd=repository,
++            capture_output=True,
++            text=True,
++            timeout=60,
++        )
++        if revision.returncode != 0 or not re.fullmatch(
++            r"[0-9a-f]{40}\n?", revision.stdout
++        ):
++            raise AssertionError(
++                "TFA worktree integration requires a local Sapling source checkout: "
++                f"cwd={repository}; returncode={revision.returncode}; "
++                f"stdout={revision.stdout!r}; stderr={revision.stderr!r}"
++            )
++        clone_result = TrustedSubprocessWithList.run(
+             executable="/usr/local/bin/eden",
+-            cmd_args=["remove", "--yes", str(source)],
++            cmd_args=[
++                "clone",
++                "--rev",
++                revision.stdout.strip(),
++                str(repository),
++                str(source),
++            ],
+             capture_output=True,
+             text=True,
+             timeout=120,
+         )
+-        if removed.returncode != 0:
++        if clone_result.returncode != 0:
+             raise AssertionError(
+-                "cannot retire disposable TFA source checkout: " + removed.stderr
++                "TFA worktree integration requires a disposable Eden checkout: "
++                + clone_result.stderr
++            )
++        cloned = True
++        _write_fixture_recovery(
++            token,
++            recovery_token,
++            "eden-checkout",
++            root,
++            root_identity,
++            "cloned",
++            repository=str(repository),
++            revision=revision.stdout.strip(),
++            source=str(source),
++        )
++        os.environ[_WORKTREE_SOURCE_ENV] = str(source)
++        yield source
++    except BaseException as error:
++        body_error = error
++        raise
++    finally:
++        if prior is None:
++            os.environ.pop(_WORKTREE_SOURCE_ENV, None)
++        else:
++            os.environ[_WORKTREE_SOURCE_ENV] = prior
++        try:
++            mounted = source in _eden_mounts()
++            _write_fixture_recovery(
++                token,
++                recovery_token,
++                "eden-checkout",
++                root,
++                root_identity,
++                "cleanup",
++                cloned=cloned,
++                mounted=mounted,
++                repository=str(repository),
++                source=str(source),
++            )
++            if cloned or mounted:
++                _retire_checkout_services(source)
++                removed = TrustedSubprocessWithList.run(
++                    executable="/usr/local/bin/eden",
++                    cmd_args=["remove", "--yes", str(source)],
++                    capture_output=True,
++                    text=True,
++                    timeout=120,
++                )
++                if removed.returncode != 0:
++                    raise AssertionError(
++                        "cannot retire disposable TFA source checkout; recovery="
++                        f"{recovery}: {removed.stderr}"
++                    )
++            if source in _eden_mounts():
++                raise AssertionError(
++                    "disposable TFA source checkout remains mounted; recovery="
++                    f"{recovery}"
++                )
++            _drain_removed_worktree(source, 10)
++            _write_fixture_recovery(
++                token,
++                recovery_token,
++                "eden-checkout",
++                root,
++                root_identity,
++                "checkout-removed",
++                cloned=False,
++                mounted=False,
++                repository=str(repository),
++                source=str(source),
++            )
++            _require_fixture_root(root, root_identity)
++            shutil.rmtree(root)
++            _clear_fixture_recovery(recovery, recovery_token)
++        except Exception as cleanup_error:
++            if body_error is None:
++                raise
++            body_error.add_note(
++                f"fixture cleanup also failed; recovery={recovery}: {cleanup_error}"
+             )
+-        if source in _eden_mounts():
+-            raise AssertionError("disposable TFA source checkout remains mounted")
+-        shutil.rmtree(root)
+ 
+ 
+ def _preserve_controller_handoff_failure(
+@@ -1220,6 +1481,167 @@
+ 
+ 
+ class ProductionContainmentIntegrationTest(unittest.TestCase):
++    def test_btrfs_teardown_failure_retains_durable_recovery_receipt(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-btrfs-fixed"
++            root.mkdir()
++            recovery_root = base / "recovery"
++
++            def command(_executable: str, arguments: list[str]) -> None:
++                if "umount" in arguments:
++                    raise AssertionError("injected unmount failure")
++
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._fixture_command",
++                    side_effect=command,
++                ),
++                self.assertRaisesRegex(AssertionError, "injected unmount failure"),
++            ):
++                with _disposable_btrfs_verify_root():
++                    pass
++            receipt_path = recovery_root / f"{root.name}.json"
++            receipt = json.loads(receipt_path.read_text())
++            self.assertEqual(receipt["schema"], "tfa.production-fixture-recovery.v1")
++            self.assertEqual(receipt["kind"], "btrfs-loop-mount")
++            self.assertEqual(receipt["phase"], "cleanup")
++            self.assertTrue(receipt["mounted"])
++            self.assertEqual(receipt["root"], str(root))
++            self.assertEqual(
++                receipt["root_identity"],
++                {"device": root.stat().st_dev, "inode": root.stat().st_ino},
++            )
++            self.assertRegex(receipt["recovery_token"], r"^[0-9a-f]{32}$")
++            self.assertTrue(root.exists())
++
++    def test_worktree_teardown_failure_retains_durable_recovery_receipt(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-source-fixed"
++            root.mkdir()
++            recovery_root = base / "recovery"
++
++            def run(**kwargs: object) -> subprocess.CompletedProcess[str]:
++                arguments = cast(list[str], kwargs["cmd_args"])
++                if arguments[0] == "log":
++                    return subprocess.CompletedProcess([], 0, "a" * 40 + "\n", "")
++                if arguments[0] == "clone":
++                    return subprocess.CompletedProcess([], 0, "", "")
++                if arguments[:2] == ["list", "--json"]:
++                    return subprocess.CompletedProcess(
++                        [], 0, json.dumps({str(root / "source"): {}}), ""
++                    )
++                if arguments[0] == "remove":
++                    return subprocess.CompletedProcess(
++                        [], 1, "", "injected remove failure"
++                    )
++                raise AssertionError(f"unexpected command: {arguments!r}")
++
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._retire_checkout_services"
++                ) as retire_services,
++                patch.object(TrustedSubprocessWithList, "run", side_effect=run),
++                self.assertRaisesRegex(AssertionError, "injected remove failure"),
++            ):
++                with _disposable_worktree_source():
++                    pass
++            retire_services.assert_called_once_with(root / "source")
++            receipt_path = recovery_root / f"{root.name}.json"
++            receipt = json.loads(receipt_path.read_text())
++            self.assertEqual(receipt["schema"], "tfa.production-fixture-recovery.v1")
++            self.assertEqual(receipt["kind"], "eden-checkout")
++            self.assertEqual(receipt["phase"], "cleanup")
++            self.assertTrue(receipt["cloned"])
++            self.assertTrue(receipt["mounted"])
++            self.assertEqual(receipt["root"], str(root))
++            self.assertEqual(
++                receipt["root_identity"],
++                {"device": root.stat().st_dev, "inode": root.stat().st_ino},
++            )
++            self.assertRegex(receipt["recovery_token"], r"^[0-9a-f]{32}$")
++            self.assertTrue(root.exists())
++
++    def test_fixture_body_error_is_not_shadowed_by_cleanup_failure(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-btrfs-body-error"
++            root.mkdir()
++            recovery_root = base / "recovery"
++
++            def command(_executable: str, arguments: list[str]) -> None:
++                if "umount" in arguments:
++                    raise AssertionError("injected cleanup failure")
++
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._fixture_command",
++                    side_effect=command,
++                ),
++                self.assertRaisesRegex(RuntimeError, "injected body failure") as raised,
++            ):
++                with _disposable_btrfs_verify_root():
++                    raise RuntimeError("injected body failure")
++            self.assertTrue(
++                any(
++                    "fixture cleanup also failed" in note
++                    for note in getattr(raised.exception, "__notes__", ())
++                )
++            )
++            self.assertTrue((recovery_root / f"{root.name}.json").exists())
++
++    def test_fixture_cleanup_refuses_replaced_recovery_ownership(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-btrfs-ownership"
++            root.mkdir()
++            recovery_root = base / "recovery"
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._fixture_command"
++                ),
++                self.assertRaisesRegex(
++                    AssertionError, "fixture recovery ownership changed"
++                ),
++            ):
++                with _disposable_btrfs_verify_root():
++                    receipt = recovery_root / f"{root.name}.json"
++                    receipt.write_text('{"recovery_token":"foreign"}\n')
++            self.assertTrue(root.exists())
++
+     def test_controller_handoff_exact_command_creates_all_artifacts_once(
+         self,
+     ) -> None:
+@@ -3286,7 +3708,9 @@
+             self.assertIsNone(value["meta_exec_wrapper"])
+ 
+     @_serialized_nested_hermit
+-    def test_normal_verify_keeps_guest_and_controller_workdirs_clean(self) -> None:
++    def test_current_full_trace_refuses_trace_drift_and_cleans_up(
++        self,
++    ) -> None:
+         Path("/tmp/tfa-phase2").mkdir(parents=True, exist_ok=True)
+         with tempfile.TemporaryDirectory(
+             prefix="tfa-production-hermit-normal-", dir="/tmp/tfa-phase2"
+@@ -3325,16 +3749,27 @@
+             self.assertEqual(completed.returncode, 0, completed.stderr)
+             receipt = json.loads((root / "hermit-quota-probe.json").read_text())
+             self.assertEqual(
+-                receipt["returncode"], 0, (attempt / "wrapper/stderr.txt").read_text()
++                receipt["returncode"], 1, (attempt / "wrapper/stderr.txt").read_text()
+             )
+             self.assertFalse(receipt["timed_out"])
+             argv = tuple(receipt["argv"])
++            stderr = (attempt / "wrapper/stderr.txt").read_text()
++            self.assertIn("Comparing full trace messages", stderr)
++            self.assertIn("Failure: nondeterministic.", stderr)
++            self.assertIn("(full trace) Mismatch at log messages", stderr)
+             verify_working_directory(guest_cwd, guest_seal)
+             evidence = controller_evidence(attempt)
+             self.assertEqual(evidence["outputs"], [])
+             self.assertEqual(evidence["verify_summary_residue"], [])
+             self.assertIn(f"--workdir={guest_cwd}", argv)
+-            self.assertIn("--timeout=20", argv)
++            self.assertNotIn("--timeout=20", argv)
++            self.assertIn("--verify-verbose", argv)
++            self.assertNotIn("--verify-strict", argv)
++            self.assertNotIn("--keep-logs", argv)
++            self.assertFalse(
++                any(token.startswith("--verify-log-dir=") for token in argv)
++            )
++            self.assertEqual(argv[argv.index("--sh-deadline") + 1], "20")
+             self.assertEqual(argv[argv.index("--") + 1], "/usr/bin/python3")
+             metadata = json.loads((attempt / "wrapper/metadata.json").read_text())
+             hermit_sha256 = hashlib.sha256(
+@@ -3346,16 +3781,12 @@
+                 attempt / "safehermit.txt",
+                 hermit_sha256,
+             )
+-            self.assertEqual(bounded_evidence["exit_code"], 0)
+-            verify_arg = next(
+-                token.removeprefix("--verify-log-dir=")
+-                for token in argv
+-                if token.startswith("--verify-log-dir=")
+-            )
+-            self.assertTrue(Path(verify_arg).parent.name.startswith("brs-tfa-verify-"))
+-            self.assertFalse(Path(verify_arg).parent.exists())
++            self.assertEqual(bounded_evidence["exit_code"], 1)
+             verify_evidence = bounded_evidence["verify_output"]
+             self.assertIsInstance(verify_evidence, dict)
++            verify_dir = Path(str(verify_evidence["verify_log_dir"]))
++            self.assertTrue(verify_dir.parent.name.startswith("brs-tfa-verify-"))
++            self.assertFalse(verify_dir.parent.exists())
+             self.assertEqual(verify_evidence["phase"], "finalized")
+             self.assertEqual(verify_evidence["report"]["returncode"], 0)
+             self.assertEqual(verify_evidence["destroy"]["returncode"], 0)
+@@ -3370,6 +3801,9 @@
+                 )
+             )
+             self.assertTrue((attempt / "verify").is_dir())
++            verify_names = {path.name for path in (attempt / "verify").iterdir()}
++            self.assertTrue(any(name.startswith("run1_log_") for name in verify_names))
++            self.assertTrue(any(name.startswith("run2_log_") for name in verify_names))
+             self.assertEqual(Path(argv[0]), safehermit_runtime_paths(attempt)[0])
+             self.assertTrue(
+                 _pinned_safehermit_allowed(argv[0], attempt / "controller-cwd")
+@@ -3410,8 +3844,7 @@
+             guest_seal = root / "guest-cwd.json"
+             seal_working_directory(guest_cwd, guest_seal)
+             attempt = root / "attempt"
+-            controller_cwd = attempt / "controller-cwd"
+-            ready = controller_cwd / "run2"
++            ready = attempt / "controller-cwd" / "run2"
+             helper = Path(__file__).with_name("test_process_migration_helper.py")
+             completed = TrustedSubprocessWithList.run(
+                 executable="/usr/bin/systemd-run",
+@@ -3451,15 +3884,19 @@
+             evidence = controller_evidence(attempt)
+             residues = evidence["verify_summary_residue"]
+             self.assertIsInstance(residues, list)
+-            self.assertGreaterEqual(len(residues), 1)
+-            self.assertTrue(
+-                all(
+-                    Path(str(record["path"])).parent == controller_cwd
+-                    for record in residues
+-                )
++            self.assertEqual(residues, [])
++            outputs = evidence["outputs"]
++            self.assertIsInstance(outputs, list)
++            self.assertEqual(
++                {Path(str(record["path"])).name for record in outputs},
++                {"run1", "run2"},
+             )
++            self.assertEqual((attempt / "controller-cwd/run1").read_text(), "run1")
++            self.assertEqual((attempt / "controller-cwd/run2").read_text(), "run2")
+             self.assertTrue((attempt / "verify").is_dir())
+-            self.assertTrue(any((attempt / "verify").iterdir()))
++            verify_names = {path.name for path in (attempt / "verify").iterdir()}
++            self.assertTrue(any(name.startswith("run1_log_") for name in verify_names))
++            self.assertTrue(any(name.startswith("run2_log_") for name in verify_names))
+ 
+     @_serialized_nested_hermit
+     def test_killed_controller_recovers_every_verify_allocation_boundary(
+@@ -3536,7 +3973,6 @@
+                         "--user",
+                         "--quiet",
+                         "--collect",
+-                        "--pipe",
+                         "--wait",
+                         "--expand-environment=no",
+                         f"--setenv={_VERIFY_SPACE_ROOT_ENV}="
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -52,6 +52,7 @@
+     hermit_witness_argv,
+     HermitError,
+     packaged_hermit_argv,
++    PACKAGED_HERMIT_RESOURCE_SHA256,
+     PACKAGED_HERMIT_REVISION,
+     safehermit_evidence,
+     safehermit_runtime_paths,
+@@ -469,6 +470,23 @@
+         )
+         self.assertEqual(value["historical_witness"]["state"], "PRESERVED")
+         self.assertEqual(value["qualification_probe"]["state"], "BLOCKED")
++        receipt_path = Path(manifest_module.__file__).with_name(
++            value["qualification_probe"]["receipts_resource"]
++        )
++        self.assertEqual(
++            hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
++            value["qualification_probe"]["receipts_sha256"],
++        )
++        receipts = json.loads(receipt_path.read_text())
++        self.assertEqual(
++            receipts["probe_binary"],
++            {
++                "build_mode": value["qualification_probe"]["mode"],
++                "configured_target": value["qualification_probe"]["configured_target"],
++                "sha256": value["qualification_probe"]["sha256"],
++                "upstream_revision": value["upstream_revision"],
++            },
++        )
+         candidates = value["qualification_probe"]["short_candidates"]
+         self.assertEqual(
+             [
+@@ -478,6 +496,40 @@
+             [("asyncssl", 1, 1), ("thrift", 0, 132), ("httpcoro", 1, 1)],
+         )
+         self.assertEqual(len(value["qualification_probe"]["blockers"]), 3)
++        self.assertEqual(
++            [
++                (receipt["case_id"], receipt["seed"], receipt["returncode"])
++                for receipt in receipts["probes"]
++            ],
++            [("asyncssl", 1, 1), ("thrift", 0, 132), ("httpcoro", 1, 1)],
++        )
++        for receipt in receipts["probes"]:
++            self.assertEqual(
++                hashlib.sha256(
++                    (json.dumps(receipt["argv"], separators=(",", ":")) + "\n").encode()
++                ).hexdigest(),
++                receipt["argv_sha256"],
++            )
++            self.assertEqual(
++                hashlib.sha256(receipt["stdout"].encode()).hexdigest(),
++                receipt["stdout_sha256"],
++            )
++            self.assertEqual(
++                hashlib.sha256(receipt["stderr"].encode()).hexdigest(),
++                receipt["stderr_sha256"],
++            )
++            self.assertEqual(
++                hashlib.sha256((receipt["result_receipt"] + "\n").encode()).hexdigest(),
++                receipt["result_receipt_sha256"],
++            )
++            result = json.loads(receipt["result_receipt"])
++            self.assertEqual(result["argv"], receipt["argv"])
++            self.assertEqual(result["case_id"], receipt["case_id"])
++            self.assertEqual(result["returncode"], receipt["returncode"])
++            self.assertEqual(
++                hashlib.sha256(receipt["safehermit_report"].encode()).hexdigest(),
++                receipt["safehermit_report_sha256"],
++            )
+ 
+     def test_rejects_generalized_population(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -596,9 +648,13 @@
+             prompt,
+         )
+         self.assertIn(
+-            "or overwrite the supplied witness directories",
++            "Use only the controller commands below",
+             prompt,
+         )
++        self.assertNotIn("/home/newton/work/dev-hermit/bin/safehermit", prompt)
++        self.assertNotIn("--verify-strict", prompt)
++        self.assertNotIn("--keep-logs", prompt)
++        self.assertNotIn("--verify-log-dir", prompt)
+ 
+ 
+ class StateTest(unittest.TestCase):
+@@ -856,6 +912,49 @@
+         pinned.start()
+         self.addCleanup(pinned.stop)
+ 
++    def test_current_verify_translation_preserves_historical_strictness(self) -> None:
++        historical = hermit_attempt_argv(
++            tuple(_argv(1)),
++            Path(EXPECTED_WORKING_DIRECTORIES["asyncssl"]),
++            Path("/tmp/tfa-phase2/controller"),
++            180,
++            Path("/tmp/tfa-phase2/safehermit"),
++        )
++        translated = hermit_module._current_verify_argv(historical)
++        boundary = translated.index("--")
++        self.assertEqual(translated[:boundary].count("--verify"), 1)
++        self.assertEqual(translated[:boundary].count("--verify-verbose"), 1)
++        self.assertNotIn("--verify-strict", translated[:boundary])
++        self.assertNotIn("--keep-logs", translated[:boundary])
++        self.assertFalse(
++            any(token.startswith("--timeout=") for token in translated[:boundary])
++        )
++        self.assertEqual(
++            hermit_module._safehermit_deadline(translated),
++            hermit_module._safehermit_deadline(historical)
++            - hermit_module._HERMIT_UNWIND_SECONDS,
++        )
++        self.assertFalse(
++            any(
++                token.startswith("--verify-log-dir=") for token in translated[:boundary]
++            )
++        )
++        self.assertEqual(translated[boundary:], historical[historical.index("--") :])
++
++    def test_current_verify_translation_rejects_a_lowered_contract(self) -> None:
++        historical = list(
++            hermit_attempt_argv(
++                tuple(_argv(1)),
++                Path(EXPECTED_WORKING_DIRECTORIES["asyncssl"]),
++                Path("/tmp/tfa-phase2/controller"),
++                180,
++                Path("/tmp/tfa-phase2/safehermit"),
++            )
++        )
++        historical.remove("--verify-strict")
++        with self.assertRaisesRegex(HermitError, "strict verification contract"):
++            hermit_module._current_verify_argv(tuple(historical))
++
+     def test_validation_argv_rebinds_patched_checkout_buck_out(self) -> None:
+         case = _loaded_case()
+         elf = Path("/tmp/tfa-phase2/cases/asyncssl/buck-out/v2/new/AsyncSSLSocketTest")
+@@ -892,6 +991,7 @@
+             value["qualification_probe"]["sha256"] = digest
+             value["qualification_probe"]["state"] = "QUALIFIED"
+             value["qualification_probe"]["blockers"] = []
++            value["packaged_executable"]["sha256"] = digest
+             compatibility.write_text(json.dumps(value))
+             original = tuple(_argv(1))
+             with (
+@@ -907,6 +1007,11 @@
+                     "testinfra.tfa.hermit.PACKAGED_HERMIT_QUALIFICATION_SHA256",
+                     digest,
+                 ),
++                patch("testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256", digest),
++                patch(
++                    "testinfra.tfa.hermit._qualification_receipt_record",
++                    return_value={"sha256": "test"},
++                ),
+             ):
+                 rewritten = packaged_hermit_argv(
+                     original,
+@@ -950,6 +1055,7 @@
+             value["qualification_probe"]["sha256"] = digest
+             value["qualification_probe"]["state"] = "QUALIFIED"
+             value["qualification_probe"]["blockers"] = []
++            value["packaged_executable"]["sha256"] = digest
+             compatibility.write_text(json.dumps(value))
+             for revision, expected_hash in (
+                 ("different", digest),
+@@ -969,6 +1075,13 @@
+                         "testinfra.tfa.hermit.PACKAGED_HERMIT_QUALIFICATION_SHA256",
+                         digest,
+                     ),
++                    patch(
++                        "testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256", digest
++                    ),
++                    patch(
++                        "testinfra.tfa.hermit._qualification_receipt_record",
++                        return_value={"sha256": "test"},
++                    ),
+                     self.assertRaisesRegex(
+                         HermitError, "identity differs from the qualified witness"
+                     ),
+@@ -982,7 +1095,7 @@
+                 identity = json.loads((root / "pinned/identity.json").read_text())
+                 self.assertEqual(identity["state"], "WITNESS_MISMATCH")
+ 
+-    def test_packaged_hermit_records_current_blocked_compatibility(self) -> None:
++    def test_packaged_hermit_records_exact_blocked_compatibility(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)
+             binary = root / "hermit-test-bin"
+@@ -995,21 +1108,39 @@
+                 .with_name("hermit-import-compatibility.v1.json")
+                 .read_text()
+             )
++            value["packaged_executable"]["sha256"] = digest
+             value["qualification_probe"]["sha256"] = digest
+             compatibility.write_text(json.dumps(value))
++            receipts = (
++                Path(manifest_module.__file__)
++                .with_name("hermit-import-receipts.v1.json")
++                .resolve(strict=True)
++            )
++
++            def resource(name: str) -> Path:
++                if name == "hermit-import-compatibility.v1.json":
++                    return compatibility
++                if name == "hermit-import-receipts.v1.json":
++                    return receipts
++                return binary
++
+             with (
+                 patch(
+                     "testinfra.tfa.hermit._packaged_resource",
+-                    side_effect=lambda name: (
+-                        compatibility
+-                        if name == "hermit-import-compatibility.v1.json"
+-                        else binary
+-                    ),
++                    side_effect=resource,
++                ),
++                patch(
++                    "testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256",
++                    digest,
+                 ),
+                 patch(
+                     "testinfra.tfa.hermit.PACKAGED_HERMIT_QUALIFICATION_SHA256",
+                     digest,
+                 ),
++                patch(
++                    "testinfra.tfa.hermit._qualification_receipt_record",
++                    return_value={"sha256": "test"},
++                ),
+                 self.assertRaisesRegex(
+                     HermitError,
+                     "packaged Hermit compatibility is BLOCKED.*"
+@@ -1034,6 +1165,43 @@
+                 },
+             )
+ 
++    def test_real_packaged_hermit_is_bound_to_unassessed_provenance(self) -> None:
++        case = _loaded_case()
++        value = json.loads(
++            Path(manifest_module.__file__)
++            .with_name("hermit-import-compatibility.v1.json")
++            .read_text()
++        )
++        with tempfile.TemporaryDirectory() as temporary:
++            destination = Path(temporary) / "runtime" / "hermit"
++            with self.assertRaisesRegex(
++                HermitError, "packaged Hermit compatibility is UNASSESSED_VARIANT"
++            ):
++                packaged_hermit_argv(
++                    case.pass_argv,
++                    case.hermit_revision,
++                    case.hermit_sha256,
++                    destination,
++                )
++            identity = json.loads((destination.parent / "identity.json").read_text())
++            self.assertEqual(identity["state"], "UNASSESSED_VARIANT")
++            self.assertEqual(
++                identity["packaged_executable"]["sha256"],
++                PACKAGED_HERMIT_RESOURCE_SHA256,
++            )
++            self.assertEqual(
++                identity["packaged_executable"]["configured_target"],
++                value["packaged_executable"]["configured_target"],
++            )
++            self.assertEqual(
++                identity["qualification"]["configured_target"],
++                value["qualification_probe"]["configured_target"],
++            )
++            self.assertEqual(
++                identity["qualification_receipts"]["sha256"],
++                hermit_module.PACKAGED_HERMIT_RECEIPTS_SHA256,
++            )
++
+     def test_safehermit_resources_are_resolved_only_when_pinned(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)
+@@ -1188,7 +1356,7 @@
+             version = MagicMock(
+                 returncode=0,
+                 stdout="codex-cli 9.9.9\n",
+-                stderr="",
++                stderr=process_module._CODEX_VERSION_STDERR[1],
+             )
+             executable = {
+                 "kind": "file",
+@@ -1214,6 +1382,9 @@
+             identity = json.loads((root / "preflight/identity.json").read_text())
+             self.assertEqual(identity["state"], "unsupported")
+             self.assertEqual(identity["version"], "codex-cli 9.9.9")
++            self.assertEqual(
++                identity["version_stderr"], process_module._CODEX_VERSION_STDERR[1]
++            )
+             self.assertEqual(identity["resolved_executable"], executable)
+ 
+     def test_cli_timeout_type_rejects_nonfinite_and_nonpositive_values(self) -> None:
+@@ -2121,17 +2292,18 @@
+     def test_timeout_kills_nested_cgroup_descendant(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)
+-            marker = root / "grandchild-survived"
++            lifetime = root / "grandchild-lifetime"
+             ready = root / "grandchild-started"
+             grandchild = (
+-                "import pathlib,time; "
++                "import fcntl,pathlib,time; "
+                 "deadline=time.monotonic()+1; "
+                 "cgroup=pathlib.Path('/proc/self/cgroup'); "
+                 "\nwhile '/migrated' not in cgroup.read_text() "
+                 "and time.monotonic()<deadline: time.sleep(0.01)\n"
++                f"lifetime=open({str(lifetime)!r},'w'); "
++                "fcntl.flock(lifetime,fcntl.LOCK_EX); "
+                 f"pathlib.Path({str(ready)!r}).write_text(cgroup.read_text()); "
+-                "time.sleep(1); "
+-                f"pathlib.Path({str(marker)!r}).write_text('alive')"
++                "time.sleep(30)"
+             )
+             script = (
+                 "import pathlib,subprocess,sys,time; "
+@@ -2154,31 +2326,32 @@
+                 root,
+                 root / "run",
+                 0.5,
++                readiness_path=ready,
++                startup_timeout_seconds=0.5,
+             )
+-            deadline = time.monotonic() + 1.5
+-            while time.monotonic() < deadline and not marker.exists():
+-                time.sleep(0.05)
+             self.assertTrue(result.timed_out)
+             self.assertTrue(ready.exists())
+             self.assertIn("/payload/migrated", ready.read_text())
+-            self.assertFalse(marker.exists(), repr(result))
++            with lifetime.open("r+") as lifetime_stream:
++                fcntl.flock(lifetime_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+             self.assertIsNotNone(result.process_group)
+             self.assertEqual(result.containment, CONTAINMENT)
+ 
+     def test_success_kills_nested_cgroup_descendant(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)
+-            marker = root / "descendant-survived"
++            lifetime = root / "descendant-lifetime"
+             ready = root / "descendant-started"
+             descendant = (
+-                "import pathlib,time; "
++                "import fcntl,pathlib,time; "
+                 "deadline=time.monotonic()+1; "
+                 "cgroup=pathlib.Path('/proc/self/cgroup'); "
+                 "\nwhile '/migrated' not in cgroup.read_text() "
+                 "and time.monotonic()<deadline: time.sleep(0.01)\n"
++                f"lifetime=open({str(lifetime)!r},'w'); "
++                "fcntl.flock(lifetime,fcntl.LOCK_EX); "
+                 f"pathlib.Path({str(ready)!r}).write_text(cgroup.read_text()); "
+-                "time.sleep(1); "
+-                f"pathlib.Path({str(marker)!r}).write_text('alive')"
++                "time.sleep(30)"
+             )
+             script = (
+                 "import pathlib,subprocess,sys,time; "
+@@ -2201,27 +2374,28 @@
+                 root / "run",
+                 10,
+             )
+-            time.sleep(0.7)
+             self.assertEqual(result.returncode, 0)
+             self.assertTrue(ready.exists())
+             self.assertIn("/payload/migrated", ready.read_text())
+             self.assertGreaterEqual(result.descendants_terminated, 1)
+-            self.assertFalse(marker.exists())
++            with lifetime.open("r+") as lifetime_stream:
++                fcntl.flock(lifetime_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+ 
+     def test_failure_kills_nested_cgroup_descendant(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+             root = Path(temporary)
+-            marker = root / "descendant-survived"
++            lifetime = root / "descendant-lifetime"
+             ready = root / "descendant-started"
+             descendant = (
+-                "import pathlib,time; "
++                "import fcntl,pathlib,time; "
+                 "deadline=time.monotonic()+1; "
+                 "cgroup=pathlib.Path('/proc/self/cgroup'); "
+                 "\nwhile '/migrated' not in cgroup.read_text() "
+                 "and time.monotonic()<deadline: time.sleep(0.01)\n"
++                f"lifetime=open({str(lifetime)!r},'w'); "
++                "fcntl.flock(lifetime,fcntl.LOCK_EX); "
+                 f"pathlib.Path({str(ready)!r}).write_text(cgroup.read_text()); "
+-                "time.sleep(1); "
+-                f"pathlib.Path({str(marker)!r}).write_text('alive')"
++                "time.sleep(30)"
+             )
+             script = (
+                 "import os,pathlib,signal,subprocess,sys,time; "
+@@ -2245,12 +2419,12 @@
+                 root / "run",
+                 10,
+             )
+-            time.sleep(0.7)
+             self.assertNotEqual(result.returncode, 0)
+             self.assertTrue(ready.exists())
+             self.assertIn("/payload/migrated", ready.read_text())
+             self.assertGreaterEqual(result.descendants_terminated, 1)
+-            self.assertFalse(marker.exists())
++            with lifetime.open("r+") as lifetime_stream:
++                fcntl.flock(lifetime_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+ 
+     def test_resume_arguments_and_session_readback(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:
+@@ -2320,16 +2494,18 @@
+             attempt_root = root / "asyncssl" / "pass"
+             space = _mock_verify_space(attempt_root)
+             self.assertIsInstance(space, hermit_module._VerifySpace)
+-            expected_argv = hermit_attempt_argv(
+-                hermit_module._replace_verify_log_dir(
+-                    hermit_witness_argv(tuple(_argv(1)), attempt_root),
+-                    attempt_root / "verify",
+-                    space.verify_dir,
++            expected_argv = hermit_module._current_verify_argv(
++                hermit_attempt_argv(
++                    hermit_module._replace_verify_log_dir(
++                        hermit_witness_argv(tuple(_argv(1)), attempt_root),
++                        attempt_root / "verify",
++                        space.verify_dir,
++                    ),
++                    Path(EXPECTED_WORKING_DIRECTORIES["asyncssl"]),
++                    attempt_root / "controller-cwd",
++                    180,
++                    safehermit_wrapper_path(attempt_root),
+                 ),
+-                Path(EXPECTED_WORKING_DIRECTORIES["asyncssl"]),
+-                attempt_root / "controller-cwd",
+-                180,
+-                safehermit_wrapper_path(attempt_root),
+             )
+             expected = ProcessResult(
+                 expected_argv, 0, 0.1, False, root / "stdout", root / "stderr"
+@@ -2381,11 +2557,15 @@
+                 environment["SAFEHERMIT_LOG_ROOT"],
+                 str(hermit_module._safehermit_log_root(attempt_root)),
+             )
++            self.assertEqual(environment["TMPDIR"], str(space.verify_dir))
+             self.assertIn(
+                 f"--workdir={EXPECTED_WORKING_DIRECTORIES['asyncssl']}",
+                 expected_argv,
+             )
+-            self.assertIn("--timeout=110", expected_argv)
++            self.assertNotIn("--timeout=110", expected_argv)
++            self.assertEqual(
++                expected_argv[expected_argv.index("--sh-deadline") + 1], "110"
++            )
+ 
+     def test_safehermit_wrapper_pin_rejects_hash_and_replacement(self) -> None:
+         with tempfile.TemporaryDirectory() as temporary:

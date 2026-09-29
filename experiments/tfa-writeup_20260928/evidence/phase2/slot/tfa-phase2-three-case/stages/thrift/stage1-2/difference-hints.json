@@ -1,0 +1,86 @@
+{
+  "case_id": "thrift",
+  "fail": {
+    "determinism_verified": true,
+    "exit_code": 1,
+    "failure_class_id": "gtest-snapshot-size-2",
+    "failures": [
+      "fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp:836: Failure\nExpected equality of these values:\n  reqSnapshots.size()\n    Which is: 2\n  3"
+    ],
+    "gtest_verdict": "FAILED",
+    "seed": 1,
+    "signal": null,
+    "top_frames": [],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 30452,
+      "INFO messages": 38937,
+      "detcore-specific messages": 38923,
+      "messages total": 38937,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 800, committed virtual time 1790027077571351040ns, run 2 first at turn 800, committed virtual time 1790027077571351040ns)": 82,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "failure_class": "gtest-snapshot-size-2",
+  "guest_stderr_diff": [],
+  "guest_stderr_diff_truncated": false,
+  "guest_stderr_same_lines_reordered": false,
+  "inputs": {
+    "fail.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000000001-replica-1.result.json",
+      "sha256": "bc7df483b6f8957c33a0f919f71961514c3a837527351efcf11897fe887afc32",
+      "size": 2195
+    },
+    "fail.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt",
+      "sha256": "85f03e9d5b46c519120cc647a866feeba19cf2d12af443e4bf1269766ca3e296",
+      "size": 1660
+    },
+    "fail.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stdout.txt",
+      "sha256": "c8a68dbd3d417f0259f338d71bac761d7fe54682fbb8103e0180b0b22fdb7d8d",
+      "size": 983
+    },
+    "pass.result": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000000000-replica-1.result.json",
+      "sha256": "ea034d80afb978c68c2ad649a383c1aa685346140b45cbae1db6bce6ea622e23",
+      "size": 2174
+    },
+    "pass.stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stderr.txt",
+      "sha256": "305f7db233675d0f477f2bd73cd7a9d917f681f791a25d7296ec84c587b0ff5d",
+      "size": 1660
+    },
+    "pass.stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stdout.txt",
+      "sha256": "a403e806173b58c452100babc08ccccadfdaffbc04fbee77dde192d907cfece9",
+      "size": 694
+    }
+  },
+  "pass": {
+    "determinism_verified": true,
+    "exit_code": 0,
+    "failure_class_id": null,
+    "failures": [],
+    "gtest_verdict": "OK",
+    "seed": 0,
+    "signal": null,
+    "top_frames": [],
+    "verifier_counts": {
+      "DETLOG & scheduler COMMIT messages": 29189,
+      "INFO messages": 34876,
+      "detcore-specific messages": 34862,
+      "messages total": 34876,
+      "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 912, committed virtual time 1790027077877067741ns, run 2 first at turn 912, committed virtual time 1790027077877067741ns)": 82,
+      "scheduler empty-run-queue kick messages": 1
+    }
+  },
+  "qualification": "deterministic-text-difference; not a root cause",
+  "schema_version": 1,
+  "verifier_count_delta": {
+    "DETLOG & scheduler COMMIT messages": 1263,
+    "INFO messages": 4061,
+    "detcore-specific messages": 4061,
+    "messages total": 4061,
+    "scheduler empty-run-queue kick messages": 0
+  }
+}

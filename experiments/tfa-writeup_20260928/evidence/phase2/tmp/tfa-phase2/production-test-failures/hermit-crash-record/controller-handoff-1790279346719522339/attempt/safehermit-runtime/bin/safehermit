@@ -1,0 +1,1452 @@
+#!/usr/bin/env bash
+# safehermit -- the only hermit entry point agents may call.
+#
+# WHY THIS EXISTS
+# ===============
+# On 2026-08-17 three hermit runs each wrote ~4.5 TB of stderr over 28+ hours at
+# 75% CPU and filled the filesystem, taking down ORC and every running agent. No
+# single mechanism would have stopped it, so this applies several and -- the part
+# that matters -- SAYS WHICH ONES IT COULD NOT APPLY.
+#
+# THE CASE THAT DECIDES WHETHER THIS WORKS. The incident binary was
+# /tmp/hermit-ers-patched, invoked by absolute path. Absolute-path execution never
+# consults PATH, so a shim named `hermit` dropped in front covers the ordinary case
+# and misses precisely the one that caused the outage. This therefore takes the
+# binary as an argument:
+#
+#     safehermit /tmp/hermit-ers-patched run -- ./prog     # arbitrary binary
+#     safehermit run -- ./prog                             # default hermit
+#     safehermit --sh-resource-report /tmp/seed-7.resources \
+#       --sh-memory-max-bytes 17179869184 --sh-tasks-max 256 \
+#       --sh-cpu-cores 1 --sh-cpu-timeout 900 --sh-deadline 2700 run -- ./prog
+#
+# The first argument is the hermit binary IF it contains a `/` and is executable,
+# or if --bin is given. Nothing else is treated as a binary, so a subcommand
+# (`run`, `record`, `replay`, `verify`, `log-diff` -- none contains a `/`) can
+# never be mistaken for one.
+#
+# FAIL LOUD, NEVER SILENTLY UNBOUNDED
+# ===================================
+# Every bound is reported on EVERY run as APPLIED or NOT_APPLIED with a reason,
+# including when everything works. This is deliberate and is the whole discipline:
+# on the day of the incident several mechanisms were present and inert, and a
+# wrapper that only speaks up when something breaks becomes another one of them.
+# `safehermit: bound.* =` lines are the contract; grep them.
+#
+# WHAT IT DOES NOT DO
+# ===================
+# It does not change hermit's behaviour, arguments or stdio. The child exit code
+# is preserved unless an explicitly requested resource report cannot be completed,
+# which fails closed with 2. stdout and stderr of the child are passed through
+# untouched; everything this script says goes to stderr prefixed `safehermit:` so
+# it can never be confused with, or parsed as, hermit output.
+#
+# EXIT CODES
+#   the child's exit code, verbatim, when accounting (if requested) completes
+#   2   safehermit usage error, or opted-in resource accounting refusal
+#   124 the deadline fired and the run was killed by its cgroup
+#   125 the log cap fired and the run was killed by its cgroup
+#   126 the opted-in aggregate CPU-time budget fired
+set -uo pipefail
+
+PROG=safehermit
+# WHERE THIS SCRIPT'S OWN LINES GO. Default 2 (stderr), exactly as before.
+# --sh-report FILE moves them, and the reason is a measured demo failure, not
+# tidiness: demos/05-qemu-boot.py hashes its hermit log into run-metadata.json
+# (info_log_sha256) and demo_common.compare_runs then LINE-DIFFS two runs' logs,
+# failing the repeat on any difference that survives normalization. Six of the
+# lines below embed run_id, which is a UTC timestamp plus this script's pid and so
+# differs on every run. Verified against the real comparator: hermit_log_diff on
+# two otherwise-identical logs reports "first divergence at line 1 ... run_id",
+# i.e. wiring that demo to safehermit while the report shares fd 2 with hermit's
+# stderr would fail repeat verification on 100% of runs, for a reason that has
+# nothing to do with hermit.
+# The report is still WRITTEN and still greppable -- this only changes where -- so
+# the "fail loud, never silently unbounded" discipline is intact. A caller that
+# redirects it takes on the job of surfacing it.
+REPORT_FD=2
+say()  { printf '%s: %s\n' "$PROG" "$*" >&$REPORT_FD; }
+# die() stays on real stderr: a usage error must be visible even when the caller
+# has pointed the report at a file it is not going to read.
+die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
+field(){ printf '%s: %s=%s\n' "$PROG" "$1" "$2" >&$REPORT_FD; }
+
+# ---------------------------------------------------------------- defaults
+DEFAULT_DEADLINE_SECS=3600          # (2) no run outlives a default without opting out
+DEFAULT_MAX_LOG_BYTES=$((64*1024*1024))   # LOW ON PURPOSE -- see the cap note below
+DEFAULT_DISK_LIMIT=8G
+DEFAULT_MEM_MAX=16G
+# (4) THE EMITTER IS DELIBERATELY LEFT ALONE. An earlier version of this script
+# defaulted RUST_LOG=detcore::scheduler=warn, which does work (measured: stderr
+# 380 -> 272 lines, detcore::scheduler 40 -> 0). The owner ruled against it, and
+# the reasoning is better: a spinning program SHOULD die from the timeout or from
+# the log hitting a low cap. Quieting the emitter hides the very signal that a run
+# is stuck -- it makes a wedged run look healthy and cheap. So the cap is set LOW
+# so that it is the thing that fires, the deadline backs it up, and the first
+# bytes are kept as evidence. RUST_LOG is never set by safehermit; the caller's
+# value, if any, is passed through untouched.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_ROOT="${SAFEHERMIT_LOG_ROOT:-$ROOT/ignored/safehermit}"
+REGISTRY="$LOG_ROOT/registry"
+
+deadline=$DEFAULT_DEADLINE_SECS
+max_log_bytes=$DEFAULT_MAX_LOG_BYTES
+disk_limit=$DEFAULT_DISK_LIMIT
+mem_max=$DEFAULT_MEM_MAX
+bin_override=""
+no_deadline=0
+deadline_explicit=0
+fresh=0
+report_file=""
+detached_report_file=""
+detached_memory_max_bytes=""
+detached_tasks_max=""
+detached_cpu_cores=""
+detached_cpu_timeout_secs=""
+
+# ---------------------------------------------------------------- our own flags
+# Parsed ONLY until the first argument we do not own, so hermit's own flags are
+# never intercepted. `--` ends our parsing explicitly.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --sh-bin)       [ $# -ge 2 ] || die "--sh-bin needs a value"; bin_override="$2"; shift 2 ;;
+        --sh-bin=*)     bin_override="${1#*=}"; shift ;;
+        --sh-deadline)  [ $# -ge 2 ] || die "--sh-deadline needs a value"; deadline="$2"; deadline_explicit=1; shift 2 ;;
+        --sh-deadline=*) deadline="${1#*=}"; deadline_explicit=1; shift ;;
+        --sh-no-deadline) no_deadline=1; shift ;;
+        --sh-fresh) fresh=1; shift ;;
+        --sh-report)    [ $# -ge 2 ] || die "--sh-report needs a value"; report_file="$2"; shift 2 ;;
+        --sh-report=*)  report_file="${1#*=}"; shift ;;
+        --sh-resource-report) [ $# -ge 2 ] || die "--sh-resource-report needs a value"; detached_report_file="$2"; shift 2 ;;
+        --sh-resource-report=*) detached_report_file="${1#*=}"; shift ;;
+        --sh-memory-max-bytes) [ $# -ge 2 ] || die "--sh-memory-max-bytes needs a value"; detached_memory_max_bytes="$2"; shift 2 ;;
+        --sh-memory-max-bytes=*) detached_memory_max_bytes="${1#*=}"; shift ;;
+        --sh-tasks-max) [ $# -ge 2 ] || die "--sh-tasks-max needs a value"; detached_tasks_max="$2"; shift 2 ;;
+        --sh-tasks-max=*) detached_tasks_max="${1#*=}"; shift ;;
+        --sh-cpu-cores) [ $# -ge 2 ] || die "--sh-cpu-cores needs a value"; detached_cpu_cores="$2"; shift 2 ;;
+        --sh-cpu-cores=*) detached_cpu_cores="${1#*=}"; shift ;;
+        --sh-cpu-timeout) [ $# -ge 2 ] || die "--sh-cpu-timeout needs a value"; detached_cpu_timeout_secs="$2"; shift 2 ;;
+        --sh-cpu-timeout=*) detached_cpu_timeout_secs="${1#*=}"; shift ;;
+        --sh-max-log-bytes)   [ $# -ge 2 ] || die "needs a value"; max_log_bytes="$2"; shift 2 ;;
+        --sh-max-log-bytes=*) max_log_bytes="${1#*=}"; shift ;;
+        --sh-disk-limit)   [ $# -ge 2 ] || die "needs a value"; disk_limit="$2"; shift 2 ;;
+        --sh-disk-limit=*) disk_limit="${1#*=}"; shift ;;
+        --sh-help|-h)
+            sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/d;p}' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+
+detached_limit_count=0
+for detached_limit in "$detached_memory_max_bytes" "$detached_tasks_max" \
+    "$detached_cpu_cores" "$detached_cpu_timeout_secs"; do
+    [ -z "$detached_limit" ] || detached_limit_count=$((detached_limit_count + 1))
+done
+if [ -n "$detached_report_file" ]; then
+    [ "$detached_limit_count" -eq 4 ] \
+        || die "--sh-resource-report requires --sh-memory-max-bytes, --sh-tasks-max, --sh-cpu-cores, and --sh-cpu-timeout"
+    if [ "$deadline_explicit" -ne 1 ] || [ "$no_deadline" -ne 0 ]; then
+        die "--sh-resource-report requires an explicit --sh-deadline"
+    fi
+    detached_limits="$(python3 - "$detached_memory_max_bytes" "$detached_tasks_max" \
+        "$detached_cpu_cores" "$detached_cpu_timeout_secs" "$deadline" <<'PY'
+import sys
+
+names = ("memory bytes", "tasks", "CPU cores", "CPU timeout seconds", "wall deadline seconds")
+values = []
+for name, raw in zip(names, sys.argv[1:]):
+    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+        raise SystemExit(f"{name} must be a positive unsigned integer in detached mode")
+    values.append(int(raw))
+memory, tasks, cores, cpu_seconds, wall_seconds = values
+if cores > 316:
+    raise SystemExit("CPU cores exceeds the 316-worker host safety ceiling")
+for name, value in (("CPU timeout", cpu_seconds), ("wall deadline", wall_seconds)):
+    if value > (2**63 - 1) // 1_000_000_000:
+        raise SystemExit(f"{name} cannot be represented in nanoseconds")
+print(memory, tasks, cores, cpu_seconds, wall_seconds)
+PY
+)" || die "invalid detached resource limit"
+    read -r detached_memory_max_bytes detached_tasks_max detached_cpu_cores \
+        detached_cpu_timeout_secs deadline <<<"$detached_limits"
+    mem_max="$detached_memory_max_bytes"
+elif [ "$detached_limit_count" -ne 0 ]; then
+    die "detached resource limit flags require --sh-resource-report"
+fi
+
+if [ -n "$report_file" ] && [ -n "$detached_report_file" ]; then
+    same_report_path="$(python3 - "$report_file" "$detached_report_file" <<'PY'
+import os
+import sys
+print("yes" if os.path.abspath(sys.argv[1]) == os.path.abspath(sys.argv[2]) else "no")
+PY
+)"
+    [ "$same_report_path" = no ] || die "--sh-report and --sh-resource-report must name different files"
+fi
+
+if [ -n "$report_file" ]; then
+    # Fail loudly on an unwritable destination rather than losing the report: a
+    # report that silently goes nowhere is the inert-mechanism failure this script
+    # exists to prevent.
+    exec 3>"$report_file" || die "--sh-report: cannot write $report_file"
+    REPORT_FD=3
+fi
+
+[ $# -ge 1 ] || die "no hermit arguments given (try --sh-help)"
+
+# ---------------------------------------------------------------- pick the binary
+# The rule that makes an ARBITRARY binary as cheap as running it bare.
+# PRECEDENCE IS NAMED, NOT JUST APPLIED. `binary_source` below reports which layer
+# won, because "which build produced this artifact" was unanswerable for most of
+# 2026-08-19 and that cost most of a day's rework.
+#
+# FRESHNESS IS OPT-IN (--sh-fresh), NOT DEFAULT, AND THAT IS A DELIBERATE
+# DEVIATION worth reading: the owner asked for ./target/release/hermit "or cargo
+# run it to ensure freshness", and separately, this morning, asked that a stable
+# binary be FROZEN for demo work precisely because rebuild churn in the shared
+# checkout produced artifacts whose originating build was unrecorded. Rebuilding
+# by default in the entry point every demo uses would reintroduce that churn. So
+# the default resolves an EXISTING binary and never builds; `--sh-fresh` opts in.
+# Raised with the owner rather than decided quietly.
+hermit_bin=""; binary_source=""
+if [ -n "$bin_override" ]; then
+    hermit_bin="$bin_override"; binary_source="flag:--sh-bin"
+elif [ -x "$1" ] && case "$1" in */*) true ;; *) false ;; esac; then
+    hermit_bin="$1"; binary_source="argv:positional-path"; shift
+elif [ -n "${HERMIT_BIN:-}" ]; then
+    hermit_bin="$HERMIT_BIN"; binary_source="env:HERMIT_BIN"
+elif [ -x "$ROOT/target/release/hermit" ]; then
+    hermit_bin="$ROOT/target/release/hermit"; binary_source="default:target/release/hermit"
+elif [ -x "$ROOT/bin/hermit" ]; then
+    hermit_bin="$ROOT/bin/hermit"; binary_source="default:bin/hermit"
+else
+    hermit_bin="$(command -v hermit 2>/dev/null || true)"; binary_source="path:$(command -v hermit 2>/dev/null || echo none)"
+fi
+if [ "$fresh" = 1 ]; then
+    if [ "$binary_source" = "default:target/release/hermit" ] || [ ! -x "$hermit_bin" ]; then
+        say "--sh-fresh: building hermit --release (this mutates the shared checkout's target/)"
+        if (cd "$ROOT" && cargo build --release -p hermit >&2); then
+            hermit_bin="$ROOT/target/release/hermit"; binary_source="fresh:cargo build --release"
+        else
+            die "--sh-fresh: cargo build --release failed; refusing to run a stale binary while you asked for a fresh one"
+        fi
+    else
+        say "--sh-fresh ignored: an explicit binary was selected ($binary_source); refusing to rebuild over an explicit choice"
+    fi
+fi
+[ -n "$hermit_bin" ] || die "no hermit binary found: pass one as the first argument, set HERMIT_BIN, or use --sh-bin"
+[ -x "$hermit_bin" ] || die "not executable: $hermit_bin"
+hermit_bin="$(cd "$(dirname "$hermit_bin")" && printf '%s/%s' "$(pwd)" "$(basename "$hermit_bin")")"
+
+# ---------------------------------------------------------------- identity (5)
+# Most of today's rework came from artifacts whose originating build was
+# unrecorded. The hash is of the binary that ACTUALLY ran, resolved absolute.
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+binary_sha256="$(sha256sum "$hermit_bin" 2>/dev/null | cut -d' ' -f1)"
+[ -n "$binary_sha256" ] || binary_sha256="unavailable"
+invocation_sha256=""
+if [ -n "$detached_report_file" ]; then
+    invocation_sha256="$(python3 - "$hermit_bin" "$@" <<'PY'
+import hashlib
+import os
+import sys
+
+digest = hashlib.sha256()
+for argument in sys.argv[1:]:
+    digest.update(os.fsencode(argument))
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+)"
+fi
+
+# ---------------------------------------------------------------- optional detached-unit accounting
+# Parallel experiment runners normally measure the worker cgroup. systemd-run
+# reparents this script's expensive child into a transient service, outside that
+# cgroup, so an explicitly opted-in caller may ask for a second resource report.
+#
+# The report is deliberately a separate file from --sh-report. It first appears
+# atomically with the owned unit name, before the unit is launched, so signal
+# teardown can find that exact cgroup. It is replaced atomically with the complete
+# counters while the unit is still retained and before reset-failed/stop below.
+# A pre-existing path is always a refusal: accepting one could make a stale unit
+# name authoritative for cancellation or mix a previous seed's counters into this
+# invocation.
+detached_report_identity=""
+detached_metrics_error=""
+detached_metrics_written=0
+detached_last_tasks_peak=""
+detached_cgroup_path=""
+detached_cpu_usage_usec=0
+detached_memory_oom_kills=0
+detached_tasks_limit_hits=0
+detached_cpu_time_limit_hit=0
+detached_wall_time_limit_hit=0
+detached_log_cap_hit=0
+detached_log_cap_killed=0
+detached_cleanup_armed=0
+detached_binary_identity_accepted=0
+detached_limit_cpu_cores_micros=""
+detached_limit_cpu_time_nsec=""
+detached_limit_wall_time_usec=""
+if [ -n "$detached_report_file" ]; then
+    detached_limit_cpu_cores_micros=$((detached_cpu_cores * 1000000))
+    detached_limit_cpu_time_nsec=$((detached_cpu_timeout_secs * 1000000000))
+    detached_limit_wall_time_usec=$((deadline * 1000000))
+fi
+
+prepare_detached_report() {
+    local prepared
+    local -a prepared_lines=()
+    prepared="$(python3 - "$detached_report_file" "$unit" "$run_id" \
+        "$invocation_sha256" "$binary_sha256" "$detached_memory_max_bytes" \
+        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
+        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" "0" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+(raw, unit, run_id, invocation, binary, memory_limit, tasks_limit,
+ cpu_cores_micros, cpu_time_limit, wall_time_limit, swap_limit) = sys.argv[1:]
+if not raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
+    raise SystemExit("resource report path is empty or contains a control character")
+path = pathlib.Path(raw)
+parent_text = os.path.abspath(os.fspath(path.parent))
+parent = pathlib.Path(parent_text)
+resolved_parent = parent.resolve(strict=True)
+if parent != resolved_parent:
+    raise SystemExit("resource report parent must not contain symlinks")
+if not resolved_parent.is_dir():
+    raise SystemExit("resource report parent is not a directory")
+parent_mode = resolved_parent.stat().st_mode
+if parent_mode & 0o022 and not parent_mode & stat.S_ISVTX:
+    raise SystemExit("resource report parent is writable by other users without sticky protection")
+name = path.name
+if name in {"", ".", ".."}:
+    raise SystemExit("resource report needs a file name")
+target = resolved_parent / name
+try:
+    os.lstat(target)
+except FileNotFoundError:
+    pass
+else:
+    raise SystemExit("resource report already exists")
+
+payload = (
+    f"safehermit: unit={unit}\n"
+    f"safehermit: run_id={run_id}\n"
+    f"safehermit: invocation_sha256={invocation}\n"
+    f"safehermit: binary_sha256={binary}\n"
+    f"safehermit: limit_memory_bytes={memory_limit}\n"
+    f"safehermit: limit_swap_bytes={swap_limit}\n"
+    f"safehermit: limit_tasks={tasks_limit}\n"
+    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
+    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
+    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
+).encode("utf-8")
+fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=resolved_parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb", closefd=True) as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = -1
+    # link(2), unlike replace(2), refuses a name that appeared after our lstat.
+    os.link(temporary, target)
+    os.unlink(temporary)
+    directory_fd = os.open(resolved_parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+
+identity = os.lstat(target)
+if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
+    raise SystemExit("resource report is not a singly-linked regular file")
+print(target)
+print(f"{identity.st_dev}:{identity.st_ino}")
+PY
+)" || return 1
+    mapfile -t prepared_lines <<<"$prepared"
+    [ "${#prepared_lines[@]}" -eq 2 ] || return 1
+    detached_report_file="${prepared_lines[0]}"
+    detached_report_identity="${prepared_lines[1]}"
+}
+
+finish_detached_report() {
+    local memory_peak=$1 cpu_usage=$2 tasks_peak=$3
+    python3 - "$detached_report_file" "$detached_report_identity" "$unit" "$run_id" \
+        "$invocation_sha256" "$binary_sha256" "$memory_peak" "$cpu_usage" "$tasks_peak" \
+        "$detached_memory_max_bytes" "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
+        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" \
+        "$detached_cpu_time_limit_hit" "$detached_memory_oom_kills" \
+        "$detached_tasks_limit_hits" "$detached_wall_time_limit_hit" \
+        "$detached_log_cap_hit" "0" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+(raw, expected_identity, unit, run_id, invocation, binary,
+ memory_peak, cpu_usage, tasks_peak, memory_limit, tasks_limit,
+ cpu_cores_micros, cpu_time_limit, wall_time_limit, cpu_limit_hit,
+ memory_oom_kills, tasks_limit_hits, wall_limit_hit, log_cap_hit,
+ swap_limit) = sys.argv[1:]
+for label, value in (
+    ("memory_peak_bytes", memory_peak),
+    ("cpu_usage_nsec", cpu_usage),
+    ("tasks_peak", tasks_peak),
+    ("limit_memory_bytes", memory_limit),
+    ("limit_swap_bytes", swap_limit),
+    ("limit_tasks", tasks_limit),
+    ("limit_cpu_cores_micros", cpu_cores_micros),
+    ("limit_cpu_time_nsec", cpu_time_limit),
+    ("limit_wall_time_usec", wall_time_limit),
+    ("cpu_time_limit_hit", cpu_limit_hit),
+    ("memory_oom_kills", memory_oom_kills),
+    ("tasks_limit_hits", tasks_limit_hits),
+    ("wall_time_limit_hit", wall_limit_hit),
+    ("log_cap_hit", log_cap_hit),
+):
+    if not value.isascii() or not value.isdecimal():
+        raise SystemExit(f"{label} is not an unsigned decimal")
+if len(binary) != 64 or any(char not in "0123456789abcdef" for char in binary):
+    raise SystemExit("binary_sha256 is not a lowercase SHA-256 digest")
+path = pathlib.Path(raw)
+current = os.lstat(path)
+identity = f"{current.st_dev}:{current.st_ino}"
+if identity != expected_identity or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+    raise SystemExit("resource report changed after launch")
+payload = (
+    f"safehermit: unit={unit}\n"
+    f"safehermit: run_id={run_id}\n"
+    f"safehermit: invocation_sha256={invocation}\n"
+    f"safehermit: binary_sha256={binary}\n"
+    f"safehermit: memory_peak_bytes={memory_peak}\n"
+    f"safehermit: cpu_usage_nsec={cpu_usage}\n"
+    f"safehermit: tasks_peak={tasks_peak}\n"
+    f"safehermit: limit_memory_bytes={memory_limit}\n"
+    f"safehermit: limit_swap_bytes={swap_limit}\n"
+    f"safehermit: limit_tasks={tasks_limit}\n"
+    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
+    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
+    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
+    f"safehermit: cpu_time_limit_hit={cpu_limit_hit}\n"
+    f"safehermit: memory_oom_kills={memory_oom_kills}\n"
+    f"safehermit: tasks_limit_hits={tasks_limit_hits}\n"
+    f"safehermit: wall_time_limit_hit={wall_limit_hit}\n"
+    f"safehermit: log_cap_hit={log_cap_hit}\n"
+).encode("utf-8")
+fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb", closefd=True) as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = -1
+    # Recheck immediately before replacement. This is a stale/reuse guard, not
+    # authority over a hostile directory; callers retain authority over parent.
+    current = os.lstat(path)
+    if f"{current.st_dev}:{current.st_ino}" != expected_identity:
+        raise SystemExit("resource report changed before completion")
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+# ---------------------------------------------------------------- (6) bounded space
+mkdir -p "$LOG_ROOT" "$REGISTRY" 2>/dev/null
+brs="$ROOT/scripts/bounded-run-space"
+disk_state=""; log_dir=""
+if [ -x "$brs" ]; then
+    log_dir="$("$brs" create --limit "$disk_limit" --tag "safehermit-$run_id" --base "$LOG_ROOT" 2>/dev/null)"
+    rc=$?
+    if [ $rc -eq 0 ] && [ -n "$log_dir" ]; then
+        disk_state="APPLIED:$disk_limit for log_dir only; guest paths and explicit log files elsewhere are outside this bound"
+    elif [ -n "$log_dir" ]; then
+        # exit 10: the space exists but nothing caps it. RELAY IT -- this is the
+        # case bounded-run-space exists to make impossible to miss.
+        disk_state="NOT_APPLIED:bounded-run-space reported UNBOUNDED (rc=$rc); space exists but is not capped"
+    else
+        disk_state="NOT_APPLIED:bounded-run-space failed (rc=$rc)"
+    fi
+fi
+if [ -z "$log_dir" ]; then
+    log_dir="$LOG_ROOT/$run_id"
+    mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
+    [ -n "$disk_state" ] || disk_state="NOT_APPLIED:scripts/bounded-run-space not present; retained log directory is not capped"
+fi
+log_file="$log_dir/hermit.log"
+
+# ---------------------------------------------------------------- (1)(2) killability
+# The container init is a namespace PID 1 with no SIGTERM handler and the kernel
+# DISCARDS default-disposition signals to it, so `timeout` and even
+# `timeout --kill-after` cannot reap this process shape. A cgroup kill can.
+# RuntimeMaxSec on a transient unit is that cgroup kill.
+unit="safehermit-$run_id"
+wall_state="APPLIED:${deadline}s"
+runner=(); runner_state="APPLIED"
+if [ "$no_deadline" = 1 ]; then
+    wall_state="NOT_APPLIED:--sh-no-deadline was passed explicitly by the caller"
+fi
+# PROBE THE CAPABILITY, DO NOT ASK A PROXY ABOUT IT. `systemctl --user
+# is-system-running` returns "degraded" (rc=1) on this box while `systemd-run
+# --user` works perfectly -- gating on it silently dropped BOTH the wall bound and
+# the memory bound on a machine that supports them. Caught by this script's own
+# acceptance test. So we actually start a throwaway transient unit and see.
+systemd_ok=0
+if command -v systemd-run >/dev/null 2>&1; then
+    if timeout 20 systemd-run --user "--unit=safehermit-probe-$$" --collect --quiet \
+         --property=RuntimeMaxSec=10 --pipe --wait -- /bin/true >/dev/null 2>&1; then
+        systemd_ok=1
+    fi
+fi
+env_state="NOT_APPLIED:no transient unit, so the child inherits this shell's environment directly"
+if [ "$systemd_ok" = 1 ]; then
+    # FORWARD THE CALLER'S ENVIRONMENT EXPLICITLY. `systemd-run --user` does NOT
+    # inherit the invoking shell's environment -- it starts the unit from the user
+    # manager's own environment -- so without this every caller variable is
+    # SILENTLY DROPPED. Measured: with RUST_LOG=warn,detcore=info,reverie_ptrace::task=info
+    # exported, a guest that writes 46,868,869 bytes of stderr in 8.4s when hermit
+    # is run directly wrote 0 bytes through the transient unit, and this script
+    # reported bytes_written=0 truncated=false exit_code=0 -- a completely silent
+    # run that looked clean. Worse, the line below used to claim the caller's
+    # RUST_LOG was "passed through untouched" while it was being discarded, so the
+    # report asserted the opposite of what happened.
+    #
+    # This matters most for exactly the callers this wrapper is for: the demos set
+    # RUST_LOG, HERMIT_REPO, QEMU_BIN, LD_LIBRARY_PATH and TZ, and a run stripped of
+    # them is not the run the caller asked for.
+    #
+    # Exported shell FUNCTIONS cannot be forwarded -- systemd rejects the name
+    # `BASH_FUNC_which%%` with "Invalid argument" and, because that aborts the whole
+    # invocation, one such variable in the caller's environment would take the entire
+    # run down. So names that are not [A-Za-z_][A-Za-z0-9_]* are skipped, and the
+    # count of skips is REPORTED rather than swallowed.
+    setenv_args=(); env_fwd=0; env_skipped=0
+    while IFS= read -r -d '' _e; do
+        _n="${_e%%=*}"
+        case "$_n" in
+            [A-Za-z_]*) case "$_n" in *[!A-Za-z0-9_]*) env_skipped=$((env_skipped+1)); continue ;; esac ;;
+            *) env_skipped=$((env_skipped+1)); continue ;;
+        esac
+        setenv_args+=("--setenv=$_e"); env_fwd=$((env_fwd+1))
+    done < <(env -0)
+    env_state="APPLIED:$env_fwd variables forwarded"
+    [ "$env_skipped" -eq 0 ] || env_state="$env_state; $env_skipped SKIPPED (name not a plain shell identifier, e.g. an exported function)"
+    # NO --collect HERE, DELIBERATELY, AND IT MUST NOT BE ADDED BACK.
+    # After the run we ask systemd whether the unit timed out, because that answer
+    # is authoritative and the exit code is not. --collect garbage-collects the unit
+    # the moment it finishes, and `systemctl show` on a unit that no longer exists
+    # does not fail and does not return empty -- it returns the DEFAULT, which is
+    # Result=success. Measured, three trials each on the same timed-out unit:
+    #     with    --collect:  Result=success
+    #     without --collect:  Result=timeout
+    # So keeping --collect while reading the result would report every timed-out run
+    # as a clean success, confidently and silently. That is worse than the inference
+    # it replaces. The unit is instead stopped and reset explicitly below.
+    # Built in one pass. The previous form appended the deadline by SPLICING at a
+    # hard-coded index -- "${runner[@]:0:5}" ... "${runner[@]:5}" -- which silently
+    # means something different the moment a flag is added or removed above it, as
+    # removing --collect just did. Nothing here depends on position now.
+    # Guest arguments can contain shell expressions intended for the guest.
+    # systemd-run otherwise expands $VAR/${VAR} and collapses $$ before exec.
+    runner=(systemd-run --user "--unit=$unit" --quiet --expand-environment=no
+            "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0"
+            "--property=KillSignal=SIGKILL")
+    if [ -n "$detached_report_file" ]; then
+        runner+=("--property=TasksMax=$detached_tasks_max"
+                 "--property=CPUQuota=$((detached_cpu_cores * 100))%")
+    fi
+    [ "$no_deadline" = 1 ] || runner+=("--property=RuntimeMaxSec=$deadline")
+    runner+=("--working-directory=$PWD" "${setenv_args[@]}" --pipe --wait --)
+else
+    # NEVER fall back silently to an unbounded run.
+    runner=()
+    runner_state="NOT_APPLIED"
+    wall_state="NOT_APPLIED:systemd --user unavailable; NO cgroup kill and NO wall bound -- \`timeout\` cannot kill a namespace PID 1, so none is attempted"
+    unit="none"
+fi
+
+resolve_detached_cgroup() {
+    local properties_file="$log_dir/.resource-unit-location"
+    timeout 5 systemctl --user show "$unit.service" \
+        -p Id -p LoadState -p ControlGroup >"$properties_file" 2>/dev/null
+    local query_rc=$?
+    [ "$query_rc" -eq 0 ] || return 1
+    detached_cgroup_path="$(python3 - "$properties_file" "$unit.service" <<'PY'
+import pathlib
+import sys
+
+fields = {}
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if not separator or key not in {"Id", "LoadState", "ControlGroup"} or key in fields:
+        raise SystemExit(1)
+    fields[key] = value
+group = fields.get("ControlGroup", "")
+parts = pathlib.PurePosixPath(group).parts
+if (
+    fields.get("Id") != sys.argv[2]
+    or fields.get("LoadState") != "loaded"
+    or not group.startswith("/")
+    or ".." in parts
+):
+    raise SystemExit(1)
+print(group)
+PY
+)" || return 1
+    [ -n "$detached_cgroup_path" ] || return 1
+}
+
+verify_detached_limits() {
+    [ -n "$detached_cgroup_path" ] || return 1
+    python3 - "/sys/fs/cgroup${detached_cgroup_path}" "$detached_memory_max_bytes" \
+        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+group = pathlib.Path(sys.argv[1])
+memory, tasks, cores_micros = map(int, sys.argv[2:])
+if int((group / "memory.max").read_text(encoding="ascii").strip()) != memory:
+    raise SystemExit(1)
+if int((group / "memory.swap.max").read_text(encoding="ascii").strip()) != 0:
+    raise SystemExit(1)
+if int((group / "pids.max").read_text(encoding="ascii").strip()) != tasks:
+    raise SystemExit(1)
+quota_raw, period_raw = (group / "cpu.max").read_text(encoding="ascii").split()
+if quota_raw == "max":
+    raise SystemExit(1)
+quota, period = int(quota_raw), int(period_raw)
+if quota * 1_000_000 != cores_micros * period:
+    raise SystemExit(1)
+PY
+}
+
+sample_detached_cgroup() {
+    [ -n "$detached_cgroup_path" ] || return 1
+    local sample
+    sample="$(python3 - "/sys/fs/cgroup${detached_cgroup_path}" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+group = pathlib.Path(sys.argv[1])
+
+def keyed(path, wanted):
+    values = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        key, value = line.split()
+        values[key] = int(value)
+    return values[wanted]
+
+print(
+    keyed(group / "cpu.stat", "usage_usec"),
+    keyed(group / "memory.events", "oom_kill"),
+    keyed(group / "pids.events", "max"),
+    int((group / "pids.peak").read_text(encoding="ascii")),
+)
+PY
+)" || return 1
+    local usage oom_hits pids_hits tasks_peak
+    read -r usage oom_hits pids_hits tasks_peak <<<"$sample"
+    for observed in "$usage" "$oom_hits" "$pids_hits" "$tasks_peak"; do
+        [[ "$observed" =~ ^[0-9]+$ ]] || return 1
+    done
+    [ "$usage" -ge "$detached_cpu_usage_usec" ] || return 1
+    [ "$oom_hits" -ge "$detached_memory_oom_kills" ] || return 1
+    [ "$pids_hits" -ge "$detached_tasks_limit_hits" ] || return 1
+    detached_cpu_usage_usec="$usage"
+    detached_memory_oom_kills="$oom_hits"
+    detached_tasks_limit_hits="$pids_hits"
+    if [ -z "$detached_last_tasks_peak" ] || [ "$tasks_peak" -gt "$detached_last_tasks_peak" ]; then
+        detached_last_tasks_peak="$tasks_peak"
+    fi
+}
+
+kill_detached_unit() {
+    if [ -n "$detached_cgroup_path" ] \
+        && [ -w "/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" ]; then
+        printf '1\n' >"/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" 2>/dev/null \
+            && return 0
+    fi
+    local attempt
+    for attempt in $(seq 1 20); do
+        /usr/bin/systemctl --user kill --kill-whom=all --signal=KILL "$unit.service" \
+            >/dev/null 2>&1 && return 0
+        [ "$attempt" -eq 20 ] || sleep 0.02
+    done
+    return 1
+}
+
+detached_unit_is_quiescent() {
+    if [ -n "$detached_cgroup_path" ] \
+        && [ -d "/sys/fs/cgroup${detached_cgroup_path}" ]; then
+        local populated
+        populated="$(sed -n 's/^populated //p' \
+            "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+        [ "$populated" = 0 ] || return 1
+    fi
+    local active
+    active="$(systemctl --user show "$unit.service" -p ActiveState --value 2>/dev/null)"
+    [ "$active" != active ] && [ "$active" != activating ] && [ "$active" != deactivating ]
+}
+
+terminate_detached_unit() {
+    local attempt
+    if detached_unit_is_quiescent; then
+        return 0
+    fi
+    kill_detached_unit || true
+    for attempt in $(seq 1 100); do
+        detached_unit_is_quiescent && return 0
+        sleep 0.02
+    done
+    timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    for attempt in $(seq 1 100); do
+        detached_unit_is_quiescent && return 0
+        sleep 0.02
+    done
+    return 1
+}
+
+reap_detached_helper() {
+    local helper_pid=$1
+    [ -n "$helper_pid" ] || return 0
+    local attempt
+    for attempt in $(seq 1 100); do
+        kill -0 "$helper_pid" 2>/dev/null || break
+        sleep 0.02
+    done
+    if kill -0 "$helper_pid" 2>/dev/null; then
+        kill -KILL "$helper_pid" 2>/dev/null || true
+    fi
+    wait "$helper_pid" 2>/dev/null || true
+}
+
+cleanup_detached_on_exit() {
+    local original_rc=$?
+    trap - EXIT INT TERM HUP
+    if [ "$detached_cleanup_armed" -eq 1 ]; then
+        terminate_detached_unit >/dev/null 2>&1 || true
+        reap_detached_helper "${runner_pid:-}"
+        reap_detached_helper "${capper_pid:-}"
+        timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+        systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+    fi
+    exit "$original_rc"
+}
+
+signal_detached_fifo() {
+    # A cancellation may kill the service after the unit stub is published but
+    # before its gate reader opens. A plain shell redirection would then block
+    # forever in open(2), so every one-byte handoff has its own real-clock bound.
+    # shellcheck disable=SC2016
+    timeout 5 bash -c 'printf "\n" >"$1"' bash "$1"
+}
+
+accept_detached_binary_identity() {
+    [ -f "$payload_binary_identity_file" ] || return 1
+    local executed_binary_sha256
+    executed_binary_sha256="$(sed -n '1p' "$payload_binary_identity_file")"
+    [[ "$executed_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    binary_sha256="$executed_binary_sha256"
+    detached_binary_identity_accepted=1
+    rm -f "$payload_binary_identity_file" "$payload_binary_identity_file.tmp"
+}
+
+unsigned_decimal_gt() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+
+left, right = sys.argv[1:]
+if not all(value.isascii() and value.isdecimal() for value in (left, right)):
+    raise SystemExit(2)
+raise SystemExit(0 if int(left) > int(right) else 1)
+PY
+}
+
+collect_detached_metrics() {
+    local properties_file="$log_dir/.resource-unit-properties"
+    timeout 5 systemctl --user show "$unit.service" \
+        -p Id -p LoadState -p ActiveState -p SubState -p Result -p ControlGroup \
+        -p MemoryPeak -p CPUUsageNSec -p TasksPeak >"$properties_file" 2>/dev/null
+    local query_rc=$?
+    [ "$query_rc" -eq 0 ] || return 1
+    python3 - "$properties_file" "$unit.service" "$detached_last_tasks_peak" <<'PY'
+import pathlib
+import sys
+
+path, expected_unit, sampled_tasks = sys.argv[1:]
+known = {
+    "Id", "LoadState", "ActiveState", "SubState", "Result", "ControlGroup",
+    "MemoryPeak", "CPUUsageNSec", "TasksPeak",
+}
+fields = {}
+for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if not separator or key not in known or key in fields:
+        raise SystemExit(1)
+    fields[key] = value
+if (
+    fields.get("Id") != expected_unit
+    or fields.get("LoadState") != "loaded"
+    or fields.get("ActiveState") not in {"active", "inactive", "failed"}
+    or not fields.get("SubState")
+):
+    raise SystemExit(1)
+
+def unsigned(name):
+    value = fields.get(name, "")
+    if not value.isascii() or not value.isdecimal():
+        raise SystemExit(1)
+    number = int(value)
+    if number >= 2**64 - 1:
+        raise SystemExit(1)
+    return number
+
+memory = unsigned("MemoryPeak")
+cpu = unsigned("CPUUsageNSec")
+tasks_raw = fields.get("TasksPeak", "")
+if tasks_raw.isascii() and tasks_raw.isdecimal():
+    tasks = int(tasks_raw)
+elif sampled_tasks.isascii() and sampled_tasks.isdecimal():
+    tasks = int(sampled_tasks)
+else:
+    raise SystemExit(1)
+print(
+    memory,
+    cpu,
+    tasks,
+    1 if fields.get("Result") == "oom-kill" else 0,
+    1 if fields.get("Result") == "timeout" else 0,
+)
+PY
+}
+
+if [ -n "$detached_report_file" ]; then
+    [ "$runner_state" = APPLIED ] \
+        || die "--sh-resource-report requires a working systemd --user transient service"
+    if ! prepare_detached_report; then
+        die "--sh-resource-report refused unsafe, pre-existing, or unwritable path: $detached_report_file"
+    fi
+    detached_cleanup_armed=1
+    trap cleanup_detached_on_exit EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
+# ---------------------------------------------------------------- (4) log filter
+if [ -n "${RUST_LOG:-}" ]; then
+    # "passed through untouched" is only true because the environment is now
+    # explicitly forwarded above; before that it was false, and silently so.
+    logfilter_state="NOT_APPLIED:caller set RUST_LOG=$RUST_LOG; passed through untouched"
+else
+    logfilter_state="NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires"
+fi
+
+# ---------------------------------------------------------------- (8) best-effort note
+# NOT A LEDGER, AND NOTHING MAY DEPEND ON IT. Owner ruling: "every time we
+# introduce a ledger it breaks and we get confused." So this writes a line because
+# writing is free, and that is the end of its authority. No receipt semantics, no
+# gate reads it, no agent behaviour is keyed to it, and a failure to write it is
+# not a failure of the run. If you find yourself wanting to make a decision from
+# this file, do not.
+reg="$REGISTRY/$run_id.json"
+printf '{"run_id":"%s","unit":"%s","pid":%s,"binary":"%s","binary_sha256":"%s","log_dir":"%s","started_at":"%s","state":"running"}\n' \
+    "$run_id" "$unit" "$$" "$hermit_bin" "$binary_sha256" "$log_dir" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$reg" 2>/dev/null \
+    && reg_state="$reg (best-effort; nothing depends on it)" || reg_state="unwritten (best-effort; harmless)"
+
+# ---------------------------------------------------------------- announce (7)
+field run_id        "$run_id"
+field binary        "$hermit_bin"
+field binary_source "$binary_source"
+field binary_sha256 "$binary_sha256"
+field log_dir       "$log_dir"
+field log_file      "$log_file"
+field unit          "$unit"
+field bound.wall      "$wall_state"
+if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
+    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0 TasksMax=$detached_tasks_max CPUQuota=$((detached_cpu_cores * 100))% CPUTimeMax=${detached_cpu_timeout_secs}s"
+elif [ "$runner_state" = APPLIED ]; then
+    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0"
+else
+    cgroup_bound_state="NOT_APPLIED:systemd --user unavailable"
+fi
+field bound.cgroup    "$cgroup_bound_state"
+field bound.disk      "$disk_state"
+if [ "$runner_state" = APPLIED ]; then
+    byte_bound_state="APPLIED:$max_log_bytes (LETHAL: the run is cgroup-killed at the cap)"
+else
+    byte_bound_state="APPLIED:$max_log_bytes (TRUNCATION ONLY: no cgroup kill is available; stderr is still drained so the child can finish)"
+fi
+field bound.bytes     "$byte_bound_state"
+field bound.logfilter "$logfilter_state"
+field env.forwarded   "$env_state"
+field note.run_record "$reg_state"
+if [ -n "$detached_report_file" ]; then
+    field resource_report "$detached_report_file"
+fi
+
+# ---------------------------------------------------------------- (3) byte cap
+# A capped log that reads as complete is worse than a missing one, so the capper
+# records the truncation. It NEVER closes the pipe: closing would deliver SIGPIPE
+# to hermit and turn a log cap into a kill, and under `set -o pipefail` that also
+# takes the script down silently. It keeps draining and stops writing.
+capper() {
+    # STREAMING, CONSTANT MEMORY. A reviewer found that the evidence cap in
+    # safe-ci-dag-runner bounds the FILE while still holding complete stdout and
+    # stderr in memory -- trading a full disk for an OOM is not a fix. This reads
+    # and writes in 64 KiB chunks and accumulates nothing, so peak memory is the
+    # chunk, not the stream.
+    #
+    # IT NEVER CLOSES THE PIPE. Closing would deliver SIGPIPE to hermit and turn a
+    # log cap into an unexplained kill, and under `set -o pipefail` it would take
+    # this script down silently too. On cap it stops WRITING and keeps DRAINING.
+    #
+    # THE CAP IS LETHAL, BY OWNER RULING. A spinning program should die from the
+    # timeout or from the log hitting a low cap, so on cap we kill the run through
+    # its cgroup and keep the first bytes as evidence. Without systemd there is no
+    # cgroup to kill, so it degrades to truncate-and-say-so rather than pretending.
+    python3 -u -c '
+import sys, os, subprocess, time
+cap = int(sys.argv[1]); path = sys.argv[2]; unit = sys.argv[3]
+parent_monitors = sys.argv[4] == "yes"
+written = 0; truncated = False; killed = "n/a"
+out = open(path, "wb")
+src = sys.stdin.buffer; dst = sys.stdout.buffer
+while True:
+    # Resource-accounted runs give this capper a dedicated payload-only FIFO;
+    # systemd-run never owns its write end, so EOF is an exact child boundary.
+    # os.read also returns currently available bytes instead of waiting to fill
+    # a 64-KiB BufferedReader request.
+    chunk = os.read(src.fileno(), 65536)
+    if not chunk: break
+    dst.write(chunk); dst.flush()
+    if not truncated:
+        room = cap - written
+        if len(chunk) <= room:
+            out.write(chunk); written += len(chunk)
+        else:
+            if room > 0: out.write(chunk[:room]); written += room
+            out.write(b"\n[safehermit] LOG CAP OF %d BYTES REACHED. The bytes above are kept as evidence; everything after this point was discarded.\n" % cap)
+            out.flush(); truncated = True
+            marker = path + ".cap-fired"
+            with open(marker + ".tmp", "w") as cap_marker:
+                cap_marker.write("1\n")
+            os.replace(marker + ".tmp", marker)
+            if unit and unit != "none":
+                if parent_monitors:
+                    # The detached parent owns the cgroup path in memory and
+                    # polls this marker. Do not trust a same-UID, payload-writable
+                    # sidecar as kill authority.
+                    rc = 0
+                    killed = "parent-monitor"
+                    kill_error = b""
+                else:
+                    rc = 1
+                    kill_error = b""
+                    for _ in range(100):
+                        attempt = subprocess.run(
+                            ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                        )
+                        rc = attempt.returncode
+                        kill_error = attempt.stderr[-512:]
+                        if rc == 0:
+                            break
+                        time.sleep(0.05)
+                    killed = "cgroup-killed" if rc == 0 else "kill-failed-rc%d" % rc
+                if parent_monitors:
+                    out.write(b"[safehermit] the detached parent was notified to kill the owned cgroup.\n")
+                else:
+                    out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
+                if rc != 0 and kill_error:
+                    out.write(b"[safehermit] final systemctl kill error: %s\n" % kill_error.rstrip())
+            else:
+                killed = "no-cgroup-available"
+                out.write(b"[safehermit] NOT killed: no systemd cgroup was available, so the cap could only truncate.\n")
+            out.flush()
+out.flush(); out.close()
+with open(path + ".meta", "w") as m:
+    m.write("bytes_written=%d\ntruncated=%s\ncap=%d\nkilled=%s\n" % (written, str(truncated).lower(), cap, killed))
+' "$1" "$2" "$3" "$4"
+}
+
+# ---------------------------------------------------------------- run
+# A FIFO, NOT PROCESS SUBSTITUTION. `2> >(capper …)` is not waited on, so the
+# script read `.meta` before the capper had written it and reported
+# `truncated=unknown` -- i.e. the truncation record, which is the entire point of
+# requirement (3), was missing on every run. Caught by this script's own test. A
+# FIFO with an explicit `wait` makes the capper's completion a precondition of
+# reporting, and keeps `$?` the child's own status rather than the pipeline's.
+if [ -n "$detached_report_file" ]; then
+    fifo="$log_dir/.resource-payload-stderr.fifo"
+else
+    fifo="$log_dir/.stderr.fifo"
+fi
+rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null || die "cannot create fifo $fifo"
+if [ -n "$detached_report_file" ]; then
+    capper_parent_monitors=yes
+else
+    capper_parent_monitors=no
+fi
+capper "$max_log_bytes" "$log_file" "$unit" "$capper_parent_monitors" < "$fifo" >&2 &
+capper_pid=$!
+capper_waited=0
+
+started=$(date +%s)
+started_monotonic_usec="$(python3 -c 'import time; print(time.monotonic_ns() // 1000)' 2>/dev/null)"
+if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
+    # Keep one inert process in the service after the payload exits. Without it,
+    # a successful transient service can disappear between systemd-run returning
+    # and the first accounting query. The payload writes its status atomically,
+    # then blocks on this FIFO while we read the still-live unit's counters and
+    # publish the complete report. RuntimeMaxSec and the lethal log cap still
+    # kill the whole cgroup, including this holder.
+    payload_status_file="$log_dir/.resource-payload-status"
+    payload_binary_identity_file="$log_dir/.resource-binary-sha256"
+    payload_release_fifo="$log_dir/.resource-payload-release"
+    payload_start_fifo="$log_dir/.resource-payload-start"
+    mkfifo "$payload_start_fifo" "$payload_release_fifo" 2>/dev/null \
+        || die "cannot create resource-accounting gate fifos"
+    resource_wrapper=(python3 -c '
+import ctypes
+import hashlib
+import os
+import pathlib
+import signal
+import stat
+import subprocess
+import sys
+
+status_file = pathlib.Path(sys.argv[1])
+release_fifo = pathlib.Path(sys.argv[2])
+start_fifo = pathlib.Path(sys.argv[3])
+stderr_fifo = pathlib.Path(sys.argv[4])
+binary_identity_file = pathlib.Path(sys.argv[5])
+binary_path = sys.argv[6]
+
+# A direct child may leave double-forked descendants behind. Become their
+# subreaper before launch, then do not publish payload status until every
+# adopted descendant is gone. This keeps the outer cgroup sampler authoritative
+# for the entire payload tree, including daemons that close stderr.
+PR_SET_CHILD_SUBREAPER = 36
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
+
+# Pin the executable inode that is hashed. Executing /proc/self/fd/N with the
+# descriptor inherited closes the pathname-replacement race between identity
+# measurement and exec, including for arbitrary binaries under /tmp.
+binary_fd = os.open(binary_path, os.O_RDONLY | os.O_CLOEXEC)
+identity = os.fstat(binary_fd)
+if not stat.S_ISREG(identity.st_mode):
+    raise SystemExit(126)
+digest = hashlib.sha256()
+while True:
+    chunk = os.read(binary_fd, 1024 * 1024)
+    if not chunk:
+        break
+    digest.update(chunk)
+os.lseek(binary_fd, 0, os.SEEK_SET)
+identity_temporary = binary_identity_file.with_name(binary_identity_file.name + ".tmp")
+identity_temporary.write_text(digest.hexdigest() + "\n", encoding="ascii")
+identity_temporary.replace(binary_identity_file)
+with stderr_fifo.open("wb", buffering=0) as payload_stderr:
+    # Open the payload-only writer before waiting at the launch gate. If
+    # preflight refuses the service, killing this wrapper then gives the capper
+    # an exact EOF even though the payload was never allowed to start.
+    with start_fifo.open("rb") as stream:
+        if not stream.read(1):
+            raise SystemExit(126)
+    completed = subprocess.run(
+        [binary_path, *sys.argv[7:]],
+        check=False,
+        executable=f"/proc/self/fd/{binary_fd}",
+        stderr=payload_stderr,
+        pass_fds=(binary_fd,),
+    )
+    while True:
+        try:
+            os.waitpid(-1, 0)
+        except ChildProcessError:
+            break
+os.close(binary_fd)
+caller_status = 128 - completed.returncode if completed.returncode < 0 else completed.returncode
+temporary = status_file.with_name(status_file.name + ".tmp")
+temporary.write_text(str(caller_status) + "\n", encoding="ascii")
+temporary.replace(status_file)
+with release_fifo.open("rb") as stream:
+    if not stream.read(1):
+        raise SystemExit(126)
+if completed.returncode < 0:
+    signum = -completed.returncode
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    raise SystemExit(128 + signum)
+raise SystemExit(completed.returncode)
+' "$payload_status_file" "$payload_release_fifo" "$payload_start_fifo" "$fifo" \
+        "$payload_binary_identity_file" "$hermit_bin" "$@")
+    "${runner[@]}" "${resource_wrapper[@]}" &
+    runner_pid=$!
+
+    # The report already contains the owned unit name. Resolve only that unit's
+    # cgroup, then retain its monotonic pids.peak while waiting. This also gives
+    # timeout/cap outcomes a task count even though their cgroup vanishes on kill.
+    for _ in $(seq 1 100); do
+        resolve_detached_cgroup && break
+        kill -0 "$runner_pid" 2>/dev/null || break
+        sleep 0.02
+    done
+    if [ -n "$detached_cgroup_path" ] && verify_detached_limits; then
+        if ! sample_detached_cgroup; then
+            detached_metrics_error="could not sample verified cgroup before payload launch"
+            kill_detached_unit || true
+        else
+            for _ in $(seq 1 100); do
+                accept_detached_binary_identity && break
+                kill -0 "$runner_pid" 2>/dev/null || break
+                sleep 0.02
+            done
+            if [ "$detached_binary_identity_accepted" -ne 1 ]; then
+                detached_metrics_error="could not authenticate the pinned executable before payload launch"
+                kill_detached_unit || true
+            elif ! signal_detached_fifo "$payload_start_fifo"; then
+                detached_metrics_error="could not release verified payload gate"
+                kill_detached_unit || true
+            fi
+        fi
+    else
+        detached_metrics_error="declared memory, task, or CPU-core limit was not applied exactly"
+        kill_detached_unit || true
+    fi
+    detached_empty_polls=0
+    detached_sample_failures=0
+    while [ ! -f "$payload_status_file" ]; do
+        if sample_detached_cgroup; then
+            detached_sample_failures=0
+        else
+            detached_group_dir="/sys/fs/cgroup${detached_cgroup_path}"
+            # RuntimeMaxSec removes the service cgroup before the foreground
+            # systemd-run client necessarily exits. Once that exact verified
+            # cgroup is gone, no payload can still be running inside it; leave
+            # the loop and collect the retained unit properties. Treating the
+            # still-draining systemd-run client as payload liveness made a
+            # legitimate wall timeout sporadically look like lost accounting.
+            [ -d "$detached_group_dir" ] || break
+            populated="$(sed -n 's/^populated //p' \
+                "$detached_group_dir/cgroup.events" 2>/dev/null)"
+            [ "$populated" != 0 ] || break
+            if [ "$populated" = 1 ] || kill -0 "$runner_pid" 2>/dev/null; then
+                detached_sample_failures=$((detached_sample_failures + 1))
+                if [ "$detached_sample_failures" -ge 3 ]; then
+                    detached_metrics_error="live cgroup resource counters became unreadable"
+                    kill_detached_unit || true
+                    break
+                fi
+            fi
+        fi
+        if [ -f "$log_file.cap-fired" ]; then
+            detached_log_cap_hit=1
+            if terminate_detached_unit; then
+                detached_log_cap_killed=1
+            else
+                detached_metrics_error="log cap fired but the owned cgroup could not be terminated"
+            fi
+            break
+        fi
+        if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
+            detached_cpu_time_limit_hit=1
+            if ! terminate_detached_unit; then
+                detached_metrics_error="CPU-time budget fired but the owned cgroup could not be terminated"
+            fi
+            break
+        fi
+        if ! kill -0 "$runner_pid" 2>/dev/null; then
+            populated="$(sed -n 's/^populated //p' \
+                "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+            if [ "$populated" = 1 ]; then
+                detached_empty_polls=0
+            else
+                detached_empty_polls=$((detached_empty_polls + 1))
+                [ "$detached_empty_polls" -lt 20 ] || break
+            fi
+        fi
+        sleep 0.05
+    done
+    sample_detached_cgroup || true
+    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+    if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
+        detached_cpu_time_limit_hit=1
+        if ! terminate_detached_unit; then
+            detached_metrics_error="final CPU-time sample exceeded the budget but the owned cgroup could not be terminated"
+        fi
+    fi
+
+    payload_rc=""
+    if [ -f "$payload_status_file" ]; then
+        payload_rc="$(sed -n '1p' "$payload_status_file")"
+        if ! [[ "$payload_rc" =~ ^[0-9]+$ ]] || [ "$payload_rc" -gt 255 ]; then
+            detached_metrics_error="payload status is missing or malformed"
+            payload_rc=""
+        fi
+        # Status is published only after the payload tree has closed its stderr
+        # writer. Drain the capper before releasing the holder so a short final
+        # burst cannot publish its marker after the parent has already decided
+        # the run completed normally.
+        wait "$capper_pid" 2>/dev/null
+        capper_waited=1
+        capper_pid=""
+        if [ -f "$log_file.cap-fired" ]; then
+            detached_log_cap_hit=1
+            if terminate_detached_unit; then
+                detached_log_cap_killed=1
+            else
+                detached_metrics_error="log cap fired at payload completion but the owned cgroup could not be terminated"
+            fi
+        fi
+        # Status is written only after the subreaper has reaped every payload
+        # descendant. Release the sole holder and wait for the unit to terminate
+        # before taking the authoritative final counters.
+        if ! detached_unit_is_quiescent && ! signal_detached_fifo "$payload_release_fifo"; then
+            detached_metrics_error="could not release the quiescent resource-accounting holder"
+            terminate_detached_unit || true
+        fi
+    fi
+    runner_rc=0
+    wait "$runner_pid" 2>/dev/null || runner_rc=$?
+    runner_pid=""
+    wait "$capper_pid" 2>/dev/null
+    capper_waited=1
+    capper_pid=""
+    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+
+    # A deadline, lethal log cap, or external cgroup kill bypasses payload
+    # status, but the retained unit properties remain queryable until cleanup.
+    # For ordinary completion, status proves the subreaper had no descendants
+    # before the holder exited. In both cases publication happens only now.
+    if [ "$detached_metrics_written" -eq 0 ] && [ -z "$detached_metrics_error" ]; then
+        detached_metrics="$(collect_detached_metrics)"
+        metrics_rc=$?
+        if [ "$metrics_rc" -eq 0 ]; then
+            read -r detached_memory_peak detached_cpu_usage detached_tasks_peak \
+                detached_result_oom detached_result_timeout <<<"$detached_metrics"
+            [ "$detached_result_oom" -le "$detached_memory_oom_kills" ] \
+                || detached_memory_oom_kills="$detached_result_oom"
+            [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
+                || detached_wall_time_limit_hit="$detached_result_timeout"
+            if unsigned_decimal_gt "$detached_cpu_usage" "$detached_limit_cpu_time_nsec"; then
+                detached_cpu_time_limit_hit=1
+            fi
+            if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
+                detached_metrics_written=1
+            else
+                detached_metrics_error="atomic post-termination resource report completion failed"
+            fi
+        else
+            detached_metrics_error="required post-termination resource property is missing or malformed"
+        fi
+    fi
+    if [ -n "$payload_rc" ]; then
+        rc=$payload_rc
+    else
+        rc=$runner_rc
+    fi
+elif [ "$runner_state" = APPLIED ]; then
+    "${runner[@]}" "$hermit_bin" "$@" 2>"$fifo"
+    rc=$?
+    runner_rc=$rc
+else
+    "$hermit_bin" "$@" 2>"$fifo"
+    rc=$?
+    runner_rc=$rc
+fi
+if [ "$capper_waited" -eq 0 ]; then
+    wait "$capper_pid" 2>/dev/null
+    capper_pid=""
+fi
+[ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+rm -f "$fifo"
+if [ -n "${payload_release_fifo:-}" ]; then
+    rm -f "$payload_start_fifo" "$payload_release_fifo" "$payload_status_file" "$payload_status_file.tmp" \
+        "$payload_binary_identity_file" "$payload_binary_identity_file.tmp" \
+        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties"
+fi
+rm -f "$log_file.cap-fired" "$log_file.cap-fired.tmp"
+elapsed=$(( $(date +%s) - started ))
+
+# ---------------------------------------------------------------- report
+trunc="unknown"; wrote="unknown"
+if [ -f "$log_file.meta" ]; then
+    trunc="$(sed -n 's/^truncated=//p' "$log_file.meta")"
+    killed="$(sed -n 's/^killed=//p' "$log_file.meta")"
+    wrote="$(sed -n 's/^bytes_written=//p' "$log_file.meta")"
+fi
+field elapsed_secs  "$elapsed"
+field bytes_written "$wrote"
+field truncated     "$trunc"
+field runner_exit_code "$runner_rc"
+if [ -n "$detached_report_file" ]; then
+    if [ "$detached_metrics_written" -eq 1 ]; then
+        field resource_report_state "COMPLETE"
+    else
+        field resource_report_state "INCOMPLETE:${detached_metrics_error:-payload ended before accounting could complete}"
+    fi
+fi
+if [ "$trunc" = true ]; then
+    if [ "$detached_log_cap_killed" -eq 1 ] && [ "${killed:-}" != cgroup-killed ]; then
+        killed="parent-cgroup-killed"
+    fi
+    field killed_at_cap "${killed:-unknown}"
+    # A distinct code, because "255" tells a caller nothing about WHY.
+    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_killed" -eq 1 ]; then
+        rc=125
+    fi
+    say "LOG CAP: the run hit the ${max_log_bytes}-byte cap (${killed:-unknown}). The log is INCOMPLETE by design; the kept bytes are the evidence."
+fi
+# ---------------------------------------------------------------- deadline verdict
+# ASK SYSTEMD, DO NOT INFER. This used to reconstruct "did the deadline fire?" from
+# two proxies -- `elapsed >= deadline` arithmetic, and an allowlist of child exit
+# codes (143/137/1) -- and both can be wrong.
+#
+# THE REPRODUCED FAILURE, which is why this is not a tidy-up. `--sh-deadline 6s` is a
+# perfectly ordinary thing for a caller to write and systemd accepts it: RuntimeMaxSec
+# takes a suffix, the bound IS applied, and the run IS killed. But bash `[ 6 -ge 6s ]`
+# aborts with "integer expression expected", so the whole condition went false and the
+# kill went UNREPORTED -- measured, a 600s child under `--sh-deadline 6s` returned exit
+# 1 after 6s with zero DEADLINE lines, against exit 124 for `--sh-deadline 6`. Exit 1
+# is hermit's own convention for "the guest failed", so the caller sees a plausible
+# ordinary failure and has no reason to suspect the run was killed.
+#
+# `Result` is what systemd itself concluded, so neither proxy is needed and the
+# arithmetic that broke on "6s" is deleted rather than repaired.
+#
+# THE NON-ANSWER IS TREATED AS A NON-ANSWER. If the result cannot be read, this says
+# so and falls back to the old inference rather than trusting a blank -- a unit that
+# no longer exists reports Result=success, so "unreadable" and "the run was fine" look
+# identical and must not be conflated.
+unit_result=""
+if [ "$runner_state" = APPLIED ] && [ "$unit" != none ]; then
+    unit_result="$(systemctl --user show "$unit.service" -p Result --value 2>/dev/null)"
+    field unit_result "${unit_result:-UNREADABLE}"
+    case "$unit_result" in
+        exit-code|signal|core-dump)
+            # systemd-run reports core-dump as 1 and signal as 255, not the
+            # shell's 128 + signal number. Read the completed process before
+            # resetting its failed unit; never infer an abort from exit 1.
+            termination_text="$(timeout 5 systemctl --user show "$unit.service" \
+                -p Id -p LoadState -p ActiveState -p SubState -p Result \
+                -p ExecMainPID -p ExecMainCode -p ExecMainStatus \
+                -p ExecMainStartTimestampMonotonic 2>/dev/null)"
+            termination_query_rc=$?
+            declare -A termination=()
+            termination_valid=1
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    Id|LoadState|ActiveState|SubState|Result|ExecMainPID|ExecMainCode|ExecMainStatus|ExecMainStartTimestampMonotonic)
+                        [ -z "${termination[$key]+present}" ] || termination_valid=0
+                        termination[$key]="$value" ;;
+                    *) termination_valid=0 ;;
+                esac
+            done <<<"$termination_text"
+            if [ "$termination_query_rc" -eq 0 ] && [ "$termination_valid" -eq 1 ] \
+                && [ "${#termination[@]}" -eq 9 ] \
+                && [ "${termination[Id]:-}" = "$unit.service" ] \
+                && [ "${termination[LoadState]:-}" = loaded ] \
+                && [ "${termination[ActiveState]:-}" = failed ] \
+                && [ "${termination[SubState]:-}" = failed ] \
+                && [ "${termination[Result]:-}" = "$unit_result" ] \
+                && [[ "${termination[ExecMainPID]:-}" =~ ^[1-9][0-9]*$ ]] \
+                && [[ "$started_monotonic_usec" =~ ^[1-9][0-9]{0,17}$ ]] \
+                && [[ "${termination[ExecMainStartTimestampMonotonic]:-}" =~ ^[1-9][0-9]{0,17}$ ]] \
+                && [ "${termination[ExecMainStartTimestampMonotonic]}" -ge "$started_monotonic_usec" ]; then
+                field exec_main_pid "${termination[ExecMainPID]}"
+                field exec_main_code "${termination[ExecMainCode]}"
+                field exec_main_status "${termination[ExecMainStatus]}"
+                field exec_main_start_monotonic_usec "${termination[ExecMainStartTimestampMonotonic]}"
+                if { [ "$unit_result" = signal ] && [ "${termination[ExecMainCode]}" = 2 ]; } \
+                    || { [ "$unit_result" = core-dump ] && [ "${termination[ExecMainCode]}" = 3 ]; }; then
+                    if [[ "${termination[ExecMainStatus]}" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] \
+                        && [ "$runner_rc" -ne 0 ]; then
+                        field process_signal "${termination[ExecMainStatus]}"
+                        # A deliberate cap verdict keeps its original priority.
+                        [ "$rc" -eq 125 ] || rc=$((128 + termination[ExecMainStatus]))
+                    else
+                        say "PROCESS STATUS UNREADABLE: invalid signal status; retaining runner exit $runner_rc."
+                    fi
+                elif [ "$unit_result" != exit-code ]; then
+                    say "PROCESS STATUS UNREADABLE: termination code differs from Result; retaining runner exit $runner_rc."
+                fi
+            else
+                say "PROCESS STATUS UNREADABLE: completed unit identity or properties differ; retaining runner exit $runner_rc."
+            fi
+            ;;
+    esac
+    # Clean up explicitly, since --collect is deliberately not used. A timed-out unit
+    # is left in the failed state otherwise, and its name stays taken.
+    systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+    if [ -n "$detached_report_file" ] && detached_unit_is_quiescent; then
+        detached_cleanup_armed=0
+        trap - EXIT INT TERM HUP
+    fi
+fi
+if [ "$unit_result" = timeout ]; then
+    say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
+    rc=124
+elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
+     && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
+    say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
+    rc=124
+fi
+if [ "$detached_cpu_time_limit_hit" -eq 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ]; then
+    say "CPU-TIMEOUT: the run exceeded ${detached_cpu_timeout_secs}s aggregate CPU and its owned cgroup was killed."
+    rc=126
+fi
+if [ -n "$detached_report_file" ] && [ "$detached_metrics_written" -ne 1 ]; then
+    say "RESOURCE REPORT REFUSAL: ${detached_metrics_error:-accounting did not complete}; the incomplete report is retained for owned-unit cleanup."
+    # Preserve the two stronger containment verdicts. Otherwise a caller that
+    # explicitly requested accounting must never receive the payload's apparent
+    # success/failure as if the measurement were complete.
+    [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ] || rc=2
+fi
+
+field exit_code "$rc"
+if [ -f "$reg" ]; then
+    python3 - "$reg" "$rc" "$trunc" <<'PY' 2>/dev/null || true
+import json, sys
+p, rc, tr = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(p)); d.update(state="finished", exit_code=int(rc), truncated=(tr == "true"))
+json.dump(d, open(p, "w"))
+PY
+fi
+exit $rc

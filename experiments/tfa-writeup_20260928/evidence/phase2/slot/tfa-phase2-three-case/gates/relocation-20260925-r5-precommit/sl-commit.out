@@ -1,0 +1,8 @@
+running code formatter: 'arc f'
+ok No lint issues.
+code formatter completed successfully in 2.40 secs
+committed 38939dd4ac125a90ec0115031a571a593c8910cd
+changed 3 file(s):
+  fbcode/testinfra/tfa/tests/test_prototype.py
+  fbcode/testinfra/tfa/README.md
+  fbcode/testinfra/tfa/relocation.py

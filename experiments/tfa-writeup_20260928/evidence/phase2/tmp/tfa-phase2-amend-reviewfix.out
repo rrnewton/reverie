@@ -1,0 +1,10 @@
+running code formatter: 'arc f'
+ok No lint issues.
+code formatter completed successfully in 1.94 secs
+ce8fa9b59465 -> 435d79639fc0 "[testinfra][tfa] Close phase-two review findings"
+amended ce8fa9b59465b610e382845a5923935c6fe51fba -> 435d79639fc043c472d31a87e5a4a4b6f658ed32
+changed 7 file(s):
+  fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+  fbcode/testinfra/tfa/tests/test_production_containment.py
+  fbcode/testinfra/tfa/tests/test_prototype.py
+  fbcode/testinfra/tfa/ (4 files)

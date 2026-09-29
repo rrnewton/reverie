@@ -1,0 +1,134 @@
+{
+  "hermit_module": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/hermit.py",
+  "hermit_module_sha256": "cf717ee4263b3dad96c04679864b471a3822bd440df160c81146e3dc2c01147e",
+  "records": [
+    {
+      "case_id": "httpcoro",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/httpcoro/pass/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "pass",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "httpcoro",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/httpcoro/fail/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "fail",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "thrift",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/thrift/pass/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "pass",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "thrift",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/thrift/fail/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "fail",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "asyncssl",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/asyncssl/pass/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "pass",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "asyncssl",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/blockers/probe-destinations/asyncssl/fail/hermit",
+      "destination_exists_after": false,
+      "exception": "packaged Hermit compatibility is PROVENANCE_MISMATCH: expected revision=4630ee2a61f93221a43e2baec0a15f34102a2c61 sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; target=fbcode//hermetic_infra/hermit/hermit-cli:hermit import_commit=5a90c83fbd90782fdb55ed8af860e9c13920ec6b packaged revision=a919cce442305c1812c84d37666d4a0bdf36533f sha256=4e8e438148c77fb34bc7119296cb86babf0434c854b616431847af379b15ac9f; qualification probe sha256=d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b state=BLOCKED; qualification blockers=sanitizer guests cannot initialize RLIMIT_CORE; the ptrace PMU timer can exceed its single-step target on this host; the imported CLI has no retained successful verify-log option; packaged blockers=--verify-verbose rejects /bin/true because Hermit host/runtime TRACE fields such as CPU identity, elapsed timing, and async-resource ordering differ between run 1 and run 2",
+      "exception_type": "HermitError",
+      "outcome": "fail",
+      "result": "REFUSED"
+    },
+    {
+      "case_id": "httpcoro",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 4
+    },
+    {
+      "case_id": "httpcoro",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 5
+    },
+    {
+      "case_id": "httpcoro",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 6
+    },
+    {
+      "case_id": "httpcoro",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 7
+    },
+    {
+      "case_id": "thrift",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 2
+    },
+    {
+      "case_id": "thrift",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 3
+    },
+    {
+      "case_id": "thrift",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 4
+    },
+    {
+      "case_id": "thrift",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 5
+    },
+    {
+      "case_id": "asyncssl",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 12
+    },
+    {
+      "case_id": "asyncssl",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 13
+    },
+    {
+      "case_id": "asyncssl",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 14
+    },
+    {
+      "case_id": "asyncssl",
+      "reason": "stress replays use the same packaged Hermit gate refused above",
+      "result": "NOT_RUN",
+      "stress_seed": 15
+    }
+  ],
+  "schema": "tfa.phase2.packaged-hermit-probe.v1",
+  "wall_time_ns": 1790326223376194087
+}

@@ -1,0 +1,3 @@
+diff --git a/fbcode/testinfra/example/PACKAGE b/fbcode/testinfra/example/PACKAGE.transaction-probe
+rename from fbcode/testinfra/example/PACKAGE
+rename to fbcode/testinfra/example/PACKAGE.transaction-probe

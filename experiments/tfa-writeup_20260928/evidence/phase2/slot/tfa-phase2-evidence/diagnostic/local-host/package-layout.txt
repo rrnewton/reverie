@@ -1,0 +1,9 @@
+# package layout (diagnostic only), built 2026-09-25T06:06:16Z
+1285753092 3 1370056488 /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/package/bin/codex
+1285753092 3 1370056488 /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/target/release/codex
+f9228becc28fe4414ba4026db00818d7af48be83590cb6c9e857e64371abb88d  /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/package/bin/codex
+28da077eae846483f4dc713b524478236cff72617b106b89a2d2d6e8c6c85d4c  /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/package/bin/codex-code-mode-host
+10567dddc0f93c51cbf253ab0e38cb9dbd5cbd8534e2fac3ece59a4693b3c634  /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/package/codex-path/bwrap
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356  /home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-evidence/meta-build/package/codex-package.json
+10567dddc0f93c51cbf253ab0e38cb9dbd5cbd8534e2fac3ece59a4693b3c634  /home/newton/.cache/dotslash/obj/cas/b1/ebf433a16e27b9f2eea1f23ba9cfce6a/extract/tar.zst/linux_x86_64/codex-path/bwrap
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356  /home/newton/.cache/dotslash/obj/cas/b1/ebf433a16e27b9f2eea1f23ba9cfce6a/extract/tar.zst/linux_x86_64/codex-package.json

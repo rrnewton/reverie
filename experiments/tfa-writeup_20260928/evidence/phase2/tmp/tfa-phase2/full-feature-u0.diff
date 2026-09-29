@@ -1,0 +1,3667 @@
+diff --git a/fbcode/testinfra/tfa/BUCK b/fbcode/testinfra/tfa/BUCK
+--- a/fbcode/testinfra/tfa/BUCK
++++ b/fbcode/testinfra/tfa/BUCK
+@@ -8,0 +9,4 @@
++load(
++    "@fbcode_macros//build_defs:fbcode_configured_alias.bzl",
++    "fbcode_configured_alias",
++)
+@@ -13,0 +18,29 @@
++# The imported compatibility evidence was collected against @fbcode//mode/opt.
++# Carry its mode constraints on an explicit transition so a dev/test consumer
++# cannot silently substitute a differently configured Hermit binary.
++fbcode_configured_alias(
++    name = "hermit-test-bin-opt",
++    actual = "//hermetic_infra/hermit/hermit-cli:hermit",
++    additional_constraints = [
++        "//compilers/constraints:reloc-fixup[on]",
++        "fbsource//arvr/libraries/logging/config/constraints:logging_flag[enabled]",
++        "fbsource//arvr/libraries/logging/config/constraints:logging_internal_flag[internal_disabled]",
++        "ovr_config//build_mode:sanitizer_type[no-san]",
++        "ovr_config//build_mode/constraints:core_build_mode[opt]",
++        "ovr_config//build_mode/constraints:debug_style[split-dwarf-separate]",
++        "ovr_config//build_mode/constraints:default_link_style[static]",
++        "ovr_config//build_mode/constraints:fbcode-build-info-mode[full]",
++        "ovr_config//build_mode/constraints:lto[none]",
++        "ovr_config//build_mode/constraints:python-default-package-style[standalone]",
++        "ovr_config//build_mode/constraints:rust-compiler[buckified]",
++        "ovr_config//build_mode/default_opt_cxx:default_opt_cxx_setting[disabled]",
++        "ovr_config//project/folly:folly[xplat]",
++        "ovr_config//third-party/mlir-fb/constraints:21",
++        "ovr_config//toolchain/cxx/constraints:split-dwarf-rollout[enabled-separate]",
++        "ovr_config//toolchain/nvcc/compile:cuda_compile_style[dist]",
++        "ovr_config//toolchain/nvcc/compile:nvcc-dev-mode-native-build[enabled]",
++    ],
++    platform = "ovr_config//platform/linux:x86_64-fbcode",
++    visibility = ["PUBLIC"],
++)
++
+@@ -23,0 +57,1 @@
++        ":hermit-test-bin-opt": "hermit-test-bin",
+@@ -24,0 +59,4 @@
++        "hermit-import-compatibility.v1.json": "hermit-import-compatibility.v1.json",
++        "hermit-import-receipts.v1.json": "hermit-import-receipts.v1.json",
++        "resources/bounded-run-space": "bounded-run-space",
++        "resources/safehermit": "safehermit",
+@@ -40,0 +79,1 @@
++        "hermit-import-compatibility.v1.json": "hermit-import-compatibility.v1.json",
+@@ -41,0 +81,2 @@
++        "resources/bounded-run-space": "bounded-run-space",
++        "resources/safehermit": "safehermit",
+diff --git a/fbcode/testinfra/tfa/README.md b/fbcode/testinfra/tfa/README.md
+--- a/fbcode/testinfra/tfa/README.md
++++ b/fbcode/testinfra/tfa/README.md
+@@ -38,1 +38,11 @@
+-turn precedes coordinator containment cleanup. Controller contents are sealed
++turn precedes coordinator containment cleanup.
++The binary bundles `hermit-test-bin` from the current fbsource Hermit target and
++resolves packaged resources only when an execution is requested. It records that
++binary's path, bytes, imported upstream revision, and comparison with the
++versioned qualification probe in `hermit-import-compatibility.v1.json`. A
++qualified binary is copied to a mode-0500 artifact-local runtime before use. The
++current `a919cce` import is not compatible with the preserved `4630ee2a`
++witness, so execution fails before launch with the explicit compatibility state
++and blockers instead of silently substituting it.
++
++Controller contents are sealed
+diff --git a/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json b/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json
+new file mode 100644
+--- /dev/null
++++ b/fbcode/testinfra/tfa/hermit-import-compatibility.v1.json
+@@ -0,0 +1,49 @@
++{
++  "schema_version": 1,
++  "target": "fbcode//hermetic_infra/hermit/hermit-cli:hermit",
++  "resource": "hermit-test-bin",
++  "fbsource_import_commit": "5a90c83fbd90782fdb55ed8af860e9c13920ec6b",
++  "upstream_revision": "a919cce442305c1812c84d37666d4a0bdf36533f",
++  "packaged_executable": {
++    "configuration": "opt-linux-x86_64-fbcode-platform010-clang21-no-san",
++    "sha256": "9bf7064a98556c08b9b31db67f9d5dfa4a8f394f6e034acd491d42165decfe88"
++  },
++  "historical_witness": {
++    "manifest": "cases.v1.json",
++    "revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
++    "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
++    "state": "PRESERVED"
++  },
++  "qualification_probe": {
++    "mode": "@fbcode//mode/opt",
++    "sha256": "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b",
++    "receipts_resource": "hermit-import-receipts.v1.json",
++    "receipts_sha256": "9b9a7c75ffc8b5e31e03f66058c57f0f72fb905b047b589143018603a7a7b30b",
++    "state": "BLOCKED",
++    "short_candidates": [
++      {
++        "case_id": "asyncssl",
++        "seed": 1,
++        "returncode": 1,
++        "blocker": "AddressSanitizer startup CHECK failed in setrlimit(RLIMIT_CORE) before gtest"
++      },
++      {
++        "case_id": "thrift",
++        "seed": 0,
++        "returncode": 132,
++        "blocker": "ThreadSanitizer startup CHECK failed in setrlimit(RLIMIT_CORE), followed by allocator CHECK and SIGILL before gtest"
++      },
++      {
++        "case_id": "httpcoro",
++        "seed": 1,
++        "returncode": 1,
++        "blocker": "Hermit PMU single-step skid panic occurred before gtest"
++      }
++    ],
++    "blockers": [
++      "sanitizer guests cannot initialize RLIMIT_CORE",
++      "the ptrace PMU timer can exceed its single-step target on this host",
++      "the imported CLI has no retained successful verify-log option"
++    ]
++  }
++}
+diff --git a/fbcode/testinfra/tfa/hermit.py b/fbcode/testinfra/tfa/hermit.py
+--- a/fbcode/testinfra/tfa/hermit.py
++++ b/fbcode/testinfra/tfa/hermit.py
+@@ -37,0 +38,19 @@
++def _packaged_resource(name: str) -> Path:
++    if name not in {
++        "bounded-run-space",
++        "hermit-import-compatibility.v1.json",
++        "hermit-import-receipts.v1.json",
++        "hermit-test-bin",
++        "safehermit",
++    }:
++        raise HermitError("packaged resource name is not allowlisted")
++    adjacent = Path(__file__).with_name(name)
++    source_tree = Path(__file__).with_name("resources") / name
++    try:
++        return (adjacent if os.path.lexists(adjacent) else source_tree).resolve(
++            strict=True
++        )
++    except OSError as error:
++        raise HermitError(f"packaged resource is unavailable: {name}") from error
++
++
+@@ -40,1 +58,0 @@
+-BOUNDED_RUN_SPACE: str = "/home/newton/work/dev-hermit/scripts/bounded-run-space"
+@@ -42,2 +60,3 @@
+-_SAFEHERMIT_LOG_ROOT: str = (
+-    "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
++PACKAGED_HERMIT_REVISION: str = "a919cce442305c1812c84d37666d4a0bdf36533f"
++PACKAGED_HERMIT_QUALIFICATION_SHA256: str = (
++    "d24fe3a2dda7afc87a9d19e69006c61945010613eab1732fcdde94863e46178b"
+@@ -44,0 +64,9 @@
++PACKAGED_HERMIT_RESOURCE_SHA256: str = (
++    "9bf7064a98556c08b9b31db67f9d5dfa4a8f394f6e034acd491d42165decfe88"
++)
++PACKAGED_HERMIT_RECEIPTS_SHA256: str = (
++    "9b9a7c75ffc8b5e31e03f66058c57f0f72fb905b047b589143018603a7a7b30b"
++)
++_PACKAGED_HERMIT_RESOURCE: str = "hermit-test-bin"
++_PACKAGED_HERMIT_COMPATIBILITY_RESOURCE: str = "hermit-import-compatibility.v1.json"
++_PACKAGED_HERMIT_RECEIPTS_RESOURCE: str = "hermit-import-receipts.v1.json"
+@@ -56,6 +84,1 @@
+-_VERIFY_ALLOCATION_LOCK: Path = (
+-    Path(_SAFEHERMIT_LOG_ROOT).parent / ".tfa-verify-v2.lock"
+-)
+-_VERIFY_COMMAND_LOCK: Path = (
+-    Path(_SAFEHERMIT_LOG_ROOT).parent / ".tfa-verify-v2-command.lock"
+-)
++_VERIFY_SPACE_ROOT_ENV: str = "TFA_TEST_VERIFY_SPACE_ROOT"
+@@ -79,0 +103,54 @@
++def _safehermit_log_root(attempt_root: Path) -> Path:
++    configured = os.environ.get(_VERIFY_SPACE_ROOT_ENV)
++    if configured is None:
++        return attempt_root / "bounded-output"
++    root = Path(configured)
++    if not root.is_absolute():
++        raise HermitError("configured verification space root is not absolute")
++    try:
++        canonical = root.resolve(strict=True)
++        fixture_root = root.parents[1]
++    except (IndexError, OSError) as error:
++        raise HermitError(
++            "configured verification space root is unavailable"
++        ) from error
++    if (
++        canonical != root
++        or root.name != "safehermit"
++        or root.parent.name != "mount"
++        or fixture_root.parent != Path("/tmp/tfa-phase2")
++        or not fixture_root.name.startswith("tfa-production-btrfs-")
++    ):
++        raise HermitError("configured verification space root is not a test fixture")
++    for component in (fixture_root, root.parent, root):
++        metadata = component.lstat()
++        if (
++            not stat.S_ISDIR(metadata.st_mode)
++            or metadata.st_uid != os.getuid()
++            or stat.S_IMODE(metadata.st_mode) & 0o022
++        ):
++            raise HermitError("configured verification space root is unsafe")
++    return root / ("attempt-" + _verify_allocation_key(attempt_root))
++
++
++def _prepare_safehermit_log_root(attempt_root: Path) -> Path:
++    path = _safehermit_log_root(attempt_root)
++    path.mkdir(mode=0o700, exist_ok=True)
++    metadata = path.lstat()
++    if (
++        not stat.S_ISDIR(metadata.st_mode)
++        or metadata.st_uid != os.getuid()
++        or stat.S_IMODE(metadata.st_mode) != 0o700
++    ):
++        raise HermitError("safehermit log root is unsafe")
++    return path
++
++
++def _verify_allocation_lock(attempt_root: Path) -> Path:
++    return attempt_root / ".verify-allocation.lock"
++
++
++def _verify_command_lock(attempt_root: Path) -> Path:
++    return attempt_root / ".verify-command.lock"
++
++
+@@ -95,1 +172,1 @@
+-        path.parent == Path(_SAFEHERMIT_LOG_ROOT)
++        path.parent == _safehermit_log_root(attempt_root)
+@@ -106,1 +183,7 @@
+-def _verified_lock_guard(path: Path, timeout_seconds: int, label: str) -> Iterator[int]:
++def _verified_lock_guard(
++    path: Path,
++    timeout_seconds: int,
++    label: str,
++    *,
++    inherit_on_fork: bool,
++) -> Iterator[int]:
+@@ -126,1 +209,4 @@
+-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                if inherit_on_fork:
++                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                else:
++                    fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+@@ -146,1 +232,1 @@
+-def _verify_allocation_guard() -> Iterator[None]:
++def _verify_allocation_guard(attempt_root: Path) -> Iterator[None]:
+@@ -148,1 +234,1 @@
+-        _VERIFY_ALLOCATION_LOCK,
++        _verify_allocation_lock(attempt_root),
+@@ -150,0 +237,1 @@
++        inherit_on_fork=False,
+@@ -156,1 +243,1 @@
+-def _verify_command_guard() -> Iterator[int]:
++def _verify_command_guard(attempt_root: Path) -> Iterator[int]:
+@@ -158,1 +245,1 @@
+-        _VERIFY_COMMAND_LOCK,
++        _verify_command_lock(attempt_root),
+@@ -160,0 +248,1 @@
++        inherit_on_fork=True,
+@@ -368,1 +456,1 @@
+-    with _verify_command_guard():
++    with _verify_command_guard(cwd):
+@@ -429,0 +518,1 @@
++    log_root = _prepare_safehermit_log_root(attempt_root)
+@@ -440,1 +529,1 @@
+-            _SAFEHERMIT_LOG_ROOT,
++            str(log_root),
+@@ -865,1 +954,1 @@
+-            _SAFEHERMIT_LOG_ROOT,
++            str(_safehermit_log_root(attempt_root)),
+@@ -967,1 +1056,3 @@
+-        entries = sorted(os.scandir(_SAFEHERMIT_LOG_ROOT), key=lambda item: item.name)
++        entries = sorted(
++            os.scandir(_safehermit_log_root(attempt_root)), key=lambda item: item.name
++        )
+@@ -1009,1 +1100,1 @@
+-    with _verify_command_guard():
++    with _verify_command_guard(attempt_root):
+@@ -1255,1 +1346,3 @@
+-        "safehermit": _pin_safehermit(Path(SAFEHERMIT), wrapper, SAFEHERMIT_SHA256),
++        "safehermit": _pin_safehermit(
++            _packaged_resource("safehermit"), wrapper, SAFEHERMIT_SHA256
++        ),
+@@ -1257,1 +1350,1 @@
+-            Path(BOUNDED_RUN_SPACE),
++            _packaged_resource("bounded-run-space"),
+@@ -1347,0 +1441,228 @@
++def _qualification_receipt_record(
++    qualification: Mapping[str, object],
++) -> dict[str, object]:
++    resource_name = qualification.get("receipts_resource")
++    expected_digest = qualification.get("receipts_sha256")
++    if (
++        resource_name != _PACKAGED_HERMIT_RECEIPTS_RESOURCE
++        or expected_digest != PACKAGED_HERMIT_RECEIPTS_SHA256
++    ):
++        raise HermitError("packaged Hermit qualification receipt binding is malformed")
++    path = _packaged_resource(_PACKAGED_HERMIT_RECEIPTS_RESOURCE)
++    try:
++        before = regular_file_record(path)
++        receipts = json.loads(path.read_text())
++        after = regular_file_record(path)
++    except (OSError, json.JSONDecodeError, StateError) as error:
++        raise HermitError("packaged Hermit qualification receipts are unreadable") from error
++    if (
++        before != after
++        or before.get("sha256") != expected_digest
++        or not isinstance(receipts, dict)
++        or receipts.get("schema_version") != 1
++        or receipts.get("probe_binary")
++        != {
++            "build_mode": qualification.get("mode"),
++            "sha256": qualification.get("sha256"),
++            "upstream_revision": PACKAGED_HERMIT_REVISION,
++        }
++        or receipts.get("bounds")
++        != {
++            "deadline_seconds": 120,
++            "disk_limit": "8G",
++            "max_log_bytes": 67108864,
++        }
++        or not isinstance(receipts.get("probes"), list)
++    ):
++        raise HermitError("packaged Hermit qualification receipts are malformed")
++    expected_markers = {
++        "asyncssl": (1, 1, "AddressSanitizer: CHECK failed", "setrlimit(RLIMIT_CORE"),
++        "thrift": (0, 132, "ThreadSanitizer: CHECK failed", "signal=SIGILL"),
++        "httpcoro": (1, 1, "Clock perf counter exceeds target value", "Sandbox container exited unexpectedly"),
++    }
++    observed: list[tuple[str, int, int]] = []
++    for probe in receipts["probes"]:
++        if not isinstance(probe, dict):
++            raise HermitError("packaged Hermit qualification probe is malformed")
++        case_id = probe.get("case_id")
++        expected = expected_markers.get(case_id)
++        argv = probe.get("argv")
++        stderr = probe.get("stderr")
++        stdout = probe.get("stdout")
++        if (
++            expected is None
++            or not isinstance(argv, list)
++            or not all(isinstance(token, str) for token in argv)
++            or not isinstance(stderr, str)
++            or not isinstance(stdout, str)
++            or probe.get("seed") != expected[0]
++            or probe.get("returncode") != expected[1]
++            or expected[2] not in stderr
++            or expected[3] not in stderr
++            or "--sh-deadline" not in argv
++            or argv[argv.index("--sh-deadline") + 1] != "120"
++            or "--sh-max-log-bytes" not in argv
++            or argv[argv.index("--sh-max-log-bytes") + 1] != "67108864"
++            or "--sh-disk-limit" not in argv
++            or argv[argv.index("--sh-disk-limit") + 1] != "8G"
++            or hashlib.sha256(
++                (json.dumps(argv, separators=(",", ":")) + "\n").encode()
++            ).hexdigest()
++            != probe.get("argv_sha256")
++            or hashlib.sha256(stderr.encode()).hexdigest()
++            != probe.get("stderr_sha256")
++            or hashlib.sha256(stdout.encode()).hexdigest()
++            != probe.get("stdout_sha256")
++            or re.fullmatch(r"[0-9a-f]{64}", str(probe.get("result_receipt_sha256")))
++            is None
++            or re.fullmatch(
++                r"[0-9a-f]{64}", str(probe.get("safehermit_report_sha256"))
++            )
++            is None
++        ):
++            raise HermitError("packaged Hermit qualification probe is malformed")
++        observed.append((case_id, expected[0], expected[1]))
++    candidates = qualification.get("short_candidates")
++    if not isinstance(candidates, list) or observed != [
++        (candidate.get("case_id"), candidate.get("seed"), candidate.get("returncode"))
++        for candidate in candidates
++        if isinstance(candidate, dict)
++    ]:
++        raise HermitError("packaged Hermit qualification candidates differ from receipts")
++    return before
++
++
++def packaged_hermit_argv(
++    argv: tuple[str, ...],
++    expected_revision: str,
++    expected_sha256: str,
++    destination: Path,
++) -> tuple[str, ...]:
++    compatibility_path = _packaged_resource(_PACKAGED_HERMIT_COMPATIBILITY_RESOURCE)
++    try:
++        compatibility_before = regular_file_record(compatibility_path)
++        compatibility = json.loads(compatibility_path.read_text())
++        compatibility_after = regular_file_record(compatibility_path)
++    except (OSError, json.JSONDecodeError, StateError) as error:
++        raise HermitError(
++            "packaged Hermit compatibility record is unreadable"
++        ) from error
++    if compatibility_before != compatibility_after or not isinstance(
++        compatibility, dict
++    ):
++        raise HermitError("packaged Hermit compatibility record changed while read")
++    qualification = compatibility.get("qualification_probe")
++    packaged = compatibility.get("packaged_executable")
++    historical = compatibility.get("historical_witness")
++    blockers = (
++        qualification.get("blockers") if isinstance(qualification, dict) else None
++    )
++    if (
++        compatibility.get("schema_version") != 1
++        or compatibility.get("target")
++        != "fbcode//hermetic_infra/hermit/hermit-cli:hermit"
++        or compatibility.get("resource") != _PACKAGED_HERMIT_RESOURCE
++        or compatibility.get("upstream_revision") != PACKAGED_HERMIT_REVISION
++        or not isinstance(compatibility.get("fbsource_import_commit"), str)
++        or re.fullmatch(
++            r"[0-9a-f]{40}", str(compatibility.get("fbsource_import_commit"))
++        )
++        is None
++        or not isinstance(historical, dict)
++        or re.fullmatch(r"[0-9a-f]{40}", str(historical.get("revision"))) is None
++        or re.fullmatch(r"[0-9a-f]{64}", str(historical.get("sha256"))) is None
++        or historical.get("state") != "PRESERVED"
++        or not isinstance(qualification, dict)
++        or not isinstance(packaged, dict)
++        or packaged.get("sha256") != PACKAGED_HERMIT_RESOURCE_SHA256
++        or packaged.get("configuration")
++        != "opt-linux-x86_64-fbcode-platform010-clang21-no-san"
++        or qualification.get("sha256") != PACKAGED_HERMIT_QUALIFICATION_SHA256
++        or qualification.get("state") not in ("BLOCKED", "QUALIFIED")
++        or not isinstance(blockers, list)
++        or not all(isinstance(blocker, str) and blocker for blocker in blockers)
++        or (qualification.get("state") == "BLOCKED") != bool(blockers)
++    ):
++        raise HermitError("packaged Hermit compatibility record is malformed")
++    receipt_record = _qualification_receipt_record(qualification)
++    binary = _packaged_resource(_PACKAGED_HERMIT_RESOURCE)
++    try:
++        record = regular_file_record(binary)
++        metadata = binary.lstat()
++    except (OSError, StateError) as error:
++        raise HermitError("packaged Hermit binary is unavailable") from error
++    packaged_sha256 = record.get("sha256")
++    if (
++        not isinstance(packaged_sha256, str)
++        or not stat.S_ISREG(metadata.st_mode)
++        or stat.S_IMODE(metadata.st_mode) & 0o111 == 0
++    ):
++        raise HermitError("packaged Hermit executable differs from its provenance")
++    qualification_sha256 = str(qualification["sha256"])
++    if packaged_sha256 != packaged["sha256"]:
++        compatibility_state = "UNASSESSED_VARIANT"
++    elif qualification["state"] != "QUALIFIED":
++        compatibility_state = "BLOCKED"
++    elif (
++        expected_revision != PACKAGED_HERMIT_REVISION
++        or expected_sha256 != packaged_sha256
++    ):
++        compatibility_state = "WITNESS_MISMATCH"
++    else:
++        compatibility_state = "QUALIFIED"
++    destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
++    write_metadata(
++        destination.parent / "identity.json",
++        {
++            "blockers": blockers,
++            "expected_witness": {
++                "revision": expected_revision,
++                "sha256": expected_sha256,
++            },
++            "fbsource_import_commit": compatibility["fbsource_import_commit"],
++            "packaged_executable": record,
++            "qualification_receipts": receipt_record,
++            "packaged_revision": PACKAGED_HERMIT_REVISION,
++            "qualification": {
++                "sha256": qualification_sha256,
++                "state": qualification["state"],
++            },
++            "schema": "tfa.packaged-hermit-compatibility.v1",
++            "state": compatibility_state,
++            "target": compatibility["target"],
++        },
++    )
++    if compatibility_state in ("BLOCKED", "UNASSESSED_VARIANT"):
++        raise HermitError(
++            f"packaged Hermit compatibility is {compatibility_state}: "
++            f"expected revision={expected_revision} sha256={expected_sha256}; "
++            f"target={compatibility['target']} "
++            f"import_commit={compatibility['fbsource_import_commit']} "
++            f"packaged revision={PACKAGED_HERMIT_REVISION} "
++            f"sha256={packaged_sha256}; "
++            f"qualification probe sha256={qualification_sha256} "
++            f"state={qualification['state']}; "
++            f"blockers={'; '.join(blockers)}"
++        )
++    if compatibility_state == "WITNESS_MISMATCH":
++        raise HermitError(
++            "packaged Hermit identity differs from the qualified witness: "
++            f"expected revision={expected_revision} sha256={expected_sha256}; "
++            f"packaged revision={PACKAGED_HERMIT_REVISION} "
++            f"sha256={packaged_sha256}"
++        )
++    if os.path.lexists(destination):
++        pinned = regular_file_record(destination)
++        if pinned.get("sha256") != packaged_sha256 or pinned.get("mode") != 0o500:
++            raise HermitError("pinned packaged Hermit executable differs")
++    else:
++        _pin_safehermit(binary, destination, packaged_sha256)
++    expected = _safehermit_binary(argv)
++    values = list(argv)
++    indexes = [index for index, value in enumerate(values) if value == str(expected)]
++    if len(indexes) != 1:
++        raise HermitError("qualified Hermit binary position is ambiguous")
++    values[indexes[0]] = str(destination)
++    return tuple(values)
++
++
+@@ -1461,1 +1782,1 @@
+-        _SAFEHERMIT_LOG_ROOT,
++        str(_safehermit_log_root(attempt_root)),
+@@ -1470,1 +1791,1 @@
+-        or bounded_path.parent != Path(_SAFEHERMIT_LOG_ROOT)
++        or bounded_path.parent != _safehermit_log_root(attempt_root)
+@@ -1691,1 +2012,2 @@
+-    expected_run_record = Path(_SAFEHERMIT_LOG_ROOT) / "registry" / f"{run_id}.json"
++    expected_log_root = _safehermit_log_root(report_path.parent)
++    expected_run_record = expected_log_root / "registry" / f"{run_id}.json"
+@@ -1694,1 +2016,1 @@
+-        or log_dir.parent != Path(_SAFEHERMIT_LOG_ROOT)
++        or log_dir.parent != expected_log_root
+@@ -1845,1 +2167,2 @@
+-    with _verify_allocation_guard():
++    attempt_root.mkdir(parents=True, exist_ok=True)
++    with _verify_allocation_guard(attempt_root):
+@@ -1862,1 +2184,0 @@
+-    attempt_root.mkdir(parents=True, exist_ok=True)
+@@ -1863,0 +2186,1 @@
++    _prepare_safehermit_log_root(attempt_root)
+@@ -1899,1 +2222,3 @@
+-        execution_environment["SAFEHERMIT_LOG_ROOT"] = _SAFEHERMIT_LOG_ROOT
++        execution_environment["SAFEHERMIT_LOG_ROOT"] = str(
++            _safehermit_log_root(attempt_root)
++        )
+@@ -1915,1 +2240,1 @@
+-                with _verify_command_guard():
++                with _verify_command_guard(attempt_root):
+diff --git a/fbcode/testinfra/tfa/main.py b/fbcode/testinfra/tfa/main.py
+--- a/fbcode/testinfra/tfa/main.py
++++ b/fbcode/testinfra/tfa/main.py
+@@ -5,0 +6,1 @@
++from dataclasses import replace
+@@ -11,1 +12,2 @@
+-from testinfra.tfa.manifest import load_manifest
++from testinfra.tfa.hermit import packaged_hermit_argv
++from testinfra.tfa.manifest import load_manifest, Manifest
+@@ -28,0 +31,26 @@
++def _execution_manifest(path: Path, artifact_root: Path) -> Manifest:
++    manifest = load_manifest(path)
++    packaged_hermit = artifact_root / ".tfa-packaged-runtime" / "hermit"
++    return replace(
++        manifest,
++        cases=tuple(
++            replace(
++                case,
++                pass_argv=packaged_hermit_argv(
++                    case.pass_argv,
++                    case.hermit_revision,
++                    case.hermit_sha256,
++                    packaged_hermit,
++                ),
++                fail_argv=packaged_hermit_argv(
++                    case.fail_argv,
++                    case.hermit_revision,
++                    case.hermit_sha256,
++                    packaged_hermit,
++                ),
++            )
++            for case in manifest.cases
++        ),
++    )
++
++
+@@ -89,1 +117,1 @@
+-        load_manifest(manifest),
++        _execution_manifest(manifest, artifact_root),
+@@ -128,1 +156,5 @@
+-        load_manifest(manifest), case_id, seed, artifact_root, timeout_seconds
++        _execution_manifest(manifest, artifact_root),
++        case_id,
++        seed,
++        artifact_root,
++        timeout_seconds,
+@@ -212,1 +244,1 @@
+-        load_manifest(manifest),
++        _execution_manifest(manifest, artifact_root),
+diff --git a/fbcode/testinfra/tfa/process.py b/fbcode/testinfra/tfa/process.py
+--- a/fbcode/testinfra/tfa/process.py
++++ b/fbcode/testinfra/tfa/process.py
+@@ -9,0 +10,1 @@
++import re
+@@ -39,1 +39,0 @@
+-        "/home/newton/work/dev-hermit/bin/safehermit",
+@@ -59,0 +60,8 @@
++_CODEX_EXECUTABLE: str = "/usr/local/bin/codex"
++_CODEX_PREFLIGHT_SCHEMA: str = "tfa.codex-environment-preflight.v1"
++_CODEX_COMPATIBILITY: dict[tuple[str, str], tuple[str, str | None]] = {
++    (
++        "codex-cli 0.156.0",
++        "8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a7920432b50acc4b9",
++    ): ("blocked", "cannot establish app-server socket mount isolation"),
++}
+@@ -232,1 +240,1 @@
+-    if executable == "/usr/local/bin/codex":
++    if executable == _CODEX_EXECUTABLE:
+@@ -236,4 +244,1 @@
+-    if (
+-        executable == "/home/newton/work/dev-hermit/bin/safehermit"
+-        or Path(executable) == cwd.parent / "safehermit-runtime" / "bin" / "safehermit"
+-    ):
++    if Path(executable) == cwd.parent / "safehermit-runtime" / "bin" / "safehermit":
+@@ -243,0 +249,135 @@
++def _codex_environment_preflight(
++    cwd: Path,
++    artifact_dir: Path,
++    environment: Mapping[str, str] | None,
++) -> dict[str, object]:
++    artifact_dir.mkdir(parents=True, exist_ok=True)
++    identity_path = artifact_dir / "identity.json"
++    try:
++        resolved = Path(_CODEX_EXECUTABLE).resolve(strict=True)
++        before = regular_file_record(resolved)
++    except (OSError, StateError) as error:
++        write_metadata(
++            identity_path,
++            {
++                "blocker": "executable cannot be resolved as a regular file",
++                "executable": _CODEX_EXECUTABLE,
++                "resolved_executable": None,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "startup-failed",
++                "version": None,
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
++            "executable cannot be resolved as a regular file"
++        ) from error
++    try:
++        version = TrustedSubprocessWithList.run(
++            executable=_CODEX_EXECUTABLE,
++            cmd_args=["--version"],
++            cwd=cwd,
++            capture_output=True,
++            text=True,
++            timeout=10,
++            env=None if environment is None else dict(environment),
++        )
++    except Exception as error:
++        write_metadata(
++            identity_path,
++            {
++                "blocker": "version command could not start",
++                "executable": _CODEX_EXECUTABLE,
++                "resolved_executable": before,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "startup-failed",
++                "version": None,
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
++            "version command could not start"
++        ) from error
++    if (
++        version.returncode != 0
++        or re.fullmatch(r"codex-cli [0-9]+\.[0-9]+\.[0-9]+\n?", version.stdout) is None
++        or len(version.stdout) > 8192
++        or version.stderr != ""
++    ):
++        write_metadata(
++            identity_path,
++            {
++                "blocker": "version command returned an invalid result",
++                "executable": _CODEX_EXECUTABLE,
++                "resolved_executable": before,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "version-failed",
++                "version": None,
++                "version_returncode": version.returncode,
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
++            "version command returned an invalid result"
++        )
++    try:
++        after = regular_file_record(resolved)
++    except (OSError, StateError) as error:
++        write_metadata(
++            identity_path,
++            {
++                "blocker": "executable became unavailable after version read",
++                "executable": _CODEX_EXECUTABLE,
++                "resolved_executable": before,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "identity-changed",
++                "version": version.stdout.strip(),
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
++            "executable became unavailable after version read"
++        ) from error
++    if before != after:
++        write_metadata(
++            identity_path,
++            {
++                "blocker": "executable changed while its version was read",
++                "executable": _CODEX_EXECUTABLE,
++                "resolved_executable": before,
++                "resolved_executable_after": after,
++                "schema": _CODEX_PREFLIGHT_SCHEMA,
++                "state": "identity-changed",
++                "version": version.stdout.strip(),
++            },
++        )
++        raise ProcessError(
++            f"Codex executable preflight failed ({_CODEX_PREFLIGHT_SCHEMA}): "
++            "executable changed while its version was read"
++        )
++    version_name = version.stdout.strip()
++    binary_sha256 = before.get("sha256")
++    state, blocker = _CODEX_COMPATIBILITY.get(
++        (version_name, str(binary_sha256)),
++        (
++            "unsupported",
++            "executable version has no reviewed workspace-sandbox compatibility result",
++        ),
++    )
++    record: dict[str, object] = {
++        "blocker": blocker,
++        "executable": _CODEX_EXECUTABLE,
++        "resolved_executable": before,
++        "schema": _CODEX_PREFLIGHT_SCHEMA,
++        "state": state,
++        "version": version_name,
++    }
++    write_metadata(identity_path, record)
++    if state != "eligible" or blocker is not None:
++        raise ProcessError(
++            f"Codex native workspace sandbox preflight failed "
++            f"({_CODEX_PREFLIGHT_SCHEMA}; {version_name}; state={state}): {blocker}"
++        )
++    return regular_file_record(identity_path)
++
++
+@@ -749,0 +890,7 @@
++    codex_preflight: dict[str, object] | None = None
++    if executable == _CODEX_EXECUTABLE and arguments[0] == "exec":
++        codex_preflight = _codex_environment_preflight(
++            execution_cwd,
++            artifact_dir / f"codex-preflight-{time.time_ns()}",
++            environment,
++        )
+@@ -763,0 +911,1 @@
++            "codex_preflight": codex_preflight,
+@@ -817,0 +966,1 @@
++                    "codex_preflight": codex_preflight,
+@@ -884,0 +1034,1 @@
++            "codex_preflight": codex_preflight,
+diff --git a/fbcode/testinfra/tfa/prompts.py b/fbcode/testinfra/tfa/prompts.py
+--- a/fbcode/testinfra/tfa/prompts.py
++++ b/fbcode/testinfra/tfa/prompts.py
+@@ -6,1 +5,0 @@
+-import shlex
+@@ -14,1 +13,3 @@
+-- Run only the exact target ELF through /home/newton/work/dev-hermit/bin/safehermit.
++- Run witnesses only through the controller command shown below. It resolves,
++  verifies, and pins the packaged safehermit, bounded-run-space, and Hermit
++  resources; no machine-local dev-hermit checkout is required.
+@@ -32,6 +33,6 @@
+-- Treat `/tmp/tfa-phase2/repro` as immutable supplied evidence. To reproduce,
+-  copy the supplied argv and redirect only `--sh-report` and
+-  `--verify-log-dir` into this case's artifact directory; never rename, mix,
+-  or overwrite the supplied witness directories.
+-- `--verify --verify-strict --verify-allow both` compares the two same-seed
+-  executions; inspect its evidence instead of relaxing comparison.
++- Treat `/tmp/tfa-phase2/repro` and the historical argv below as immutable
++  supplied evidence. Do not invoke that obsolete argv directly. The controller
++  maps it to the current packaged CLI only after its compatibility gate passes.
++- The current strict comparison contract is `--verify --verify-verbose
++  --verify-allow both`: verbose selects FullTrace and disables line stripping.
++  Inspect its evidence instead of relaxing comparison.
+@@ -102,4 +103,12 @@
+-        "pass_argv": list(case.pass_argv),
+-        "fail_argv": list(case.fail_argv),
+-        "pass_command": shlex.join(case.pass_argv),
+-        "fail_command": shlex.join(case.fail_argv),
++        "historical_pass_argv": list(case.pass_argv),
++        "historical_fail_argv": list(case.fail_argv),
++        "controller_pass_command": (
++            "buck run fbcode//testinfra/tfa:tfa_phase2 -- run-witness "
++            f"--manifest fbcode/testinfra/tfa/cases.v1.json --case-id {case.case_id} "
++            f"--outcome pass --artifact-root {artifact_dir}"
++        ),
++        "controller_fail_command": (
++            "buck run fbcode//testinfra/tfa:tfa_phase2 -- run-witness "
++            f"--manifest fbcode/testinfra/tfa/cases.v1.json --case-id {case.case_id} "
++            f"--outcome fail --artifact-root {artifact_dir}"
++        ),
+diff --git a/fbcode/testinfra/tfa/resources/bounded-run-space b/fbcode/testinfra/tfa/resources/bounded-run-space
+new file mode 100755
+--- /dev/null
++++ b/fbcode/testinfra/tfa/resources/bounded-run-space
+@@ -0,0 +1,318 @@
++#!/usr/bin/env bash
++# bounded-run-space — give one unit of work its own bounded place to write.
++#
++# WHAT THIS IS
++# ------------
++# Creates a btrfs subvolume with a qgroup limit, hands back its path, reports what
++# was used, and tears it down. Only writes below the returned directory are
++# bounded. A caller that writes elsewhere -- including an explicit log path
++# outside it -- remains outside this limit. Cleanup deletes that subvolume;
++# qgroup exclusive bytes provide a pre-deletion reclaim estimate.
++#
++# WHY THIS EXISTS. On 2026-08-17..19 three hermit invocations wrote ~4.5 TB of
++# stderr each and filled the device. cgroup-v2 cannot prevent that: it has no
++# disk-SPACE control at all, and io.max is bandwidth, not bytes at rest. A qgroup
++# is the only mechanism here that bounds bytes at rest.
++#
++# MEASUREMENTS THIS IS BUILT ON (2026-08-19, 512 MiB loopback, compress=zstd:3 to
++# match /data; every number re-derived locally rather than inherited):
++#
++#   QGROUPS COUNT COMPRESSED, ON-DISK BYTES -- not logical. A 16 MiB max_rfer
++#   passed 513,747,600 LOGICAL bytes of the incident's own repeated log lines
++#   (490 MiB, 30.6x) before failing. qgroup referenced settled at 15.98 MiB.
++#   CONSEQUENCE FOR WHOEVER SETS --limit: this is a DISK number. "64M" buys a
++#   1-2 GB log file, which still costs real time to read, copy and grep.
++#
++#   THE ERRNO IS EDQUOT (122), NOT ENOSPC (28). ENOSPC is what a genuinely full
++#   filesystem gives. Both occur, on different code paths; a handler needs both.
++#
++#   COST IS NEGLIGIBLE: create + limit + delete measured at 2.1 ms of actual btrfs
++#   work over 20 iterations. Each `sudo` fork costs 11.3 ms, five times more than
++#   the work. Privilege is the cost here, not time.
++#
++# THE FAILURE MODE THIS IS DESIGNED AGAINST IS SILENCE, NOT HANGING. Measured on
++# hermit 0.2.0 across nine runs: it never hung. It either died with a bare exit 101
++# whose panic message could not be written (because the sink that filled WAS
++# stderr), or -- with --log-file -- completed in the same 26.0s as an unbounded
++# control, exit 1, guest output correct, and NOT ONE WORD about the log having been
++# truncated. On a full filesystem that path exited 0 with no log at all. A run that
++# reports success while its evidence is silently missing is worse than one that
++# hangs, because a hang gets investigated. So the bounded thing cannot be trusted to
++# report its own truncation: `report` below exists to do it from the outside.
++#
++# TWO TRAPS THIS ENCODES, both measured:
++#
++#   1. `btrfs qgroup limit` CANNOT BE TRUSTED BY ITS EXIT CODE ALONE for the
++#      property we care about. We therefore READ THE LIMIT BACK off the live
++#      qgroup and only report BOUNDED if the readback matches. A limit that was
++#      requested but not applied is precisely the "looks bounded, is not" failure
++#      this tool exists to prevent.
++#   2. NON-ROOT CAN CREATE A SUBVOLUME BUT CANNOT DELETE IT (create exit 0, delete
++#      exit 1, "Operation not permitted"). Creating without being able to destroy
++#      leaks a subvolume per run forever, so this refuses to create unless it can
++#      also verify it can clean up: everything goes through `sudo -n`.
++#
++# UNBOUNDED IS ALWAYS LOUD. If quotas are off, sudo is unavailable, or the target
++# is not btrfs, this still hands back a usable directory -- but it says UNBOUNDED
++# on stderr, exits 10 instead of 0, and drops a `.UNBOUNDED` marker file inside the
++# directory so someone finding the artifacts later knows they were never bounded.
++# A step that runs unbounded while appearing bounded is worse than no feature.
++#
++# USAGE
++#   dir=$(bounded-run-space create --limit 256M --tag mytag --base /tmp)   # exit 0 | 10
++#   bounded-run-space report  "$dir"                                       # exit 0 | 10 | 11
++#   bounded-run-space destroy "$dir"                                       # exit 0
++#
++# EXIT CODES
++#   0   bounded (create), under allowance (report), destroyed (destroy)
++#   2   bad usage
++#   10  UNBOUNDED -- the caller MUST relay this; the space exists but nothing caps it
++#   11  report only: the allowance threshold was reached, so the contents may be incomplete
++#   12  destroy failed; the path still exists
++set -uo pipefail
++
++PROG=bounded-run-space
++die() { echo "$PROG: $*" >&2; exit 2; }
++say() { echo "$PROG: $*" >&2; }
++
++# --- size parsing (byte count, or 512M / 2G SI, or 1Gi binary) -------------------
++parse_size() {
++    python3 - "$1" <<'PY'
++import re, sys
++s = sys.argv[1].strip()
++m = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([KMGT]i?B?|B)?', s, re.IGNORECASE)
++if not m: sys.exit(1)
++val = float(m.group(1)); unit = (m.group(2) or "").upper().rstrip("B")
++mult = {"":1,"K":1000,"M":1000**2,"G":1000**3,"T":1000**4,
++        "KI":1024,"MI":1024**2,"GI":1024**3,"TI":1024**4}
++if unit not in mult: sys.exit(1)
++b = int(val*mult[unit])
++if b <= 0: sys.exit(1)
++print(b)
++PY
++}
++
++is_btrfs() { [ "$(stat -fc %T "$1" 2>/dev/null || true)" = "btrfs" ]; }
++have_sudo() { sudo -n true >/dev/null 2>&1; }
++
++# Resolve the subvolume id of PATH, or empty.
++subvol_id() { sudo -n btrfs subvolume show "$1" 2>/dev/null | awk '/Subvolume ID/{print $3; exit}'; }
++
++# Read the LIVE limit and usage for a subvolume: "referenced exclusive max_rfer".
++# Empty when quotas are off or the qgroup is absent.
++qgroup_row() {
++    local path="$1" id="$2"
++    sudo -n btrfs qgroup show -re --raw "$path" 2>/dev/null \
++        | awk -v q="0/$id" '$1==q {print $2" "$3" "$4; exit}'
++}
++
++mark_unbounded() { # $1=dir  $2=reason
++    local identity canonical
++    identity="$(stat -Lc '%d:%i' "$1")" || return 1
++    canonical="$(cd "$1" && pwd -P)" || return 1
++    printf '%s\n' \
++        "This directory was NOT bounded." \
++        "directory=$canonical" \
++        "device_inode=$identity" \
++        "reason: $2" \
++        "Nothing limited how many bytes were written here. Totals below are not a guarantee." \
++        > "$1/.UNBOUNDED" 2>/dev/null
++}
++
++record_unbounded_or_remove() { # $1=dir  $2=reason
++    local dir="$1" reason="$2"
++    mark_unbounded "$dir" "$reason" && return 0
++    if [ -n "$(subvol_id "$dir")" ]; then
++        sudo -n btrfs subvolume delete "$dir" >/dev/null 2>&1 || true
++    else
++        rm -f -- "$dir/.UNBOUNDED" 2>/dev/null || true
++        rmdir -- "$dir" 2>/dev/null || true
++    fi
++    die "create: could not record that the returned space was unbounded; removed it instead"
++}
++
++mark_bounded() { # $1=dir  $2=subvolume-id  $3=limit-bytes
++    local identity canonical
++    identity="$(stat -Lc '%d:%i' "$1")" || return 1
++    canonical="$(cd "$1" && pwd -P)" || return 1
++    printf '%s\n' \
++        "bounded-run-space/v1" \
++        "directory=$canonical" \
++        "device_inode=$identity" \
++        "subvolume_id=$2" \
++        "limit_bytes=$3" \
++        > "$1/.BOUNDED_RUN_SPACE"
++}
++
++owned_path() {
++    local dir="$1" name marker canonical recorded_dir identity recorded_identity
++    [ ! -L "$dir" ] || return 1
++    name="$(basename -- "$dir")"
++    case "$name" in brs-*) ;; *) return 1 ;; esac
++    if [ "$(head -n 1 "$dir/.BOUNDED_RUN_SPACE" 2>/dev/null)" = "bounded-run-space/v1" ]; then
++        marker="$dir/.BOUNDED_RUN_SPACE"
++    elif [ "$(head -n 1 "$dir/.UNBOUNDED" 2>/dev/null)" = "This directory was NOT bounded." ]; then
++        marker="$dir/.UNBOUNDED"
++    else
++        return 1
++    fi
++    canonical="$(cd "$dir" && pwd -P)" || return 1
++    recorded_dir="$(sed -n 's/^directory=//p' "$marker")"
++    identity="$(stat -Lc '%d:%i' "$dir")" || return 1
++    recorded_identity="$(sed -n 's/^device_inode=//p' "$marker")"
++    [ "$recorded_dir" = "$canonical" ] && [ "$recorded_identity" = "$identity" ]
++}
++
++# --------------------------------------------------------------------------- create
++cmd_create() {
++    local limit="" base="${TMPDIR:-/tmp}" tag="run"
++    while [ $# -gt 0 ]; do
++        case "$1" in
++            --limit) [ $# -ge 2 ] || die "--limit needs a value"; limit="$2"; shift 2 ;;
++            --limit=*) limit="${1#*=}"; shift ;;
++            --base)  [ $# -ge 2 ] || die "--base needs a value";  base="$2";  shift 2 ;;
++            --base=*)  base="${1#*=}";  shift ;;
++            --tag)   [ $# -ge 2 ] || die "--tag needs a value";   tag="$2";   shift 2 ;;
++            --tag=*)   tag="${1#*=}";   shift ;;
++            *) die "create: unknown argument '$1'" ;;
++        esac
++    done
++    [ -n "$limit" ] || die "create: --limit is required"
++    local bytes; bytes="$(parse_size "$limit")" || die "create: --limit: bad size '$limit'"
++    local safe
++    safe="$(printf '%s' "$tag" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-48)"
++    mkdir -p "$base" 2>/dev/null || die "create: cannot create base $base"
++    base="$(cd "$base" && pwd -P)" || die "create: cannot resolve base $base"
++    local dir
++    dir="$base/brs-$safe-$$-$(date +%s%N)"
++
++    # Decide up front whether a bound is even possible, and name the reason if not.
++    local reason=""
++    if ! is_btrfs "$base"; then reason="$base is not btrfs (fstype=$(stat -fc %T "$base" 2>/dev/null))"
++    elif ! have_sudo;      then reason="passwordless sudo unavailable; subvolume create/delete both need it"
++    fi
++    if [ -n "$reason" ]; then
++        mkdir -p "$dir" || die "create: cannot create $dir"
++        record_unbounded_or_remove "$dir" "$reason"
++        say "UNBOUNDED: $reason"
++        say "UNBOUNDED: handing back a PLAIN DIRECTORY at $dir with NOTHING capping its size."
++        printf '%s\n' "$dir"; return 10
++    fi
++
++    if ! sudo -n btrfs subvolume create "$dir" >/dev/null 2>&1; then
++        mkdir -p "$dir" || die "create: cannot create $dir"
++        record_unbounded_or_remove "$dir" "btrfs subvolume create failed"
++        say "UNBOUNDED: could not create a subvolume at $dir; using a plain directory, size NOT capped."
++        printf '%s\n' "$dir"; return 10
++    fi
++    sudo -n chown "$(id -u):$(id -g)" "$dir" 2>/dev/null || true
++
++    local id; id="$(subvol_id "$dir")"
++    if [ -z "$id" ]; then
++        record_unbounded_or_remove "$dir" "created path has no readable btrfs subvolume id"
++        say "UNBOUNDED: created $dir but could not read its subvolume id."
++        printf '%s\n' "$dir"; return 10
++    fi
++    local limit_err; limit_err="$(sudo -n btrfs qgroup limit "$bytes" "0/$id" "$base" 2>&1)"
++    # READBACK, NOT THE EXIT CODE. Only a live max_rfer equal to what we asked for
++    # counts as bounded; anything else degrades loudly rather than pretending.
++    local row max_rfer; row="$(qgroup_row "$base" "$id")"; max_rfer="$(echo "$row" | awk '{print $3}')"
++    if [ "${max_rfer:-none}" != "$bytes" ]; then
++        record_unbounded_or_remove "$dir" "qgroup limit not in force (readback='${max_rfer:-unreadable}', wanted=$bytes; ${limit_err:-no error text})"
++        say "UNBOUNDED: asked for a ${bytes}-byte quota on subvolume 0/$id but the readback says '${max_rfer:-unreadable}'."
++        [ -n "$limit_err" ] && say "UNBOUNDED: btrfs said: $limit_err"
++        say "UNBOUNDED: $dir is a real subvolume but NOTHING CAPS ITS SIZE. Enable quotas to bound it."
++        printf '%s\n' "$dir"; return 10
++    fi
++
++    if ! mark_bounded "$dir" "$id" "$bytes"; then
++        sudo -n btrfs subvolume delete "$dir" >/dev/null 2>&1 || true
++        die "create: could not record ownership marker; removed the new subvolume"
++    fi
++
++    say "bounded: $dir  subvol=0/$id  limit=${bytes} bytes of ON-DISK (compressed) space"
++    say "bounded: note the allowance is measured AFTER compression; expect logical files many times larger"
++    printf '%s\n' "$dir"; return 0
++}
++
++# --------------------------------------------------------------------------- report
++cmd_report() {
++    local dir="${1:-}"; [ -n "$dir" ] || die "report: need a path"
++    [ -d "$dir" ] || die "report: no such directory $dir"
++    if ! owned_path "$dir"; then
++        say "UNBOUNDED: $dir has no matching bounded-run-space identity marker"
++        return 10
++    fi
++    if [ -f "$dir/.UNBOUNDED" ]; then
++        say "UNBOUNDED: $dir was never bounded; byte totals here guarantee nothing."
++        sed 's/^/  /' "$dir/.UNBOUNDED" >&2 2>/dev/null || true
++        return 10
++    fi
++    local base id row recorded_id recorded_limit
++    base="$(dirname "$dir")"; id="$(subvol_id "$dir")"
++    [ -n "$id" ] || { say "UNBOUNDED: $dir is not a subvolume"; return 10; }
++    recorded_id="$(sed -n 's/^subvolume_id=//p' "$dir/.BOUNDED_RUN_SPACE")"
++    recorded_limit="$(sed -n 's/^limit_bytes=//p' "$dir/.BOUNDED_RUN_SPACE")"
++    if [ "$id" != "$recorded_id" ] || ! [[ "$recorded_limit" =~ ^[0-9]+$ ]]; then
++        say "UNBOUNDED: marker identity does not match live subvolume $id"
++        return 10
++    fi
++    row="$(qgroup_row "$base" "$id")"
++    [ -n "$row" ] || { say "UNBOUNDED: no qgroup row for 0/$id (quotas off?)"; return 10; }
++    local ref exc mx; ref="$(echo "$row" | awk '{print $1}')"; exc="$(echo "$row" | awk '{print $2}')"; mx="$(echo "$row" | awk '{print $3}')"
++    if [ "$mx" != "$recorded_limit" ]; then
++        say "UNBOUNDED: live qgroup limit is '$mx', marker records '$recorded_limit'"
++        return 10
++    fi
++    echo "referenced=$ref exclusive=$exc limit=$mx"
++    if [ "$mx" != "none" ] && [ "${ref:-0}" -ge "$(( mx - mx / 100 ))" ]; then
++        # Within 1% of the allowance: treat as reached. The bounded process will NOT
++        # tell you this -- measured: hermit exits 0 or 1 with a silently truncated log.
++        say "ALLOWANCE THRESHOLD REACHED: referenced=$ref of limit=$mx. Anything written here may be INCOMPLETE."
++        return 11
++    fi
++    return 0
++}
++
++# --------------------------------------------------------------------------- destroy
++cmd_destroy() {
++    local dir="${1:-}"; [ -n "$dir" ] || die "destroy: need a path"
++    [ -d "$dir" ] || { say "destroy: $dir already gone"; return 0; }
++    if ! owned_path "$dir"; then
++        say "destroy: REFUSING path without a matching bounded-run-space identity marker: $dir"
++        return 12
++    fi
++    local base id exc; base="$(dirname "$dir")"; id="$(subvol_id "$dir")"
++    if [ -z "$id" ]; then
++        rm -rf -- "$dir" 2>/dev/null || sudo -n rm -rf -- "$dir" 2>/dev/null || true
++        [ ! -e "$dir" ] || { say "destroy: could not remove plain directory $dir"; return 12; }
++        say "destroyed (plain directory, no reclaim figure available): $dir"
++        return 0
++    fi
++    exc="$(qgroup_row "$base" "$id" | awk '{print $2}')"
++    if ! sudo -n btrfs subvolume delete "$dir" >/dev/null 2>&1; then
++        say "destroy: subvolume delete failed for $dir"
++        return 12
++    fi
++    # SYNC BEFORE MEASURING. Subvolume deletion is ASYNCHRONOUS: measured, reading df
++    # immediately after delete reported 0 bytes reclaimed on a filesystem that then
++    # gave back 10.7 MB. An unsynced reading under-reports how much space is still
++    # held, which is the dangerous direction.
++    sudo -n btrfs subvolume sync "$base" >/dev/null 2>&1 || true
++    if [ -n "$exc" ]; then
++        # Exclusive over-predicts slightly (measured: predicted 10,915,840, df returned
++        # 10,768,384 -- 1.4% optimistic), so it is an upper bound on reclaim, not exact.
++        say "destroyed: $dir  reclaimed about $exc bytes (qgroup exclusive; ~1.5% optimistic)"
++    else
++        say "destroyed: $dir"
++    fi
++    return 0
++}
++
++case "${1:-}" in
++    create)  shift; cmd_create "$@" ;;
++    report)  shift; cmd_report "$@" ;;
++    destroy) shift; cmd_destroy "$@" ;;
++    -h|--help|"") sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/d;p}' "$0"; exit 0 ;;
++    *) die "unknown subcommand '${1}' (want create|report|destroy)" ;;
++esac
+diff --git a/fbcode/testinfra/tfa/resources/safehermit b/fbcode/testinfra/tfa/resources/safehermit
+new file mode 100755
+--- /dev/null
++++ b/fbcode/testinfra/tfa/resources/safehermit
+@@ -0,0 +1,1452 @@
++#!/usr/bin/env bash
++# safehermit -- the only hermit entry point agents may call.
++#
++# WHY THIS EXISTS
++# ===============
++# On 2026-08-17 three hermit runs each wrote ~4.5 TB of stderr over 28+ hours at
++# 75% CPU and filled the filesystem, taking down ORC and every running agent. No
++# single mechanism would have stopped it, so this applies several and -- the part
++# that matters -- SAYS WHICH ONES IT COULD NOT APPLY.
++#
++# THE CASE THAT DECIDES WHETHER THIS WORKS. The incident binary was
++# /tmp/hermit-ers-patched, invoked by absolute path. Absolute-path execution never
++# consults PATH, so a shim named `hermit` dropped in front covers the ordinary case
++# and misses precisely the one that caused the outage. This therefore takes the
++# binary as an argument:
++#
++#     safehermit /tmp/hermit-ers-patched run -- ./prog     # arbitrary binary
++#     safehermit run -- ./prog                             # default hermit
++#     safehermit --sh-resource-report /tmp/seed-7.resources \
++#       --sh-memory-max-bytes 17179869184 --sh-tasks-max 256 \
++#       --sh-cpu-cores 1 --sh-cpu-timeout 900 --sh-deadline 2700 run -- ./prog
++#
++# The first argument is the hermit binary IF it contains a `/` and is executable,
++# or if --bin is given. Nothing else is treated as a binary, so a subcommand
++# (`run`, `record`, `replay`, `verify`, `log-diff` -- none contains a `/`) can
++# never be mistaken for one.
++#
++# FAIL LOUD, NEVER SILENTLY UNBOUNDED
++# ===================================
++# Every bound is reported on EVERY run as APPLIED or NOT_APPLIED with a reason,
++# including when everything works. This is deliberate and is the whole discipline:
++# on the day of the incident several mechanisms were present and inert, and a
++# wrapper that only speaks up when something breaks becomes another one of them.
++# `safehermit: bound.* =` lines are the contract; grep them.
++#
++# WHAT IT DOES NOT DO
++# ===================
++# It does not change hermit's behaviour, arguments or stdio. The child exit code
++# is preserved unless an explicitly requested resource report cannot be completed,
++# which fails closed with 2. stdout and stderr of the child are passed through
++# untouched; everything this script says goes to stderr prefixed `safehermit:` so
++# it can never be confused with, or parsed as, hermit output.
++#
++# EXIT CODES
++#   the child's exit code, verbatim, when accounting (if requested) completes
++#   2   safehermit usage error, or opted-in resource accounting refusal
++#   124 the deadline fired and the run was killed by its cgroup
++#   125 the log cap fired and the run was killed by its cgroup
++#   126 the opted-in aggregate CPU-time budget fired
++set -uo pipefail
++
++PROG=safehermit
++# WHERE THIS SCRIPT'S OWN LINES GO. Default 2 (stderr), exactly as before.
++# --sh-report FILE moves them, and the reason is a measured demo failure, not
++# tidiness: demos/05-qemu-boot.py hashes its hermit log into run-metadata.json
++# (info_log_sha256) and demo_common.compare_runs then LINE-DIFFS two runs' logs,
++# failing the repeat on any difference that survives normalization. Six of the
++# lines below embed run_id, which is a UTC timestamp plus this script's pid and so
++# differs on every run. Verified against the real comparator: hermit_log_diff on
++# two otherwise-identical logs reports "first divergence at line 1 ... run_id",
++# i.e. wiring that demo to safehermit while the report shares fd 2 with hermit's
++# stderr would fail repeat verification on 100% of runs, for a reason that has
++# nothing to do with hermit.
++# The report is still WRITTEN and still greppable -- this only changes where -- so
++# the "fail loud, never silently unbounded" discipline is intact. A caller that
++# redirects it takes on the job of surfacing it.
++REPORT_FD=2
++say()  { printf '%s: %s\n' "$PROG" "$*" >&$REPORT_FD; }
++# die() stays on real stderr: a usage error must be visible even when the caller
++# has pointed the report at a file it is not going to read.
++die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
++field(){ printf '%s: %s=%s\n' "$PROG" "$1" "$2" >&$REPORT_FD; }
++
++# ---------------------------------------------------------------- defaults
++DEFAULT_DEADLINE_SECS=3600          # (2) no run outlives a default without opting out
++DEFAULT_MAX_LOG_BYTES=$((64*1024*1024))   # LOW ON PURPOSE -- see the cap note below
++DEFAULT_DISK_LIMIT=8G
++DEFAULT_MEM_MAX=16G
++# (4) THE EMITTER IS DELIBERATELY LEFT ALONE. An earlier version of this script
++# defaulted RUST_LOG=detcore::scheduler=warn, which does work (measured: stderr
++# 380 -> 272 lines, detcore::scheduler 40 -> 0). The owner ruled against it, and
++# the reasoning is better: a spinning program SHOULD die from the timeout or from
++# the log hitting a low cap. Quieting the emitter hides the very signal that a run
++# is stuck -- it makes a wedged run look healthy and cheap. So the cap is set LOW
++# so that it is the thing that fires, the deadline backs it up, and the first
++# bytes are kept as evidence. RUST_LOG is never set by safehermit; the caller's
++# value, if any, is passed through untouched.
++
++ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++LOG_ROOT="${SAFEHERMIT_LOG_ROOT:-$ROOT/ignored/safehermit}"
++REGISTRY="$LOG_ROOT/registry"
++
++deadline=$DEFAULT_DEADLINE_SECS
++max_log_bytes=$DEFAULT_MAX_LOG_BYTES
++disk_limit=$DEFAULT_DISK_LIMIT
++mem_max=$DEFAULT_MEM_MAX
++bin_override=""
++no_deadline=0
++deadline_explicit=0
++fresh=0
++report_file=""
++detached_report_file=""
++detached_memory_max_bytes=""
++detached_tasks_max=""
++detached_cpu_cores=""
++detached_cpu_timeout_secs=""
++
++# ---------------------------------------------------------------- our own flags
++# Parsed ONLY until the first argument we do not own, so hermit's own flags are
++# never intercepted. `--` ends our parsing explicitly.
++while [ $# -gt 0 ]; do
++    case "$1" in
++        --sh-bin)       [ $# -ge 2 ] || die "--sh-bin needs a value"; bin_override="$2"; shift 2 ;;
++        --sh-bin=*)     bin_override="${1#*=}"; shift ;;
++        --sh-deadline)  [ $# -ge 2 ] || die "--sh-deadline needs a value"; deadline="$2"; deadline_explicit=1; shift 2 ;;
++        --sh-deadline=*) deadline="${1#*=}"; deadline_explicit=1; shift ;;
++        --sh-no-deadline) no_deadline=1; shift ;;
++        --sh-fresh) fresh=1; shift ;;
++        --sh-report)    [ $# -ge 2 ] || die "--sh-report needs a value"; report_file="$2"; shift 2 ;;
++        --sh-report=*)  report_file="${1#*=}"; shift ;;
++        --sh-resource-report) [ $# -ge 2 ] || die "--sh-resource-report needs a value"; detached_report_file="$2"; shift 2 ;;
++        --sh-resource-report=*) detached_report_file="${1#*=}"; shift ;;
++        --sh-memory-max-bytes) [ $# -ge 2 ] || die "--sh-memory-max-bytes needs a value"; detached_memory_max_bytes="$2"; shift 2 ;;
++        --sh-memory-max-bytes=*) detached_memory_max_bytes="${1#*=}"; shift ;;
++        --sh-tasks-max) [ $# -ge 2 ] || die "--sh-tasks-max needs a value"; detached_tasks_max="$2"; shift 2 ;;
++        --sh-tasks-max=*) detached_tasks_max="${1#*=}"; shift ;;
++        --sh-cpu-cores) [ $# -ge 2 ] || die "--sh-cpu-cores needs a value"; detached_cpu_cores="$2"; shift 2 ;;
++        --sh-cpu-cores=*) detached_cpu_cores="${1#*=}"; shift ;;
++        --sh-cpu-timeout) [ $# -ge 2 ] || die "--sh-cpu-timeout needs a value"; detached_cpu_timeout_secs="$2"; shift 2 ;;
++        --sh-cpu-timeout=*) detached_cpu_timeout_secs="${1#*=}"; shift ;;
++        --sh-max-log-bytes)   [ $# -ge 2 ] || die "needs a value"; max_log_bytes="$2"; shift 2 ;;
++        --sh-max-log-bytes=*) max_log_bytes="${1#*=}"; shift ;;
++        --sh-disk-limit)   [ $# -ge 2 ] || die "needs a value"; disk_limit="$2"; shift 2 ;;
++        --sh-disk-limit=*) disk_limit="${1#*=}"; shift ;;
++        --sh-help|-h)
++            sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/d;p}' "$0" | sed 's/^# \{0,1\}//'
++            exit 0 ;;
++        --) shift; break ;;
++        *) break ;;
++    esac
++done
++
++detached_limit_count=0
++for detached_limit in "$detached_memory_max_bytes" "$detached_tasks_max" \
++    "$detached_cpu_cores" "$detached_cpu_timeout_secs"; do
++    [ -z "$detached_limit" ] || detached_limit_count=$((detached_limit_count + 1))
++done
++if [ -n "$detached_report_file" ]; then
++    [ "$detached_limit_count" -eq 4 ] \
++        || die "--sh-resource-report requires --sh-memory-max-bytes, --sh-tasks-max, --sh-cpu-cores, and --sh-cpu-timeout"
++    if [ "$deadline_explicit" -ne 1 ] || [ "$no_deadline" -ne 0 ]; then
++        die "--sh-resource-report requires an explicit --sh-deadline"
++    fi
++    detached_limits="$(python3 - "$detached_memory_max_bytes" "$detached_tasks_max" \
++        "$detached_cpu_cores" "$detached_cpu_timeout_secs" "$deadline" <<'PY'
++import sys
++
++names = ("memory bytes", "tasks", "CPU cores", "CPU timeout seconds", "wall deadline seconds")
++values = []
++for name, raw in zip(names, sys.argv[1:]):
++    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
++        raise SystemExit(f"{name} must be a positive unsigned integer in detached mode")
++    values.append(int(raw))
++memory, tasks, cores, cpu_seconds, wall_seconds = values
++if cores > 316:
++    raise SystemExit("CPU cores exceeds the 316-worker host safety ceiling")
++for name, value in (("CPU timeout", cpu_seconds), ("wall deadline", wall_seconds)):
++    if value > (2**63 - 1) // 1_000_000_000:
++        raise SystemExit(f"{name} cannot be represented in nanoseconds")
++print(memory, tasks, cores, cpu_seconds, wall_seconds)
++PY
++)" || die "invalid detached resource limit"
++    read -r detached_memory_max_bytes detached_tasks_max detached_cpu_cores \
++        detached_cpu_timeout_secs deadline <<<"$detached_limits"
++    mem_max="$detached_memory_max_bytes"
++elif [ "$detached_limit_count" -ne 0 ]; then
++    die "detached resource limit flags require --sh-resource-report"
++fi
++
++if [ -n "$report_file" ] && [ -n "$detached_report_file" ]; then
++    same_report_path="$(python3 - "$report_file" "$detached_report_file" <<'PY'
++import os
++import sys
++print("yes" if os.path.abspath(sys.argv[1]) == os.path.abspath(sys.argv[2]) else "no")
++PY
++)"
++    [ "$same_report_path" = no ] || die "--sh-report and --sh-resource-report must name different files"
++fi
++
++if [ -n "$report_file" ]; then
++    # Fail loudly on an unwritable destination rather than losing the report: a
++    # report that silently goes nowhere is the inert-mechanism failure this script
++    # exists to prevent.
++    exec 3>"$report_file" || die "--sh-report: cannot write $report_file"
++    REPORT_FD=3
++fi
++
++[ $# -ge 1 ] || die "no hermit arguments given (try --sh-help)"
++
++# ---------------------------------------------------------------- pick the binary
++# The rule that makes an ARBITRARY binary as cheap as running it bare.
++# PRECEDENCE IS NAMED, NOT JUST APPLIED. `binary_source` below reports which layer
++# won, because "which build produced this artifact" was unanswerable for most of
++# 2026-08-19 and that cost most of a day's rework.
++#
++# FRESHNESS IS OPT-IN (--sh-fresh), NOT DEFAULT, AND THAT IS A DELIBERATE
++# DEVIATION worth reading: the owner asked for ./target/release/hermit "or cargo
++# run it to ensure freshness", and separately, this morning, asked that a stable
++# binary be FROZEN for demo work precisely because rebuild churn in the shared
++# checkout produced artifacts whose originating build was unrecorded. Rebuilding
++# by default in the entry point every demo uses would reintroduce that churn. So
++# the default resolves an EXISTING binary and never builds; `--sh-fresh` opts in.
++# Raised with the owner rather than decided quietly.
++hermit_bin=""; binary_source=""
++if [ -n "$bin_override" ]; then
++    hermit_bin="$bin_override"; binary_source="flag:--sh-bin"
++elif [ -x "$1" ] && case "$1" in */*) true ;; *) false ;; esac; then
++    hermit_bin="$1"; binary_source="argv:positional-path"; shift
++elif [ -n "${HERMIT_BIN:-}" ]; then
++    hermit_bin="$HERMIT_BIN"; binary_source="env:HERMIT_BIN"
++elif [ -x "$ROOT/target/release/hermit" ]; then
++    hermit_bin="$ROOT/target/release/hermit"; binary_source="default:target/release/hermit"
++elif [ -x "$ROOT/bin/hermit" ]; then
++    hermit_bin="$ROOT/bin/hermit"; binary_source="default:bin/hermit"
++else
++    hermit_bin="$(command -v hermit 2>/dev/null || true)"; binary_source="path:$(command -v hermit 2>/dev/null || echo none)"
++fi
++if [ "$fresh" = 1 ]; then
++    if [ "$binary_source" = "default:target/release/hermit" ] || [ ! -x "$hermit_bin" ]; then
++        say "--sh-fresh: building hermit --release (this mutates the shared checkout's target/)"
++        if (cd "$ROOT" && cargo build --release -p hermit >&2); then
++            hermit_bin="$ROOT/target/release/hermit"; binary_source="fresh:cargo build --release"
++        else
++            die "--sh-fresh: cargo build --release failed; refusing to run a stale binary while you asked for a fresh one"
++        fi
++    else
++        say "--sh-fresh ignored: an explicit binary was selected ($binary_source); refusing to rebuild over an explicit choice"
++    fi
++fi
++[ -n "$hermit_bin" ] || die "no hermit binary found: pass one as the first argument, set HERMIT_BIN, or use --sh-bin"
++[ -x "$hermit_bin" ] || die "not executable: $hermit_bin"
++hermit_bin="$(cd "$(dirname "$hermit_bin")" && printf '%s/%s' "$(pwd)" "$(basename "$hermit_bin")")"
++
++# ---------------------------------------------------------------- identity (5)
++# Most of today's rework came from artifacts whose originating build was
++# unrecorded. The hash is of the binary that ACTUALLY ran, resolved absolute.
++run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
++binary_sha256="$(sha256sum "$hermit_bin" 2>/dev/null | cut -d' ' -f1)"
++[ -n "$binary_sha256" ] || binary_sha256="unavailable"
++invocation_sha256=""
++if [ -n "$detached_report_file" ]; then
++    invocation_sha256="$(python3 - "$hermit_bin" "$@" <<'PY'
++import hashlib
++import os
++import sys
++
++digest = hashlib.sha256()
++for argument in sys.argv[1:]:
++    digest.update(os.fsencode(argument))
++    digest.update(b"\0")
++print(digest.hexdigest())
++PY
++)"
++fi
++
++# ---------------------------------------------------------------- optional detached-unit accounting
++# Parallel experiment runners normally measure the worker cgroup. systemd-run
++# reparents this script's expensive child into a transient service, outside that
++# cgroup, so an explicitly opted-in caller may ask for a second resource report.
++#
++# The report is deliberately a separate file from --sh-report. It first appears
++# atomically with the owned unit name, before the unit is launched, so signal
++# teardown can find that exact cgroup. It is replaced atomically with the complete
++# counters while the unit is still retained and before reset-failed/stop below.
++# A pre-existing path is always a refusal: accepting one could make a stale unit
++# name authoritative for cancellation or mix a previous seed's counters into this
++# invocation.
++detached_report_identity=""
++detached_metrics_error=""
++detached_metrics_written=0
++detached_last_tasks_peak=""
++detached_cgroup_path=""
++detached_cpu_usage_usec=0
++detached_memory_oom_kills=0
++detached_tasks_limit_hits=0
++detached_cpu_time_limit_hit=0
++detached_wall_time_limit_hit=0
++detached_log_cap_hit=0
++detached_log_cap_killed=0
++detached_cleanup_armed=0
++detached_binary_identity_accepted=0
++detached_limit_cpu_cores_micros=""
++detached_limit_cpu_time_nsec=""
++detached_limit_wall_time_usec=""
++if [ -n "$detached_report_file" ]; then
++    detached_limit_cpu_cores_micros=$((detached_cpu_cores * 1000000))
++    detached_limit_cpu_time_nsec=$((detached_cpu_timeout_secs * 1000000000))
++    detached_limit_wall_time_usec=$((deadline * 1000000))
++fi
++
++prepare_detached_report() {
++    local prepared
++    local -a prepared_lines=()
++    prepared="$(python3 - "$detached_report_file" "$unit" "$run_id" \
++        "$invocation_sha256" "$binary_sha256" "$detached_memory_max_bytes" \
++        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
++        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" "0" <<'PY'
++import os
++import pathlib
++import stat
++import sys
++import tempfile
++
++(raw, unit, run_id, invocation, binary, memory_limit, tasks_limit,
++ cpu_cores_micros, cpu_time_limit, wall_time_limit, swap_limit) = sys.argv[1:]
++if not raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
++    raise SystemExit("resource report path is empty or contains a control character")
++path = pathlib.Path(raw)
++parent_text = os.path.abspath(os.fspath(path.parent))
++parent = pathlib.Path(parent_text)
++resolved_parent = parent.resolve(strict=True)
++if parent != resolved_parent:
++    raise SystemExit("resource report parent must not contain symlinks")
++if not resolved_parent.is_dir():
++    raise SystemExit("resource report parent is not a directory")
++parent_mode = resolved_parent.stat().st_mode
++if parent_mode & 0o022 and not parent_mode & stat.S_ISVTX:
++    raise SystemExit("resource report parent is writable by other users without sticky protection")
++name = path.name
++if name in {"", ".", ".."}:
++    raise SystemExit("resource report needs a file name")
++target = resolved_parent / name
++try:
++    os.lstat(target)
++except FileNotFoundError:
++    pass
++else:
++    raise SystemExit("resource report already exists")
++
++payload = (
++    f"safehermit: unit={unit}\n"
++    f"safehermit: run_id={run_id}\n"
++    f"safehermit: invocation_sha256={invocation}\n"
++    f"safehermit: binary_sha256={binary}\n"
++    f"safehermit: limit_memory_bytes={memory_limit}\n"
++    f"safehermit: limit_swap_bytes={swap_limit}\n"
++    f"safehermit: limit_tasks={tasks_limit}\n"
++    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
++    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
++    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
++).encode("utf-8")
++fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=resolved_parent)
++try:
++    os.fchmod(fd, 0o600)
++    with os.fdopen(fd, "wb", closefd=True) as stream:
++        stream.write(payload)
++        stream.flush()
++        os.fsync(stream.fileno())
++    fd = -1
++    # link(2), unlike replace(2), refuses a name that appeared after our lstat.
++    os.link(temporary, target)
++    os.unlink(temporary)
++    directory_fd = os.open(resolved_parent, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory_fd)
++    finally:
++        os.close(directory_fd)
++finally:
++    if fd >= 0:
++        os.close(fd)
++    try:
++        os.unlink(temporary)
++    except FileNotFoundError:
++        pass
++
++identity = os.lstat(target)
++if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
++    raise SystemExit("resource report is not a singly-linked regular file")
++print(target)
++print(f"{identity.st_dev}:{identity.st_ino}")
++PY
++)" || return 1
++    mapfile -t prepared_lines <<<"$prepared"
++    [ "${#prepared_lines[@]}" -eq 2 ] || return 1
++    detached_report_file="${prepared_lines[0]}"
++    detached_report_identity="${prepared_lines[1]}"
++}
++
++finish_detached_report() {
++    local memory_peak=$1 cpu_usage=$2 tasks_peak=$3
++    python3 - "$detached_report_file" "$detached_report_identity" "$unit" "$run_id" \
++        "$invocation_sha256" "$binary_sha256" "$memory_peak" "$cpu_usage" "$tasks_peak" \
++        "$detached_memory_max_bytes" "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
++        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" \
++        "$detached_cpu_time_limit_hit" "$detached_memory_oom_kills" \
++        "$detached_tasks_limit_hits" "$detached_wall_time_limit_hit" \
++        "$detached_log_cap_hit" "0" <<'PY'
++import os
++import pathlib
++import stat
++import sys
++import tempfile
++
++(raw, expected_identity, unit, run_id, invocation, binary,
++ memory_peak, cpu_usage, tasks_peak, memory_limit, tasks_limit,
++ cpu_cores_micros, cpu_time_limit, wall_time_limit, cpu_limit_hit,
++ memory_oom_kills, tasks_limit_hits, wall_limit_hit, log_cap_hit,
++ swap_limit) = sys.argv[1:]
++for label, value in (
++    ("memory_peak_bytes", memory_peak),
++    ("cpu_usage_nsec", cpu_usage),
++    ("tasks_peak", tasks_peak),
++    ("limit_memory_bytes", memory_limit),
++    ("limit_swap_bytes", swap_limit),
++    ("limit_tasks", tasks_limit),
++    ("limit_cpu_cores_micros", cpu_cores_micros),
++    ("limit_cpu_time_nsec", cpu_time_limit),
++    ("limit_wall_time_usec", wall_time_limit),
++    ("cpu_time_limit_hit", cpu_limit_hit),
++    ("memory_oom_kills", memory_oom_kills),
++    ("tasks_limit_hits", tasks_limit_hits),
++    ("wall_time_limit_hit", wall_limit_hit),
++    ("log_cap_hit", log_cap_hit),
++):
++    if not value.isascii() or not value.isdecimal():
++        raise SystemExit(f"{label} is not an unsigned decimal")
++if len(binary) != 64 or any(char not in "0123456789abcdef" for char in binary):
++    raise SystemExit("binary_sha256 is not a lowercase SHA-256 digest")
++path = pathlib.Path(raw)
++current = os.lstat(path)
++identity = f"{current.st_dev}:{current.st_ino}"
++if identity != expected_identity or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
++    raise SystemExit("resource report changed after launch")
++payload = (
++    f"safehermit: unit={unit}\n"
++    f"safehermit: run_id={run_id}\n"
++    f"safehermit: invocation_sha256={invocation}\n"
++    f"safehermit: binary_sha256={binary}\n"
++    f"safehermit: memory_peak_bytes={memory_peak}\n"
++    f"safehermit: cpu_usage_nsec={cpu_usage}\n"
++    f"safehermit: tasks_peak={tasks_peak}\n"
++    f"safehermit: limit_memory_bytes={memory_limit}\n"
++    f"safehermit: limit_swap_bytes={swap_limit}\n"
++    f"safehermit: limit_tasks={tasks_limit}\n"
++    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
++    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
++    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
++    f"safehermit: cpu_time_limit_hit={cpu_limit_hit}\n"
++    f"safehermit: memory_oom_kills={memory_oom_kills}\n"
++    f"safehermit: tasks_limit_hits={tasks_limit_hits}\n"
++    f"safehermit: wall_time_limit_hit={wall_limit_hit}\n"
++    f"safehermit: log_cap_hit={log_cap_hit}\n"
++).encode("utf-8")
++fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=path.parent)
++try:
++    os.fchmod(fd, 0o600)
++    with os.fdopen(fd, "wb", closefd=True) as stream:
++        stream.write(payload)
++        stream.flush()
++        os.fsync(stream.fileno())
++    fd = -1
++    # Recheck immediately before replacement. This is a stale/reuse guard, not
++    # authority over a hostile directory; callers retain authority over parent.
++    current = os.lstat(path)
++    if f"{current.st_dev}:{current.st_ino}" != expected_identity:
++        raise SystemExit("resource report changed before completion")
++    os.replace(temporary, path)
++    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory_fd)
++    finally:
++        os.close(directory_fd)
++finally:
++    if fd >= 0:
++        os.close(fd)
++    try:
++        os.unlink(temporary)
++    except FileNotFoundError:
++        pass
++PY
++}
++
++# ---------------------------------------------------------------- (6) bounded space
++mkdir -p "$LOG_ROOT" "$REGISTRY" 2>/dev/null
++brs="$ROOT/scripts/bounded-run-space"
++disk_state=""; log_dir=""
++if [ -x "$brs" ]; then
++    log_dir="$("$brs" create --limit "$disk_limit" --tag "safehermit-$run_id" --base "$LOG_ROOT" 2>/dev/null)"
++    rc=$?
++    if [ $rc -eq 0 ] && [ -n "$log_dir" ]; then
++        disk_state="APPLIED:$disk_limit for log_dir only; guest paths and explicit log files elsewhere are outside this bound"
++    elif [ -n "$log_dir" ]; then
++        # exit 10: the space exists but nothing caps it. RELAY IT -- this is the
++        # case bounded-run-space exists to make impossible to miss.
++        disk_state="NOT_APPLIED:bounded-run-space reported UNBOUNDED (rc=$rc); space exists but is not capped"
++    else
++        disk_state="NOT_APPLIED:bounded-run-space failed (rc=$rc)"
++    fi
++fi
++if [ -z "$log_dir" ]; then
++    log_dir="$LOG_ROOT/$run_id"
++    mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
++    [ -n "$disk_state" ] || disk_state="NOT_APPLIED:scripts/bounded-run-space not present; retained log directory is not capped"
++fi
++log_file="$log_dir/hermit.log"
++
++# ---------------------------------------------------------------- (1)(2) killability
++# The container init is a namespace PID 1 with no SIGTERM handler and the kernel
++# DISCARDS default-disposition signals to it, so `timeout` and even
++# `timeout --kill-after` cannot reap this process shape. A cgroup kill can.
++# RuntimeMaxSec on a transient unit is that cgroup kill.
++unit="safehermit-$run_id"
++wall_state="APPLIED:${deadline}s"
++runner=(); runner_state="APPLIED"
++if [ "$no_deadline" = 1 ]; then
++    wall_state="NOT_APPLIED:--sh-no-deadline was passed explicitly by the caller"
++fi
++# PROBE THE CAPABILITY, DO NOT ASK A PROXY ABOUT IT. `systemctl --user
++# is-system-running` returns "degraded" (rc=1) on this box while `systemd-run
++# --user` works perfectly -- gating on it silently dropped BOTH the wall bound and
++# the memory bound on a machine that supports them. Caught by this script's own
++# acceptance test. So we actually start a throwaway transient unit and see.
++systemd_ok=0
++if command -v systemd-run >/dev/null 2>&1; then
++    if timeout 20 systemd-run --user "--unit=safehermit-probe-$$" --collect --quiet \
++         --property=RuntimeMaxSec=10 --pipe --wait -- /bin/true >/dev/null 2>&1; then
++        systemd_ok=1
++    fi
++fi
++env_state="NOT_APPLIED:no transient unit, so the child inherits this shell's environment directly"
++if [ "$systemd_ok" = 1 ]; then
++    # FORWARD THE CALLER'S ENVIRONMENT EXPLICITLY. `systemd-run --user` does NOT
++    # inherit the invoking shell's environment -- it starts the unit from the user
++    # manager's own environment -- so without this every caller variable is
++    # SILENTLY DROPPED. Measured: with RUST_LOG=warn,detcore=info,reverie_ptrace::task=info
++    # exported, a guest that writes 46,868,869 bytes of stderr in 8.4s when hermit
++    # is run directly wrote 0 bytes through the transient unit, and this script
++    # reported bytes_written=0 truncated=false exit_code=0 -- a completely silent
++    # run that looked clean. Worse, the line below used to claim the caller's
++    # RUST_LOG was "passed through untouched" while it was being discarded, so the
++    # report asserted the opposite of what happened.
++    #
++    # This matters most for exactly the callers this wrapper is for: the demos set
++    # RUST_LOG, HERMIT_REPO, QEMU_BIN, LD_LIBRARY_PATH and TZ, and a run stripped of
++    # them is not the run the caller asked for.
++    #
++    # Exported shell FUNCTIONS cannot be forwarded -- systemd rejects the name
++    # `BASH_FUNC_which%%` with "Invalid argument" and, because that aborts the whole
++    # invocation, one such variable in the caller's environment would take the entire
++    # run down. So names that are not [A-Za-z_][A-Za-z0-9_]* are skipped, and the
++    # count of skips is REPORTED rather than swallowed.
++    setenv_args=(); env_fwd=0; env_skipped=0
++    while IFS= read -r -d '' _e; do
++        _n="${_e%%=*}"
++        case "$_n" in
++            [A-Za-z_]*) case "$_n" in *[!A-Za-z0-9_]*) env_skipped=$((env_skipped+1)); continue ;; esac ;;
++            *) env_skipped=$((env_skipped+1)); continue ;;
++        esac
++        setenv_args+=("--setenv=$_e"); env_fwd=$((env_fwd+1))
++    done < <(env -0)
++    env_state="APPLIED:$env_fwd variables forwarded"
++    [ "$env_skipped" -eq 0 ] || env_state="$env_state; $env_skipped SKIPPED (name not a plain shell identifier, e.g. an exported function)"
++    # NO --collect HERE, DELIBERATELY, AND IT MUST NOT BE ADDED BACK.
++    # After the run we ask systemd whether the unit timed out, because that answer
++    # is authoritative and the exit code is not. --collect garbage-collects the unit
++    # the moment it finishes, and `systemctl show` on a unit that no longer exists
++    # does not fail and does not return empty -- it returns the DEFAULT, which is
++    # Result=success. Measured, three trials each on the same timed-out unit:
++    #     with    --collect:  Result=success
++    #     without --collect:  Result=timeout
++    # So keeping --collect while reading the result would report every timed-out run
++    # as a clean success, confidently and silently. That is worse than the inference
++    # it replaces. The unit is instead stopped and reset explicitly below.
++    # Built in one pass. The previous form appended the deadline by SPLICING at a
++    # hard-coded index -- "${runner[@]:0:5}" ... "${runner[@]:5}" -- which silently
++    # means something different the moment a flag is added or removed above it, as
++    # removing --collect just did. Nothing here depends on position now.
++    # Guest arguments can contain shell expressions intended for the guest.
++    # systemd-run otherwise expands $VAR/${VAR} and collapses $$ before exec.
++    runner=(systemd-run --user "--unit=$unit" --quiet --expand-environment=no
++            "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0"
++            "--property=KillSignal=SIGKILL")
++    if [ -n "$detached_report_file" ]; then
++        runner+=("--property=TasksMax=$detached_tasks_max"
++                 "--property=CPUQuota=$((detached_cpu_cores * 100))%")
++    fi
++    [ "$no_deadline" = 1 ] || runner+=("--property=RuntimeMaxSec=$deadline")
++    runner+=("--working-directory=$PWD" "${setenv_args[@]}" --pipe --wait --)
++else
++    # NEVER fall back silently to an unbounded run.
++    runner=()
++    runner_state="NOT_APPLIED"
++    wall_state="NOT_APPLIED:systemd --user unavailable; NO cgroup kill and NO wall bound -- \`timeout\` cannot kill a namespace PID 1, so none is attempted"
++    unit="none"
++fi
++
++resolve_detached_cgroup() {
++    local properties_file="$log_dir/.resource-unit-location"
++    timeout 5 systemctl --user show "$unit.service" \
++        -p Id -p LoadState -p ControlGroup >"$properties_file" 2>/dev/null
++    local query_rc=$?
++    [ "$query_rc" -eq 0 ] || return 1
++    detached_cgroup_path="$(python3 - "$properties_file" "$unit.service" <<'PY'
++import pathlib
++import sys
++
++fields = {}
++for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
++    key, separator, value = line.partition("=")
++    if not separator or key not in {"Id", "LoadState", "ControlGroup"} or key in fields:
++        raise SystemExit(1)
++    fields[key] = value
++group = fields.get("ControlGroup", "")
++parts = pathlib.PurePosixPath(group).parts
++if (
++    fields.get("Id") != sys.argv[2]
++    or fields.get("LoadState") != "loaded"
++    or not group.startswith("/")
++    or ".." in parts
++):
++    raise SystemExit(1)
++print(group)
++PY
++)" || return 1
++    [ -n "$detached_cgroup_path" ] || return 1
++}
++
++verify_detached_limits() {
++    [ -n "$detached_cgroup_path" ] || return 1
++    python3 - "/sys/fs/cgroup${detached_cgroup_path}" "$detached_memory_max_bytes" \
++        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" 2>/dev/null <<'PY'
++import pathlib
++import sys
++
++group = pathlib.Path(sys.argv[1])
++memory, tasks, cores_micros = map(int, sys.argv[2:])
++if int((group / "memory.max").read_text(encoding="ascii").strip()) != memory:
++    raise SystemExit(1)
++if int((group / "memory.swap.max").read_text(encoding="ascii").strip()) != 0:
++    raise SystemExit(1)
++if int((group / "pids.max").read_text(encoding="ascii").strip()) != tasks:
++    raise SystemExit(1)
++quota_raw, period_raw = (group / "cpu.max").read_text(encoding="ascii").split()
++if quota_raw == "max":
++    raise SystemExit(1)
++quota, period = int(quota_raw), int(period_raw)
++if quota * 1_000_000 != cores_micros * period:
++    raise SystemExit(1)
++PY
++}
++
++sample_detached_cgroup() {
++    [ -n "$detached_cgroup_path" ] || return 1
++    local sample
++    sample="$(python3 - "/sys/fs/cgroup${detached_cgroup_path}" 2>/dev/null <<'PY'
++import pathlib
++import sys
++
++group = pathlib.Path(sys.argv[1])
++
++def keyed(path, wanted):
++    values = {}
++    for line in path.read_text(encoding="ascii").splitlines():
++        key, value = line.split()
++        values[key] = int(value)
++    return values[wanted]
++
++print(
++    keyed(group / "cpu.stat", "usage_usec"),
++    keyed(group / "memory.events", "oom_kill"),
++    keyed(group / "pids.events", "max"),
++    int((group / "pids.peak").read_text(encoding="ascii")),
++)
++PY
++)" || return 1
++    local usage oom_hits pids_hits tasks_peak
++    read -r usage oom_hits pids_hits tasks_peak <<<"$sample"
++    for observed in "$usage" "$oom_hits" "$pids_hits" "$tasks_peak"; do
++        [[ "$observed" =~ ^[0-9]+$ ]] || return 1
++    done
++    [ "$usage" -ge "$detached_cpu_usage_usec" ] || return 1
++    [ "$oom_hits" -ge "$detached_memory_oom_kills" ] || return 1
++    [ "$pids_hits" -ge "$detached_tasks_limit_hits" ] || return 1
++    detached_cpu_usage_usec="$usage"
++    detached_memory_oom_kills="$oom_hits"
++    detached_tasks_limit_hits="$pids_hits"
++    if [ -z "$detached_last_tasks_peak" ] || [ "$tasks_peak" -gt "$detached_last_tasks_peak" ]; then
++        detached_last_tasks_peak="$tasks_peak"
++    fi
++}
++
++kill_detached_unit() {
++    if [ -n "$detached_cgroup_path" ] \
++        && [ -w "/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" ]; then
++        printf '1\n' >"/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" 2>/dev/null \
++            && return 0
++    fi
++    local attempt
++    for attempt in $(seq 1 20); do
++        /usr/bin/systemctl --user kill --kill-whom=all --signal=KILL "$unit.service" \
++            >/dev/null 2>&1 && return 0
++        [ "$attempt" -eq 20 ] || sleep 0.02
++    done
++    return 1
++}
++
++detached_unit_is_quiescent() {
++    if [ -n "$detached_cgroup_path" ] \
++        && [ -d "/sys/fs/cgroup${detached_cgroup_path}" ]; then
++        local populated
++        populated="$(sed -n 's/^populated //p' \
++            "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
++        [ "$populated" = 0 ] || return 1
++    fi
++    local active
++    active="$(systemctl --user show "$unit.service" -p ActiveState --value 2>/dev/null)"
++    [ "$active" != active ] && [ "$active" != activating ] && [ "$active" != deactivating ]
++}
++
++terminate_detached_unit() {
++    local attempt
++    if detached_unit_is_quiescent; then
++        return 0
++    fi
++    kill_detached_unit || true
++    for attempt in $(seq 1 100); do
++        detached_unit_is_quiescent && return 0
++        sleep 0.02
++    done
++    timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
++    for attempt in $(seq 1 100); do
++        detached_unit_is_quiescent && return 0
++        sleep 0.02
++    done
++    return 1
++}
++
++reap_detached_helper() {
++    local helper_pid=$1
++    [ -n "$helper_pid" ] || return 0
++    local attempt
++    for attempt in $(seq 1 100); do
++        kill -0 "$helper_pid" 2>/dev/null || break
++        sleep 0.02
++    done
++    if kill -0 "$helper_pid" 2>/dev/null; then
++        kill -KILL "$helper_pid" 2>/dev/null || true
++    fi
++    wait "$helper_pid" 2>/dev/null || true
++}
++
++cleanup_detached_on_exit() {
++    local original_rc=$?
++    trap - EXIT INT TERM HUP
++    if [ "$detached_cleanup_armed" -eq 1 ]; then
++        terminate_detached_unit >/dev/null 2>&1 || true
++        reap_detached_helper "${runner_pid:-}"
++        reap_detached_helper "${capper_pid:-}"
++        timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
++        systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
++    fi
++    exit "$original_rc"
++}
++
++signal_detached_fifo() {
++    # A cancellation may kill the service after the unit stub is published but
++    # before its gate reader opens. A plain shell redirection would then block
++    # forever in open(2), so every one-byte handoff has its own real-clock bound.
++    # shellcheck disable=SC2016
++    timeout 5 bash -c 'printf "\n" >"$1"' bash "$1"
++}
++
++accept_detached_binary_identity() {
++    [ -f "$payload_binary_identity_file" ] || return 1
++    local executed_binary_sha256
++    executed_binary_sha256="$(sed -n '1p' "$payload_binary_identity_file")"
++    [[ "$executed_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
++    binary_sha256="$executed_binary_sha256"
++    detached_binary_identity_accepted=1
++    rm -f "$payload_binary_identity_file" "$payload_binary_identity_file.tmp"
++}
++
++unsigned_decimal_gt() {
++    python3 - "$1" "$2" <<'PY'
++import sys
++
++left, right = sys.argv[1:]
++if not all(value.isascii() and value.isdecimal() for value in (left, right)):
++    raise SystemExit(2)
++raise SystemExit(0 if int(left) > int(right) else 1)
++PY
++}
++
++collect_detached_metrics() {
++    local properties_file="$log_dir/.resource-unit-properties"
++    timeout 5 systemctl --user show "$unit.service" \
++        -p Id -p LoadState -p ActiveState -p SubState -p Result -p ControlGroup \
++        -p MemoryPeak -p CPUUsageNSec -p TasksPeak >"$properties_file" 2>/dev/null
++    local query_rc=$?
++    [ "$query_rc" -eq 0 ] || return 1
++    python3 - "$properties_file" "$unit.service" "$detached_last_tasks_peak" <<'PY'
++import pathlib
++import sys
++
++path, expected_unit, sampled_tasks = sys.argv[1:]
++known = {
++    "Id", "LoadState", "ActiveState", "SubState", "Result", "ControlGroup",
++    "MemoryPeak", "CPUUsageNSec", "TasksPeak",
++}
++fields = {}
++for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
++    key, separator, value = line.partition("=")
++    if not separator or key not in known or key in fields:
++        raise SystemExit(1)
++    fields[key] = value
++if (
++    fields.get("Id") != expected_unit
++    or fields.get("LoadState") != "loaded"
++    or fields.get("ActiveState") not in {"active", "inactive", "failed"}
++    or not fields.get("SubState")
++):
++    raise SystemExit(1)
++
++def unsigned(name):
++    value = fields.get(name, "")
++    if not value.isascii() or not value.isdecimal():
++        raise SystemExit(1)
++    number = int(value)
++    if number >= 2**64 - 1:
++        raise SystemExit(1)
++    return number
++
++memory = unsigned("MemoryPeak")
++cpu = unsigned("CPUUsageNSec")
++tasks_raw = fields.get("TasksPeak", "")
++if tasks_raw.isascii() and tasks_raw.isdecimal():
++    tasks = int(tasks_raw)
++elif sampled_tasks.isascii() and sampled_tasks.isdecimal():
++    tasks = int(sampled_tasks)
++else:
++    raise SystemExit(1)
++print(
++    memory,
++    cpu,
++    tasks,
++    1 if fields.get("Result") == "oom-kill" else 0,
++    1 if fields.get("Result") == "timeout" else 0,
++)
++PY
++}
++
++if [ -n "$detached_report_file" ]; then
++    [ "$runner_state" = APPLIED ] \
++        || die "--sh-resource-report requires a working systemd --user transient service"
++    if ! prepare_detached_report; then
++        die "--sh-resource-report refused unsafe, pre-existing, or unwritable path: $detached_report_file"
++    fi
++    detached_cleanup_armed=1
++    trap cleanup_detached_on_exit EXIT
++    trap 'exit 129' HUP
++    trap 'exit 130' INT
++    trap 'exit 143' TERM
++fi
++
++# ---------------------------------------------------------------- (4) log filter
++if [ -n "${RUST_LOG:-}" ]; then
++    # "passed through untouched" is only true because the environment is now
++    # explicitly forwarded above; before that it was false, and silently so.
++    logfilter_state="NOT_APPLIED:caller set RUST_LOG=$RUST_LOG; passed through untouched"
++else
++    logfilter_state="NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires"
++fi
++
++# ---------------------------------------------------------------- (8) best-effort note
++# NOT A LEDGER, AND NOTHING MAY DEPEND ON IT. Owner ruling: "every time we
++# introduce a ledger it breaks and we get confused." So this writes a line because
++# writing is free, and that is the end of its authority. No receipt semantics, no
++# gate reads it, no agent behaviour is keyed to it, and a failure to write it is
++# not a failure of the run. If you find yourself wanting to make a decision from
++# this file, do not.
++reg="$REGISTRY/$run_id.json"
++printf '{"run_id":"%s","unit":"%s","pid":%s,"binary":"%s","binary_sha256":"%s","log_dir":"%s","started_at":"%s","state":"running"}\n' \
++    "$run_id" "$unit" "$$" "$hermit_bin" "$binary_sha256" "$log_dir" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$reg" 2>/dev/null \
++    && reg_state="$reg (best-effort; nothing depends on it)" || reg_state="unwritten (best-effort; harmless)"
++
++# ---------------------------------------------------------------- announce (7)
++field run_id        "$run_id"
++field binary        "$hermit_bin"
++field binary_source "$binary_source"
++field binary_sha256 "$binary_sha256"
++field log_dir       "$log_dir"
++field log_file      "$log_file"
++field unit          "$unit"
++field bound.wall      "$wall_state"
++if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
++    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0 TasksMax=$detached_tasks_max CPUQuota=$((detached_cpu_cores * 100))% CPUTimeMax=${detached_cpu_timeout_secs}s"
++elif [ "$runner_state" = APPLIED ]; then
++    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0"
++else
++    cgroup_bound_state="NOT_APPLIED:systemd --user unavailable"
++fi
++field bound.cgroup    "$cgroup_bound_state"
++field bound.disk      "$disk_state"
++if [ "$runner_state" = APPLIED ]; then
++    byte_bound_state="APPLIED:$max_log_bytes (LETHAL: the run is cgroup-killed at the cap)"
++else
++    byte_bound_state="APPLIED:$max_log_bytes (TRUNCATION ONLY: no cgroup kill is available; stderr is still drained so the child can finish)"
++fi
++field bound.bytes     "$byte_bound_state"
++field bound.logfilter "$logfilter_state"
++field env.forwarded   "$env_state"
++field note.run_record "$reg_state"
++if [ -n "$detached_report_file" ]; then
++    field resource_report "$detached_report_file"
++fi
++
++# ---------------------------------------------------------------- (3) byte cap
++# A capped log that reads as complete is worse than a missing one, so the capper
++# records the truncation. It NEVER closes the pipe: closing would deliver SIGPIPE
++# to hermit and turn a log cap into a kill, and under `set -o pipefail` that also
++# takes the script down silently. It keeps draining and stops writing.
++capper() {
++    # STREAMING, CONSTANT MEMORY. A reviewer found that the evidence cap in
++    # safe-ci-dag-runner bounds the FILE while still holding complete stdout and
++    # stderr in memory -- trading a full disk for an OOM is not a fix. This reads
++    # and writes in 64 KiB chunks and accumulates nothing, so peak memory is the
++    # chunk, not the stream.
++    #
++    # IT NEVER CLOSES THE PIPE. Closing would deliver SIGPIPE to hermit and turn a
++    # log cap into an unexplained kill, and under `set -o pipefail` it would take
++    # this script down silently too. On cap it stops WRITING and keeps DRAINING.
++    #
++    # THE CAP IS LETHAL, BY OWNER RULING. A spinning program should die from the
++    # timeout or from the log hitting a low cap, so on cap we kill the run through
++    # its cgroup and keep the first bytes as evidence. Without systemd there is no
++    # cgroup to kill, so it degrades to truncate-and-say-so rather than pretending.
++    python3 -u -c '
++import sys, os, subprocess, time
++cap = int(sys.argv[1]); path = sys.argv[2]; unit = sys.argv[3]
++parent_monitors = sys.argv[4] == "yes"
++written = 0; truncated = False; killed = "n/a"
++out = open(path, "wb")
++src = sys.stdin.buffer; dst = sys.stdout.buffer
++while True:
++    # Resource-accounted runs give this capper a dedicated payload-only FIFO;
++    # systemd-run never owns its write end, so EOF is an exact child boundary.
++    # os.read also returns currently available bytes instead of waiting to fill
++    # a 64-KiB BufferedReader request.
++    chunk = os.read(src.fileno(), 65536)
++    if not chunk: break
++    dst.write(chunk); dst.flush()
++    if not truncated:
++        room = cap - written
++        if len(chunk) <= room:
++            out.write(chunk); written += len(chunk)
++        else:
++            if room > 0: out.write(chunk[:room]); written += room
++            out.write(b"\n[safehermit] LOG CAP OF %d BYTES REACHED. The bytes above are kept as evidence; everything after this point was discarded.\n" % cap)
++            out.flush(); truncated = True
++            marker = path + ".cap-fired"
++            with open(marker + ".tmp", "w") as cap_marker:
++                cap_marker.write("1\n")
++            os.replace(marker + ".tmp", marker)
++            if unit and unit != "none":
++                if parent_monitors:
++                    # The detached parent owns the cgroup path in memory and
++                    # polls this marker. Do not trust a same-UID, payload-writable
++                    # sidecar as kill authority.
++                    rc = 0
++                    killed = "parent-monitor"
++                    kill_error = b""
++                else:
++                    rc = 1
++                    kill_error = b""
++                    for _ in range(100):
++                        attempt = subprocess.run(
++                            ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
++                            stdout=subprocess.DEVNULL,
++                            stderr=subprocess.PIPE,
++                            check=False,
++                        )
++                        rc = attempt.returncode
++                        kill_error = attempt.stderr[-512:]
++                        if rc == 0:
++                            break
++                        time.sleep(0.05)
++                    killed = "cgroup-killed" if rc == 0 else "kill-failed-rc%d" % rc
++                if parent_monitors:
++                    out.write(b"[safehermit] the detached parent was notified to kill the owned cgroup.\n")
++                else:
++                    out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
++                if rc != 0 and kill_error:
++                    out.write(b"[safehermit] final systemctl kill error: %s\n" % kill_error.rstrip())
++            else:
++                killed = "no-cgroup-available"
++                out.write(b"[safehermit] NOT killed: no systemd cgroup was available, so the cap could only truncate.\n")
++            out.flush()
++out.flush(); out.close()
++with open(path + ".meta", "w") as m:
++    m.write("bytes_written=%d\ntruncated=%s\ncap=%d\nkilled=%s\n" % (written, str(truncated).lower(), cap, killed))
++' "$1" "$2" "$3" "$4"
++}
++
++# ---------------------------------------------------------------- run
++# A FIFO, NOT PROCESS SUBSTITUTION. `2> >(capper …)` is not waited on, so the
++# script read `.meta` before the capper had written it and reported
++# `truncated=unknown` -- i.e. the truncation record, which is the entire point of
++# requirement (3), was missing on every run. Caught by this script's own test. A
++# FIFO with an explicit `wait` makes the capper's completion a precondition of
++# reporting, and keeps `$?` the child's own status rather than the pipeline's.
++if [ -n "$detached_report_file" ]; then
++    fifo="$log_dir/.resource-payload-stderr.fifo"
++else
++    fifo="$log_dir/.stderr.fifo"
++fi
++rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null || die "cannot create fifo $fifo"
++if [ -n "$detached_report_file" ]; then
++    capper_parent_monitors=yes
++else
++    capper_parent_monitors=no
++fi
++capper "$max_log_bytes" "$log_file" "$unit" "$capper_parent_monitors" < "$fifo" >&2 &
++capper_pid=$!
++capper_waited=0
++
++started=$(date +%s)
++started_monotonic_usec="$(python3 -c 'import time; print(time.monotonic_ns() // 1000)' 2>/dev/null)"
++if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
++    # Keep one inert process in the service after the payload exits. Without it,
++    # a successful transient service can disappear between systemd-run returning
++    # and the first accounting query. The payload writes its status atomically,
++    # then blocks on this FIFO while we read the still-live unit's counters and
++    # publish the complete report. RuntimeMaxSec and the lethal log cap still
++    # kill the whole cgroup, including this holder.
++    payload_status_file="$log_dir/.resource-payload-status"
++    payload_binary_identity_file="$log_dir/.resource-binary-sha256"
++    payload_release_fifo="$log_dir/.resource-payload-release"
++    payload_start_fifo="$log_dir/.resource-payload-start"
++    mkfifo "$payload_start_fifo" "$payload_release_fifo" 2>/dev/null \
++        || die "cannot create resource-accounting gate fifos"
++    resource_wrapper=(python3 -c '
++import ctypes
++import hashlib
++import os
++import pathlib
++import signal
++import stat
++import subprocess
++import sys
++
++status_file = pathlib.Path(sys.argv[1])
++release_fifo = pathlib.Path(sys.argv[2])
++start_fifo = pathlib.Path(sys.argv[3])
++stderr_fifo = pathlib.Path(sys.argv[4])
++binary_identity_file = pathlib.Path(sys.argv[5])
++binary_path = sys.argv[6]
++
++# A direct child may leave double-forked descendants behind. Become their
++# subreaper before launch, then do not publish payload status until every
++# adopted descendant is gone. This keeps the outer cgroup sampler authoritative
++# for the entire payload tree, including daemons that close stderr.
++PR_SET_CHILD_SUBREAPER = 36
++libc = ctypes.CDLL(None, use_errno=True)
++if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
++    raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
++
++# Pin the executable inode that is hashed. Executing /proc/self/fd/N with the
++# descriptor inherited closes the pathname-replacement race between identity
++# measurement and exec, including for arbitrary binaries under /tmp.
++binary_fd = os.open(binary_path, os.O_RDONLY | os.O_CLOEXEC)
++identity = os.fstat(binary_fd)
++if not stat.S_ISREG(identity.st_mode):
++    raise SystemExit(126)
++digest = hashlib.sha256()
++while True:
++    chunk = os.read(binary_fd, 1024 * 1024)
++    if not chunk:
++        break
++    digest.update(chunk)
++os.lseek(binary_fd, 0, os.SEEK_SET)
++identity_temporary = binary_identity_file.with_name(binary_identity_file.name + ".tmp")
++identity_temporary.write_text(digest.hexdigest() + "\n", encoding="ascii")
++identity_temporary.replace(binary_identity_file)
++with stderr_fifo.open("wb", buffering=0) as payload_stderr:
++    # Open the payload-only writer before waiting at the launch gate. If
++    # preflight refuses the service, killing this wrapper then gives the capper
++    # an exact EOF even though the payload was never allowed to start.
++    with start_fifo.open("rb") as stream:
++        if not stream.read(1):
++            raise SystemExit(126)
++    completed = subprocess.run(
++        [binary_path, *sys.argv[7:]],
++        check=False,
++        executable=f"/proc/self/fd/{binary_fd}",
++        stderr=payload_stderr,
++        pass_fds=(binary_fd,),
++    )
++    while True:
++        try:
++            os.waitpid(-1, 0)
++        except ChildProcessError:
++            break
++os.close(binary_fd)
++caller_status = 128 - completed.returncode if completed.returncode < 0 else completed.returncode
++temporary = status_file.with_name(status_file.name + ".tmp")
++temporary.write_text(str(caller_status) + "\n", encoding="ascii")
++temporary.replace(status_file)
++with release_fifo.open("rb") as stream:
++    if not stream.read(1):
++        raise SystemExit(126)
++if completed.returncode < 0:
++    signum = -completed.returncode
++    signal.signal(signum, signal.SIG_DFL)
++    os.kill(os.getpid(), signum)
++    raise SystemExit(128 + signum)
++raise SystemExit(completed.returncode)
++' "$payload_status_file" "$payload_release_fifo" "$payload_start_fifo" "$fifo" \
++        "$payload_binary_identity_file" "$hermit_bin" "$@")
++    "${runner[@]}" "${resource_wrapper[@]}" &
++    runner_pid=$!
++
++    # The report already contains the owned unit name. Resolve only that unit's
++    # cgroup, then retain its monotonic pids.peak while waiting. This also gives
++    # timeout/cap outcomes a task count even though their cgroup vanishes on kill.
++    for _ in $(seq 1 100); do
++        resolve_detached_cgroup && break
++        kill -0 "$runner_pid" 2>/dev/null || break
++        sleep 0.02
++    done
++    if [ -n "$detached_cgroup_path" ] && verify_detached_limits; then
++        if ! sample_detached_cgroup; then
++            detached_metrics_error="could not sample verified cgroup before payload launch"
++            kill_detached_unit || true
++        else
++            for _ in $(seq 1 100); do
++                accept_detached_binary_identity && break
++                kill -0 "$runner_pid" 2>/dev/null || break
++                sleep 0.02
++            done
++            if [ "$detached_binary_identity_accepted" -ne 1 ]; then
++                detached_metrics_error="could not authenticate the pinned executable before payload launch"
++                kill_detached_unit || true
++            elif ! signal_detached_fifo "$payload_start_fifo"; then
++                detached_metrics_error="could not release verified payload gate"
++                kill_detached_unit || true
++            fi
++        fi
++    else
++        detached_metrics_error="declared memory, task, or CPU-core limit was not applied exactly"
++        kill_detached_unit || true
++    fi
++    detached_empty_polls=0
++    detached_sample_failures=0
++    while [ ! -f "$payload_status_file" ]; do
++        if sample_detached_cgroup; then
++            detached_sample_failures=0
++        else
++            detached_group_dir="/sys/fs/cgroup${detached_cgroup_path}"
++            # RuntimeMaxSec removes the service cgroup before the foreground
++            # systemd-run client necessarily exits. Once that exact verified
++            # cgroup is gone, no payload can still be running inside it; leave
++            # the loop and collect the retained unit properties. Treating the
++            # still-draining systemd-run client as payload liveness made a
++            # legitimate wall timeout sporadically look like lost accounting.
++            [ -d "$detached_group_dir" ] || break
++            populated="$(sed -n 's/^populated //p' \
++                "$detached_group_dir/cgroup.events" 2>/dev/null)"
++            [ "$populated" != 0 ] || break
++            if [ "$populated" = 1 ] || kill -0 "$runner_pid" 2>/dev/null; then
++                detached_sample_failures=$((detached_sample_failures + 1))
++                if [ "$detached_sample_failures" -ge 3 ]; then
++                    detached_metrics_error="live cgroup resource counters became unreadable"
++                    kill_detached_unit || true
++                    break
++                fi
++            fi
++        fi
++        if [ -f "$log_file.cap-fired" ]; then
++            detached_log_cap_hit=1
++            if terminate_detached_unit; then
++                detached_log_cap_killed=1
++            else
++                detached_metrics_error="log cap fired but the owned cgroup could not be terminated"
++            fi
++            break
++        fi
++        if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
++            detached_cpu_time_limit_hit=1
++            if ! terminate_detached_unit; then
++                detached_metrics_error="CPU-time budget fired but the owned cgroup could not be terminated"
++            fi
++            break
++        fi
++        if ! kill -0 "$runner_pid" 2>/dev/null; then
++            populated="$(sed -n 's/^populated //p' \
++                "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
++            if [ "$populated" = 1 ]; then
++                detached_empty_polls=0
++            else
++                detached_empty_polls=$((detached_empty_polls + 1))
++                [ "$detached_empty_polls" -lt 20 ] || break
++            fi
++        fi
++        sleep 0.05
++    done
++    sample_detached_cgroup || true
++    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
++    if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
++        detached_cpu_time_limit_hit=1
++        if ! terminate_detached_unit; then
++            detached_metrics_error="final CPU-time sample exceeded the budget but the owned cgroup could not be terminated"
++        fi
++    fi
++
++    payload_rc=""
++    if [ -f "$payload_status_file" ]; then
++        payload_rc="$(sed -n '1p' "$payload_status_file")"
++        if ! [[ "$payload_rc" =~ ^[0-9]+$ ]] || [ "$payload_rc" -gt 255 ]; then
++            detached_metrics_error="payload status is missing or malformed"
++            payload_rc=""
++        fi
++        # Status is published only after the payload tree has closed its stderr
++        # writer. Drain the capper before releasing the holder so a short final
++        # burst cannot publish its marker after the parent has already decided
++        # the run completed normally.
++        wait "$capper_pid" 2>/dev/null
++        capper_waited=1
++        capper_pid=""
++        if [ -f "$log_file.cap-fired" ]; then
++            detached_log_cap_hit=1
++            if terminate_detached_unit; then
++                detached_log_cap_killed=1
++            else
++                detached_metrics_error="log cap fired at payload completion but the owned cgroup could not be terminated"
++            fi
++        fi
++        # Status is written only after the subreaper has reaped every payload
++        # descendant. Release the sole holder and wait for the unit to terminate
++        # before taking the authoritative final counters.
++        if ! detached_unit_is_quiescent && ! signal_detached_fifo "$payload_release_fifo"; then
++            detached_metrics_error="could not release the quiescent resource-accounting holder"
++            terminate_detached_unit || true
++        fi
++    fi
++    runner_rc=0
++    wait "$runner_pid" 2>/dev/null || runner_rc=$?
++    runner_pid=""
++    wait "$capper_pid" 2>/dev/null
++    capper_waited=1
++    capper_pid=""
++    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
++
++    # A deadline, lethal log cap, or external cgroup kill bypasses payload
++    # status, but the retained unit properties remain queryable until cleanup.
++    # For ordinary completion, status proves the subreaper had no descendants
++    # before the holder exited. In both cases publication happens only now.
++    if [ "$detached_metrics_written" -eq 0 ] && [ -z "$detached_metrics_error" ]; then
++        detached_metrics="$(collect_detached_metrics)"
++        metrics_rc=$?
++        if [ "$metrics_rc" -eq 0 ]; then
++            read -r detached_memory_peak detached_cpu_usage detached_tasks_peak \
++                detached_result_oom detached_result_timeout <<<"$detached_metrics"
++            [ "$detached_result_oom" -le "$detached_memory_oom_kills" ] \
++                || detached_memory_oom_kills="$detached_result_oom"
++            [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
++                || detached_wall_time_limit_hit="$detached_result_timeout"
++            if unsigned_decimal_gt "$detached_cpu_usage" "$detached_limit_cpu_time_nsec"; then
++                detached_cpu_time_limit_hit=1
++            fi
++            if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
++                detached_metrics_written=1
++            else
++                detached_metrics_error="atomic post-termination resource report completion failed"
++            fi
++        else
++            detached_metrics_error="required post-termination resource property is missing or malformed"
++        fi
++    fi
++    if [ -n "$payload_rc" ]; then
++        rc=$payload_rc
++    else
++        rc=$runner_rc
++    fi
++elif [ "$runner_state" = APPLIED ]; then
++    "${runner[@]}" "$hermit_bin" "$@" 2>"$fifo"
++    rc=$?
++    runner_rc=$rc
++else
++    "$hermit_bin" "$@" 2>"$fifo"
++    rc=$?
++    runner_rc=$rc
++fi
++if [ "$capper_waited" -eq 0 ]; then
++    wait "$capper_pid" 2>/dev/null
++    capper_pid=""
++fi
++[ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
++rm -f "$fifo"
++if [ -n "${payload_release_fifo:-}" ]; then
++    rm -f "$payload_start_fifo" "$payload_release_fifo" "$payload_status_file" "$payload_status_file.tmp" \
++        "$payload_binary_identity_file" "$payload_binary_identity_file.tmp" \
++        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties"
++fi
++rm -f "$log_file.cap-fired" "$log_file.cap-fired.tmp"
++elapsed=$(( $(date +%s) - started ))
++
++# ---------------------------------------------------------------- report
++trunc="unknown"; wrote="unknown"
++if [ -f "$log_file.meta" ]; then
++    trunc="$(sed -n 's/^truncated=//p' "$log_file.meta")"
++    killed="$(sed -n 's/^killed=//p' "$log_file.meta")"
++    wrote="$(sed -n 's/^bytes_written=//p' "$log_file.meta")"
++fi
++field elapsed_secs  "$elapsed"
++field bytes_written "$wrote"
++field truncated     "$trunc"
++field runner_exit_code "$runner_rc"
++if [ -n "$detached_report_file" ]; then
++    if [ "$detached_metrics_written" -eq 1 ]; then
++        field resource_report_state "COMPLETE"
++    else
++        field resource_report_state "INCOMPLETE:${detached_metrics_error:-payload ended before accounting could complete}"
++    fi
++fi
++if [ "$trunc" = true ]; then
++    if [ "$detached_log_cap_killed" -eq 1 ] && [ "${killed:-}" != cgroup-killed ]; then
++        killed="parent-cgroup-killed"
++    fi
++    field killed_at_cap "${killed:-unknown}"
++    # A distinct code, because "255" tells a caller nothing about WHY.
++    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_killed" -eq 1 ]; then
++        rc=125
++    fi
++    say "LOG CAP: the run hit the ${max_log_bytes}-byte cap (${killed:-unknown}). The log is INCOMPLETE by design; the kept bytes are the evidence."
++fi
++# ---------------------------------------------------------------- deadline verdict
++# ASK SYSTEMD, DO NOT INFER. This used to reconstruct "did the deadline fire?" from
++# two proxies -- `elapsed >= deadline` arithmetic, and an allowlist of child exit
++# codes (143/137/1) -- and both can be wrong.
++#
++# THE REPRODUCED FAILURE, which is why this is not a tidy-up. `--sh-deadline 6s` is a
++# perfectly ordinary thing for a caller to write and systemd accepts it: RuntimeMaxSec
++# takes a suffix, the bound IS applied, and the run IS killed. But bash `[ 6 -ge 6s ]`
++# aborts with "integer expression expected", so the whole condition went false and the
++# kill went UNREPORTED -- measured, a 600s child under `--sh-deadline 6s` returned exit
++# 1 after 6s with zero DEADLINE lines, against exit 124 for `--sh-deadline 6`. Exit 1
++# is hermit's own convention for "the guest failed", so the caller sees a plausible
++# ordinary failure and has no reason to suspect the run was killed.
++#
++# `Result` is what systemd itself concluded, so neither proxy is needed and the
++# arithmetic that broke on "6s" is deleted rather than repaired.
++#
++# THE NON-ANSWER IS TREATED AS A NON-ANSWER. If the result cannot be read, this says
++# so and falls back to the old inference rather than trusting a blank -- a unit that
++# no longer exists reports Result=success, so "unreadable" and "the run was fine" look
++# identical and must not be conflated.
++unit_result=""
++if [ "$runner_state" = APPLIED ] && [ "$unit" != none ]; then
++    unit_result="$(systemctl --user show "$unit.service" -p Result --value 2>/dev/null)"
++    field unit_result "${unit_result:-UNREADABLE}"
++    case "$unit_result" in
++        exit-code|signal|core-dump)
++            # systemd-run reports core-dump as 1 and signal as 255, not the
++            # shell's 128 + signal number. Read the completed process before
++            # resetting its failed unit; never infer an abort from exit 1.
++            termination_text="$(timeout 5 systemctl --user show "$unit.service" \
++                -p Id -p LoadState -p ActiveState -p SubState -p Result \
++                -p ExecMainPID -p ExecMainCode -p ExecMainStatus \
++                -p ExecMainStartTimestampMonotonic 2>/dev/null)"
++            termination_query_rc=$?
++            declare -A termination=()
++            termination_valid=1
++            while IFS='=' read -r key value; do
++                case "$key" in
++                    Id|LoadState|ActiveState|SubState|Result|ExecMainPID|ExecMainCode|ExecMainStatus|ExecMainStartTimestampMonotonic)
++                        [ -z "${termination[$key]+present}" ] || termination_valid=0
++                        termination[$key]="$value" ;;
++                    *) termination_valid=0 ;;
++                esac
++            done <<<"$termination_text"
++            if [ "$termination_query_rc" -eq 0 ] && [ "$termination_valid" -eq 1 ] \
++                && [ "${#termination[@]}" -eq 9 ] \
++                && [ "${termination[Id]:-}" = "$unit.service" ] \
++                && [ "${termination[LoadState]:-}" = loaded ] \
++                && [ "${termination[ActiveState]:-}" = failed ] \
++                && [ "${termination[SubState]:-}" = failed ] \
++                && [ "${termination[Result]:-}" = "$unit_result" ] \
++                && [[ "${termination[ExecMainPID]:-}" =~ ^[1-9][0-9]*$ ]] \
++                && [[ "$started_monotonic_usec" =~ ^[1-9][0-9]{0,17}$ ]] \
++                && [[ "${termination[ExecMainStartTimestampMonotonic]:-}" =~ ^[1-9][0-9]{0,17}$ ]] \
++                && [ "${termination[ExecMainStartTimestampMonotonic]}" -ge "$started_monotonic_usec" ]; then
++                field exec_main_pid "${termination[ExecMainPID]}"
++                field exec_main_code "${termination[ExecMainCode]}"
++                field exec_main_status "${termination[ExecMainStatus]}"
++                field exec_main_start_monotonic_usec "${termination[ExecMainStartTimestampMonotonic]}"
++                if { [ "$unit_result" = signal ] && [ "${termination[ExecMainCode]}" = 2 ]; } \
++                    || { [ "$unit_result" = core-dump ] && [ "${termination[ExecMainCode]}" = 3 ]; }; then
++                    if [[ "${termination[ExecMainStatus]}" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] \
++                        && [ "$runner_rc" -ne 0 ]; then
++                        field process_signal "${termination[ExecMainStatus]}"
++                        # A deliberate cap verdict keeps its original priority.
++                        [ "$rc" -eq 125 ] || rc=$((128 + termination[ExecMainStatus]))
++                    else
++                        say "PROCESS STATUS UNREADABLE: invalid signal status; retaining runner exit $runner_rc."
++                    fi
++                elif [ "$unit_result" != exit-code ]; then
++                    say "PROCESS STATUS UNREADABLE: termination code differs from Result; retaining runner exit $runner_rc."
++                fi
++            else
++                say "PROCESS STATUS UNREADABLE: completed unit identity or properties differ; retaining runner exit $runner_rc."
++            fi
++            ;;
++    esac
++    # Clean up explicitly, since --collect is deliberately not used. A timed-out unit
++    # is left in the failed state otherwise, and its name stays taken.
++    systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
++    systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
++    if [ -n "$detached_report_file" ] && detached_unit_is_quiescent; then
++        detached_cleanup_armed=0
++        trap - EXIT INT TERM HUP
++    fi
++fi
++if [ "$unit_result" = timeout ]; then
++    say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
++    rc=124
++elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APPLIED ] \
++     && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
++    say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
++    rc=124
++fi
++if [ "$detached_cpu_time_limit_hit" -eq 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ]; then
++    say "CPU-TIMEOUT: the run exceeded ${detached_cpu_timeout_secs}s aggregate CPU and its owned cgroup was killed."
++    rc=126
++fi
++if [ -n "$detached_report_file" ] && [ "$detached_metrics_written" -ne 1 ]; then
++    say "RESOURCE REPORT REFUSAL: ${detached_metrics_error:-accounting did not complete}; the incomplete report is retained for owned-unit cleanup."
++    # Preserve the two stronger containment verdicts. Otherwise a caller that
++    # explicitly requested accounting must never receive the payload's apparent
++    # success/failure as if the measurement were complete.
++    [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ] || rc=2
++fi
++
++field exit_code "$rc"
++if [ -f "$reg" ]; then
++    python3 - "$reg" "$rc" "$trunc" <<'PY' 2>/dev/null || true
++import json, sys
++p, rc, tr = sys.argv[1], sys.argv[2], sys.argv[3]
++d = json.load(open(p)); d.update(state="finished", exit_code=int(rc), truncated=(tr == "true"))
++json.dump(d, open(p, "w"))
++PY
++fi
++exit $rc
+diff --git a/fbcode/testinfra/tfa/tests/BUCK b/fbcode/testinfra/tfa/tests/BUCK
+--- a/fbcode/testinfra/tfa/tests/BUCK
++++ b/fbcode/testinfra/tfa/tests/BUCK
+@@ -5,1 +4,0 @@
+-
+@@ -25,0 +25,3 @@
++    resources = {
++        "//testinfra/tfa:hermit-test-bin-opt": "hermit-test-bin",
++    },
+diff --git a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+--- a/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
++++ b/fbcode/testinfra/tfa/tests/test_process_migration_helper.py
+@@ -360,1 +360,1 @@
+-        "--verify-strict",
++        "--verify-verbose",
+@@ -407,1 +407,1 @@
+-        "--verify-strict",
++        "--verify-verbose",
+@@ -446,1 +446,1 @@
+-            for path in Path(hermit_module._SAFEHERMIT_LOG_ROOT).iterdir()
++            for path in hermit_module._safehermit_log_root(attempt).iterdir()
+@@ -578,0 +579,1 @@
++    controller_pid = os.getpid()
+@@ -587,1 +588,5 @@
+-                    {"operation": boundary, "worker_pid": os.getpid()},
++                    {
++                        "controller_pid": controller_pid,
++                        "operation": boundary,
++                        "worker_pid": os.getpid(),
++                    },
+@@ -685,1 +690,1 @@
+-    with _verify_command_guard():
++    with _verify_command_guard(started.parent / "attempt"):
+diff --git a/fbcode/testinfra/tfa/tests/test_production_containment.py b/fbcode/testinfra/tfa/tests/test_production_containment.py
+--- a/fbcode/testinfra/tfa/tests/test_production_containment.py
++++ b/fbcode/testinfra/tfa/tests/test_production_containment.py
+@@ -28,0 +29,1 @@
++import testinfra.tfa.hermit as hermit_module
+@@ -78,5 +79,4 @@
+-_HERMIT_BINARY = (
+-    "/home/newton/work/dev-hermit/ignored/"
+-    "tfa-rlimit-core-rerun-20260920-4630ee2a/"
+-    "stable-5c422b85/hermit-4630ee2a"
+-)
++def _hermit_binary() -> str:
++    return str(Path(__file__).with_name("hermit-test-bin").resolve(strict=True))
++
++
+@@ -87,1 +86,0 @@
+-_HANDOFF_TEST_LOCK = _HERMIT_TEST_SCHEDULER_LOCK
+@@ -89,2 +88,3 @@
+-_WORKTREE_JOURNAL_ROOT = Path("/tmp/tfa-phase2/production-worktree-journal")
+-_WORKTREE_SOURCE_ROOT = Path("/home/newton/work/tfa/fbsource")
++_FIXTURE_RECOVERY_ROOT = Path("/tmp/tfa-phase2/fixture-recovery")
++_WORKTREE_SOURCE_ENV = "TFA_TEST_WORKTREE_SOURCE_ROOT"
++_VERIFY_SPACE_ROOT_ENV = "TFA_TEST_VERIFY_SPACE_ROOT"
+@@ -205,1 +205,4 @@
+-        with Lease(_HERMIT_TEST_SCHEDULER_LOCK, wait=True):
++        with (
++            Lease(_HERMIT_TEST_SCHEDULER_LOCK, wait=True),
++            _disposable_btrfs_verify_root(),
++        ):
+@@ -210,0 +214,136 @@
++def _fixture_command(executable: str, arguments: list[str]) -> None:
++    result = TrustedSubprocessWithList.run(
++        executable=executable,
++        cmd_args=arguments,
++        capture_output=True,
++        text=True,
++        timeout=120,
++    )
++    if result.returncode != 0:
++        raise AssertionError(
++            f"TFA integration fixture command failed: {executable} "
++            f"{arguments!r}; stdout={result.stdout!r}; stderr={result.stderr!r}"
++        )
++
++
++def _write_fixture_recovery(
++    token: str, kind: str, root: Path, phase: str, **details: object
++) -> Path:
++    _FIXTURE_RECOVERY_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
++    path = _FIXTURE_RECOVERY_ROOT / f"{token}.json"
++    temporary = _FIXTURE_RECOVERY_ROOT / f".{token}.{os.getpid()}.tmp"
++    payload = {
++        "schema": "tfa.production-fixture-recovery.v1",
++        "kind": kind,
++        "owner_pid": os.getpid(),
++        "phase": phase,
++        "root": str(root),
++        **details,
++    }
++    descriptor = os.open(
++        temporary,
++        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
++        0o600,
++    )
++    try:
++        with os.fdopen(descriptor, "w") as output:
++            json.dump(payload, output, sort_keys=True)
++            output.write("\n")
++            output.flush()
++            os.fsync(output.fileno())
++    except BaseException:
++        temporary.unlink(missing_ok=True)
++        raise
++    os.replace(temporary, path)
++    directory = os.open(_FIXTURE_RECOVERY_ROOT, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory)
++    finally:
++        os.close(directory)
++    return path
++
++
++def _clear_fixture_recovery(path: Path) -> None:
++    path.unlink()
++    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        os.fsync(directory)
++    finally:
++        os.close(directory)
++
++
++@contextmanager
++def _disposable_btrfs_verify_root() -> Iterator[Path]:
++    Path("/tmp/tfa-phase2").mkdir(parents=True, exist_ok=True)
++    root = Path(tempfile.mkdtemp(prefix="tfa-production-btrfs-", dir="/tmp/tfa-phase2"))
++    image = root / "verify.btrfs"
++    mount = root / "mount"
++    mount.mkdir()
++    token = root.name
++    recovery = _write_fixture_recovery(
++        token,
++        "btrfs-loop-mount",
++        root,
++        "allocated",
++        image=str(image),
++        mount=str(mount),
++    )
++    mounted = False
++    prior = os.environ.get(_VERIFY_SPACE_ROOT_ENV)
++    try:
++        with image.open("wb") as output:
++            output.truncate(128 * 1024 * 1024)
++            output.flush()
++            os.fsync(output.fileno())
++        _write_fixture_recovery(
++            token,
++            "btrfs-loop-mount",
++            root,
++            "image-created",
++            image=str(image),
++            mount=str(mount),
++        )
++        _fixture_command("/usr/sbin/mkfs.btrfs", ["-q", "-f", str(image)])
++        _fixture_command(
++            "/usr/bin/sudo", ["-n", "mount", "-o", "loop", str(image), str(mount)]
++        )
++        mounted = True
++        _write_fixture_recovery(
++            token,
++            "btrfs-loop-mount",
++            root,
++            "mounted",
++            image=str(image),
++            mount=str(mount),
++        )
++        _fixture_command(
++            "/usr/bin/sudo", ["-n", "btrfs", "quota", "enable", str(mount)]
++        )
++        _fixture_command(
++            "/usr/bin/sudo",
++            ["-n", "chown", f"{os.getuid()}:{os.getgid()}", str(mount)],
++        )
++        verify_root = mount / "safehermit"
++        verify_root.mkdir(mode=0o700)
++        os.environ[_VERIFY_SPACE_ROOT_ENV] = str(verify_root)
++        yield verify_root
++    finally:
++        if prior is None:
++            os.environ.pop(_VERIFY_SPACE_ROOT_ENV, None)
++        else:
++            os.environ[_VERIFY_SPACE_ROOT_ENV] = prior
++        _write_fixture_recovery(
++            token,
++            "btrfs-loop-mount",
++            root,
++            "cleanup",
++            image=str(image),
++            mount=str(mount),
++            mounted=mounted,
++        )
++        if mounted:
++            _fixture_command("/usr/bin/sudo", ["-n", "umount", str(mount)])
++        shutil.rmtree(root)
++        _clear_fixture_recovery(recovery)
++
++
+@@ -214,3 +353,4 @@
+-        with Lease(_HANDOFF_TEST_LOCK, wait=True):
+-            _reconcile_worktree_journals()
+-            return function(*args, **kwargs)
++        with _disposable_worktree_source() as source_root:
++            with Lease(source_root.parent / "controller-handoff.lock", wait=True):
++                _reconcile_worktree_journals()
++                return function(*args, **kwargs)
+@@ -220,0 +361,120 @@
++def _worktree_source_root() -> Path:
++    value = os.environ.get(_WORKTREE_SOURCE_ENV)
++    if value is None:
++        raise AssertionError("disposable TFA worktree source is not configured")
++    path = Path(value)
++    if not path.is_absolute():
++        raise AssertionError("disposable TFA worktree source is not absolute")
++    return path.resolve()
++
++
++@contextmanager
++def _disposable_worktree_source() -> Iterator[Path]:
++    Path("/tmp/tfa-phase2").mkdir(parents=True, exist_ok=True)
++    root = Path(
++        tempfile.mkdtemp(prefix="tfa-production-source-", dir="/tmp/tfa-phase2")
++    )
++    source = root / "source"
++    repository = Path.cwd().resolve()
++    token = root.name
++    recovery = _write_fixture_recovery(
++        token,
++        "eden-checkout",
++        root,
++        "allocated",
++        repository=str(repository),
++        source=str(source),
++    )
++    cloned = False
++    prior = os.environ.get(_WORKTREE_SOURCE_ENV)
++    try:
++        revision = TrustedSubprocessWithList.run(
++            executable="/usr/local/bin/sl",
++            cmd_args=[
++                "log",
++                "-r",
++                ".",
++                "-T",
++                "{node}\\n",
++                "--reason",
++                "resolve disposable TFA fixture revision - sl help log",
++            ],
++            cwd=repository,
++            capture_output=True,
++            text=True,
++            timeout=60,
++        )
++        if revision.returncode != 0 or not re.fullmatch(
++            r"[0-9a-f]{40}\n?", revision.stdout
++        ):
++            raise AssertionError(
++                "TFA worktree integration requires a local Sapling source checkout: "
++                f"cwd={repository}; returncode={revision.returncode}; "
++                f"stdout={revision.stdout!r}; stderr={revision.stderr!r}"
++            )
++        clone_result = TrustedSubprocessWithList.run(
++            executable="/usr/local/bin/eden",
++            cmd_args=[
++                "clone",
++                "--rev",
++                revision.stdout.strip(),
++                str(repository),
++                str(source),
++            ],
++            capture_output=True,
++            text=True,
++            timeout=120,
++        )
++        if clone_result.returncode != 0:
++            raise AssertionError(
++                "TFA worktree integration requires a disposable Eden checkout: "
++                + clone_result.stderr
++            )
++        cloned = True
++        _write_fixture_recovery(
++            token,
++            "eden-checkout",
++            root,
++            "cloned",
++            repository=str(repository),
++            revision=revision.stdout.strip(),
++            source=str(source),
++        )
++        os.environ[_WORKTREE_SOURCE_ENV] = str(source)
++        yield source
++    finally:
++        if prior is None:
++            os.environ.pop(_WORKTREE_SOURCE_ENV, None)
++        else:
++            os.environ[_WORKTREE_SOURCE_ENV] = prior
++        _write_fixture_recovery(
++            token,
++            "eden-checkout",
++            root,
++            "cleanup",
++            cloned=cloned,
++            repository=str(repository),
++            source=str(source),
++        )
++        if cloned:
++            removed = TrustedSubprocessWithList.run(
++                executable="/usr/local/bin/eden",
++                cmd_args=["remove", "--yes", str(source)],
++                capture_output=True,
++                text=True,
++                timeout=120,
++            )
++            if removed.returncode != 0:
++                raise AssertionError(
++                    "cannot retire disposable TFA source checkout; recovery="
++                    f"{recovery}: {removed.stderr}"
++                )
++            if source in _eden_mounts():
++                raise AssertionError(
++                    "disposable TFA source checkout remains mounted; recovery="
++                    f"{recovery}"
++                )
++        shutil.rmtree(root)
++        _clear_fixture_recovery(recovery)
++
++
+@@ -802,2 +1062,3 @@
+-    _WORKTREE_JOURNAL_ROOT.mkdir(parents=True, mode=0o700, exist_ok=True)
+-    metadata = _WORKTREE_JOURNAL_ROOT.lstat()
++    root = _worktree_source_root().parent / "journals"
++    root.mkdir(parents=True, mode=0o700, exist_ok=True)
++    metadata = root.lstat()
+@@ -810,1 +1071,1 @@
+-    return _WORKTREE_JOURNAL_ROOT
++    return root
+@@ -827,1 +1088,1 @@
+-    if source != _WORKTREE_SOURCE_ROOT or target.parent != evidence:
++    if source != _worktree_source_root() or target.parent != evidence:
+@@ -899,1 +1160,1 @@
+-        or source != _WORKTREE_SOURCE_ROOT
++        or source != _worktree_source_root()
+@@ -1020,1 +1281,1 @@
+-    with _registered_worktree(_WORKTREE_SOURCE_ROOT, root, checkout, label):
++    with _registered_worktree(_worktree_source_root(), root, checkout, label):
+@@ -1078,0 +1340,75 @@
++    def test_btrfs_teardown_failure_retains_durable_recovery_receipt(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-btrfs-fixed"
++            root.mkdir()
++            recovery_root = base / "recovery"
++
++            def command(_executable: str, arguments: list[str]) -> None:
++                if "umount" in arguments:
++                    raise AssertionError("injected unmount failure")
++
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._fixture_command",
++                    side_effect=command,
++                ),
++                self.assertRaisesRegex(AssertionError, "injected unmount failure"),
++            ):
++                with _disposable_btrfs_verify_root():
++                    pass
++            receipt_path = recovery_root / f"{root.name}.json"
++            receipt = json.loads(receipt_path.read_text())
++            self.assertEqual(receipt["schema"], "tfa.production-fixture-recovery.v1")
++            self.assertEqual(receipt["kind"], "btrfs-loop-mount")
++            self.assertEqual(receipt["phase"], "cleanup")
++            self.assertTrue(receipt["mounted"])
++            self.assertEqual(receipt["root"], str(root))
++            self.assertTrue(root.exists())
++
++    def test_worktree_teardown_failure_retains_durable_recovery_receipt(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            root = base / "tfa-production-source-fixed"
++            root.mkdir()
++            recovery_root = base / "recovery"
++            results = iter(
++                (
++                    subprocess.CompletedProcess([], 0, "a" * 40 + "\n", ""),
++                    subprocess.CompletedProcess([], 0, "", ""),
++                    subprocess.CompletedProcess([], 1, "", "injected remove failure"),
++                )
++            )
++            with (
++                patch(
++                    "testinfra.tfa.tests.test_production_containment.tempfile.mkdtemp",
++                    return_value=str(root),
++                ),
++                patch(
++                    "testinfra.tfa.tests.test_production_containment._FIXTURE_RECOVERY_ROOT",
++                    recovery_root,
++                ),
++                patch.object(
++                    TrustedSubprocessWithList, "run", side_effect=lambda **_kwargs: next(results)
++                ),
++                self.assertRaisesRegex(AssertionError, "injected remove failure"),
++            ):
++                with _disposable_worktree_source():
++                    pass
++            receipt_path = recovery_root / f"{root.name}.json"
++            receipt = json.loads(receipt_path.read_text())
++            self.assertEqual(receipt["schema"], "tfa.production-fixture-recovery.v1")
++            self.assertEqual(receipt["kind"], "eden-checkout")
++            self.assertEqual(receipt["phase"], "cleanup")
++            self.assertTrue(receipt["cloned"])
++            self.assertEqual(receipt["root"], str(root))
++            self.assertTrue(root.exists())
++
+@@ -1112,0 +1449,1 @@
++    @_serialized_controller_handoff
+@@ -1121,0 +1459,1 @@
++            journal_root.mkdir()
+@@ -1123,2 +1461,2 @@
+-                "testinfra.tfa.tests.test_production_containment._WORKTREE_JOURNAL_ROOT",
+-                journal_root,
++                "testinfra.tfa.tests.test_production_containment._worktree_journal_root",
++                return_value=journal_root,
+@@ -1127,1 +1465,1 @@
+-                    _WORKTREE_SOURCE_ROOT,
++                    _worktree_source_root(),
+@@ -1192,1 +1530,1 @@
+-                self.assertIn(canonical, _registered_worktrees(_WORKTREE_SOURCE_ROOT))
++                self.assertIn(canonical, _registered_worktrees(_worktree_source_root()))
+@@ -1205,1 +1543,1 @@
+-                    canonical, _registered_worktrees(_WORKTREE_SOURCE_ROOT)
++                    canonical, _registered_worktrees(_worktree_source_root())
+@@ -1709,1 +2047,1 @@
+-                    "PYTHONPATH=/home/newton/work/tfa/fbsource/fbcode",
++                    f"PYTHONPATH={Path(__file__).parents[3]}",
+@@ -1923,1 +2261,1 @@
+-        source_root = Path("/home/newton/work/tfa/fbsource")
++        source_root = _worktree_source_root()
+@@ -2779,0 +3118,9 @@
++            preflight_record = metadata["codex_preflight"]
++            self.assertIsInstance(preflight_record, dict)
++            preflight = json.loads(Path(preflight_record["path"]).read_text())
++            self.assertEqual(preflight["executable"], "/usr/local/bin/codex")
++            self.assertRegex(
++                preflight["version"], r"^codex-cli [0-9]+\.[0-9]+\.[0-9]+$"
++            )
++            self.assertEqual(preflight["state"], "eligible")
++            self.assertIsNone(preflight["blocker"])
+@@ -2791,1 +3138,1 @@
+-        source_root = Path("/home/newton/work/tfa/fbsource")
++        source_root = _worktree_source_root()
+@@ -3153,0 +3501,2 @@
++                    f"--setenv={_VERIFY_SPACE_ROOT_ENV}="
++                    f"{os.environ[_VERIFY_SPACE_ROOT_ENV]}",
+@@ -3162,1 +3511,1 @@
+-                    _HERMIT_BINARY,
++                    _hermit_binary(),
+@@ -3170,1 +3519,3 @@
+-            self.assertEqual(receipt["returncode"], 0)
++            self.assertEqual(
++                receipt["returncode"], 0, (attempt / "wrapper/stderr.txt").read_text()
++            )
+@@ -3182,1 +3533,1 @@
+-                Path(_HERMIT_BINARY).read_bytes()
++                Path(_hermit_binary()).read_bytes()
+@@ -3265,0 +3617,2 @@
++                    f"--setenv={_VERIFY_SPACE_ROOT_ENV}="
++                    f"{os.environ[_VERIFY_SPACE_ROOT_ENV]}",
+@@ -3274,1 +3627,1 @@
+-                    _HERMIT_BINARY,
++                    _hermit_binary(),
+@@ -3282,1 +3635,5 @@
+-            self.assertEqual(receipt["returncode"], 124)
++            self.assertEqual(
++                receipt["returncode"],
++                124,
++                (attempt / "wrapper/stderr.txt").read_text(),
++            )
+@@ -3332,0 +3690,2 @@
++                        f"--setenv={_VERIFY_SPACE_ROOT_ENV}="
++                        f"{os.environ[_VERIFY_SPACE_ROOT_ENV]}",
+@@ -3341,1 +3700,1 @@
+-                        _HERMIT_BINARY,
++                        _hermit_binary(),
+@@ -3374,0 +3734,2 @@
++                        f"--setenv={_VERIFY_SPACE_ROOT_ENV}="
++                        f"{os.environ[_VERIFY_SPACE_ROOT_ENV]}",
+@@ -3383,1 +3744,1 @@
+-                        _HERMIT_BINARY,
++                        _hermit_binary(),
+@@ -3414,3 +3774,0 @@
+-        bounded_root = Path(
+-            "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+-        )
+@@ -3437,1 +3795,1 @@
+-                        _HERMIT_BINARY,
++                        _hermit_binary(),
+@@ -3453,0 +3812,1 @@
++                    controller_pid = ready["controller_pid"]
+@@ -3454,0 +3814,1 @@
++                    self.assertIsInstance(controller_pid, int)
+@@ -3458,1 +3818,1 @@
+-                    os.kill(controller.pid, signal.SIGKILL)
++                    os.kill(controller_pid, signal.SIGKILL)
+@@ -3468,1 +3828,1 @@
+-                            _HERMIT_BINARY,
++                            _hermit_binary(),
+@@ -3491,0 +3852,1 @@
++                    bounded_root = hermit_module._safehermit_log_root(attempt)
+@@ -3535,1 +3896,1 @@
+-                    _HERMIT_BINARY,
++                    _hermit_binary(),
+diff --git a/fbcode/testinfra/tfa/tests/test_prototype.py b/fbcode/testinfra/tfa/tests/test_prototype.py
+--- a/fbcode/testinfra/tfa/tests/test_prototype.py
++++ b/fbcode/testinfra/tfa/tests/test_prototype.py
+@@ -24,0 +25,1 @@
++import testinfra.tfa.process as process_module
+@@ -52,0 +54,3 @@
++    packaged_hermit_argv,
++    PACKAGED_HERMIT_RESOURCE_SHA256,
++    PACKAGED_HERMIT_REVISION,
+@@ -210,4 +214,2 @@
+-    bounded_path = Path(
+-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/"
+-        f"brs-{allocation_tag}-123-456"
+-    )
++    log_root = hermit_module._safehermit_log_root(root)
++    bounded_path = log_root / f"brs-{allocation_tag}-123-456"
+@@ -245,1 +247,1 @@
+-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
++        str(log_root),
+@@ -320,3 +321,0 @@
+-    log_root = Path(
+-        "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+-    )
+@@ -456,0 +456,67 @@
++    def test_imported_hermit_blockers_preserve_historical_witness(self) -> None:
++        value = json.loads(
++            Path(manifest_module.__file__)
++            .with_name("hermit-import-compatibility.v1.json")
++            .read_text()
++        )
++        self.assertEqual(value["schema_version"], 1)
++        self.assertEqual(
++            value["upstream_revision"], hermit_module.PACKAGED_HERMIT_REVISION
++        )
++        self.assertEqual(value["resource"], "hermit-test-bin")
++        self.assertEqual(
++            value["qualification_probe"]["sha256"],
++            hermit_module.PACKAGED_HERMIT_QUALIFICATION_SHA256,
++        )
++        self.assertEqual(value["historical_witness"]["state"], "PRESERVED")
++        self.assertEqual(value["qualification_probe"]["state"], "BLOCKED")
++        receipt_path = Path(manifest_module.__file__).with_name(
++            value["qualification_probe"]["receipts_resource"]
++        )
++        self.assertEqual(
++            hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
++            value["qualification_probe"]["receipts_sha256"],
++        )
++        receipts = json.loads(receipt_path.read_text())
++        self.assertEqual(
++            receipts["probe_binary"],
++            {
++                "build_mode": value["qualification_probe"]["mode"],
++                "sha256": value["qualification_probe"]["sha256"],
++                "upstream_revision": value["upstream_revision"],
++            },
++        )
++        candidates = value["qualification_probe"]["short_candidates"]
++        self.assertEqual(
++            [
++                (candidate["case_id"], candidate["seed"], candidate["returncode"])
++                for candidate in candidates
++            ],
++            [("asyncssl", 1, 1), ("thrift", 0, 132), ("httpcoro", 1, 1)],
++        )
++        self.assertEqual(len(value["qualification_probe"]["blockers"]), 3)
++        self.assertEqual(
++            [
++                (receipt["case_id"], receipt["seed"], receipt["returncode"])
++                for receipt in receipts["probes"]
++            ],
++            [("asyncssl", 1, 1), ("thrift", 0, 132), ("httpcoro", 1, 1)],
++        )
++        for receipt in receipts["probes"]:
++            self.assertEqual(
++                hashlib.sha256(
++                    (
++                        json.dumps(receipt["argv"], separators=(",", ":")) + "\n"
++                    ).encode()
++                ).hexdigest(),
++                receipt["argv_sha256"],
++            )
++            self.assertEqual(
++                hashlib.sha256(receipt["stdout"].encode()).hexdigest(),
++                receipt["stdout_sha256"],
++            )
++            self.assertEqual(
++                hashlib.sha256(receipt["stderr"].encode()).hexdigest(),
++                receipt["stderr_sha256"],
++            )
++
+@@ -851,0 +918,387 @@
++    def test_packaged_hermit_replaces_only_qualified_binary(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            binary = root / "hermit-test-bin"
++            binary.write_bytes(b"qualified imported Hermit\n")
++            binary.chmod(0o500)
++            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
++            compatibility = root / "hermit-import-compatibility.v1.json"
++            value = json.loads(
++                Path(manifest_module.__file__)
++                .with_name("hermit-import-compatibility.v1.json")
++                .read_text()
++            )
++            value["historical_witness"]["revision"] = PACKAGED_HERMIT_REVISION
++            value["historical_witness"]["sha256"] = digest
++            value["qualification_probe"]["sha256"] = digest
++            value["qualification_probe"]["state"] = "QUALIFIED"
++            value["qualification_probe"]["blockers"] = []
++            value["packaged_executable"]["sha256"] = digest
++            compatibility.write_text(json.dumps(value))
++            original = tuple(_argv(1))
++            with (
++                patch(
++                    "testinfra.tfa.hermit._packaged_resource",
++                    side_effect=lambda name: (
++                        compatibility
++                        if name == "hermit-import-compatibility.v1.json"
++                        else binary
++                    ),
++                ),
++                patch(
++                    "testinfra.tfa.hermit.PACKAGED_HERMIT_QUALIFICATION_SHA256",
++                    digest,
++                ),
++                patch("testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256", digest),
++                patch(
++                    "testinfra.tfa.hermit._qualification_receipt_record",
++                    return_value={"sha256": "test"},
++                ),
++            ):
++                rewritten = packaged_hermit_argv(
++                    original,
++                    PACKAGED_HERMIT_REVISION,
++                    digest,
++                    root / "pinned" / "hermit",
++                )
++            expected_index = original.index(
++                "/home/newton/work/dev-hermit/ignored/"
++                "tfa-rlimit-core-rerun-20260920-4630ee2a/"
++                "stable-5c422b85/hermit-4630ee2a"
++            )
++            self.assertEqual(rewritten[expected_index], str(root / "pinned" / "hermit"))
++            self.assertEqual(
++                stat.S_IMODE((root / "pinned" / "hermit").stat().st_mode), 0o500
++            )
++            self.assertEqual(
++                hashlib.sha256((root / "pinned" / "hermit").read_bytes()).hexdigest(),
++                digest,
++            )
++            self.assertEqual(
++                rewritten[:expected_index] + rewritten[expected_index + 1 :],
++                original[:expected_index] + original[expected_index + 1 :],
++            )
++
++    def test_packaged_hermit_rejects_unqualified_revision_or_bytes(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            binary = root / "hermit-test-bin"
++            binary.write_bytes(b"qualified imported Hermit\n")
++            binary.chmod(0o500)
++            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
++            compatibility = root / "hermit-import-compatibility.v1.json"
++            value = json.loads(
++                Path(manifest_module.__file__)
++                .with_name("hermit-import-compatibility.v1.json")
++                .read_text()
++            )
++            value["historical_witness"]["revision"] = PACKAGED_HERMIT_REVISION
++            value["historical_witness"]["sha256"] = digest
++            value["qualification_probe"]["sha256"] = digest
++            value["qualification_probe"]["state"] = "QUALIFIED"
++            value["qualification_probe"]["blockers"] = []
++            value["packaged_executable"]["sha256"] = digest
++            compatibility.write_text(json.dumps(value))
++            for revision, expected_hash in (
++                ("different", digest),
++                (PACKAGED_HERMIT_REVISION, "0" * 64),
++            ):
++                with (
++                    self.subTest(revision=revision, expected_hash=expected_hash),
++                    patch(
++                        "testinfra.tfa.hermit._packaged_resource",
++                        side_effect=lambda name: (
++                            compatibility
++                            if name == "hermit-import-compatibility.v1.json"
++                            else binary
++                        ),
++                    ),
++                    patch(
++                        "testinfra.tfa.hermit.PACKAGED_HERMIT_QUALIFICATION_SHA256",
++                        digest,
++                    ),
++                    patch(
++                        "testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256", digest
++                    ),
++                    patch(
++                        "testinfra.tfa.hermit._qualification_receipt_record",
++                        return_value={"sha256": "test"},
++                    ),
++                    self.assertRaisesRegex(
++                        HermitError, "identity differs from the qualified witness"
++                    ),
++                ):
++                    packaged_hermit_argv(
++                        tuple(_argv(1)),
++                        revision,
++                        expected_hash,
++                        root / "pinned" / "hermit",
++                    )
++                identity = json.loads((root / "pinned/identity.json").read_text())
++                self.assertEqual(identity["state"], "WITNESS_MISMATCH")
++
++    def test_packaged_hermit_records_current_blocked_compatibility(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            binary = root / "hermit-test-bin"
++            binary.write_bytes(b"current imported Hermit\n")
++            binary.chmod(0o500)
++            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
++            compatibility = root / "hermit-import-compatibility.v1.json"
++            value = json.loads(
++                Path(manifest_module.__file__)
++                .with_name("hermit-import-compatibility.v1.json")
++                .read_text()
++            )
++            value["packaged_executable"]["sha256"] = digest
++            compatibility.write_text(json.dumps(value))
++            receipts = Path(manifest_module.__file__).with_name(
++                "hermit-import-receipts.v1.json"
++            )
++
++            def resource(name: str) -> Path:
++                if name == "hermit-import-compatibility.v1.json":
++                    return compatibility
++                if name == "hermit-import-receipts.v1.json":
++                    return receipts
++                return binary
++
++            with (
++                patch(
++                    "testinfra.tfa.hermit._packaged_resource",
++                    side_effect=resource,
++                ),
++                patch(
++                    "testinfra.tfa.hermit.PACKAGED_HERMIT_RESOURCE_SHA256",
++                    digest,
++                ),
++                self.assertRaisesRegex(
++                    HermitError,
++                    "packaged Hermit compatibility is BLOCKED.*"
++                    "sanitizer guests cannot initialize RLIMIT_CORE",
++                ),
++            ):
++                packaged_hermit_argv(
++                    tuple(_argv(1)),
++                    str(value["historical_witness"]["revision"]),
++                    str(value["historical_witness"]["sha256"]),
++                    root / "pinned" / "hermit",
++                )
++            identity = json.loads((root / "pinned/identity.json").read_text())
++            self.assertEqual(identity["schema"], "tfa.packaged-hermit-compatibility.v1")
++            self.assertEqual(identity["state"], "BLOCKED")
++            self.assertEqual(identity["packaged_executable"]["sha256"], digest)
++            self.assertEqual(
++                identity["expected_witness"],
++                {
++                    "revision": value["historical_witness"]["revision"],
++                    "sha256": value["historical_witness"]["sha256"],
++                },
++            )
++
++    def test_real_packaged_hermit_is_bound_to_blocked_provenance(self) -> None:
++        case = _loaded_case()
++        with tempfile.TemporaryDirectory() as temporary:
++            destination = Path(temporary) / "runtime" / "hermit"
++            with self.assertRaisesRegex(
++                HermitError, "packaged Hermit compatibility is BLOCKED"
++            ):
++                packaged_hermit_argv(
++                    case.pass_argv,
++                    case.hermit_revision,
++                    case.hermit_sha256,
++                    destination,
++                )
++            identity = json.loads((destination.parent / "identity.json").read_text())
++            self.assertEqual(identity["state"], "BLOCKED")
++            self.assertEqual(
++                identity["packaged_executable"]["sha256"],
++                PACKAGED_HERMIT_RESOURCE_SHA256,
++            )
++            self.assertEqual(
++                identity["qualification_receipts"]["sha256"],
++                hermit_module.PACKAGED_HERMIT_RECEIPTS_SHA256,
++            )
++
++    def test_safehermit_resources_are_resolved_only_when_pinned(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            safehermit = root / "source-safehermit"
++            bounded = root / "source-bounded-run-space"
++            safehermit.write_bytes(b"#!/bin/sh\nexit 0\n")
++            bounded.write_bytes(b"#!/bin/sh\nexit 0\n")
++            safehermit.chmod(0o700)
++            bounded.chmod(0o700)
++            safe_digest = hashlib.sha256(safehermit.read_bytes()).hexdigest()
++            bounded_digest = hashlib.sha256(bounded.read_bytes()).hexdigest()
++            attempt = root / "attempt"
++            resolved: list[str] = []
++
++            def resource(name: str) -> Path:
++                resolved.append(name)
++                return safehermit if name == "safehermit" else bounded
++
++            with (
++                patch("testinfra.tfa.hermit._packaged_resource", side_effect=resource),
++                patch("testinfra.tfa.hermit.SAFEHERMIT_SHA256", safe_digest),
++                patch("testinfra.tfa.hermit.BOUNDED_RUN_SPACE_SHA256", bounded_digest),
++            ):
++                records = _pin_safehermit_runtime(attempt)
++            self.assertEqual(resolved, ["safehermit", "bounded-run-space"])
++            for path in safehermit_runtime_paths(attempt):
++                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o500)
++            safe_record = records["safehermit"]
++            bounded_record = records["bounded_run_space"]
++            self.assertIsInstance(safe_record, dict)
++            self.assertIsInstance(bounded_record, dict)
++            self.assertEqual(safe_record["sha256"], safe_digest)
++            self.assertEqual(bounded_record["sha256"], bounded_digest)
++
++    def test_codex_mount_isolation_preflight_fails_before_agent_launch(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            checkout = root / "checkout"
++            checkout.mkdir()
++            output = root / "agent-output"
++            output.mkdir()
++            process_dir = root / "control" / "diagnostic-agent"
++            process_dir.mkdir(parents=True)
++            schema = root / "schema.json"
++            schema.write_text("{}\n")
++            arguments = codex_arguments(
++                "must not run",
++                checkout,
++                schema,
++                process_dir / "final-message.json",
++                None,
++            )
++            with (
++                patch(
++                    "testinfra.tfa.process._codex_environment_preflight",
++                    side_effect=ProcessError(
++                        "Codex native workspace sandbox preflight failed "
++                        "(codex-cli 0.156.0): cannot establish app-server "
++                        "socket mount isolation"
++                    ),
++                ) as preflight,
++                patch("testinfra.tfa.process._spawn_contained") as spawn,
++                self.assertRaisesRegex(
++                    ProcessError, "cannot establish app-server socket mount isolation"
++                ),
++            ):
++                run_process(
++                    "/usr/local/bin/codex",
++                    arguments,
++                    checkout,
++                    process_dir,
++                    10,
++                )
++            preflight.assert_called_once()
++            spawn.assert_not_called()
++
++    def test_codex_preflight_classifies_known_mount_isolation_version(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            version = MagicMock(
++                returncode=0,
++                stdout="codex-cli 0.156.0\n",
++                stderr="",
++            )
++            with (
++                patch.object(TrustedSubprocessWithList, "run", return_value=version),
++                patch(
++                    "testinfra.tfa.process.regular_file_record",
++                    return_value={
++                        "kind": "file",
++                        "mode": 0o755,
++                        "path": "/usr/local/bin/codex_cli/codex",
++                        "sha256": (
++                            "8ec5b75747642abcdb71a16a7639f2fad3423d3a3fef371a"
++                            "7920432b50acc4b9"
++                        ),
++                        "size": 1,
++                    },
++                ),
++                self.assertRaisesRegex(
++                    ProcessError, "cannot establish app-server socket mount isolation"
++                ),
++            ):
++                process_module._codex_environment_preflight(
++                    root, root / "preflight", {}
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v1")
++            self.assertEqual(identity["version"], "codex-cli 0.156.0")
++            self.assertEqual(identity["state"], "blocked")
++            self.assertEqual(
++                identity["blocker"],
++                "cannot establish app-server socket mount isolation",
++            )
++
++    def test_codex_preflight_records_version_command_startup_failure(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            with (
++                patch.object(
++                    TrustedSubprocessWithList,
++                    "run",
++                    side_effect=OSError("local process unavailable"),
++                ),
++                patch(
++                    "testinfra.tfa.process.regular_file_record",
++                    return_value={
++                        "kind": "file",
++                        "mode": 0o755,
++                        "path": "/usr/local/bin/codex_cli/codex",
++                        "sha256": "0" * 64,
++                        "size": 1,
++                    },
++                ),
++                self.assertRaisesRegex(
++                    ProcessError,
++                    "tfa.codex-environment-preflight.v1.*"
++                    "version command could not start",
++                ),
++            ):
++                process_module._codex_environment_preflight(
++                    root, root / "preflight", {}
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["state"], "startup-failed")
++            self.assertIsNone(identity["version"])
++            self.assertEqual(identity["schema"], "tfa.codex-environment-preflight.v1")
++
++    def test_codex_preflight_rejects_unreviewed_executable_version(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            version = MagicMock(
++                returncode=0,
++                stdout="codex-cli 9.9.9\n",
++                stderr="",
++            )
++            executable = {
++                "kind": "file",
++                "mode": 0o755,
++                "path": "/usr/local/bin/codex_cli/codex",
++                "sha256": "0" * 64,
++                "size": 1,
++            }
++            with (
++                patch.object(TrustedSubprocessWithList, "run", return_value=version),
++                patch(
++                    "testinfra.tfa.process.regular_file_record",
++                    return_value=executable,
++                ),
++                self.assertRaisesRegex(
++                    ProcessError,
++                    "state=unsupported.*no reviewed workspace-sandbox compatibility",
++                ),
++            ):
++                process_module._codex_environment_preflight(
++                    root, root / "preflight", {}
++                )
++            identity = json.loads((root / "preflight/identity.json").read_text())
++            self.assertEqual(identity["state"], "unsupported")
++            self.assertEqual(identity["version"], "codex-cli 9.9.9")
++            self.assertEqual(identity["resolved_executable"], executable)
++
+@@ -1287,6 +1740,2 @@
+-            refused = (
+-                Path(
+-                    "/home/newton/work/dev-hermit/ignored/"
+-                    "safehermit-loopback/mnt/safehermit"
+-                )
+-                / f"brs-{hermit_module._verify_allocation_tag(attempt)}-123-456"
++            refused = hermit_module._safehermit_log_root(attempt) / (
++                f"brs-{hermit_module._verify_allocation_tag(attempt)}-123-456"
+@@ -1327,0 +1777,26 @@
++    def test_verify_space_override_accepts_only_private_test_fixture(self) -> None:
++        Path("/tmp/tfa-phase2").mkdir(parents=True, exist_ok=True)
++        with tempfile.TemporaryDirectory(
++            prefix="tfa-production-btrfs-unit-", dir="/tmp/tfa-phase2"
++        ) as temporary:
++            fixture = Path(temporary)
++            mount = fixture / "mount"
++            mount.mkdir()
++            root = mount / "safehermit"
++            root.mkdir(mode=0o700)
++            attempt = fixture / "attempt"
++            attempt.mkdir()
++            with patch.dict(
++                os.environ,
++                {hermit_module._VERIFY_SPACE_ROOT_ENV: str(root)},
++                clear=False,
++            ):
++                resolved = hermit_module._safehermit_log_root(attempt)
++                self.assertEqual(resolved.parent, root)
++                replacement = fixture / "replacement"
++                replacement.mkdir(mode=0o700)
++                root.rmdir()
++                root.symlink_to(replacement, target_is_directory=True)
++                with self.assertRaisesRegex(HermitError, "not a test fixture"):
++                    hermit_module._safehermit_log_root(attempt)
++
+@@ -1486,2 +1961,1 @@
+-            bounded_root = root / "bounded"
+-            bounded_root.mkdir()
++            bounded_root = hermit_module._safehermit_log_root(attempt)
+@@ -1520,1 +1993,0 @@
+-                patch("testinfra.tfa.hermit._SAFEHERMIT_LOG_ROOT", str(bounded_root)),
+@@ -1550,2 +2023,14 @@
+-            descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            ready, child_ready = os.pipe()
++            release, child_release = os.pipe()
++            holder = os.fork()
++            if holder == 0:
++                os.close(ready)
++                os.close(child_release)
++                descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
++                fcntl.lockf(descriptor, fcntl.LOCK_EX)
++                os.write(child_ready, b"ready")
++                os.read(release, 1)
++                os.close(descriptor)
++                os._exit(0)
++            os.close(child_ready)
++            os.close(release)
+@@ -1552,0 +2038,1 @@
++                self.assertEqual(os.read(ready, 5), b"ready")
+@@ -1554,1 +2040,4 @@
+-                    patch("testinfra.tfa.hermit._VERIFY_ALLOCATION_LOCK", lock),
++                    patch(
++                        "testinfra.tfa.hermit._verify_allocation_lock",
++                        return_value=lock,
++                    ),
+@@ -1563,1 +2052,1 @@
+-                    with hermit_module._verify_allocation_guard():
++                    with hermit_module._verify_allocation_guard(Path(temporary)):
+@@ -1566,2 +2055,4 @@
+-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+-                os.close(descriptor)
++                os.close(ready)
++                os.write(child_release, b"x")
++                os.close(child_release)
++                self.assertEqual(os.waitpid(holder, 0)[1], 0)
+@@ -1977,2 +2468,1 @@
+-                "/home/newton/work/dev-hermit/ignored/"
+-                "safehermit-loopback/mnt/safehermit",
++                str(hermit_module._safehermit_log_root(attempt_root)),

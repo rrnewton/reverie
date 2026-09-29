@@ -1,0 +1,109 @@
+test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup) ... FAIL
+test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck) ... FAIL
+test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool) ... FAIL
+test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected) ... FAIL
+
+======================================================================
+FAIL: test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3349, in test_real_codex_native_workspace_sandbox_and_tfa_cleanup
+    self.assertEqual(result.returncode, 0, result.stderr_path.read_text())
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+
+
+======================================================================
+FAIL: test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3454, in test_real_codex_candidate_handoff_uses_controller_buck
+    candidate = _diagnose_candidate_locked(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/pipeline.py", line 3254, in _diagnose_candidate_locked
+    _checkout_state(case, checkout, attempt / "pre-agent-checkout", True)
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/pipeline.py", line 2118, in _checkout_state
+    raise RuntimeError("case checkout preflight failed")
+RuntimeError: case checkout preflight failed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3394, in test_real_codex_candidate_handoff_uses_controller_buck
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/controller-handoff/controller-handoff-1790310829814057797; retained root: /tmp/tfa-phase2/tfa-production-controller-handoff-dz5ve018
+
+======================================================================
+FAIL: test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3574, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    self.assertEqual(fresh.returncode, 0, fresh.stderr_path.read_text())
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3535, in test_real_codex_final_message_cannot_be_redirected_by_tool
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/codex-report/controller-handoff-1790310868896721601; retained root: /tmp/tfa-phase2/tfa-production-codex-report-13bkbop2
+
+======================================================================
+FAIL: test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3660, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    self.assertEqual(review.returncode, 0, review.stderr_path.read_text())
+AssertionError: 1 != 0 : Codex CLI at Meta (https://fburl.com/codex.cli.users)
+Using AI Gateway (Azure Codex upstream)
+Reading additional input from stdin...
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 3622, in test_real_codex_reviewer_final_message_cannot_be_redirected
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/tmp/tfa-phase2-controller-followup-20260924/fbcode/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/reviewer-report/controller-handoff-1790310909842495350; retained root: /tmp/tfa-phase2/tfa-production-reviewer-report-um9fx9nh
+
+----------------------------------------------------------------------
+Ran 4 tests in 142.066s
+
+FAILED (failures=4)

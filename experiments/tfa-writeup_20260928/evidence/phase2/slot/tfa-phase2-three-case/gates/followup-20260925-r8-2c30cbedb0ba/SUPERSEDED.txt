@@ -1,0 +1,1 @@
+Superseded and incomplete: this run stopped during render-cmp (no render-cmp.rc, negctl or containment outputs) and its head 2c30cbed was amended to b8b85d00462b after an adversarial finding (agent-text injection and report re-read TOCTOU). See ../followup-20260925-r8-b8b85d00462b/.

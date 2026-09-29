@@ -1,0 +1,1 @@
+fail 0 revert-control-seed-000 reverted-checkout negative control (unfixed FAIL seed 0)

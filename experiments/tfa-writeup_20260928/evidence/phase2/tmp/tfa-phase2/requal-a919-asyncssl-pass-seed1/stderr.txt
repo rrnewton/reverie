@@ -1,0 +1,8 @@
+error: unexpected argument '--chaos-per-thread-slowdown' found
+
+  tip: a similar argument exists: '--chaos'
+  tip: to pass '--chaos-per-thread-slowdown' as a value, use '-- --chaos-per-thread-slowdown'
+
+Usage: hermit run --backend <BACKEND> --strict --chaos <PROGRAM> [ARGS]...
+
+For more information, try '--help'.

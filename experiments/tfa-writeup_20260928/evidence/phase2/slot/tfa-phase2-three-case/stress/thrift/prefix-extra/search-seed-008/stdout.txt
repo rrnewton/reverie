@@ -1,0 +1,21 @@
+Note: Google Test filter = RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from RequestInstrumentationTestWithFinishedDebugPayload
+[ RUN      ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest
+fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp:836: Failure
+Expected equality of these values:
+  reqSnapshots.size()
+    Which is: 2
+  3
+
+[  FAILED  ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest (887 ms)
+[----------] 1 test from RequestInstrumentationTestWithFinishedDebugPayload (889 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (893 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest
+
+ 1 FAILED TEST

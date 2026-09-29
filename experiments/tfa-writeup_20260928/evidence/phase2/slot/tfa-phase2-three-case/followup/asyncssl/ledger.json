@@ -1,0 +1,111 @@
+{
+  "candidate_report": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/investigation/asyncssl/agent-output/controller-extracted-report.json",
+  "case_id": "asyncssl",
+  "phases": {
+    "patched": {
+      "guest_sha256": "3dd68a50be15bd8f5a456f23ff4a3a278516a37881d423d154f64af51c7e9da9",
+      "interrupted": [],
+      "runs": [
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-1"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-2"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fail-witness-seed-011-attempt-3"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-012"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-013"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-014"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/fresh-seed-015"
+        },
+        {
+          "role": "pass-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/pass-witness-seed-001-attempt-1"
+        },
+        {
+          "role": "pass-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/pass-witness-seed-001-attempt-2"
+        }
+      ]
+    },
+    "unfixed": {
+      "guest_sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46",
+      "interrupted": [],
+      "runs": [
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/fail-witness-seed-011-attempt-1"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/fail-witness-seed-011-attempt-2"
+        },
+        {
+          "role": "pass-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/pass-witness-seed-001-attempt-1"
+        },
+        {
+          "role": "pass-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix/pass-witness-seed-001-attempt-2"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-012"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-013"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-014"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-fresh/fresh-seed-015"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-3"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fail-witness-seed-011-attempt-4"
+        },
+        {
+          "role": "fresh",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/prefix-extra/fresh-seed-015-repeat-1"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011-repeat-1"
+        },
+        {
+          "role": "fail-witness",
+          "run": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/stress/asyncssl/postfix/revert-control-seed-011-repeat-2"
+        }
+      ]
+    }
+  },
+  "schema": "tfa.followup-ledger.v1"
+}

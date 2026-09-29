@@ -1,0 +1,668 @@
+Traceback (most recent call last)
+/home/newton/work/tfa/fbsource/buck-out/v2/art/prelude/f131b89c4a309a34/python/tools/make_par/____run_lpar_main__.py__/__run_lpar_main__.py:46 in <module>
+  45 
+❱ 46 __invoke_main()
+  47 
+/home/newton/work/tfa/fbsource/buck-out/v2/art/prelude/f131b89c4a309a34/python/tools/make_par/____run_lpar_main__.py__/__run_lpar_main__.py:43 in __invoke_main
+  42 │   run_as_main = getattr(mod, main_runner_function)                       
+❱ 43 │   run_as_main(module, main_function)                                     
+  44                                                                            
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│        main_function = 'cli'                                                 │
+│ main_runner_function = 'run_as_main'                                         │
+│   main_runner_module = '__par__.meta_only.bootstrap'                         │
+│                  mod = <module '__par__.meta_only.bootstrap' from            │
+│                        '/home/newton/work/tfa/fbsource/buck-out/v2/art/fbco… │
+│               module = 'testinfra.tfa.main'                                  │
+│                   os = <module 'os' (frozen)>                                │
+│                  sys = <module 'sys' (built-in)>                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/fbcode/buck2/prelude/python/runtime/__par__/meta_only/bootstrap.py:110 in run_as_main
+  109 │   │                                                                     
+❱ 110 │   │   oss_run_as_main(                                                  
+  111 │   │   │   main_module,                                                  
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│                  cm = <contextlib._GeneratorContextManager object at         │
+│                       0x7f9c8ed8fb00>                                        │
+│    context_managers = [                                                      │
+│                       │   <contextlib._GeneratorContextManager object at     │
+│                       0x7f9c8ed8f8c0>,                                       │
+│                       │   <contextlib._GeneratorContextManager object at     │
+│                       0x7f9c8ed8fb00>                                        │
+│                       ]                                                      │
+│                hook = RuntimeHook(                                           │
+│                       │   name='PEX_INIT_HOOK',                              │
+│                       │   module='__par__.meta_only.pexutil',                │
+│                       │   main_function='init_import_hook_cm',               │
+│                       │   default_enabled=True                               │
+│                       )                                                      │
+│            is_debug = False                                                  │
+│       main_function = 'cli'                                                  │
+│ main_function_hooks = [                                                      │
+│                       │   <function mark_main_timestamp at 0x7f9c7b557b00>,  │
+│                       │   <function _noop at 0x7f9c7b4f6c00>                 │
+│                       ]                                                      │
+│         main_module = 'testinfra.tfa.main'                                   │
+│               stack = <contextlib.ExitStack object at 0x7f9c8ed8f890>        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/fbcode/buck2/prelude/python/runtime/__par__/bootstrap.py:95 in run_as_main
+  94 │   else:                                                                  
+❱ 95 │   │   main()                                                             
+  96                                                                            
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ decorate_main_function = None                                                │
+│   decorate_main_module = None                                                │
+│    is_decorated_module = False                                               │
+│                   main = <Group cli>                                         │
+│          main_function = 'cli'                                               │
+│    main_function_hooks = [                                                   │
+│                          │   <function mark_main_timestamp at                │
+│                          0x7f9c7b557b00>,                                    │
+│                          │   <function _noop at 0x7f9c7b4f6c00>              │
+│                          ]                                                   │
+│            main_module = 'testinfra.tfa.main'                                │
+│                    mod = <module 'testinfra.tfa.main' from                   │
+│                          '/home/newton/work/tfa/fbsource/buck-out/v2/art/fb… │
+│                    sys = <module 'sys' (built-in)>                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/third-party/pypi/click/8.1.7/sources/src/click/core.py:1389 in __call__
+  1388 │   │   """Alias for :meth:`main`."""                                    
+❱ 1389 │   │   return self.main(*args, **kwargs)                                
+  1390                                                                          
+                                                                                
+╭─────── locals ───────╮                                                        
+│   args = ()          │                                                        
+│ kwargs = {}          │                                                        
+│   self = <Group cli> │                                                        
+╰──────────────────────╯                                                        
+/home/newton/work/tfa/fbsource/fbcode/cli/py/click/mixins.py:149 in main
+  148 │   │   │   │   # pyre-fixme[16]: `object` has no attribute `main`.       
+❱ 149 │   │   │   │   return super().main(*args, **kwargs, logging_context=conte
+  150 │   │   self.warn_multiple_versions(**kwargs)                             
+                                                                                
+╭───────────────────────────────── locals ──────────────────────────────────╮   
+│    args = ()                                                              │   
+│ context = LoggingContext(                                                 │   
+│           │   setup=SetupContext(                                         │   
+│           │   │   user=<Handler (WARNING)>,                               │   
+│           │   │   logview=None                                            │   
+│           │   ),                                                          │   
+│           │   duplicator=None                                             │   
+│           )                                                               │   
+│  kwargs = {}                                                              │   
+│    self = <Group cli>                                                     │   
+╰───────────────────────────────────────────────────────────────────────────╯   
+/home/newton/work/tfa/fbsource/third-party/pypi/click/8.1.7/sources/src/click/core.py:1310 in main
+  1309 │   │   │   │   with self.make_context(prog_name, args, **extra) as ctx: 
+❱ 1310 │   │   │   │   │   rv = self.invoke(ctx)                                
+  1311 │   │   │   │   │   if not standalone_mode:                              
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│                args = [                                                      │
+│                       │   'render-followup',                                 │
+│                       │   '--manifest',                                      │
+│                       │                                                      │
+│                       '/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/… │
+│                       │   '--case-id',                                       │
+│                       │   'thrift',                                          │
+│                       │   '--ledger',                                        │
+│                       │                                                      │
+│                       '/home/newton/work/dev-hermit/worktrees/slots/tfa-pha… │
+│                       │   '--output-dir',                                    │
+│                       │                                                      │
+│                       '/home/newton/work/dev-hermit/worktrees/slots/tfa-pha… │
+│                       ]                                                      │
+│        complete_var = None                                                   │
+│                 ctx = <click.core.Context object at 0x7f9c7ada6f60>          │
+│               extra = {                                                      │
+│                       │   'logging_context': LoggingContext(                 │
+│                       │   │   setup=SetupContext(                            │
+│                       │   │   │   user=<Handler (WARNING)>,                  │
+│                       │   │   │   logview=None                               │
+│                       │   │   ),                                             │
+│                       │   │   duplicator=None                                │
+│                       │   )                                                  │
+│                       }                                                      │
+│           prog_name = 'tfa_phase2.par'                                       │
+│                self = <Group cli>                                            │
+│     standalone_mode = True                                                   │
+│ windows_expand_args = True                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/third-party/pypi/click/8.1.7/sources/src/click/core.py:1782 in invoke
+  1781 │   │   │   │   with sub_ctx:                                            
+❱ 1782 │   │   │   │   │   return _process_result(sub_ctx.command.invoke(sub_ctx
+  1783                                                                          
+                                                                                
+╭───────────────────────── locals ─────────────────────────╮                    
+│     args = []                                            │                    
+│      cmd = <Command render-followup>                     │                    
+│ cmd_name = 'render-followup'                             │                    
+│      ctx = <click.core.Context object at 0x7f9c7ada6f60> │                    
+│     self = <Group cli>                                   │                    
+│  sub_ctx = <click.core.Context object at 0x7f9c7a8b1850> │                    
+╰──────────────────────────────────────────────────────────╯                    
+/home/newton/work/tfa/fbsource/third-party/pypi/click/8.1.7/sources/src/click/core.py:1171 in invoke
+  1170 │   │   if self.callback is not None:                                    
+❱ 1171 │   │   │   return ctx.invoke(self.callback, **ctx.params)               
+  1172                                                                          
+                                                                                
+╭─────────────────────── locals ───────────────────────╮                        
+│  ctx = <click.core.Context object at 0x7f9c7a8b1850> │                        
+│ self = <Command render-followup>                     │                        
+╰──────────────────────────────────────────────────────╯                        
+/home/newton/work/tfa/fbsource/third-party/pypi/click/8.1.7/sources/src/click/core.py:779 in invoke
+   778 │   │   │   with ctx:                                                    
+❱  779 │   │   │   │   return __callback(*args, **kwargs)                       
+   780                                                                          
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ _Context__self = <click.core.Context object at 0x7f9c7a8b1850>               │
+│           args = ()                                                          │
+│            ctx = <click.core.Context object at 0x7f9c7a8b1850>               │
+│         kwargs = {                                                           │
+│                  │   'manifest':                                             │
+│                  PosixPath('/home/newton/work/tfa/fbsource/fbcode/testinfra… │
+│                  │   'case_id': 'thrift',                                    │
+│                  │   'ledger':                                               │
+│                  PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tf… │
+│                  │   'output_dir':                                           │
+│                  PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tf… │
+│                  }                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/fbcode/cli/py/click/asyncio.py:54 in wrapper
+  53 │   def wrapper(*args: P.args, **kwargs: P.kwargs) -> R | Awaitable[R]:    
+❱ 54 │   │   res = fn(*args, **kwargs)                                          
+  55 │   │   if isinstance(res, Coroutine):                                     
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│   args = ()                                                                  │
+│ kwargs = {                                                                   │
+│          │   'manifest':                                                     │
+│          PosixPath('/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/cas… │
+│          │   'case_id': 'thrift',                                            │
+│          │   'ledger':                                                       │
+│          PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2… │
+│          │   'output_dir':                                                   │
+│          PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2… │
+│          }                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/main.py:121 in render_followup_command
+  120 │   case = load_manifest(manifest).case(case_id)                          
+❱ 121 │   followup = validated_followup(case, ledger)                           
+  122 │   runs = [asdict(run) for run in followup.runs]                         
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│       case = Case(                                                           │
+│              │   case_id='thrift',                                           │
+│              │   selector='fbcode//thrift/lib/cpp2/test:InstrumentationTest  │
+│              - RequestInstrumentationTestWit'+51,                            │
+│              │   test_id='281475235299286',                                  │
+│              │   issue_id=None,                                              │
+│              │   task_id=None,                                               │
+│              │   live_task=False,                                            │
+│              │   source_revision='7f239d5b37dfbecf32fed144468da461f998add5', │
+│              │   hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61', │
+│              │                                                               │
+│              hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4… │
+│              │                                                               │
+│              artifact_sha256='2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf… │
+│              │                                                               │
+│              authoritative_record='https://github.com/rrnewton/dev-hermit/b… │
+│              │   working_directory='/tmp/tfa-phase2/cwd/thrift',             │
+│              │                                                               │
+│              evidence_url='https://github.com/rrnewton/dev-hermit/blob/edd9… │
+│              │   build_argv=(                                                │
+│              │   │   'buck',                                                 │
+│              │   │   'build',                                                │
+│              │   │   '@fbcode//mode/dev-tsan',                               │
+│              │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest',     │
+│              │   │   '--show-full-json-output'                               │
+│              │   ),                                                          │
+│              │   test_argv=(                                                 │
+│              │   │   'buck',                                                 │
+│              │   │   'test',                                                 │
+│              │   │   '@fbcode//mode/dev-tsan',                               │
+│              │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest',     │
+│              │   │   '--',                                                   │
+│              │   │   '--exact',                                              │
+│              │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest -     │
+│              RequestInstrumentationTestWit'+51                               │
+│              │   ),                                                          │
+│              │   pass_argv=(                                                 │
+│              │   │   '/home/newton/work/dev-hermit/bin/safehermit',          │
+│              │   │   '--sh-report',                                          │
+│              │   │   '/tmp/tfa-phase2/repro/thrift/pass/safehermit.json',    │
+│              │   │   '--sh-deadline',                                        │
+│              │   │   '120',                                                  │
+│              │   │   '--sh-max-log-bytes',                                   │
+│              │   │   '67108864',                                             │
+│              │   │   '--sh-disk-limit',                                      │
+│              │   │   '8G',                                                   │
+│              │   │                                                           │
+│              '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20… │
+│              │   │   ... +40                                                 │
+│              │   ),                                                          │
+│              │   fail_argv=(                                                 │
+│              │   │   '/home/newton/work/dev-hermit/bin/safehermit',          │
+│              │   │   '--sh-report',                                          │
+│              │   │   '/tmp/tfa-phase2/repro/thrift/fail/safehermit.json',    │
+│              │   │   '--sh-deadline',                                        │
+│              │   │   '120',                                                  │
+│              │   │   '--sh-max-log-bytes',                                   │
+│              │   │   '67108864',                                             │
+│              │   │   '--sh-disk-limit',                                      │
+│              │   │   '8G',                                                   │
+│              │   │                                                           │
+│              '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20… │
+│              │   │   ... +40                                                 │
+│              │   ),                                                          │
+│              │   pass_seed=0,                                                │
+│              │   fail_seed=1,                                                │
+│              │   historical_pass_seed=0,                                     │
+│              │   historical_fail_seed=1,                                     │
+│              │   fresh_stress_seeds=(2, 3, 4, 5),                            │
+│              │   failure_class='gtest-snapshot-size-2'                       │
+│              )                                                               │
+│    case_id = 'thrift'                                                        │
+│     ledger = PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tfa-ph… │
+│   manifest = PosixPath('/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa… │
+│ output_dir = PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tfa-ph… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+/home/newton/work/tfa/fbsource/fbcode/testinfra/tfa/followup.py:305 in validated_followup
+  304 │   if guests["unfixed"] == guests["patched"]:                            
+❱ 305 │   │   raise FollowupError("patched phase reran the unfixed test ELF")   
+  306 │   seen: set[str] = set()                                                
+                                                                                
+╭─────────────────────────────────── locals ───────────────────────────────────╮
+│ alternatives = (                                                             │
+│                │   (                                                         │
+│                │   │   2,                                                    │
+│                │   │   'req3 was counted but its DebugStub was not yet       │
+│                registered when the snapshot task'+5                          │
+│                │   ),                                                        │
+│                │   (                                                         │
+│                │   │   3,                                                    │
+│                │   │   'req1 was dropped from the registry because the       │
+│                finished-list limit was not appli'+21                         │
+│                │   ),                                                        │
+│                │   (                                                         │
+│                │   │   4,                                                    │
+│                │   │   "Requests span multiple IO workers and one worker's   │
+│                registry is missing from the "+10                             │
+│                │   )                                                         │
+│                )                                                             │
+│    candidate = CandidateSummary(                                             │
+│                │   case_id='thrift',                                         │
+│                │   root_cause='Test race, not a server bug. For rocket,      │
+│                getActiveRequests only drops when the r'+324,                 │
+│                │                                                             │
+│                patch_path='/home/newton/work/dev-hermit/worktrees/slots/tfa… │
+│                │   selected_hypothesis_rank=1,                               │
+│                │   hypotheses=(                                              │
+│                │   │   Hypothesis(                                           │
+│                │   │   │   rank=1,                                           │
+│                │   │   │   claim='req1 is still counted by                   │
+│                ThriftServer::getActiveRequests() after its handler pos'+170, │
+│                │   │   │   contradicting='Not directly instrumented. No      │
+│                build is allowed, so which snapshot entry is missi'+80        │
+│                │   │   ),                                                    │
+│                │   │   Hypothesis(                                           │
+│                │   │   │   rank=2,                                           │
+│                │   │   │   claim='req3 was counted but its DebugStub was not │
+│                yet registered when the snapshot task'+5,                     │
+│                │   │   │   contradicting='Both run back to back in one       │
+│                IO-thread callback (ThriftRocketServerHandler.cpp:5'+129      │
+│                │   │   ),                                                    │
+│                │   │   Hypothesis(                                           │
+│                │   │   │   rank=3,                                           │
+│                │   │   │   claim='req1 was dropped from the registry because │
+│                the finished-list limit was not appli'+21,                    │
+│                │   │   │   contradicting='The PASS witness passes            │
+│                EXPECT_NE(finished timestamp, 0), so req1 is retained in'+80  │
+│                │   │   ),                                                    │
+│                │   │   Hypothesis(                                           │
+│                │   │   │   rank=4,                                           │
+│                │   │   │   claim="Requests span multiple IO workers and one  │
+│                worker's registry is missing from the "+10,                   │
+│                │   │   │   contradicting='One RocketClientChannel connection │
+│                means one Cpp2Worker and one registry, and fo'+31             │
+│                │   │   )                                                     │
+│                │   )                                                         │
+│                )                                                             │
+│         case = Case(                                                         │
+│                │   case_id='thrift',                                         │
+│                │                                                             │
+│                selector='fbcode//thrift/lib/cpp2/test:InstrumentationTest -  │
+│                RequestInstrumentationTestWit'+51,                            │
+│                │   test_id='281475235299286',                                │
+│                │   issue_id=None,                                            │
+│                │   task_id=None,                                             │
+│                │   live_task=False,                                          │
+│                │                                                             │
+│                source_revision='7f239d5b37dfbecf32fed144468da461f998add5',   │
+│                │                                                             │
+│                hermit_revision='4630ee2a61f93221a43e2baec0a15f34102a2c61',   │
+│                │                                                             │
+│                hermit_sha256='5c422b8599ebc9471f8395f52f4f8c286919fad09bee1… │
+│                │                                                             │
+│                artifact_sha256='2ec5d2128aa5af3ae86d46659054dd72b64ef86a389… │
+│                │                                                             │
+│                authoritative_record='https://github.com/rrnewton/dev-hermit… │
+│                │   working_directory='/tmp/tfa-phase2/cwd/thrift',           │
+│                │                                                             │
+│                evidence_url='https://github.com/rrnewton/dev-hermit/blob/ed… │
+│                │   build_argv=(                                              │
+│                │   │   'buck',                                               │
+│                │   │   'build',                                              │
+│                │   │   '@fbcode//mode/dev-tsan',                             │
+│                │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest',   │
+│                │   │   '--show-full-json-output'                             │
+│                │   ),                                                        │
+│                │   test_argv=(                                               │
+│                │   │   'buck',                                               │
+│                │   │   'test',                                               │
+│                │   │   '@fbcode//mode/dev-tsan',                             │
+│                │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest',   │
+│                │   │   '--',                                                 │
+│                │   │   '--exact',                                            │
+│                │   │   'fbcode//thrift/lib/cpp2/test:InstrumentationTest -   │
+│                RequestInstrumentationTestWit'+51                             │
+│                │   ),                                                        │
+│                │   pass_argv=(                                               │
+│                │   │   '/home/newton/work/dev-hermit/bin/safehermit',        │
+│                │   │   '--sh-report',                                        │
+│                │   │   '/tmp/tfa-phase2/repro/thrift/pass/safehermit.json',  │
+│                │   │   '--sh-deadline',                                      │
+│                │   │   '120',                                                │
+│                │   │   '--sh-max-log-bytes',                                 │
+│                │   │   '67108864',                                           │
+│                │   │   '--sh-disk-limit',                                    │
+│                │   │   '8G',                                                 │
+│                │   │                                                         │
+│                '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-… │
+│                │   │   ... +40                                               │
+│                │   ),                                                        │
+│                │   fail_argv=(                                               │
+│                │   │   '/home/newton/work/dev-hermit/bin/safehermit',        │
+│                │   │   '--sh-report',                                        │
+│                │   │   '/tmp/tfa-phase2/repro/thrift/fail/safehermit.json',  │
+│                │   │   '--sh-deadline',                                      │
+│                │   │   '120',                                                │
+│                │   │   '--sh-max-log-bytes',                                 │
+│                │   │   '67108864',                                           │
+│                │   │   '--sh-disk-limit',                                    │
+│                │   │   '8G',                                                 │
+│                │   │                                                         │
+│                '/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-… │
+│                │   │   ... +40                                               │
+│                │   ),                                                        │
+│                │   pass_seed=0,                                              │
+│                │   fail_seed=1,                                              │
+│                │   historical_pass_seed=0,                                   │
+│                │   historical_fail_seed=1,                                   │
+│                │   fresh_stress_seeds=(2, 3, 4, 5),                          │
+│                │   failure_class='gtest-snapshot-size-2'                     │
+│                )                                                             │
+│         data = b'{\n  "candidate_report":                                    │
+│                "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2'+70… │
+│ evidence_gap = 'Not directly instrumented. No build is allowed, so which     │
+│                snapshot entry is missi'+80                                   │
+│       guests = {                                                             │
+│                │   'unfixed':                                                │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                │   'patched':                                                │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                }                                                             │
+│       ledger = {                                                             │
+│                │   'candidate_report':                                       │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   'case_id': 'thrift',                                      │
+│                │   'phases': {                                               │
+│                │   │   'patched': {                                          │
+│                │   │   │   'guest_sha256':                                   │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                │   │   │   'interrupted': [],                                │
+│                │   │   │   'runs': [                                         │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fail-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fail-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   ... +3                                        │
+│                │   │   │   ]                                                 │
+│                │   │   },                                                    │
+│                │   │   'unfixed': {                                          │
+│                │   │   │   'guest_sha256':                                   │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                │   │   │   'interrupted': [],                                │
+│                │   │   │   'runs': [                                         │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fail-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fail-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'pass-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'pass-witness',                   │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'fresh',                          │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   {                                             │
+│                │   │   │   │   │   'role': 'discriminator',                  │
+│                │   │   │   │   │   'run':                                    │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   │   },                                            │
+│                │   │   │   │   ... +7                                        │
+│                │   │   │   ]                                                 │
+│                │   │   }                                                     │
+│                │   },                                                        │
+│                │   'schema': 'tfa.followup-ledger.v1'                        │
+│                }                                                             │
+│  ledger_path = PosixPath('/home/newton/work/dev-hermit/worktrees/slots/tfa-… │
+│        patch = b'diff --git                                                  │
+│                a/fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp         │
+│                b/fbcode/thrift'+771                                          │
+│       phases = {                                                             │
+│                │   'patched': {                                              │
+│                │   │   'guest_sha256':                                       │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                │   │   'interrupted': [],                                    │
+│                │   │   'runs': [                                             │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fail-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fail-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   ... +3                                            │
+│                │   │   ]                                                     │
+│                │   },                                                        │
+│                │   'unfixed': {                                              │
+│                │   │   'guest_sha256':                                       │
+│                '2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094… │
+│                │   │   'interrupted': [],                                    │
+│                │   │   'runs': [                                             │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fail-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fail-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'pass-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'pass-witness',                       │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'fresh',                              │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   {                                                 │
+│                │   │   │   │   'role': 'discriminator',                      │
+│                │   │   │   │   'run':                                        │
+│                '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+│                │   │   │   },                                                │
+│                │   │   │   ... +7                                            │
+│                │   │   ]                                                     │
+│                │   }                                                         │
+│                }                                                             │
+│         rank = 1                                                             │
+│       report = '/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyb… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+FollowupError: patched phase reran the unfixed test ELF

@@ -1,0 +1,151 @@
+
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Opus 5.5 with high effort · Google Vertex AI
+  ▝▝ ▝▝    ~/work/tfa/phase2-cases/investigators/thrift
+
+
+▎ Introducing Agent Home v2 - a fast and reliable way to work with Claude Code on web and mobile.
+▎ Open https://www.internalfb.com/ah
+  ⎿  SessionStart:startup hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: /home/newton/.claude/scout-hooks/session-start.sh: No such file or directory
+  ⎿  SessionStart:startup says: Discovered 13 skills (/llm-rules-info for more)
+
+
+❯ Hermit quick-start
+  - Build with Buck outside Hermit.
+  - Run witnesses only through the controller command shown below. It resolves,
+    verifies, and pins the packaged safehermit, bounded-run-space, and Hermit
+    resources; no machine-local dev-hermit checkout is required.
+  - Preserve argv tokens exactly; never invoke through a shell.
+  - For every Hermit invocation, create a fresh `controller-cwd` under that
+    attempt's artifact directory. Add a same-path bind for it, add
+    `--workdir=<fixed case working_directory>`, add Hermit's `--timeout=110`
+    inside safehermit's 120-second deadline, and invoke safehermit with the tool
+    working directory set to `controller-cwd`. Keep the outer timeout at least
+    130 seconds. Never run Hermit from the fixed guest working directory.
+  - Preserve and hash any `.hermit-verify-summary-*` timeout residue in the
+    controller directory; never delete or allowlist it. The fixed guest working
+    directory must remain sealed and unchanged.
+  - Keep the same-path buck-out bind mount because the ELF resolves runtime
+    dependencies there.
+  - For post-fix replay, use the ELF built in the isolated case checkout and
+    rewrite both the guest ELF path and same-path buck-out bind mount to that
+    checkout.
+  - Never copy, replace, or link an ELF or dependency into
+    /home/newton/work/tfa/fbsource/buck-out.
+  - Treat `/tmp/tfa-phase2/repro` and the sealed historical manifest as immutable
+    supplied evidence. Use only the controller commands below; the controller maps
+    the historical contract to the current packaged CLI only after its
+    compatibility gate passes.
+  - The current strict comparison contract is `--verify --verify-verbose
+    --verify-allow both`: verbose selects FullTrace and disables line stripping.
+    Inspect its evidence instead of relaxing comparison.
+
+
+  Investigation contract
+  1. Reproduce both the supplied PASS and FAIL before editing. Inspect the
+     selected test and production code.
+  2. Separate the trigger/fatal symptom from the originating invariant
+     violation.
+  3. Emit 2-5 ranked falsifiable hypotheses. Each needs supporting evidence,
+     contradicting evidence, and the next discriminating experiment. Select
+     exactly one top hypothesis.
+  4. Propose the smallest principled fix in the exact patch artifact. The source
+     checkout is read-only to your tools: do not edit it, invoke source-control
+     mutations, or attempt to apply the patch yourself. Do not quarantine or
+     disable tests, weaken assertions/comparators/tolerances/timeouts, add
+
+  ──── (257 lines hidden) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  d-seed-00000000000000000001-replica-1.stderr.txt",
+        "sha256": "85f03e9d5b46c519120cc647a866feeba19cf2d12af443e4bf1269766ca3e296",
+        "size": 1660
+      },
+      "fail.stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-001-sched-seed-00000000000000
+  000001-replica-1.stdout.txt",
+        "sha256": "c8a68dbd3d417f0259f338d71bac761d7fe54682fbb8103e0180b0b22fdb7d8d",
+        "size": 983
+      },
+      "pass.result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000
+  000000-replica-1.result.json",
+        "sha256": "ea034d80afb978c68c2ad649a383c1aa685346140b45cbae1db6bce6ea622e23",
+        "size": 2174
+      },
+      "pass.stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000
+  000000-replica-1.stderr.txt",
+        "sha256": "305f7db233675d0f477f2bd73cd7a9d917f681f791a25d7296ec84c587b0ff5d",
+        "size": 1660
+      },
+      "pass.stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/tfa-phase2-cyber-opus/ignored/tfa-phase2-three-case/authoritative/thrift/evidence/selection-000-sched-seed-00000000000000
+  000000-replica-1.stdout.txt",
+        "sha256": "a403e806173b58c452100babc08ccccadfdaffbc04fbee77dde192d907cfece9",
+        "size": 694
+      }
+    },
+    "pass": {
+      "determinism_verified": true,
+      "exit_code": 0,
+      "failure_class_id": null,
+      "failures": [],
+      "gtest_verdict": "OK",
+      "seed": 0,
+      "signal": null,
+      "top_frames": [],
+      "verifier_counts": {
+❯ Hermit quick-start - Build with Buck outside Hermit. - Run witnesses only through the controller command shown below. It resolves, verifies, and pins the packaged safehermit, bound…
+        "DETLOG & scheduler COMMIT messages": 29189,
+        "INFO messages": 34876,
+        "detcore-specific messages": 34862,
+        "messages total": 34876,
+        "scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 912, committed virtual time 1790027077877067741ns, run 2 first at turn 912, committed virtual time
+  1790027077877067741ns)": 82,
+        "scheduler empty-run-queue kick messages": 1
+      }
+    },
+    "qualification": "deterministic-text-difference; not a root cause",
+    "schema_version": 1,
+    "verifier_count_delta": {
+      "DETLOG & scheduler COMMIT messages": 1263,
+      "INFO messages": 4061,
+      "detcore-specific messages": 4061,
+      "messages total": 4061,
+      "scheduler empty-run-queue kick messages": 0
+    }
+  }
+  ```
+
+  ⎿  Read fbcode/mode/dev-tsan (11 lines)
+  ⎿  Loaded fbcode/.claude/CLAUDE.md
+  ⎿  UserPromptSubmit says: Discovered 4 skills: compare_model_size.md, lionhead_fuzzing_harness, td-explainer, ... (/llm-rules-info for more)
+
+  Ran 4 shell commands
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+
+● Let me start the PASS witness replay in the background while I read production code.
+
+● Finding active request counter in server files
+  ⎿  $ cd /home/newton/work/tfa/phase2-cases/investigators/thrift/fbcode/thrift/lib/cpp2; grep -n "activeRequests\|getActiveRequests\|incActiveRequests\|decActiveRequests"
+     server/ThriftServer.h server/ThriftServer.cpp server/BaseThriftServer.h server/Cpp2Worker.h server/Cpp2Worker.cpp server/RequestsReg…
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: line 1: validated_jf: command not found
+
+* Herding… (53s · ↓ 2.6k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on · 1 shell · esc to interrupt · ← 1 agent · ↓ to manage

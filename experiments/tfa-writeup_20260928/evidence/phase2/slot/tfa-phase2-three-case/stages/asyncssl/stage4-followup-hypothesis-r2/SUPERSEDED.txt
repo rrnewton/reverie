@@ -1,0 +1,1 @@
+Superseded on 2026-09-25 by ../stage4-followup-hypothesis-r3/, rendered at b8b85d00462b. That head renders investigator-written fields as bounded plain text in a text fence, taken from the validated report snapshot.

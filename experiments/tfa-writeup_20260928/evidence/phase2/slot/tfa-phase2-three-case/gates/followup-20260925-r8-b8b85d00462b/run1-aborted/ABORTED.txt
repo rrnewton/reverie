@@ -1,0 +1,1 @@
+Aborted run: render-cmp used `{ ...; exit $rc; }`, a brace group, so `exit` ended the whole script after render-cmp (rc 0). Outputs up to that point are kept here; the full gate list was rerun in the parent directory with `( ... )`.

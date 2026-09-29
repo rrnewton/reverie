@@ -1,0 +1,2 @@
+    PID    PPID   UID                  STARTED     ELAPSED COMMAND
+3352899   43018 212630 Fri Sep 25 03:14:44 2026      05:20 /usr/local/bin/chataccd --mount-point /tmp/tfa-phase2/tfa-production-source-1j_c07x6/source --subscribe

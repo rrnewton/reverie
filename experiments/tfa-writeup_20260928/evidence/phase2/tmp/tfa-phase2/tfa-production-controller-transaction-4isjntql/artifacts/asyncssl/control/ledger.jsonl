@@ -1,0 +1,3 @@
+{"details": {"test": true}, "sequence": 1, "stage": "VALIDATED_REPRO", "timestamp": 1790403055.8113987}
+{"details": {"test": true}, "sequence": 2, "stage": "INITIAL_COMMENT", "timestamp": 1790403055.8122122}
+{"details": {"test": true}, "sequence": 3, "stage": "INVESTIGATING", "timestamp": 1790403055.8126204}

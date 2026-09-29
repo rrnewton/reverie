@@ -1,0 +1,14 @@
+HARD WARNING: PRIMARY CHECKOUT FRESHNESS
+  parent: detached: HEAD detached at 84021cb28d5e
+  parent: dirty: uncommitted path(s), including any staged gitlink, are present
+  parent: unknown: could not query live origin/main
+  hermit: primary checkout is not initialized
+  reverie: primary checkout is not initialized
+  liteinst2: primary checkout is not initialized
+  hermit: no tracked Cargo manifest pins rrnewton/reverie
+  hermit: could not parse Cargo.lock: [Errno 2] No such file or directory: '/home/newton/work/coord2-tfa-land/hermit/Cargo.lock'
+  hermit: could not parse liteinst-runtime-build/Cargo.lock: [Errno 2] No such file or directory: '/home/newton/work/coord2-tfa-land/hermit/liteinst-runtime-build/Cargo.lock'
+  hermit: could not read scripts/stage-liteinst-runtime.sh: [Errno 2] No such file or directory: '/home/newton/work/coord2-tfa-land/hermit/scripts/stage-liteinst-runtime.sh'
+Run `make checkout-fresh`; dirty primaries are preserved and skipped, and only a coherent snapshot is published.
+commit-attribution: PASS checked=1 machines=devbig030
+demo-review gate: no runnable demo files touched in staged change -- OK.

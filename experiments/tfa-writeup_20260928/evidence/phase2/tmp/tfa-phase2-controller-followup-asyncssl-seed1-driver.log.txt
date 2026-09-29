@@ -1,0 +1,3 @@
+0 False 6.749636456021108
+/tmp/tfa-phase2-controller-followup-evidence-20260924/asyncssl-real/seed-1/wrapper/stdout.txt
+/tmp/tfa-phase2-controller-followup-evidence-20260924/asyncssl-real/seed-1/wrapper/stderr.txt

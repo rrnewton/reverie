@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "case_id": "thrift",
+  "qualification": "candidate-only",
+  "selected_hypothesis_rank": 1,
+  "hypotheses": [
+    {
+      "rank": 1,
+      "top": true,
+      "claim": "req1 is still counted by ThriftServer::getActiveRequests() after its handler posts baton1, so the test's wait loop `while (getActiveRequests() < 2)` is satisfied by req1+req2 before req3 reaches the server; the snapshot then contains only req1 (finished) and req2 (started), size 2.",
+      "supporting": "(a) For rocket request-response, decActiveRequests runs only from ~RocketServerFrameContext (RocketServerFrameContext.cpp:47-54 -> connection requestComplete -> ThriftRocketServerHandler::requestComplete), which runs inside ~ThriftServerRequestResponse, i.e. after RequestsRegistry::Deleter already called moveToFinishedList (RequestsRegistry.h Deleter::operator()), and it can be deferred further until the response write is flushed (RocketServerConnection::requestComplete enqueues on writeBatcher_/inflightWritesQueue_). baton1 is posted inside the handler, before serialization, the IO-thread hop, request destruction and the write. (b) getServerSnapshot collects stubs via folly::via(worker->getEventBase()) (ThriftServer.cpp:2199-2222), the same IO thread that increments activeRequests and constructs/registers each rocket request in one synchronous callback (ThriftRocketServerHandler.cpp:597-600, RocketRequestOrchestrator.h:383-386). So any request counted when the loop exited is registered by the time the snapshot task runs; req1 is always in the registry (active or in the finished list, limit 1), and req2 is blocked in its handler, so a size of 2 can only mean req3 was not yet at the server. That requires the loop to have been satisfied without req3, i.e. by req1 still being counted. (c) The failure is deterministic under Hermit sched-seed 1 with chaos per-thread slowdown (the replay fail-a1 reproduced it with stdout byte-identical to history, sha256 c8a68dbd...), which is consistent with the server CPU/IO thread finishing req1 being slowed relative to the client thread.",
+      "contradicting": "Not observed directly: no instrumentation shows which request is missing from reqSnapshots or what getActiveRequests() returned at loop exit, because the ELF cannot be rebuilt here. The argument rests on code reading of the rocket path in this revision (both RocketServerConnection and RefactoredRocketServerConnection have the same deferred requestComplete).",
+      "next_experiment": "Controller: build the patched test (which waits for getActiveRequests()==0 after baton1) and replay sched-seed 1 and seed 0 plus fresh seeds 2-5; H1 predicts seed 1 passes. A stronger discriminator on an unpatched build is to log getActiveRequests() at loop exit and each snapshot's method/finished timestamp. H1 predicts activeRequests==2 with req1 counted, and the missing snapshot entry is req3."
+    },
+    {
+      "rank": 2,
+      "top": false,
+      "claim": "req3 was counted by incActiveRequests but its DebugStub was not yet linked into the registry when the snapshot task ran, so req3 is missing even though the wait loop legitimately saw req2+req3.",
+      "supporting": "The failure is consistent with req3 being missing, and increment and registration are separate statements.",
+      "contradicting": "In both rocket paths the increment and makeRequest/registerStub run back to back in the same IO-thread callback (ThriftRocketServerHandler.cpp:597-600; in RocketRequestOrchestrator.h:383-386 the request object, and therefore its stub, already exists before incActiveRequests). The snapshot runs as a separate task on that same EventBase, so it cannot interleave between them.",
+      "next_experiment": "On an unpatched build, record per-request the order of incActiveRequests and registerStub relative to the snapshot task on the worker EventBase (e.g. with VLOG or a test-only hook). H2 predicts a snapshot between them; code structure predicts none."
+    },
+    {
+      "rank": 3,
+      "top": false,
+      "claim": "req1 is the missing entry: it was dropped from the registry (not retained in the finished list) because the maxFinishedDebugPayloadsPerWorker=1 setting was not applied to the worker registry or was evicted.",
+      "supporting": "reqSnapshots.size()==2 would also result if req1 vanished while req2 and req3 were present.",
+      "contradicting": "The PASS witness (seed 0) passes EXPECT_NE(finished timestamp, 0) and all startedProcessing checks, so req1 was retained in the finished list with a non-zero finished timestamp in that run; the limit is therefore applied. moveToFinishedList unlinks from the active list and pushes to the finished list atomically on the IO thread, and only one request ever finishes before the snapshot, so eviction with limit 1 cannot drop req1.",
+      "next_experiment": "On an unpatched build, dump the method name and finished timestamp of each snapshot entry in the failing seed-1 run. H3 predicts the finished (req1) entry is absent; H1 predicts it is present and req3 is absent."
+    },
+    {
+      "rank": 4,
+      "top": false,
+      "claim": "The requests are spread across multiple IO workers and one worker's registry is not included in, or is stale in, the aggregated snapshot.",
+      "supporting": "getServerSnapshot aggregates one future per worker.",
+      "contradicting": "All three requests go over a single RocketClientChannel connection, so they are handled by one Cpp2Worker and one RequestsRegistry. forEachWorker visits every worker.",
+      "next_experiment": "Log worker identity and registry pointer per request in the failing run. H4 predicts different workers; the connection model predicts one."
+    }
+  ]
+}

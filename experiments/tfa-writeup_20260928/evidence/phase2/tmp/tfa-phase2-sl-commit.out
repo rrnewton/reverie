@@ -1,0 +1,8 @@
+running code formatter: 'arc f'
+ok No lint issues.
+code formatter completed successfully in 2.00 secs
+committed ce8fa9b59465b610e382845a5923935c6fe51fba
+changed 12 file(s):
+  fbcode/testinfra/tfa/resources/bounded-run-space
+  fbcode/testinfra/tfa/tests/ (4 files)
+  fbcode/testinfra/tfa/ (7 files)

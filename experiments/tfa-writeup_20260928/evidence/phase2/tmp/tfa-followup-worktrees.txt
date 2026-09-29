@@ -1,0 +1,7 @@
+  linked  /home/newton/temp/tfa-phase2/cases/asyncssl   tfa-phase2-asyncssl
+  linked  /home/newton/temp/tfa-phase2-thrift-case   tfa-phase2-thrift
+  main    /home/newton/work/tfa/fbsource
+  linked  /tmp/tfa-phase2/cases/httpcoro   tfa-phase2-httpcoro
+  linked  /tmp/tfa-phase2/httpcoro-b493168e.FhHVCr/checkout   tfa-httpcoro-b493168e
+  linked  /tmp/tfa-phase2/qualified-runs-0eb3028f-20260922/checkouts/httpcoro   tfa-httpcoro-0eb3028f
+* linked  /tmp/tfa-phase2-controller-followup-20260924   tfa-phase2-controller-followup-20260924

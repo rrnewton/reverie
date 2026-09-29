@@ -1,0 +1,44 @@
+.......FFF....
+======================================================================
+FAIL: test_refuses_paths_escaping_through_dotdot_or_symlink (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_paths_escaping_through_dotdot_or_symlink) (flag='--mount=', escape='symlink')
+----------------------------------------------------------------------
+testinfra.tfa.relocation.RelocationError: pass witness differs from its first attempt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1460, in test_refuses_paths_escaping_through_dotdot_or_symlink
+    self.assertRaisesRegex(RelocationError, message),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: "cwd resolves into" does not match "pass witness differs from its first attempt"
+
+======================================================================
+FAIL: test_refuses_paths_escaping_through_dotdot_or_symlink (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_paths_escaping_through_dotdot_or_symlink) (flag='--sh-report', escape='symlink')
+----------------------------------------------------------------------
+testinfra.tfa.relocation.RelocationError: pass witness differs from its first attempt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1460, in test_refuses_paths_escaping_through_dotdot_or_symlink
+    self.assertRaisesRegex(RelocationError, message),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: "safehermit report resolves into" does not match "pass witness differs from its first attempt"
+
+======================================================================
+FAIL: test_refuses_paths_escaping_through_dotdot_or_symlink (testinfra.tfa.tests.test_prototype.RelocationTest.test_refuses_paths_escaping_through_dotdot_or_symlink) (flag='--verify-log-dir=', escape='symlink')
+----------------------------------------------------------------------
+testinfra.tfa.relocation.RelocationError: pass witness differs from its first attempt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_phase2_test__/tfa_phase2_test#link-tree/testinfra/tfa/tests/test_prototype.py", line 1460, in test_refuses_paths_escaping_through_dotdot_or_symlink
+    self.assertRaisesRegex(RelocationError, message),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: "verify-log dir resolves into" does not match "pass witness differs from its first attempt"
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.113s
+
+FAILED (failures=3)

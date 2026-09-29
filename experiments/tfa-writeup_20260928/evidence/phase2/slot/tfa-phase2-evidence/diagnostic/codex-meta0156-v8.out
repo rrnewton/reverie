@@ -1,0 +1,114 @@
+test_btrfs_teardown_failure_retains_durable_recovery_receipt (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_btrfs_teardown_failure_retains_durable_recovery_receipt) ... ok
+test_cgroup_cleanup_covers_nested_descendants_on_every_outcome (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_cgroup_cleanup_covers_nested_descendants_on_every_outcome) ... ok
+test_changed_runtime_bytes_fail_closed_before_launch (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_changed_runtime_bytes_fail_closed_before_launch) ... ok
+test_checkout_identity_lock_excludes_concurrent_controller (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_checkout_identity_lock_excludes_concurrent_controller) ... ok
+test_checkout_identity_lock_rejects_path_replacement (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_checkout_identity_lock_rejects_path_replacement) ... ok
+test_checkout_service_identity_drift_prevents_mutation (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_checkout_service_identity_drift_prevents_mutation) ... ok
+test_checkout_service_retirement_is_exact_and_bounded (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_checkout_service_retirement_is_exact_and_bounded) ... ok
+test_checkout_service_units_are_exact_and_fail_closed (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_checkout_service_units_are_exact_and_fail_closed) ... ok
+test_controller_handoff_exact_command_creates_all_artifacts_once (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_controller_handoff_exact_command_creates_all_artifacts_once) ... ok
+test_current_full_trace_cannot_qualify_minimal_guest_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_current_full_trace_cannot_qualify_minimal_guest_and_cleans_up) ... ok
+test_current_full_trace_refuses_trace_drift_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_current_full_trace_refuses_trace_drift_and_cleans_up) ... ok
+test_fast_failure_keeps_host_identity_and_cleans_up (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_fast_failure_keeps_host_identity_and_cleans_up) ... ok
+test_fixture_body_error_is_not_shadowed_by_cleanup_failure (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_fixture_body_error_is_not_shadowed_by_cleanup_failure) ... ok
+test_fixture_cleanup_refuses_replaced_recovery_ownership (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_fixture_cleanup_refuses_replaced_recovery_ownership) ... ok
+test_forced_run2_kill_confines_and_seals_verify_residue (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_forced_run2_kill_confines_and_seals_verify_residue) ... ok
+test_inflight_bounded_commands_hold_recovery_until_quiescent (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_inflight_bounded_commands_hold_recovery_until_quiescent) ... ok
+test_killed_controller_recovers_every_verify_allocation_boundary (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_killed_controller_recovers_every_verify_allocation_boundary) ... ok
+test_killed_worktree_body_is_reconciled_by_independent_owner (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_killed_worktree_body_is_reconciled_by_independent_owner) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'testinfra'
+FAIL
+test_nested_hermit_lock_serializes_independent_processes (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_nested_hermit_lock_serializes_independent_processes) ... ok
+test_nested_run_process_in_transient_scope_scrubs_exec_wrapper (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_nested_run_process_in_transient_scope_scrubs_exec_wrapper) ... ok
+test_post_diagnosis_failure_bundle_outlives_case_directory (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_post_diagnosis_failure_bundle_outlives_case_directory) ... ok
+test_process_reference_scan_checks_process_root (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_process_reference_scan_checks_process_root) ... ok
+test_readiness_phase_has_a_bounded_startup_deadline (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_readiness_phase_has_a_bounded_startup_deadline) ... ok
+test_real_codex_candidate_handoff_uses_controller_buck (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_candidate_handoff_uses_controller_buck) ... ok
+test_real_codex_final_message_cannot_be_redirected_by_tool (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_final_message_cannot_be_redirected_by_tool) ... ok
+test_real_codex_native_workspace_sandbox_and_tfa_cleanup (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_native_workspace_sandbox_and_tfa_cleanup) ... ok
+test_real_codex_reviewer_final_message_cannot_be_redirected (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_codex_reviewer_final_message_cannot_be_redirected) ... ok
+test_real_controller_transaction_rejects_and_retries_exact_paths (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_real_controller_transaction_rejects_and_retries_exact_paths) ... ok
+test_removed_worktree_drain_rejects_deleted_cwd_reference (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_removed_worktree_drain_rejects_deleted_cwd_reference) ... ok
+test_removed_worktree_drain_rejects_deleted_open_fd_reference (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_removed_worktree_drain_rejects_deleted_open_fd_reference) ... ok
+test_removed_worktree_drain_rejects_encoded_argv_reference (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_removed_worktree_drain_rejects_encoded_argv_reference) ... ok
+test_removed_worktree_drain_rejects_persistent_reference (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_removed_worktree_drain_rejects_persistent_reference) ... ok
+test_removed_worktree_drain_rejects_real_deleted_process_root (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_removed_worktree_drain_rejects_real_deleted_process_root) ... ok
+test_runtime_recovery_preserves_mounted_interrupted_staging (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_runtime_recovery_preserves_mounted_interrupted_staging) ... /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/__par__/__startup_function_loader__.py:23: UserWarning: Startup function '_initialize' (static_extension_finder:_initialize) not executed: No module named '_static_extension_utils'
+  warnings.warn(
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/pipeline.py", line 1787, in _materialize_external_runtime_links
+    raise RuntimeError(
+RuntimeError: preserved runtime staging requires explicit cleanup
+ok
+test_worker_response_timeout_keeps_command_lock_until_exit (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_worker_response_timeout_keeps_command_lock_until_exit) ... Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_process_migration_helper.py", line 740, in <module>
+    main()
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_process_migration_helper.py", line 59, in main
+    _hermit_worker_timeout_probe(
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_process_migration_helper.py", line 684, in _hermit_worker_timeout_probe
+    hermit_module.run_hermit_attempt(
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/hermit.py", line 2320, in run_hermit_attempt
+    return _run_hermit_attempt_locked(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/hermit.py", line 2360, in _run_hermit_attempt_locked
+    space = _prepare_verify_space(attempt_root, bounded_run_space, disk_limit)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/hermit.py", line 567, in _prepare_verify_space
+    receipt = _bounded_space_result(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/hermit.py", line 528, in _bounded_space_result
+    return _read_bounded_space_worker(output)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/unittest/mock.py", line 1204, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_process_migration_helper.py", line 671, in read
+    return original_read(output)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/hermit.py", line 474, in _read_bounded_space_worker
+    raise HermitError("bounded verification worker did not finish")
+testinfra.tfa.hermit.HermitError: bounded verification worker did not finish
+unrecorded bounded verification allocation was recovered
+ok
+test_worktree_cleanup_failure_preserves_evidence_outside_root (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_worktree_cleanup_failure_preserves_evidence_outside_root) ... ok
+test_worktree_journal_is_atomic_sealed_and_private (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_worktree_journal_is_atomic_sealed_and_private) ... ok
+test_worktree_retirement_requires_registration_and_mount_absence (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_worktree_retirement_requires_registration_and_mount_absence) ... ok
+test_worktree_teardown_failure_retains_durable_recovery_receipt (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_worktree_teardown_failure_retains_durable_recovery_receipt) ... ok
+
+======================================================================
+FAIL: test_killed_worktree_body_is_reconciled_by_independent_owner (testinfra.tfa.tests.test_production_containment.ProductionContainmentIntegrationTest.test_killed_worktree_body_is_reconciled_by_independent_owner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 644, in _preserving_production_directory
+    yield root
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1752, in test_killed_worktree_body_is_reconciled_by_independent_owner
+    self.fail(f"worktree crash body exited {body.returncode}")
+AssertionError: worktree crash body exited 1
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 465, in locked
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 1725, in test_killed_worktree_body_is_reconciled_by_independent_owner
+    with _preserving_production_directory(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/fbcode/platform010/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c62dfa3398b37794/testinfra/tfa/tests/__tfa_production_containment_test__/tfa_production_containment_test#link-tree/testinfra/tfa/tests/test_production_containment.py", line 650, in _preserving_production_directory
+    raise AssertionError(
+AssertionError: production evidence preserved at /tmp/tfa-phase2/production-test-failures/worktree-crash/controller-handoff-1790318830399380521; retained root: /tmp/tfa-phase2/tfa-production-worktree-crash-9enc_8bv
+
+----------------------------------------------------------------------
+Ran 39 tests in 581.808s
+
+FAILED (failures=1)

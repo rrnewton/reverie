@@ -1,0 +1,12 @@
+2026-09-25T03:00:20.327-07:00  INFO arc_pyre_lib: Querying affected files from source control...
+2026-09-25T03:00:20.959-07:00  INFO arc_pyre_lib: Found 3 existing changed Python files
+2026-09-25T03:00:20.959-07:00  INFO arc_pyre_lib: Checking owning targets of existing changed Python files...
+[2026-09-25T03:00:21.065-07:00] Buck UI: https://www.internalfb.com/buck2/2c484128-dbe6-4068-9dd3-8c89b1fb3b2d
+[2026-09-25T03:00:23.179-07:00] RE Session: reSessionID-07890cd0-427f-48b7-8920-f540dc82c1a2
+[2026-09-25T03:00:24.120-07:00] Network: up 6.2KiB  down 68KiB  session reSessionID-07890cd0-427f-48b7-8920-f540dc82c1a2
+2026-09-25T03:00:24.203-07:00  INFO arc_pyre_lib: Found 2 targets and type checking ran on 2 of them
+[1;4mType errors in target [0m[3;4;35mfbcode//testinfra/tfa/tests:tfa_phase2_test-library[0m
+[31mfbcode/testinfra/tfa/tests/test_prototype.py[0m:[33m1348[0m:[33m29[0m `(run: Path) -> int` is not assignable to dict value type `(Path) -> None`
+[31mfbcode/testinfra/tfa/tests/test_prototype.py[0m:[33m1359[0m:[33m38[0m `(run: Path) -> int` is not assignable to dict value type `(Path) -> None`
+
+Pyrefly feedback: if these diagnostics were not useful, run `pyrefly feedback --reason <REASON> [--details <TEXT>]` (see `pyrefly feedback --help`).
