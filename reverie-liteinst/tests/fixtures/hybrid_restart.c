@@ -272,6 +272,56 @@ static int seccomp_trap(void) {
   return 0;
 }
 
+static volatile sig_atomic_t sigsys_handled;
+
+static void count_sigsys(int signo) {
+  (void)signo;
+  sigsys_handled += 1;
+}
+
+// A synchronous-class SIGSYS (positive si_code) the thread queues to itself
+// while it is blocked, then an rt_sigsuspend through the site whose temporary
+// mask unblocks it. The syscall returns at once, and at its exit Linux
+// dequeues the SIGSYS ahead of the tracer's single-step report, while the
+// temporary mask and its pending restore are in force. The handler must run
+// once, the sleep must fail with EINTR, and the restored mask must block
+// SIGSYS again.
+static int held_sigsuspend(void) {
+  warm_up();
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = count_sigsys;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGSYS, &action, NULL) != 0) {
+    return 40;
+  }
+  sigset_t block, old;
+  sigemptyset(&block);
+  sigaddset(&block, SIGSYS);
+  if (sigprocmask(SIG_BLOCK, &block, &old) != 0) {
+    return 41;
+  }
+  siginfo_t info;
+  memset(&info, 0, sizeof(info));
+  info.si_signo = SIGSYS;
+  info.si_code = 1; // SYS_SECCOMP, a positive (synchronous-class) code
+  if (syscall(SYS_rt_tgsigqueueinfo, getpid(), syscall(SYS_gettid), SIGSYS, &info) != 0) {
+    perror("rt_tgsigqueueinfo");
+    return 42;
+  }
+  sigset_t wait_mask = old;
+  sigdelset(&wait_mask, SIGSYS);
+  long result = restart_site(SYS_rt_sigsuspend, (long)&wait_mask, 8, 0, 0);
+  sigset_t now;
+  if (sigprocmask(SIG_SETMASK, NULL, &now) != 0) {
+    return 43;
+  }
+  printf("sigsuspend-result=%ld handled=%d blocked=%d", result, (int)sigsys_handled,
+         sigismember(&now, SIGSYS));
+  print_site_counts();
+  return 0;
+}
+
 static volatile sig_atomic_t handled;
 static volatile sig_atomic_t nested_ok;
 static long expected_parent;
@@ -617,6 +667,9 @@ int main(int argc, char **argv) {
   }
   if (strcmp(mode, "seccomp") == 0) {
     return seccomp_trap();
+  }
+  if (strcmp(mode, "sigsuspend-held") == 0) {
+    return held_sigsuspend();
   }
   return 3;
 }

@@ -2494,6 +2494,20 @@ async fn run_restart_fixture(
     mode: &str,
     plan: RestartPlan,
 ) -> Result<(String, Vec<String>), Error> {
+    let (output, events) = run_restart_fixture_output(backend, mode, plan).await?;
+    assert!(
+        output.status.success(),
+        "{backend:?} {mode} guest failed: {output:?}"
+    );
+    Ok((String::from_utf8(output.stdout).unwrap(), events))
+}
+
+/// As `run_restart_fixture`, for a guest that may exit unsuccessfully.
+async fn run_restart_fixture_output(
+    backend: RestartBackend,
+    mode: &str,
+    plan: RestartPlan,
+) -> Result<(reverie::process::Output, Vec<String>), Error> {
     let (_directory, guest) = compile_fixture("hybrid_restart.c");
     let mut command = Command::new(guest);
     command.arg(mode);
@@ -2518,11 +2532,7 @@ async fn run_restart_fixture(
                 .await?
         }
     };
-    assert!(
-        output.status.success(),
-        "{backend:?} {mode} guest failed: {output:?}"
-    );
-    Ok((String::from_utf8(output.stdout).unwrap(), log.events()))
+    Ok((output, log.events()))
 }
 
 fn restart_counts(backend: RestartBackend, hooks: u64) -> String {
@@ -2973,50 +2983,51 @@ async fn host_hybrid_signals_racing_unsubscribed_syscalls_are_seen_once() {
 
 /// A kernel-generated synchronous signal during the private-page step (here
 /// the guest's own `SECCOMP_RET_TRAP` SIGSYS) is dequeued ahead of the
-/// step's single-step report, which stays queued. Resuming would surface that
-/// report at the restored controller registers as a fake syscall trap and
-/// re-execute the syscall, so the session fails closed. Plain ptrace delivers
-/// the SIGSYS, which kills this handler-less guest.
+/// step's single-step report. The syscall did not run; the SIGSYS is returned
+/// to the kernel's queue behind the report and delivered when the guest
+/// resumes, as plain ptrace delivers it, and kills this handler-less guest on
+/// both backends after the Tool saw it once.
 #[tokio::test(flavor = "current_thread")]
-async fn host_hybrid_synchronous_signal_in_private_step_fails_closed() {
-    let (_directory, guest) = compile_fixture("hybrid_restart.c");
-    let mut command = Command::new(&guest);
-    command
-        .arg("seccomp")
-        .stdout(reverie::process::Stdio::piped())
-        .stderr(reverie::process::Stdio::piped());
-    let (output, log) = reverie_ptrace::TracerBuilder::<RestartTool>::new(command)
-        .config(0)
-        .spawn()
-        .await
-        .unwrap()
-        .wait_with_output()
-        .await
-        .unwrap();
-    // Whether a core is dumped is host policy; only the signal is asserted.
-    assert!(
-        matches!(
-            output.status,
-            ExitStatus::Signaled(reverie::Signal::SIGSYS, _)
-        ),
-        "{output:?}"
-    );
-    assert_eq!(log.events(), ["read(warm)", "signal SIGSYS"]);
+async fn host_hybrid_guest_seccomp_trap_in_private_step_follows_ptrace() {
+    for backend in RESTART_BACKENDS {
+        let (output, events) =
+            run_restart_fixture_output(backend, "seccomp", RestartPlan::default())
+                .await
+                .unwrap();
+        // Whether a core is dumped is host policy; only the signal is asserted.
+        assert!(
+            matches!(
+                output.status,
+                ExitStatus::Signaled(reverie::Signal::SIGSYS, _)
+            ),
+            "{backend:?}: {output:?}"
+        );
+        assert_eq!(events, ["read(warm)", "signal SIGSYS"], "{backend:?}");
+    }
+}
 
-    let error = run_restart_fixture(
-        RestartBackend::HostHybrid,
-        "seccomp",
+/// A synchronous-class signal that becomes deliverable only under the
+/// temporary mask of an unsubscribed `rt_sigsuspend` stops the private-page
+/// step after the syscall returned, ahead of the single-step report. The
+/// signal cannot be returned to the queue without discarding the saved mask,
+/// so it is held for delivery at the guest's syscall site. The guest must see
+/// what plain ptrace gives it: the handler runs once, the sleep fails with
+/// `EINTR`, the saved mask that blocks the signal is restored, and the Tool
+/// sees the signal once.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_signal_held_after_a_mask_swapping_syscall_follows_ptrace() {
+    let (stdout, events) = restart_parity(
+        "sigsuspend-held",
         RestartPlan::default(),
+        1,
+        "sigsuspend-held",
     )
-    .await
-    .expect_err("a synchronous signal in the private-page step must fail closed");
-    let error = error.to_string();
-    assert!(
-        error.contains("restart LiteInst host-hybrid syscall")
-            && error.contains("stopped with SIGSYS")
-            && error.contains("single-step report may still be queued"),
-        "private-page step did not fail closed: {error}"
+    .await;
+    assert_eq!(
+        stdout,
+        "sigsuspend-result=-4 handled=1 blocked=1 traps=- hooks=-\n"
     );
+    assert_eq!(events, ["read(warm)", "signal SIGSYS"]);
 }
 
 /// A handler that decides the magic read's restart leaves a nested
