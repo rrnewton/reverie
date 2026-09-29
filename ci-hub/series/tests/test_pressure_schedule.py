@@ -20,7 +20,45 @@ sys.modules[SPEC.name] = pressure_schedule
 SPEC.loader.exec_module(pressure_schedule)
 
 
+ORIGINAL_PROBE_VERSION = pressure_schedule.unwrapped_git.probe_version
+
+
+def fake_host_gits(root):
+    """A fake wrapper `git` beside a fake git.meta.real, and a plain git."""
+    local = root / "fake-local-bin"
+    plain = root / "fake-plain-bin"
+    for directory, name, version in (
+        (local, "git", "git version 2.53.0-Meta"),
+        (local, "git.meta.real", "git version 2.53.0-Meta"),
+        (plain, "git", "git version 2.52.0"),
+    ):
+        directory.mkdir(exist_ok=True)
+        script = directory / name
+        script.write_text(f"#!/bin/sh\necho '{version}'\n")
+        script.chmod(0o755)
+    return local, local / "git.meta.real", plain
+
+
 class PressureScheduleTest(unittest.TestCase):
+    def setUp(self):
+        # Keep launch() from resolving or running the host's git: the default
+        # here is "no git.meta.real", which leaves PATH unchanged. The
+        # UnwrappedGitLaunchTest cases below use fake binaries instead.
+        absent = mock.patch.object(
+            pressure_schedule.unwrapped_git,
+            "REAL_GIT",
+            Path("/nonexistent-unwrapped-git-fixture/git.meta.real"),
+        )
+        absent.start()
+        self.addCleanup(absent.stop)
+        probe = mock.patch.object(
+            pressure_schedule.unwrapped_git,
+            "probe_version",
+            return_value=("git version fixture", ""),
+        )
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_tick_output_exposes_summary_as_its_own_key(self):
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
@@ -693,6 +731,164 @@ class PressureScheduleTest(unittest.TestCase):
                 pressure_schedule.shutil, "which", return_value=None
             ):
                 self.assertEqual(pressure_schedule.launch(Path(directory)), 1)
+
+
+class UnwrappedGitLaunchTest(unittest.TestCase):
+    """launch() hands the unit a PATH whose git is git.meta.real, or PATH unchanged."""
+
+    def launch(self, root, path, **patches):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == "/bin/systemctl":
+                return subprocess.CompletedProcess(command, 3, "", "")
+            if "rev-parse" in command:
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.dict(pressure_schedule.os.environ, {"PATH": path}, clear=True)
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    pressure_schedule.shutil,
+                    "which",
+                    side_effect=lambda name: {
+                        "systemctl": "/bin/systemctl",
+                        "systemd-run": "/bin/systemd-run",
+                        "with-proxy": "/bin/with-proxy",
+                    }[name],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    pressure_schedule.unwrapped_git, "REAL_GIT", patches.pop("real")
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    pressure_schedule.unwrapped_git,
+                    "probe_version",
+                    ORIGINAL_PROBE_VERSION,
+                )
+            )
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(pressure_schedule, name, value))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            rc = pressure_schedule.launch(root, run)
+        launched = [command for command in calls if command[0] == "/bin/systemd-run"]
+        return rc, launched, output.getvalue()
+
+    def slot(self, root):
+        record = pressure_schedule.run_registry.read_record(
+            pressure_schedule.run_registry.record_path(root, pressure_schedule.UNIT)
+        )
+        return Path(record["checkout"]).name
+
+    def path_values(self, command):
+        return [arg for arg in command if arg.startswith("--setenv=PATH=")]
+
+    def test_launch_runs_unwrapped_git_when_path_git_is_the_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            rc, launched, output = self.launch(root, f"{local}:/bin", real=real)
+
+            self.assertEqual(0, rc, output)
+            self.assertEqual(1, len(launched))
+            slot = self.slot(root)
+            git_directory = root / "ignored/ci-hub/pressure-test-git" / slot
+            self.assertEqual(
+                [f"--setenv=PATH={git_directory}:{local}:/bin"],
+                self.path_values(launched[0]),
+            )
+            self.assertEqual(["git"], sorted(p.name for p in git_directory.iterdir()))
+            self.assertEqual(str(real), pressure_schedule.os.readlink(git_directory / "git"))
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn(f"pressure_schedule: slot={slot} git substitution APPLIED: ", log)
+            self.assertIn(f'"effective_git": "{real}"', log)
+            # stdout stays the health tick's two-line protocol.
+            self.assertEqual(
+                ["state=launched", "summary"],
+                [line.split("=", 1)[0] if line.startswith("summary=") else line
+                 for line in output.splitlines()],
+            )
+
+    def test_launch_leaves_path_unchanged_when_git_is_not_the_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, plain = fake_host_gits(root)
+            path = f"{plain}:{local}:/bin"
+            rc, launched, output = self.launch(root, path, real=real)
+
+            self.assertEqual(0, rc, output)
+            self.assertEqual([f"--setenv=PATH={path}"], self.path_values(launched[0]))
+            self.assertFalse((root / "ignored/ci-hub/pressure-test-git").exists())
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn("git substitution NOT-APPLIED: ", log)
+            self.assertIn('"code": "not-the-wrapper"', log)
+            self.assertIn('"effective_version": "git version 2.52.0"', log)
+
+    def test_directory_failure_launches_with_path_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            blocker = root / "not-a-directory"
+            blocker.write_text("")
+            path = f"{local}:/bin"
+            rc, launched, output = self.launch(
+                root,
+                path,
+                real=real,
+                unwrapped_git_directory=lambda _root, slot: blocker / slot,
+            )
+
+            self.assertEqual(0, rc, output)
+            self.assertEqual([f"--setenv=PATH={path}"], self.path_values(launched[0]))
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn('"code": "materialize-failed"', log)
+
+    def test_refused_handoff_creates_no_git_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, _plain = fake_host_gits(root)
+            with mock.patch.dict(
+                pressure_schedule.os.environ,
+                {"DEV_HERMIT_OPERATIONAL_TOOL": str(root / "missing-tool")},
+            ):
+                calls = []
+
+                def run(command, **kwargs):
+                    calls.append(command)
+                    if command[0] == "/bin/systemctl":
+                        return subprocess.CompletedProcess(command, 3, "", "")
+                    if "rev-parse" in command:
+                        return subprocess.CompletedProcess(
+                            command, 0, "a" * 40 + "\n", ""
+                        )
+                    return subprocess.CompletedProcess(command, 0, "", "")
+
+                with mock.patch.object(
+                    pressure_schedule.unwrapped_git, "REAL_GIT", real
+                ), mock.patch.object(
+                    pressure_schedule.unwrapped_git,
+                    "probe_version",
+                    ORIGINAL_PROBE_VERSION,
+                ), mock.patch.dict(
+                    pressure_schedule.os.environ, {"PATH": f"{local}:/bin"}
+                ), mock.patch.object(
+                    pressure_schedule.shutil,
+                    "which",
+                    side_effect=lambda name: f"/bin/{name}",
+                ), contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(1, pressure_schedule.launch(root, run))
+            self.assertIn("state=refused", output.getvalue())
+            self.assertIn("incomplete operational-tool handoff", output.getvalue())
+            self.assertFalse(any(command[0] == "/bin/systemd-run" for command in calls))
+            self.assertFalse((root / "ignored/ci-hub/pressure-test-git").exists())
 
 
 if __name__ == "__main__":

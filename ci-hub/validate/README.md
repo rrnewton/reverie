@@ -140,6 +140,54 @@ selection, or verdict.
   change, as the validate-run recipe already requires (launch from a
   detached dev-hermit worktree at `origin/main`).
 
+## git: validation runs the unwrapped binary
+
+On devbig014, `git` on PATH is `/usr/local/bin/git`, a fleet telemetry
+wrapper. Each call starts four more `/usr/local/bin/git.meta.real` processes
+and a detached `scm_telem_log`, then runs the requested command through
+`git.meta.real`. Inside a systemd-run cgroup at a load average of about 200,
+one call cost 164 ms of CPU through the wrapper and 19 ms through
+`git.meta.real` directly. Hermit's `gate.manifest` makes about 4011 git calls
+(https://github.com/rrnewton/hermit/pull/3311), and RUN 1961 stopped at
+901.5 of its 900 CPU-s (https://github.com/rrnewton/hermit/issues/3381).
+
+So `ci-hub validate-run` (for `rrnewton/hermit`) and `pressure_schedule.py
+launch` give their unit a PATH whose first entry is a run-private directory.
+Its only entry is `git`, a symlink to `git.meta.real`. `validate/unwrapped_git.py`
+decides this at every launch. Run `python3 ci-hub/validate/unwrapped_git.py`
+to see what this host would do.
+
+This changes which git binary runs. It does not change any budget, timeout,
+cell selection, or verdict. The unit gives up the wrapper's telemetry, its
+extra HTTP headers, and its retry on HTTP 429.
+
+- **Checks.** The substitution applies only when all of these hold:
+  - PATH's `git` is the same file (`os.path.samefile`) as the `git` beside
+    `git.meta.real`. A same-named copy does not count.
+  - `git.meta.real` is an executable regular file.
+  - Both binaries print the same `git --version` line.
+
+  Otherwise PATH is unchanged, with a reason code: `not-the-wrapper`,
+  `already-unwrapped`, `real-git-unavailable`, `version-mismatch`,
+  `version-probe-failed`, `no-git-on-path`, `relative-path-entry`,
+  `unusable-directory` or `materialize-failed`. The version probes write to
+  temporary files, not pipes, because the wrapper's detached logger keeps
+  inherited descriptors open.
+- **Where.** A validation uses
+  `ignored/validate/artifacts/<unit>/unwrapped-git/`. A pressure test uses
+  `ignored/ci-hub/pressure-test-git/<slot>/`. A directory is created only if
+  it does not exist yet, and never reused. `validate-run --dry-run` prints the planned
+  PATH without creating anything.
+- **Evidence.** The retained validate log gets a
+  `validate-run: git substitution APPLIED|NOT-APPLIED: {...}` line. The
+  pressure log gets `pressure_schedule: slot=<slot> git substitution ...`.
+  Each line carries the resolved git, its realpath, the effective git and its
+  version, the directory and the reason. The run handle has no new field,
+  because `run_registry.parse_current_record` refuses unknown fields (see
+  **Older readers** above).
+- **Not covered.** Reverie validations, `bin/safehermit`, and any other launch
+  path keep the inherited PATH.
+
 ## Per-run output that survives the fresh checkout
 
 Disposable checkouts are created under `worktrees/validate/`. Private Cargo

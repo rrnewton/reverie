@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1398,6 +1399,17 @@ class StartUnitTest(unittest.TestCase):
         route_patch = mock.patch.dict(os.environ, {"FLEET_REAL_GH": sys.executable})
         route_patch.start()
         self.addCleanup(route_patch.stop)
+        # Keep launches from resolving or running the host's git: by default
+        # there is no git.meta.real, so PATH is left unchanged. fake_host_gits()
+        # swaps in temporary binaries for the tests of the substitution itself.
+        self.original_probe_version = start_unit.unwrapped_git.probe_version
+        for name, value in (
+            ("REAL_GIT", self.root / "absent-host-bin/git.meta.real"),
+            ("probe_version", lambda *_args, **_kwargs: ("git version fixture", "")),
+        ):
+            git_patch = mock.patch.object(start_unit.unwrapped_git, name, value)
+            git_patch.start()
+            self.addCleanup(git_patch.stop)
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
@@ -2543,6 +2555,101 @@ else:
             "validate-run: cpu placement source=override excluded=0 ",
             (self.root / "run.log").read_text(encoding="utf-8"),
         )
+
+    def fake_host_gits(self) -> tuple[Path, Path, Path]:
+        """A fake wrapper `git` beside a fake git.meta.real, and a plain git.
+
+        Temporary scripts only; the host's /usr/local/bin is never run.
+        """
+        local = self.root / "fake-local-bin"
+        plain = self.root / "fake-plain-bin"
+        for directory, name, version in (
+            (local, "git", "git version 2.53.0-Meta"),
+            (local, "git.meta.real", "git version 2.53.0-Meta"),
+            (plain, "git", "git version 2.52.0"),
+        ):
+            directory.mkdir(exist_ok=True)
+            script = directory / name
+            script.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
+            script.chmod(0o755)
+        for name, value in (
+            ("REAL_GIT", local / "git.meta.real"),
+            ("probe_version", self.original_probe_version),
+        ):
+            git_patch = mock.patch.object(start_unit.unwrapped_git, name, value)
+            git_patch.start()
+            self.addCleanup(git_patch.stop)
+        return local, local / "git.meta.real", plain
+
+    def unit_path_value(self, command: list[str]) -> str:
+        values = [item.removeprefix("PATH=") for item in command if item.startswith("PATH=")]
+        self.assertEqual(1, len(values), command)
+        return values[0]
+
+    def unwrapped_git_directory(self) -> Path:
+        return self.root / "ignored/validate/artifacts/validate-test/unwrapped-git"
+
+    def test_launch_runs_unwrapped_git_when_path_git_is_the_wrapper(self) -> None:
+        local, real, _plain = self.fake_host_gits()
+        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
+        rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        directory = self.unwrapped_git_directory()
+        self.assertEqual(f"{directory}:{local}:/usr/bin:/bin", self.unit_path_value(systemd))
+        self.assertEqual(["git"], sorted(entry.name for entry in directory.iterdir()))
+        self.assertEqual(str(real), os.readlink(directory / "git"))
+        log = (self.root / "run.log").read_text(encoding="utf-8")
+        self.assertIn("validate-run: git substitution APPLIED: ", log)
+        self.assertIn(f'"effective_git": "{real}"', log)
+        self.assertIn('"effective_version": "git version 2.53.0-Meta"', log)
+        self.assertIn(f'"resolved_git": "{local / "git"}"', log)
+
+    def test_launch_leaves_path_unchanged_when_git_is_not_the_wrapper(self) -> None:
+        local, _real, plain = self.fake_host_gits()
+        path = f"{plain}:{local}:/usr/bin:/bin"
+        environment = {**self.environment, "PATH": path}
+        rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertEqual(path, self.unit_path_value(systemd))
+        self.assertFalse(self.unwrapped_git_directory().exists())
+        log = (self.root / "run.log").read_text(encoding="utf-8")
+        self.assertIn("validate-run: git substitution NOT-APPLIED: ", log)
+        self.assertIn('"code": "not-the-wrapper"', log)
+        self.assertIn(f'"effective_git": "{plain / "git"}"', log)
+        self.assertIn('"effective_version": "git version 2.52.0"', log)
+
+    def test_dry_run_plans_unwrapped_git_without_creating_it(self) -> None:
+        local, _real, _plain = self.fake_host_gits()
+        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
+        rc, output, error = self.invoke(
+            ["--dry-run", "--", "full"], environment=environment
+        )
+
+        self.assertEqual(0, rc, error)
+        command_lines = [
+            line.removeprefix("COMMAND ")
+            for line in output.splitlines()
+            if line.startswith("COMMAND ")
+        ]
+        self.assertEqual(1, len(command_lines), output)
+        directory = self.unwrapped_git_directory()
+        self.assertEqual(
+            f"{directory}:{local}:/usr/bin:/bin",
+            self.unit_path_value(shlex.split(command_lines[0])),
+        )
+        self.assertFalse(directory.exists())
 
     def test_malformed_cpu_placement_override_refuses_before_launch(self) -> None:
         environment = {**self.environment, "DEV_HERMIT_EXCLUDE_CPUS": "0-x"}

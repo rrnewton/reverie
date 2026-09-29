@@ -24,6 +24,7 @@ sys.path.insert(0, str(SOURCE_ROOT / "ci-hub" / "validate"))
 import series  # noqa: E402
 import run_registry  # noqa: E402
 import cpu_placement  # noqa: E402
+import unwrapped_git  # noqa: E402
 
 
 STATE_ROOT = Path(
@@ -77,6 +78,11 @@ def launch_lock_path(root: Path) -> Path:
     return root / "ignored" / "ci-hub" / "pressure-test-launch.lock"
 
 
+def unwrapped_git_directory(root: Path, slot: str) -> Path:
+    """This run's private PATH entry holding only a `git` symlink."""
+    return root / "ignored" / "ci-hub" / "pressure-test-git" / slot
+
+
 def emit(state: str, summary: str) -> None:
     print(f"state={state}")
     print(f"summary={summary}")
@@ -106,8 +112,11 @@ def launch_command(
     record: Path,
     environment: Mapping[str, str] | None = None,
     placement: cpu_placement.CpuPlacement | None = None,
+    path: str | None = None,
 ) -> list[str]:
     environment = os.environ if environment is None else environment
+    if path is None:
+        path = environment.get("PATH", "")
     # Same placement as validate-run (https://github.com/rrnewton/hermit/issues/3265).
     # A malformed DEV_HERMIT_EXCLUDE_CPUS raises CpuPlacementError, a ValueError,
     # which launch() reports as a refusal before any unit exists.
@@ -170,7 +179,7 @@ def launch_command(
             else []
         ),
         f"--working-directory={working_directory}",
-        f"--setenv=PATH={environment.get('PATH', '')}",
+        f"--setenv=PATH={path}",
         "--setenv=PYTHONUNBUFFERED=1",
         f"--setenv=DEV_HERMIT_PARENT={root}",
         f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
@@ -349,22 +358,53 @@ def launch(
             return 1
 
         record = run_registry.record_path(root, UNIT)
-        try:
-            placement = cpu_placement.derive()
-            command = launch_command(
-                root, systemd_run, with_proxy, target, record, placement=placement
-            )
-        except ValueError as error:
-            emit("refused", str(error))
-            return 1
-
-        previous = read_state(root)
-        started_at = utc_now()
         slot = (
             f"pressure-{target[:12]}-"
             f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d%H%M%S')}-"
             f"{secrets.token_hex(4)}"
         )
+        try:
+            placement = cpu_placement.derive()
+            # Planned before the unit exists and created only once the command
+            # is known to build; see ci-hub/validate/unwrapped_git.py.
+            planned = unwrapped_git.plan(
+                os.environ.get("PATH", ""), unwrapped_git_directory(root, slot)
+            )
+            command = launch_command(
+                root,
+                systemd_run,
+                with_proxy,
+                target,
+                record,
+                placement=placement,
+                path=planned.path,
+            )
+        except ValueError as error:
+            emit("refused", str(error))
+            return 1
+        git_substitution = unwrapped_git.materialize(planned)
+        if git_substitution.path != planned.path:
+            # The directory could not be created: launch with PATH unchanged.
+            command = launch_command(
+                root,
+                systemd_run,
+                with_proxy,
+                target,
+                record,
+                placement=placement,
+                path=git_substitution.path,
+            )
+        # The unit appends its own output to this log; stdout here is the
+        # health tick's state/summary protocol and must stay two lines.
+        with log.open("a", encoding="utf-8") as retained:
+            print(
+                f"{utc_now()} pressure_schedule: slot={slot} "
+                f"{git_substitution.summary()}",
+                file=retained,
+            )
+
+        previous = read_state(root)
+        started_at = utc_now()
         run_registry.write_current_record(
             record,
             {

@@ -39,6 +39,7 @@ import qualifying_receipt
 import pane_owner
 import run_registry
 import cpu_placement
+import unwrapped_git
 import reverie_node
 import tree_disposition
 import tree_disposition
@@ -1512,6 +1513,11 @@ def fresh_validation_slot(target: str) -> str:
 def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     base = root / "ignored/validate/artifacts" / unit
     return base / "e2e", base / "safe-ci-dag-runner"
+
+
+def _unwrapped_git_directory(root: Path, unit: str) -> Path:
+    """This unit's private PATH entry holding only a `git` symlink."""
+    return root / "ignored/validate/artifacts" / unit / "unwrapped-git"
 
 
 def _carries_nosuid_or_nodev(path: Path) -> bool:
@@ -13045,6 +13051,23 @@ def main(
                     ),
                 }
             )
+        git_substitution: unwrapped_git.GitSubstitution | None = None
+        unit_environment: Mapping[str, str] = environment
+        if repo == "rrnewton/hermit":
+            # Run the validation's git as the binary the host telemetry
+            # wrapper execs, when PATH's git is provably that wrapper and both
+            # report the same version (ci-hub/validate/unwrapped_git.py). The
+            # directory sits beside this unit's other artifacts and holds one
+            # `git` symlink. A dry run plans without creating it. Any failed
+            # check leaves PATH unchanged; the retained log says which.
+            git_substitution = unwrapped_git.plan(
+                environment.get("PATH", ""),
+                _unwrapped_git_directory(state_root, unit),
+                env=environment,
+            )
+            if not args.dry_run:
+                git_substitution = unwrapped_git.materialize(git_substitution)
+            unit_environment = {**environment, "PATH": git_substitution.path}
         started_at = datetime.now(timezone.utc).isoformat()
         command = build_systemd_command(
             root=tool_root,
@@ -13060,7 +13083,7 @@ def main(
             wait=args.wait,
             hold=args.hold,
             child_deadline=child_deadline,
-            environment=environment,
+            environment=unit_environment,
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             cargo_home=private_cargo_home,
@@ -13171,6 +13194,12 @@ def main(
                 if placement is not None:
                     with log.open("a", encoding="utf-8") as retained:
                         print(f"validate-run: {placement.summary()}", file=retained)
+                if git_substitution is not None:
+                    with log.open("a", encoding="utf-8") as retained:
+                        print(
+                            f"validate-run: {git_substitution.summary()}",
+                            file=retained,
+                        )
                 if driver_rust_toolchain is not None:
                     with log.open("a", encoding="utf-8") as retained:
                         print(
