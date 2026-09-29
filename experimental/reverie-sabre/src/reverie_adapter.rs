@@ -1213,6 +1213,12 @@ where
         }
     }
 
+    // This experimental adapter tracks no begin/ready runtime window, so it
+    // cannot attribute any delivered syscall to a runtime bootstrap.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     fn memory(&self) -> Self::Memory {
         SabreMemory::new(self.pid)
     }

@@ -32,7 +32,7 @@ struct install_result {
 static int (*initialize)(const struct host_config*);
 static struct host_config config = {1, 0};
 static struct host_frame saved_frame;
-static volatile sig_atomic_t begins, readies, reentry_result;
+static volatile sig_atomic_t begins, readies, failures, reentry_result;
 
 /* No injected guest executes this site. A real successful installation proves
  * the initializer prepared both the site table and a usable trampoline arena.
@@ -61,7 +61,7 @@ static void trap(int sig, siginfo_t* info, void* opaque) {
     if (reentry_result != -EALREADY)
       _exit(82);
   } else if (marker == UINT64_C(0x7265766c69000002)) {
-    if (begins != 1 || readies || rip != frame->ready_rip)
+    if (begins != 1 || readies || failures || rip != frame->ready_rip)
       _exit(83);
     const uint64_t* saved = (const void*)&saved_frame;
     const uint64_t* current = (const void*)frame;
@@ -69,6 +69,16 @@ static void trap(int sig, siginfo_t* info, void* opaque) {
       if (saved[i] != current[i])
         _exit(84);
     readies = 1;
+  } else if (marker == UINT64_C(0x7265766c69000005)) {
+    /* A failed preparation closes the handshake at the Ready site. */
+    if (begins != 1 || readies || failures || rip != frame->ready_rip)
+      _exit(86);
+    const uint64_t* saved = (const void*)&saved_frame;
+    const uint64_t* current = (const void*)frame;
+    for (size_t i = 0; i < sizeof(saved_frame) / sizeof(uint64_t); ++i)
+      if (saved[i] != current[i])
+        _exit(87);
+    failures = 1;
   } else {
     _exit(85);
   }
@@ -149,9 +159,11 @@ int main(int argc, char** argv) {
   if (failure) {
     require(
         result == -EPERM && readies == 0, "preparation failure reported Ready");
+    require(failures == 1, "preparation failure did not close the handshake");
   } else {
     require(
         result == 0 && readies == 1, "actual initialization did not finish");
+    require(failures == 0, "successful initialization reported a failure");
     int64_t (*install)(uint64_t) = (void*)(uintptr_t)saved_frame.install_helper;
     int64_t tail = install((uintptr_t)test_syscall_site);
     const struct install_result* installed =
@@ -172,7 +184,8 @@ int main(int argc, char** argv) {
   }
   require(initialize(&config) == -EALREADY, "host initialization ran twice");
   require(
-      begins == 1 && readies == !failure, "repeat changed handshake counts");
+      begins == 1 && readies == !failure && failures == failure,
+      "repeat changed handshake counts");
   require(
       !strcmp(getenv("REVERIE_LITEINST_HOST_RUNTIME"), "not-selected"),
       "host env changed");

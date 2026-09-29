@@ -231,6 +231,7 @@ impl LiteinstBackend {
                 crate::runtime::HOST_READY_MARKER,
                 crate::runtime::HOST_HELPER_RETURN_MARKER,
                 crate::runtime::HOST_SYSCALL_MARKER,
+                crate::runtime::HOST_FAILED_MARKER,
             )
             .spawn()
             .await?
@@ -268,6 +269,7 @@ impl LiteinstBackend {
                 crate::runtime::HOST_READY_MARKER,
                 crate::runtime::HOST_HELPER_RETURN_MARKER,
                 crate::runtime::HOST_SYSCALL_MARKER,
+                crate::runtime::HOST_FAILED_MARKER,
                 BackendStatsRequest::ENABLED,
             )
             .spawn()
@@ -375,6 +377,7 @@ impl LiteinstBackend {
                 crate::runtime::HOST_READY_MARKER,
                 crate::runtime::HOST_HELPER_RETURN_MARKER,
                 crate::runtime::HOST_SYSCALL_MARKER,
+                crate::runtime::HOST_FAILED_MARKER,
             )
             .spawn()
             .await?
@@ -410,6 +413,7 @@ impl LiteinstBackend {
                 crate::runtime::HOST_READY_MARKER,
                 crate::runtime::HOST_HELPER_RETURN_MARKER,
                 crate::runtime::HOST_SYSCALL_MARKER,
+                crate::runtime::HOST_FAILED_MARKER,
                 BackendStatsRequest::ENABLED,
             )
             .spawn()
