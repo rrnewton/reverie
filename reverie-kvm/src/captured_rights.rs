@@ -200,20 +200,133 @@ fn release_received_virtual_transfers(
     state.file_retirement.retire_capture(captures);
 }
 
+// Linux UAPI F_LINUX_SPECIFIC_BASE + 3. Pinned libc need not expose it.
+const HOST_F_DUPFD_QUERY: libc::c_int = 1027;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalStdioOfdQuery {
+    Fcntl,
+    Kcmp,
+}
+
+impl PhysicalStdioOfdQuery {
+    fn same(self, left: RawFd, right: RawFd) -> Result<bool, i64> {
+        let result = match self {
+            Self::Fcntl => {
+                // SAFETY: this command compares live descriptor references;
+                // it neither allocates a descriptor nor changes the OFD.
+                unsafe { libc::fcntl(left, HOST_F_DUPFD_QUERY, right) as libc::c_long }
+            }
+            Self::Kcmp => {
+                // Compare the calling thread's file table. getpid() can name
+                // another table after thread-local unsharing; never cache TID.
+                let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+                if tid < 0 {
+                    return Err(io_error(std::io::Error::last_os_error()));
+                }
+                // SAFETY: KCMP_FILE=0 takes two task IDs and unsigned-long fd
+                // indices. The kernel validates descriptors and permissions.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_kcmp,
+                        tid as libc::pid_t,
+                        tid as libc::pid_t,
+                        0 as libc::c_int,
+                        left as libc::c_ulong,
+                        right as libc::c_ulong,
+                    )
+                }
+            }
+        };
+        if result == -1 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        self.decode_result(result)
+    }
+
+    fn decode_result(self, result: libc::c_long) -> Result<bool, i64> {
+        match (self, result) {
+            (Self::Fcntl, 1) | (Self::Kcmp, 0) => Ok(true),
+            (Self::Fcntl, 0) | (Self::Kcmp, 1..=3) => Ok(false),
+            _ => Err(negative_errno(libc::EIO)),
+        }
+    }
+}
+
+fn select_physical_stdio_query(
+    stdout: RawFd,
+    stderr: RawFd,
+    mut same: impl FnMut(PhysicalStdioOfdQuery, RawFd, RawFd) -> Result<bool, i64>,
+) -> Result<PhysicalStdioOfdQuery, [i64; 2]> {
+    let mut qualify = |method: PhysicalStdioOfdQuery| {
+        if same(method, stdout, stdout)? && !same(method, stdout, stderr)? {
+            Ok(method)
+        } else {
+            Err(negative_errno(libc::EIO))
+        }
+    };
+    match qualify(PhysicalStdioOfdQuery::Fcntl) {
+        Ok(method) => Ok(method),
+        Err(fcntl_error) => {
+            qualify(PhysicalStdioOfdQuery::Kcmp).map_err(|kcmp_error| [fcntl_error, kcmp_error])
+        }
+    }
+}
+
+fn qualify_physical_stdio_query(
+    owner: &CapturedPipeIdentities,
+) -> Result<PhysicalStdioOfdQuery, [i64; 2]> {
+    // These two independently-created pipes are pinned by owner. Capability
+    // selection must precede any inspection of physical stdout/stderr, even
+    // when both are closed. Preserve both qualification errors for diagnosis.
+    let stdout = owner.writer(OutputAlias::Stdout);
+    let stderr = owner.writer(OutputAlias::Stderr);
+    select_physical_stdio_query(
+        stdout.as_raw_fd(),
+        stderr.as_raw_fd(),
+        PhysicalStdioOfdQuery::same,
+    )
+}
+
+fn physical_stdio_is_open(fd: RawFd) -> Result<bool, i64> {
+    // SAFETY: F_GETFD only checks the descriptor. External concurrent stdio
+    // replacement remains outside the inherited-stdio lifetime contract.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EBADF) {
+        Ok(false)
+    } else {
+        Err(io_error(error))
+    }
+}
+
 fn unlabelled_capture_carrier(state: &LoadedStaticElf, fd: RawFd) -> Result<bool, i64> {
     let Some(owner) = &state.capture_owner else {
         return Ok(false);
     };
+    // No capability means uniform refusal of otherwise-ordinary rights under
+    // capture, independent of the donated inode or physical stdio topology.
+    // Authenticated capture/proc rights take their existing earlier paths.
+    let query = qualify_physical_stdio_query(owner)
+        .map_err(|_qualification_errors| negative_errno(libc::ENOSYS))?;
     let key = host_file_key(fd)?;
-    // Refusal only: physical stdio identity is never authority for restoring
-    // capture metadata. A raw/unlabelled duplicate must not escape either.
-    for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-        if host_file_key(standard).is_ok_and(|physical| physical == key) {
+    for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
+        // Private pipe identity is intentionally object-wide, including an
+        // independently reopened endpoint. Do not narrow this check to OFDs.
+        if host_file_key(owner.writer(alias).as_raw_fd())? == key {
             return Ok(true);
         }
     }
-    for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
-        if host_file_key(owner.writer(alias).as_raw_fd())? == key {
+    // Physical regular files/devices need actual OFD identity: independent
+    // opens of the same inode remain ordinary transferable descriptions. This
+    // checks current descriptors, not startup provenance: initially closed
+    // stdio numbers subsequently reused by internal opens need a separate
+    // reservation design, as does external concurrent stdio replacement.
+    // See https://github.com/rrnewton/reverie/issues/766.
+    for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        if physical_stdio_is_open(standard)? && query.same(fd, standard)? {
             return Ok(true);
         }
     }
