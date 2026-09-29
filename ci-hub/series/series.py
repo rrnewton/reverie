@@ -3259,11 +3259,222 @@ def test_id(row: dict) -> str | None:
     return parts[0] if len(parts) == 3 else None
 
 
-def history_rows(rows: Iterable[dict], test: str, tree: str | None = None) -> list[dict]:
-    """All rows for one exact test id, ordered as they were emitted."""
+RETIRED_IDS_FILE = "tests/e2e/manifests/inventory/retired-ids.json"
+RETIRED_IDS_SCHEMA = 1
+_RETIRED_IDS_FIELDS = frozenset({"schema", "description", "retirements"})
+_RETIREMENT_FIELDS = frozenset({
+    "retired_bucket", "successor_bucket", "last_live_commit", "reason", "ids", "collisions",
+})
+_RETIRED_TEST_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+
+
+def _retired_test_name(test: str, bucket: str) -> str | None:
+    """``name`` of ``bucket/name``, with Hermit's ``retired_ids::test_name`` rule."""
+    prefix = bucket + "/"
+    if not test.startswith(prefix):
+        return None
+    name = test[len(prefix):]
+    return name if _RETIRED_TEST_NAME_RE.fullmatch(name) else None
+
+
+def _retired_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SeriesError(f"retired-id map {label} must be a non-empty string")
+    return value
+
+
+def _retired_string_map(value: object, label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()
+    ):
+        raise SeriesError(f"retired-id map {label} must map strings to strings")
+    return value
+
+
+def parse_retired_ids(text: str) -> dict[str, str]:
+    """Every retired test id and its successor, from Hermit's ``retired-ids.json``.
+
+    When Hermit folds one manifest bucket into another, a program keeps its
+    history but changes its test id (the backend-parity-c bucket became
+    c-programs, https://github.com/rrnewton/hermit/issues/3301). Hermit records
+    each old id and the id that replaced it in :data:`RETIRED_IDS_FILE`, and
+    its own reader, ``hermit_manifest_plan::retired_ids::RetiredIds::parse``,
+    decides what a valid map is. This reader accepts only the maps that one
+    accepts, so the two never resolve one id differently: exactly the schema-1
+    fields; non-empty text fields; a full lowercase ``last_live_commit``; every
+    retired id a test of its retired bucket and every successor a test of its
+    successor bucket; each successor the plain bucket-prefix rename unless the
+    old id is listed, with a reason, in ``collisions``; no id retired twice; no
+    successor shared by two ids; and no successor that is itself retired.
+    Anything else raises :class:`SeriesError`.
+    """
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise SeriesError(f"invalid retired-id map: {error}") from error
+    if not isinstance(document, dict) or set(document) != _RETIRED_IDS_FIELDS:
+        raise SeriesError(
+            "retired-id map must hold exactly schema, description and retirements"
+        )
+    schema = document["schema"]
+    if type(schema) is not int or schema != RETIRED_IDS_SCHEMA:
+        raise SeriesError(
+            f"retired-id map schema must be {RETIRED_IDS_SCHEMA}, found {schema!r}"
+        )
+    _retired_string(document["description"], "description")
+    retirements = document["retirements"]
+    if not isinstance(retirements, list) or not retirements:
+        raise SeriesError("retired-id map has no retirement")
+    successors: dict[str, str] = {}
+    shared: set[str] = set()
+    buckets: set[str] = set()
+    for index, retirement in enumerate(retirements):
+        if not isinstance(retirement, dict) or set(retirement) != _RETIREMENT_FIELDS:
+            raise SeriesError(
+                f"retired-id map retirement {index} must hold exactly "
+                + ", ".join(sorted(_RETIREMENT_FIELDS))
+            )
+        bucket = _retired_string(retirement["retired_bucket"], "retired_bucket")
+        successor_bucket = _retired_string(
+            retirement["successor_bucket"], "successor_bucket"
+        )
+        if bucket == successor_bucket:
+            raise SeriesError(f"retirement of {bucket} names itself as successor")
+        if bucket in buckets:
+            raise SeriesError(f"bucket {bucket} is retired twice")
+        buckets.add(bucket)
+        last_live = retirement["last_live_commit"]
+        if not isinstance(last_live, str) or _SHA_RE.fullmatch(last_live) is None:
+            raise SeriesError(
+                f"retirement of {bucket} needs a full lowercase last_live_commit SHA"
+            )
+        _retired_string(retirement["reason"], f"retirement of {bucket} reason")
+        ids = _retired_string_map(retirement["ids"], f"retirement of {bucket} ids")
+        collisions = _retired_string_map(
+            retirement["collisions"], f"retirement of {bucket} collisions"
+        )
+        if not ids:
+            raise SeriesError(f"retirement of {bucket} retires no id")
+        for old, reason in collisions.items():
+            if old not in ids:
+                raise SeriesError(
+                    f"collision {old!r} is not a retired id of bucket {bucket}"
+                )
+            _retired_string(reason, f"collision {old!r} reason")
+        for old, new in ids.items():
+            old_name = _retired_test_name(old, bucket)
+            if old_name is None:
+                raise SeriesError(f"retired id {old!r} is not a test of bucket {bucket}")
+            new_name = _retired_test_name(new, successor_bucket)
+            if new_name is None:
+                raise SeriesError(
+                    f"successor {new!r} of {old!r} is not a test of bucket {successor_bucket}"
+                )
+            listed = old in collisions
+            if old_name == new_name and listed:
+                raise SeriesError(
+                    f"collision {old!r} maps to the plain prefix rename {new!r}"
+                )
+            if old_name != new_name and not listed:
+                raise SeriesError(
+                    f"successor {new!r} of {old!r} is neither the prefix rename "
+                    f"{successor_bucket}/{old_name} nor a listed collision"
+                )
+            if old in successors:
+                raise SeriesError(f"retired id {old!r} is listed twice")
+            if new in shared:
+                raise SeriesError(f"successor {new!r} is shared by two retired ids")
+            successors[old] = new
+            shared.add(new)
+    chained = sorted(shared.intersection(successors))
+    if chained:
+        raise SeriesError(
+            f"{chained[0]!r} is both a retired id and a successor; "
+            "record the final id directly"
+        )
+    return successors
+
+
+def retired_ids_at(checkout: Path, ref: str) -> tuple[str, dict[str, str]] | None:
+    """``(commit, map)``: Hermit's retired-id map as committed at ``ref``.
+
+    ``ref`` is resolved once to a commit and the file is read from that
+    immutable commit, never from the working tree. ``None`` means no map
+    applies and every test id is joined exactly as recorded, which is what
+    every reader did before the map existed: ``checkout`` is not a checkout,
+    ``ref`` does not resolve, or the commit predates the file. A file that is
+    present but unreadable or malformed raises :class:`SeriesError` rather than
+    silently dropping the joins it would have made.
+    """
+    checkout = Path(checkout)
+    if not _is_checkout(checkout):
+        return None
+    resolved = _git(checkout, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    commit = resolved.stdout.strip()
+    if resolved.returncode != 0 or _SHA_RE.fullmatch(commit) is None:
+        return None
+    listed = _git(checkout, ["ls-tree", "-z", commit, "--", RETIRED_IDS_FILE])
+    if listed.returncode != 0:
+        detail = listed.stderr.strip() or "no output"
+        raise SeriesError(f"cannot list {RETIRED_IDS_FILE} at Hermit {commit}: {detail}")
+    entries = [entry for entry in listed.stdout.split("\0") if entry]
+    if not entries:
+        return None
+    meta, _, path = entries[0].partition("\t")
+    fields = meta.split()
+    if len(entries) != 1 or path != RETIRED_IDS_FILE or len(fields) != 3 or fields[1] != "blob":
+        raise SeriesError(f"{RETIRED_IDS_FILE} at Hermit {commit} is not one file")
+    env = dict(os.environ)
+    for name in _GIT_REPO_SCOPED_ENV:
+        env.pop(name, None)
+    shown = subprocess.run(
+        ["git", "-C", str(checkout), "cat-file", "blob", fields[2]],
+        capture_output=True, timeout=60, check=False, env=env,
+    )
+    if shown.returncode != 0:
+        detail = shown.stderr.decode(errors="replace").strip() or "no output"
+        raise SeriesError(f"cannot read {RETIRED_IDS_FILE} at Hermit {commit}: {detail}")
+    try:
+        text = shown.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SeriesError(f"{RETIRED_IDS_FILE} at Hermit {commit} is not UTF-8") from error
+    try:
+        return commit, parse_retired_ids(text)
+    except SeriesError as error:
+        raise SeriesError(f"{RETIRED_IDS_FILE} at Hermit {commit}: {error}") from error
+
+
+def resolve_test_id(test: str, retired: Mapping[str, str] | None) -> str:
+    """The live test id that carries ``test``'s history: its successor if retired."""
+    return retired.get(test, test) if retired else test
+
+
+def resolve_cell(cell: str, retired: Mapping[str, str] | None) -> str:
+    """``<test>/<mode>/<backend>`` with a retired ``test`` replaced by its successor."""
+    parts = cell.rsplit("/", 2)
+    if len(parts) != 3:
+        return cell
+    return "/".join([resolve_test_id(parts[0], retired), parts[1], parts[2]])
+
+
+def history_rows(
+    rows: Iterable[dict],
+    test: str,
+    tree: str | None = None,
+    retired: Mapping[str, str] | None = None,
+) -> list[dict]:
+    """All rows for one test, ordered as they were emitted.
+
+    Without ``retired`` this is one exact test id. With Hermit's retired-id map
+    (:func:`retired_ids_at`), a row recorded under a retired id and a row
+    recorded under its successor belong to one history, whichever of the two
+    ``test`` names. Each row keeps its recorded ``series.cell``.
+    """
+    wanted = resolve_test_id(test, retired)
     selected = [
         row for row in rows
-        if test_id(row) == test
+        if (recorded := test_id(row)) is not None
+        and resolve_test_id(recorded, retired) == wanted
         and (tree is None or (row.get("series") or {}).get("tree") == tree)
     ]
     return sorted(
@@ -6033,10 +6244,23 @@ def _cmd_history(argv: list[str]) -> int:
         return _usage("history --tree must be a full lowercase 40-hex commit sha")
 
     try:
-        rows = history_rows(history_store_rows(parent), wanted_test, wanted_tree)
+        stored = history_store_rows(parent)
     except (MalformedEvent, SeriesError, OSError, subprocess.SubprocessError) as error:
         print(f"series: cannot read history: {error}", file=sys.stderr)
         return 2
+    # The retired-id map is read from the same refreshed Hermit origin/main
+    # that labels current ancestry below, so a test whose older rows carry a
+    # retired id is joined by the map Hermit main publishes now.
+    hermit_checkout = parent / "hermit"
+    if _is_checkout(hermit_checkout):
+        refresh_origin_main(hermit_checkout, "Hermit")
+    try:
+        retired_source = retired_ids_at(hermit_checkout, "origin/main")
+    except (SeriesError, OSError, subprocess.SubprocessError) as error:
+        print(f"series: cannot read Hermit's retired-id map: {error}", file=sys.stderr)
+        return 2
+    retired = retired_source[1] if retired_source is not None else None
+    rows = history_rows(stored, wanted_test, wanted_tree, retired)
     if not rows:
         suffix = f" at {wanted_tree}" if wanted_tree else ""
         print(
@@ -6046,19 +6270,26 @@ def _cmd_history(argv: list[str]) -> int:
         return 1
 
     trees = [str((row.get("series") or {}).get("tree", "")) for row in rows]
-    hermit_checkout = parent / "hermit"
-    if _is_checkout(hermit_checkout):
-        refresh_origin_main(hermit_checkout, "Hermit")
     current = main_ancestry(hermit_checkout, trees)
     represented = sum(int((row.get("series") or {}).get("num_runs", 1)) for row in rows)
     print(
         f"test={wanted_test} rows={len(rows)} runs={represented} "
         "source=test-ledger-origin-main+local-spool"
     )
+    resolved_test = resolve_test_id(wanted_test, retired)
+    joined = sorted(
+        {recorded for row in rows if (recorded := test_id(row)) is not None}
+        | {wanted_test}
+    )
+    if retired_source is not None and joined != [resolved_test]:
+        print(
+            f"joined test ids {' + '.join(joined)} as {resolved_test} "
+            f"(retired-id map {RETIRED_IDS_FILE} at Hermit {retired_source[0]})"
+        )
     by_cell: dict[str, dict[str, Any]] = {}
     for row in rows:
         payload = row.get("series") or {}
-        cell = str(payload.get("cell", "-"))
+        cell = resolve_cell(str(payload.get("cell", "-")), retired)
         totals = by_cell.setdefault(cell, {"runs": 0, "minimum": None, "maximum": None})
         totals["runs"] += int(payload.get("num_runs", 1))
         runtime = payload.get("runtime") or {}

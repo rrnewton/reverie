@@ -6344,6 +6344,392 @@ class HistoryCli(unittest.TestCase):
             self.assertEqual(rc, 1, stderr.getvalue())
             self.assertIn("no runs recorded", stderr.getvalue())
 
+    OLD_TEST = "backend-parity-c/flock-lifecycle"
+    NEW_TEST = "c-programs/flock-lifecycle"
+
+    def _retired_history_fixture(self, root: Path, retired_map: str | None) -> tuple[Path, str, str]:
+        """A parent whose stale Hermit origin/main gains ``retired_map`` on refresh.
+
+        The old-id row was recorded at the first Hermit commit and the new-id
+        row at the second, which is the commit that adds the map (or, with
+        ``retired_map=None``, a commit that does not). Returns the parent and
+        the two Hermit commits.
+        """
+        parent = root / "parent"
+        parent.mkdir()
+        hermit_bare = root / "hermit-origin.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", "-b", "main", str(hermit_bare)], check=True,
+        )
+        repo = parent / "hermit"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "config", "user.name", "Series Test")
+        self._git(repo, "config", "user.email", "series@example.invalid")
+        (repo / "one").write_text("one\n")
+        self._git(repo, "add", "one")
+        self._git(repo, "commit", "-qm", "one")
+        old_tree = self._git(repo, "rev-parse", "HEAD")
+        self._git(repo, "remote", "add", "origin", str(hermit_bare))
+        self._git(repo, "push", "-q", "-u", "origin", "main")
+
+        writer = root / "hermit-writer"
+        subprocess.run(["git", "clone", "-q", str(hermit_bare), str(writer)], check=True)
+        self._git(writer, "config", "user.name", "Series Test")
+        self._git(writer, "config", "user.email", "series@example.invalid")
+        if retired_map is None:
+            (writer / "two").write_text("two\n")
+            self._git(writer, "add", "two")
+        else:
+            path = writer / series.RETIRED_IDS_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text(retired_map)
+            self._git(writer, "add", series.RETIRED_IDS_FILE)
+        self._git(writer, "commit", "-qm", "two")
+        self._git(writer, "push", "-q", "origin", "main")
+        new_tree = self._git(writer, "rev-parse", "HEAD")
+        self.assertEqual(
+            self._git(repo, "rev-parse", "origin/main"),
+            old_tree,
+            "the fixture must begin with a Hermit origin/main that predates the map",
+        )
+
+        rows = [
+            row(
+                event_id="retired-old",
+                emitted_at="2026-08-24T03:00:00Z",
+                run_id="validate-old",
+                producer="validate",
+                series={
+                    "cell": f"{self.OLD_TEST}/verify/ptrace",
+                    "tree": old_tree,
+                    "outcome": "passed",
+                    "num_runs": 3,
+                },
+            ),
+            row(
+                event_id="retired-new",
+                emitted_at="2026-08-26T03:00:00Z",
+                run_id="validate-new",
+                producer="validate",
+                series={
+                    "cell": f"{self.NEW_TEST}/verify/ptrace",
+                    "tree": new_tree,
+                    "outcome": "diverged",
+                    "num_runs": 1,
+                },
+            ),
+            row(
+                event_id="retired-other",
+                emitted_at="2026-08-25T03:00:00Z",
+                run_id="validate-old",
+                producer="validate",
+                series={"cell": "backend-parity-c/other/verify/ptrace", "tree": old_tree},
+            ),
+        ]
+        tracked = parent / "series/hermit/host/2026-08.jsonl"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text("".join(json.dumps(item) + "\n" for item in rows))
+        self._publish_parent(parent)
+        return parent, old_tree, new_tree
+
+    def _history(self, parent: Path, test: str) -> tuple[int, str, str]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = series.main(["history", "--parent", str(parent), "--test", test])
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_history_joins_a_retired_id_and_its_successor_into_one_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent, old_tree, new_tree = self._retired_history_fixture(
+                Path(temporary), RetiredIdMap.fixture_text(),
+            )
+            for query in (self.NEW_TEST, self.OLD_TEST):
+                with self.subTest(query=query):
+                    rc, text, errors = self._history(parent, query)
+                    self.assertEqual(rc, 0, errors)
+                    self.assertIn(f"test={query} rows=2 runs=4", text)
+                    self.assertIn(
+                        f"joined test ids {self.OLD_TEST} + {self.NEW_TEST} as {self.NEW_TEST} "
+                        f"(retired-id map {series.RETIRED_IDS_FILE} at Hermit {new_tree})",
+                        text,
+                    )
+                    # The old-id and new-id rows continue one cell's totals.
+                    self.assertIn(
+                        f"cell={self.NEW_TEST}/verify/ptrace\truns=4\t", text,
+                    )
+                    self.assertNotIn(f"cell={self.OLD_TEST}/verify/ptrace\t", text)
+                    # Each row still shows the id it was recorded under, oldest first.
+                    old_line = f"2026-08-24\t{old_tree}\t"
+                    new_line = f"2026-08-26\t{new_tree}\t"
+                    self.assertIn(old_line, text)
+                    self.assertIn(new_line, text)
+                    self.assertLess(text.index(old_line), text.index(new_line))
+                    old_row = text[text.index(old_line):].splitlines()[0]
+                    new_row = text[text.index(new_line):].splitlines()[0]
+                    self.assertIn(f"\t{self.OLD_TEST}/verify/ptrace\tpassed\t", old_row)
+                    self.assertIn(f"\t{self.NEW_TEST}/verify/ptrace\tdiverged\t", new_row)
+                    self.assertNotIn("other/verify/ptrace", text)
+
+    def test_history_without_a_retired_id_map_joins_exact_ids_as_before(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent, old_tree, new_tree = self._retired_history_fixture(Path(temporary), None)
+            for query, tree, cell, other in (
+                (self.NEW_TEST, new_tree, f"{self.NEW_TEST}/verify/ptrace", self.OLD_TEST),
+                (self.OLD_TEST, old_tree, f"{self.OLD_TEST}/verify/ptrace", self.NEW_TEST),
+            ):
+                with self.subTest(query=query):
+                    rc, text, errors = self._history(parent, query)
+                    self.assertEqual(rc, 0, errors)
+                    runs = 1 if query == self.NEW_TEST else 3
+                    self.assertIn(f"test={query} rows=1 runs={runs}", text)
+                    self.assertIn(f"cell={cell}\truns={runs}\t", text)
+                    self.assertIn(f"\t{tree}\t", text)
+                    self.assertNotIn("joined test ids", text)
+                    self.assertNotIn(other, text)
+
+    def test_history_refuses_a_malformed_retired_id_map(self):
+        document = json.loads(RetiredIdMap.fixture_text())
+        document["retirements"][0]["ids"]["backend-parity-c/other"] = self.NEW_TEST
+        document["retirements"][0]["collisions"]["backend-parity-c/other"] = "fixture"
+        with tempfile.TemporaryDirectory() as temporary:
+            parent, _old, new_tree = self._retired_history_fixture(
+                Path(temporary), json.dumps(document),
+            )
+            rc, text, errors = self._history(parent, self.NEW_TEST)
+            self.assertEqual(rc, 2, text + errors)
+            self.assertIn("series: cannot read Hermit's retired-id map:", errors)
+            self.assertIn(f"at Hermit {new_tree}", errors)
+            self.assertIn("is shared by two retired ids", errors)
+            self.assertEqual(text, "")
+
+
+class RetiredIdMap(unittest.TestCase):
+    """series reads Hermit's retired-id map with Hermit's own acceptance rules.
+
+    The rules are those of ``hermit_manifest_plan::retired_ids::RetiredIds::parse``
+    at Hermit 0818c472f25d7e89e9df6f621fa86e5baef573ae
+    (https://github.com/rrnewton/hermit/issues/3301, slice S6).
+    """
+
+    @staticmethod
+    def fixture(**override):
+        retirement = {
+            "retired_bucket": "backend-parity-c",
+            "successor_bucket": "c-programs",
+            "last_live_commit": "3f66a249b30fada86b81e722b8e5439ac0789f8e",
+            "reason": "backend-parity-c folded into c-programs",
+            "ids": {
+                "backend-parity-c/flock-lifecycle": "c-programs/flock-lifecycle",
+                "backend-parity-c/other": "c-programs/other",
+                "backend-parity-c/pidfd-open-self": "c-programs/pidfd-open-self-pair",
+            },
+            "collisions": {
+                "backend-parity-c/pidfd-open-self": "c-programs/pidfd-open-self is another program",
+            },
+        }
+        retirement.update(override)
+        return {"schema": 1, "description": "fixture map", "retirements": [retirement]}
+
+    @classmethod
+    def fixture_text(cls, **override):
+        return json.dumps(cls.fixture(**override))
+
+    def test_resolves_retired_ids_and_passes_every_other_id_through(self):
+        retired = series.parse_retired_ids(self.fixture_text())
+        self.assertEqual(
+            retired,
+            {
+                "backend-parity-c/flock-lifecycle": "c-programs/flock-lifecycle",
+                "backend-parity-c/other": "c-programs/other",
+                "backend-parity-c/pidfd-open-self": "c-programs/pidfd-open-self-pair",
+            },
+        )
+        self.assertEqual(
+            series.resolve_test_id("backend-parity-c/pidfd-open-self", retired),
+            "c-programs/pidfd-open-self-pair",
+        )
+        self.assertEqual(
+            series.resolve_test_id("c-programs/pidfd-open-self", retired),
+            "c-programs/pidfd-open-self",
+        )
+        self.assertEqual(
+            series.resolve_cell("backend-parity-c/flock-lifecycle/verify/dbi", retired),
+            "c-programs/flock-lifecycle/verify/dbi",
+        )
+        self.assertEqual(
+            series.resolve_cell("backend-parity-c/unlisted/verify/dbi", retired),
+            "backend-parity-c/unlisted/verify/dbi",
+        )
+        self.assertEqual(
+            series.resolve_cell("backend-parity-c/flock-lifecycle/verify/dbi", None),
+            "backend-parity-c/flock-lifecycle/verify/dbi",
+        )
+
+    def test_history_rows_join_an_old_id_row_and_a_new_id_row(self):
+        retired = series.parse_retired_ids(self.fixture_text())
+        old = row(
+            event_id="old",
+            emitted_at="2026-08-24T03:00:00Z",
+            series={"cell": "backend-parity-c/flock-lifecycle/verify/ptrace"},
+        )
+        new = row(
+            event_id="new",
+            emitted_at="2026-08-26T03:00:00Z",
+            series={"cell": "c-programs/flock-lifecycle/verify/ptrace"},
+        )
+        other = row(event_id="other", series={"cell": "backend-parity-c/other/verify/ptrace"})
+        stored = [new, other, old]
+        for test in ("c-programs/flock-lifecycle", "backend-parity-c/flock-lifecycle"):
+            with self.subTest(test=test):
+                joined = series.history_rows(stored, test, retired=retired)
+                self.assertEqual([item["event_id"] for item in joined], ["old", "new"])
+                self.assertEqual(
+                    [item["series"]["cell"] for item in joined],
+                    [
+                        "backend-parity-c/flock-lifecycle/verify/ptrace",
+                        "c-programs/flock-lifecycle/verify/ptrace",
+                    ],
+                )
+        # No map: one exact test id, as before the map existed.
+        self.assertEqual(
+            [item["event_id"] for item in series.history_rows(stored, "c-programs/flock-lifecycle")],
+            ["new"],
+        )
+        self.assertEqual(
+            [
+                item["event_id"]
+                for item in series.history_rows(stored, "backend-parity-c/flock-lifecycle", retired=None)
+            ],
+            ["old"],
+        )
+
+    def test_refuses_every_map_hermit_refuses(self):
+        flock = "backend-parity-c/flock-lifecycle"
+        cases = []
+
+        def case(label, needle, document):
+            cases.append((label, needle, document))
+
+        base = self.fixture()
+        case("not json", "invalid retired-id map", "{")
+        case("unknown top-level field", "exactly schema",
+             {**base, "extra": 1})
+        case("missing top-level field", "exactly schema",
+             {key: value for key, value in base.items() if key != "description"})
+        case("schema 2", "schema must be 1", {**base, "schema": 2})
+        case("schema true", "schema must be 1", {**base, "schema": True})
+        case("schema float", "schema must be 1", {**base, "schema": 1.0})
+        case("blank description", "description", {**base, "description": " "})
+        case("no retirement", "has no retirement", {**base, "retirements": []})
+        case("unknown retirement field", "must hold exactly",
+             {**base, "retirements": [{**base["retirements"][0], "extra": 1}]})
+        case("self successor", "names itself",
+             self.fixture(successor_bucket="backend-parity-c"))
+        case("bucket twice", "retired twice",
+             {**base, "retirements": [base["retirements"][0], base["retirements"][0]]})
+        case("short sha", "last_live_commit", self.fixture(last_live_commit="3f66a249"))
+        case("upper sha", "last_live_commit",
+             self.fixture(last_live_commit="3F66A249B30FADA86B81E722B8E5439AC0789F8E"))
+        case("blank reason", "reason", self.fixture(reason=""))
+        case("no ids", "retires no id", self.fixture(ids={}, collisions={}))
+        case("non-string successor", "strings to strings", self.fixture(ids={flock: 1}))
+        case("collision not retired", "is not a retired id",
+             self.fixture(collisions={"backend-parity-c/absent": "reason"}))
+        case("blank collision reason", "reason",
+             self.fixture(collisions={"backend-parity-c/pidfd-open-self": " "}))
+        case("retired id outside bucket", "is not a test of bucket backend-parity-c",
+             self.fixture(ids={"c-programs/flock-lifecycle": "c-programs/flock-lifecycle"}, collisions={}))
+        case("uppercase name", "is not a test of bucket backend-parity-c",
+             self.fixture(ids={"backend-parity-c/Flock": "c-programs/Flock"}, collisions={}))
+        case("successor outside bucket", "is not a test of bucket c-programs",
+             self.fixture(ids={flock: "applications/flock-lifecycle"}, collisions={}))
+        case("unlisted rename", "neither the prefix rename",
+             self.fixture(ids={flock: "c-programs/flock-pair"}, collisions={}))
+        case("listed plain rename", "plain prefix rename",
+             self.fixture(ids={flock: "c-programs/flock-lifecycle"}, collisions={flock: "why"}))
+        case("shared successor", "shared by two",
+             self.fixture(
+                 ids={flock: "c-programs/flock-lifecycle",
+                      "backend-parity-c/twin": "c-programs/flock-lifecycle"},
+                 collisions={"backend-parity-c/twin": "reuses flock"},
+             ))
+        case("chain", "both a retired id and a successor", self._chained())
+        for label, needle, document in cases:
+            with self.subTest(label=label):
+                text = document if isinstance(document, str) else json.dumps(document)
+                with self.assertRaises(series.SeriesError) as raised:
+                    series.parse_retired_ids(text)
+                self.assertIn(needle, str(raised.exception))
+
+    def _chained(self):
+        return {
+            "schema": 1,
+            "description": "fixture map",
+            "retirements": [
+                {
+                    "retired_bucket": "old-a",
+                    "successor_bucket": "old-b",
+                    "last_live_commit": "a" * 40,
+                    "reason": "first fold",
+                    "ids": {"old-a/x": "old-b/x"},
+                    "collisions": {},
+                },
+                {
+                    "retired_bucket": "old-b",
+                    "successor_bucket": "live",
+                    "last_live_commit": "b" * 40,
+                    "reason": "second fold",
+                    "ids": {"old-b/x": "live/x"},
+                    "collisions": {},
+                },
+            ],
+        }
+
+    def test_retired_ids_at_reads_the_committed_file_or_reports_none(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "hermit"
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True,
+                ).stdout.strip()
+
+            # Not a checkout: no map, exact joins.
+            self.assertIsNone(series.retired_ids_at(repo, "HEAD"))
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Series Test")
+            git("config", "user.email", "series@example.invalid")
+            (repo / "one").write_text("one\n")
+            git("add", "one")
+            git("commit", "-qm", "one")
+            before = git("rev-parse", "HEAD")
+            # A commit that predates the file, and a ref that does not resolve.
+            self.assertIsNone(series.retired_ids_at(repo, "HEAD"))
+            self.assertIsNone(series.retired_ids_at(repo, "origin/main"))
+            path = repo / series.RETIRED_IDS_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text(self.fixture_text())
+            # An uncommitted working-tree file is not read.
+            self.assertIsNone(series.retired_ids_at(repo, "HEAD"))
+            git("add", series.RETIRED_IDS_FILE)
+            git("commit", "-qm", "map")
+            after = git("rev-parse", "HEAD")
+            commit, retired = series.retired_ids_at(repo, "HEAD")
+            self.assertEqual(commit, after)
+            self.assertEqual(retired["backend-parity-c/other"], "c-programs/other")
+            self.assertIsNone(series.retired_ids_at(repo, before))
+            # The committed bytes are read, not the working tree's.
+            path.write_text("{")
+            self.assertEqual(series.retired_ids_at(repo, "HEAD")[0], after)
+            git("commit", "-qam", "break")
+            with self.assertRaises(series.SeriesError) as raised:
+                series.retired_ids_at(repo, "HEAD")
+            self.assertIn(f"{series.RETIRED_IDS_FILE} at Hermit ", str(raised.exception))
+            self.assertIn("invalid retired-id map", str(raised.exception))
+
 
 class ManifestScalarResolution(unittest.TestCase):
     """series reads Hermit manifests with the scalar rules of Hermit's own loader.

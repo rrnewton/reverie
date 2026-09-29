@@ -16,6 +16,7 @@ use hermit_manifest_plan::manifest_metadata::{
     BuildMetadata, CellMetadata, CurrentReproducer, DirectMetadata, ManifestMetadata,
     ObservationMetadata, TestMetadata,
 };
+use hermit_manifest_plan::retired_ids::{RetiredIds, RETIRED_IDS_FILE};
 use hermit_manifest_plan::runner::{FailureClass, ObservedResult};
 use hermit_manifest_plan::stress_series::{
     HostCapability, HostCapabilityVerdict, SeriesAttemptDisposition, SeriesCoordinates,
@@ -68,7 +69,11 @@ struct PreparedSeries {
     schema: String,
     producer: SeriesProducer,
     run_id: String,
+    /// The cell exactly as the row recorded it.
     cell: String,
+    /// The cell whose history this row belongs to now: `cell` with a retired
+    /// test id replaced by its successor (see [`resolve_series_cell`]).
+    resolved_cell: String,
     tree: String,
     represented_runs: u64,
     projection_reason: Option<String>,
@@ -102,13 +107,79 @@ struct SeriesAccumulation {
     admitted_physical_row_count: usize,
     admitted_represented_run_count: u64,
     excluded: BTreeMap<(String, String), (u64, u64)>,
+    /// `(producer, run_id, resolved cell)` to the cell that run recorded.
+    run_cells: BTreeMap<(String, String, String), String>,
 }
 
+/// Hermit's retired-id map from the checkout whose manifest the projection
+/// publishes, or `None` for a Hermit that predates the map.
+///
+/// Series rows recorded before a Hermit bucket fold name the retired test id
+/// (`backend-parity-c/x` became `c-programs/x`,
+/// <https://github.com/rrnewton/hermit/issues/3301>). The map read here is
+/// Hermit's own, parsed by Hermit's own reader, from the same checkout the
+/// manifest metadata came from, so it describes exactly that manifest's cell
+/// universe. Without the file every row joins under its recorded id, as it did
+/// before the map existed; a file that is present but unreadable or invalid
+/// refuses the projection rather than silently dropping those joins.
+pub(crate) fn load_retired_ids(
+    hermit_checkout: &std::path::Path,
+) -> Result<Option<RetiredIds>, String> {
+    let path = hermit_checkout.join(RETIRED_IDS_FILE);
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+        Ok(_) => RetiredIds::load(hermit_checkout).map(Some),
+    }
+}
+
+/// A series cell id (`<test>/<mode>/<backend>`) with a retired test id
+/// replaced by its successor. Every other id is returned unchanged, and so is
+/// every id when no map applies.
+fn resolve_series_cell(retired_ids: Option<&RetiredIds>, cell: &str) -> String {
+    let Some(retired_ids) = retired_ids else {
+        return cell.to_owned();
+    };
+    let mut parts = cell.rsplitn(3, '/');
+    let (Some(backend), Some(mode), Some(test)) = (parts.next(), parts.next(), parts.next()) else {
+        return cell.to_owned();
+    };
+    match retired_ids.successor(test) {
+        Some(successor) => format!("{successor}/{mode}/{backend}"),
+        None => cell.to_owned(),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn project<F>(
     manifest_json: &[u8],
     history_jsonl: &str,
     series_jsonl: &str,
     historical_identity: Option<(&str, &str)>,
+    current_main_ancestry: F,
+) -> Result<Value, String>
+where
+    F: FnMut(&str) -> Result<Option<bool>, String>,
+{
+    project_with_retired_ids(
+        manifest_json,
+        history_jsonl,
+        series_jsonl,
+        historical_identity,
+        None,
+        current_main_ancestry,
+    )
+}
+
+/// The public website projection. With `retired_ids`, a series row recorded
+/// under a retired test id is joined to its successor's manifest cell, so the
+/// cell's last-tested time and trend continue across the rename.
+pub(crate) fn project_with_retired_ids<F>(
+    manifest_json: &[u8],
+    history_jsonl: &str,
+    series_jsonl: &str,
+    historical_identity: Option<(&str, &str)>,
+    retired_ids: Option<&RetiredIds>,
     mut current_main_ancestry: F,
 ) -> Result<Value, String>
 where
@@ -122,7 +193,13 @@ where
     let series_row_count = series.len();
     let manifest = project_manifest(manifest)?;
     let mut history = project_history(&history, historical_identity)?;
-    let series = project_series(&series, &manifest, &history, &mut current_main_ancestry)?;
+    let series = project_series(
+        &series,
+        &manifest,
+        &history,
+        retired_ids,
+        &mut current_main_ancestry,
+    )?;
     if let Some(historical) = history.historical.as_mut() {
         bind_historical_measurement_environment(historical, &series.rows)?;
     }
@@ -1840,6 +1917,7 @@ fn project_series<F>(
     rows: &[Parsed<SeriesRow>],
     manifest: &Value,
     history: &HistoryProjection,
+    retired_ids: Option<&RetiredIds>,
     current_main_ancestry: &mut F,
 ) -> Result<SeriesProjection, String>
 where
@@ -1848,7 +1926,7 @@ where
     let allowed_cells = manifest_cell_identities(manifest)?;
     validate_derived_series(rows, &history.derived)?;
     let physical_row_count = rows.len();
-    let accumulation = accumulate_series(rows, history, &allowed_cells)?;
+    let accumulation = accumulate_series(rows, history, &allowed_cells, retired_ids)?;
     let ancestry = series_ancestry(&accumulation.prepared, current_main_ancestry)?;
     let SeriesAccumulation {
         prepared,
@@ -1861,6 +1939,7 @@ where
         admitted_represented_run_count,
         excluded,
         event_ids: _,
+        run_cells: _,
     } = accumulation;
     let rows = decorate_series_rows(prepared, &ancestry)?;
     Ok(SeriesProjection {
@@ -1998,6 +2077,7 @@ fn accumulate_series(
     rows: &[Parsed<SeriesRow>],
     history: &HistoryProjection,
     allowed_cells: &BTreeSet<String>,
+    retired_ids: Option<&RetiredIds>,
 ) -> Result<SeriesAccumulation, String> {
     let mut accumulation = SeriesAccumulation::default();
     for parsed in rows {
@@ -2007,9 +2087,24 @@ fn accumulate_series(
                 parsed.typed.event_id
             )
         })?;
-        let row = prepare_series_row(&parsed.typed, &parsed.raw)?;
+        let mut row = prepare_series_row(&parsed.typed, &parsed.raw)?;
         if !accumulation.event_ids.insert(row.event_id.clone()) {
             return Err(format!("series rows repeat event_id {:?}", row.event_id));
+        }
+        resolve_prepared_cell(&mut row, retired_ids)?;
+        let recorded = accumulation
+            .run_cells
+            .entry((
+                series_producer_name(&row.producer).to_owned(),
+                row.run_id.clone(),
+                row.resolved_cell.clone(),
+            ))
+            .or_insert_with(|| row.cell.clone());
+        if *recorded != row.cell {
+            return Err(format!(
+                "series run {:?} records {} under both {recorded} and {}; refusing to guess how to merge a retired id with its successor",
+                row.run_id, row.resolved_cell, row.cell
+            ));
         }
         record_raw_series_counts(&mut accumulation, &row)?;
         let reasons = series_exclusion_reasons(&row, history, allowed_cells);
@@ -2065,8 +2160,8 @@ fn series_exclusion_reasons(
     allowed_cells: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut reasons = BTreeSet::new();
-    if !allowed_cells.contains(&row.cell) {
-        reasons.insert(cell_not_in_manifest_reason(&row.cell));
+    if !allowed_cells.contains(&row.resolved_cell) {
+        reasons.insert(cell_not_in_manifest_reason(&row.resolved_cell));
     }
     if row.schema != series_schema_name(&SeriesSchema::V3) {
         reasons.insert("series schema is not stress-series/v3".to_owned());
@@ -2089,6 +2184,7 @@ fn series_exclusion_reasons(
                             .to_owned(),
                     );
                 }
+                // The validate path selected the id its own run recorded.
                 if !selection.selected_cells.contains(&row.cell) {
                     reasons.insert(
                         "validate series row names a cell not selected by its validate path"
@@ -2185,6 +2281,28 @@ fn projection_exclusion_counts(excluded: BTreeMap<(String, String), (u64, u64)>)
         .collect()
 }
 
+/// Publish `row` under the cell whose history it belongs to now. A row whose
+/// recorded test id is retired is published under its successor's cell and
+/// keeps the recorded id as `series.recorded_cell`; every other row is
+/// published exactly as recorded.
+fn resolve_prepared_cell(
+    row: &mut PreparedSeries,
+    retired_ids: Option<&RetiredIds>,
+) -> Result<(), String> {
+    let resolved = resolve_series_cell(retired_ids, &row.cell);
+    if resolved != row.cell {
+        let payload = row
+            .public
+            .get_mut("series")
+            .and_then(Value::as_object_mut)
+            .ok_or("prepared series row has no series object")?;
+        payload.insert("cell".into(), Value::String(resolved.clone()));
+        payload.insert("recorded_cell".into(), Value::String(row.cell.clone()));
+    }
+    row.resolved_cell = resolved;
+    Ok(())
+}
+
 fn prepare_series_row(row: &SeriesRow, raw: &Value) -> Result<PreparedSeries, String> {
     let raw = raw
         .as_object()
@@ -2225,6 +2343,7 @@ fn prepare_series_row(row: &SeriesRow, raw: &Value) -> Result<PreparedSeries, St
         schema: schema_name,
         producer: *producer,
         run_id: run_id.clone(),
+        resolved_cell: cell.clone(),
         cell,
         tree,
         represented_runs,
@@ -3091,16 +3210,12 @@ mod tests {
             public["recorded"]["cells"][0]["cell_verdict"]["state"],
             "compared-and-matched"
         );
-        assert!(
-            public["recorded"]["cells"][0]
-                .get("backend_parity")
-                .is_none()
-        );
-        assert!(
-            public["recorded"]["cells"][0]
-                .get("comparison_authority")
-                .is_none()
-        );
+        assert!(public["recorded"]["cells"][0]
+            .get("backend_parity")
+            .is_none());
+        assert!(public["recorded"]["cells"][0]
+            .get("comparison_authority")
+            .is_none());
     }
 
     #[test]
@@ -3141,14 +3256,12 @@ mod tests {
         assert_eq!(projected.history.len(), 1);
         assert_eq!(projected.history[0]["run_id"], "run-cargo");
         assert_eq!(projected.current.len(), 1);
-        assert!(
-            projected
-                .exclusion_counts
-                .iter()
-                .any(|((schema, reason), counts)| {
-                    schema == "7" && reason == REASON && *counts == (1, 1)
-                })
-        );
+        assert!(projected
+            .exclusion_counts
+            .iter()
+            .any(|((schema, reason), counts)| {
+                schema == "7" && reason == REASON && *counts == (1, 1)
+            }));
     }
 
     #[test]
@@ -3168,36 +3281,28 @@ mod tests {
         assert_eq!(projected.selections.len(), 1);
         assert_eq!(projected.history[0]["run_id"], "run-good");
         assert_eq!(values.len() - projected.history.len(), 2);
-        assert!(
-            projected
-                .exclusion_counts
-                .iter()
-                .any(|((schema, reason), counts)| {
-                    schema == "6"
-                        && reason == "validation HistoryRow schema is not 7, 8, 9 or 10"
-                        && *counts == (1, 1)
-                })
-        );
-        assert!(
-            projected
-                .exclusion_counts
-                .iter()
-                .any(|((schema, reason), counts)| {
-                    schema == "7"
-                        && reason == "validation HistoryRow omits profile"
-                        && *counts == (1, 1)
-                })
-        );
-        assert!(
-            projected
-                .exclusion_counts
-                .iter()
-                .any(|((schema, reason), counts)| {
-                    schema == "7"
-                        && reason == "validation HistoryRow omits result"
-                        && *counts == (1, 1)
-                })
-        );
+        assert!(projected
+            .exclusion_counts
+            .iter()
+            .any(|((schema, reason), counts)| {
+                schema == "6"
+                    && reason == "validation HistoryRow schema is not 7, 8, 9 or 10"
+                    && *counts == (1, 1)
+            }));
+        assert!(projected
+            .exclusion_counts
+            .iter()
+            .any(|((schema, reason), counts)| {
+                schema == "7"
+                    && reason == "validation HistoryRow omits profile"
+                    && *counts == (1, 1)
+            }));
+        assert!(projected
+            .exclusion_counts
+            .iter()
+            .any(|((schema, reason), counts)| {
+                schema == "7" && reason == "validation HistoryRow omits result" && *counts == (1, 1)
+            }));
         let audited_physical: u64 = projected
             .exclusion_counts
             .values()
@@ -3274,11 +3379,9 @@ mod tests {
         assert_eq!(value["counts"]["projection_admitted_physical_row_count"], 1);
         assert_eq!(value["counts"]["projection_excluded_physical_row_count"], 2);
         assert_eq!(value["series_rows"][0]["event_id"], "event-repeat-known");
-        assert!(
-            value["validate_run_selection"]
-                .get("event-unknown")
-                .is_none()
-        );
+        assert!(value["validate_run_selection"]
+            .get("event-unknown")
+            .is_none());
         assert_eq!(value["counts"]["current_validation_run_row_count"], 1);
         let audit = value["projection_exclusion_counts"].as_array().unwrap();
         for cell in ["fixture/test/verify/ptrace", "fixture/new-test/verify/kvm"] {
@@ -3331,16 +3434,12 @@ mod tests {
             "full"
         );
         assert_eq!(value["series_rows"][0]["current_main_ancestry"], true);
-        assert!(
-            value["series_rows"][0]
-                .get("projection_validation_reason")
-                .is_none()
-        );
-        assert!(
-            value["series_rows"][0]
-                .get("product_result_available")
-                .is_none()
-        );
+        assert!(value["series_rows"][0]
+            .get("projection_validation_reason")
+            .is_none());
+        assert!(value["series_rows"][0]
+            .get("product_result_available")
+            .is_none());
         let audit = value["projection_exclusion_counts"].as_array().unwrap();
         assert!(audit.iter().any(|row| {
             row["schema"] == "stress-series/v1"
@@ -3409,6 +3508,254 @@ mod tests {
         assert_eq!(value["series_rows"].as_array().unwrap().len(), 1);
         assert_eq!(value["series_rows"][0]["producer"], "hermit-repeat");
         assert_eq!(value["validate_run_selection"], serde_json::json!({}));
+    }
+
+    /// Hermit's retired-id map shape (schema 1) folding `old-fixture` into the
+    /// test module's `fixture` bucket, as backend-parity-c was folded into
+    /// c-programs (https://github.com/rrnewton/hermit/issues/3301).
+    fn retired_fixture_map() -> RetiredIds {
+        RetiredIds::parse(
+            &serde_json::json!({
+                "schema": 1,
+                "description": "fixture map",
+                "retirements": [{
+                    "retired_bucket": "old-fixture",
+                    "successor_bucket": "fixture",
+                    "last_live_commit": "a".repeat(40),
+                    "reason": "old-fixture folded into fixture",
+                    "ids": {"old-fixture/test": "fixture/test"},
+                    "collisions": {},
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// A validation row whose run selected and recorded the retired id.
+    fn retired_history_row(record_id: &str, run_id: &str, commit: &str) -> Value {
+        let mut row = history_row(7, record_id, run_id, commit);
+        let evidence = &mut row["cell_results"];
+        for list in ["selected", "cells"] {
+            let identity = &mut evidence[list][0];
+            identity["category"] = Value::String("old-fixture".into());
+            identity["test"] = Value::String("old-fixture/test".into());
+        }
+        evidence["population_sha256"] =
+            Value::String(sha256(&canonical_bytes(&Value::Array(vec![evidence
+                ["selected"][0]
+                .clone()]))));
+        row
+    }
+
+    #[test]
+    fn retired_id_rows_and_successor_rows_join_one_manifest_cell() {
+        let old_commit = "c".repeat(40);
+        let new_commit = "d".repeat(40);
+        let mut old_validate = series("run-old", &old_commit, "event-old-validate");
+        old_validate["series"]["cell"] = Value::String("old-fixture/test/verify/ptrace".into());
+        let mut old_repeat = series("repeat-old", &old_commit, "event-old-repeat");
+        old_repeat["producer"] = Value::String("hermit-repeat".into());
+        old_repeat["series"]["cell"] = Value::String("old-fixture/test/verify/ptrace".into());
+        let mut new_pressure = series("pressure-new", &new_commit, "event-new-pressure");
+        new_pressure["producer"] = Value::String("pressure-test".into());
+        new_pressure["emitted_at"] = Value::String("2026-09-03T00:02:00Z".into());
+        let manifest_bytes = canonical_bytes(&manifest());
+        let history = jsonl(&[retired_history_row("record-old", "run-old", &old_commit)]);
+        let series_rows = jsonl(&[old_validate, old_repeat, new_pressure]);
+        let retired = retired_fixture_map();
+        let joined = project_with_retired_ids(
+            &manifest_bytes,
+            &history,
+            &series_rows,
+            None,
+            Some(&retired),
+            |_| Ok(Some(true)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            joined["counts"]["projection_admitted_physical_row_count"],
+            3
+        );
+        assert_eq!(
+            joined["counts"]["projection_excluded_physical_row_count"],
+            0
+        );
+        let rows = joined["series_rows"].as_array().unwrap();
+        let by_event = |event: &str| {
+            rows.iter()
+                .find(|row| row["event_id"] == event)
+                .unwrap_or_else(|| panic!("{event} was not published: {rows:?}"))
+        };
+        for event in ["event-old-validate", "event-old-repeat"] {
+            let payload = &by_event(event)["series"];
+            assert_eq!(payload["cell"], "fixture/test/verify/ptrace", "{event}");
+            assert_eq!(
+                payload["recorded_cell"], "old-fixture/test/verify/ptrace",
+                "{event}"
+            );
+        }
+        let current = &by_event("event-new-pressure")["series"];
+        assert_eq!(current["cell"], "fixture/test/verify/ptrace");
+        assert!(current.get("recorded_cell").is_none());
+        // The validate row is still admitted through the id its own run selected.
+        assert_eq!(
+            joined["validate_run_selection"]["event-old-validate"],
+            serde_json::json!({"path": "full", "selected": true})
+        );
+
+        // No map (a Hermit without retired-ids.json): exact recorded ids, as
+        // before. The retired-id rows are excluded as not in the manifest.
+        let exact = project(&manifest_bytes, &history, &series_rows, None, |_| {
+            Ok(Some(true))
+        })
+        .unwrap();
+        assert_eq!(exact["counts"]["projection_admitted_physical_row_count"], 1);
+        assert_eq!(exact["counts"]["projection_excluded_physical_row_count"], 2);
+        assert_eq!(exact["series_rows"][0]["event_id"], "event-new-pressure");
+        assert!(exact["series_rows"][0]["series"]
+            .get("recorded_cell")
+            .is_none());
+        let reason = cell_not_in_manifest_reason("old-fixture/test/verify/ptrace");
+        assert!(
+            exact["projection_exclusion_counts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["reason"] == reason.as_str() && row["physical_row_count"] == 2),
+            "{:?}",
+            exact["projection_exclusion_counts"]
+        );
+        // A map whose ids this data never names changes nothing either.
+        let unrelated = RetiredIds::parse(
+            &serde_json::json!({
+                "schema": 1,
+                "description": "unrelated map",
+                "retirements": [{
+                    "retired_bucket": "gone",
+                    "successor_bucket": "fixture",
+                    "last_live_commit": "b".repeat(40),
+                    "reason": "unrelated",
+                    "ids": {"gone/test": "fixture/other"},
+                    "collisions": {"gone/test": "fixture/test is another program"},
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let unchanged = project_with_retired_ids(
+            &manifest_bytes,
+            &history,
+            &series_rows,
+            None,
+            Some(&unrelated),
+            |_| Ok(Some(true)),
+        )
+        .unwrap();
+        assert_eq!(unchanged, exact);
+    }
+
+    #[test]
+    fn one_run_recording_a_retired_id_and_its_successor_is_refused() {
+        let commit = "d".repeat(40);
+        let mut old = series("pressure-run", &commit, "event-old");
+        old["producer"] = Value::String("pressure-test".into());
+        old["series"]["cell"] = Value::String("old-fixture/test/verify/ptrace".into());
+        let mut new = series("pressure-run", &commit, "event-new");
+        new["producer"] = Value::String("pressure-test".into());
+        let rows = jsonl(&[old, new]);
+        let manifest_bytes = canonical_bytes(&manifest());
+        let retired = retired_fixture_map();
+        let error =
+            project_with_retired_ids(&manifest_bytes, "", &rows, None, Some(&retired), |_| {
+                Ok(Some(true))
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("series run \"pressure-run\" records fixture/test/verify/ptrace under both old-fixture/test/verify/ptrace and fixture/test/verify/ptrace"),
+            "{error}"
+        );
+        // Without the map the two ids are different cells, as before.
+        let exact = project(&manifest_bytes, "", &rows, None, |_| Ok(Some(true))).unwrap();
+        assert_eq!(exact["counts"]["projection_admitted_physical_row_count"], 1);
+    }
+
+    #[test]
+    fn retired_ids_load_from_the_checkout_or_are_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-retired-ids-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(load_retired_ids(&root).unwrap(), None);
+        let path = root.join(RETIRED_IDS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "schema": 1,
+                "description": "fixture map",
+                "retirements": [{
+                    "retired_bucket": "old-fixture",
+                    "successor_bucket": "fixture",
+                    "last_live_commit": "a".repeat(40),
+                    "reason": "old-fixture folded into fixture",
+                    "ids": {"old-fixture/test": "fixture/test"},
+                    "collisions": {},
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = load_retired_ids(&root).unwrap().unwrap();
+        assert_eq!(loaded, retired_fixture_map());
+        assert_eq!(
+            resolve_series_cell(Some(&loaded), "old-fixture/test/replay/dbi"),
+            "fixture/test/replay/dbi"
+        );
+        assert_eq!(
+            resolve_series_cell(Some(&loaded), "old-fixture/other/replay/dbi"),
+            "old-fixture/other/replay/dbi"
+        );
+        assert_eq!(
+            resolve_series_cell(None, "old-fixture/test/replay/dbi"),
+            "old-fixture/test/replay/dbi"
+        );
+        // A present map that Hermit's reader refuses refuses the projection.
+        std::fs::write(&path, "{\"schema\": 2}").unwrap();
+        let error = load_retired_ids(&root).unwrap_err();
+        assert!(error.contains(RETIRED_IDS_FILE), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_pinned_hermit_retired_id_map_joins_backend_parity_c_into_c_programs() {
+        let hermit = std::path::Path::new(file!())
+            .parent()
+            .unwrap()
+            .join("../../hermit")
+            .canonicalize()
+            .unwrap();
+        let retired = load_retired_ids(&hermit)
+            .unwrap()
+            .expect("the pinned Hermit carries tests/e2e/manifests/inventory/retired-ids.json");
+        let successors = retired.successors_of("backend-parity-c").unwrap();
+        assert!(!successors.is_empty());
+        assert!(successors.iter().all(|id| id.starts_with("c-programs/")));
+        assert_eq!(
+            resolve_series_cell(
+                Some(&retired),
+                "backend-parity-c/flock-lifecycle/verify/ptrace"
+            ),
+            "c-programs/flock-lifecycle/verify/ptrace"
+        );
+        assert_eq!(
+            resolve_series_cell(Some(&retired), "c-programs/flock-lifecycle/verify/ptrace"),
+            "c-programs/flock-lifecycle/verify/ptrace"
+        );
     }
 
     #[test]
@@ -3605,11 +3952,9 @@ mod tests {
             let mut bad = operand.clone();
             bad[field] = "foreign".into();
             write(&bad);
-            assert!(
-                project_history_with(&parsed, None, load)
-                    .unwrap_err()
-                    .contains("differs from its original terminal/census")
-            );
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("differs from its original terminal/census"));
             assert!(
                 project_history_with(&parsed, Some(("record-five", "run-five")), load)
                     .unwrap_err()
@@ -3633,12 +3978,10 @@ mod tests {
                 .contains("matched 0 terminal rows")
         );
         std::fs::remove_file(&path).unwrap();
-        assert!(
-            project_history_with(&parsed, None, load)
-                .unwrap()
-                .history
-                .is_empty()
-        );
+        assert!(project_history_with(&parsed, None, load)
+            .unwrap()
+            .history
+            .is_empty());
         assert!(
             project_history_with(&parsed, Some(("record-five", "run-five")), load)
                 .unwrap_err()
@@ -3739,18 +4082,14 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             // Neither a malformed operand nor a non-ENOENT lookup error is absence.
             std::fs::write(&path, b"{}\n").unwrap();
-            assert!(
-                project_history_with(&parsed, None, load)
-                    .unwrap_err()
-                    .contains("missing field")
-            );
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("missing field"));
             std::fs::remove_file(&path).unwrap();
             std::os::unix::fs::symlink("missing-target", &path).unwrap();
-            assert!(
-                project_history_with(&parsed, None, load)
-                    .unwrap_err()
-                    .contains("cannot open derived census")
-            );
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("cannot open derived census"));
             std::fs::remove_file(&path).unwrap();
 
             let operand = serde_json::json!({

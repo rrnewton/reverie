@@ -228,6 +228,22 @@ scheduler turns, virtual nanoseconds, syscall counts, wall-time range, all four
 divergence coordinates, the two compared messages, producer, and run id. An
 empty result prints `no runs recorded` and exits nonzero.
 
+A renamed test keeps one history. Hermit records each retired test id and its
+successor in `tests/e2e/manifests/inventory/retired-ids.json`; for example
+`backend-parity-c/flock-lifecycle` became `c-programs/flock-lifecycle`
+(<https://github.com/rrnewton/hermit/issues/3301>). `history` reads that file
+from the Hermit submodule's freshly fetched `origin/main` commit, parses it with
+the same rules as Hermit's reader, and joins rows recorded under either id,
+whichever of the two `--test` names. When it joins more than one id it says so
+on the second line, naming the ids, the map and the Hermit commit. The cell
+totals are keyed by the successor's cell; each row still shows the cell it
+recorded. Without the file every id is joined exactly as recorded, as before.
+A present file that Hermit would refuse makes `history` refuse, rather than
+silently dropping the join. The website projection
+(`ci-hub.rs compatibility-website-projection`) applies the same map, read from
+the Hermit checkout it publishes, and marks a joined row with
+`series.recorded_cell`.
+
 ## Immutable scorecard input snapshot
 
 The dormant scorecard transaction can obtain one run-scoped input without

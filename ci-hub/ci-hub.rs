@@ -4878,11 +4878,19 @@ fn run_compatibility_website_projection(
     require_compatibility_projection_checkout(&args.hermit_checkout, &args.hermit_main_commit)
         .map_err(CiHubError::ValidateStatus)?;
     let historical_identity = args.record_id.as_deref().zip(args.run_id.as_deref());
-    let report =
-        compatibility_website::project(&manifest, &history, &series, historical_identity, |tree| {
-            compatibility_projection_ancestry(&args.hermit_checkout, &args.hermit_main_commit, tree)
-        })
+    let retired_ids = compatibility_website::load_retired_ids(&args.hermit_checkout)
         .map_err(CiHubError::ValidateStatus)?;
+    let report = compatibility_website::project_with_retired_ids(
+        &manifest,
+        &history,
+        &series,
+        historical_identity,
+        retired_ids.as_ref(),
+        |tree| {
+            compatibility_projection_ancestry(&args.hermit_checkout, &args.hermit_main_commit, tree)
+        },
+    )
+    .map_err(CiHubError::ValidateStatus)?;
     println!(
         "{}",
         serde_json::to_string(&report).map_err(|error| {
