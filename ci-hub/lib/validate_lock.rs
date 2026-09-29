@@ -7450,23 +7450,7 @@ finally: os.close(held)
     }
 
     fn write_run_handle_authority(root: &Path) {
-        let authority_dir = root.join("ci-hub/validate");
-        fs::create_dir_all(&authority_dir).unwrap();
-        fs::write(
-            authority_dir.join("run_registry.py"),
-            include_str!("../validate/run_registry.py"),
-        )
-        .unwrap();
-        fs::write(
-            authority_dir.join("service_result.py"),
-            include_str!("../validate/service_result.py"),
-        )
-        .unwrap();
-        fs::write(
-            authority_dir.join("final_validate_status.py"),
-            include_str!("../validate/final_validate_status.py"),
-        )
-        .unwrap();
+        validate_run_handle::write_authority_fixture(root);
     }
 
     fn current_validation_record(name: &str) -> serde_json::Value {

@@ -124,6 +124,50 @@ fn authority(root: &Path) -> PathBuf {
     root.join("ci-hub/validate/run_registry.py")
 }
 
+/// Materialize the real Python run-handle authority under a temporary tool
+/// root, for tests that call it through [`authority`].
+///
+/// Production runs `python3 <tool root>/ci-hub/validate/run_registry.py` from a
+/// complete checkout, so every sibling import resolves. A fixture carries only
+/// the files written here, so this list must be the authority's complete
+/// top-level import closure: `run_registry` imports `service_result` and
+/// `reverie_node`; both import `final_validate_status`; `reverie_node` adds
+/// `ci-hub/lib` to `sys.path` for `bounded_capture`. A module missing here makes
+/// every authority call fail with `ModuleNotFoundError`, which is how
+/// `import reverie_node` (01991d70e603) broke twelve fixtures that each kept
+/// their own three-file copy. Keep this the one list the fixtures share.
+#[cfg(test)]
+pub(crate) fn write_authority_fixture(tool_root: &Path) {
+    let validate = tool_root.join("ci-hub/validate");
+    let lib = tool_root.join("ci-hub/lib");
+    std::fs::create_dir_all(&validate).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    for (path, contents) in [
+        (
+            validate.join("run_registry.py"),
+            include_str!("../validate/run_registry.py"),
+        ),
+        (
+            validate.join("service_result.py"),
+            include_str!("../validate/service_result.py"),
+        ),
+        (
+            validate.join("final_validate_status.py"),
+            include_str!("../validate/final_validate_status.py"),
+        ),
+        (
+            validate.join("reverie_node.py"),
+            include_str!("../validate/reverie_node.py"),
+        ),
+        (
+            lib.join("bounded_capture.py"),
+            include_str!("bounded_capture.py"),
+        ),
+    ] {
+        std::fs::write(path, contents).unwrap();
+    }
+}
+
 fn run_authority<T: DeserializeOwned>(root: &Path, arguments: &[String]) -> Result<T, String> {
     let script = authority(root);
     let output = Command::new("python3")
@@ -284,23 +328,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let validate = root.join("ci-hub/validate");
-        fs::create_dir_all(&validate).unwrap();
-        fs::write(
-            validate.join("run_registry.py"),
-            include_str!("../validate/run_registry.py"),
-        )
-        .unwrap();
-        fs::write(
-            validate.join("service_result.py"),
-            include_str!("../validate/service_result.py"),
-        )
-        .unwrap();
-        fs::write(
-            validate.join("final_validate_status.py"),
-            include_str!("../validate/final_validate_status.py"),
-        )
-        .unwrap();
+        write_authority_fixture(&root);
         root
     }
 

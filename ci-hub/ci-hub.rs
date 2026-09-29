@@ -14516,32 +14516,16 @@ mod tests {
         let tool_root = root.join("tool");
         let runs = root.join("ignored/validate/runs");
         let process = root.join("proc/123");
-        let authority_dir = tool_root.join("ci-hub/validate");
         let stale_authority_dir = root.join("ci-hub/validate");
         std::fs::create_dir_all(&runs).unwrap();
         std::fs::create_dir_all(&process).unwrap();
-        std::fs::create_dir_all(&authority_dir).unwrap();
         std::fs::create_dir_all(&stale_authority_dir).unwrap();
         std::fs::write(
             stale_authority_dir.join("run_registry.py"),
             "raise SystemExit('the state-root authority must not be used')\n",
         )
         .unwrap();
-        std::fs::write(
-            authority_dir.join("run_registry.py"),
-            include_str!("validate/run_registry.py"),
-        )
-        .unwrap();
-        std::fs::write(
-            authority_dir.join("service_result.py"),
-            include_str!("validate/service_result.py"),
-        )
-        .unwrap();
-        std::fs::write(
-            authority_dir.join("final_validate_status.py"),
-            include_str!("validate/final_validate_status.py"),
-        )
-        .unwrap();
+        validate_run_handle::write_authority_fixture(&tool_root);
         let boot_id = root.join("boot_id");
         std::fs::write(&boot_id, "boot-one\n").unwrap();
         let mut fields = vec!["0"; 20];
