@@ -922,6 +922,9 @@ struct LiteinstRuntimeState {
     /// The thread that executed the begin trap and so runs the runtime's
     /// bootstrap. Another thread of the same process, or a process forked
     /// from it, keeps running guest code while the phase is `Bootstrap`.
+    /// Set only on entry to `Bootstrap` and cleared on every exit from it
+    /// (Ready, Failed, and the exec reset), so it is `Some` exactly while the
+    /// phase is `Bootstrap`.
     bootstrap_tid: Option<Pid>,
     generation: u64,
     ready_generation: Option<u64>,
@@ -3621,6 +3624,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     state.phase = LiteinstRuntimePhase::Ready;
                     state.ready_generation = Some(state.generation);
+                    state.bootstrap_tid = None;
                 }
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
@@ -3638,6 +3642,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         return Err(Errno::EPROTO.into());
                     }
                     state.phase = LiteinstRuntimePhase::Failed;
+                    state.bootstrap_tid = None;
                 }
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
@@ -4158,6 +4163,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 state.phase = LiteinstRuntimePhase::Ready;
                 state.ready_generation = Some(state.generation);
+                state.bootstrap_tid = None;
             }
         }
 
