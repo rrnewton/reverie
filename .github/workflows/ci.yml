@@ -89,6 +89,7 @@ jobs:
         # Keep release/no-default artifacts separate from all-features builds.
         # Cargo still verifies source, dependency and compiler fingerprints.
         path: target/liteinst-conformance
+<<<<<<< 239101c09fd23cba752b4e3c49032f9f9805c56e
 <<<<<<< 30160b739694bdd39dd50a93a379d4fc2bea7afc
         key: liteinst-conformance-${{ github.job }}-release-no-default-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
     - name: LiteInst real target-loader conformance
@@ -104,6 +105,13 @@ jobs:
       # The bounded runner builds the release DSO, binds its digest and requires
       # exactly one executed test, including the new-namespace refusal control.
 >>>>>>> b1ed5557d9
+=======
+        key: liteinst-conformance-${{ github.job }}-release-no-default-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+    - name: LiteInst real target-loader conformance
+      # Uses ptrace and native loader oracles; no PMU or self-hosted runner needed.
+      # The bounded runner builds the release DSO, binds its digest and requires
+      # exactly one executed, passing test.
+>>>>>>> 39239a7869
       run: reverie-liteinst/tests/run_target_loader_conformance.sh
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
