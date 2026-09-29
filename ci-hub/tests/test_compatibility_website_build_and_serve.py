@@ -14,10 +14,12 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 import pytest
@@ -62,6 +64,105 @@ renderer_test = load_module("compatibility_website_combined_fixture", RENDER_TES
 documented_commands = load_module(
     "compatibility_website_combined_documented_commands", DOCUMENTED_COMMANDS
 )
+
+
+# rust-script 0.36 builds every script in one shared target directory,
+# $XDG_CACHE_HOME/rust-script/binaries/release, and each --force run takes
+# Cargo's build locks there (.cargo-lock, .cargo-build-lock and
+# .cargo-artifact-lock), including the no-op freshness check of a binary that
+# is already built. On a shared host another agent's build can hold those locks
+# for longer than the 120-second bound on `ci-hub compatibility-website --help`
+# or the 60-second bound on a started server reporting its URL. The tests that
+# start rust-script therefore use one module-private cache instead of the one
+# they inherit. The cache is compiled once, before the first such test, under
+# its own bound: a cold ci-hub.rs compile into an empty cache took 53 seconds
+# on devbig014 at a load average of about 110, which would otherwise consume
+# most of one test's bound. The 900 seconds matches build_data's projection
+# bound, which also covers a cold ci-hub.rs compile.
+PRIVATE_RUST_SCRIPT_WARM_TIMEOUT_SECONDS = 900
+PRIVATE_RUST_SCRIPT_KILL_WAIT_SECONDS = 30
+
+
+def _compile_into_private_rust_script_cache(
+    label: str, command: list[str], cache: Path
+) -> None:
+    # rust-script runs Cargo, which runs rustc. A timeout that killed only
+    # rust-script would leave them writing into the cache while it is removed,
+    # so the compile runs in its own session and the whole group is killed.
+    process = subprocess.Popen(
+        command,
+        cwd=REPOSITORY,
+        env={**os.environ, "XDG_CACHE_HOME": str(cache)},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    stderr = ""
+    timed_out = False
+    try:
+        _stdout, stderr = process.communicate(
+            timeout=PRIVATE_RUST_SCRIPT_WARM_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        deadline = time.monotonic() + PRIVATE_RUST_SCRIPT_KILL_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+    if timed_out:
+        pytest.fail(
+            f"precondition not met: compiling {label} into a private "
+            f"rust-script cache did not finish within "
+            f"{PRIVATE_RUST_SCRIPT_WARM_TIMEOUT_SECONDS} seconds",
+            pytrace=False,
+        )
+    if process.returncode != 0:
+        pytest.fail(
+            f"precondition not met: compiling {label} into a private "
+            f"rust-script cache exited {process.returncode}: {stderr[-2000:]}",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(scope="module")
+def warm_private_rust_script_cache() -> Iterator[Path]:
+    cache = tempfile.TemporaryDirectory(prefix="compatibility-website-rust-script-")
+    try:
+        root = Path(cache.name)
+        _compile_into_private_rust_script_cache(
+            "ci-hub/ci-hub.rs",
+            [str(REPOSITORY / "ci-hub/ci-hub"), "compatibility-website", "--help"],
+            root,
+        )
+        _compile_into_private_rust_script_cache(
+            "ci-hub/compatibility-website/serve.rs",
+            ["rust-script", "--force", str(website.SERVE_PATH), "--help"],
+            root,
+        )
+        yield root
+    finally:
+        cache.cleanup()
+
+
+@pytest.fixture
+def private_rust_script_cache(
+    warm_private_rust_script_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    # Every subprocess the test starts inherits this, including a rust-script
+    # that a Python child execs.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(warm_private_rust_script_cache))
+    return warm_private_rust_script_cache
 
 
 def test_live_builder_keeps_tool_identity_and_explicit_state_separate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3001,6 +3102,7 @@ def test_server_refusal_closes_the_target_and_releases_the_output_lock(
         os.close(contender)
 
 
+@pytest.mark.usefixtures("private_rust_script_cache")
 def test_public_serve_wrapper_binds_build_json_and_propagates_sigterm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3066,6 +3168,7 @@ raise SystemExit(module._entrypoint(['serve', '--root', str(root), '--port', '0'
             process.communicate(timeout=5)
 
 
+@pytest.mark.usefixtures("private_rust_script_cache")
 def test_build_and_serve_reports_and_serves_one_artifact_across_path_swap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3180,6 +3283,7 @@ def test_help_is_bounded_and_names_all_modes() -> None:
     assert "build-historical-and-serve" in result.stdout
 
 
+@pytest.mark.usefixtures("private_rust_script_cache")
 @pytest.mark.parametrize(
     "mode",
     [
