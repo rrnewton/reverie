@@ -1,0 +1,12 @@
+# This file intentionally sets no options. It pins rustfmt's defaults for
+# dev-hermit's own Rust files.
+#
+# rustfmt looks for a rustfmt.toml from each file's directory upward and uses
+# the first one it finds. Without a config at the repository root, a stray
+# rustfmt.toml in a parent directory, such as /tmp or /var/tmp, would apply
+# to a dev-hermit worktree placed there and change the style. That broke the
+# format gate in ci-hub/bin/git-push-verified (`rustfmt --edition 2021
+# --check`): https://github.com/rrnewton/dev-hermit/issues/430
+#
+# The nested repositories (hermit, reverie, agent-utils) keep their own
+# rustfmt.toml, which is closer to their files and still applies to them.
