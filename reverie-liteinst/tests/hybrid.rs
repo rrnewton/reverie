@@ -3089,6 +3089,40 @@ async fn host_hybrid_landing_after_a_siglongjmp_resolves_the_restart_it_returns_
     }
 }
 
+/// A handler that abandons more restarts than
+/// `LITEINST_PENDING_RESTART_LIMIT`, each by `siglongjmp` out of a nested
+/// handler from the same frame, still returns to the landing of the restart
+/// it interrupted. Each abandoned restart shares the next one's controller
+/// stack pointer, so it is replaced rather than piling up and evicting the
+/// live restart below them.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restarts_abandoned_at_one_depth_keep_the_live_restart() {
+    const ABANDONED: usize = 70;
+    for (mode, result) in [
+        ("handler-abandon", -4),
+        ("handler-abandon-restart", RESTART_RESULT),
+    ] {
+        let plan = RestartPlan {
+            errno: reverie::Errno::ERESTARTSYS.into_raw(),
+            restarts: 1,
+            signal: libc::SIGUSR1,
+            ..Default::default()
+        };
+        let (stdout, events) = restart_parity(mode, plan, 1 + ABANDONED as u64, mode).await;
+        assert_eq!(
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\nafter-sleep=0\n"),
+            "{mode}"
+        );
+        let mut expected = vec!["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1"];
+        expected.extend(std::iter::repeat_n("signal SIGALRM", ABANDONED));
+        if result == RESTART_RESULT {
+            expected.push("magic read(0x7e57,1)");
+        }
+        assert_eq!(events, expected, "{mode}");
+    }
+}
+
 /// A handler that edits the saved `rax` of the syscall it interrupted changes
 /// the result of an interrupted syscall, and the syscall number of a
 /// restarted one, as under plain ptrace.

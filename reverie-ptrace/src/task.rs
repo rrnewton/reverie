@@ -1126,7 +1126,9 @@ fn callback_observation_decision(
 ///   inside the handler were abandoned.
 /// - A handler left by `siglongjmp` abandons its restarts. They stay below
 ///   the top until an enclosing restart's re-trap or landing drops everything
-///   above it, and `LITEINST_PENDING_RESTART_LIMIT` bounds them meanwhile.
+///   above it, or a new restart at the same controller stack pointer
+///   replaces them, and `LITEINST_PENDING_RESTART_LIMIT` bounds them
+///   meanwhile (see `push_liteinst_pending_restart`).
 /// - A handler that edits its `ucontext` edits the runtime's trap context, not
 ///   the guest's syscall registers. At an armed landing only `rax` keeps its
 ///   plain-ptrace meaning (the result, or the number of the syscall to
@@ -3997,10 +3999,22 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// Records a restart the thread will re-trap for. A restart abandoned by
-    /// `siglongjmp` out of a handler is never re-trapped; the oldest is
-    /// dropped past `LITEINST_PENDING_RESTART_LIMIT` so they cannot
-    /// accumulate.
+    /// `siglongjmp` out of a handler is never re-trapped, so two rules keep
+    /// such entries from accumulating:
+    ///
+    /// - An entry with the new restart's controller stack pointer is dropped.
+    ///   A live restart keeps its controller frame on the stack until its
+    ///   re-trap or landing, and a handler delivered while it is pending runs
+    ///   below that frame or on another stack, so a new trap at the same
+    ///   stack pointer means the older restart was abandoned. A loop that
+    ///   abandons a restart on every iteration therefore keeps one entry.
+    /// - Past `LITEINST_PENDING_RESTART_LIMIT` entries the oldest is dropped.
+    ///   That entry is live only if a handler abandoned more than the limit
+    ///   of restarts at distinct stack depths inside it; its landing or
+    ///   re-trap then fails closed.
     fn push_liteinst_pending_restart(&mut self, pending: LiteinstPendingRestart) {
+        self.liteinst_pending_restarts
+            .retain(|older| older.controller_rsp != pending.controller_rsp);
         if self.liteinst_pending_restarts.len() >= LITEINST_PENDING_RESTART_LIMIT {
             self.liteinst_pending_restarts.remove(0);
         }
