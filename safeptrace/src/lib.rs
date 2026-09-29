@@ -45,6 +45,8 @@ pub use crate::notifier::StopSiginfo;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::StoppedObservation;
 #[cfg(feature = "notifier")]
+pub use crate::notifier::SupersededStopRefusal;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
 pub use crate::regs::*;
 use crate::waitid::IdType;
