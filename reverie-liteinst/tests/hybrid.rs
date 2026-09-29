@@ -983,6 +983,12 @@ fn preload_path() -> PathBuf {
 }
 
 fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
+    compile_fixture_with(name, &[])
+}
+
+/// Compiles a fixture like `compile_fixture`, passing `extra` to the compiler
+/// driver after the source and output.
+fn compile_fixture_with(name: &str, extra: &[&str]) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let source = build_path("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -994,6 +1000,7 @@ fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
         .arg(&source)
         .arg("-o")
         .arg(&output)
+        .args(extra)
         .output()
         .unwrap();
     assert!(
@@ -2552,4 +2559,227 @@ async fn runtime_preparation_failure_before_any_runtime_syscall_leaves_no_window
         format_generation(&syscalls)
     );
     assert_failure_closed_the_window(&syscalls, 0, &error);
+}
+
+/// Records every syscall with the calling thread, so that the bootstrapping
+/// thread and another thread of the same process can be told apart.
+#[derive(Default)]
+struct RecordRuntimeBootstrapByThread;
+
+/// hybrid_bootstrap_thread.c tags the second thread's call inside the
+/// bootstrap window, and main's call after the ready trap, with these.
+const BOOTSTRAP_THREAD_MARKER: usize = 0x74687264;
+const BOOTSTRAP_MAIN_MARKER: usize = 0x6d61696e;
+
+#[reverie::tool]
+impl Tool for RecordRuntimeBootstrapByThread {
+    type GlobalState = BootstrapLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &BootstrapLogConfig) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), reverie::Errno> {
+        let bootstrap = u8::from(guest.is_backend_runtime_bootstrap());
+        guest.send_rpc(format!("exec {bootstrap}")).await;
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (nr, args) = syscall.into_parts();
+        let marker = match (nr, args.arg0) {
+            (Sysno::getpid, BOOTSTRAP_THREAD_MARKER) => "thread",
+            (Sysno::getpid, BOOTSTRAP_MAIN_MARKER) => "main",
+            _ => "-",
+        };
+        let bootstrap = u8::from(guest.is_backend_runtime_bootstrap());
+        guest
+            .send_rpc(format!(
+                "syscall {} {} {} {bootstrap} {marker}",
+                guest.pid(),
+                guest.tid(),
+                nr as i64
+            ))
+            .await;
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ThreadSyscall {
+    pid: i32,
+    tid: i32,
+    nr: Sysno,
+    bootstrap: bool,
+    marker: String,
+}
+
+/// A second guest thread that runs while the runtime is inside its bootstrap
+/// window executes guest code. Only the thread that executed the begin trap is
+/// the runtime's, although the window's phase is shared by every thread of the
+/// address space.
+///
+/// The fixture's open64 interposes on the runtime's /proc/self/maps open, a
+/// call the runtime makes between its begin and ready traps, and creates the
+/// thread there. The bootstrapping thread waits for the new thread's tagged
+/// call before it returns to the runtime, and the new thread stays alive
+/// until main releases it after the ready trap. So the tagged call always lies
+/// inside the window, and no thread exits before Ready.
+///
+/// The interposed open64 itself runs on the bootstrapping thread inside the
+/// window, so its pipe, thread creation and wait are attributed to the
+/// runtime. That is the residual for guest code interposed on the runtime's
+/// imports tracked in https://github.com/rrnewton/hermit/issues/3352; this
+/// test pins it rather than hides it.
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_bootstrap_window_excludes_another_thread_of_the_process() {
+    let (_directory, guest) =
+        compile_fixture_with("hybrid_bootstrap_thread.c", &["-pthread", "-rdynamic"]);
+    let log_directory = tempfile::tempdir().unwrap();
+    let log = log_directory.path().join("bootstrap.log");
+    let mut command = Command::new(&guest);
+    command.arg("thread");
+    let (output, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_host_with_output_and_preload::<RecordRuntimeBootstrapByThread>(
+            command,
+            (log.clone(), false),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("the bootstrap-thread fixture did not finish")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"bootstrap-thread-joined\n");
+
+    let text = fs::read_to_string(&log).expect("the Tool recorded no events");
+    let mut generations: Vec<Vec<ThreadSyscall>> = vec![Vec::new()];
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split(' ').collect();
+        match fields.as_slice() {
+            ["exec", bootstrap] => {
+                assert_eq!(
+                    *bootstrap, "0",
+                    "a post-exec callback ran inside the runtime bootstrap window"
+                );
+                generations.push(Vec::new());
+            }
+            ["syscall", pid, tid, nr, bootstrap, marker] => {
+                generations.last_mut().unwrap().push(ThreadSyscall {
+                    pid: pid.parse().unwrap(),
+                    tid: tid.parse().unwrap(),
+                    nr: Sysno::from(nr.parse::<i32>().unwrap()),
+                    bootstrap: *bootstrap == "1",
+                    marker: (*marker).to_owned(),
+                })
+            }
+            _ => panic!("malformed bootstrap log line {line:?}"),
+        }
+    }
+    // The launcher, then the one image.
+    assert_eq!(generations.len(), 2, "{generations:?}");
+    assert!(
+        generations[0].iter().all(|s| !s.bootstrap),
+        "the launcher's syscalls were attributed to the runtime: {:?}",
+        generations[0]
+    );
+    let image = &generations[1];
+    let describe = |syscalls: &[ThreadSyscall]| {
+        syscalls
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{}{}{}",
+                    s.tid,
+                    s.nr,
+                    if s.bootstrap { "*" } else { "" },
+                    if s.marker == "-" {
+                        String::new()
+                    } else {
+                        format!("[{}]", s.marker)
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let leader = image[0].pid;
+    assert!(
+        image.iter().all(|s| s.pid == leader),
+        "a second process ran: {}",
+        describe(image)
+    );
+    let second_tids: std::collections::BTreeSet<i32> = image
+        .iter()
+        .filter(|s| s.tid != leader)
+        .map(|s| s.tid)
+        .collect();
+    assert_eq!(
+        second_tids.len(),
+        1,
+        "expected exactly one second thread: {}",
+        describe(image)
+    );
+
+    // The bootstrapping thread: one contiguous window holding the runtime's
+    // work and the interposed thread creation, with main after it.
+    let leader_syscalls: Vec<RecordedSyscall> = image
+        .iter()
+        .filter(|s| s.tid == leader)
+        .map(|s| RecordedSyscall {
+            nr: s.nr,
+            bootstrap: s.bootstrap,
+            marker: s.marker == "main",
+        })
+        .collect();
+    let window = bootstrap_window(1, &leader_syscalls, &[Sysno::openat, Sysno::memfd_create]);
+    assert!(
+        leader_syscalls[window.clone()]
+            .iter()
+            .any(|s| matches!(s.nr, Sysno::clone | Sysno::clone3)),
+        "the second thread was not created inside the bootstrap window: {}",
+        describe(image)
+    );
+    assert_eq!(
+        leader_syscalls[window.end..]
+            .iter()
+            .filter(|s| s.marker)
+            .count(),
+        1,
+        "main's tagged call did not follow the ready trap: {}",
+        describe(image)
+    );
+
+    // Every call of the second thread is guest work, including its tagged
+    // call, which lies strictly inside the bootstrapping thread's window in
+    // the order the Tool received them.
+    let second: Vec<&ThreadSyscall> = image.iter().filter(|s| s.tid != leader).collect();
+    assert!(
+        second.iter().all(|s| !s.bootstrap),
+        "a syscall of the second thread was attributed to the runtime bootstrap: {}",
+        describe(image)
+    );
+    let tagged = image
+        .iter()
+        .position(|s| s.marker == "thread")
+        .unwrap_or_else(|| {
+            panic!(
+                "the second thread's tagged call is missing: {}",
+                describe(image)
+            )
+        });
+    assert_ne!(image[tagged].tid, leader, "{}", describe(image));
+    let leader_before = image[..tagged].iter().rev().find(|s| s.tid == leader);
+    let leader_after = image[tagged + 1..].iter().find(|s| s.tid == leader);
+    assert!(
+        leader_before.is_some_and(|s| s.bootstrap) && leader_after.is_some_and(|s| s.bootstrap),
+        "the second thread's tagged call was not inside the bootstrap window: {}",
+        describe(image)
+    );
 }
