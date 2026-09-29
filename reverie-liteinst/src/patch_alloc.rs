@@ -8,6 +8,15 @@
 //! Tool callbacks use a separate reusable arena because a callback can interrupt
 //! the guest allocator itself. Its temporary and persistent allocations are
 //! therefore isolated from libc until they are released or the process exits.
+//!
+//! The host-runtime constructor window (Begin..Ready) uses a third, reclaiming
+//! heap. The guest's own allocator must still be uninitialised when `main`
+//! runs under LiteInst, as it is natively, so nothing the constructor allocates
+//! may reach glibc malloc. The constructor frees and reallocates heavily (a
+//! 2 MiB maps buffer inside liteinst2 per executable mapping, repeated
+//! `/proc/self/maps` reads), so the never-freeing patch heap would leak about
+//! 2 MiB per mapping. The constructor heap uses power-of-two size classes with
+//! per-class free lists instead; objects that survive Ready stay in it.
 
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
@@ -223,6 +232,37 @@ thread_local! {
     // these counters before it can choose a safe backing heap.
     static INSTALLATION_DEPTH: Cell<usize> = const { Cell::new(0) };
     static DISPATCH_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static INIT_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Routes this thread's allocations to the constructor heap while held.
+pub(crate) struct InitAllocationScope;
+
+impl Drop for InitAllocationScope {
+    fn drop(&mut self) {
+        INIT_DEPTH.set(INIT_DEPTH.get() - 1);
+    }
+}
+
+/// Enters the host-runtime constructor window; see the module documentation.
+pub(crate) fn enter_init() -> InitAllocationScope {
+    INIT_DEPTH.set(INIT_DEPTH.get() + 1);
+    InitAllocationScope
+}
+
+fn init_active() -> bool {
+    INIT_DEPTH.get() != 0
+}
+
+/// Bytes ever carved from the constructor heap (its bump cursor, a peak).
+pub(crate) fn init_heap_high_water() -> usize {
+    INIT_HEAP.high_water.load(Ordering::Acquire)
+}
+
+/// Whether any constructor-window allocation missed the constructor heap and
+/// fell back to the system allocator. Sticky for the process lifetime.
+pub(crate) fn init_heap_exhausted() -> bool {
+    INIT_HEAP.exhausted.load(Ordering::Acquire)
 }
 
 pub(crate) struct PatchAllocationScope;
@@ -265,13 +305,28 @@ pub(crate) struct PatchAllocator;
 
 // SAFETY: normal allocations delegate to System. Installation allocations use
 // process-lifetime storage, and dispatch allocations use serialized reusable
-// storage independent of the interrupted guest allocator.
+// storage independent of the interrupted guest allocator. Constructor-window
+// allocations use serialized class storage that is frozen after the window.
 unsafe impl GlobalAlloc for PatchAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if installation_active() {
             PATCH_HEAP.allocate(layout)
         } else if dispatch_active() {
+            // Checked before the constructor window: a dispatch nested in the
+            // window must not spin on an INIT_HEAP lock it interrupted.
             TOOL_HEAP.allocate(layout)
+        } else if init_active() {
+            let pointer = INIT_HEAP.allocate(layout);
+            if pointer.is_null() {
+                // `allocate` set the sticky exhausted flag, which fails
+                // initialization loudly after `prepare`. Falling back keeps an
+                // infallible Rust allocation from aborting before that check
+                // can report the cause.
+                // SAFETY: forwarded to the process system allocator.
+                unsafe { System.alloc(layout) }
+            } else {
+                pointer
+            }
         } else {
             // SAFETY: forwarded to the process system allocator.
             unsafe { System.alloc(layout) }
@@ -293,6 +348,14 @@ unsafe impl GlobalAlloc for PatchAllocator {
             unsafe { TOOL_HEAP.deallocate(pointer) };
         } else if PATCH_HEAP.contains(pointer) {
             // Installation allocations remain valid for the process lifetime.
+        } else if INIT_HEAP.contains(pointer) {
+            if init_active() && !dispatch_active() {
+                // SAFETY: the pointer was allocated by INIT_HEAP for this layout.
+                unsafe { INIT_HEAP.deallocate(pointer, layout) };
+            }
+            // Outside the constructor window the heap's metadata is frozen, so
+            // a later free (possibly from a signal handler) takes no lock and
+            // the block is leaked.
         } else if dispatch_active() {
             // A tool may drop state allocated before the filter was installed.
             // Leaking it is preferable to reentering an interrupted allocator.
@@ -313,6 +376,27 @@ unsafe impl GlobalAlloc for PatchAllocator {
                 unsafe {
                     ptr::copy_nonoverlapping(pointer, replacement, old.size().min(new_size));
                     TOOL_HEAP.deallocate(pointer);
+                }
+            }
+            return replacement;
+        }
+        if INIT_HEAP.contains(pointer) {
+            let Ok(new_layout) = Layout::from_size_align(new_size, old.align()) else {
+                return ptr::null_mut();
+            };
+            let class = InitHeap::<INIT_HEAP_BYTES>::class_of(old);
+            if class.is_some() && class == InitHeap::<INIT_HEAP_BYTES>::class_of(new_layout) {
+                // The block already spans its whole class; no metadata changes.
+                return pointer;
+            }
+            // SAFETY: new_layout is valid; `alloc` routes as for a fresh request.
+            let replacement = unsafe { self.alloc(new_layout) };
+            if !replacement.is_null() {
+                // SAFETY: both allocations are valid and non-overlapping; dealloc
+                // reclaims the source inside the window and leaks it outside.
+                unsafe {
+                    ptr::copy_nonoverlapping(pointer, replacement, old.size().min(new_size));
+                    self.dealloc(pointer, old);
                 }
             }
             return replacement;
@@ -352,6 +436,149 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 }
 
 static TOOL_HEAP: ToolHeap = ToolHeap::new();
+
+// Untouched .bss pages cost no RSS. The predicted constructor peak is about
+// 2.5 MiB: one reused 2 MiB liteinst2 maps buffer, the 192 KiB site registry
+// (a 256 KiB class) and small objects.
+const INIT_HEAP_BYTES: usize = 16 * 1024 * 1024;
+/// Size class k holds blocks of `16 << k` bytes: 16 B through 4 MiB.
+const INIT_HEAP_CLASSES: usize = 19;
+const INIT_HEAP_MIN_CLASS_SHIFT: u32 = 4;
+/// Blocks are carved aligned to min(class size, this), so any layout whose
+/// alignment is at most this fits its class without per-block headers.
+const INIT_HEAP_MAX_ALIGN: usize = 4096;
+
+#[repr(C, align(4096))]
+struct InitHeapBytes<const N: usize>([u8; N]);
+
+/// Reclaiming storage for the host-runtime constructor window.
+///
+/// Headerless: dealloc and realloc receive the layout, so a block's class is
+/// recomputed rather than stored. Blocks never split or merge, so a freed
+/// 2 MiB buffer is only ever reused by the next 2 MiB-class request. Free
+/// blocks store the next free offset in their first word.
+struct InitHeap<const N: usize> {
+    bytes: UnsafeCell<InitHeapBytes<N>>,
+    next: UnsafeCell<usize>,
+    free_heads: UnsafeCell<[usize; INIT_HEAP_CLASSES]>,
+    locked: AtomicBool,
+    high_water: AtomicUsize,
+    exhausted: AtomicBool,
+}
+
+// SAFETY: every cursor and free-list access is serialized by `locked`.
+unsafe impl<const N: usize> Sync for InitHeap<N> {}
+
+impl<const N: usize> InitHeap<N> {
+    const fn new() -> Self {
+        Self {
+            bytes: UnsafeCell::new(InitHeapBytes([0; N])),
+            next: UnsafeCell::new(0),
+            free_heads: UnsafeCell::new([FREE_LIST_END; INIT_HEAP_CLASSES]),
+            locked: AtomicBool::new(false),
+            high_water: AtomicUsize::new(0),
+            exhausted: AtomicBool::new(false),
+        }
+    }
+
+    fn base(&self) -> *mut u8 {
+        // SAFETY: UnsafeCell::get returns the stable, non-null arena address.
+        unsafe { ptr::addr_of_mut!((*self.bytes.get()).0).cast::<u8>() }
+    }
+
+    fn contains(&self, pointer: *mut u8) -> bool {
+        let base = self.base() as usize;
+        (base..base + N).contains(&(pointer as usize))
+    }
+
+    fn class_of(layout: Layout) -> Option<usize> {
+        if layout.align() > INIT_HEAP_MAX_ALIGN {
+            return None;
+        }
+        let bytes = layout
+            .size()
+            .max(layout.align())
+            .max(1 << INIT_HEAP_MIN_CLASS_SHIFT)
+            .checked_next_power_of_two()?;
+        let class = (bytes.trailing_zeros() - INIT_HEAP_MIN_CLASS_SHIFT) as usize;
+        (class < INIT_HEAP_CLASSES).then_some(class)
+    }
+
+    fn lock(&self) -> SpinGuard<'_> {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        SpinGuard {
+            locked: &self.locked,
+        }
+    }
+
+    /// Returns null, and sets the sticky exhausted flag, when the layout has
+    /// no class or the heap has no room for a fresh block of its class.
+    fn allocate(&self, layout: Layout) -> *mut u8 {
+        let Some(class) = Self::class_of(layout) else {
+            self.exhausted.store(true, Ordering::Release);
+            return ptr::null_mut();
+        };
+        let _guard = self.lock();
+        // SAFETY: the heap lock serializes free-list access.
+        let heads = unsafe { &mut *self.free_heads.get() };
+        let head = heads[class];
+        if head != FREE_LIST_END {
+            let block = self.base().wrapping_add(head);
+            // SAFETY: a free block's first word holds the next free offset.
+            heads[class] = unsafe { block.cast::<usize>().read() };
+            return block;
+        }
+        let class_bytes = 1usize << (class as u32 + INIT_HEAP_MIN_CLASS_SHIFT);
+        // SAFETY: the heap lock serializes bump-cursor access.
+        let cursor = unsafe { *self.next.get() };
+        let Some(end) = align_up(cursor, class_bytes.min(INIT_HEAP_MAX_ALIGN))
+            .and_then(|offset| offset.checked_add(class_bytes))
+            .filter(|end| *end <= N)
+        else {
+            self.exhausted.store(true, Ordering::Release);
+            return ptr::null_mut();
+        };
+        // SAFETY: the heap lock serializes bump-cursor access.
+        unsafe { *self.next.get() = end };
+        self.high_water.store(end, Ordering::Release);
+        self.base().wrapping_add(end - class_bytes)
+    }
+
+    /// # Safety
+    ///
+    /// `pointer` must be a live block returned by `allocate` for `layout`'s class.
+    unsafe fn deallocate(&self, pointer: *mut u8, layout: Layout) {
+        let Some(class) = Self::class_of(layout) else {
+            return;
+        };
+        let _guard = self.lock();
+        // SAFETY: the heap lock serializes free-list access; every block is at
+        // least 16 bytes and 16-byte aligned, so its first word is writable.
+        unsafe {
+            let heads = &mut *self.free_heads.get();
+            pointer.cast::<usize>().write(heads[class]);
+            heads[class] = pointer as usize - self.base() as usize;
+        }
+    }
+}
+
+struct SpinGuard<'a> {
+    locked: &'a AtomicBool,
+}
+
+impl Drop for SpinGuard<'_> {
+    fn drop(&mut self) {
+        self.locked.store(false, Ordering::Release);
+    }
+}
+
+static INIT_HEAP: InitHeap<INIT_HEAP_BYTES> = InitHeap::new();
 
 #[cfg(test)]
 mod tests {
@@ -509,6 +736,119 @@ mod tests {
         });
         for thread in threads {
             thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn init_heap_reuses_a_freed_block_of_the_same_class() {
+        static HEAP: InitHeap<{ 8 << 20 }> = InitHeap::new();
+        let big = Layout::from_size_align(2 << 20, 1).unwrap();
+        let small = Layout::from_size_align(64, 8).unwrap();
+        let first = HEAP.allocate(big);
+        assert!(!first.is_null());
+        // SAFETY: first is live and was allocated for big.
+        unsafe { HEAP.deallocate(first, big) };
+        let small_block = HEAP.allocate(small);
+        assert!(!small_block.is_null());
+        let second = HEAP.allocate(big);
+        // The freed 2 MiB block is not consumed by the small request.
+        assert_eq!(second, first);
+        // One 2 MiB block, then a 64 B block carved after it.
+        assert_eq!(HEAP.high_water.load(Ordering::Acquire), (2 << 20) + 64);
+        assert!(!HEAP.exhausted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn init_heap_classes_are_powers_of_two_from_16_bytes_to_4_mib() {
+        type Heap = InitHeap<4096>;
+        let class = |size, align| Heap::class_of(Layout::from_size_align(size, align).unwrap());
+        assert_eq!(class(0, 1), Some(0));
+        assert_eq!(class(16, 1), Some(0));
+        assert_eq!(class(17, 1), Some(1));
+        assert_eq!(class(8, 64), Some(2));
+        assert_eq!(class(196_608, 8), Some(14));
+        assert_eq!(class(2 << 20, 1), Some(17));
+        assert_eq!(class(4 << 20, 1), Some(18));
+        assert_eq!(class((4 << 20) + 1, 1), None);
+        assert_eq!(class(16, 8192), None);
+    }
+
+    #[test]
+    fn init_heap_exhaustion_is_sticky_and_returns_null() {
+        static HEAP: InitHeap<{ 1 << 20 }> = InitHeap::new();
+        let too_big = Layout::from_size_align(2 << 20, 1).unwrap();
+        assert!(HEAP.allocate(too_big).is_null());
+        assert!(HEAP.exhausted.load(Ordering::Acquire));
+        let small = Layout::from_size_align(16, 1).unwrap();
+        assert!(!HEAP.allocate(small).is_null());
+        assert!(HEAP.exhausted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn init_scope_routes_to_the_reclaiming_heap_and_freezes_it_afterwards() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let layout = Layout::from_size_align(1000, 8).unwrap();
+        let scope = enter_init();
+        // SAFETY: layout is valid for this allocator.
+        let first = unsafe { allocator.alloc(layout) };
+        assert!(INIT_HEAP.contains(first));
+        // SAFETY: first is live and was allocated with layout.
+        unsafe { allocator.dealloc(first, layout) };
+        // SAFETY: layout is valid for this allocator.
+        let reused = unsafe { allocator.alloc(layout) };
+        assert_eq!(reused, first);
+        drop(scope);
+
+        // Outside the window a free is a leak: the block is not reissued.
+        // SAFETY: reused is live and was allocated with layout.
+        unsafe { allocator.dealloc(reused, layout) };
+        let scope = enter_init();
+        // SAFETY: layout is valid for this allocator.
+        let fresh = unsafe { allocator.alloc(layout) };
+        assert!(INIT_HEAP.contains(fresh));
+        assert_ne!(fresh, reused);
+        // SAFETY: fresh is live and was allocated with layout.
+        unsafe { allocator.dealloc(fresh, layout) };
+        drop(scope);
+        assert!(!init_heap_exhausted());
+    }
+
+    #[test]
+    fn init_heap_realloc_is_in_place_within_a_class_and_copies_across() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let small = Layout::from_size_align(40, 8).unwrap();
+        let _scope = enter_init();
+        // SAFETY: small is valid for this allocator.
+        let pointer = unsafe { allocator.alloc(small) };
+        assert!(INIT_HEAP.contains(pointer));
+        for index in 0..small.size() {
+            // SAFETY: index is within the live allocation.
+            unsafe { pointer.add(index).write(index as u8) };
+        }
+        // 40 and 64 bytes share the 64 B class.
+        // SAFETY: pointer is live and was allocated with small.
+        let same = unsafe { allocator.realloc(pointer, small, 64) };
+        assert_eq!(same, pointer);
+        let mid = Layout::from_size_align(64, 8).unwrap();
+        // SAFETY: same is live and was allocated with mid's class.
+        let grown = unsafe { allocator.realloc(same, mid, 300) };
+        assert!(INIT_HEAP.contains(grown));
+        assert_ne!(grown, same);
+        for index in 0..small.size() {
+            // SAFETY: index is within the live grown allocation.
+            assert_eq!(unsafe { grown.add(index).read() }, index as u8);
+        }
+        // The 64 B source was reclaimed inside the window.
+        // SAFETY: mid is valid for this allocator.
+        let reissued = unsafe { allocator.alloc(mid) };
+        assert_eq!(reissued, same);
+        let big = Layout::from_size_align(300, 8).unwrap();
+        // SAFETY: both pointers are live with these layouts.
+        unsafe {
+            allocator.dealloc(reissued, mid);
+            allocator.dealloc(grown, big);
         }
     }
 }
