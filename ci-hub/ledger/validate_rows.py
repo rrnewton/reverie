@@ -2272,6 +2272,21 @@ class CommittedValidationNamespace:
             if row.get("run_id") in census_runs
         ]
 
+    def retained_evidence_quarantined(self, row: dict) -> bool:
+        """Whether a selected row is an allowlisted lost run; refuse any other marker.
+
+        The finalized-proof capture asks the namespace, as it does for the
+        census selection, so the judgment comes from this reader rather than
+        from a module the caller happens to have loaded. A marker that names
+        no allowlisted lost run is refused, never read as absence. Like
+        select(), this grants no admission.
+        """
+        if qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY not in row:
+            return False
+        if qualifying_receipt.retained_evidence_quarantine_entry(row) is None:
+            raise ValueError("retained evidence quarantine names no allowlisted lost run")
+        return True
+
     def select(self, **selector) -> dict:
         row = _select_finalized_row(self._rows, **selector)
         identity = _admission_event_identity(row)

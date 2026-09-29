@@ -1012,20 +1012,16 @@ def stage_captured_proof(root: Path, value: Any) -> None:
     _proof_reader().stage_artifacts(root, captured_proof_objects(value))
 
 
-def _retained_evidence_quarantined(row: Mapping[str, Any]) -> bool:
-    """Whether a row is an allowlisted lost run; refuse any other marker."""
-    receipt = getattr(validation_ledger, "qualifying_receipt", None)
-    if receipt is None:
-        raise ExportRefused("retained evidence quarantine reader is not loaded")
-    if receipt.RETAINED_EVIDENCE_QUARANTINE_KEY not in row:
-        return False
+def _retained_evidence_quarantined(namespace: Any, row: Mapping[str, Any]) -> bool:
+    """Whether a row is an allowlisted lost run; refuse any other marker.
+
+    The namespace judges the marker, so the capture depends on its namespace
+    argument and the proof reader only.
+    """
     try:
-        entry = receipt.retained_evidence_quarantine_entry(row)
-    except RuntimeError as error:
+        return namespace.retained_evidence_quarantined(row)
+    except (RuntimeError, ValueError) as error:
         raise ExportRefused(str(error)) from error
-    if entry is None:
-        raise ExportRefused("retained evidence quarantine names no allowlisted lost run")
-    return True
 
 
 def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[str, Any]:
@@ -1057,7 +1053,7 @@ def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[
             continue
         if row.get("schema_version") == 5:
             proof.derived_row_binding(row)
-        if _retained_evidence_quarantined(row):
+        if _retained_evidence_quarantined(namespace, row):
             # A lost run's carrier cannot exist; it stays unavailable, as the
             # native verifier reports it, and never becomes proof operands.
             missing.append(terminal)

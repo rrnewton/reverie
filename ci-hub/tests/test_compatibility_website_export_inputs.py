@@ -1683,6 +1683,11 @@ class TransportNamespace:
     # The canonical census selector itself, run over this double's rows_view()
     # and select(), so these transport tests still exercise the real selection.
     census_terminals = export_inputs.validation_ledger.CommittedValidationNamespace.census_terminals
+    # Likewise the canonical quarantine judgment, so a marked row is judged by
+    # the reader's own allowlist check.
+    retained_evidence_quarantined = (
+        export_inputs.validation_ledger.CommittedValidationNamespace.retained_evidence_quarantined
+    )
 
     def select(self, **selector):
         assert all(self.selection["row"].get(key) == value for key, value in selector.items())
