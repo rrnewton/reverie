@@ -239,6 +239,10 @@ pub(crate) struct GuestFileIdentityTable {
     /// keyed by their pinned backing memfd.
     pub proc_transfers:
         std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
+    /// Serializes nonblocking host receipt through capture metadata pinning.
+    pub capture_receive_gate: Arc<std::sync::Mutex<()>>,
+    pub capture_transfers:
+        std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::CaptureTransfer>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -574,6 +578,7 @@ struct FileRetirementState {
 enum RetiredFile {
     Owned(File),
     Shared(Arc<File>),
+    Capture(Arc<crate::executor::CaptureDescription>),
 }
 
 impl std::fmt::Debug for FileRetirement {
@@ -597,6 +602,15 @@ impl FileRetirement {
 
     pub(crate) fn retire(&self, files: impl IntoIterator<Item = File>) {
         self.retire_inner(files.into_iter().map(RetiredFile::Owned));
+    }
+
+    pub(crate) fn retire_capture(
+        &self,
+        descriptions: impl IntoIterator<Item = Arc<crate::executor::CaptureDescription>>,
+    ) {
+        // Keep the complete donor owner, including metadata keepers and sink,
+        // alive until the removing executor has released its guards.
+        self.retire_inner(descriptions.into_iter().map(RetiredFile::Capture));
     }
 
     pub(crate) fn retire_shared(&self, files: impl IntoIterator<Item = Arc<File>>) {
@@ -641,9 +655,10 @@ impl FileRetirement {
             if let Some(probe) = probe {
                 let descriptors: Vec<_> = files
                     .iter()
-                    .map(|file| match file {
-                        RetiredFile::Owned(file) => file.as_raw_fd(),
-                        RetiredFile::Shared(file) => file.as_raw_fd(),
+                    .flat_map(|file| match file {
+                        RetiredFile::Owned(file) => vec![file.as_raw_fd()],
+                        RetiredFile::Shared(file) => vec![file.as_raw_fd()],
+                        RetiredFile::Capture(description) => description.retirement_descriptors(),
                     })
                     .collect();
                 // The actual owners remain alive until the probe permits this
@@ -655,6 +670,7 @@ impl FileRetirement {
             match file {
                 RetiredFile::Owned(file) => drop(file),
                 RetiredFile::Shared(file) => drop(file),
+                RetiredFile::Capture(description) => drop(description),
             }
         }
     }
@@ -872,6 +888,9 @@ pub(crate) struct LoadedStaticElf {
     pub loginuid_fds: std::collections::BTreeSet<i32>,
     pub stdout_alias_fds: std::collections::BTreeSet<i32>,
     pub stderr_alias_fds: std::collections::BTreeSet<i32>,
+    pub(crate) capture_descriptions:
+        std::collections::BTreeMap<i32, Arc<crate::executor::CaptureDescription>>,
+    pub(crate) capture_owner: Option<Arc<crate::executor::CapturedPipeIdentities>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
     // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
@@ -926,6 +945,8 @@ impl LoadedStaticElf {
     /// signal-transaction guards are released.
     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
         self.random_device_descriptions.remove(&fd);
+        self.file_retirement
+            .retire_capture(self.capture_descriptions.remove(&fd));
         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
         if fd == libc::STDIN_FILENO {
             retired.extend(self.take_stdin());
@@ -948,6 +969,8 @@ impl LoadedStaticElf {
 
     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
         self.random_device_descriptions.remove(&fd);
+        self.file_retirement
+            .retire_capture(self.capture_descriptions.remove(&fd));
         let file = self.files.remove(&fd);
         self.fd_entry_ids.remove(&fd);
         file
@@ -1058,6 +1081,8 @@ impl LoadedStaticElf {
             loginuid_fds: self.loginuid_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
+            capture_descriptions: self.capture_descriptions.clone(),
+            capture_owner: self.capture_owner.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: crate::executor::ChildWaitContext::default(),
@@ -1156,6 +1181,22 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|fd| !cloexec_fds.contains(fd) && files.contains_key(fd))
             .collect();
+        let capture_descriptions = previous
+            .capture_descriptions
+            .into_iter()
+            .filter_map(|(fd, description)| {
+                if !cloexec_fds.contains(&fd)
+                    && (files.contains_key(&fd)
+                        || ([1, 2].contains(&fd) && !previous.closed_standard_fds.contains(&fd)))
+                {
+                    Some((fd, description))
+                } else {
+                    previous.file_retirement.retire_capture([description]);
+                    None
+                }
+            })
+            .collect();
+        let capture_owner = previous.capture_owner;
         let proc_files: std::collections::BTreeMap<_, _> = previous
             .proc_files
             .into_iter()
@@ -1270,6 +1311,11 @@ impl LoadedStaticElf {
         self.loginuid_fds = loginuid_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
+        let retired_capture =
+            std::mem::replace(&mut self.capture_descriptions, capture_descriptions);
+        self.file_retirement
+            .retire_capture(retired_capture.into_values());
+        self.capture_owner = capture_owner;
         self.cloexec_fds = std::collections::BTreeSet::new();
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
@@ -1712,6 +1758,8 @@ fn load_executable(
         loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
+        capture_descriptions: std::collections::BTreeMap::new(),
+        capture_owner: None,
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: crate::executor::ChildWaitContext::default(),
@@ -1728,6 +1776,8 @@ fn load_executable(
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
+            capture_receive_gate: Arc::new(std::sync::Mutex::new(())),
+            capture_transfers: std::collections::BTreeMap::new(),
         })),
     })
 }

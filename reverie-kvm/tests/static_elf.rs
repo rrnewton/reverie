@@ -15682,6 +15682,9 @@ mod timestamp_terminal;
 #[path = "support/capture_identity.rs"]
 mod capture_identity;
 
+#[path = "support/captured_rights.rs"]
+mod captured_rights;
+
 #[path = "support/cpuid_dispatch.rs"]
 mod cpuid_dispatch;
 
