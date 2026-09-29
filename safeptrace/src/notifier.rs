@@ -472,6 +472,8 @@ struct Event {
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    worker_done_wait_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -693,6 +695,8 @@ impl Event {
             cleanup_return_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_publish_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_done_wait_pause: Mutex::new(None),
         }
     }
 
@@ -1400,6 +1404,12 @@ impl Event {
     fn mark_worker_done(&self) {
         let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
         debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+        // A waiter checks the state and waits under worker_done_lock. Taking
+        // it here orders this notification after that waiter has started
+        // waiting, or after its check sees WORKER_DONE; without it the
+        // notification can land between the check and the wait and is lost,
+        // and the waiter sleeps for its whole timeout.
+        drop(self.worker_done_lock.lock());
         self.worker_done_changed.notify_all();
         self.notify_wait_owner_change();
     }
@@ -1419,6 +1429,18 @@ impl Event {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
+            }
+            #[cfg(test)]
+            {
+                let pause = self.worker_done_wait_pause.lock().take();
+                if let Some(pause) = pause
+                    && pause.captured.send(()).is_ok()
+                {
+                    // Test-only interval after the state check and before the
+                    // wait, with worker_done_lock held. It ends when the test
+                    // sends on the resume channel or drops it.
+                    let _ = pause.resume.recv();
+                }
             }
             self.worker_done_changed.wait_for(&mut guard, remaining);
         }
@@ -5249,6 +5271,85 @@ mod test {
 
         assert!(cleanup.wait(Duration::ZERO));
         assert!(!cleanup.pending_is_empty());
+    }
+
+    /// The worker retires while a `TerminalCleanup::wait` caller is between
+    /// its state check and its wait. The caller is paused in that interval
+    /// with `worker_done_lock` held, and `mark_worker_done` runs then. It must
+    /// not complete inside that interval, and the caller must then be released
+    /// by that notification rather than by its own timeout. A notification
+    /// sent inside the interval reaches nobody, and the caller sleeps for its
+    /// whole timeout before its re-check returns true. The only time bounds
+    /// here are that timeout and hang bounds on this test's own steps. The
+    /// caller's elapsed time includes the pause, which lasts until this test
+    /// resumes it, so a correct run fails only if this test takes the whole
+    /// timeout to get from the pause to the resume.
+    #[test]
+    fn worker_done_wakes_a_waiter_between_its_check_and_its_wait() {
+        const WAIT: Duration = Duration::from_secs(10);
+        let handle = EventHandle::new();
+        assert!(handle.event().try_begin_worker_start());
+        handle.event().mark_worker_running();
+        let (captured, paused) = mpsc::sync_channel(1);
+        let (resume_waiter, resume) = mpsc::sync_channel(1);
+        *handle.event().worker_done_wait_pause.lock() = Some(BoundedTestPause { captured, resume });
+        let cleanup = TerminalCleanup {
+            pid: Pid::from_raw(i32::MAX - 33).into(),
+            event: handle.clone(),
+        };
+        let (waited_tx, waited_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            let started = Instant::now();
+            let waited = cleanup.wait(WAIT);
+            let _ = waited_tx.send((waited, started.elapsed()));
+        });
+        paused
+            .recv_timeout(WAIT)
+            .expect("the waiter did not reach the interval before its wait");
+
+        let (marked_tx, marked_rx) = mpsc::sync_channel(1);
+        let marker_event = handle.clone();
+        let marker = thread::spawn(move || {
+            marker_event.event().mark_worker_done();
+            let _ = marked_tx.send(());
+        });
+        // The state swap precedes the notification in mark_worker_done, so
+        // once it is visible the marker has reached its notification step.
+        let swap_deadline = Instant::now() + WAIT;
+        while handle.event().worker_state.load(Ordering::Acquire) != WORKER_DONE {
+            assert!(
+                Instant::now() < swap_deadline,
+                "mark_worker_done did not publish WORKER_DONE"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        // The waiter holds worker_done_lock until it is resumed below, so a
+        // correct marker cannot finish in this window; without the lock it
+        // finishes in microseconds. The window can only miss the defect, when
+        // the marker is not scheduled within it; it never reports a correct
+        // marker.
+        let marked_in_interval = marked_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        resume_waiter.send(()).expect("release the waiter");
+
+        let (waited, elapsed) = waited_rx
+            .recv_timeout(WAIT * 2)
+            .expect("the waiter did not return after its own timeout");
+        assert!(waited, "the waiter did not observe WORKER_DONE");
+        assert!(
+            elapsed < WAIT,
+            "the waiter returned only at its {WAIT:?} timeout after {elapsed:?}; the worker-done \
+             wakeup was lost (mark_worker_done completed inside the check-to-wait interval: \
+             {marked_in_interval})"
+        );
+        assert!(
+            !marked_in_interval,
+            "mark_worker_done completed while the waiter held worker_done_lock"
+        );
+        marked_rx
+            .recv_timeout(WAIT)
+            .expect("mark_worker_done did not complete after the waiter waited");
+        waiter.join().expect("join the waiter");
+        marker.join().expect("join the marker");
     }
 
     #[test]
