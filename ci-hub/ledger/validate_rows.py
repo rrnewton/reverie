@@ -1250,6 +1250,13 @@ def _cyclic_gc_paused():
     Nested uses are no-ops. The public readers pause once around the whole
     replay: resuming between the read and the projection made the collector
     scan every event it had skipped while the rows were still being built.
+
+    The collector's switch is process-wide and this keeps no count of other
+    threads, so it suits single-threaded callers only. Any other thread runs
+    with collection paused while a replay is in progress, and when two threads
+    replay at once, the first to finish turns collection back on while the
+    other is still building rows. Either costs time or memory, never output:
+    the collector only reclaims memory.
     """
     if not gc.isenabled():
         yield

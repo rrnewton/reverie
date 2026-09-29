@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
@@ -1211,6 +1212,86 @@ def test_validate_each_event_reuses_only_an_exactly_accepted_line(
         [changed], known_ids=known, accepted_lines=lines,
     )) == [expected]
     assert runs == [1]
+
+
+def _real_checker_verdict(lines: list[str]) -> tuple[int, str] | None:
+    """The real checker's (line number, message) for its first refusal, or None."""
+    result = ledger._run_shared_type_checker("".join(line + "\n" for line in lines))
+    if result.returncode == 0:
+        return None
+    detail = result.stderr.strip() or result.stdout.strip()
+    match = re.search(r"stdin line (\d+): (.*)", detail, re.DOTALL)
+    assert match, f"checker refused without naming a line: {detail!r}"
+    return int(match.group(1)), match.group(2).strip()
+
+
+def test_real_checker_refusal_does_not_depend_on_earlier_lines(tmp_path: Path):
+    # validate_each_event reads the refusal of line N in a many-line run as
+    # the refusal a run over line N alone would give. That holds only while
+    # check-ledger-events.rs judges each line on its own; pin it on the real
+    # checker, not a stand-in.
+    events = _corrected_pairs(tmp_path, 2)
+    bad_source = copy.deepcopy(events[3])
+    bad_source["producer"]["source"] = "bogus-source"
+    bad_outcome = copy.deepcopy(events[0])
+    bad_outcome["outcome"] = "bogus-outcome"
+    accepted = [ledger.shared_type_line(event) for event in events]
+    for refused, valid in ((bad_source, events[3]), (bad_outcome, events[0])):
+        line = ledger.shared_type_line(refused)
+        alone = _real_checker_verdict([line])
+        assert alone is not None and alone[0] == 1 and alone[1]
+        # Earlier lines a stateful checker could remember: the valid form of
+        # the same event (same event_id), and every line of both event types.
+        contexts = {"same event": [ledger.shared_type_line(valid)], "all": accepted}
+        for name, context in contexts.items():
+            # Refused at its own position with the same message, which also
+            # means the checker accepted every line before it.
+            assert _real_checker_verdict(context + [line]) == (
+                len(context) + 1, alone[1],
+            ), name
+
+
+def test_preserve_replay_rechecks_a_correction_whose_admission_line_differs(
+    tmp_path: Path, monkeypatch
+):
+    events = _corrected_pairs(tmp_path, 4)
+    write_events(tmp_path, *events)
+    expected = validate_rows.rows(root=tmp_path, preserve_admission=True)
+    odd = events[5]
+    real_identity = validate_rows._admission_event_identity
+
+    def identity(value):
+        if value.get("event_id") == odd["event_id"]:
+            # The same JSON value with spaces after separators: the checker
+            # accepts it, but it is not the line the correction check sends.
+            return json.dumps(value, sort_keys=True)
+        return real_identity(value)
+
+    monkeypatch.setattr(validate_rows, "_admission_event_identity", identity)
+    real_run = ledger._run_shared_type_checker
+    payloads: list[str] = []
+
+    def capturing(payload, arguments=()):
+        payloads.append(payload)
+        return real_run(payload, arguments)
+
+    monkeypatch.setattr(ledger, "_run_shared_type_checker", capturing)
+    assert validate_rows.rows(root=tmp_path, preserve_admission=True) == expected
+    # The union run judged the spaced line, so that verdict is not reused for
+    # the plain line: exactly that one correction is checked again, and the
+    # other three reuse the union run.
+    #
+    # What this pins is the lookup: reuse is keyed on the exact line the
+    # correction check sends. Recording shared_type_line(event) for every
+    # correction the union run passed fails here (measured: 1 checker run,
+    # not 2). Removing only the `same` comparison in _checked_events does not:
+    # the spaced line it would then record matches no line the correction
+    # check sends, so that comparison is a second guard, not the only one.
+    assert len(payloads) == 2
+    assert len(payloads[0].splitlines()) == 8
+    assert json.dumps(odd, sort_keys=True) in payloads[0].splitlines()
+    assert ledger.shared_type_line(odd) not in payloads[0].splitlines()
+    assert payloads[1] == ledger.shared_type_line(odd) + "\n"
 
 
 @pytest.mark.parametrize("enabled", [True, False])
