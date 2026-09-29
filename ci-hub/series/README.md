@@ -182,6 +182,16 @@ and invokes the existing `emit-series` command. The fixed systemd unit prevents
 two samples from overlapping, and the lock keeps the sample from running beside
 a validate.
 
+The sample passes no `--cell-timeout`: `pressure-test.rs` derives each cell's
+enclosing bound from its manifest budget and refuses a smaller one, so a fixed
+value here can only cause refusals. `--run-timeout 1500` bounds the whole run,
+and `pressure-test.rs` refuses a selection whose declared worst-case occupancy
+cannot fit it. The launched unit sets `GIT_ALLOW_PROTOCOL=https:file:ssh`
+because the systemd user manager does not, and the wrkslots post-provision
+`git submodule update` otherwise refuses the local-path submodule URLs. Both
+`wrkslots create` and `wrkslots remove` wait up to 900 seconds for a busy lock
+instead of failing immediately.
+
 `classify_pressure_sample` reduces one fixed campaign from the accepted series
 projection, never from the website's display state. Its denominator is exactly
 ten distinct repetition numbers for every cell in the frozen selection:

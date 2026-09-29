@@ -31,11 +31,33 @@ STATE_ROOT = Path(
 ).resolve()
 UNIT = "hermit-pressure-test"
 SAMPLE_COUNT = 10
-CELL_TIMEOUT_SECONDS = 60
+# No per-cell bound is passed: pressure-test.rs derives each cell's enclosing
+# allowance from its manifest budget and refuses any smaller --cell-timeout.
+# The former fixed 60 s was below the requirement of every verify, replay, and
+# chaos cell in the current manifests (at least 278 s, for a 57 s manifest
+# timeout), so every sampled run refused before launch
+# (https://github.com/rrnewton/dev-hermit/issues/431).  The whole run stays
+# bounded by RUN_TIMEOUT_SECONDS, which pressure-test.rs also checks against
+# the selected cells' declared worst-case occupancy before it starts.
 RUN_TIMEOUT_SECONDS = 1500
 LOCK_WAIT_SECONDS = 3600
 LOCK_CHILD_DEADLINE_SECONDS = 1800
-UNIT_RUNTIME_SECONDS = LOCK_WAIT_SECONDS + LOCK_CHILD_DEADLINE_SECONDS + 300
+# wrkslots fails immediately on a busy configuration or state lock unless given
+# --wait-lock; other agents' create/remove calls hold those locks routinely.
+SLOT_LOCK_WAIT_SECONDS = 900
+UNIT_RUNTIME_SECONDS = (
+    SLOT_LOCK_WAIT_SECONDS  # wrkslots create
+    + LOCK_WAIT_SECONDS
+    + LOCK_CHILD_DEADLINE_SECONDS
+    + SLOT_LOCK_WAIT_SECONDS  # wrkslots remove
+    + 300
+)
+# The systemd user manager's environment has no GIT_ALLOW_PROTOCOL, and the
+# user's url.insteadOf rewrites submodule URLs to local paths, so the
+# post-provision `git submodule update` fails with "transport 'file' not
+# allowed".  Same remedy as the integration-tip launcher in
+# https://github.com/rrnewton/dev-hermit/commit/84ff6369d7f806fdac0bf5d7962aa20f534bcae3.
+UNIT_GIT_SETENV: Mapping[str, str] = {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -152,6 +174,10 @@ def launch_command(
         "--setenv=PYTHONUNBUFFERED=1",
         f"--setenv=DEV_HERMIT_PARENT={root}",
         f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
+        *(
+            f"--setenv={name}={value}"
+            for name, value in sorted(UNIT_GIT_SETENV.items())
+        ),
         # pressure-test.rs re-executes into a dagrun scope in another slice,
         # where AllowedCPUs above no longer applies; safe_ci_scope reads these
         # and applies the same list to that scope.
@@ -222,8 +248,6 @@ def pressure_commands(checkout: Path, results: Path) -> list[list[str]]:
             str(SAMPLE_COUNT),
             "--jobs",
             "4",
-            "--cell-timeout",
-            str(CELL_TIMEOUT_SECONDS),
             "--run-timeout",
             str(RUN_TIMEOUT_SECONDS),
         ],
@@ -393,6 +417,19 @@ def launch(
         return 1 if prior else 0
 
 
+def wrkslots_failure_detail(completed: subprocess.CompletedProcess) -> str:
+    output = completed.stderr.strip() or completed.stdout.strip()
+    if not output:
+        return f"exit {completed.returncode}"
+    refusals = [line for line in output.splitlines() if line.startswith("REFUSED:")]
+    if refusals and not output.startswith("REFUSED:"):
+        # wrkslots prints unrelated registry WARNING/INCONSISTENT findings
+        # before its refusal; lead with the refusal so the one-line summary
+        # names the actual cause.  The full output follows unchanged.
+        return "\n".join([*refusals, output])
+    return output
+
+
 def remove_worktree(root: Path, slot: str, machine: str) -> str | None:
     try:
         completed = subprocess.run(
@@ -404,6 +441,8 @@ def remove_worktree(root: Path, slot: str, machine: str) -> str | None:
                 str(root),
                 "--machine",
                 machine,
+                "--wait-lock",
+                str(SLOT_LOCK_WAIT_SECONDS),
                 "--allow-existing-unregistered-worktrees",
                 "remove",
                 slot,
@@ -421,11 +460,7 @@ def remove_worktree(root: Path, slot: str, machine: str) -> str | None:
         return f"could not launch wrkslots remove: {error}"
     if completed.returncode == 0:
         return None
-    return (
-        completed.stderr.strip()
-        or completed.stdout.strip()
-        or f"exit {completed.returncode}"
-    )
+    return wrkslots_failure_detail(completed)
 
 
 def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
@@ -464,6 +499,8 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
             str(root),
             "--machine",
             machine,
+            "--wait-lock",
+            str(SLOT_LOCK_WAIT_SECONDS),
             "--allow-existing-unregistered-worktrees",
             "create",
             slot,
@@ -490,9 +527,7 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
         check=False,
     )
     if added.returncode != 0:
-        detail = (
-            added.stderr.strip() or added.stdout.strip() or f"exit {added.returncode}"
-        )
+        detail = wrkslots_failure_detail(added)
         state.update(
             state="failed", finished_at=utc_now(), detail=f"wrkslots create: {detail}"
         )

@@ -430,12 +430,14 @@ reminders:
   # Run one bounded sample of red cells with executable commands each day. The
   # health tick only
   # launches the work and returns; the fixed systemd unit prevents overlap.
-  # The worker fetches current Hermit main into a clean worktree under ignored/
-  # and enters validate-lock as a bench run, reserving both slots so the sample
+  # The worker fetches current Hermit main into a clean wrkslots worktree
+  # (waiting up to 15 minutes for a busy wrkslots lock) and enters
+  # validate-lock as a bench run, reserving both slots so the sample
   # cannot overlap a validate. It waits up to one hour for admission, then runs
-  # ten verify, replay, or chaos cells at -j4 with a 60-second per-cell bound and
-  # a 25-minute whole-run
-  # bound. The result directory and a plain-file log are retained. The existing
+  # ten verify, replay, or chaos cells at -j4. Each cell gets the per-cell bound
+  # pressure-test.rs derives from its manifest budget, and the run has a
+  # 25-minute whole-run bound. The result directory and a plain-file log are
+  # retained. The existing
   # pressure-test emit-series command writes the completed rows; a run that did
   # not compare remains a non-verdict in that writer.
   - name: pressure_test

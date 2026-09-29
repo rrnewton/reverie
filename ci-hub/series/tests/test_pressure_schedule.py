@@ -120,6 +120,14 @@ class PressureScheduleTest(unittest.TestCase):
                 f"--setenv=DEV_HERMIT_TOOL_ROOT={pressure_schedule.SOURCE_ROOT}",
                 launched,
             )
+            # The user manager's environment lacks GIT_ALLOW_PROTOCOL; without
+            # it the wrkslots post-provision submodule update refuses the
+            # insteadOf-rewritten local submodule URLs
+            # (https://github.com/rrnewton/dev-hermit/issues/431).
+            self.assertIn(
+                "--setenv=GIT_ALLOW_PROTOCOL=https:file:ssh",
+                launched[: launched.index("--")],
+            )
             self.assertEqual(
                 launched[launched.index("--") + 1 :],
                 [
@@ -341,7 +349,14 @@ class PressureScheduleTest(unittest.TestCase):
         self.assertNotIn("--mode", run)
         self.assertEqual(run[run.index("--sample") + 1], "10")
         self.assertEqual(run[run.index("--jobs") + 1], "4")
-        self.assertEqual(run[run.index("--cell-timeout") + 1], "60")
+        # pressure-test.rs derives each cell's bound from its manifest budget
+        # and refuses any smaller --cell-timeout; the former fixed 60 s was
+        # below every cell's requirement, so every sample refused before
+        # launch (https://github.com/rrnewton/dev-hermit/issues/431).
+        self.assertFalse(
+            [arg for arg in run if arg.startswith("--cell-timeout")], run
+        )
+        self.assertFalse(hasattr(pressure_schedule, "CELL_TIMEOUT_SECONDS"))
         self.assertEqual(run[run.index("--run-timeout") + 1], "1500")
         self.assertEqual(
             emit,
@@ -400,6 +415,11 @@ class PressureScheduleTest(unittest.TestCase):
             )
             self.assertIn("create", calls[0])
             self.assertLess(calls[0].index("--machine"), calls[0].index("create"))
+            self.assertLess(calls[0].index("--wait-lock"), calls[0].index("create"))
+            self.assertEqual(
+                calls[0][calls[0].index("--wait-lock") + 1],
+                str(pressure_schedule.SLOT_LOCK_WAIT_SECONDS),
+            )
             self.assertEqual(
                 calls[0][calls[0].index("--machine") + 1], "devbig030"
             )
@@ -418,6 +438,11 @@ class PressureScheduleTest(unittest.TestCase):
             self.assertTrue(calls[3][0].endswith("ci-hub/bin/wrkslots"))
             self.assertIn("remove", calls[3])
             self.assertLess(calls[3].index("--machine"), calls[3].index("remove"))
+            self.assertLess(calls[3].index("--wait-lock"), calls[3].index("remove"))
+            self.assertEqual(
+                calls[3][calls[3].index("--wait-lock") + 1],
+                str(pressure_schedule.SLOT_LOCK_WAIT_SECONDS),
+            )
             self.assertEqual(
                 calls[3][calls[3].index("--machine") + 1], "devbig030"
             )
@@ -425,6 +450,138 @@ class PressureScheduleTest(unittest.TestCase):
             finished = pressure_schedule.run_registry.read_record(record)
             self.assertEqual(finished["state"], "completed")
             self.assertEqual(finished["result"], "passed")
+
+    def _campaign_record(self, root):
+        record = pressure_schedule.run_registry.record_path(
+            root, pressure_schedule.UNIT
+        )
+        pressure_schedule.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "kind": "bench",
+                "state": "running",
+                "unit": f"{pressure_schedule.UNIT}.service",
+                "target": "a" * 40,
+                "repo": "rrnewton/hermit",
+                "checkout": str(root / "worktrees/validate/pressure-test"),
+                "log": str(root / "ignored/ci-hub/pressure-test.log"),
+                "agent": "tick-pressure-test",
+                "started_at": "2026-09-29T12:00:00Z",
+                "producer": pressure_schedule.run_registry.PRODUCER,
+                "admission": "ci-hub validate-lock",
+            },
+        )
+        return record
+
+    def test_provisioning_waits_on_a_busy_wrkslots_lock(self):
+        # Model wrkslots' global --wait-lock contract: the default 0 refuses a
+        # busy configuration or state lock at once with the message below; a
+        # positive value waits up to that many seconds.  Hold the lock for
+        # 540 s, the disk snapshot's documented lifecycle-lock hold
+        # (ci-hub/validate/start_unit.py).  In ignored/ci-hub/pressure-test.log,
+        # 12 of the 15 `wrkslots create` failures behind
+        # https://github.com/rrnewton/dev-hermit/issues/431 were this refusal,
+        # and 3 further ticks recorded it as their `wrkslots remove`
+        # cleanup_error.
+        held_seconds = 540.0
+        wrkslots_calls = []
+
+        def run(command, **kwargs):
+            if not command[0].endswith("ci-hub/bin/wrkslots"):
+                return subprocess.CompletedProcess(command, 0, "", "")
+            subcommand = next(
+                index
+                for index, argument in enumerate(command)
+                if argument in ("create", "remove")
+            )
+            global_options = command[1:subcommand]
+            wait = 0.0
+            if "--wait-lock" in global_options:
+                wait = float(global_options[global_options.index("--wait-lock") + 1])
+            wrkslots_calls.append((command[subcommand], wait))
+            if wait < held_seconds:
+                return subprocess.CompletedProcess(
+                    command,
+                    3,
+                    "",
+                    "REFUSED: state lock is busy for /parent/worktrees/ACTIVE; "
+                    "retry after the current command exits\n",
+                )
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = self._campaign_record(root)
+            output = io.StringIO()
+            with mock.patch.object(
+                pressure_schedule.subprocess, "run", side_effect=run
+            ), contextlib.redirect_stdout(output):
+                self.assertEqual(
+                    pressure_schedule.run_campaign("a" * 40, record, root),
+                    0,
+                    output.getvalue(),
+                )
+            self.assertEqual(
+                [name for name, _wait in wrkslots_calls], ["create", "remove"]
+            )
+            finished = pressure_schedule.run_registry.read_record(record)
+            self.assertEqual(finished["state"], "completed")
+            self.assertIsNone(finished.get("cleanup_error"))
+
+    def test_create_failure_summary_leads_with_the_wrkslots_refusal(self):
+        # wrkslots prints unrelated registry findings before the refusal; the
+        # 2026-09-25 and 2026-09-28 ticks were summarised as the WARNING line
+        # while the real refusal was the failed post-provision hook.
+        stderr = (
+            "WARNING: registry/storage state remains INCONSISTENT (106 finding(s)); "
+            "this create target is distinct and none of the reported state was changed\n"
+            "INCONSISTENT kind=directory-without-row target=agent/x: exists\n"
+            "post-provision hook 1/1 checkout=checkout: git submodule update --init --recursive\n"
+            "fatal: transport 'file' not allowed\n"
+            "REFUSED: post-provision hook 1 for checkout checkout failed with rc 1; "
+            "slot was left for inspection\n"
+            "REMEDY: run 'wrkslots create --help'\n"
+        )
+
+        def run(command, **kwargs):
+            if "create" in command:
+                return subprocess.CompletedProcess(command, 3, "", stderr)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = self._campaign_record(root)
+            with mock.patch.object(
+                pressure_schedule.subprocess, "run", side_effect=run
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    pressure_schedule.run_campaign("a" * 40, record, root)
+            first_line = str(raised.exception).splitlines()[0]
+            self.assertEqual(
+                first_line,
+                "wrkslots create: REFUSED: post-provision hook 1 for checkout "
+                "checkout failed with rc 1; slot was left for inspection",
+            )
+            # The complete wrkslots output is retained after the headline.
+            self.assertIn("fatal: transport 'file' not allowed", str(raised.exception))
+            self.assertEqual(pressure_schedule.read_state(root)["state"], "failed")
+
+    def test_unit_runtime_covers_every_bounded_phase(self):
+        self.assertGreater(
+            pressure_schedule.UNIT_RUNTIME_SECONDS,
+            2 * pressure_schedule.SLOT_LOCK_WAIT_SECONDS
+            + pressure_schedule.LOCK_WAIT_SECONDS
+            + pressure_schedule.LOCK_CHILD_DEADLINE_SECONDS,
+        )
+        # pressure-test.rs puts the run in a scope with RuntimeMaxSec equal to
+        # the whole-run bound plus max(60, run/10) seconds of grace; the
+        # validate-lock child deadline must enclose that scope.
+        run_timeout = pressure_schedule.RUN_TIMEOUT_SECONDS
+        self.assertGreater(
+            pressure_schedule.LOCK_CHILD_DEADLINE_SECONDS,
+            run_timeout + max(60, run_timeout // 10),
+        )
 
     def test_teardown_launch_error_after_pass_still_finishes_records(self):
         with tempfile.TemporaryDirectory() as directory:
