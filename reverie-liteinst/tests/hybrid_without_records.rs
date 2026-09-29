@@ -249,7 +249,8 @@ async fn rt_sigreturn_hook_trap_past_the_target_is_witnessed_once() {
 // cap hybrid.rs's `overtaken_cap` gives for the 15 rounds that could be
 // overtaken (the last cannot be, since the guest makes no stop between its
 // handler's return and its exit), and every witness must be a late event
-// or a missing round.
+// or a missing round. Since a lost notification is also a missing round,
+// and witnessed, the cap admits as many witnessed losses too.
 #[test]
 fn an_rt_sigreturn_hook_trap_keeps_the_timer_event_without_records() {
     reverie_ptrace::ret_without_perf!();
@@ -300,6 +301,11 @@ async fn rt_sigreturn_hook_trap_keeps_the_timer_event_without_records() {
         "{missing} of {rounds} kept events did not fire: {events:?}"
     );
     let late = events.iter().filter(|&&clock| clock > rcbs).count() as u64;
+    eprintln!(
+        "{missing} of {rounds} kept events missing, at most {MISSING_CAP}; {late} of {} fired \
+         past the target {rcbs}; {witnesses} witnessed",
+        events.len()
+    );
     assert_eq!(
         witnesses,
         late + missing,
