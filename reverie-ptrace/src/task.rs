@@ -8282,6 +8282,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        self.untraced_syscall_with(task, nr, args, false).await
+    }
+
+    /// `untraced_syscall`; `original` marks a LiteInst frame-mode injection of
+    /// the event's own pending syscall, which a signal must not stop from
+    /// running (`requeue_signals_before_original_syscall`).
+    async fn untraced_syscall_with(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+        original: bool,
+    ) -> Result<Result<i64, Errno>, TraceError> {
         self.validate_liteinst_mapping_execution(nr, args)?;
         self.timer.expire_overflow_records(&task);
         tracing::trace!(
@@ -8316,9 +8329,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let (wait, seccomp_trapped) = self
+        let (mut wait, mut seccomp_trapped) = self
             .step_private_syscall_discarding_late_timer(task, nr)
             .await?;
+        if original && child_context.is_some() {
+            (wait, seccomp_trapped) = self
+                .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr)
+                .await?;
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
@@ -8635,6 +8653,103 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Runs a LiteInst frame-mode injection of the event's original syscall
+    /// that a signal stopped before its private-page `syscall` instruction,
+    /// the way plain ptrace runs the original: once, with the signal pending.
+    ///
+    /// Plain ptrace resumes the original from its seccomp stop, so the kernel
+    /// enters the syscall with the signal still pending and delivers it on the
+    /// way back to the guest, as a signal stop the Tool sees. A
+    /// non-blocking syscall completes; a blocking one that the signal can
+    /// interrupt returns its `-ERESTART*` code or `-EINTR` at once. The
+    /// private-page step instead dequeued the signal before the instruction.
+    /// This puts it back, in the kernel, and reaches the syscall entry:
+    ///
+    /// 1. The signal is added to the thread's blocked mask and resumed into
+    ///    it with `PTRACE_SYSCALL`; the kernel requeues a blocked signal the
+    ///    tracer injects, with its siginfo. Any further signal stop before the
+    ///    instruction is requeued the same way; the thread's own late timer
+    ///    overflow is discarded, as `step_private_syscall_discarding_late_timer`
+    ///    discards it, and a group stop is resumed without a signal, as
+    ///    `step_private_syscall` resumes it.
+    /// 2. At the syscall-entry stop the original mask is restored, which
+    ///    leaves the signals pending and deliverable.
+    /// 3. `step_private_syscall` then runs the syscall, which sees them
+    ///    pending. It handles what can stop that step after the syscall
+    ///    returned exactly as for any injected syscall: a guest seccomp trap
+    ///    (whose flag is returned), a synchronous-class signal dequeued ahead
+    ///    of the step's report, which is requeued behind it or, after a
+    ///    mask-swapping syscall, held; and group stops.
+    ///
+    /// The signals stay queued in the kernel; nothing is held for the resume
+    /// (`pending_signal`) except by step 3, so the next resume delivers them as
+    /// a signal stop the Tool handles, and a restart code the syscall returns
+    /// is decided by the ordinary rewound-`int3` delivery.
+    ///
+    /// `SIGKILL` and `SIGSTOP` cannot be blocked, and an external `SIGTRAP`
+    /// would coalesce with the step's own report, so a stop with one of them
+    /// is returned unchanged and keeps the generic not-run handling
+    /// (`status_to_result`): the injection returns `-ERESTARTSYS` with the
+    /// signal held for the resume. Signals requeued before it stay pending.
+    async fn requeue_signals_before_original_syscall(
+        &mut self,
+        wait: Wait,
+        seccomp_trapped: bool,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
+        fn requeueable(sig: Signal) -> bool {
+            !matches!(sig, Signal::SIGKILL | Signal::SIGSTOP | Signal::SIGTRAP)
+        }
+        fn before_instruction(stopped: &Stopped) -> Result<bool, TraceError> {
+            Ok(stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET)
+        }
+        match &wait {
+            Wait::Stopped(stopped, Event::Signal(sig))
+                if requeueable(*sig)
+                    && !self.liteinst_activation_in_progress()
+                    && before_instruction(stopped)? => {}
+            _ => return Ok((wait, seccomp_trapped)),
+        }
+        let Wait::Stopped(stopped, _) = &wait else {
+            unreachable!("matched a stopped task")
+        };
+        let original_mask = stopped.getsigmask()?;
+        let mut mask = original_mask;
+        let mut wait = wait;
+        loop {
+            match wait {
+                Wait::Stopped(stopped, Event::Signal(sig))
+                    if requeueable(sig) && before_instruction(&stopped)? =>
+                {
+                    let deliver = if is_group_stop(&stopped, sig)? {
+                        None
+                    } else if sig == Timer::signal_type()
+                        && self.consume_own_timer_overflow(&stopped)?
+                    {
+                        LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+                        None
+                    } else {
+                        mask |= signal_mask_bit(sig);
+                        stopped.setsigmask(mask)?;
+                        Some(sig)
+                    };
+                    wait = self.syscall_stopped(stopped, deliver)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                }
+                Wait::Stopped(stopped, Event::Syscall) => {
+                    stopped.setsigmask(original_mask)?;
+                    return self.step_private_syscall(stopped, nr).await;
+                }
+                other => {
+                    if let Wait::Stopped(stopped, _) = &other {
+                        stopped.setsigmask(original_mask)?;
+                    }
+                    return Ok((other, false));
+                }
+            }
+        }
+    }
+
     // Replace an actual, unconverted seccomp entry. The caller must have taken
     // its pending record; this is not valid for a stopped task with no original
     // syscall left to consume (for example, a post-exec callback).
@@ -8864,8 +8979,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         );
 
         if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
+            let original = self.injected_syscall_frame.is_some()
+                && self.pending_syscall.take() == Some((nr, args));
             self.pending_syscall = None;
-            self.untraced_syscall(task, nr, args).await
+            self.untraced_syscall_with(task, nr, args, original).await
         } else {
             match self.pending_syscall.take() {
                 Some(original) if original == (nr, args) => {
@@ -8910,8 +9027,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let task = self.assume_stopped();
 
         if self.injected_syscall_frame.is_some() {
-            self.pending_syscall = None;
-            let result = self.untraced_syscall(task, nr, args).await?;
+            let original = self.pending_syscall.take() == Some((nr, args));
+            let result = self.untraced_syscall_with(task, nr, args, original).await?;
             // `handle_injected_syscall` owns the frame and applies this after
             // the callback is dropped, restarting the trap for a Linux restart
             // code instead of leaking it into the guest frame.

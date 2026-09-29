@@ -2264,6 +2264,9 @@ struct RestartPlan {
     /// With `signal_timer`, request the timer `SIGNAL_TIMER_NEAR_RCBS` ahead
     /// instead, so its single-step window covers the handler's return.
     signal_timer_near: bool,
+    /// Pass the original magic read through (`Guest::inject`) right after
+    /// sending `signal`, instead of returning a result.
+    inject_original: bool,
 }
 
 /// Far enough past the delivery of a quiet guest handler that neither the
@@ -2300,6 +2303,7 @@ impl RestartPlan {
             | ((self.inject_in_signal as u64) << 37)
             | ((self.deliver_sigtrap as u64) << 38)
             | ((self.signal_timer_near as u64) << 39)
+            | ((self.inject_original as u64) << 40)
     }
 
     fn decode(config: u64) -> Self {
@@ -2319,6 +2323,7 @@ impl RestartPlan {
             inject_in_signal: (config >> 37) & 1 != 0,
             deliver_sigtrap: (config >> 38) & 1 != 0,
             signal_timer_near: (config >> 39) & 1 != 0,
+            inject_original: (config >> 40) & 1 != 0,
         }
     }
 }
@@ -2423,6 +2428,9 @@ impl Tool for RestartTool {
                     )
                 };
                 assert_eq!(sent, 0, "tgkill failed");
+            }
+            if plan.inject_original {
+                return Ok(guest.inject(syscall).await?);
             }
             if index == 0 {
                 match plan.inject {
@@ -3250,6 +3258,52 @@ async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
         assert_eq!(
             events,
             ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1", last],
+            "{mode}"
+        );
+    }
+}
+
+/// The Tool sends a signal and then passes the original magic read through
+/// (`Guest::inject`) while the signal is still pending. Plain ptrace runs the
+/// read from its seccomp stop with the signal pending: the read of the
+/// unopened descriptor fails with `EBADF` at once, and the signal is
+/// delivered on the way back to the guest, as a signal event the Tool sees.
+/// Host-hybrid's private step stops at the signal before the syscall
+/// instruction; it must still run the syscall once with the signal pending,
+/// not return a restart code that re-invokes the Tool, and must leave the
+/// signal for a Tool-visible delivery. Covered with a handler without and
+/// with `SA_RESTART` (whose `getppid` through the site is the second hook
+/// entry), and with a signal that has no handler.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_original_injection_with_a_pending_signal_follows_ptrace() {
+    for (mode, signal, handled, hooks) in [
+        ("handler", libc::SIGUSR1, " handled=1 nested-ok=1", 2),
+        (
+            "handler-restart",
+            libc::SIGUSR1,
+            " handled=1 nested-ok=1",
+            2,
+        ),
+        ("read", libc::SIGURG, "", 1),
+    ] {
+        let plan = RestartPlan {
+            signal,
+            inject_original: true,
+            ..Default::default()
+        };
+        let (stdout, events) = restart_parity(mode, plan, hooks, mode).await;
+        assert_eq!(
+            stdout,
+            format!("read-result=-9{handled} traps=- hooks=-\n"),
+            "{mode}"
+        );
+        let signal_event = format!(
+            "signal {}",
+            reverie::Signal::try_from(signal).unwrap().as_str()
+        );
+        assert_eq!(
+            events,
+            ["read(warm)", "magic read(0x7e57,1)", signal_event.as_str()],
             "{mode}"
         );
     }
