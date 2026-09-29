@@ -323,6 +323,26 @@ fn assert_baseline_is_not_vacuous(
         seccomp_stops > 50,
         "baseline has only {seccomp_stops} seccomp stops"
     );
+    // The fixture keeps SIGCHLD blocked from before each fork and vfork until
+    // after the matching waitpid, so each child's SIGCHLD is delivered at a
+    // fixed point: right after the parent's wait4 stop, never before it.
+    let root_stops = ptrace
+        .stops
+        .get(root)
+        .unwrap_or_else(|| panic!("no stop sequence for root {root}"));
+    let sigchld_stops = root_stops
+        .iter()
+        .filter(|stop| *stop == "Signal(SIGCHLD)")
+        .count();
+    let sigchld_after_wait4 = root_stops
+        .windows(2)
+        .filter(|pair| pair[0] == "seccomp 61" && pair[1] == "Signal(SIGCHLD)")
+        .count();
+    assert_eq!(
+        (sigchld_stops, sigchld_after_wait4),
+        (2, 2),
+        "root's two SIGCHLD stops must each follow its wait4 stop: {root_stops:?}"
+    );
     let mut expected_tasks = vec![root.to_owned(), fork.to_owned(), vfork.to_owned()];
     expected_tasks.sort();
     assert_eq!(
